@@ -80,14 +80,7 @@ _REAPABLE_PLAY_STATUSES = frozenset({"running", "running_complete", "prepared", 
 
 
 def _wait_clock_past(ts: float) -> None:
-    """Block until time.time() is strictly greater than ``ts``.
-
-    updated_at is a float-seconds timestamp; on a coarse clock two immediate
-    writes can land the same value, which would let a "stale" version
-    snapshot accidentally still match. Version-guard tests call this between
-    taking the snapshot and the concurrent write so staleness is guaranteed,
-    not clock-dependent.
-    """
+    """Block until time.time() is strictly greater than ``ts``: updated_at is a float-seconds timestamp, and on a coarse clock two immediate writes can land the same value, which would let a 'stale' version snapshot accidentally still match. Version-guard tests call this between the snapshot and the concurrent write so staleness is guaranteed, not clock-dependent."""
     while time.time() <= ts:
         time.sleep(0.001)
 
@@ -190,10 +183,7 @@ async def _make_entity(entity_type: str, db: StateDB, status: str) -> str:
 
 
 def _schema_check_status_values(table: str) -> frozenset[str]:
-    """Extract the exact ``CHECK(status IN (...))`` value list for *table*
-    directly out of ``schema.sql`` — the authoritative on-disk vocabulary,
-    read fresh rather than hand-copied, so this test cannot itself drift
-    from the schema it is meant to police."""
+    """Extract the exact ``CHECK(status IN (...))`` value list for *table* directly out of ``schema.sql`` -- the authoritative on-disk vocabulary, read fresh rather than hand-copied, so this test cannot itself drift from the schema it polices."""
     schema_text = _SCHEMA_PATH.read_text()
     table_match = re.search(
         rf"CREATE TABLE IF NOT EXISTS {re.escape(table)} \((.*?)\n\);",
@@ -285,30 +275,20 @@ _CHECK_ENFORCED_TABLES: dict[str, str] = {
 
 
 def test_status_vocabulary_covers_every_status_managed_entity() -> None:
-    """Every entity type the update_status() gate manages must have a pinned
-    expected list above — a new status-managed entity added to the registry
-    without a matching golden entry here would otherwise sit outside the
-    drift gate entirely."""
+    """Every entity type the update_status() gate manages must have a pinned expected list above -- a new status-managed entity added to the registry without a matching golden entry here would otherwise sit outside the drift gate entirely."""
     assert sorted(_EXPECTED_STATUSES) == sorted(VALID_STATUSES_BY_ENTITY_TYPE)
 
 
 @pytest.mark.parametrize("entity_type", sorted(_EXPECTED_STATUSES))
 def test_status_vocabulary_golden_against_policy_registry(entity_type: str) -> None:
-    """`VALID_STATUSES_BY_ENTITY_TYPE` (the update_status() gate) and the
-    PolicyRegistry's own `.statuses` must both equal the pinned list — they
-    are sourced from the same registry today, but this test would still
-    catch either one drifting independently."""
+    """`VALID_STATUSES_BY_ENTITY_TYPE` (the update_status() gate) and the PolicyRegistry's own `.statuses` must both equal the pinned list -- sourced from the same registry today, but this test would still catch either one drifting independently."""
     assert sorted(VALID_STATUSES_BY_ENTITY_TYPE[entity_type]) == _EXPECTED_STATUSES[entity_type]
     assert sorted(DEFAULT_REGISTRY.get(entity_type).statuses) == _EXPECTED_STATUSES[entity_type]
 
 
 @pytest.mark.parametrize("entity_type", sorted(_CHECK_ENFORCED_TABLES))
 def test_status_vocabulary_golden_against_schema_check(entity_type: str) -> None:
-    """A status the PolicyRegistry declares but the schema CHECK omits (or
-    vice versa) is a live footgun: update_status() would accept a value
-    SQLite itself rejects at the UPDATE (an IntegrityError surfacing far
-    from the actual mistake), or the CHECK would silently admit a value the
-    unified policy never validates. Pin exact parity between the two."""
+    """A status the PolicyRegistry declares but the schema CHECK omits (or vice versa) is a live footgun: update_status() would accept a value SQLite itself rejects at the UPDATE, or the CHECK would silently admit a value the unified policy never validates. Pin exact parity between the two."""
     table = _CHECK_ENFORCED_TABLES[entity_type]
     assert sorted(_schema_check_status_values(table)) == _EXPECTED_STATUSES[entity_type]
 
@@ -460,10 +440,7 @@ async def test_cas_miss_on_expected_statuses_returns_false_silently(db: StateDB)
 
 @pytest.mark.asyncio
 async def test_cas_miss_on_expected_updated_at_returns_false_silently(db: StateDB) -> None:
-    """The version guard (`expected_updated_at`) is a distinct CAS channel
-    from `expected_statuses` — pinned separately because a caller could
-    plausibly drop one and keep the other without any status-only test
-    noticing. A stale version snapshot is also a silent `False`."""
+    """The version guard (`expected_updated_at`) is a distinct CAS channel from `expected_statuses` -- pinned separately because a caller could plausibly drop one and keep the other without any status-only test noticing. A stale version snapshot is also a silent `False`."""
     sid = await _make_session(db, status="running")
     stale_snapshot = await db.get_session(sid)
     stale_version = stale_snapshot["updated_at"]
@@ -495,12 +472,7 @@ async def test_cas_miss_on_expected_updated_at_returns_false_silently(db: StateD
 
 @pytest.mark.asyncio
 async def test_terminal_overwrite_without_override_raises_not_returns_false(db: StateDB) -> None:
-    """The OTHER update_status() contract: attempting to move a *terminal*
-    entity to a different status, with no guard supplied at all and no
-    override, is not a conflict/False — it is a raised
-    TransitionRejectedError. Confusing this with the CAS-miss case above
-    (e.g. treating a caught exception as an ordinary skip, or vice versa) is
-    the exact bug class this test pins."""
+    """The OTHER update_status() contract: moving a *terminal* entity to a different status, with no guard and no override, is not a conflict/False -- it is a raised TransitionRejectedError. Confusing this with the CAS-miss case (e.g. treating a caught exception as an ordinary skip, or vice versa) is the exact bug class this test pins."""
     sid = await _make_session(db, status="completed")
 
     with pytest.raises(TransitionRejectedError) as exc_info:
@@ -520,14 +492,7 @@ async def test_terminal_overwrite_without_override_raises_not_returns_false(db: 
 
 @pytest.mark.asyncio
 async def test_terminal_row_with_stale_guard_returns_false_not_raise(db: StateDB) -> None:
-    """The two contracts *interact*: the exact same terminal row and the
-    exact same attempted write raises TransitionRejectedError with no guard
-    (previous test), but returns a silent False when the caller supplies an
-    expected_statuses guard that the row's actual status fails — because the
-    guard check runs before the terminal-exit check in
-    SQLAlchemyLifecycleService._transition(). A caller relying on "terminal
-    writes always raise" would be surprised here; this pins the real
-    behavior so a future refactor can't silently swap which one fires."""
+    """The two contracts *interact*: the same terminal row and write raises TransitionRejectedError with no guard, but returns a silent False when the caller supplies an expected_statuses guard the row's actual status fails -- because the guard check runs before the terminal-exit check in SQLAlchemyLifecycleService._transition(). Pins the real behavior so a future refactor can't silently swap which one fires."""
     sid = await _make_session(db, status="completed")
 
     applied = await db.update_status(
@@ -578,12 +543,7 @@ async def test_reaper_pattern_stale_row_is_reaped(db: StateDB) -> None:
 async def test_reaper_pattern_row_claimed_between_read_and_write_is_not_clobbered(
     db: StateDB,
 ) -> None:
-    """A play legitimately re-claimed (re-touched, updated_at bumped) between
-    the reaper's scan and its guarded write must survive untouched — even
-    though its status is STILL a member of the reapable set, since
-    status-membership alone cannot distinguish "still stale" from "just
-    re-touched". Dropping expected_updated_at from the guarded write would
-    pass every status-only test and still over-reap this exact case."""
+    """A row legitimately re-claimed (re-touched, updated_at bumped) between the reaper's scan and its guarded write must survive untouched, even though its status is STILL in the reapable set -- status-membership alone can't distinguish 'still stale' from 'just re-touched'. Dropping expected_updated_at from the guarded write would pass every status-only test and still over-reap this exact case."""
     play_id = await _make_play(db, status="running")
     snapshot = await db.get_play(play_id)
     _wait_clock_past(snapshot["updated_at"])

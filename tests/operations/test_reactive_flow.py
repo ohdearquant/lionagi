@@ -152,13 +152,7 @@ async def test_dependent_spawn_runs_after_emitter():
 
 @pytest.mark.asyncio
 async def test_spawn_branch_setup_fires_with_operation_and_cloned_branch():
-    """spawn_branch_setup(operation, cloned_branch) must run for every
-    reactively-spawned node right after its branch clone is created — the
-    seam cli/orchestrate/flow.py uses to retarget a CLI-backed chat_model's
-    writable workspace to the spawn's own artifact dir instead of silently
-    inheriting the emitter's. The stamped spawn_id (set by node_builder,
-    mirroring role_node_builder in production) must already be on the
-    operation's metadata by the time the callback fires."""
+    """spawn_branch_setup(operation, cloned_branch) must run for every reactively-spawned node right after its branch clone is created -- the seam cli/orchestrate/flow.py uses to retarget a CLI-backed chat_model's writable workspace to the spawn's own artifact dir. The stamped spawn_id must already be on the operation's metadata by the time the callback fires."""
     from lionagi.session.branch import Branch
 
     async def spawner(**kw):
@@ -207,17 +201,7 @@ async def test_spawn_branch_setup_fires_with_operation_and_cloned_branch():
 )
 @pytest.mark.asyncio
 async def test_reactive_flow_notifies_for_preallocated_clone():
-    """A dependency-created (preallocated) branch clone must fire
-    on_branch_created exactly once, the same guarantee non-reactive flow
-    already provides. It currently fires zero times: this reproduces the
-    confirmed gap so a future runtime fix turns this into a loud XPASS
-    instead of silently leaving the branch-created persistence hook unfired
-    for reactive runs. Pinned to AssertionError so an unrelated exception
-    from either production `flow(...)` call surfaces as a real failure
-    instead of being swallowed as this known violation, and split from the
-    injected-clone leg below so a partial repair (one leg fixed, not the
-    other) surfaces as an XPASS on exactly one test instead of being hidden
-    inside a combined assertion."""
+    """A dependency-created (preallocated) branch clone must fire on_branch_created exactly once, like non-reactive flow already does; it currently fires zero times, reproducing the confirmed gap so a future fix turns this into a loud XPASS rather than silently leaving the hook unfired. Pinned to AssertionError, and split from the injected-clone leg below, so a partial repair surfaces as an XPASS on exactly one test."""
 
     # A dependent two-node graph — the second node has no explicit branch, so
     # the executor preallocates a clone of the default branch.
@@ -245,16 +229,7 @@ async def test_reactive_flow_notifies_for_preallocated_clone():
 )
 @pytest.mark.asyncio
 async def test_reactive_flow_notifies_for_injected_clone():
-    """A reactively injected (SpawnRequest) branch clone must fire
-    on_branch_created exactly once, the same guarantee non-reactive flow
-    already provides. It currently fires zero times: this reproduces the
-    confirmed gap so a future runtime fix turns this into a loud XPASS
-    instead of silently leaving the branch-created persistence hook unfired
-    for reactive runs. Pinned to AssertionError so an unrelated exception
-    from the production `flow(...)` call surfaces as a real failure instead
-    of being swallowed as this known violation, and split from the
-    preallocated-clone leg above so a partial repair surfaces as an XPASS on
-    exactly one test instead of being hidden inside a combined assertion."""
+    """A reactively injected (SpawnRequest) branch clone must fire on_branch_created exactly once, like non-reactive flow already does; it currently fires zero times, reproducing the confirmed gap so a future fix turns this into a loud XPASS rather than silently leaving the hook unfired. Pinned to AssertionError, and split from the preallocated-clone leg above, so a partial repair surfaces as an XPASS on exactly one test."""
 
     # A spawner node injects a follow-up node via SpawnRequest — the injected
     # node's branch is cloned by _assign_injected_branch.
@@ -490,16 +465,7 @@ async def test_no_spawn_behaves_like_normal_flow():
 
 @pytest.mark.asyncio
 async def test_execute_subscribes_via_public_observer_not_private():
-    """ReactiveExecutor.execute() must reach the bus via session.observer (public property).
-
-    Strategy: after normal session construction (which initialises _observer via
-    the model_validator), we forcibly clear _observer back to None to simulate
-    the scenario where the private attr is uninitialised.  If execute() still
-    used getattr(session, '_observer', None) it would see None and skip
-    subscribing, causing SpawnRequests to be silently dropped.  With the fix,
-    execute() calls session.observer (the property) which re-creates the
-    observer and the spawn is received.
-    """
+    """ReactiveExecutor.execute() must reach the bus via session.observer (the public property), not the private `_observer` attr: after construction, `_observer` is forced back to None to simulate an uninitialized private attr -- if execute() used `getattr(session, '_observer', None)` it would see None and silently drop SpawnRequests, whereas the property re-creates the observer and the spawn is received."""
     executed: list[str] = []
 
     async def spawner(**kw):
