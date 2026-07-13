@@ -295,6 +295,13 @@ def resolve_run_reason(
             None,
         )
     if exception is not None:
+        if isinstance(exception, ProviderError):
+            code = (
+                RunReasons.FAILED_PROVIDER_RETRYABLE
+                if exception.retryable
+                else RunReasons.FAILED_PROVIDER_NONRETRYABLE
+            )
+            return code, f"{type(exception).__name__}: {exception}", None
         return RunReasons.FAILED_EXCEPTION, f"{type(exception).__name__}: {exception}", None
     return RunReasons.FAILED_EXCEPTION, "Run failed.", None
 

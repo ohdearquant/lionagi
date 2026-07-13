@@ -6,12 +6,23 @@
 from __future__ import annotations
 
 import re
+from typing import ClassVar
 
 # --- Base hierarchy ---
 
 
 class ProviderError(RuntimeError):
-    """Generic error surfaced by a CLI provider subprocess."""
+    """Generic error surfaced by a CLI provider subprocess.
+
+    ``retryable`` is a class-level classification hint (not a retry
+    implementation): True for failures that are transient in nature (rate
+    limits, capacity, dropped streams), False for failures that will recur
+    on an unmodified retry (bad credentials, unsupported model/tool, context
+    overflow, safety rejection). Callers that add retry/backoff logic later
+    can key off this attribute instead of re-deriving it from the message.
+    """
+
+    retryable: ClassVar[bool] = False
 
     def __init__(
         self,
@@ -28,6 +39,8 @@ class ProviderError(RuntimeError):
 class ProviderQuotaError(ProviderError):
     """The provider CLI rejected the request due to usage/rate limits."""
 
+    retryable: ClassVar[bool] = True
+
 
 class ProviderAuthError(ProviderError):
     """The provider CLI rejected the request due to invalid credentials."""
@@ -35,6 +48,35 @@ class ProviderAuthError(ProviderError):
 
 class ProviderContextError(ProviderError):
     """The provider CLI rejected the request because the context is too long."""
+
+
+class ProviderCapacityError(ProviderError):
+    """The provider CLI rejected the request because the selected model is at capacity."""
+
+    retryable: ClassVar[bool] = True
+
+
+class ProviderUnsupportedModelError(ProviderError):
+    """The provider CLI rejected the request because the model or tool is not
+    supported for the current account/configuration (e.g. a model name the
+    signed-in account tier cannot use, or a tool the model doesn't support)."""
+
+
+class ProviderSafetyError(ProviderError):
+    """The provider CLI rejected the request because content was flagged by a safety filter."""
+
+
+class ProviderStreamDisconnectError(ProviderError):
+    """The provider CLI's stream disconnected before the turn completed (network drop, idle timeout)."""
+
+    retryable: ClassVar[bool] = True
+
+
+class ProviderAdapterError(ProviderError):
+    """A CLI adapter reported a non-success status with no more specific cause
+    identified from the message text (e.g. an `agy` turn ending status=ERROR)."""
+
+    retryable: ClassVar[bool] = True
 
 
 class WorkerLivenessError(ProviderError):
@@ -79,6 +121,11 @@ _QUOTA_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"usage\s+limit\s+reached", re.IGNORECASE),
     re.compile(r"rate[\s._-]?limit[\s._-]?exceeded", re.IGNORECASE),
     re.compile(r"try\s+again\s+at\s+\d", re.IGNORECASE),
+    # Date-formatted retry times ("try again at Jul 6th, 2026 11:08 PM") don't
+    # have a digit immediately after "at", so the pattern above misses them —
+    # match the quota phrasing itself instead of the retry-time suffix.
+    re.compile(r"hit\s+your\s+usage\s+limit", re.IGNORECASE),
+    re.compile(r"purchase\s+more\s+credits", re.IGNORECASE),
 ]
 
 _AUTH_PATTERNS: list[re.Pattern[str]] = [
@@ -89,6 +136,34 @@ _AUTH_PATTERNS: list[re.Pattern[str]] = [
 
 _CONTEXT_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"context[\s._-]?(window|length)[\s._-]?(exceeded|too\s+long)", re.IGNORECASE),
+    # "Codex ran out of room in the model's context window." never uses the
+    # exceeded/too-long wording the pattern above expects.
+    re.compile(r"ran\s+out\s+of\s+room.*context\s+window", re.IGNORECASE),
+]
+
+_CAPACITY_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"model\s+is\s+at\s+capacity", re.IGNORECASE),
+]
+
+_UNSUPPORTED_MODEL_PATTERNS: list[re.Pattern[str]] = [
+    # Covers both "the '<model>' model is not supported when using Codex with
+    # a ChatGPT account" and "Tool '<name>' is not supported with <model>".
+    re.compile(r"is\s+not\s+supported", re.IGNORECASE),
+]
+
+_SAFETY_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"flagged\s+for\s+(possible\s+)?cybersecurity\s+risk", re.IGNORECASE),
+]
+
+_STREAM_DISCONNECT_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"stream\s+disconnected\s+before\s+completion", re.IGNORECASE),
+]
+
+# Catch-all for adapters (e.g. `agy`) that report a bare non-success status
+# with no parseable cause in the message. Checked last — a more specific
+# pattern above always wins when the adapter's own text names one.
+_ADAPTER_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"agy\s+returned\s+status=", re.IGNORECASE),
 ]
 
 
@@ -111,5 +186,25 @@ def classify_provider_error(
     for pat in _CONTEXT_PATTERNS:
         if pat.search(combined):
             return ProviderContextError(content, stderr_tail=stderr_tail, raw=content)
+
+    for pat in _CAPACITY_PATTERNS:
+        if pat.search(combined):
+            return ProviderCapacityError(content, stderr_tail=stderr_tail, raw=content)
+
+    for pat in _UNSUPPORTED_MODEL_PATTERNS:
+        if pat.search(combined):
+            return ProviderUnsupportedModelError(content, stderr_tail=stderr_tail, raw=content)
+
+    for pat in _SAFETY_PATTERNS:
+        if pat.search(combined):
+            return ProviderSafetyError(content, stderr_tail=stderr_tail, raw=content)
+
+    for pat in _STREAM_DISCONNECT_PATTERNS:
+        if pat.search(combined):
+            return ProviderStreamDisconnectError(content, stderr_tail=stderr_tail, raw=content)
+
+    for pat in _ADAPTER_PATTERNS:
+        if pat.search(combined):
+            return ProviderAdapterError(content, stderr_tail=stderr_tail, raw=content)
 
     return ProviderError(content, stderr_tail=stderr_tail, raw=content)

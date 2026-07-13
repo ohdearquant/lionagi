@@ -517,6 +517,49 @@ class TestTeardownReasonResolution:
         assert "ValueError" in summary
         assert "bad input" in summary
 
+    def test_non_provider_exception_stays_generic_failed_exception(self):
+        """A plain RuntimeError (not a classified ProviderError) must keep the
+        generic bucket — only provider-classified failures get the retryable
+        split below."""
+        from lionagi.cli._runs import resolve_run_reason as _resolve_run_reason
+
+        code, _, _ = _resolve_run_reason(status="failed", exception=RuntimeError("boom"))
+        assert code == RunReasons.FAILED_EXCEPTION
+
+    @pytest.mark.parametrize(
+        "cls_name,message,expected",
+        [
+            ("ProviderQuotaError", "usage limit reached", "retryable"),
+            ("ProviderCapacityError", "model is at capacity", "retryable"),
+            ("ProviderStreamDisconnectError", "stream disconnected before completion", "retryable"),
+            ("ProviderAdapterError", "agy returned status=ERROR", "retryable"),
+            ("ProviderAuthError", "not logged in", "nonretryable"),
+            ("ProviderContextError", "context window exceeded", "nonretryable"),
+            ("ProviderUnsupportedModelError", "model is not supported", "nonretryable"),
+            ("ProviderSafetyError", "flagged for cybersecurity risk", "nonretryable"),
+        ],
+    )
+    def test_classified_provider_error_maps_to_retryable_reason_code(
+        self, cls_name, message, expected
+    ):
+        """A terminal ProviderError subclass must carry a reason code that
+        distinguishes retryable from non-retryable — the rank-2 reliability
+        cohort's classification requirement (ADR-0057 vocabulary)."""
+        import lionagi.providers._provider_errors as provider_errors
+        from lionagi.cli._runs import resolve_run_reason as _resolve_run_reason
+
+        error_cls = getattr(provider_errors, cls_name)
+        code, summary, _ = _resolve_run_reason(status="failed", exception=error_cls(message))
+
+        expected_code = (
+            RunReasons.FAILED_PROVIDER_RETRYABLE
+            if expected == "retryable"
+            else RunReasons.FAILED_PROVIDER_NONRETRYABLE
+        )
+        assert code == expected_code
+        assert code in VALID_REASON_CODES
+        assert cls_name in summary
+
 
 # ── ADR-0057 Phase 2: invocation transition writes reason ────────────
 
