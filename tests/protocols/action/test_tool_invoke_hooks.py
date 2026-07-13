@@ -248,6 +248,31 @@ async def test_rewrite_that_fails_revalidation_is_rejected():
     assert order == ["security_pre"]
 
 
+async def test_preprocessor_added_key_outside_schema_survives_revalidation():
+    """A tool-level preprocessor may add a key that isn't part of the
+    declared request_options schema (e.g. an audit marker). The
+    post-preprocessor revalidation step must not silently drop it --
+    only the schema-covered keys go through the model."""
+    calls: list[dict] = []
+
+    async def add(a: int, b: int, audit_marker: str | None = None) -> int:
+        calls.append({"a": a, "b": b, "audit_marker": audit_marker})
+        return a + b
+
+    async def preprocessor(args: dict) -> dict:
+        return {**args, "audit_marker": "trusted"}
+
+    tool = Tool(func_callable=add, request_options=AddArgs, preprocessor=preprocessor)
+    manager = ActionManager(tool)
+
+    fc = await manager.invoke({"function": "add", "arguments": {"a": 1, "b": 2}})
+
+    assert fc.status == EventStatus.COMPLETED
+    assert fc.response == 3
+    assert calls == [{"a": 1, "b": 2, "audit_marker": "trusted"}]
+    assert fc.arguments["audit_marker"] == "trusted"
+
+
 # ── Post hooks: success and failure ─────────────────────────────────────────
 
 

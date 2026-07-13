@@ -65,6 +65,10 @@ class FunctionCalling(Event):
 
         # Re-validate after any pre-stage rewrite (hook layer or preprocessor
         # above) so a rewrite can never bypass the tool's declared schema.
+        # Keys outside the schema (e.g. an audit marker a preprocessor adds)
+        # are not covered by that validation -- pydantic's default
+        # extra="ignore" would otherwise drop them from model_dump, so they
+        # are carried through untouched rather than silently discarded.
         if self.func_tool.request_options:
             try:
                 validated = self.func_tool.request_options(**self.arguments)
@@ -72,7 +76,9 @@ class FunctionCalling(Event):
                 raise PermissionError(
                     f"rewritten arguments failed validation for {self.func_tool.function!r}: {e}"
                 ) from e
-            self.arguments = validated.model_dump(exclude_unset=True)
+            validated_args = validated.model_dump(exclude_unset=True)
+            extra_args = {k: v for k, v in self.arguments.items() if k not in validated_args}
+            self.arguments = {**validated_args, **extra_args}
 
         if is_coro_func(self.func_tool.func_callable):
             response = await self.func_tool.func_callable(**self.arguments)
