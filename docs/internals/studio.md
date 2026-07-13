@@ -164,8 +164,8 @@ message ids) must not fall through to `0 or fallback`.
 ## lionagi/studio/services/approvals.py
 
 - **Lifecycle** — An action is proposed (pending) → a human grants or denies
-  → the real endpoint consumes the granted approval exactly once. Expiry and
-  single-use are enforced here, not by caller convention: a granted approval
+  → the consuming endpoint must consume the granted approval exactly once.
+  Expiry and single-use are enforced here, not by caller convention: a granted approval
   that's expired, already consumed, or whose params don't hash-match the
   action being executed is rejected.
 - **Principal separation** — A request carrying the operator/service
@@ -216,9 +216,9 @@ message ids) must not fall through to `0 or fallback`.
 ## lionagi/studio/services/task_applications.py
 
 - **ADR-0071 D1 architecture** — `TaskApplication` is the frozen submit shape
-  every binding shares. This module wires only the in-process binding
-  (`submit_task`/`cancel_task`); `li task submit` and `POST /api/tasks` are
-  separate bindings calling the same functions. `submit_task` writes a
+  every binding shares. This module wires the in-process binding
+  (`submit_task`/`cancel_task`); any other binding calls these same
+  functions rather than duplicating the contract. `submit_task` writes a
   durable `queued` row into `schedule_runs` (ADR-0071 D2 generalized task
   entity, `schedule_id` NULL) as a plain INSERT (no prior CAS state to
   guard); every status move after routes through
@@ -265,10 +265,10 @@ message ids) must not fall through to `0 or fallback`.
 ## lionagi/studio/services/leo.py
 
 - **Security boundary** — Mutating tools never execute; they return a
-  `proposed_action` dict for the frontend to confirm and call the real studio
-  endpoint directly. `ui_command` tools return a declarative command dict the
-  frontend executes client-side (navigation, form prefill) — commands never
-  mutate server state. Sessions are in-memory (server restart clears
+  `proposed_action` dict as an SSE payload — confirmation and the actual
+  endpoint call belong to the client, not this service. `ui_command` tools
+  return a declarative command dict intended for client-side handling
+  (navigation, form prefill) — commands never mutate server state. Sessions are in-memory (server restart clears
   history); auth is the studio bearer-token gate at app-level middleware,
   same as every other route.
 - **No `from __future__ import annotations`** — Leo tool callables are
