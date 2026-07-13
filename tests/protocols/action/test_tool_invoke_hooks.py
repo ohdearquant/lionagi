@@ -112,7 +112,10 @@ async def test_security_pre_sees_external_rewrite_with_no_user_hook():
 # ── Deny / ask / unrecognized (D5) ──────────────────────────────────────────
 
 
-async def test_deny_short_circuits_before_invoke_and_post():
+async def test_deny_short_circuits_before_invoke_and_captures_as_failed():
+    """A denying pre-hook must fail the call closed the same way every other
+    denial path in this module does: FAILED status with the denial captured
+    as the error, never raised out of ActionManager.invoke."""
     order: list[str] = []
     calls: list[tuple[int, int]] = []
     manager, tool_name = _build_manager(order, calls, with_security=True)
@@ -129,12 +132,18 @@ async def test_deny_short_circuits_before_invoke_and_post():
     manager.add_tool_pre_hook(denier)
     manager.add_tool_post_hook(external_post)
 
-    with pytest.raises(ToolHookDeniedError, match="not today"):
-        await manager.invoke({"function": tool_name, "arguments": {"a": 1, "b": 2}})
+    fc = await manager.invoke({"function": tool_name, "arguments": {"a": 1, "b": 2}})
 
     assert order == ["pre-deny"], "security_pre and the tool callable must never run"
     assert calls == [], "the tool callable must never run on deny"
-    assert post_calls == [], "post hooks must not fire when pre denies"
+    assert fc.status == EventStatus.FAILED
+    assert isinstance(fc.execution.error, ToolHookDeniedError)
+    assert "not today" in str(fc.execution.error)
+    # ToolHookDeniedError isn't deepcopy-able (its __init__ signature doesn't
+    # match the args exception __reduce__ replays), so evidence isolation
+    # fails and post hooks are safely skipped rather than fired on live
+    # execution state -- see run_tool_post_hooks' isolation contract.
+    assert post_calls == []
 
 
 async def test_ask_fails_closed():
@@ -147,10 +156,12 @@ async def test_ask_fails_closed():
 
     manager.add_tool_pre_hook(asker)
 
-    with pytest.raises(ToolHookDeniedError, match="failing closed"):
-        await manager.invoke({"function": tool_name, "arguments": {"a": 1, "b": 2}})
+    fc = await manager.invoke({"function": tool_name, "arguments": {"a": 1, "b": 2}})
 
     assert calls == []
+    assert fc.status == EventStatus.FAILED
+    assert isinstance(fc.execution.error, ToolHookDeniedError)
+    assert "failing closed" in str(fc.execution.error)
 
 
 async def test_unrecognized_decision_fails_closed_with_diagnostic():
@@ -163,10 +174,12 @@ async def test_unrecognized_decision_fails_closed_with_diagnostic():
 
     manager.add_tool_pre_hook(confused)
 
-    with pytest.raises(ToolHookDeniedError, match="unrecognized decision 'warn'"):
-        await manager.invoke({"function": tool_name, "arguments": {"a": 1, "b": 2}})
+    fc = await manager.invoke({"function": tool_name, "arguments": {"a": 1, "b": 2}})
 
     assert calls == []
+    assert fc.status == EventStatus.FAILED
+    assert isinstance(fc.execution.error, ToolHookDeniedError)
+    assert "unrecognized decision 'warn'" in str(fc.execution.error)
 
 
 async def test_pre_hook_raising_permission_error_denies():
@@ -180,10 +193,12 @@ async def test_pre_hook_raising_permission_error_denies():
 
     manager.add_tool_pre_hook(legacy_guard)
 
-    with pytest.raises(ToolHookDeniedError, match="blocked by legacy guard"):
-        await manager.invoke({"function": tool_name, "arguments": {"a": 1, "b": 2}})
+    fc = await manager.invoke({"function": tool_name, "arguments": {"a": 1, "b": 2}})
 
     assert calls == []
+    assert fc.status == EventStatus.FAILED
+    assert isinstance(fc.execution.error, ToolHookDeniedError)
+    assert "blocked by legacy guard" in str(fc.execution.error)
 
 
 # ── Rewrite + revalidation ──────────────────────────────────────────────────
@@ -512,6 +527,38 @@ async def test_post_hook_cannot_rewrite_completed_error():
     assert fc.execution.error is failure
     assert fc.execution.error.args == ("original",)
     assert fc.execution.error.details == {"source": "tool"}
+
+
+async def test_cancellation_propagates_promptly_despite_slow_post_hook():
+    """A cancellation delivered while the tool call is in flight must not be
+    held up by an in-flight tool-post hook -- otherwise wait_for/cancel-based
+    timeouts silently inherit the hook's latency."""
+    import asyncio
+    import time
+
+    tool_started = asyncio.Event()
+
+    async def slow_tool() -> None:
+        tool_started.set()
+        await asyncio.sleep(10)
+
+    manager = ActionManager(Tool(func_callable=slow_tool))
+
+    async def slow_post_hook(name, arguments, result, error) -> None:
+        await asyncio.sleep(2)
+
+    manager.add_tool_post_hook(slow_post_hook)
+
+    task = asyncio.create_task(manager.invoke({"function": "slow_tool", "arguments": {}}))
+    await tool_started.wait()
+
+    task.cancel()
+    start = time.monotonic()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 1.0, "cancellation must not be delayed by a slow tool-post hook"
 
 
 # ── No hooks registered: unchanged behavior ─────────────────────────────────
