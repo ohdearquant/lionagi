@@ -478,6 +478,20 @@ class PluginRegistry:
         return out
 
     @classmethod
+    def active_playbook_files(cls) -> dict[str, tuple[str, Path]]:
+        """``<plugin>/<name>`` -> (plugin name, absolute playbook path), for
+        every ACTIVE plugin. Consumed by ``lionagi.cli.orchestrate``.
+        """
+        out: dict[str, tuple[str, Path]] = {}
+        active, _, _ = _fresh_active_plugins(cls._ensure_loaded())
+        for plugin_name, fresh in active.items():
+            assert fresh.manifest is not None
+            for rel in fresh.manifest.capabilities.playbooks:
+                stem = Path(rel).stem.removesuffix(".playbook")
+                out[f"{plugin_name}/{stem}"] = (plugin_name, fresh.bundle_dir / rel)
+        return out
+
+    @classmethod
     def active_provider_targets(cls) -> list[tuple[str, str]]:
         """``(plugin_name, module)`` pairs for every declared provider
         capability, across every live-eligible plugin. Consumed by
