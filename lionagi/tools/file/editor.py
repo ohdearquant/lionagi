@@ -241,22 +241,9 @@ class EditorTool(LionTool):
         if self._tool is None:
 
             async def editor_tool(**kwargs):
-                """
-                Write or edit files on disk within the configured workspace root.
-
-                IMPORTANT: Always read the file first (reader action='read') before editing.
-                The reader returns lines as `<number>\\t<code>` — do NOT copy the leading
-                `<number>\\t` prefix into old_string; use only the actual code text.
-
-                Use action='write' to create or fully replace a file. Use action='edit'
-                for targeted exact-string replacement — safer than full rewrites.
-                Parent directories are created automatically on write.
-
-                If an edit fails with 'not found': re-read the file, copy the exact text
-                including all whitespace, and retry.
-                If an edit fails with 'appears N times': expand old_string with more
-                surrounding context to make it unique, or set replace_all=True.
-                Paths outside the workspace root and symlinks are rejected.
+                """Write or edit files on disk within the configured workspace root; you must read a file (reader action='read') before editing it.
+                action='write' creates/overwrites; action='edit' does exact-string replacement — strip the `<number>\\t` reader prefix from old_string.
+                On 'not found': re-read the file and copy the exact text, then retry.
                 """
                 return (await self.handle_request(EditorRequest(**kwargs))).model_dump()
 

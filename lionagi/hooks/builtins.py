@@ -57,11 +57,8 @@ async def persist_session_start(
         return
     await db.update_session(
         session_id,
-        # status="running" routes through update_status(), which requires
-        # a reason_code — pass it explicitly so the transition records a
-        # canonical "started" cause instead of tripping the deprecation
-        # shim (which would raise on the running status and be swallowed by
-        # the bus, silently dropping all the provenance fields above).
+        # Explicit reason_code avoids tripping the deprecation shim, which
+        # would swallow the transition and silently drop provenance fields.
         reason_code=RunReasons.STARTED_OK,
         model=model,
         provider=provider,
@@ -86,21 +83,8 @@ async def persist_session_end(
     duration_ms: float | None = None,
     **_unused: Any,
 ) -> None:
-    """Stamp ended_at/status + usage on the session row.
-
-    teardown_persist() always stamps the terminal status (via
-    _teardown_common()'s update_status() call) before emitting SESSION_END, so
-    by the time this handler runs in the normal CLI flow the row is already
-    terminal. In that case only the pure usage fields (input_tokens,
-    output_tokens, total_cost_usd, num_turns, duration_ms) are written — the
-    status/reason_code/ended_at transition is skipped (avoids a duplicate
-    status_transitions row and keeps a genuine double-fire from clobbering an
-    already-recorded status), and node_metadata is left untouched too, since
-    _teardown_common() already owns it for a terminal row (its own
-    extras/identity-markers write happens before update_status()) and
-    update_session() does a plain column SET, not a merge — writing
-    {"error": ...} here would clobber that richer data rather than add to it.
-    """
+    """Stamp ended_at/status + usage on the session row; usually only usage
+    fields are written since teardown_persist already stamped status."""
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
     from lionagi.state.reasons import RunReasons
 
@@ -115,11 +99,8 @@ async def persist_session_end(
     if not already_terminal:
         fields["ended_at"] = time.time()
         if error is not None:
-            # update_session() binds this as a raw SQL param (no JSON
-            # bindparam), so pre-serialize to avoid sqlite3.InterfaceError.
-            # update_session() also does a plain column SET, not a merge, so
-            # start from whatever node_metadata the row already carries
-            # (e.g. identity markers) rather than clobbering it.
+            # Pre-serialize (raw SQL param, no JSON bindparam) and merge
+            # onto existing node_metadata rather than clobbering it.
             existing_metadata = row.get("node_metadata")
             if not isinstance(existing_metadata, dict):
                 existing_metadata = {}

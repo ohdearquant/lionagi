@@ -75,20 +75,7 @@ def mocked_branch(mock_factory):
 @pytest.fixture
 def make_mocked_branch(mock_factory) -> Callable[..., Any]:
     """Canonical factory fixture: replaces every per-file ``make_mocked_branch_for_*``.
-
-    Returns a callable accepting any kwargs the underlying ``LionAGIMockFactory``
-    accepts — ``response`` (str or dict), ``responses`` (sequence), ``system``,
-    ``tools``, ``name``, ``user``, ``model``, ``provider``.
-
-    Example::
-
-        async def test_operate(make_mocked_branch):
-            branch = make_mocked_branch(
-                response='{"foo": "bar"}',
-                system="You are a helper.",
-            )
-            result = await branch.operate(instruction="...", response_format=MyModel)
-    """
+    Returns a callable forwarding kwargs to ``LionAGIMockFactory.create_mocked_branch``."""
 
     def _create_branch(**kwargs: Any):
         return mock_factory.create_mocked_branch(**kwargs)
@@ -119,14 +106,7 @@ def test_payload(test_data_helpers):
 
 @pytest.fixture
 def scripted_branch_factory() -> Callable[..., Any]:
-    """Factory: build a scripted branch from a list of response dicts.
-
-    Usage::
-
-        async def test_foo(scripted_branch_factory):
-            branch = scripted_branch_factory([{"type": "text", "content": "hi"}])
-            assert await branch.chat("hello") == "hi"
-    """
+    """Factory: build a scripted branch from a list of response dicts."""
 
     def _make(responses: list[dict[str, Any]], **kwargs: Any):
         return TestBranch.from_responses(responses, **kwargs)
@@ -142,10 +122,8 @@ def scripted_branch(scripted_branch_factory):
 
 @pytest.fixture
 def scripted_endpoint_for(scripted_branch_factory) -> Callable[..., ScriptedEndpoint]:
-    """Factory: return the ScriptedEndpoint behind a branch built by this fixture.
-
-    Useful when a test cares about call inspection more than the branch itself.
-    """
+    """Factory: return the ScriptedEndpoint behind a branch built by this fixture, for
+    tests that care about call inspection more than the branch itself."""
 
     def _make(responses: list[dict[str, Any]], **kwargs: Any) -> ScriptedEndpoint:
         branch = scripted_branch_factory(responses, **kwargs)

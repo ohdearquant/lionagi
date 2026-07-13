@@ -85,9 +85,8 @@ class LionMessenger(LionTool):
         cb = self._callbacks.get(event)
         if cb:
             if event == "help":
-                # Best-effort: a raising coordinator callback must never
-                # surface as an unhandled exception on the emitting worker's
-                # tool-call turn — the whole point of fire-and-continue.
+                # Best-effort: a raising coordinator callback must never surface as an
+                # unhandled exception on the emitter's tool-call turn (fire-and-continue).
                 try:
                     cb(**kwargs)
                 except Exception:
@@ -99,9 +98,8 @@ class LionMessenger(LionTool):
             else:
                 cb(**kwargs)
         else:
-            # A mis-wired coordinator (nobody called .on(event, ...)) must be
-            # discoverable during bring-up, not silently inert — debug-level
-            # so it doesn't spam normal runs where some events are unused.
+            # A mis-wired coordinator must stay discoverable during bring-up — debug-level
+            # so it doesn't spam normal runs where some events are legitimately unused.
             logger.debug(
                 "LionMessenger: no callback registered for event=%r (kwargs=%r)",
                 event,
@@ -134,13 +132,9 @@ class LionMessenger(LionTool):
             content: str = None,
             urgency: str = None,
         ) -> str:
-            """Send messages to teammates, receive pending ones, signal
-            done/finished, wake a teammate, or send a help signal. action in
-            {'send', 'receive', 'done', 'finished', 'wakeup', 'help'}; to
-            (name or list of names) and content are required for
-            send/wakeup, neither is required for receive; content (the
-            reason) is required for help, urgency is optional (defaults to
-            'fyi')."""
+            """Send/receive teammate messages, signal done/finished, wake a teammate, or send a help signal.
+            action in {'send','receive','done','finished','wakeup','help'}; 'to'+'content' required for send/wakeup, 'content' required for help.
+            """
             if action == "receive":
                 pending = exchange.receive(sender_id)
                 if not pending:

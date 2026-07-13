@@ -156,9 +156,7 @@ class ContextTool(LionTool):
 
         async def _auto_summarize(uids: list, pile) -> str | None:
             """Generate a compact summary over `uids` with one direct model call.
-
-            Never raises — returns None on any failure so the caller can fall back
-            to asking the model to write the summary itself.
+            Never raises — returns None on failure so the caller can fall back to writing the summary itself.
             """
             texts: list[str] = []
             total = 0
@@ -206,10 +204,8 @@ class ContextTool(LionTool):
             scope: str = None,
             auto: bool = False,
         ) -> dict:
-            """Engineer your own conversation context — check usage, browse, evict,
-            restore, and compact. Evicted/compacted messages are hidden from the
-            model's view but preserved in the conversation record and can be
-            restored at any time.
+            """Engineer your own conversation context — check usage, browse, evict, restore, and compact messages.
+            Evicted/compacted messages stay in the full conversation record and can be restored at any time.
             """
             active = branch.progression  # current view (respects evictions)
             full = msgs.progression  # complete durable record

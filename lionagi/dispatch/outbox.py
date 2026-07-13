@@ -2,18 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Durable dispatch outbox core (ADR-0059 slice 1).
 
-Durability and delivery are separate guarantees: an outbox row persists in
-``state.db`` independent of any consumer's liveness (durability); a surviving
-producer — the Studio daemon's scheduler tick — re-attempts the configured
-notify template until it succeeds, backs off, or exhausts ``max_attempts``
-(delivery). The transport is a shell command template (ADR-0059 D3):
-best-effort, argv-safe, no specific messaging CLI baked in — the command is
-configuration.
-
-Argv-safety (binding rider): ``payload`` and ``deliver_to`` are substituted as
-whole argv elements, never string-interpolated into a shell command line, and
-the template always runs via ``exec`` (no shell), so shell metacharacters in
-either value are inert.
+Durability and delivery are separate guarantees (row persists; scheduler
+retries with backoff); transport is argv-safe, never shell-interpolated.
+See docs/internals/runtime.md.
 """
 
 from __future__ import annotations
@@ -53,19 +44,15 @@ _log = logging.getLogger(__name__)
 DEFAULT_MAX_ATTEMPTS = 8
 NOTIFY_TIMEOUT_SECONDS = 10.0
 
-# Terminal dispatch_outbox statuses (ADR-0059 D1's six-value CHECK minus the
-# two in-flight ones). Used as the default status filter for purge_dispatches
-# when the caller supplies no explicit status.
+# Terminal dispatch_outbox statuses (ADR-0059 D1's six minus the two
+# in-flight ones) — default status filter for purge_dispatches.
 _TERMINAL_DISPATCH_STATUSES = ("delivered", "acked", "dead_letter", "expired")
 
 _BASE_BACKOFF_SECONDS = 30
 _MAX_BACKOFF_SECONDS = 1800
 
-# A claim on a row (pending/delivering -> delivering) advances next_attempt_at
-# by this lease so overlapping scans within the transport's execution window
-# cannot re-claim it; a scan only revisits a still-`delivering` row once the
-# lease has lapsed (crash recovery), and by then the guarded attempt-counter
-# CAS in transition() ensures only one claimant ever wins per attempt.
+# Claiming a row advances next_attempt_at by this lease so overlapping scans
+# can't re-claim it; a lapsed lease allows crash-recovery re-scan.
 _CLAIM_LEASE_SECONDS = NOTIFY_TIMEOUT_SECONDS + 5.0
 
 _PAYLOAD_TOKEN = "{payload}"  # noqa: S105 -- template placeholder, not a credential
@@ -162,16 +149,8 @@ async def enqueue_dispatch(
 ) -> str:
     """Insert a pending dispatch_outbox row; returns the dispatch id.
 
-    Idempotent on ``dedup_key``: a re-enqueue with the same key returns the
-    existing row's id rather than inserting a duplicate.
-
-    ``max_attempts`` bounds delivery whether or not ``ack_required`` — an
-    ack-required row that keeps sending successfully but never gets acked
-    still exhausts at ``max_attempts`` sends (``dead_letter``, distinct
-    ``DEAD_LETTER_ACK_TIMEOUT`` reason) rather than re-delivering forever.
-    ``expires_at`` is an *additional*, optional bound honored on top of
-    ``max_attempts``; it is not required for ``ack_required`` rows to be
-    bounded.
+    Idempotent on ``dedup_key``. ``max_attempts`` bounds delivery even for
+    ack_required rows (dead_letter on exhaustion). See docs/internals/runtime.md.
     """
     now = time.time()
     dispatch_id = uuid.uuid4().hex
@@ -323,26 +302,9 @@ async def deliver_due_dispatches(
 ) -> dict[str, int]:
     """Scan due pending/delivering rows and attempt delivery. Called from the scheduler tick.
 
-    Ack-required rows loop back to ``pending`` (not ``delivered``) on transport
-    success, so the same due-scan re-attempts delivery with backoff until the
-    consumer acks, the row expires, or ``max_attempts`` sends have gone out
-    unacked (``dead_letter``, ``DEAD_LETTER_ACK_TIMEOUT``) — the default
-    (``ack_required=0``) tier stops at ``delivered`` on first transport
-    success. ``delivering`` rows are re-scanned for crash recovery, but a
-    claim on one is only exclusive for the duration of a lease
-    (``_CLAIM_LEASE_SECONDS``): the guarded attempt-counter CAS in
-    ``transition()`` prevents two overlapping scans from both running the
-    notify transport for the same attempt.
-
-    Race hardening: the due-row snapshot below and each row's subsequent
-    ``transition()`` calls are separate transactions, so an operator
-    ``purge_dispatch``/``purge_dispatches`` call can delete a snapshotted row
-    in between -- ``transition()`` raises ``LookupError`` when its target row
-    no longer exists (see ``lionagi.state.transitions.transition``, which
-    ``SELECT``s the row inside its own ``_tx()`` and raises if the ``SELECT``
-    misses). That is caught per-row here so one concurrently purged row is
-    skipped (logged at debug) rather than aborting delivery for the rest of
-    the batch.
+    Ack-required rows loop back to pending until acked/expired/exhausted;
+    claims use a time-boxed lease plus a guarded attempt-counter CAS so
+    overlapping scans can't double-deliver. See docs/internals/runtime.md.
     """
     if now is None:
         now = time.time()
@@ -392,13 +354,9 @@ async def _deliver_one_due_row(
     notify_template: list[str] | None,
     counts: dict[str, int],
 ) -> None:
-    """Claim-and-deliver one due row (extracted so ``deliver_due_dispatches`` can catch a
-    mid-scan ``LookupError`` per row without aborting the rest of the batch).
-
-    Every early ``return`` below is a normal outcome for this row (expired,
-    lost the claim race, dead-lettered, retried, ...). A row missing at
-    ``transition()`` time (e.g. an operator purge raced this scan) instead
-    propagates ``LookupError`` to the caller.
+    """Claim-and-deliver one due row; per-row so a mid-scan ``LookupError``
+    (row purged concurrently) can be caught without aborting the batch.
+    Early returns are normal outcomes; see docs/internals/runtime.md.
     """
     dispatch_id = row["id"]
 
@@ -437,13 +395,8 @@ async def _deliver_one_due_row(
             actor=Actor(type="scheduler", id="dispatch_delivery_loop"),
             idempotency_key=f"deliver:{dispatch_id}:{row['attempt']}",
         ),
-        # A `delivering -> delivering` recovery claim is a same-state
-        # match on status alone, so guard on the pre-claim attempt value
-        # too: the atomic patch below bumps attempt as part of THIS
-        # UPDATE, so a second overlapping claimant's guard misses and it
-        # loses instead of also running the transport. The next_attempt_at
-        # lease keeps a live (non-crashed) claim from being re-picked-up
-        # by a later scan until the transport should plausibly be done.
+        # Guard on pre-claim attempt (not just status) so a second
+        # overlapping claimant's guard misses and it loses the race.
         guard={"attempt": row["attempt"]},
         patch={"attempt": next_attempt, "next_attempt_at": now + _CLAIM_LEASE_SECONDS},
     )
@@ -464,11 +417,8 @@ async def _deliver_one_due_row(
         )
 
     if success:
-        # ack_required rows loop back to pending awaiting the consumer's
-        # ack_token, but that must still be bounded by max_attempts (the
-        # ADR's boundedness contract applies to every send while awaiting
-        # ack, not only to transport failures) — otherwise a successful
-        # transport to a dead/non-acking consumer re-delivers forever.
+        # ack_required rows loop back to pending but must still respect
+        # max_attempts, or a non-acking consumer re-delivers forever.
         if row["ack_required"] and next_attempt >= row["max_attempts"]:
             result = await transition(
                 db,
@@ -620,24 +570,17 @@ async def retry_dispatch(db: Any, dispatch_id: str) -> bool:
             actor=Actor(type="operator", id="li_dispatch_retry"),
             idempotency_key=f"operator_retry:{dispatch_id}:{now}",
         ),
-        # Rider B: the status change and the attempt/next_attempt_at/last_error
-        # reset are one guarded write, not two transactions — a crash between
-        # separate writes would otherwise leave a 'pending' row with stale
-        # exhausted accounting.
+        # One guarded write, not two transactions — a crash between separate
+        # writes would leave stale exhausted accounting on a 'pending' row.
         patch={"attempt": 0, "next_attempt_at": now, "last_error": None},
     )
     return result.applied
 
 
 async def purge_dispatch(db: Any, dispatch_id: str, *, actor: str = "li_dispatch_purge") -> bool:
-    """Single-row guarded delete inside BEGIN IMMEDIATE (RIDER B: direct-DB write discipline).
-
-    Accepts any status: naming an exact id is already a deliberate,
-    non-bulk operator action, unlike ``purge_dispatches`` below which
-    requires explicit criteria to guard against a bare mass-delete. Writes
-    one ``admin_events`` row (action="dispatch_purge") on a successful
-    delete so single-row purges are auditable like the bulk path
-    (ADR-0059 delta 3 — the shipped adapter wrote none).
+    """Single-row guarded delete; accepts any status (naming an id is already
+    deliberate). Writes an admin_events audit row on success — see
+    docs/internals/runtime.md.
     """
     async with db._read() as conn:
         row = (
@@ -679,34 +622,9 @@ async def purge_dispatches(
 ) -> dict[str, Any]:
     """Bulk-delete ``dispatch_outbox`` rows matching explicit criteria.
 
-    At least one of ``status`` or ``before`` is required — a bare call with
-    neither raises ``ValueError`` so a mistaken invocation cannot delete the
-    entire table. ``before`` filters on ``updated_at``.
-
-    Status semantics (deliberately asymmetric):
-
-    - An explicit ``status`` is honored exactly as given, including
-      ``pending``/``delivering`` — naming an in-flight status is deliberate
-      operator intent (e.g. force-clearing a stuck row), not an accident.
-    - A status-less call (``status=None``, only ``before`` supplied) is
-      scoped to the terminal statuses only
-      (``delivered``/``acked``/``dead_letter``/``expired``): it can never
-      implicitly sweep ``pending``/``delivering`` rows that a live
-      scheduler tick may still claim or retry.
-
-    This is an operator action distinct from the automatic retention sweep
-    in ``lionagi.studio.services.db_maintenance.prune_old_data`` (which is
-    always terminal-only, on separate success/dead-letter windows); this
-    function is the one path that can touch a non-terminal row, and only
-    when the caller names that status explicitly.
-
-    Writes one ``admin_events`` row (action="dispatch_purge") per call,
-    always, including ``dry_run`` calls (so a dry run leaves an inspectable
-    record of what would have been deleted). ``status_transitions`` rows for
-    purged ids are preserved, matching ``purge_dispatch`` and the automatic
-    sweep — see their docstrings for why.
-
-    Returns ``{"total": N, "dry_run": bool, <status>: count, ...}``.
+    Requires ``status`` and/or ``before``. An explicit status is honored as
+    given (even in-flight); a status-less call defaults to terminal-only.
+    See docs/internals/runtime.md.
     """
     if status is None and before is None:
         raise ValueError("purge_dispatches requires status and/or before criteria")
@@ -739,11 +657,8 @@ async def purge_dispatches(
         counts_by_status = {r["status"]: r["n"] for r in rows}
         total = sum(counts_by_status.values())
     else:
-        # Select the exact match set inside the write transaction, derive the
-        # audit counts from it, and delete by those ids only. A criteria-based
-        # second DELETE could remove a different set than the count saw (the
-        # transaction is not a database-wide lock on PostgreSQL), and the
-        # admin_events record must describe the rows actually deleted.
+        # Select the exact match set first and delete by those ids only — a
+        # criteria-based second DELETE could see a different set on PostgreSQL.
         async with db._tx() as conn:
             matched = (
                 (

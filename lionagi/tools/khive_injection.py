@@ -1,12 +1,8 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""KhiveInjectionProvider: the reference ContextProvider (ADR-0008) that recalls
-(and optionally composes) from a khive daemon and renders the result into the
-pre-turn guidance fold. Talks to khive over the same MCP transport lionagi
-already uses for tool servers (`service.connections.mcp_wrapper`) — no new
-transport, and no khive/MCP import at module load, so the core import path
-stays clean without the `mcp` extra installed."""
+"""KhiveInjectionProvider: the reference ContextProvider (ADR-0008) — recalls/composes
+from khive over the existing MCP transport; see docs/internals/runtime.md."""
 
 from __future__ import annotations
 
@@ -57,17 +53,8 @@ class WritebackPolicy:
 
 @dataclass(frozen=True)
 class KhiveInjectionPolicy:
-    """Policy block controlling pre-turn khive injection (ADR-0008).
-
-    ``namespace``, when set, is threaded onto every khive verb this policy's
-    provider emits (recall, compose, auto_feedback, remember) — the bench-arm
-    isolation mechanism. auto_feedback WRITES to the live brain store, so an
-    unpinned "M1 read-only" arm still mutates posteriors and contaminates the
-    M0/M1 comparison: pinning a namespace is required, not optional, for any
-    enabled bench arm. Currently only the write verb honors namespace (read
-    verbs reject unknown params), so this is forward-wired for when reads
-    grow namespace scoping too.
-    """
+    """Policy block controlling pre-turn khive injection (ADR-0008); see
+    docs/internals/runtime.md for the namespace/bench-arm isolation contract."""
 
     profile_id: str
     enabled: bool = True
@@ -213,19 +200,8 @@ def _extract_writeback_pairs(action_responses: list) -> list[dict]:
 
 
 class KhiveInjectionProvider:
-    """Pre-turn ContextProvider (ADR-0008): recall + optional compose against khive,
-    rendered into the guidance fold. Every recall emits `brain.auto_feedback` in the
-    same round-trip with the policy's explicit `profile_id` — khive's auto_feedback
-    does no binding resolution, so an implicit/default profile mis-attributes the event.
-
-    `writeback()` is a separate, opt-in POST-turn hook: rule-based tool
-    error/resolution pairs written to `memory.remember` at capped, low-provenance
-    salience. It is invoked by the operate() Middle, not by `provide()`, and it is not
-    the nudge plane — it writes durable memory, never a tool-result suffix.
-
-    Both `provide()` and `writeback()` are fully contained: any transport failure is
-    logged and swallowed so the turn always proceeds.
-    """
+    """Pre-turn ContextProvider (ADR-0008): recall + optional compose against khive.
+    See docs/internals/runtime.md for the provide()/writeback() contract and failure-swallowing behavior."""
 
     def __init__(self, policy: KhiveInjectionPolicy, mcp_config: dict | None = None):
         if policy.snapshot_id is not None:

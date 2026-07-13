@@ -11,15 +11,8 @@ __all__ = ("GroqAudioTranscriptionEndpoint",)
 
 
 def _replayable_file_factory(file_data, field_name: str, *, require_replayable: bool = True):
-    """Return a zero-arg callable producing a fresh file object for one attempt.
-
-    Bytes/bytearray are snapshotted once and re-wrapped in a new BytesIO per
-    attempt. A seekable stream is seeked back to its starting position before
-    each attempt. A non-seekable stream cannot be replayed safely: when a
-    retry can occur (*require_replayable*), it fails here, before any network
-    I/O, instead of silently resending an exhausted stream; on a single-shot
-    endpoint it is handed to aiohttp once, as before.
-    """
+    """Return a zero-arg callable producing a fresh file object for one retry attempt.
+    See docs/internals/runtime.md for the replay-safety invariant."""
     if file_data is None:
         return lambda: None
     if isinstance(file_data, (bytes, bytearray)):
@@ -35,10 +28,8 @@ def _replayable_file_factory(file_data, field_name: str, *, require_replayable: 
                 "max_retries=1 for a non-seekable stream."
             )
         return lambda: file_data
-    # Snapshot the stream once and restore its position. Handing the live
-    # stream to each attempt is not enough: an explicit RetryConfig retries by
-    # re-invoking _call, which would rebuild this factory with the consumed
-    # stream already at EOF and silently upload an empty file.
+    # Snapshot once, restore position — a live stream handed to each attempt would
+    # already be at EOF on retry (RetryConfig re-invokes _call), uploading empty.
     start_pos = file_data.tell()
     snapshot = file_data.read()
     file_data.seek(start_pos)
