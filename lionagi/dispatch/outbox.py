@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Durable dispatch outbox core (ADR-0059 slice 1).
+"""Durable dispatch outbox core (ADR-0059).
 
 Durability and delivery are separate guarantees (row persists; scheduler
 retries with backoff); transport is argv-safe, never shell-interpolated.
