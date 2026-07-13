@@ -40,9 +40,8 @@ def _graph_from_metadata(raw: str | None) -> dict[str, Any] | None:
         return None
     early_graph = meta.get("early_graph")
     if isinstance(early_graph, dict) and early_graph.get("nodes"):
-        # Studio workflow-exec runs (ADR workflow-exec Fork 3): the compiled
-        # graph already carries the authored node ids + edges in this exact
-        # WorkerStepNode/WorkerLinkEdge shape — pass through, no re-derivation.
+        # Compiled workflow-exec graph already carries authored node ids +
+        # edges in this shape — pass through, no re-derivation.
         return early_graph
     agents = meta.get("agents") or []
     operations = meta.get("operations") or []
@@ -210,9 +209,8 @@ async def list_project_counts() -> list[dict[str, Any]]:
     ]
 
 
-# Long-lived sessions accumulate tens of thousands of messages; loading
-# them all in one detail response freezes the client and approaches
-# SQLite's bound-variable limit. Detail responses window from the tail.
+# Long-lived sessions accumulate tens of thousands of messages; detail
+# responses window from the tail to avoid freezing the client.
 DEFAULT_MESSAGE_LIMIT = 200
 MAX_MESSAGE_LIMIT = 1000
 
@@ -370,9 +368,8 @@ async def _fetch_action_messages(
         chunk = msg_ids[chunk_start : chunk_start + 500]
         placeholders = ",".join("?" for _ in chunk)
         # `+m.lion_class` disqualifies the lion_class index so the planner probes
-        # the id primary key for the IN list; without it, SQLite drives this query
-        # from idx_messages_lion_class and rescans every action-class row in the
-        # whole table per chunk, which is minutes of I/O on a multi-GB store.
+        # the id primary key for the IN list instead of rescanning every
+        # action-class row in the whole table per chunk (minutes of I/O at scale).
         cur = await db.execute(
             f"""
             SELECT m.id, m.created_at, m.content, m.sender, m.role, m.lion_class
@@ -548,9 +545,8 @@ async def get_session(
 
             role_counts = await _fetch_role_counts(db, full_msg_ids)
             action_messages = await _fetch_action_messages(db, full_msg_ids)
-            # message_count is the DB role-aggregate, not the progression length
-            # (message_total): a progression can reference ids whose message row
-            # was never persisted (or was pruned), so the two can diverge.
+            # message_count is the DB role-aggregate, not message_total: a
+            # progression can reference ids whose row was pruned, so the two can diverge.
             message_count = sum(role_counts.values())
             branch_stats = _branch_message_stats(message_count, role_counts, action_messages)
 
@@ -643,21 +639,16 @@ async def get_session(
         "status_evidence_refs": _parse_json_col(session_row["status_evidence_refs"]),
         "graph": _graph_from_metadata(session_row["node_metadata"]),
         "segments": (_parse_metadata(session_row["node_metadata"]) or {}).get("segments"),
-        # Raw node_metadata (carries pid/pid_create_time for running sessions)
-        # so callers like get_run()'s liveness check can find the recorded
-        # pid the same way list_sessions() already exposes it.
+        # Raw node_metadata (carries pid/pid_create_time) so callers like
+        # get_run()'s liveness check can find the recorded pid.
         "node_metadata": session_row["node_metadata"],
     }
 
 
 async def get_session_messages_after(session_id: str, after_ts: float) -> list[dict[str, Any]]:
-    """Poll-friendly tail read for the SSE stream/signals endpoints.
-
-    Joins each branch's progression collection via json_each rather than binding
-    every message id into an IN (...) clause — a branch with thousands of messages
-    would otherwise blow past SQLite's 999 bound-variable limit (OperationalError:
-    too many SQL variables), killing the stream on every poll tick.
-    """
+    """Poll-friendly tail read for the SSE stream/signals endpoints. Joins via
+    json_each rather than binding every message id into an IN (...) clause,
+    which would blow past SQLite's 999 bound-variable limit at scale."""
     if not DEFAULT_DB_PATH.exists():
         return []
 
@@ -719,11 +710,8 @@ async def get_session_stream_state(session_id: str) -> dict[str, Any] | None:
 
 
 def is_session_stream_done(state: dict[str, Any] | None, *, now: float) -> bool:
-    """Return True only when the session is in a terminal status AND has been stable >= 60s.
-
-    Both conditions must hold — terminal status alone might be a transient write;
-    stale time alone would close active sessions that haven't received messages recently.
-    """
+    """True only when the session is terminal AND has been stable >= 60s
+    (terminal alone may be a transient write; stale time alone risks closing active sessions)."""
     if state is None:
         return False
     return (
@@ -771,9 +759,8 @@ async def get_session_route(
     response_class=None,
 )
 async def stream_session_route(session_id: str):
-    # ADR-0076: pre-flight 404 guard. Without it a non-existent session
-    # silently returns no messages and waits 60s before "done" — the client
-    # hangs with no indication. Mirrors the shows router's pattern.
+    # Pre-flight 404 guard: without it a non-existent session silently
+    # returns no messages and waits 60s before "done" with no indication.
     if not await session_exists(session_id):
         raise NotFoundError(f"Session '{session_id}' not found")
 
@@ -835,9 +822,8 @@ async def stream_signals(session_id: str) -> Any:
 
             if rows:
                 for row in rows:
-                    # _PAYLOAD_BYTE_CAP (16 KiB, defined in session/observer.py) caps the
-                    # payload column only, not the full SSE frame; the row envelope adds
-                    # ~176 bytes of fixed metadata overhead, so frames can exceed that cap.
+                    # _PAYLOAD_BYTE_CAP (session/observer.py) caps the payload
+                    # column only; the row envelope adds overhead so frames can exceed it.
                     yield f"data: {json.dumps(row)}\n\n"
                     if row["seq"] > after_seq:
                         after_seq = row["seq"]

@@ -2,22 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Leo: the Studio operator agent — session registry, tool definitions, and routes.
 
-Security boundary: mutating tools never execute. They return a proposed_action
-dict; the frontend confirms and calls the real studio endpoint directly. The
-Leo backend never writes studio state.
-
-UI driving: ui_command tools return a declarative command dict the frontend
-executes client-side (navigation, form prefill). Commands never mutate server
-state.
-
-Sessions are in-memory; a server restart clears history. Auth is the studio
-bearer-token gate applied at the app-level middleware, same as every other
-route.
+Security boundary: mutating tools never execute; they return a proposed_action for
+the frontend to confirm and call the real endpoint directly.
 """
 
-# NOTE: no `from __future__ import annotations` — the Leo tool callables are
-# introspected by function_to_schema, which requires real (non-string)
-# parameter annotations.
+# NOTE: no `from __future__ import annotations` — Leo tool callables are
+# introspected by function_to_schema, which requires real (non-string) annotations.
 
 import asyncio
 import json
@@ -39,10 +29,8 @@ from ._sse import sse_response
 # Session registry
 # ---------------------------------------------------------------------------
 
-# Bounded so a long-running server doesn't grow this dict forever: capacity
-# eviction drops the least-recently-used session, and idle eviction sweeps
-# sessions nobody has touched in a while. Both run lazily on create/access —
-# there is no background timer.
+# Bounded so a long-running server doesn't grow this dict forever — LRU eviction
+# on capacity, idle sweep on access; both run lazily, no background timer.
 _MAX_SESSIONS = 50
 _IDLE_EXPIRY_SECONDS = 2 * 60 * 60
 
@@ -336,10 +324,8 @@ def _emit(event: dict[str, Any]) -> str:
 async def _run_turn(sess: LeoSession, user_content: str):
     """Run one Leo turn against the session's Branch, streaming SSE events.
 
-    Scans only the messages the Branch.ReAct() call appends during this turn
-    for tool outputs carrying proposed_action / ui_command, so a proposal
-    surfaced on an earlier turn never resurfaces on a later one. Must only be
-    called while holding sess.lock (see send_leo_message_route).
+    Scans only newly-appended messages so old proposals never resurface; must be
+    called while holding sess.lock.
     """
     from lionagi.protocols.messages.action_response import ActionResponse
 

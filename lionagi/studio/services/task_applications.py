@@ -1,25 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0071 D1: the task-application submit surface.
-
-``TaskApplication`` is the frozen submit shape every binding shares. This
-module wires only the in-process binding (``submit_task`` /
-``cancel_task``) — ``li task submit`` and ``POST /api/tasks`` are later,
-separate bindings that call the same functions.
-
-``submit_task`` validates the application and writes a durable ``queued``
-row into ``schedule_runs`` (the ADR-0071 D2 generalized task entity,
-``schedule_id`` NULL). That first write is a plain INSERT — there is no
-prior CAS state to guard. Every status move after it routes through
-``lionagi.state.transitions.transition()``; this module never writes
-``schedule_runs.status`` directly again.
-
-No worker/lease loop and no remote execution live here — ``execution_target``
-and ``library_ref`` are stored as provenance for a later slice (D3, already
-shipped, and ADR-0073). ``required_capabilities`` is used at submit time only
-to derive the D4 host-scoped ``concurrency_key`` (``capabilities.py``); the
-claim-time eligibility/affinity matching itself lives in ``worker.py``.
-"""
+"""ADR-0071 D1: the task-application submit surface. ``TaskApplication`` is the frozen submit shape every binding (in-process, CLI, HTTP) shares."""
 
 from __future__ import annotations
 
@@ -41,10 +22,8 @@ from ..scheduler.subprocess import _ALIAS_ACTION_KINDS, _VALID_ACTION_KINDS
 
 __all__ = ("TaskApplication", "cancel_task", "submit_task")
 
-# ADR-0071 D1: this ADR pair adds "workflow" (ADR-0073 registry-resolved
-# definitions) to the existing launcher vocabulary — a CHECK widen, not a
-# rename of any existing kind. Reuses the launcher's own closed set +
-# "playbook" alias rather than declaring a second copy.
+# ADR-0071 D1: adds "workflow" (ADR-0073) to the launcher vocabulary as a CHECK widen,
+# not a rename -- reuses the launcher's own closed set + "playbook" alias.
 _TASK_APPLICATION_ACTION_KINDS: frozenset[str] = _VALID_ACTION_KINDS | {"workflow"}
 
 _VALID_EXECUTION_TARGETS: frozenset[str] = frozenset(
@@ -62,9 +41,8 @@ class TaskApplication:
     required_capabilities: list[str] = field(default_factory=list)
     library_ref: str | None = None
     library_content_hash: str | None = None
-    # Part of the submit contract per ADR-0072 dedup, but submit-level
-    # deduplication is not built yet — submit_task rejects a non-None value
-    # rather than silently double-enqueueing a retried application.
+    # Part of the ADR-0072 dedup contract, but not built yet -- submit_task rejects a
+    # non-None value rather than silently double-enqueueing a retried application.
     idempotency_key: str | None = None
 
 
@@ -98,10 +76,7 @@ def _validate(app: TaskApplication) -> str:
 
 
 def _derive_concurrency_key(required_capabilities: list[str]) -> str | None:
-    """D4's host-scoped rule: only serialization-class tokens (per
-    capabilities.py's token->class map) fold into a host-scoped
-    concurrency_key. Eligibility/affinity-only tasks get no concurrency_key.
-    """
+    """D4's host-scoped rule: only serialization-class tokens fold into a host-scoped concurrency_key; eligibility/affinity-only tasks get none."""
     return capabilities.host_scoped_concurrency_key(socket.gethostname(), required_capabilities)
 
 
@@ -151,11 +126,7 @@ async def submit_task(db: StateDB, app: TaskApplication) -> str:
 
 
 async def cancel_task(db: StateDB, run_id: str, *, actor: Actor) -> bool:
-    """Cancel a still-``queued`` task application via the CAS transition
-    store. Only ``queued -> cancelled`` is permitted in this slice
-    (transitions.py's ADR-0071 vocab gate rejects anything else, e.g. a
-    lease/running move, out from a queued row).
-    """
+    """Cancel a still-``queued`` task application via the CAS transition store. Only ``queued -> cancelled`` is permitted in this slice."""
     result = await transition(
         db,
         TransitionRequest(

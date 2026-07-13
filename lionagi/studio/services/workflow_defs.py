@@ -23,10 +23,8 @@ class NameConflictError(Exception):
 
 
 # Closed set of node kinds — must match the Designer frontend's WorkflowNodeKind.
-# 'gate' was removed (conditions now live on edges, not gate nodes — see the
-# workflow-exec spec, Fork 1). A saved def still carrying a 'gate' node fails
-# validation here (create/update) and load (get_workflow_def_route) with an
-# actionable, node-naming error rather than a generic 422.
+# 'gate' was removed (conditions now live on edges, not gate nodes); a saved def
+# still carrying one fails validation/load with an actionable error.
 _VALID_NODE_KINDS: frozenset[str] = frozenset({"input", "chat", "parse", "fanout", "engine"})
 
 _MAX_NODES = 200
@@ -303,8 +301,7 @@ class RunWorkflowDefRequest(BaseModel):
 async def run_workflow_def_route(def_id: str, body: RunWorkflowDefRequest) -> dict[str, Any]:
     """Compile *def_id* and execute it via Session.flow; returns {run_id, status}.
 
-    run_id is the same id GET /api/sessions/{id} and Fleet/History already read —
-    the run appears there like any other flow run (no new telemetry surface).
+    run_id is the same id GET /api/sessions/{id} already reads — no new telemetry surface.
     """
     from .workflow_compile import WorkflowCompileError
     from .workflow_run import WorkflowNotFoundError, run_workflow_def
