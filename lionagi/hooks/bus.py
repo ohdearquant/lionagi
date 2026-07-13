@@ -54,6 +54,15 @@ class HookPoint(str, Enum):
     TOOL_ERROR = "tool.error"  # emitted in operations/act/act.py on invocation error
     MESSAGE_ADD = "message.add"  # live: emitted in session/branch.py
     ARTIFACT_CREATED = "artifact.created"  # not-yet-wired
+    # emitted in operations/chat/chat.py and operations/run/run.py, immediately
+    # before provider invocation / streaming begins, when a turn-origin token
+    # is present on the operation context (see operations/_turn_origin.py)
+    USER_PROMPT_SUBMIT = "prompt.submit"
+
+
+# HookPoints that propagate handler exceptions (rather than logging and
+# swallowing them) so a guard can veto the action about to happen.
+_BLOCKING_POINTS = frozenset({HookPoint.TOOL_PRE, HookPoint.USER_PROMPT_SUBMIT})
 
 
 HookHandler = Callable[..., Awaitable[Any] | Any]
@@ -125,7 +134,7 @@ class HookBus:
     async def emit(self, point: HookPoint | str, /, **kwargs: Any) -> None:
         """Fire handlers sequentially; exceptions logged, not propagated."""
         point = _normalize_point(point)
-        if point is HookPoint.TOOL_PRE:
+        if point in _BLOCKING_POINTS:
             await self.blocking_emit(point, **kwargs)
             return
         token = _emitting_bus.set(self)

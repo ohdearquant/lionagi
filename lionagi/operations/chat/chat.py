@@ -9,11 +9,32 @@ from lionagi._errors import ExecutionError
 from lionagi.protocols.generic import EventStatus
 from lionagi.protocols.messages import AssistantResponse, Instruction
 
+from .._turn_origin import consume_turn_origin
 from ..types import ChatParam
 from ._prepare import _apply_context_providers, _prepare_run_kwargs
 
 if TYPE_CHECKING:
     from lionagi.session.branch import Branch
+
+
+async def _emit_user_prompt_submit(
+    branch: "Branch", chat_param: ChatParam, ins: Instruction
+) -> None:
+    """Fire USER_PROMPT_SUBMIT exactly once, iff the operation context carries a token."""
+    token = consume_turn_origin(chat_param.turn_origin)
+    if token is None or branch._hooks is None:
+        return
+    from lionagi.hooks.bus import HookPoint
+
+    prompt = ins.rendered
+    if not isinstance(prompt, str):
+        prompt = str(prompt)
+    await branch._hooks.emit(
+        HookPoint.USER_PROMPT_SUBMIT,
+        session_id=str(branch._owning_session_id or branch.id),
+        branch_id=str(branch.id),
+        prompt=prompt,
+    )
 
 
 async def chat(
@@ -27,6 +48,8 @@ async def chat(
         ins, kw = _prepare_run_kwargs(branch, instruction, chat_param, ins=pre_ins)
     finally:
         branch._context_injection_slot = None
+
+    await _emit_user_prompt_submit(branch, chat_param, ins)
 
     imodel = chat_param.imodel or branch.chat_model
     if not chat_param._is_sentinel(chat_param.include_token_usage_to_model):
