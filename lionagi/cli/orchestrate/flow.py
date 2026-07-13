@@ -52,6 +52,8 @@ from ._orchestration import (
     start_live_persist,
     stop_live_persist,
     team_guidance,
+    team_history_context,
+    worker_is_cli,
 )
 
 logger = logging.getLogger(__name__)
@@ -496,6 +498,13 @@ async def _build_dag(
                     }
                 }
             )
+            # Attached-team history (if any) rides in operation context, not
+            # the system prompt — see team_history_context's docstring for why.
+            history_ctx = team_history_context(
+                env.team_data, agent_ids[i], messenger_bound=messenger_bound
+            )
+            if history_ctx:
+                ctx.append(history_ctx)
         w_effort = env.effort
         if not env.bare and w_profile and w_profile.effort:
             w_effort = w_profile.effort
@@ -1972,6 +1981,18 @@ async def _run_flow_inner(
         env.messenger = LionMessenger(env.exchange)
         env.messenger.on("help", make_help_coordinator(env))
         env.roster = {}
+        # Mixed-provider teams (heterogeneous --workers pool) build one worker
+        # branch at a time, so which teammates end up messenger-bound isn't
+        # fully known until _build_dag's loop below finishes. Resolve it here,
+        # for every team member up front, so each worker's prompt can flag
+        # CLI-provider teammates as unreachable via messenger regardless of
+        # build order (worker_is_cli is a cheap, side-effect-free pre-pass —
+        # no branch/iModel with real I/O is constructed).
+        env.messenger_names = frozenset(
+            agent_ids[i]
+            for i, ta in enumerate(assignments)
+            if not worker_is_cli(env, ta.assignee, pool[i % len(pool)] if pool else None)
+        )
 
     budget_preambles: dict[int, str] = {}
     if env.total_budget and assignments:
