@@ -56,12 +56,7 @@ def _run_row(run_id: str, schedule_id: str, *, fired_at: float, **overrides) -> 
 
 @pytest.mark.asyncio
 async def test_crash_between_insert_and_advance_does_not_double_fire(tmp_path):
-    """(a) A process death between the occurrence insert and the cursor
-    advance must roll back BOTH halves -- not just leave the schedule's
-    cursor behind while the occurrence row survives. Otherwise a restart
-    that recomputes "still due" from the stale cursor would fire again for
-    an occurrence that the crashed attempt already (partially) recorded.
-    """
+    """(a) A process death between the occurrence insert and cursor advance must roll back BOTH halves, not leave the cursor behind while the occurrence row survives -- otherwise a restart recomputing 'still due' from the stale cursor fires again for an already-recorded occurrence."""
     db_path = tmp_path / "state.db"
     sid = "sched-a"
 
@@ -109,14 +104,7 @@ async def test_crash_between_insert_and_advance_does_not_double_fire(tmp_path):
 
 @pytest.mark.asyncio
 async def test_github_path_crash_before_second_event_refires_only_second(tmp_path):
-    """(b) Two github_poll events are dispatched in the same poll batch.
-    The first event's occurrence-insert + github_cursor advance commits
-    cleanly; the process then dies mid-transaction for the second event.
-    A restart must see the first event as already recorded (so it is never
-    re-fired) while the second is still open (schedule_run_exists_since is
-    False for it, and the cursor has not moved past it) -- so the next poll
-    re-fires ONLY the second event, never both.
-    """
+    """(b) Two github_poll events dispatch in the same batch; the first's insert+cursor-advance commits, then the process dies mid-transaction for the second. A restart must see the first as already recorded (never re-fired) and the second still open, so the next poll re-fires ONLY the second."""
     db_path = tmp_path / "state.db"
     sid = "sched-b"
     event1_time = "2026-07-07T10:00:00Z"
@@ -188,13 +176,7 @@ async def test_github_path_crash_before_second_event_refires_only_second(tmp_pat
 async def test_missed_fire_recovery_skips_occurrence_already_in_schedule_runs(
     tmp_path, monkeypatch
 ):
-    """(c) Startup/missed-fire recovery must consult schedule_runs before
-    queuing a recovery fire. A schedule whose next_fire_at is past-due but
-    which already has a schedule_run row recorded at-or-after that time
-    (the atomic transaction committed, then the process died before the
-    run's terminal write) must NOT be re-fired -- only have its cursor
-    advanced past the already-handled occurrence.
-    """
+    """(c) Startup/missed-fire recovery must consult schedule_runs before queuing a recovery fire: a past-due schedule that already has a schedule_run row at-or-after that time (committed, then the process died before the terminal write) must NOT be re-fired -- only have its cursor advanced past it."""
     import lionagi.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
@@ -245,15 +227,7 @@ async def test_missed_fire_recovery_skips_occurrence_already_in_schedule_runs(
 
 @pytest.mark.asyncio
 async def test_missed_fire_recovery_still_fires_past_capacity_deferred_skip(tmp_path, monkeypatch):
-    """(c2) A capacity-deferred fire (global concurrent-fire cap reached)
-    writes an audit-only 'skipped' schedule_run row via
-    _maybe_record_deferred() and deliberately leaves next_fire_at
-    untouched, so the same due occurrence retries on the next tick. If the
-    process restarts before that retry, the recovery scan must not mistake
-    this audit row for a genuine fire -- schedule_run_exists_since()
-    excludes status='skipped' rows precisely so this occurrence still gets
-    a real recovery fire instead of being silently cursor-advanced past.
-    """
+    """(c2) A capacity-deferred fire writes an audit-only 'skipped' schedule_run row and deliberately leaves next_fire_at untouched so the occurrence retries next tick; recovery must not mistake that audit row for a genuine fire -- schedule_run_exists_since() excludes status='skipped' rows so this occurrence still gets a real recovery fire."""
     import lionagi.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
@@ -309,17 +283,7 @@ async def test_missed_fire_recovery_still_fires_past_capacity_deferred_skip(tmp_
 
 @pytest.mark.asyncio
 async def test_recovery_refires_occurrence_committed_but_never_dispatched(tmp_path, monkeypatch):
-    """(e) A crash between the occurrence-insert/cursor-advance transaction
-    committing and spawn_and_wait() confirming the external process
-    launched leaves a durable status='running' row with dispatched_at
-    still NULL, and the schedule's cursor already moved past it -- so
-    ordinary missed-fire recovery (schedule_run_exists_since) will never
-    reconsider this schedule as due again; the occurrence would otherwise
-    be silently lost. _recover_undispatched_fires() must tombstone the
-    orphaned row (failed / FAILED_NEVER_DISPATCHED) and re-fire a fresh
-    occurrence carrying the SAME trigger_context the orphaned attempt
-    never got to use -- the at-least-once side of the delivery contract.
-    """
+    """(e) A crash between the occurrence-insert/cursor-advance commit and spawn_and_wait() confirming launch leaves a durable status='running' row with dispatched_at NULL, past the cursor -- invisible to ordinary missed-fire recovery. _recover_undispatched_fires() must tombstone the orphan and re-fire a fresh occurrence carrying the same trigger_context, the at-least-once side of the delivery contract."""
     import lionagi.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
@@ -395,13 +359,7 @@ async def test_recovery_refires_occurrence_committed_but_never_dispatched(tmp_pa
 
 @pytest.mark.asyncio
 async def test_recovery_never_touches_a_row_with_confirmed_dispatch(tmp_path, monkeypatch):
-    """Once dispatched_at is set, the row is outside
-    _recover_undispatched_fires()'s scan entirely -- the external process is
-    confirmed to exist, so this is the contract's at-most-once boundary: a
-    daemon crash from here on is left to the ordinary stale-run reaper
-    (timed_out), never auto-retried, to avoid a duplicate real-world side
-    effect from an action that may already be running or finished.
-    """
+    """Once dispatched_at is set, the row is outside _recover_undispatched_fires()'s scan entirely -- the at-most-once boundary: a crash from here on is left to the ordinary stale-run reaper, never auto-retried, to avoid a duplicate real-world side effect."""
     import lionagi.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
@@ -437,12 +395,7 @@ async def test_recovery_never_touches_a_row_with_confirmed_dispatch(tmp_path, mo
 
 @pytest.mark.asyncio
 async def test_recovery_tombstones_undispatched_chain_child_without_retry(tmp_path, monkeypatch):
-    """An undispatched chain child (chain_depth > 0, an on_success/on_fail
-    follow-on) is tombstoned like any other orphan, but NOT auto-retried --
-    the narrower, documented gap in _fire_inner()'s delivery contract: the
-    parent occurrence's own recorded outcome is unaffected, only a
-    follow-on step is lost rather than automatically replayed.
-    """
+    """An undispatched chain child (chain_depth > 0) is tombstoned like any other orphan, but NOT auto-retried -- the documented gap in _fire_inner()'s delivery contract: only the follow-on step is lost, the parent occurrence's own recorded outcome is unaffected."""
     import lionagi.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
@@ -493,24 +446,7 @@ async def test_recovery_tombstones_undispatched_chain_child_without_retry(tmp_pa
 
 @pytest.mark.asyncio
 async def test_tombstone_and_replace_schedule_run_is_atomic(tmp_path):
-    """The OLD shape recovery briefly took (flip the orphan via a standalone
-    update_status() call, THEN separately -- in a backgrounded fire task --
-    insert the replacement row once _fire_inner() got around to it) had a
-    real gap: a crash between those two independent writes left the orphan
-    durably 'failed' (terminal, so dropped from every future
-    list_undispatched_schedule_runs() scan) with no replacement ever
-    recorded -- the occurrence lost for good, invisible to recovery AND
-    never retried.
-
-    tombstone_and_replace_schedule_run() closes that by doing both writes
-    in ONE transaction. Prove it directly: force the second statement
-    (the replacement INSERT) to raise mid-transaction and confirm the
-    first statement (the orphan's UPDATE) rolled back too -- the orphan
-    must come back out exactly as it went in, still 'running', still
-    undispatched, still visible to a fresh scan. A crash here can only
-    ever discard a replacement that was never durably recorded, never
-    leave a flipped orphan with nothing to show for it.
-    """
+    """The old two-write recovery shape (flip the orphan, then separately insert the replacement) could crash between the writes and lose the occurrence for good; tombstone_and_replace_schedule_run() does both in ONE transaction -- proven by forcing the replacement INSERT to raise mid-transaction and confirming the orphan's UPDATE rolled back too, still 'running' and visible to a fresh scan."""
     db_path = tmp_path / "state.db"
     sid = "sched-atomic"
 
@@ -568,15 +504,7 @@ async def test_tombstone_and_replace_schedule_run_is_atomic(tmp_path):
 async def test_recovery_leaves_orphan_untouched_when_refire_crashes_before_atomic_write(
     tmp_path, monkeypatch
 ):
-    """A crash during a recovery re-fire attempt, at any point BEFORE
-    _write_occurrence()'s atomic transaction runs (e.g. while building the
-    replacement invocation or resolving the action), must leave the
-    orphan completely untouched -- neither half of the tombstone+insert
-    pair exists yet, so there is nothing to roll back; the orphan is
-    simply still exactly where it started. A fresh recovery pass over the
-    same state must find and retry it again, proving the occurrence is
-    never lost even when the re-fire attempt itself fails early.
-    """
+    """A crash during recovery re-fire, at any point before _write_occurrence()'s atomic transaction runs, must leave the orphan completely untouched (nothing to roll back yet); a fresh recovery pass over the same state must find and retry it, proving the occurrence is never lost even when the re-fire attempt itself fails early."""
     import lionagi.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
@@ -657,14 +585,7 @@ async def test_recovery_leaves_orphan_untouched_when_refire_crashes_before_atomi
 
 @pytest.mark.asyncio
 async def test_recovery_never_double_fires_across_two_passes(tmp_path, monkeypatch):
-    """Running _recover_undispatched_fires() a second time over state left
-    behind by a first, fully-completed pass must find nothing left to do:
-    once the replacement occurrence from pass one is durably dispatched
-    (dispatched_at set), it is entirely out of scope for pass two, and the
-    original orphan it superseded is already terminal. Two passes over the
-    same eventually-successful recovery must produce exactly one re-fire,
-    never two.
-    """
+    """A second _recover_undispatched_fires() pass over state left by a first, fully-completed pass must find nothing left to do: the replacement occurrence is already dispatched and the original orphan already terminal -- two passes over the same recovery must produce exactly one re-fire."""
     import lionagi.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
@@ -723,15 +644,7 @@ async def test_recovery_never_double_fires_across_two_passes(tmp_path, monkeypat
 
 @pytest.mark.asyncio
 async def test_tombstone_and_replace_schedule_run_refuses_when_dispatch_confirmed(tmp_path):
-    """The CAS predicate must require dispatched_at IS NULL, not just
-    status='running'. A launch confirmation (dispatched_at stamped, status
-    unchanged -- see _mark_dispatched()) landing between a recovery scan and
-    this write means the row is no longer undispatched; tombstoning it and
-    inserting a replacement would flip a run that actually launched to
-    'failed' and fire a duplicate. Reviewer repro: dispatched_at already set
-    on the orphan before the call -- must refuse (applied=False), inserting
-    nothing.
-    """
+    """The CAS predicate requires dispatched_at IS NULL, not just status='running': a launch confirmation landing between a recovery scan and this write means the row is no longer undispatched, and tombstoning it would flip an actually-launched run to 'failed' and fire a duplicate -- reviewer repro: dispatched_at already set must refuse (applied=False), inserting nothing."""
     db_path = tmp_path / "state.db"
     sid = "sched-dispatched-race"
 
@@ -763,16 +676,7 @@ async def test_tombstone_and_replace_schedule_run_refuses_when_dispatch_confirme
 
 @pytest.mark.asyncio
 async def test_recovery_refire_is_noop_when_dispatch_confirmed_mid_race(tmp_path, monkeypatch):
-    """The reviewer-specified race: recovery's scan finds "run-live" as
-    undispatched, but a concurrently-confirmed launch (dispatched_at
-    stamped) lands after the scan and before the recovery re-fire's own
-    atomic write. The strengthened CAS makes that write a no-op, so the
-    live run must come out completely untouched -- still 'running', its
-    dispatched_at preserved, no replacement row -- and the abandonment path
-    must cancel ONLY the pre-spawn recovery invocation it created for this
-    doomed attempt, never the live run's own (separate, still-running)
-    invocation.
-    """
+    """The reviewer-specified race: a concurrently-confirmed launch (dispatched_at stamped) lands after recovery's scan but before its atomic re-fire write; the strengthened CAS makes that write a no-op, leaving the live run completely untouched, and abandonment cancels only the doomed pre-spawn recovery invocation, never the live run's own."""
     import lionagi.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"

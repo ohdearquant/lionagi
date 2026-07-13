@@ -284,17 +284,7 @@ async def test_checkpoint_writer_record_flow_context_updates_running_snapshot(tm
 async def test_checkpoint_writer_record_spawned_keeps_separate_from_ops_and_dedups_by_node_id(
     tmp_path: Path,
 ):
-    """Spawned nodes must never share the `ops` keyspace with planned agent_ids
-    -- a spawned child's branch can be named identically to a planned agent_id
-    (clones inherit the source branch's name), so `ops` and `spawned` are kept
-    as two distinct groves, and re-recording the same spawned node id updates
-    its one entry rather than appending a duplicate.
-
-    Also pins the CHECKPOINT_VERSION 2 reconstruction fields (operation,
-    assignee, instruction, parent_id, spawn_id) round-tripping through the
-    same entry, and defaulting to None when the caller (an old-format write
-    path, or one that couldn't resolve the live graph node) omits them.
-    """
+    """Spawned nodes use a separate `spawned` keyspace from planned `ops` (a spawned branch can share a planned agent_id's name); re-recording the same node id updates in place, and CHECKPOINT_VERSION 2 reconstruction fields round-trip, defaulting to None when omitted."""
     path = tmp_path / "checkpoint.json"
     writer = CheckpointWriter(path=path, session_id="s", prompt="p", plan=[], config={})
 
@@ -418,11 +408,7 @@ def test_apply_checkpoint_precompletion_no_degraded_ops_is_a_silent_noop():
 
 
 def test_apply_checkpoint_precompletion_preserves_failed_ops_as_terminal_not_rerun():
-    """A checkpointed 'failed' op must be restored as terminal FAILED, not
-    silently treated as pending and re-run -- it may already have produced
-    side effects or partial artifacts before the process died, and resume
-    must never guess at retry semantics on its own.
-    """
+    """A checkpointed 'failed' op is restored as terminal FAILED, not re-run -- it may have already produced side effects and resume must not guess at retry semantics."""
     nodes = {"n-worker": _FakeNode("n-worker")}
     env = SimpleNamespace(
         builder=SimpleNamespace(get_graph=lambda: SimpleNamespace(internal_nodes=nodes))
@@ -457,15 +443,7 @@ def test_apply_checkpoint_precompletion_preserves_failed_ops_as_terminal_not_rer
 
 
 def test_apply_checkpoint_precompletion_refuses_when_spawned_entries_present():
-    """A checkpoint's `spawned` entries in the pre-CHECKPOINT_VERSION-2 shape
-    (no `operation` recorded) carry nothing resume can rebuild an Operation
-    node from, so they must refuse resume outright rather than silently drop
-    that completed work. Refusal is unconditional -- it is not something
-    --allow-degraded-context (a different concern) can bypass -- and happens
-    before any node is mutated. Contrast with
-    test_apply_checkpoint_precompletion_reconstructs_valid_spawned_entry_without_refusing
-    below, where a CHECKPOINT_VERSION-2-shaped entry resumes cleanly.
-    """
+    """Pre-CHECKPOINT_VERSION-2 `spawned` entries (no `operation` recorded) carry nothing to rebuild from, so resume refuses unconditionally before mutating any node -- contrast with the version-2-shaped entry below, which resumes cleanly."""
     nodes = {"n-worker": _FakeNode("n-worker")}
     env = SimpleNamespace(
         builder=SimpleNamespace(get_graph=lambda: SimpleNamespace(internal_nodes=nodes))
@@ -541,14 +519,7 @@ def _terminal_plan_and_ops(agent_id: str, node_id, status: str = "completed") ->
 
 
 def test_reconstruct_spawned_nodes_precompletes_completed_child_with_edge_and_branch():
-    """The core sound-replay case: a reactively spawned node whose own
-    checkpoint entry recorded operation/assignee/instruction/parent_id (the
-    CHECKPOINT_VERSION 2 fields) is rebuilt into the graph, wired to its
-    parent by a 'spawn' edge, routed to the same role branch a live spawn
-    would have used, and pre-completed -- so the executor's terminal-status
-    short-circuit picks it up instead of re-running it. The planned parent
-    is checkpointed completed, satisfying the soundness gate.
-    """
+    """Core sound-replay case: a completed reactively-spawned node with its CHECKPOINT_VERSION 2 fields is rebuilt, wired to its parent by a 'spawn' edge, routed to the same role branch, and pre-completed so the executor's terminal short-circuit skips re-running it."""
     builder, parent_id, worker_branch = _real_planned_node("worker")
     env = SimpleNamespace(builder=builder)
     dag_state = _DagState(
@@ -623,10 +594,7 @@ def test_reconstruct_spawned_nodes_marks_failed_child_terminal_not_rerun():
 
 
 def test_reconstruct_spawned_nodes_chains_through_another_reconstructed_spawn():
-    """A grandchild spawn (spawned by a node that was itself reactively
-    spawned) resolves its parent against the other entries in the SAME
-    checkpoint_spawned batch, not just the statically planned nodes.
-    """
+    """A grandchild spawn resolves its parent against the other entries in the same checkpoint_spawned batch, not just the statically planned nodes."""
     builder = OperationGraphBuilder()
     env = SimpleNamespace(builder=builder)
     dag_state = _DagState(
@@ -674,13 +642,7 @@ def test_reconstruct_spawned_nodes_chains_through_another_reconstructed_spawn():
 
 
 def test_reconstruct_spawned_nodes_refuses_when_parent_not_checkpointed_terminal():
-    """The genuinely unsound subcase named in the design: a spawned node
-    whose parent op had NOT itself reached a checkpointed terminal state
-    before the crash. Resuming would either duplicate the spawn (the parent
-    re-runs and emits it again) or lose it outright (the parent never
-    re-emits it) -- a decision this version cannot soundly replay. Refusal
-    names only the affected node, and mutates nothing first.
-    """
+    """A spawned node whose parent op had not itself reached a checkpointed terminal state before the crash can't be soundly replayed (would duplicate or lose the spawn); refusal names only the affected node and mutates nothing first."""
     builder = OperationGraphBuilder()
     env = SimpleNamespace(builder=builder)
     dag_state = _DagState(
@@ -715,16 +677,7 @@ def test_reconstruct_spawned_nodes_refuses_when_parent_not_checkpointed_terminal
 
 
 def test_reconstruct_spawned_nodes_refuses_when_planned_parent_exists_but_is_still_pending():
-    """Tighter parent-soundness case: a spawned child's parent_id names a REAL planned DAG node -- not a
-    stray string -- but that planned node has no terminal entry in
-    checkpoint_ops (still pending at crash time). Accepting this on the old
-    "parent_id is any known planned node" rule would pre-complete the child
-    while the parent reruns live, and the parent can then emit the same
-    follow-up spawn again -- exactly the duplicate-work case the design
-    calls out. Tightening the gate to require the planned parent be
-    checkpointed terminal (same rule already applied to spawn-chain parents)
-    must refuse this the same way.
-    """
+    """Tighter parent-soundness case: parent_id names a real planned node, but it has no terminal entry in checkpoint_ops (still pending at crash time) -- accepting this would pre-complete the child while the parent reruns live and re-emits the same spawn."""
     builder, parent_id, worker_branch = _real_planned_node("worker")
     env = SimpleNamespace(builder=builder)
     dag_state = _DagState(
@@ -798,16 +751,7 @@ def test_reconstruct_spawned_nodes_refuses_unrecognized_status():
 
 
 def test_reconstruct_spawned_nodes_refuses_assignee_without_spawn_id():
-    """The defensive counterpart to spawn_id reconstruction: role_node_builder
-    stamps spawn_id and assignee together, unconditionally, at construction
-    time -- so a
-    checkpoint entry recording an assignee but no spawn_id cannot have come
-    from a sound live spawn. Reconstructing it anyway would hand the
-    finalize-time result-collection scan an assignee-bearing node with no
-    spawn_id, which is precisely the RuntimeError invariant violation this
-    fix exists to prevent; refusing resume for the node is the safe
-    alternative to smuggling that broken state through.
-    """
+    """role_node_builder always stamps spawn_id and assignee together, so an entry with assignee but no spawn_id can't have come from a sound live spawn; reconstructing it would hand finalize an assignee-bearing node with no spawn_id, violating its invariant."""
     builder, parent_id, worker_branch = _real_planned_node("worker")
     env = SimpleNamespace(builder=builder)
     dag_state = _DagState(
@@ -840,12 +784,7 @@ def test_reconstruct_spawned_nodes_refuses_assignee_without_spawn_id():
 
 
 def test_apply_checkpoint_precompletion_reconstructs_valid_spawned_entry_without_refusing():
-    """End-to-end through the actual entry point _run_flow_inner calls: a
-    CHECKPOINT_VERSION-2-shaped spawned entry resumes cleanly alongside the
-    normal planned-op precompletion -- no refusal just because a spawn
-    occurred, matching the design's core fix (contrast with the legacy-format
-    refusal test above).
-    """
+    """End-to-end through _run_flow_inner's entry point: a CHECKPOINT_VERSION-2-shaped spawned entry resumes cleanly alongside normal planned-op precompletion -- no refusal just because a spawn occurred."""
     builder, parent_id, worker_branch = _real_planned_node("worker")
     env = SimpleNamespace(builder=builder)
 
@@ -906,11 +845,7 @@ def test_apply_checkpoint_precompletion_reconstructs_valid_spawned_entry_without
 
 
 async def test_checkpoint_captures_nonempty_executor_flow_context_on_completion(tmp_path: Path):
-    """The write side of the flow_context guarantee: _checkpoint_record must
-    snapshot the live executor's shared context workspace, not just the
-    completing op's own response -- otherwise --resume has nothing correct to
-    restore even though the checkpoint's `ops` entries look fine on their own.
-    """
+    """Write side of the flow_context guarantee: _checkpoint_record must snapshot the live executor's shared context, not just the completing op's response, or --resume has nothing correct to restore."""
     env = _make_resume_env(tmp_path)
     env.session = Session(default_branch=Branch(name="orchestrator"))
     env.run.checkpoint_path = tmp_path / "checkpoint.json"
@@ -974,12 +909,7 @@ async def test_checkpoint_captures_nonempty_executor_flow_context_on_completion(
 async def test_checkpoint_spawned_node_name_collision_does_not_overwrite_planned_ops_entry(
     tmp_path: Path,
 ):
-    """A reactively spawned child's branch can carry a name identical to a
-    planned agent_id's (clones inherit the source branch's name). Using that
-    name as the checkpoint's `ops` key would silently overwrite the planned
-    op's entry -- spawned completions must route to `spawned`, keyed by their
-    own node id, and never touch `ops`.
-    """
+    """A spawned child's cloned branch can share a planned agent_id's name; using that name as the `ops` key would silently overwrite the planned entry, so spawned completions route to `spawned` keyed by node id instead."""
     env = _make_resume_env(tmp_path)
     env.session = Session(default_branch=Branch(name="orchestrator"))
     env.run.checkpoint_path = tmp_path / "checkpoint.json"
@@ -1074,15 +1004,7 @@ async def test_checkpoint_spawned_node_name_collision_does_not_overwrite_planned
 async def test_checkpoint_record_captures_spawn_id_from_live_role_routed_graph_node(
     tmp_path: Path,
 ):
-    """The write-side counterpart: role_node_builder stamps spawn_id/
-    reference_id on a spawned node's metadata unconditionally, whether or
-    not the request
-    carried an assignee (lionagi/orchestration/patterns.py). _checkpoint_record
-    must capture spawn_id off the live graph node the same way it already
-    captures assignee, so a role-routed spawn's checkpoint entry carries
-    what reconstruction later needs to satisfy the finalize-time
-    assignee-without-spawn_id invariant check.
-    """
+    """Write-side counterpart: role_node_builder stamps spawn_id unconditionally on a spawned node's metadata, so _checkpoint_record must capture it off the live graph node the same way it captures assignee, for reconstruction's assignee-without-spawn_id check."""
     builder, parent_id, worker_branch = _real_planned_node("worker")
     env = _make_resume_env(tmp_path)
     env.builder = builder
@@ -1171,17 +1093,7 @@ async def test_checkpoint_record_captures_spawn_id_from_live_role_routed_graph_n
 async def test_execute_dag_seeds_fresh_checkpoint_with_already_reconstructed_spawned_entries(
     tmp_path: Path,
 ):
-    """Double-crash/double-resume: a first resume reconstructs a
-    completed reactively-spawned node from a prior checkpoint's `spawned`
-    list into the graph and pre-completes it (never re-run, so it never
-    emits a fresh completion signal to re-record itself). The NEXT
-    _execute_dag call for this generation constructs a brand new
-    CheckpointWriter; without seeding it with the already-reconstructed
-    entries, its very first flush would overwrite `spawned` back to `[]` --
-    so if this resumed run crashes AGAIN before anything new completes, the
-    second resume would find nothing to reconstruct from and silently lose
-    that already-completed spawned work.
-    """
+    """Double-crash/double-resume: a resume's brand-new CheckpointWriter must be seeded with already-reconstructed spawned entries, or its first flush overwrites `spawned` back to `[]` and a second crash loses that completed work."""
     env = _make_resume_env(tmp_path)
     env.session = Session(default_branch=Branch(name="orchestrator"))
     env.run.checkpoint_path = tmp_path / "checkpoint.json"
@@ -1247,17 +1159,7 @@ async def test_execute_dag_seeds_fresh_checkpoint_with_already_reconstructed_spa
 
 
 async def test_execute_dag_max_spawn_budget_accounts_for_restored_spawns(tmp_path: Path):
-    """--max-ops is a TOTAL budget for the whole logical run, including
-    resumes -- _resume_flow replays the checkpoint's persisted config
-    verbatim rather than re-deriving max_ops, and the CLI's own progress
-    text calls it "at most {max_ops} ops total, INCLUDING any reactively
-    spawned" ones. Recomputing the live spawn budget on resume as
-    max_ops - len(assignments), with no adjustment for spawns already
-    restored from a prior checkpoint generation, would silently re-grant
-    the SAME budget every resume -- a run that had already exhausted its
-    spawn budget before a crash could accept spawns beyond what --max-ops
-    ever allowed.
-    """
+    """--max-ops is a total budget across resumes; recomputing the live spawn budget as max_ops - len(assignments) with no adjustment for spawns already restored would silently re-grant the same budget every resume."""
     env = _make_resume_env(tmp_path)
     env.session = Session(default_branch=Branch(name="orchestrator"))
     env.run.checkpoint_path = tmp_path / "checkpoint.json"
@@ -1322,13 +1224,7 @@ async def test_execute_dag_max_spawn_budget_accounts_for_restored_spawns(tmp_pat
 
 
 async def test_execute_dag_n_spawned_counts_restored_spawns_alongside_new_ones(tmp_path: Path):
-    """The synthesis gate in _run_flow_inner is `with_synthesis or
-    exec_result.n_spawned`. A resume where every reactively spawned node was
-    already completed before the crash -- so THIS generation's live run_dag
-    produces zero new spawns -- must still report the restored count as
-    n_spawned, or a fully-restored, spawn-having run would silently skip
-    synthesis solely because nothing NEW happened to spawn this generation.
-    """
+    """The synthesis gate is `with_synthesis or exec_result.n_spawned`; a resume where every spawn was already completed before the crash (zero new spawns this generation) must still report the restored count, or synthesis is silently skipped."""
     env = _make_resume_env(tmp_path)
     env.session = Session(default_branch=Branch(name="orchestrator"))
     env.run.checkpoint_path = tmp_path / "checkpoint.json"
@@ -1387,16 +1283,7 @@ async def test_execute_dag_n_spawned_counts_restored_spawns_alongside_new_ones(t
 
 
 async def test_resumed_run_with_only_restored_spawns_triggers_synthesis(tmp_path: Path):
-    """End-to-end through _run_flow_inner: the synthesis gate must fire even
-    when every reactively spawned node was already completed before the
-    crash and this generation's live run_dag produces zero new spawns --
-    proving the n_spawned accounting fix actually reaches the gate check,
-    not just the _execute_dag return value in isolation. Reconstruction
-    itself (_apply_checkpoint_precompletion) is stubbed here since its
-    correctness is covered elsewhere; this isolates the downstream
-    accounting/gating consequence of a checkpoint carrying `spawned` entries
-    into a resume.
-    """
+    """End-to-end through _run_flow_inner: the synthesis gate must fire even when every reactively spawned node was already completed and this generation produces zero new spawns -- proves the n_spawned accounting fix reaches the gate check, not just _execute_dag's return value."""
     env = _make_resume_env(tmp_path)
     checkpoint = {
         "version": 2,
@@ -1477,12 +1364,7 @@ async def test_resumed_run_with_only_restored_spawns_triggers_synthesis(tmp_path
 
 
 def test_role_node_builder_start_seeds_first_spawn_id_past_restored_ordinal():
-    """Direct proof of the resume-facing knob: role_node_builder(..., start=2)
-    must issue spawn-2 for the first live spawn built through it, not
-    spawn-1 -- the exact collision (same spawn_id, same artifact directory,
-    since the CLI derives one from the other) a resumed run's fresh closure
-    would otherwise reissue against an already-restored spawn-1.
-    """
+    """role_node_builder(..., start=2) must issue spawn-2 for the first live spawn, not spawn-1 -- the exact id/artifact-directory collision a resumed run's fresh closure would otherwise reissue against an already-restored spawn-1."""
     from lionagi.casts.emission import SpawnRequest
     from lionagi.orchestration.patterns import role_node_builder
 
@@ -1494,12 +1376,7 @@ def test_role_node_builder_start_seeds_first_spawn_id_past_restored_ordinal():
 
 
 async def test_execute_dag_seeds_spawn_sequence_past_restored_ordinal(tmp_path: Path):
-    """When resuming a checkpoint that already restored spawn-1, the fresh
-    role_node_builder(...) this _execute_dag call constructs must start its
-    sequence at 2, not 1 -- otherwise any pending op that emits a new spawn
-    after the resume reuses spawn-1's id (and artifact directory) instead of
-    representing a distinct spawned operation.
-    """
+    """Resuming a checkpoint that already restored spawn-1, the fresh role_node_builder(...) this _execute_dag call constructs must start its sequence at 2, or a new spawn after resume reuses spawn-1's id and artifact directory."""
     env = _make_resume_env(tmp_path)
     env.session = Session(default_branch=Branch(name="orchestrator"))
     env.run.checkpoint_path = tmp_path / "checkpoint.json"
@@ -1561,15 +1438,7 @@ async def test_execute_dag_seeds_spawn_sequence_past_restored_ordinal(tmp_path: 
 
 
 async def test_execute_dag_seeds_spawn_sequence_past_gap_in_restored_ordinals(tmp_path: Path):
-    """A crashed run may have gaps -- a spawn allocated (consuming an
-    ordinal from role_node_builder's sequence) but never reaching a
-    checkpointed terminal state before the crash never appears in a
-    checkpoint's `spawned` list at all. The next-ordinal seed must take the
-    MAX existing restored ordinal + 1, not len(restored) + 1, or it would
-    double-allocate into the gap and still collide. Restoring only
-    "spawn-3" (as if spawn-1/spawn-2 existed but crashed before completing)
-    must still seed the next sequence at 4, not 2.
-    """
+    """A crashed run can leave gaps (an allocated spawn ordinal that never reached a checkpointed terminal state, so it's absent from `spawned`); the next-ordinal seed must take MAX(restored)+1, not len(restored)+1, or it double-allocates into the gap."""
     env = _make_resume_env(tmp_path)
     env.session = Session(default_branch=Branch(name="orchestrator"))
     env.run.checkpoint_path = tmp_path / "checkpoint.json"
@@ -1634,11 +1503,7 @@ async def test_execute_dag_seeds_spawn_sequence_past_gap_in_restored_ordinals(tm
 
 
 async def test_resume_skips_planner_and_still_calls_finalize_with_zero_pending_ops(tmp_path: Path):
-    """A checkpoint where every op is already completed must still reach
-    _finalize_flow — no shortcut may skip the finalization tail just because
-    execute_dag had nothing new to run. Also pins the companion guarantee:
-    the planner is never called on resume.
-    """
+    """A checkpoint where every op is already completed must still reach _finalize_flow -- no shortcut skips finalization just because execute_dag had nothing new to run. Also pins: the planner is never called on resume."""
     env = _make_resume_env(tmp_path)
     checkpoint = {
         "version": 1,
@@ -1702,13 +1567,7 @@ async def test_resume_skips_planner_and_still_calls_finalize_with_zero_pending_o
 
 
 async def test_resume_seeds_executor_with_checkpointed_flow_context(tmp_path: Path):
-    """A completed op that wrote into the executor's shared flow_context
-    before a crash must hand that same context to the fresh (post-resume)
-    executor, so pending ops downstream see it exactly as they would have
-    live -- not the empty workspace a brand new DependencyAwareExecutor
-    otherwise starts with. Proven across a simulated process boundary: this
-    _run_flow_inner call knows nothing except what the checkpoint dict carries.
-    """
+    """A completed op's flow_context written before a crash must hand off to the fresh post-resume executor, not the empty workspace a brand-new DependencyAwareExecutor starts with -- proven across a simulated process boundary."""
     env = _make_resume_env(tmp_path)
     checkpoint = {
         "version": 1,
@@ -1769,13 +1628,7 @@ async def test_resume_seeds_executor_with_checkpointed_flow_context(tmp_path: Pa
 async def test_resumed_checkpoint_carries_restored_flow_context_across_zero_completions(
     tmp_path: Path,
 ):
-    """A second-generation checkpoint -- one written by a RESUMED run -- must
-    still carry forward the flow_context restored from the prior checkpoint,
-    even if the resumed run crashes before any op completes and the writer
-    only ever flushes its initial construction-time seed. Otherwise a
-    resume-of-a-resume silently loses shared context that nothing actually
-    went wrong with restoring, across this second simulated process boundary.
-    """
+    """A second-generation checkpoint (written by a resumed run) must still carry forward the flow_context restored from the prior checkpoint, even if it crashes before any op completes and the writer only flushes its initial seed."""
     env = _make_resume_env(tmp_path)
     env.run.checkpoint_path = tmp_path / "checkpoint.json"
     checkpoint = {
@@ -1837,11 +1690,7 @@ async def test_resumed_checkpoint_carries_restored_flow_context_across_zero_comp
 
 
 async def test_resume_refuses_checkpoint_with_spawned_entries(tmp_path: Path):
-    """Replaying reactively spawned work on resume isn't implemented, so a
-    checkpoint that recorded any must refuse resume outright -- silently
-    proceeding would drop that completed spawned work along with its
-    artifact-contract/synthesis participation.
-    """
+    """Replaying reactively spawned work on resume isn't implemented, so a checkpoint recording any must refuse outright rather than silently drop that completed spawned work."""
     env = _make_resume_env(tmp_path)
     checkpoint = {
         "version": 1,
@@ -1891,12 +1740,7 @@ async def test_resume_refuses_checkpoint_with_spawned_entries(tmp_path: Path):
 async def test_resume_missing_artifact_still_flips_status_to_failed(
     temp_db_path: Path, tmp_path: Path
 ):
-    """Concrete DB-level proof of the same gate: resuming a checkpoint whose
-    only op is already 'completed' (nothing left for run_dag to execute) must
-    still drive the artifact-verification teardown check. A required artifact
-    genuinely missing from disk must still flip the session to failed, not
-    silently read as a clean completion because resume had nothing new to run.
-    """
+    """Concrete DB-level proof of the same gate: resuming a checkpoint with nothing left for run_dag to execute must still drive the artifact-verification teardown check, and flip status to failed if a required artifact is missing."""
     env = _minimal_real_env()
     artifacts_dir = tmp_path / "artifacts"
     artifacts_dir.mkdir()
@@ -2083,10 +1927,7 @@ async def test_resolve_checkpoint_target_falls_back_to_session_run_id(
 
 
 def _parse_flow_args(argv: list[str]) -> argparse.Namespace:
-    """Mimic the real CLI pipeline: pre-scan for playbook → inject flags → parse.
-
-    Mirrors tests/cli/orchestrate/test_flow_spec_file.py's helper of the same name.
-    """
+    """Mimics the real CLI pipeline (pre-scan for playbook -> inject flags -> parse); same helper name as test_flow_spec_file.py's, for parity."""
     from lionagi.cli.orchestrate import (
         add_orchestrate_subparser,
         inject_playbook_schema_into_parser,

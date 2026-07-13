@@ -163,35 +163,12 @@ _PARAM_NAME_RE = re.compile(r"\(\?P<\w+>")
 
 
 def _normalize_route_match_shape(path_regex_pattern: str) -> str:
-    """Erase parameter NAMES from a compiled Starlette path_regex pattern,
-    keeping converter/regex semantics.
-
-    Starlette compiles "/x/{id}" and "/x/{schedule_id}" to the same regex
-    BODY under different named groups (`(?P<id>[^/]+)` vs
-    `(?P<schedule_id>[^/]+)`) -- the router dispatches purely on the
-    compiled match, never on the param spelling, so two routes differing
-    only in param name shadow each other exactly like an identical literal
-    path would. A typed converter changes the body itself
-    (`(?P<id>[0-9]+)` for `{id:int}`), so it stays a genuinely distinct
-    shape from the untyped `{id}` -- only the group NAME is erased here,
-    not the pattern inside it.
-    """
+    """Erase parameter NAMES from a compiled Starlette path_regex pattern, keeping converter/regex semantics: the router dispatches on the compiled body, not the param spelling, so `{id}` and `{schedule_id}` shadow each other while a typed `{id:int}` (different regex body) stays a genuinely distinct shape."""
     return _PARAM_NAME_RE.sub("(?P<_>", path_regex_pattern)
 
 
 def _entries_from_fastapi_app(app: fastapi.FastAPI) -> list[tuple[str, str, str]]:
-    """(method, path, match_shape) for every route on a FastAPI app's route
-    table, as a LIST (not a set) -- a route registered twice at the same
-    match shape produces two entries here, one per registration.
-
-    match_shape is the route's compiled path_regex with parameter names
-    erased (see _normalize_route_match_shape); it is what FastAPI's router
-    actually dispatches on, kept alongside the original `path` so a
-    duplicate report can show a developer both source spellings. HEAD is
-    excluded: FastAPI auto-adds it for every GET, so it is never an
-    independent registration and would double every GET row for no
-    contract value.
-    """
+    """(method, path, match_shape) for every route on a FastAPI app's route table, as a LIST -- a route registered twice at the same match shape produces two entries. HEAD is excluded (FastAPI auto-adds it for every GET, so it would double every GET row for no contract value)."""
     entries: list[tuple[str, str, str]] = []
     for route in app.routes:
         path = getattr(route, "path", None)
@@ -212,17 +189,7 @@ def _entries_from_fastapi_app(app: fastapi.FastAPI) -> list[tuple[str, str, str]
 def _find_duplicate_routes(
     entries: list[tuple[str, str, str]],
 ) -> dict[tuple[str, str], list[str]]:
-    """Return {(method, match_shape): [path, path, ...]} for every match
-    shape registered more than once.
-
-    Keying on match_shape (not the raw path) is what catches two routes
-    that read as different source -- "/x/{schedule_id}" vs "/x/{id}" --
-    but compile to the identical dispatch target: FastAPI's router matches
-    the first registration for a given compiled shape and never even
-    considers a later one, so the second is dead code regardless of what
-    its param happens to be named. The path list preserves both original
-    spellings for the failure message.
-    """
+    """Return {(method, match_shape): [path, path, ...]} for every match shape registered more than once -- keying on match_shape (not the raw path) catches routes that read as different source but compile to the same dispatch target, where FastAPI's router silently drops the later registration as dead code."""
     by_shape: dict[tuple[str, str], list[str]] = {}
     for method, path, match_shape in entries:
         by_shape.setdefault((method, match_shape), []).append(path)
@@ -271,12 +238,7 @@ def test_golden_route_count_pinned():
 
 
 def _compiled_match_shape(path_template: str) -> str:
-    """Real Starlette-compiled match shape for a path template.
-
-    Goes through an actual Route object (the same path_regex Starlette
-    itself computes), rather than a hand-typed regex string, so the test
-    fixtures below can't drift from Starlette's real compile_path() output.
-    """
+    """Real Starlette-compiled match shape for a path template, via an actual Route object (not a hand-typed regex) so the fixtures below can't drift from Starlette's own compile_path() output."""
     from starlette.routing import Route
 
     async def _noop() -> None:
@@ -319,18 +281,7 @@ def test_normalize_route_match_shape_erases_param_names_but_keeps_converters():
 
 
 def test_duplicate_route_registration_is_caught_on_a_live_fastapi_app():
-    """End-to-end proof, not just a property of the tuple-list helper: a
-    genuinely duplicated route (identical path spelling) on a real FastAPI
-    app's route table is detected by the same collection path
-    _live_app_routes() uses.
-
-    A duplicate can't be produced through the studio_route registry itself
-    (registry.py's dedup guard raises ValueError on a second registration at
-    the same (path, method, module, qualname) -- see test_route_registry.py
-    ::test_dedup_guard_raises_on_duplicate), so this mounts two routes
-    directly on a throwaway FastAPI app the way FastAPI itself would if that
-    guard were ever bypassed or missing.
-    """
+    """End-to-end proof, not just a property of the tuple-list helper: since the studio_route registry's own dedup guard already raises on a same-shape duplicate, this mounts two identical-path routes directly on a throwaway FastAPI app to prove _live_app_routes() would still catch it if that guard were ever bypassed."""
     from fastapi import FastAPI
 
     app = FastAPI()
@@ -351,17 +302,7 @@ def test_duplicate_route_registration_is_caught_on_a_live_fastapi_app():
 
 
 def test_duplicate_route_registration_with_different_param_names_is_caught():
-    """The reviewer's exact regression: /api/schedules/{schedule_id} and
-    /api/schedules/{id} read as different source but compile to the same
-    dispatch target, so the second shadows the first exactly like an
-    identical-path duplicate would -- the gate must name them as duplicates
-    even though no two path strings in the pair are equal.
-
-    One route is registered through an APIRouter + include_router (with a
-    path prefix, the way every real studio area router mounts), and the
-    other directly on the app, proving match-shape normalization survives
-    prefix compilation rather than only working on a hand-built path string.
-    """
+    """The reviewer's exact regression: /api/schedules/{schedule_id} and /api/schedules/{id} read as different source but compile to the same dispatch target, so the gate must name them as duplicates even though no two path strings are equal -- one route goes through an APIRouter + prefix (like real studio routers), proving match-shape normalization survives prefix compilation."""
     from fastapi import APIRouter, FastAPI
 
     app = FastAPI()
@@ -391,14 +332,7 @@ def test_duplicate_route_registration_with_different_param_names_is_caught():
 
 
 def test_api_prefix_appears_exactly_once_in_every_route_path():
-    """Every mounted studio API route path carries exactly one "/api" segment.
-
-    Guards the double-prefix regression class directly: a client (or a
-    future route-registration change) that prepends "/api" a second time
-    would produce paths like "/api/api/sessions/", which this test catches
-    by counting occurrences of the literal "/api" substring rather than
-    just checking the leading prefix.
-    """
+    """Guards the double-prefix regression class: a route-registration change that prepends '/api' a second time would produce '/api/api/...' paths, caught here by counting occurrences of the literal '/api' substring rather than just checking the leading prefix."""
     for _method, path in _live_app_routes():
         if path == "/health":
             assert "/api" not in path
@@ -413,13 +347,7 @@ def test_api_prefix_appears_exactly_once_in_every_route_path():
 
 
 def _patch_db(monkeypatch, db_path: Path) -> None:
-    """Point every service module's DB reference at a fresh temp path.
-
-    Must run before any seeding call -- StateDB() reads
-    lionagi.state.db.DEFAULT_DB_PATH fresh at each instantiation (see
-    StateDB.__init__), and admin.py/sessions.py additionally cache the path
-    as a plain string in their own module-level `_DB` for aiosqlite.connect.
-    """
+    """Point every service module's DB reference at a fresh temp path; must run before any seeding call since StateDB() re-reads DEFAULT_DB_PATH fresh per instantiation, and admin.py/sessions.py additionally cache the path in their own module-level `_DB`."""
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.admin as admin_mod
     import lionagi.studio.services.db_maintenance as db_maintenance_mod
@@ -919,12 +847,7 @@ def test_schedules_disable_success_response_shape(tmp_path, monkeypatch):
 
 
 def test_schedules_trigger_success_response_shape(tmp_path, monkeypatch):
-    """scheduler.fire_now() is mocked out: a real fire spawns a background
-    asyncio task that launches a subprocess (engine.py::_tracked_fire), which
-    has no place in a response-shape pin. This isolates the route handler's
-    own success contract -- {"ok": True, "run_id": <the value fire_now
-    returned>} -- from the scheduler engine's fire machinery, which has its
-    own coverage elsewhere."""
+    """scheduler.fire_now() is mocked out (a real fire spawns a background subprocess with no place in a response-shape pin), isolating the route handler's own success contract -- {'ok': True, 'run_id': ...} -- from the scheduler engine's fire machinery, covered elsewhere."""
     db_path = tmp_path / "state.db"
     _patch_db(monkeypatch, db_path)
     schedule_id = _create_gate_schedule(db_path)

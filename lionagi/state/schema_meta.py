@@ -520,18 +520,10 @@ schedules = Table(
     Column("budget_usd", Float),
     Column("budget_tokens", Integer),
     Column("project", Text),
-    # Metric threshold alerts: {metric, op, value, window_minutes} config
-    # blob + the timestamp of the last breach fire (doubles as the cooldown
-    # anchor -- see schema.sql for the fuller comment).
+    # Metric threshold alerts config + last breach fire; see schema.sql.
     Column("threshold_config", JSON),
     Column("last_alert_at", Float),
-    # Observer self-health (github_poll poller): last_healthy_poll_at is
-    # stamped on any 2xx/304 github_poll() read (including a healthy-empty
-    # one); poller_consecutive_401 counts consecutive 401s and resets only
-    # on a healthy read (a transient error/non-200 between 401s does not
-    # reset the run). Read by StateDB.metric_value's
-    # github_poll_healthy_age_minutes / github_poll_consecutive_401
-    # threshold metrics -- see SchedulerEngine._tick_github for the stamp.
+    # Observer self-health (github_poll poller); see schema.sql.
     Column("last_healthy_poll_at", Float),
     Column("poller_consecutive_401", Integer, nullable=False, server_default="0"),
     Column("created_at", Float, nullable=False),
@@ -554,10 +546,7 @@ Index(
 )
 
 # ── schedule_runs ─────────────────────────────────────────────────────────────
-# ADR-0071 D2: generalized into the durable task-application entity. schedule_id
-# is nullable (an ad-hoc task application has schedule_id IS NULL); the status
-# CHECK carries the full ADR-0072 lifecycle; queued_at/leased_by/
-# lease_expires_at/concurrency_key are ADR-0071's queue columns.
+# ADR-0071 D2: generalized task-application entity, schedule_id nullable.
 
 schedule_runs = Table(
     "schedule_runs",
@@ -607,9 +596,7 @@ schedule_runs = Table(
     Column("execution_target", Text),
     Column("library_ref", Text),
     Column("library_content_hash", Text),
-    # Delivery-contract marker: stamped once the scheduler engine confirms
-    # the external process for this occurrence was actually launched. See
-    # the schema.sql CREATE TABLE comment for the full rationale.
+    # Delivery-contract marker; see schema.sql.
     Column("dispatched_at", Float),
 )
 
@@ -642,8 +629,7 @@ Index(
 )
 
 # ── workers ─────────────────────────────────────────────────────────────────
-# ADR-0071 D5: capability-matching worker registry -- the only genuinely new
-# table this ADR pair adds.
+# ADR-0071 D5: capability-matching worker registry.
 
 workers = Table(
     "workers",
@@ -688,9 +674,8 @@ artifacts = Table(
     Column("invocation_id", Text, ForeignKey("invocations.id", ondelete="CASCADE")),
     Column("session_id", Text, ForeignKey("sessions.id")),
     Column("created_at", Float, nullable=False),
-    # updated_at has a SQLite server_default in schema.sql but the MIGRATION_COLUMNS
-    # comment notes it must be nullable in ALTER TABLE because expressions are not
-    # valid column defaults there; the insert path always sets it explicitly.
+    # Nullable here (unlike schema.sql's server_default) because ALTER TABLE
+    # rejects expression defaults; the insert path always sets it explicitly.
     Column("updated_at", Float, nullable=False),
     Column("kind", Text, nullable=False),
     Column("name", Text, nullable=False),
@@ -797,12 +782,8 @@ Index(
 Index("idx_status_transitions_created", status_transitions.c.created_at)
 
 # ── terminal_deliveries ─────────────────────────────────────────────────────────
-# Durable reconciliation-consumer acknowledgment ledger for post-commit
-# terminal-event callbacks (never written by the in-process push path itself —
-# only a registered reconciliation consumer inserts a row, once it has
-# durably processed a terminal event). The composite primary key makes
-# concurrent/repeated acks of the same event by the same consumer a
-# single-row no-op.
+# Reconciliation-consumer acknowledgment ledger; see
+# lionagi/state/lifecycle/deliveries.py and docs/internals/runtime.md.
 
 terminal_deliveries = Table(
     "terminal_deliveries",
@@ -899,8 +880,8 @@ Index("idx_engine_defs_kind", engine_defs.c.kind)
 Index("idx_engine_defs_updated", engine_defs.c.updated_at)
 
 # ── workflow_defs ─────────────────────────────────────────────────────────────
-# Named workflow definitions authored in the Studio Designer. spec_json holds
-# the versioned node/edge graph; validation lives in the studio service layer.
+# Named workflow definitions from the Studio Designer; spec_json is the
+# versioned node/edge graph, validated in the studio service layer.
 
 workflow_defs = Table(
     "workflow_defs",
@@ -917,15 +898,9 @@ Index("idx_workflow_defs_name", workflow_defs.c.name)
 Index("idx_workflow_defs_updated", workflow_defs.c.updated_at)
 
 # ── session_controls (ADR-0069 D1–D3: live-control transport) ─────────────────
-# One row per operator control verb queued against a live session. A poller task
-# in `cli/orchestrate/flow.py`'s `_execute_dag` reads unapplied rows and applies
-# them against the running executor. Apply/stamp ordering is verb-classed:
-# pause/resume are
-# idempotent (apply, then stamp — safe to re-apply on a poller crash); message
-# is not (stamp 'applying', then apply, then finalize — a crash surfaces as an
-# unapplied 'applying' row rather than risking a double injection). 'stop' is
-# schema-reserved and rejected by the current poller as unsupported; no CLI
-# verb emits it yet.
+# One row per operator control verb queued against a live session, polled by
+# `cli/orchestrate/flow.py`'s `_execute_dag`; see docs/internals/runtime.md
+# for the verb-classed apply/stamp ordering.
 
 session_controls = Table(
     "session_controls",
@@ -963,9 +938,8 @@ Index(
 )
 
 # ── dispatch_outbox (ADR-0059: durable dispatch outbox) ─────────────────────
-# Producer-driven at-least-once outbound delivery. A row survives independent
-# of any consumer's liveness; the scheduler tick re-attempts the configured
-# notify template until it succeeds, backs off, or exhausts max_attempts.
+# Producer-driven at-least-once delivery; the scheduler tick re-attempts
+# until success, backoff exhaustion, or max_attempts.
 
 dispatch_outbox = Table(
     "dispatch_outbox",
@@ -1014,9 +988,8 @@ Index(
 )
 
 # ── run_tags ──────────────────────────────────────────────────────────────────
-# Free-form review labels attached to a run (session). Kept in the canonical
-# metadata (not only schema.sql) so StateDB.open()/create_all builds it on every
-# backend, keeping the SQLite, Postgres, and schema-parity paths consistent.
+# Free-form review labels on a run (session); kept in canonical metadata (not
+# only schema.sql) so create_all builds it consistently on every backend.
 
 run_tags = Table(
     "run_tags",
@@ -1032,8 +1005,7 @@ run_tags = Table(
 )
 
 # ── approvals (studio operator permission ledger) ──────────────────────────
-# Server-side confirm-flow: a mutating action is proposed, a human grants or
-# denies it, and the real endpoint consumes the granted approval exactly once.
+# Server-side confirm-flow: proposed, granted/denied, consumed exactly once.
 
 approvals = Table(
     "approvals",
@@ -1072,9 +1044,7 @@ Index(
 )
 
 # ── approval_evidence (hash-chained audit trail on the approval ledger) ────
-# Append-only: every approval lifecycle event writes one row in the same
-# transaction as the approvals status change. See schema.sql for the full
-# chain-hash design note.
+# Append-only, same transaction as the approvals status change; see schema.sql.
 
 approval_evidence = Table(
     "approval_evidence",

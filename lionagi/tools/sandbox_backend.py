@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
 
+from lionagi.libs.path_safety import check_path_safe, contain_relative_path
 from lionagi.ln.concurrency import run_sync
 
 from . import sandbox as _worktree
@@ -229,7 +230,9 @@ class LocalWorktreeBackend:
 
         base = Path(handle.remote_repo_path)
         for rel_path, content in cell.seed_inputs.items():
-            dst = base / rel_path
+            # Containment against the provisioned workspace (ADR-0090 delta 4):
+            # absolute paths, `..` traversal, and symlink escapes are all rejected.
+            dst = contain_relative_path(rel_path, base, "seed_inputs")
             dst.parent.mkdir(parents=True, exist_ok=True)
             data = content.encode("utf-8") if isinstance(content, str) else content
             dst.write_bytes(data)
@@ -269,7 +272,7 @@ class LocalWorktreeBackend:
                 diff = await _worktree.sandbox_diff(handle.metadata["session"])
                 out[rel] = diff["patch"].encode("utf-8")
                 continue
-            fp = base / rel
+            fp = contain_relative_path(rel, base, "artifact_manifest")
             out[rel] = fp.read_bytes() if fp.is_file() else b""
         return out
 
@@ -340,6 +343,10 @@ class DaytonaBackend:
 
         sandbox: DaytonaSandbox = handle.metadata["sandbox"]
         for rel_path, content in cell.seed_inputs.items():
+            # Remote filesystem: no local resolve() is possible, so reject
+            # absolute paths and `..` traversal at the string level (ADR-0090
+            # delta 4 — symlink-escape checking is scoped to the local backend).
+            check_path_safe(rel_path, "seed_inputs")
             data = content.encode("utf-8") if isinstance(content, str) else content
             await sandbox.upload_bytes(data, f"{handle.remote_repo_path}/{rel_path}")
 
@@ -392,6 +399,7 @@ class DaytonaBackend:
                 diff = await sandbox.git_diff(handle.remote_repo_path)
                 out[rel] = diff.encode("utf-8")
                 continue
+            check_path_safe(rel, "artifact_manifest")
             out[rel] = await sandbox.download(f"{handle.remote_repo_path}/{rel}")
         return out
 

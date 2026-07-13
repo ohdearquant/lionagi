@@ -1,36 +1,8 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 """Flow/play `--notify` compatibility sugar over the terminal-callback
-registry.
-
-`--notify` remains scoped compatibility sugar: after the flow/play run's own
-entity id is known, it registers the legacy payload shape
-(kind/playbook/save_dir/cwd/exit_class/started_at/ended_at/status/
-invocation_id) as an exec adapter filtered to that one entity, and
-unregisters it once the run's teardown has fired. This is deliberately
-different from the settings-level `notify.on_terminal` handler (bootstrapped
-once per process, unscoped, delivering the new minimal envelope) -- the
-`--notify` flag is a per-run override carrying the old payload shape for
-existing consumers, not a second copy of the same delivery. It registers as
-an *override* (see `TerminalCallbackRegistry.register`), so it replaces the
-settings-resolved handler for this one run's entity only -- other runs still
-get the settings-level handler unaffected.
-
-For backward compatibility with the documented `{payload}`/`{status}`/
-`{invocation_id}` command-template placeholders and the legacy
-`LIONAGI_NOTIFY_PAYLOAD`/`LIONAGI_NOTIFY_STATUS`/`LIONAGI_NOTIFY_INVOCATION_ID`
-environment variables, both are still populated for this adapter -- the
-placeholders are substituted into each parsed argv token directly (no shell
-is ever constructed, so a literal `{payload}` inside a quoted argument is
-still exactly one argv element, never re-parsed), and the same three values
-are set as environment variables on the child process for consumers that
-read them from the environment instead of argv or stdin.
-
-There is no longer a direct teardown call into a notify hook: the terminal
-event that used to trigger it now comes from the guarded lifecycle
-transition itself (`db.update_status()` on the run's session/invocation),
-so registering here and letting the registry's own post-commit push fire it
-is what prevents double delivery.
+registry: registers the legacy payload shape as a scoped, overriding exec
+adapter for this run's entity. See docs/internals/cli.md.
 """
 
 from __future__ import annotations
@@ -95,13 +67,9 @@ def register_flow_notify_scope(
     started_at: float,
 ) -> str | None:
     """Register the `--notify` legacy-payload adapter scoped to this run's
-    own terminal entity (its invocation if tracked, else its session).
-
-    Returns the registration name (pass to ``unregister_flow_notify_scope``
-    in a ``finally`` block), or ``None`` if *override* resolved to the
-    disabled state (empty, shell-feature, unparseable, or a malformed
-    adapter -- already logged by ``resolve_notify_config``/``build_handler``;
-    never raised).
+    own terminal entity. Returns the registration name (pass to
+    ``unregister_flow_notify_scope`` in a ``finally`` block), or ``None`` if
+    *override* resolved to disabled (never raised).
     """
     resolved = resolve_notify_config(override=override)
     if resolved is None:
