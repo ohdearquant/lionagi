@@ -183,6 +183,29 @@ class TestToolConsumerCollision:
         result = manager.match_tool({"function": "greet", "arguments": {}})
         assert result.func_tool.function == "greet"
 
+    def test_registered_tool_plus_two_colliding_plugins_still_raises(self, write_plugin):
+        """A registered local tool wins over any single colliding plugin, but
+        it must not mask a *peer* collision between two plugins declaring the
+        same bare name -- that hard error (ADR-0088 D6) is independent of
+        whether the manager already has a local registration for the name."""
+
+        def greet():
+            return "local"
+
+        manager = ActionManager()
+        manager.register_tool(greet)
+
+        _write_tool_plugin(write_plugin, "p1", name="plugin-one", tool_name="greet", func_name="a")
+        _write_tool_plugin(write_plugin, "p2", name="plugin-two", tool_name="greet", func_name="b")
+        _trust("p1")
+        _trust("p2")
+        PluginRegistry.reset()
+
+        with pytest.raises(PluginToolCollisionError) as excinfo:
+            manager.match_tool({"function": "greet", "arguments": {}})
+        assert "plugin-one" in str(excinfo.value)
+        assert "plugin-two" in str(excinfo.value)
+
 
 class TestLiveRescanWithoutReset:
     """The cached snapshot is only a candidate index -- enabled/collision/target
@@ -353,3 +376,25 @@ class TestBuiltinToolCollisionDiagnostic:
 
         assert result.func_tool.func_callable is greet
         assert caplog.text == ""
+
+    def test_shadow_diagnostic_is_deduplicated_across_calls(self, write_plugin, caplog):
+        """The collision warning fires once per plugin+tool identity, not on
+        every `match_tool` call for the same active collision (log spam and
+        repeated plugin resolution on a hot invocation path)."""
+        import logging
+
+        def greet():
+            return "local"
+
+        manager = ActionManager()
+        manager.register_tool(greet)
+
+        _write_tool_plugin(write_plugin, "p1", name="greeter", tool_name="greet")
+        _trust("p1")
+        PluginRegistry.reset()
+
+        with caplog.at_level(logging.WARNING, logger="lionagi.protocols.action.manager"):
+            manager.match_tool({"function": "greet", "arguments": {}})
+            manager.match_tool({"function": "greet", "arguments": {}})
+
+        assert caplog.text.count("greeter") == 1
