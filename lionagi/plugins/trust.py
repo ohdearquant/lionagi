@@ -19,7 +19,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from ._user_settings import read_user_settings, write_user_settings
+from ._user_settings import locked_user_settings, read_user_settings
 from .discovery import DiscoveredPlugin
 
 __all__ = (
@@ -84,37 +84,63 @@ def read_trusted_plugins() -> dict[str, Any]:
     return trusted if isinstance(trusted, dict) else {}
 
 
-def gc_trust_records(discovered: list[DiscoveredPlugin]) -> list[str]:
-    """Prune ``trusted_plugins`` entries whose bundle is no longer discoverable (D7).
+def _bundle_dir_present(bundle_path: str) -> bool:
+    try:
+        return Path(bundle_path).is_dir()
+    except OSError:
+        return False
 
-    A trust record is keyed by the manifest ``name:`` field, not a path — once
-    ``rm -r`` removes the bundle directory (D7's stated uninstall step), that
-    name simply no longer appears among *discovered*'s parsed manifests, and
-    the record does nothing but sit in ``~/.lionagi/settings.yaml``. Pruning it
-    is not just tidiness: if it were left in place and a *different* bundle
-    later reappeared under the same name with content that happens to hash the
-    same as what was pinned before (a stale checkout, a re-cloned repo), that
-    lingering record would trust it silently — the exact resurrection D5's
-    content-pinning is meant to prevent. Garbage-collecting on every notice
-    means a reappearing plugin is always ``untrusted`` again, never grandfathered
-    in on an old hash.
+
+def gc_trust_records(discovered: list[DiscoveredPlugin]) -> list[str]:
+    """Prune ``trusted_plugins`` entries whose bundle directory is confirmed gone (D7).
+
+    Pruning is directory-presence, not manifest-parse-success: ``trust_plugin()``
+    pins the bundle's absolute directory alongside the content hashes, and this
+    only treats an entry as stale once that exact directory no longer exists on
+    disk (D7's stated uninstall step is ``rm -r`` the bundle). A plugin whose
+    ``plugin.yaml`` merely fails to parse right now — malformed edit in
+    progress, a transient read error, a declared path escaping the bundle — is
+    NOT the same thing as an uninstalled plugin; ``discover_plugins()`` still
+    reports it (as a manifest-less ``DiscoveredPlugin``) as long as its
+    directory is there, and its trust record must survive that untouched, per
+    the ADR's stated "bundle directory has been removed" pruning condition.
+
+    Trust records written before this bundle-path pin (legacy shape, no
+    ``bundle_path`` key) fall back to the old parsed-manifest-name check —
+    conservative in the opposite direction (it can still false-evict a legacy
+    record on a transient parse failure), but every record trust_plugin()
+    writes from here on carries the precise check, so this fallback is a
+    migration window, not the steady-state behavior.
+
+    Not just tidiness: if a genuinely-removed record were left in place and a
+    *different* bundle later reappeared under the same name with content that
+    happens to hash the same as what was pinned before (a stale checkout, a
+    re-cloned repo), that lingering record would trust it silently — the exact
+    resurrection D5's content-pinning is meant to prevent.
 
     Returns the pruned names, sorted, so the caller can report exactly what
     happened and why — this must never prune silently. Idempotent: a second
     call with nothing newly absent returns an empty list and writes nothing.
     """
-    settings = read_user_settings()
-    trusted = settings.get("trusted_plugins", {})
-    if not isinstance(trusted, dict) or not trusted:
-        return []
     live_names = {d.manifest.name for d in discovered if d.manifest is not None}
-    stale = sorted(name for name in trusted if name not in live_names)
-    if not stale:
-        return []
-    for name in stale:
-        trusted.pop(name, None)
-    settings["trusted_plugins"] = trusted
-    write_user_settings(settings)
+    with locked_user_settings() as settings:
+        trusted = settings.get("trusted_plugins", {})
+        if not isinstance(trusted, dict) or not trusted:
+            return []
+        stale: list[str] = []
+        for name, record in trusted.items():
+            bundle_path = record.get("bundle_path") if isinstance(record, dict) else None
+            if isinstance(bundle_path, str) and bundle_path:
+                if not _bundle_dir_present(bundle_path):
+                    stale.append(name)
+            elif name not in live_names:
+                stale.append(name)
+        stale.sort()
+        if not stale:
+            return []
+        for name in stale:
+            trusted.pop(name, None)
+        settings["trusted_plugins"] = trusted
     return stale
 
 
@@ -172,7 +198,8 @@ def build_trust_disclosure(discovered: DiscoveredPlugin) -> dict[str, Any]:
 
 
 def trust_plugin(discovered: DiscoveredPlugin) -> dict[str, Any]:
-    """Record trust for *discovered*: pins the manifest + every declared file's content hash.
+    """Record trust for *discovered*: pins the manifest + every declared file's content hash,
+    plus the bundle's resolved directory path (what ``gc_trust_records()`` checks for presence).
 
     Returns the disclosure payload that was (or should be) shown to the
     approver — callers render it before calling this, this call just persists
@@ -190,11 +217,11 @@ def trust_plugin(discovered: DiscoveredPlugin) -> dict[str, Any]:
             f"cannot trust plugin {discovered.manifest.name!r}: declared file(s) "
             f"missing or unreadable: {', '.join(missing)}"
         )
-    settings = read_user_settings()
-    trusted = settings.setdefault("trusted_plugins", {})
-    if not isinstance(trusted, dict):
-        trusted = {}
-        settings["trusted_plugins"] = trusted
-    trusted[discovered.manifest.name] = hashes
-    write_user_settings(settings)
+    record = {**hashes, "bundle_path": str(discovered.bundle_dir.resolve())}
+    with locked_user_settings() as settings:
+        trusted = settings.setdefault("trusted_plugins", {})
+        if not isinstance(trusted, dict):
+            trusted = {}
+            settings["trusted_plugins"] = trusted
+        trusted[discovered.manifest.name] = record
     return build_trust_disclosure(discovered)

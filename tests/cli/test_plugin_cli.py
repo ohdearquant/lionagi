@@ -153,6 +153,27 @@ def test_list_prune_is_idempotent(capsys, web_research_bundle):
     assert "pruned" not in out
 
 
+def test_list_keeps_trust_record_when_manifest_is_unparsable_but_bundle_present(
+    capsys, web_research_bundle
+):
+    """`li plugin list` GC must not revoke trust just because plugin.yaml currently
+    fails to parse -- only an actually-removed bundle directory is grounds for
+    pruning (ADR-0088 D7)."""
+    code = cli_main(["plugin", "trust", "web-research", "--yes"])
+    assert code == 0
+    capsys.readouterr()
+
+    (web_research_bundle / "plugin.yaml").write_text("not: [valid, yaml, manifest")
+
+    code = cli_main(["plugin", "list"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "pruned" not in out
+
+    trusted = read_trusted_plugins_helper()
+    assert "web-research" in trusted
+
+
 def read_trusted_plugins_helper() -> dict:
     settings = read_user_settings()
     return settings.get("trusted_plugins", {})

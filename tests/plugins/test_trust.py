@@ -270,3 +270,81 @@ def test_gc_ignores_malformed_trusted_plugins_block(write_plugin):
     write_user_settings(settings)
 
     assert gc_trust_records(discover_plugins()) == []
+
+
+def test_gc_keeps_trust_for_present_bundle_with_unparsable_manifest(write_plugin):
+    """A bundle that still exists on disk but whose plugin.yaml currently fails to
+    parse (mid-edit, transient corruption) must NOT be treated as uninstalled --
+    only a directory that is actually gone (D7's `rm -r`) is grounds for pruning.
+    Regression for a false-eviction bug where GC keyed liveness off "did this
+    scan's manifest parse" instead of "does the pinned bundle directory exist"."""
+    d = _discover_one(write_plugin)
+    trust_plugin(d)
+    trusted = read_trusted_plugins()
+    assert "web-research" in trusted
+    assert trusted["web-research"]["bundle_path"] == str(d.bundle_dir.resolve())
+
+    # Corrupt the manifest in place -- bundle directory itself is untouched.
+    d.manifest_path.write_text("not: [valid, yaml, manifest")
+    rescanned = discover_plugins()
+    assert rescanned[0].manifest is None
+    assert rescanned[0].bundle_dir == d.bundle_dir
+
+    pruned = gc_trust_records(rescanned)
+
+    assert pruned == []
+    assert "web-research" in read_trusted_plugins()
+
+
+def test_gc_prunes_when_bundle_directory_actually_removed_even_if_undiscoverable(
+    write_plugin,
+):
+    """The precise (bundle_path-pinned) check prunes on directory-absence directly,
+    independent of what discover_plugins() reports -- rmtree'ing the bundle removes
+    it from any future scan's output too, but the point of the fix is that GC no
+    longer needs a *parsed* entry in `discovered` to know the bundle is gone."""
+    d = _discover_one(write_plugin)
+    trust_plugin(d)
+    shutil.rmtree(d.bundle_dir)
+
+    # No discovered plugins at all (directory gone, nothing to scan) -- GC still
+    # correctly identifies the trust record as stale via the pinned bundle_path.
+    pruned = gc_trust_records(discover_plugins())
+
+    assert pruned == ["web-research"]
+    assert "web-research" not in read_trusted_plugins()
+
+
+def test_gc_legacy_record_without_bundle_path_falls_back_to_name_check(write_plugin):
+    """A trust record written before bundle_path was pinned (pre-fix shape) has no
+    directory to check -- GC falls back to the old parsed-manifest-name heuristic
+    for that record only, so genuinely stale legacy records still get cleaned up."""
+    d = _discover_one(write_plugin)
+    trust_plugin(d)
+
+    # Simulate a legacy (pre-fix) trust record shape: strip bundle_path.
+    settings = read_user_settings()
+    del settings["trusted_plugins"]["web-research"]["bundle_path"]
+    write_user_settings(settings)
+
+    shutil.rmtree(d.bundle_dir)
+    pruned = gc_trust_records(discover_plugins())
+
+    assert pruned == ["web-research"]
+    assert "web-research" not in read_trusted_plugins()
+
+
+def test_gc_legacy_record_without_bundle_path_kept_when_still_discoverable(write_plugin):
+    """The legacy fallback must not over-prune: a legacy record for a plugin that's
+    still discoverable (manifest parses fine) survives GC."""
+    d = _discover_one(write_plugin)
+    trust_plugin(d)
+
+    settings = read_user_settings()
+    del settings["trusted_plugins"]["web-research"]["bundle_path"]
+    write_user_settings(settings)
+
+    pruned = gc_trust_records(discover_plugins())
+
+    assert pruned == []
+    assert "web-research" in read_trusted_plugins()
