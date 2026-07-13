@@ -453,6 +453,18 @@ class PluginRegistry:
             cls._activation_errors = {}
 
     @classmethod
+    def snapshot_generation(cls) -> int:
+        """Cheap process-lifetime token for the cached plugin scan: identical
+        across calls until ``reset()`` forces a rebuild, at which point it
+        changes. Lets a caller that already fully validated a plugin against
+        the live snapshot cheaply detect ``nothing has been reset since``
+        without repeating the scan itself; never a substitute for the
+        full, per-target trust/eligibility check ``activate_target()``
+        performs whenever this token *does* change.
+        """
+        return id(cls._ensure_loaded())
+
+    @classmethod
     def list_plugins(cls) -> list[PluginRecord]:
         return list(cls._ensure_loaded())
 

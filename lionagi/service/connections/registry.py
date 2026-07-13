@@ -71,13 +71,25 @@ class EndpointMeta:
 
 
 class _RegistryEntry:
-    __slots__ = ("meta", "cls", "plugin_name", "plugin_target")
+    __slots__ = (
+        "meta",
+        "cls",
+        "plugin_name",
+        "plugin_target",
+        "_validated_generation",
+        "_validated_stat",
+    )
 
     def __init__(self, meta: EndpointMeta, cls: type):
         self.meta = meta
         self.cls = cls
         self.plugin_name: str | None = None
         self.plugin_target: str | None = None
+        # Fast-path cache for _revalidate_plugin_entry: the PluginRegistry
+        # snapshot generation and (manifest, target) mtimes as of the last
+        # clean activate_target() call. See _revalidate_plugin_entry.
+        self._validated_generation: int | None = None
+        self._validated_stat: tuple[int, int] | None = None
 
 
 class EndpointRegistry:
@@ -186,11 +198,28 @@ class EndpointRegistry:
 
     @classmethod
     def _revalidate_plugin_entry(cls, entry: _RegistryEntry) -> bool:
-        """Keep plugin entries available only while their declared target remains trusted."""
+        """Keep plugin entries available only while their declared target
+        remains trusted. ``PluginRegistry.activate_target()`` rescans and
+        rehashes every installed plugin on each call, not just this one --
+        too expensive to pay on every ``match()`` hit against an endpoint
+        that already activated cleanly. Only re-runs it when the
+        ``PluginRegistry`` snapshot has been reset, or this plugin's
+        manifest or declared target file has been touched on disk since the
+        last clean revalidation; otherwise reuses that prior result.
+        """
         if entry.plugin_name is None or entry.plugin_target is None:
             return True
 
         from lionagi.plugins import PluginActivationError, PluginRegistry
+
+        generation = PluginRegistry.snapshot_generation()
+        stat_signature = cls._plugin_entry_stat(entry.plugin_name, entry.plugin_target)
+        if (
+            stat_signature is not None
+            and entry._validated_generation == generation
+            and entry._validated_stat == stat_signature
+        ):
+            return True
 
         try:
             PluginRegistry.activate_target(entry.plugin_name, entry.plugin_target)
@@ -200,7 +229,31 @@ class EndpointRegistry:
             except ValueError:
                 pass
             return False
+
+        entry._validated_generation = generation
+        entry._validated_stat = cls._plugin_entry_stat(entry.plugin_name, entry.plugin_target)
         return True
+
+    @classmethod
+    def _plugin_entry_stat(cls, plugin_name: str, target: str) -> tuple[int, int] | None:
+        """``(manifest_mtime_ns, target_mtime_ns)`` for a plugin-provided
+        endpoint's backing files -- a cheap ``anything on disk moved`` signal
+        for ``_revalidate_plugin_entry``'s fast path. ``None`` (unknown
+        plugin, unresolvable path, either file missing) always forces the
+        caller back onto the full ``activate_target()`` path.
+        """
+        from lionagi.plugins import PluginRegistry
+
+        record = PluginRegistry.get(plugin_name)
+        if record is None:
+            return None
+        module_path = target.split(":", 1)[0]
+        try:
+            manifest_mtime = record.manifest_path.stat().st_mtime_ns
+            target_mtime = (record.bundle_dir / module_path).stat().st_mtime_ns
+        except OSError:
+            return None
+        return (manifest_mtime, target_mtime)
 
     @classmethod
     def _consult_plugin_providers(cls) -> bool:

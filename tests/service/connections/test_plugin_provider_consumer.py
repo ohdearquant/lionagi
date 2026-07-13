@@ -151,6 +151,82 @@ class TestPluginProviderHit:
         assert second.config.provider == "acme-llm"
 
 
+class TestPluginProviderRevalidationCaching:
+    """``_revalidate_plugin_entry`` must rescan (via
+    ``PluginRegistry.activate_target``) on a genuine miss -- first
+    resolution, or after the plugin's files changed -- but reuse that result
+    on repeat ``match_endpoint`` hits, not re-run the full plugin-directory
+    rescan + hash pass on every call for an endpoint that already activated
+    cleanly."""
+
+    def test_repeated_hits_do_not_rescan_after_first_revalidation(self, write_plugin, monkeypatch):
+        _write_provider_plugin(write_plugin, "wr", name="web-research", provider="acme-llm")
+
+        call_count = 0
+        original_activate_target = PluginRegistry.activate_target.__func__
+
+        def counting_activate_target(cls, plugin_name, target):
+            nonlocal call_count
+            call_count += 1
+            return original_activate_target(cls, plugin_name, target)
+
+        monkeypatch.setattr(
+            PluginRegistry, "activate_target", classmethod(counting_activate_target)
+        )
+
+        first = match_endpoint(provider="acme-llm", endpoint="chat")
+        assert type(first).__name__ == "PluginProviderEndpoint"
+        calls_after_first_resolution = call_count
+        assert calls_after_first_resolution > 0
+
+        for _ in range(5):
+            repeat = match_endpoint(provider="acme-llm", endpoint="chat")
+            assert type(repeat).__name__ == "PluginProviderEndpoint"
+
+        assert call_count == calls_after_first_resolution, (
+            "repeated match_endpoint() hits against an unchanged plugin "
+            "endpoint must reuse the cached revalidation, not re-trigger "
+            "PluginRegistry.activate_target's full rescan on every call"
+        )
+
+    def test_edited_target_after_a_cached_hit_forces_a_fresh_rescan(
+        self, write_plugin, monkeypatch
+    ):
+        """A cache hit must never outlive an actual on-disk change: editing the
+        declared target file after it was already cached as valid must still
+        trigger a fresh activate_target() call on the very next match()."""
+        bundle = _write_provider_plugin(
+            write_plugin, "wr", name="web-research", provider="acme-llm"
+        )
+
+        call_count = 0
+        original_activate_target = PluginRegistry.activate_target.__func__
+
+        def counting_activate_target(cls, plugin_name, target):
+            nonlocal call_count
+            call_count += 1
+            return original_activate_target(cls, plugin_name, target)
+
+        monkeypatch.setattr(
+            PluginRegistry, "activate_target", classmethod(counting_activate_target)
+        )
+
+        first = match_endpoint(provider="acme-llm", endpoint="chat")
+        assert type(first).__name__ == "PluginProviderEndpoint"
+        cached_hit = match_endpoint(provider="acme-llm", endpoint="chat")
+        assert type(cached_hit).__name__ == "PluginProviderEndpoint"
+        calls_before_edit = call_count
+
+        (bundle / "providers" / "endpoint.py").write_text(
+            PROVIDER_MODULE.format(provider="acme-llm") + "\n# changed after activation\n"
+        )
+
+        second = match_endpoint(provider="acme-llm", endpoint="chat")
+
+        assert call_count > calls_before_edit
+        assert type(second).__name__ == "Endpoint"
+
+
 class TestPluginProviderMiss:
     def test_genuinely_unknown_provider_falls_back_identically(self, write_plugin):
         # An active plugin exists but declares an unrelated provider -- a miss
