@@ -186,8 +186,8 @@ message ids) must not fall through to `0 or fallback`.
   preceding `BEGIN IMMEDIATE` in the same transaction as the status change)
   so the tail read is race-free; this function opens no transaction of its own.
 - **`require_approval`** — Validates a granted approval for exactly this
-  action and consumes it atomically. A mutating route calls it before its side
-  effect, passing the same action_kind/params it's about to act on.
+  action and consumes it atomically. A mutating route must call it before its
+  side effect, passing the same action_kind/params it's about to act on.
 
 ## lionagi/studio/services/definitions.py
 
