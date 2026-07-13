@@ -218,6 +218,12 @@ def test_cyclic_prompt_context_does_not_raise_recursion_error():
     chat = message.chat_msg
     assert chat is not None
     assert chat["content"] == "stable"
+    # The untracked-mutable guard must REFUSE to cache content it cannot
+    # safely fingerprint: a cyclic structure trips the fail-safe path, so the
+    # render cache stays empty rather than pinning a value that can silently
+    # go stale. (Pre-fix this test passed on "no exception" alone, which did
+    # not prove the bypass — assert the bypass directly.)
+    assert message._render_cache == {}
     assert branch.msgs.to_chat_msgs()[0]["content"] == "stable"
 
 
