@@ -140,7 +140,7 @@ def test_claude_adapter_rejects_plain_argv_override():
 
 
 def test_claude_adapter_rejects_read_then_reuse_override():
-    """The round-3 bypass: {prompt_path} is redirected into a shell variable
+    """The variable-reuse bypass: {prompt_path} is redirected into a shell variable
     by one sub-command, then that variable (not {prompt_path} itself) is
     passed as argv to the real command — a per-occurrence-only check would
     accept this since the redirection itself looks fine. The `;` sequencing

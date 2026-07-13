@@ -121,8 +121,7 @@ async def test_error_event_top_level_message_preserved():
 
 
 # ---------------------------------------------------------------------------
-# Edge cases from codex review finding #2:
-# error=null, error missing, {"code": ...} no message, non-dict error
+# Edge cases: error=null, error missing, {"code": ...} no message, non-dict error
 # ---------------------------------------------------------------------------
 
 

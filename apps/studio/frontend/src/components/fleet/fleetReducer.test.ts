@@ -318,7 +318,7 @@ describe("terminalRecentRows", () => {
 // ─── Status/verdict unification (design-brief §0/§0b) ────────────────────────
 // Fleet must never re-derive lifecycle status on its own — it went through
 // deriveDisplayStatus() the same as boardReducer and RunDetail, closing the
-// list-vs-detail bug on this view specifically (Ocean's original repro).
+// list-vs-detail bug on this view specifically.
 
 describe("fleetReducer — status unification", () => {
   it("terminalRecentRows preserves status_reason_code/summary — it must not drop them", () => {

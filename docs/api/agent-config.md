@@ -50,7 +50,7 @@ attributes after building the spec:
 ```python
 spec = AgentSpec.coding()
 spec.mcp_servers = ["khive"]
-spec.mcp_config_path = "/Users/me/project/.mcp.json"
+spec.mcp_config_path = "/path/to/project/.mcp.json"
 ```
 
 ### Hook methods
@@ -128,7 +128,7 @@ By default (`secure=True`) it wires two guards:
 Set `secure=False` to disable these defaults and manage hooks manually.
 
 ```python
-spec = AgentSpec.coding(model="openai/gpt-4.1", cwd="/Users/me/project")
+spec = AgentSpec.coding(model="openai/gpt-4.1", cwd="/path/to/project")
 ```
 
 ### `AgentSpec.from_yaml()`
@@ -347,7 +347,7 @@ example, swapping a validated regular file for a symlink) is outside this guard'
 it assumes a cooperative filesystem, not an adversarial one under concurrent write access.
 
 ```python
-spec.pre("reader", guard_paths(allowed_paths=["/Users/me/project/"]))
+spec.pre("reader", guard_paths(allowed_paths=["/path/to/project/"]))
 spec.pre("editor", guard_paths(denied_paths=[".env", "*.key"]))
 ```
 

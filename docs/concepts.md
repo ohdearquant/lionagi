@@ -165,7 +165,7 @@ fully configured `Branch` without boilerplate.
 from lionagi.agent import AgentSpec, create_agent
 
 # Preset: coding agent with file tools and a strict system prompt
-spec = AgentSpec.coding(model="openai/gpt-4.1", cwd="/Users/me/project")
+spec = AgentSpec.coding(model="openai/gpt-4.1", cwd="/path/to/project")
 
 # Add guardrail hooks
 from lionagi.agent.hooks import guard_destructive, log_tool_use
@@ -223,7 +223,7 @@ that role.
 from lionagi.tools.sandbox import create_sandbox, sandbox_diff, sandbox_commit, sandbox_merge, sandbox_discard
 
 # Create: a new branch + worktree at <repo>/.worktrees/sandbox-<id>/
-session = await create_sandbox(repo_root="/Users/me/project")
+session = await create_sandbox(repo_root="/path/to/project")
 
 # Hand the worktree path to an agent
 branch = await create_agent(AgentSpec.coding(cwd=session.worktree_path))

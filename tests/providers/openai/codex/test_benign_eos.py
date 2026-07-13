@@ -97,7 +97,7 @@ async def test_error_event_with_empty_error_dict_is_benign_eos():
 
 
 # ---------------------------------------------------------------------------
-# Round-3 shapes: structured-but-falsy error payloads are REAL failures
+# Invariant: structured-but-falsy error payloads are REAL failures
 # ---------------------------------------------------------------------------
 
 
@@ -194,7 +194,7 @@ async def test_turn_failed_with_nested_message_still_preferred_over_toplevel():
 
 
 # ---------------------------------------------------------------------------
-# Round-3 regression: "error": null must NOT be treated as benign EOS
+# Regression: "error": null must NOT be treated as benign EOS
 # (fix/cli-worker-error-surfacing regression)
 # ---------------------------------------------------------------------------
 

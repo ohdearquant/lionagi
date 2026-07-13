@@ -45,7 +45,7 @@ Executing DAG: 3 agents / 3 ops...
   ▶ r1 started
   ✓ r1 done (9.4s)
 [...4 more lines...]
-Saved to /Users/you/auth-audit
+Saved to /path/to/auth-audit
 Total: 47.2s
 ```
 

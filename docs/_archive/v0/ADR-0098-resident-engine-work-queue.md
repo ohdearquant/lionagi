@@ -5,17 +5,17 @@
 
 ## Context
 
-lambda:khive runs a ~4.5-minute cron tick that today cold-starts a `li play` subprocess per
+khive runs a ~4.5-minute cron tick that today cold-starts a `li play` subprocess per
 lane. A lane is a 30-90 minute, worktree-scoped, gated Rust fix/feature cluster (gates
-`fmt`/`clippy`/`test`/`doc`, one report artifact, commits-not-push), run 3-5 concurrent. Ocean's
-directive (2026-07-07, verbatim intent): a krons-worker pattern — "engine 开起来，有事情就 queue
-进去，需要 state transition 的按 reactive 逻辑用." Kill the cold start per lane and the shapeless
-handoff between the loop and the play. lambda:khive is the anchor tenant and supplied a bounded
+`fmt`/`clippy`/`test`/`doc`, one report artifact, commits-not-push), run 3-5 concurrent. The
+design intent (2026-07-07): a krons-worker pattern — start the engine once, queue work into it,
+and drive state transitions through reactive logic. Kill the cold start per lane and the shapeless
+handoff between the loop and the play. khive is the anchor tenant and supplied a bounded
 requirements document (queue semantics on its `gtd` pack, `comm` event signaling, a session-pack
-summary layer, an atomic claim/lease verb it owns, v0 non-goals). lambda:lattice is the second
-tenant. Ocean's standing norm is that seats should not hand-write orchestration code beyond a
-line or two — everything runs through lionagi's own surfaces — so this pattern is a first-class
-lionagi product surface, not a one-off script.
+summary layer, an atomic claim/lease verb it owns, v0 non-goals). A second internal consumer is
+the second tenant. The project's standing norm is that consumers should not hand-write
+orchestration code beyond a line or two — everything runs through lionagi's own surfaces — so
+this pattern is a first-class lionagi product surface, not a one-off script.
 
 Two facts, verified in source at HEAD, make the warm-host pattern viable without a rewrite:
 warm session reuse already works (`session.flow()` is re-run on the same live session in
@@ -44,19 +44,19 @@ memory-shaped." The queue this ADR defines lives in that excluded space, cites A
 transport posture and the Protocol-plus-in-tree-default pattern, and does not reopen ADR-0091's
 scope.
 
-This ADR also carries a scope extension directed separately by Ocean — the `state.db`/khive
-sessions-DB consolidation (see the StateStore section under Decision). Its provenance is a two-hop
-relay through lambda:khive, anchored verbatim to comm message `9cacb116` (2026-07-07) and marked
-**pending Ocean's own confirmation at the gate**; the full quote and the traceability condition
-under which that section may be acted on are stated where the extension is defined, not asserted as
-Ocean's verified first-person words here.
+This ADR also carries a scope extension directed separately by operator direction — the
+`state.db`/khive sessions-DB consolidation (see the StateStore section under Decision). Its
+provenance is a relayed directive, anchored to an internal design-review note (2026-07-07) and
+marked **pending confirmation at the gate**; the full detail and the traceability condition under
+which that section may be acted on are stated where the extension is defined, not asserted as
+verified first-person direction here.
 
 ## Decision
 
 The resident engine is one warm host process that dequeues tasks from a pluggable queue, runs
 each as its own fresh `Session` under a per-lane watchdog, and writes a host-plus-session
 summary on completion. The design is organized as five sub-decisions (Forks A-E) plus a scope
-extension (StateStore consolidation) directed separately by Ocean.
+extension (StateStore consolidation) directed separately (see provenance note above).
 
 ### A. Lane execution model: one warm process, one fresh Session per lane
 
@@ -187,17 +187,16 @@ This directly answers the "no-backfill, stop-signal-triggered, degraded sessions
 `summary_pending`" requirement: the machine writes the machine-readable parts, the LLM writes only
 the reflective part.
 
-### StateStore consolidation (scope extension, Leo-directed)
+### StateStore consolidation (scope extension)
 
-**Provenance of this section.** This scope was directed by Ocean and relayed to lambda:lionagi
-second-hand through lambda:khive, via comm message `9cacb116` (2026-07-07). The relayed intent,
-quoted verbatim as received: "lionagi state.db and khive sessions.db absolutely must consolidate —
-today the same sessions get mirrored TWICE (claude_mirror into state.db, khive session pack
-ingesting separately), and the DB itself belongs on the khive side." This section is drafted from
-that two-hop relay; the exact wording is anchored to message `9cacb116` and is **pending Ocean's
-own confirmation at the gate**. It is not presented here as Ocean's verified first-person words,
-and the traceability anchor above is the condition under which this section may be cited or
-acted on.
+**Provenance of this section.** This scope was directed by operator instruction and relayed to
+lionagi second-hand through an internal design-review channel (2026-07-07). The relayed intent,
+paraphrased as received: lionagi's `state.db` and khive's sessions database must consolidate —
+today the same sessions get mirrored twice (`claude_mirror` into `state.db`, khive session pack
+ingesting separately), and the database itself belongs on the khive side. This section is drafted
+from that relay and is **pending confirmation at the gate**. It is not presented here as verified
+first-person direction, and the traceability condition above is the condition under which this
+section may be cited or acted on.
 
 **Shape of the consolidation.** The same Protocol-seam family gets a third member, an abstract
 `StateStore` protocol next to `TaskSource` and `SummaryStore`. The governing split: khive is the
@@ -221,14 +220,14 @@ future implementation slice against it should not need a fourth sibling ADR to j
 **Open / to resolve at gate:** the exact `StateStore` method surface (mirroring `TaskSource`'s
 `claim`/`complete`/`fail` shape, or a different verb set suited to boundary-transition writes) is
 not specified by the relayed directive and is not invented here. It is deferred to the
-implementation slice, once Ocean confirms the directive at the gate.
+implementation slice, once the directive is confirmed at the gate.
 
 ### Crash safety: the claim/lease dependency
 
 The resident engine's entire crash-safety story — "host dies, in-flight lane's task returns to the
 queue, nothing lost" — rests on khive's `gtd` claim/lease verb. That verb is pinned in a signed
-joint contract (`CLAIM_LEASE_CONTRACT.md`, v1, khive signed implementable 2026-07-07, comm msg
-`4351afcc`), reproduced here as the invariants this ADR depends on:
+joint contract (`CLAIM_LEASE_CONTRACT.md`, v1, khive signed implementable 2026-07-07), reproduced
+here as the invariants this ADR depends on:
 
 - **M1 — Atomic exactly-one-winner claim.** A claim transitions a task `next -> active`, stamping
   worker id and lease deadline in one atomic operation. When N workers race for the same task,
@@ -284,8 +283,8 @@ Excluded from v0: the `stop` verb, the `inject()` bridge, tier escalation (ADR-0
 transport, reactive checkpoint/resume, and lease-renewal/heartbeat. Protocol types and a
 zero-khive in-tree default ship so lionagi's own tests run without khive; khive's `gtd`/
 session-pack adapters live outside the repo. This proves the full loop — warm client reuse,
-queue-driven dequeue, worktree isolation, boundary transitions, summary write-back — and
-lambda:lattice becomes tenant #2 by writing adapters against the same Protocol.
+queue-driven dequeue, worktree isolation, boundary transitions, summary write-back — and a
+second consumer becomes tenant #2 by writing adapters against the same Protocol.
 
 ## Consequences
 
@@ -298,7 +297,7 @@ lambda:lattice becomes tenant #2 by writing adapters against the same Protocol.
 - The Protocol pair follows a proven pattern (ADR-0091) rather than inventing a new one, and is
   gated on the same "real in-tree default" bar that pattern established.
 - The crash-safety story is pinned against a signed contract (M1-M3) rather than an assumed verb,
-  closing the single biggest risk the advisor flagged for this gate.
+  closing the single biggest risk flagged for this gate.
 - lionagi core gains zero khive dependency and zero khive naming; khive remains an external,
   opt-in adapter, consistent with ADR-0091's posture.
 
@@ -313,7 +312,7 @@ lambda:lattice becomes tenant #2 by writing adapters against the same Protocol.
   a spec error today, not a handled case; the mitigation is sizing `lease_seconds` generously
   (>=600s floor, caller-supplied above that), not a renewal loop.
 - The `StateStore` consolidation section is drafted from a second-hand relay and is explicitly
-  gated on Ocean's confirmation before it is acted on; its method surface is unresolved.
+  gated on confirmation before it is acted on; its method surface is unresolved.
 - `B1`'s Protocol pair is only justified if the in-tree `InMemoryTaskSource` default is actually
   committed and exercised by lionagi's own tests; if that slips, the fallback (Protocol-types-only,
   trivial in-memory default) is a narrower ADR-0098 than described here and should be re-scoped
@@ -323,7 +322,7 @@ lambda:lattice becomes tenant #2 by writing adapters against the same Protocol.
 
 | Alternative | Why Rejected |
 |---|---|
-| A2: warm supervisor, subprocess-per-lane | Forecloses `inject()` mid-lane steering, an explicit Ocean want; does not deliver the cold-start-eliminated outcome Ocean asked for; "defeats the purpose" framing is weak on its own (cold start is cheap for long lanes) but A2 still loses on the inject point. |
+| A2: warm supervisor, subprocess-per-lane | Forecloses `inject()` mid-lane steering, an explicit design goal; does not deliver the cold-start-eliminated outcome the design calls for; "defeats the purpose" framing is weak on its own (cold start is cheap for long lanes) but A2 still loses on the inject point. |
 | A3: hybrid, warm for short lanes, subprocess for long/risky ones | Adds a branch and two code paths for a problem the child-subprocess execution model (CLI coding agents as children of the host) already solves for the long-lane case. |
 | B2: host loop calls khive MCP verbs directly, no Protocol | Either leaks khive naming into the Apache-2.0 core, or if made generic collapses to B1 minus the type with no reason to skip it once there are two implementors. |
 | B3: optional "khive extra" dependency inside lionagi core | Precluded by ADR-0091's own rejected-alternatives entry: extra-gating hides installability, not visibility, in the public source tree. |
@@ -370,14 +369,13 @@ lambda:lattice becomes tenant #2 by writing adapters against the same Protocol.
 - ADR-0099: Escalation node_builder Tier Bump (`docs/adrs/ADR-0099-escalation-node-builder-tier-bump.md`)
   — out-of-scope sibling dependency: the global attempt ceiling that makes `TaskSource.fail()`
   safe against poison work also bounds ADR-0099's DAG-local escalation give-up path.
-- `lionagi/.khive/workspaces/20260707/resident-engine/ADVISOR_VERDICT.md` — the resolved design
-  decision this ADR encodes (Forks A-F).
-- `lionagi/.khive/workspaces/20260707/resident-engine/CLAIM_LEASE_CONTRACT.md` — the signed joint
-  contract (v1) for the `gtd` claim/lease verb, M1-M3.
-- `lionagi/.khive/workspaces/20260707/resident-engine/PACKET.md` — the original advisor packet.
-- khive `.khive/workspaces/20260707/resident-engine/REQUIREMENTS.md` — the anchor tenant's
-  consumer requirements this ADR is grounded against.
-- comm message `9cacb116` (2026-07-07, lambda:khive to lambda:lionagi) — the relayed StateStore
-  consolidation directive; see the StateStore section above for the traceability condition.
-- comm message `4351afcc` (2026-07-07, lambda:khive) — khive's signature on the claim/lease
-  contract v1.
+- An internal design-review record (not in this repo) — the resolved design decision this ADR
+  encodes (Forks A-F).
+- An internal design-review record (not in this repo) — the signed joint contract (v1) for the
+  `gtd` claim/lease verb, M1-M3.
+- An internal design-review record (not in this repo) — the original design brief.
+- khive's own requirements document (not in this repo) — the anchor tenant's consumer
+  requirements this ADR is grounded against.
+- An internal relayed directive (2026-07-07) — the StateStore consolidation directive; see the
+  StateStore section above for the traceability condition.
+- An internal signed record (2026-07-07) — khive's signature on the claim/lease contract v1.
