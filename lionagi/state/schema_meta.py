@@ -598,6 +598,10 @@ schedule_runs = Table(
     Column("library_content_hash", Text),
     # Delivery-contract marker; see schema.sql.
     Column("dispatched_at", Float),
+    # Nullable sidecar metadata blob for resuming a run, shaped like an
+    # Element.to_dict(mode="db") payload. NULL means no resume state has
+    # been captured for this run.
+    Column("resume_packet", JSON),
 )
 
 Index("idx_sched_runs_schedule", schedule_runs.c.schedule_id, schedule_runs.c.fired_at)

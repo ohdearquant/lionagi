@@ -762,6 +762,10 @@ _EXCLUDED_COLUMNS = {
     # confirmed dispatch); excluded here for the same reason as the D2
     # columns above.
     "dispatched_at",
+    # Resume-packet sidecar metadata blob — additive, asserted separately
+    # (must be NULL for a schedule-spawned run that never set it); excluded
+    # here for the same reason as the D2 columns above.
+    "resume_packet",
 }
 
 
@@ -815,6 +819,7 @@ async def test_schedule_spawned_run_stays_byte_identical(db: StateDB) -> None:
         "library_ref",
         "library_content_hash",
         "dispatched_at",
+        "resume_packet",
     ):
         assert row_after_create[col] is None
     # ADR-0071 D4 additive column — defaults to 0, not NULL.
