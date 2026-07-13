@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 from uuid import UUID
 
@@ -32,6 +33,8 @@ class Exchange(Element):
     flows: Pile[Flow[Message, Progression]] = None  # type: ignore
     _owner_index: dict[UUID, UUID] = PrivateAttr(default_factory=dict)
     _stop: bool = PrivateAttr(default=False)
+    _in_flight: dict[UUID, int] = PrivateAttr(default_factory=dict)
+    _in_flight_lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -103,28 +106,53 @@ class Exchange(Element):
                             deliveries.append((other_id, message_copy))
                 elif message.recipient is not None and message.recipient in self._owner_index:
                     deliveries.append((message.recipient, message))
+            self._mark_in_flight(deliveries, increment=True)
         if deliveries:
-            await gather(
-                *[self._deliver_to(recipient_id, message) for recipient_id, message in deliveries],
-                return_exceptions=True,
-            )
+            try:
+                await gather(
+                    *[
+                        self._deliver_to(recipient_id, message)
+                        for recipient_id, message in deliveries
+                    ],
+                    return_exceptions=True,
+                )
+            finally:
+                self._mark_in_flight(deliveries, increment=False)
 
         unique_messages = {message.id for _, message in deliveries}
         return len(unique_messages)
 
+    def _mark_in_flight(self, deliveries: list[tuple[UUID, Message]], *, increment: bool) -> None:
+        """Track recipients while messages are between outbox and inbox."""
+        with self._in_flight_lock:
+            for recipient_id, _ in deliveries:
+                count = self._in_flight.get(recipient_id, 0)
+                if increment:
+                    self._in_flight[recipient_id] = count + 1
+                elif count <= 1:
+                    self._in_flight.pop(recipient_id, None)
+                else:
+                    self._in_flight[recipient_id] = count - 1
+
+    def peek_pending(self, owner_id: UUID) -> tuple[list[Message], bool]:
+        """Atomically peek at delivered and in-transit mail for an owner."""
+        with self._in_flight_lock:
+            return self.receive(owner_id), self._in_flight.get(owner_id, 0) > 0
+
     async def _deliver_to(self, recipient_id: UUID, message: Message) -> None:
         """Deliver to recipient inbox. No-op if recipient unregistered."""
-        recipient_flow = self.get(recipient_id)
-        if recipient_flow is None:
-            return  # Recipient unregistered, drop message
+        with self._in_flight_lock:
+            recipient_flow = self.get(recipient_id)
+            if recipient_flow is None:
+                return  # Recipient unregistered, drop message
 
-        inbox_name = _inbox_name(message.sender)
-        try:
-            recipient_flow.add_progression(Progression(name=inbox_name))
-        except ItemExistsError:
-            pass
+            inbox_name = _inbox_name(message.sender)
+            try:
+                recipient_flow.add_progression(Progression(name=inbox_name))
+            except ItemExistsError:
+                pass
 
-        recipient_flow.add_item(message, progressions=inbox_name)
+            recipient_flow.add_item(message, progressions=inbox_name)
 
     async def collect_all(self) -> int:
         """Route all outboxes. Returns total messages routed."""

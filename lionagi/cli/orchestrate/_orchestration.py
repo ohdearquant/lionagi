@@ -682,11 +682,11 @@ class TeamLifecycleCoordinator:
             if branch is None:
                 continue
             try:
-                msgs = self.exchange.receive(branch.id)
+                msgs, in_flight = self.exchange.peek_pending(branch.id)
             except Exception as e:  # noqa: BLE001 — a peek must never abort the check
-                _log_orch.debug("team round: exchange.receive(%r) failed: %s", worker, e)
+                _log_orch.debug("team round: exchange.peek_pending(%r) failed: %s", worker, e)
                 continue
-            if msgs:
+            if msgs or in_flight:
                 pending[worker] = msgs
         return pending
 

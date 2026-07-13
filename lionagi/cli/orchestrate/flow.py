@@ -945,6 +945,15 @@ async def _execute_dag(
             return
         if not state.should_continue:
             return
+        batch_size = sum(
+            worker in _team_coordinator.worker_branches for worker in state.pending_targets
+        )
+        if batch_size and not executor.can_inject(batch_size):
+            logger.warning(
+                "team round: wakeup batch of %d exceeds remaining operation capacity",
+                batch_size,
+            )
+            return
         try:
             new_ops = _team_coordinator.build_round_operations(state, prompt=checkpoint_prompt)
         except Exception as e:  # noqa: BLE001

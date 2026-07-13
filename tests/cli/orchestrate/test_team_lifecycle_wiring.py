@@ -8,6 +8,7 @@ No real agent or LLM call anywhere — branches are stubbed."""
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -310,6 +311,48 @@ class TestTeamLifecycleCoordinatorExchangeUnion:
         assert state.quiescent
         assert not state.should_continue
 
+    async def test_message_mid_handoff_prevents_quiescence(self, monkeypatch):
+        """Mail removed from an outbox but not yet delivered must keep its
+        recipient pending until the handoff completes."""
+        _make_team("t11", ["orchestrator", "alice", "bob"])
+        alice_branch = _FakeBranch("alice")
+        bob_branch = _FakeBranch("bob")
+        exchange = Exchange()
+        exchange.register(alice_branch.id)
+        exchange.register(bob_branch.id)
+        coord = make_team_lifecycle_coordinator(
+            "t11",
+            ["alice", "bob"],
+            {"alice": alice_branch, "bob": bob_branch},
+            messenger_bound={"alice": True, "bob": True},
+            exchange=exchange,
+        )
+        coord.on_done(name="alice", sender_id=uuid4(), reason="")
+        coord.on_done(name="bob", sender_id=uuid4(), reason="")
+        exchange.send(sender=bob_branch.id, recipient=alice_branch.id, content="check this")
+
+        handoff_started = asyncio.Event()
+        release_handoff = asyncio.Event()
+        exchange_module = importlib.import_module("lionagi.session.exchange")
+        real_gather = exchange_module.gather
+
+        async def paused_gather(*aws, **kwargs):
+            handoff_started.set()
+            await release_handoff.wait()
+            return await real_gather(*aws, **kwargs)
+
+        monkeypatch.setattr(exchange_module, "gather", paused_gather)
+        collect_task = asyncio.create_task(exchange.collect(bob_branch.id))
+        await handoff_started.wait()
+
+        state = coord.check_round()
+        assert not state.quiescent
+        assert state.should_continue
+        assert state.pending_targets == frozenset({"alice"})
+
+        release_handoff.set()
+        await collect_task
+
 
 # ── Source-level wiring guard (mirrors TestCoordinatorWiredAtMessengerConstruction) ──
 
@@ -401,9 +444,8 @@ def _plan_and_dag_real(
 
 
 async def test_execute_dag_real_executor_wakes_alice_before_task_group_closes(tmp_path):
-    """Finding-1 regression: alice leaves herself mail and signals done in
-    one turn, no sleep — the wakeup round must still fire against the real
-    executor, with no poll loop left to race."""
+    """Alice leaves herself mail and signals done in one turn, no sleep —
+    the wakeup must fire before the real executor's task group closes."""
     team_id = "e2e-real-team"
     _make_team(team_id, ["orchestrator", "alice"])
 
@@ -568,6 +610,109 @@ async def test_execute_dag_real_executor_rejected_injection_does_not_crash_the_r
     assert exec_result.agent_results[0]["response"] == "pass 0"
     leaked = asyncio.all_tasks() - tasks_before
     assert leaked == set()
+
+
+async def test_execute_dag_rejects_full_wakeup_batch_without_consuming_mail(tmp_path):
+    """When one spawn slot cannot wake two idle workers, neither worker's
+    mail is read and neither worker is marked active."""
+    team_id = "e2e-real-partial-capacity"
+    _make_team(team_id, ["orchestrator", "alice", "bob"])
+
+    env = _make_env(tmp_path)
+    env.team_data = {
+        "id": team_id,
+        "name": "e2e",
+        "members": ["orchestrator", "alice", "bob"],
+    }
+    env.messenger = _FakeMessenger()
+
+    calls: dict[str, list[int]] = {"alice": [], "bob": []}
+    ready = 0
+    all_ready = asyncio.Event()
+
+    async def worker_operate(worker: str, **kw):
+        nonlocal ready
+        calls[worker].append(len(calls[worker]))
+        with team._locked_team(team_id) as data:
+            data["messages"].append(
+                {
+                    "id": f"mail-{worker}-{len(calls[worker])}",
+                    "from": "orchestrator",
+                    "to": [worker],
+                    "content": f"more work for {worker}",
+                    "kind": "message",
+                    "read_by": {},
+                    "timestamp": "2026-01-01T00:00:00",
+                }
+            )
+        team.post_done_signal(team_id, worker=worker, summary="waiting")
+        ready += 1
+        if ready == 2:
+            all_ready.set()
+        await all_ready.wait()
+        return "waiting"
+
+    async def alice_operate(**kw):
+        return await worker_operate(kw["instruction"], **kw)
+
+    async def bob_operate(**kw):
+        return await worker_operate(kw["instruction"], **kw)
+
+    alice_branch = _build_stub_branch(alice_operate, name="alice")
+    bob_branch = _build_stub_branch(bob_operate, name="bob")
+    session = Session()
+    session.branches.include(alice_branch)
+    session.branches.include(bob_branch)
+    session.default_branch = alice_branch
+    env.session = session
+
+    graph = Graph()
+    alice_node = Operation(operation="operate", parameters={"instruction": "alice"})
+    alice_node.branch_id = alice_branch.id
+    bob_node = Operation(operation="operate", parameters={"instruction": "bob"})
+    bob_node.branch_id = bob_branch.id
+    graph.add_node(alice_node)
+    graph.add_node(bob_node)
+    env.builder.get_graph = lambda: graph
+
+    plan_result = _PlanResult(
+        assignments=[
+            TaskAssignment(task="x", assignee="researcher"),
+            TaskAssignment(task="y", assignee="researcher"),
+        ],
+        agent_ids=["alice", "bob"],
+        dep_indices=[[], []],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[alice_node.id, bob_node.id],
+        known_nodes={alice_node.id, bob_node.id},
+        deps_by_node={alice_node.id: [], bob_node.id: []},
+        reactive=True,
+        spawn_roles=set(),
+        role_base={},
+        worker_models=["codex/gpt-5.5", "codex/gpt-5.5"],
+        worker_branches={"alice": alice_branch, "bob": bob_branch},
+        messenger_bound={"alice": True, "bob": True},
+    )
+
+    await _execute_dag(env, plan_result, dag_state, max_concurrent=2, max_ops=3, team_max_rounds=2)
+
+    assert calls == {"alice": [0], "bob": [0]}
+    data = team._load_team(team_id)
+    mail = [msg for msg in data["messages"] if msg["kind"] == "message"]
+    assert len(mail) == 2
+    assert all(msg["read_by"] == {} for msg in mail)
+    assert all(msg["kind"] != "wakeup" for msg in data["messages"])
+    state = team.compute_quiescence(
+        data["messages"],
+        worker_names=["alice", "bob"],
+        rounds_run=0,
+        max_rounds=2,
+    )
+    assert state.pending_targets == frozenset({"alice", "bob"})
+    assert not state.active_workers
 
 
 async def test_check_round_sees_undelivered_outbox_mail_without_a_pre_collect(tmp_path):

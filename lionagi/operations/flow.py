@@ -1018,6 +1018,17 @@ class ReactiveExecutor(DependencyAwareExecutor):
             return True
         return False
 
+    def can_inject(self, count: int = 1) -> bool:
+        """Return whether a batch can fit without exceeding the spawn cap."""
+        if count < 0:
+            raise ValueError("count must be non-negative")
+        with self._graph_lock:
+            return (
+                self._running
+                and self._tg is not None
+                and self._spawn_count + count <= self.max_spawn
+            )
+
     def _accept_node(
         self,
         child: Operation,
