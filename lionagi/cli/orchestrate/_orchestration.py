@@ -279,6 +279,15 @@ def team_worker_system(
     roster and called out explicitly, so the prompt never tells a worker to
     `messenger(action="send", to=...)` a name the tool will reject.
 
+    The orchestrator itself is never registered into the live messenger
+    roster (`build_worker_branch` only binds worker branches) — nothing
+    reads a coordinator inbox mid-run, escalation goes through
+    `action="help"` instead. For a messenger-bound worker the roster line
+    reflects that: it's listed for context but flagged as not a `to=`
+    target, same as an unreachable CLI teammate. Bash-channel workers are
+    unaffected — `li team send --to orchestrator` always succeeds against
+    the shared file channel, so that line stays plain there.
+
     Prior team messages (attached-team history) are NOT included here even
     for messenger-bound workers — see `team_history_context`. Message
     *content* is untrusted transcript data (arbitrary prior user/agent
@@ -297,7 +306,10 @@ def team_worker_system(
     all_members = team_data.get("members", [])
     worker_names = [m for m in all_members if m != "orchestrator"]
     teammates = [n for n in worker_names if n != worker_name]
-    roster_lines = ["- orchestrator (coordinator)"]
+    orch_note = (
+        ' (not a messenger recipient — use action="help" instead)' if messenger_bound else ""
+    )
+    roster_lines = [f"- orchestrator (coordinator){orch_note}"]
     unreachable: list[str] = []
     for t in teammates:
         if messenger_bound and messenger_names is not None and t not in messenger_names:
@@ -321,6 +333,14 @@ def team_worker_system(
             '`messenger(action="send", to=...)` them, it will fail with '
             "'Unknown recipient'. You'll only see their work in the final team "
             "results at flow end."
+        )
+    if messenger_bound:
+        section += (
+            "\n\n### Coordinator reach\n"
+            "orchestrator is not a messenger `to=` target — nothing reads a "
+            "coordinator inbox mid-run. To escalate, call the messenger tool "
+            'with `action="help"` instead; your final results are also '
+            "automatically shared with the orchestrator at flow end."
         )
     return section
 

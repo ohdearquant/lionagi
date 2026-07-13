@@ -724,3 +724,121 @@ async def test_messenger_bound_worker_system_prompt_excludes_attached_history_en
     ctx = team_history_context(env.team_data, "alice", messenger_bound=messenger_bound)
     assert ctx is not None
     assert "kickoff broadcast" in [m["content"] for m in ctx["prior_team_messages"]["messages"]]
+
+
+# ── Coordinator reachability: the orchestrator is not a messenger target ───
+#
+# The roster line for "orchestrator" is the one entry team_worker_system()
+# always emits without going through the messenger_names reachability
+# filter (it isn't a teammate, so it never appears in `teammates`). Nothing
+# in build_worker_branch (see its exchange-registration block) ever
+# registers the orchestrator branch into env.roster/exchange — coordinator
+# escalation goes through `action="help"` instead — so a messenger-bound
+# worker's roster line for it must be flagged the same way an unreachable
+# CLI teammate is, not left looking like a plain, sendable `to=` target.
+
+
+def test_team_worker_system_flags_orchestrator_as_unreachable_for_messenger_bound_worker():
+    section = team_worker_system(
+        _team_data(),
+        "alice",
+        messenger_bound=True,
+        messenger_names=frozenset({"alice", "bob"}),
+    )
+    assert (
+        '- orchestrator (coordinator) (not a messenger recipient — use action="help" instead)'
+        in section
+    )
+    assert "### Coordinator reach" in section
+    assert 'action="help"' in section.split("### Coordinator reach", 1)[1]
+
+
+def test_team_worker_system_orchestrator_line_stays_plain_for_bash_channel_worker():
+    """li team send --to orchestrator always succeeds against the shared file
+    channel (li team's own `to` validation only warns, never rejects), so
+    the bash-channel prompt is unaffected by this fix."""
+    section = team_worker_system(_team_data(), "alice", messenger_bound=False)
+    assert "- orchestrator (coordinator)" in section
+    assert "not a messenger recipient" not in section
+    assert "### Coordinator reach" not in section
+
+
+def _parse_advertised_roster(section: str) -> list[tuple[str, bool]]:
+    """Parse the '### Your team' roster block of a rendered coordination
+    section into (name, flagged_unreachable) pairs, driven entirely by the
+    rendered text — never a hardcoded name list. A line is "flagged" when
+    its own annotation says it isn't a valid messenger `to=` target (the
+    same wording team_worker_system uses for both CLI-only teammates and
+    the orchestrator); anything else is advertised as reachable."""
+    block = section.split("### Your team", 1)[1].split("\n###", 1)[0]
+    parsed = []
+    for line in block.splitlines():
+        line = line.strip()
+        if not line.startswith("- "):
+            continue
+        body = line[2:]
+        name = body.split(" (", 1)[0].strip().strip("*")
+        flagged = "no messenger channel" in body or "not a messenger recipient" in body
+        parsed.append((name, flagged))
+    return parsed
+
+
+@pytest.mark.asyncio
+async def test_every_advertised_messenger_recipient_is_actually_reachable(tmp_path):
+    """Structural guard requested for this class of bug: parse the roster a
+    real messenger-bound worker's OWN rendered prompt advertises, then check
+    each parsed name against the live roster/tool it actually ships with —
+    never hardcode which names should or shouldn't work. A name advertised
+    as plain (not flagged) must be a valid `to=` target; a name flagged
+    unreachable must actually be rejected. This is exactly the assertion
+    that would have failed pre-fix: 'orchestrator' used to appear as a
+    plain roster line while never being registered in env.roster."""
+    exchange = Exchange()
+    messenger = LionMessenger(exchange)
+    roster: dict = {}
+    env = _make_env(
+        tmp_path,
+        exchange=exchange,
+        messenger=messenger,
+        roster=roster,
+        team_data=_mixed_team_data(),
+        messenger_names=frozenset({"alice", "bob"}),
+    )
+
+    with patch(
+        "lionagi.cli.orchestrate._orchestration.build_imodel_from_spec",
+        side_effect=_api_imodel,
+    ):
+        wb_alice, _, _, mb_alice = await build_worker_branch(
+            env, agent_id="alice", role="researcher", explicit_name="alice"
+        )
+        await build_worker_branch(env, agent_id="bob", role="researcher", explicit_name="bob")
+    assert mb_alice is True
+
+    prompt = wb_alice.system.rendered
+    tool = next(t for t in wb_alice.acts.registry.values() if t.function == "messenger")
+    advertised = _parse_advertised_roster(prompt)
+    assert advertised  # sanity: parsing actually found roster lines
+
+    checked_reachable = 0
+    checked_unreachable = 0
+    for name, flagged in advertised:
+        if name == "alice":  # this worker itself, not a send target
+            continue
+        result = tool.func_callable(action="send", to=name, content="ping")
+        if flagged:
+            assert "Unknown recipient" in result, (
+                f"{name!r} is flagged unreachable in the prompt but send succeeded: {result!r}"
+            )
+            checked_unreachable += 1
+        else:
+            assert "Unknown recipient" not in result, (
+                f"{name!r} is advertised as reachable but the tool rejected it: {result!r}"
+            )
+            checked_reachable += 1
+
+    # sanity: the fixture actually exercises both branches of the assertion
+    # (a real reachable target — bob — and real unreachable ones — cli-carl,
+    # and pre-fix, orchestrator).
+    assert checked_reachable > 0
+    assert checked_unreachable > 0
