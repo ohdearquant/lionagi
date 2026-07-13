@@ -133,6 +133,32 @@ def test_response_format_structure_derives_from_tracked_copy():
     )
 
 
+def test_response_format_nested_object_mutated_in_place_invalidates_cache():
+    from pydantic import BaseModel
+
+    class Answer(BaseModel):
+        note: str
+
+    answer = Answer(note="draft")
+    branch = Branch()
+    branch.msgs.add_message(instruction="historic", response_format={"answer": answer})
+
+    first = branch.msgs.to_chat_msgs()[0]["content"]
+    assert "draft" in first
+
+    # `answer` is a live object nested inside a tracked dict value; mutating
+    # its own field in place advances no `_TrackedDict`/`_TrackedList`
+    # revision, so a naive revision-keyed cache would keep serving the
+    # pre-mutation rendering.
+    answer.note = "final"
+
+    cached = branch.msgs.to_chat_msgs()[0]["content"]
+    uncached = branch.msgs.to_chat_msgs(_use_render_cache=False)[0]["content"]
+    assert "final" in cached
+    assert "draft" not in cached
+    assert cached == uncached
+
+
 def test_message_deepcopy_pickle_and_prepare_roundtrip():
     import copy
     import pickle

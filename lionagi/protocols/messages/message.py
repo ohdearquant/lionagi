@@ -324,8 +324,13 @@ class Message(Node, Sendable):
 
     def _render_cached(self, variant: str, render: Callable[[], Any]) -> Any:
         """Return a rendering cached by content identity and revision (not
-        id(), which could cross-wire non-overlapping objects reusing an address)."""
+        id(), which could cross-wire non-overlapping objects reusing an address).
+        Bypasses the cache entirely when content holds a value the revision
+        tracker cannot observe in-place mutation of."""
         content = self.content
+        if _content_has_untracked_mutable(content):
+            return render()
+
         revision = getattr(content, "_render_revision", 0)
         cached = self._render_cache.get(variant)
         if cached is not None and cached[0] is content and cached[1] == revision:
@@ -371,6 +376,41 @@ class Message(Node, Sendable):
         if isinstance(msg_, dict) and isinstance(msg_["content"], list):
             return [i for i in msg_["content"] if i["type"] == "image_url"]
         return None
+
+
+_JSON_SAFE_LEAF_TYPES = (type(None), bool, int, float, str, bytes)
+
+
+def _has_untracked_mutable(value: Any, _seen: frozenset[int] = frozenset()) -> bool:
+    """True if `value` holds — at any depth — a mutable object whose in-place
+    mutation `_TrackedList`/`_TrackedDict` cannot observe: anything besides
+    JSON-safe primitives and list/dict/tuple/frozenset nesting of them.
+    `type` objects are exempt — content only ever reads their class-level
+    schema, never live instance state (see `_build_structure` in instruction.py).
+    """
+    if isinstance(value, _JSON_SAFE_LEAF_TYPES) or isinstance(value, type):
+        return False
+    if isinstance(value, (list, tuple, frozenset)):
+        if id(value) in _seen:
+            return False
+        seen = _seen | {id(value)}
+        return any(_has_untracked_mutable(v, seen) for v in value)
+    if isinstance(value, dict):
+        if id(value) in _seen:
+            return False
+        seen = _seen | {id(value)}
+        return any(_has_untracked_mutable(v, seen) for v in value.values())
+    return True
+
+
+def _content_has_untracked_mutable(content: Any) -> bool:
+    """True if any render-input field on `content` carries a value the
+    revision tracker cannot observe in-place mutation of — the cache must
+    not trust its revision counter and should re-render on every call."""
+    allowed = getattr(content, "allowed", None)
+    if not callable(allowed):
+        return False
+    return any(_has_untracked_mutable(getattr(content, name, None)) for name in allowed())
 
 
 def _copy_rendered(rendered: Any) -> Any:
