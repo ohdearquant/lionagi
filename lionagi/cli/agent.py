@@ -51,7 +51,7 @@ from ._runs import (
     setup_agent_persist,
     teardown_agent_persist,
 )
-from ._util import EXIT_CODE_BY_STATUS, classify_exception
+from ._util import EXIT_CODE_BY_STATUS, classify_exception, validate_cwd_exists
 
 # Preset names supported by --preset.
 _PRESET_CHOICES = ("coding",)
@@ -210,6 +210,11 @@ async def _run_agent(
     session_id is None whenever live persistence never started.
     """
     effort = normalize_effort(effort)
+    # Fail fast: a nonexistent --cwd must never silently spawn into a
+    # provider-created directory (or a deep, opaque subprocess failure) —
+    # validate before any run is allocated or persistence is set up.
+    # Forward the returned tilde-expanded path; providers never expand `~`.
+    cwd = validate_cwd_exists(cwd)
     if resume and continue_last:
         raise ConfigurationError("--resume / -r and --continue-last / -c are mutually exclusive.")
     if preset and (resume or continue_last):
@@ -607,7 +612,9 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         default=None,
         help=(
             "Load agent profile by name. Resolves "
-            ".lionagi/agents/<NAME>/<NAME>.md first, then .lionagi/agents/<NAME>.md. "
+            ".lionagi/agents/<NAME>/<NAME>.md first, then .lionagi/agents/<NAME>.md, "
+            "then a trusted+enabled plugin's declared profile "
+            "('<plugin>/<NAME>', or a bare NAME when only one plugin declares it). "
             "Profile provides system prompt, default model, effort, yolo, "
             "timeout, resume_on_timeout. CLI flags override profile settings."
         ),

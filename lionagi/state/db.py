@@ -256,6 +256,15 @@ TERMINAL_STATUSES_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     for entity_type in ("session", "invocation", "schedule_run", "show", "play", "team")
 }
 SESSION_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["session"]
+
+# Terminal branches.status values. branches has no lifecycle-policy entry of
+# its own (it never goes through update_status()'s ADR-0035 machinery) — but
+# every status finalize_branch() ever receives is a session final_status
+# passed straight through by cli/_runs.py teardown_persist(), so this IS
+# SESSION_TERMINAL_STATUSES, not a second hand-maintained list that could
+# drift from it.
+_BRANCH_TERMINAL_STATUSES = SESSION_TERMINAL_STATUSES
+
 INVOCATION_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE[
     "invocation"
 ]  # invocations share the session terminal-status vocabulary
@@ -1243,7 +1252,8 @@ class StateDB:
                       required_capabilities  JSON,
                       execution_target       TEXT,
                       library_ref             TEXT,
-                      library_content_hash    TEXT
+                      library_content_hash    TEXT,
+                      dispatched_at           REAL
                     )
                     """
                 )
@@ -2287,8 +2297,11 @@ class StateDB:
             rows = (await conn.execute(text(query), params)).mappings().all()
         return [self._row_to_dict(r) for r in rows]
 
-    async def update_schedule(self, schedule_id: str, **fields: Any) -> None:
-        allowed = {
+    # Fields update_schedule() (and create_schedule_run_and_advance()'s
+    # folded-in schedule update) may write. A single choke point so the two
+    # write paths can never drift on what's allowed.
+    _SCHEDULE_UPDATE_ALLOWED_FIELDS = frozenset(
+        {
             "name",
             "description",
             "enabled",
@@ -2325,7 +2338,25 @@ class StateDB:
             "last_healthy_poll_at",
             "poller_consecutive_401",
         }
-        bad = set(fields) - allowed
+    )
+
+    async def update_schedule(self, schedule_id: str, **fields: Any) -> None:
+        stmt, params = self._build_update_schedule_stmt(schedule_id, fields)
+        async with self._tx() as conn:
+            await conn.execute(stmt, params)
+
+    @classmethod
+    def _build_update_schedule_stmt(cls, schedule_id: str, fields: dict[str, Any]):
+        """Validate + build the ``UPDATE schedules`` statement + bound
+        params for *fields* without opening a transaction.
+
+        Shared by ``update_schedule`` (its own standalone commit) and
+        ``create_schedule_run_and_advance`` (folded into the same
+        transaction as the occurrence insert) -- the single choke point for
+        both the field allowlist and the SQL shape, so the two write paths
+        can never drift apart.
+        """
+        bad = set(fields) - cls._SCHEDULE_UPDATE_ALLOWED_FIELDS
         if bad:
             raise ValueError(f"Invalid schedule field(s): {bad}")
         json_fields = {
@@ -2336,6 +2367,7 @@ class StateDB:
             "on_fail",
             "threshold_config",
         }
+        fields = dict(fields)
         fields["updated_at"] = time.time()
         sets_parts = []
         bind_params = []
@@ -2348,8 +2380,7 @@ class StateDB:
         stmt = text(f"UPDATE schedules SET {', '.join(sets_parts)} WHERE id = :_id")  # noqa: S608
         if bind_params:
             stmt = stmt.bindparams(*bind_params)
-        async with self._tx() as conn:
-            await conn.execute(stmt, params)
+        return stmt, params
 
     async def delete_schedule(self, schedule_id: str) -> bool:
         async with self._tx() as conn:
@@ -2362,40 +2393,103 @@ class StateDB:
     # ── Schedule Runs (ADR-0070) ──────────────────────────────────────
 
     async def create_schedule_run(self, run: dict[str, Any]) -> None:
+        stmt, params = self._build_schedule_run_insert_stmt(run)
+        async with self._tx() as conn:
+            await conn.execute(stmt, params)
+
+    @staticmethod
+    def _build_schedule_run_insert_stmt(run: dict[str, Any]):
+        """Build the ``INSERT INTO schedule_runs`` statement + bound params
+        for *run* without opening a transaction -- shared by
+        ``create_schedule_run`` and ``create_schedule_run_and_advance``."""
+        now = time.time()
+        stmt = text(
+            """INSERT INTO schedule_runs
+               (id, schedule_id, invocation_id, trigger_context,
+                action_kind, action_args, status, exit_code,
+                chain_parent_id, chain_depth, fired_at, ended_at,
+                error_detail, created_at)
+               VALUES (:id, :schedule_id, :invocation_id, :trigger_context,
+                       :action_kind, :action_args, :status, :exit_code,
+                       :chain_parent_id, :chain_depth, :fired_at, :ended_at,
+                       :error_detail, :created_at)"""
+        ).bindparams(
+            bindparam("trigger_context", type_=JSON),
+            bindparam("action_args", type_=JSON),
+        )
+        params = {
+            "id": run["id"],
+            "schedule_id": run["schedule_id"],
+            "invocation_id": run.get("invocation_id"),
+            "trigger_context": run["trigger_context"],
+            "action_kind": run["action_kind"],
+            "action_args": run["action_args"],
+            "status": run.get("status", "running"),
+            "exit_code": run.get("exit_code"),
+            "chain_parent_id": run.get("chain_parent_id"),
+            "chain_depth": run.get("chain_depth", 0),
+            "fired_at": run["fired_at"],
+            "ended_at": run.get("ended_at"),
+            "error_detail": run.get("error_detail"),
+            "created_at": run.get("created_at", now),
+        }
+        return stmt, params
+
+    async def create_schedule_run_and_advance(
+        self,
+        run: dict[str, Any],
+        *,
+        schedule_id: str,
+        schedule_fields: dict[str, Any],
+    ) -> None:
+        """Insert one schedule_runs occurrence row and advance the owning
+        schedule's cursor fields in a single transaction, so a crash can
+        only ever discard an occurrence that was never durably recorded --
+        never leave the cursor pointing before one that was, which would
+        make a restart re-fire it. *schedule_fields* goes through the same
+        allowlist as ``update_schedule``.
+        """
+        run_stmt, run_params = self._build_schedule_run_insert_stmt(run)
+        sched_stmt, sched_params = self._build_update_schedule_stmt(schedule_id, schedule_fields)
+        async with self._tx() as conn:
+            await conn.execute(run_stmt, run_params)
+            await conn.execute(sched_stmt, sched_params)
+
+    async def tombstone_and_replace_schedule_run(
+        self,
+        orphan_id: str,
+        replacement_run: dict[str, Any],
+        *,
+        expected_orphan_status: str = "running",
+    ) -> bool:
+        """Flip an undispatched orphan to a terminal status and insert its
+        replacement occurrence row in one transaction, so a crash leaves
+        either both writes durable or neither. The CAS also requires
+        ``dispatched_at IS NULL``: if a launch confirmation lands between
+        the recovery scan and this write, the row no longer qualifies as
+        undispatched and the call is a no-op (returns ``False``, nothing
+        inserted) rather than tombstoning a run that actually launched.
+
+        Returns ``False`` if the orphan's status no longer matches
+        *expected_orphan_status* or is no longer undispatched -- something
+        else already resolved it between the scan and this write, so there
+        is nothing to recover and no replacement should be created.
+        """
+        run_stmt, run_params = self._build_schedule_run_insert_stmt(replacement_run)
         now = time.time()
         async with self._tx() as conn:
-            await conn.execute(
+            result = await conn.execute(
                 text(
-                    """INSERT INTO schedule_runs
-                       (id, schedule_id, invocation_id, trigger_context,
-                        action_kind, action_args, status, exit_code,
-                        chain_parent_id, chain_depth, fired_at, ended_at,
-                        error_detail, created_at)
-                       VALUES (:id, :schedule_id, :invocation_id, :trigger_context,
-                               :action_kind, :action_args, :status, :exit_code,
-                               :chain_parent_id, :chain_depth, :fired_at, :ended_at,
-                               :error_detail, :created_at)"""
-                ).bindparams(
-                    bindparam("trigger_context", type_=JSON),
-                    bindparam("action_args", type_=JSON),
+                    "UPDATE schedule_runs SET status = 'failed', updated_at = :now "
+                    "WHERE id = :orphan_id AND status = :expected_status "
+                    "AND dispatched_at IS NULL"
                 ),
-                {
-                    "id": run["id"],
-                    "schedule_id": run["schedule_id"],
-                    "invocation_id": run.get("invocation_id"),
-                    "trigger_context": run["trigger_context"],
-                    "action_kind": run["action_kind"],
-                    "action_args": run["action_args"],
-                    "status": run.get("status", "running"),
-                    "exit_code": run.get("exit_code"),
-                    "chain_parent_id": run.get("chain_parent_id"),
-                    "chain_depth": run.get("chain_depth", 0),
-                    "fired_at": run["fired_at"],
-                    "ended_at": run.get("ended_at"),
-                    "error_detail": run.get("error_detail"),
-                    "created_at": run.get("created_at", now),
-                },
+                {"now": now, "orphan_id": orphan_id, "expected_status": expected_orphan_status},
             )
+            if result.rowcount == 0:
+                return False
+            await conn.execute(run_stmt, run_params)
+        return True
 
     async def update_schedule_run(
         self,
@@ -2409,7 +2503,14 @@ class StateDB:
         **fields: Any,
     ) -> None:
         """Update schedule_run fields; route status through update_status()."""
-        allowed = {"status", "exit_code", "ended_at", "error_detail", "invocation_id"}
+        allowed = {
+            "status",
+            "exit_code",
+            "ended_at",
+            "error_detail",
+            "invocation_id",
+            "dispatched_at",
+        }
         bad = set(fields) - allowed
         if bad:
             raise ValueError(f"Invalid schedule_run field(s): {bad}")
@@ -2427,6 +2528,18 @@ class StateDB:
         )
 
         if fields:
+            # updated_at must move on every write to this row, not only on a
+            # status transition -- update_status() already bumps it as part
+            # of the status UPDATE above, but a plain field-only call (e.g.
+            # the exit_code/ended_at write that lands *before* the terminal
+            # status transition, while the row is still "running") would
+            # otherwise leave it stale. A stale updated_at is exactly the
+            # snapshot value reap_stale_schedule_runs()'s expected_updated_at
+            # guard would still match on a scan landing in that window,
+            # letting the reaper race a legitimately-finishing run to
+            # "timed_out" ahead of its own terminal write.
+            fields = dict(fields)
+            fields["updated_at"] = time.time()
             sets = ", ".join(f'"{k}" = :{k}' for k in fields)
             params = dict(fields)
             params["_id"] = run_id
@@ -2681,6 +2794,51 @@ class StateDB:
             if status == "failed":
                 streak += 1
         return streak, last_status
+
+    async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool:
+        """True if *schedule_id* has a genuinely-fired schedule_runs row at
+        or after *since* -- used by missed-fire recovery to tell "never
+        fired" from "fired but crashed before follow-up bookkeeping".
+        Excludes ``status = 'skipped'`` rows so a capacity-deferred skip
+        (whose next_fire_at is deliberately left untouched) still counts as
+        due and retries, rather than being treated as already handled.
+        """
+        async with self._read() as conn:
+            row = (
+                await conn.execute(
+                    text(
+                        "SELECT 1 FROM schedule_runs "
+                        "WHERE schedule_id = :schedule_id AND fired_at >= :since "
+                        "AND status != 'skipped' LIMIT 1"
+                    ),
+                    {"schedule_id": schedule_id, "since": since},
+                )
+            ).first()
+        return row is not None
+
+    async def list_undispatched_schedule_runs(self) -> list[dict[str, Any]]:
+        """Scheduler-fired occurrence rows whose transaction committed but
+        whose external process launch was never confirmed (cursor already
+        moved, so ordinary missed-fire recovery will never reconsider them).
+        ``SchedulerEngine._recover_undispatched_fires()`` runs this once at
+        startup and re-fires each row. Scoped to ``schedule_id IS NOT NULL``
+        to exclude the leased ad-hoc task queue, which has its own
+        dispatch/lease model and never sets dispatched_at.
+        """
+        async with self._read() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT * FROM schedule_runs WHERE status = 'running' "
+                            "AND dispatched_at IS NULL AND schedule_id IS NOT NULL"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [self._row_to_dict(r) for r in rows]
 
     async def get_schedule_run(self, run_id: str) -> dict[str, Any] | None:
         async with self._read() as conn:
@@ -3171,6 +3329,54 @@ class StateDB:
         if bind_params:
             stmt = stmt.bindparams(*bind_params)
         await conn.execute(stmt, params)
+
+    async def finalize_branch(
+        self, branch_id: str, *, status: str, ended_at: float | None = None
+    ) -> bool:
+        """Guarded terminal-status write for one branch row (BRANCH_END).
+
+        Two-sided guard; both conditions must hold for the write to land:
+
+        - *status* itself must be a genuine terminal outcome
+          (``_BRANCH_TERMINAL_STATUSES`` == ``SESSION_TERMINAL_STATUSES`` —
+          every value BRANCH_END ever carries is a session final_status
+          passed straight through by cli/_runs.py teardown_persist()). A
+          non-terminal payload — e.g. the "running" the linked-engine
+          reconciliation path can produce when it suppresses a phantom
+          "failed" back to "running" — is rejected outright: this method
+          never stamps a branch "ended" with a non-terminal status. Returns
+          False without touching the row.
+        - the EXISTING row must still be in a legitimate pre-terminal state:
+          NULL (never touched) or "running" (the only two values flow.py's
+          own per-op writer -- or anything else -- ever leaves a branch in
+          before its real terminal outcome lands; this method itself never
+          writes "running", it only ever writes a terminal status). Any
+          other existing value — whichever terminal status it already
+          holds — is immutable: a run-level finalize must never flap a
+          branch that already reached its outcome, regardless of which
+          terminal status that was (completed, failed, cancelled,
+          timed_out, aborted, completed_empty) or what this call's own
+          *status* argument is.
+
+        A branch row that was never created (a DAG leg that never emitted a
+        first message) matches zero rows and is a harmless no-op.
+        Returns True when a row was actually updated.
+        """
+        if status not in _BRANCH_TERMINAL_STATUSES:
+            return False
+        async with self._tx() as conn:
+            result = await conn.execute(
+                text(
+                    "UPDATE branches SET status = :status, ended_at = :ended_at "
+                    "WHERE id = :id AND (status IS NULL OR status = 'running')"
+                ),
+                {
+                    "status": status,
+                    "ended_at": ended_at if ended_at is not None else time.time(),
+                    "id": branch_id,
+                },
+            )
+        return result.rowcount > 0
 
     async def repair_branch_progression(
         self,

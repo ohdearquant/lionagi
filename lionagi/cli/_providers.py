@@ -339,8 +339,23 @@ def _resolve_profile_path(agents_dir: Path, name: str) -> Path | None:
     return None
 
 
+def _plugin_agent_profiles() -> dict[str, tuple[str, Path]]:
+    """``<plugin>/<name>`` -> (plugin name, profile path) for every ACTIVE plugin (trusted+enabled+compatible).
+
+    A plugin's agent profiles only ever join the search *after* project and
+    global profiles: local files always win, and an untrusted or disabled
+    plugin contributes nothing here at all.
+    """
+    from lionagi.plugins import PluginRegistry
+
+    return PluginRegistry.active_agent_profile_files()
+
+
 def list_agents() -> list[str]:
-    """List available agent profile names, merged across all .lionagi/ dirs."""
+    """List available agent profile names, merged across .lionagi/ dirs and active plugins.
+
+    Plugin-declared profiles are namespaced as ``<plugin>/<name>``.
+    """
     seen: set[str] = set()
     for d in _find_lionagi_dirs():
         agents_dir = d / "agents"
@@ -354,24 +369,85 @@ def list_agents() -> list[str]:
         for p in agents_dir.glob("*.md"):
             if p.is_file():
                 seen.add(p.stem)
+    seen.update(_plugin_agent_profiles().keys())
     return sorted(seen)
 
 
+def _resolve_plugin_profile_path(name: str) -> Path | None:
+    """Resolve *name* against active plugins: an explicit ``<plugin>/<agent>`` token always
+
+    resolves; a bare name resolves only when exactly one active plugin declares it
+    (ambiguous bare names are left unresolved — namespacing exists precisely so a
+    caller can disambiguate).
+    """
+    plugin_profiles = _plugin_agent_profiles()
+    if "/" in name:
+        entry = plugin_profiles.get(name)
+        return entry[1] if entry is not None else None
+
+    matches = [
+        path for token, (_plugin, path) in plugin_profiles.items() if token.endswith(f"/{name}")
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _warn_if_shadowing_plugin_profile(name: str) -> None:
+    """Log a shadow warning when a local agent profile hides a same-named plugin profile.
+
+    The user's own explicit local file always wins on a bare-name collision;
+    this only makes the shadowing visible instead of silent.
+    """
+    plugin_profiles = _plugin_agent_profiles()
+    owners = sorted(
+        {token.split("/", 1)[0] for token in plugin_profiles if token.endswith(f"/{name}")}
+    )
+    if not owners:
+        return
+    from ._logging import warn
+
+    warn(
+        f"agent profile {name!r} is also declared by plugin(s) {', '.join(owners)}; "
+        f"using the local file (load the plugin's version with '<plugin>/{name}')."
+    )
+
+
 def load_agent_profile(name: str) -> AgentProfile:
-    """Load a named agent profile, searching project-local then global ~/.lionagi/agents/."""
-    _validate_bare_name(name)
+    """Load a named agent profile, searching project-local then global ~/.lionagi/agents/,
+
+    then active plugin bundles: a plugin's agent profiles join the search
+    only after a project/global miss, and only for a plugin that is trusted +
+    enabled + version-compatible (see ``lionagi.plugins``).
+    """
+    plugin_token = "/" in name
+    if plugin_token:
+        # A `<plugin>/<name>` token is opaque to the bare-name validator
+        # (which forbids '/'); validate each component instead.
+        plugin_part, _, agent_part = name.partition("/")
+        _validate_bare_name(plugin_part)
+        _validate_bare_name(agent_part)
+    else:
+        _validate_bare_name(name)
+
     dirs = _find_lionagi_dirs()
-    if not dirs:
+    if not plugin_token:
+        for d in dirs:
+            path = _resolve_profile_path(d / "agents", name)
+            if path is not None:
+                _warn_if_shadowing_plugin_profile(name)
+                text = path.read_text()
+                return _parse_profile(name, text)
+
+    plugin_path = _resolve_plugin_profile_path(name)
+    if plugin_path is not None:
+        return _parse_profile(name, plugin_path.read_text())
+
+    if not dirs and not plugin_token:
         raise FileNotFoundError(
             "No .lionagi/ directory found. Create .lionagi/agents/ in your repo "
             "or ~/.lionagi/agents/ globally."
         )
-
-    for d in dirs:
-        path = _resolve_profile_path(d / "agents", name)
-        if path is not None:
-            text = path.read_text()
-            return _parse_profile(name, text)
 
     available = list_agents()
     msg = f"Agent profile '{name}' not found"

@@ -23,6 +23,7 @@ dependencies = [
     "orjson>=3.11.8",
     "psutil>=5.9.0",
     "pyyaml>=6.0",
+    "packaging>=21.0",
 ]
 license = {file = "LICENSE"}
 classifiers=[
