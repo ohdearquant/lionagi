@@ -23,9 +23,7 @@ __all__ = (
     "list_modes",
 )
 
-# Roles/modes are a CLOSED built-in set — one inline module per pattern, each
-# exposing a single ``ROLE`` / ``MODE``. Not user-definable; users extend via
-# packs (casts/pack.py), not by adding roles.
+# CLOSED built-in set, one module per pattern — not user-definable; extend via packs (casts/pack.py).
 _ROLES_PKG = "lionagi.casts.roles"
 _MODES_PKG = "lionagi.casts.roles.modes"
 
@@ -109,10 +107,8 @@ class Role(Pattern):
 
     body: str = ""
     emits: tuple = ()
-    # ADR-0064 shape ({"expected": [{"id", "path", "required", ...}]}) — a gate
-    # role's own declared output contract, merged per-leg into the flow's
-    # artifact_contract at DAG-build time (see flow.py _build_dag). None means
-    # this role makes no artifact claim.
+    # ADR-0064: gate role's declared output contract, merged per-leg into the flow's
+    # artifact_contract at DAG-build time (flow.py _build_dag). None = no artifact claim.
     artifact_defaults: dict | None = None
 
     @property
@@ -120,9 +116,7 @@ class Role(Pattern):
         return PatternKind.ROLE
 
     def to_dict(self, exclude: set[str] = None) -> dict[str, Any]:
-        # serialize ``emits`` (model classes) by name so the dict stays
-        # hashable/JSON-friendly. Params.to_dict (not super()) — zero-arg super
-        # is unreliable under @dataclass(slots=True).
+        # Params.to_dict (not super()) — zero-arg super is unreliable under @dataclass(slots=True).
         d = Params.to_dict(self, exclude=exclude)
         if "emits" in d:
             d["emits"] = [m.__name__ for m in d["emits"]]

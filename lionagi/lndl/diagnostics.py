@@ -1,42 +1,8 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""LNDL diagnostics — opt-in telemetry for LNDL parse rounds.
-
-These primitives let callers introspect what the model actually emitted
-during ``branch.operate(lndl=True, ...)`` or ``branch.ReActStream(lndl=True, ...)``:
-
-    from lionagi.lndl import LndlTrace
-
-    trace = LndlTrace()
-    result = await branch.operate(
-        instruction="...",
-        response_format=Report,
-        lndl=True,
-        trace=trace,
-    )
-    print(trace.summary())          # quick health snapshot
-    for r in trace.rounds:
-        print(r.outcome, r.error)   # per-round details
-
-The trace is **opt-in** — callers must instantiate ``LndlTrace`` and pass it.
-Default behaviour and return types are unchanged: ``trace=None`` (default)
-means zero overhead.
-
-Two layers of classification:
-
-* **Syntax** (``classify_chunk``): does this raw assistant text look like
-  well-formed LNDL? ``clean`` / ``malformed`` / ``no_out``.
-* **Outcome** (``LndlRoundRecord.outcome``): what did the framework decide
-  this round? ``success`` / ``continue`` / ``retry`` / ``failed`` /
-  ``exhausted`` — mirrors the ``RoundOutcome`` ADT.
-* **Result** (``classify_result``): for a final operate return value, what
-  did we get? ``ok`` (parsed BaseModel) / ``str`` (raw fallback) /
-  ``dict`` (validation failed) / ``empty`` (None or empty container).
-
-These three views answer different questions: *did the model write valid
-LNDL?* / *what did the framework do with it?* / *what did the user get?*
-"""
+"""LNDL diagnostics — opt-in telemetry for LNDL parse rounds. Pass a
+``LndlTrace()`` via ``trace=``; default ``trace=None`` means zero overhead."""
 
 from __future__ import annotations
 
@@ -55,19 +21,13 @@ __all__ = (
 )
 
 
-# ---------------------------------------------------------------------------
 # Syntax classification — does an assistant chunk look like valid LNDL?
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class LndlChunkHealth:
-    """Syntactic shape of a single assistant LNDL response.
-
-    This is a lexer-free, structure-only check intended to answer the
-    question "is this chunk in the LNDL ballpark?" without invoking the
-    full parser. The full parser is what produces semantic verdicts.
-    """
+    """Syntactic shape of a single assistant LNDL response — a lexer-free,
+    structure-only check; the full parser produces semantic verdicts."""
 
     text: str
     has_out: bool
@@ -86,12 +46,8 @@ class LndlChunkHealth:
 
 
 def classify_chunk(text: str) -> LndlChunkHealth:
-    """Classify the syntactic health of a raw LNDL chunk.
-
-    Heuristic — does NOT parse the chunk. Intended for fast pre-screening
-    and aggregate health metrics. Use ``Lexer`` + ``Parser`` for definitive
-    syntax verdicts.
-    """
+    """Classify the syntactic health of a raw LNDL chunk. Heuristic — does
+    NOT parse; use ``Lexer`` + ``Parser`` for definitive syntax verdicts."""
     if not isinstance(text, str):
         return LndlChunkHealth(text="", has_out=False, open_tags=0, close_tags=0, balanced=False)
     has_out = "OUT{" in text or "OUT [" in text
@@ -109,16 +65,8 @@ def classify_chunk(text: str) -> LndlChunkHealth:
 
 
 def classify_result(value: Any) -> str:
-    """Classify what an operate-with-LNDL result actually is.
-
-    Returns one of:
-
-    * ``ok``    — a parsed ``BaseModel`` (the schema-shaped return).
-    * ``str``   — raw LNDL fallback (parse or assembly failure leaked through).
-    * ``dict``  — partial dict (validation failed but the framework kept
-      the unstructured value rather than raising).
-    * ``empty`` — ``None``, empty string, empty dict, or all-``None`` dict.
-    """
+    """Classify an operate-with-LNDL result: ``ok`` (parsed BaseModel),
+    ``str`` (raw fallback), ``dict`` (validation failed), or ``empty``."""
     if value is None:
         return "empty"
     if isinstance(value, str):
@@ -132,9 +80,7 @@ def classify_result(value: Any) -> str:
     return "dict"
 
 
-# ---------------------------------------------------------------------------
 # Per-round trace records
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -155,12 +101,8 @@ class LndlRoundRecord:
 
 @dataclass
 class LndlTrace:
-    """Opt-in trace container for LNDL operate / ReActStream calls.
-
-    Pass an instance via ``trace=`` and the framework will append one
-    ``LndlRoundRecord`` per LNDL parse attempt (including retries and
-    multi-round continuations).
-    """
+    """Opt-in trace container: pass via ``trace=`` and the framework appends
+    one ``LndlRoundRecord`` per LNDL parse attempt (incl. retries/continuations)."""
 
     rounds: list[LndlRoundRecord] = field(default_factory=list)
 
@@ -202,23 +144,12 @@ class LndlTrace:
         return len(self.rounds)
 
 
-# ---------------------------------------------------------------------------
 # Public utility — extract LNDL strings from a Branch's message log
-# ---------------------------------------------------------------------------
 
 
 def extract_lndl_chunks(messages: Any, since: int = 0) -> list[str]:
-    """Pull raw LNDL strings from assistant messages added after ``since``.
-
-    Filters to assistant messages whose content contains LNDL syntax
-    markers (``<lact``, ``<lvar``, ``OUT{``, ``OUT [``). Useful when you
-    didn't pass a ``trace=`` (or want chunks from non-LNDL messages too).
-
-    Args:
-        messages: An iterable of messages — typically ``branch.messages``.
-        since: Start index. Pass ``len(branch.messages)`` before a call,
-            then call again after to get chunks emitted by that call only.
-    """
+    """Pull raw LNDL strings (matching ``<lact``, ``<lvar``, ``OUT{``, ``OUT [``)
+    from assistant messages added after ``since``, for callers that skipped ``trace=``."""
     chunks: list[str] = []
     msgs = list(messages)
     for i in range(since, len(msgs)):

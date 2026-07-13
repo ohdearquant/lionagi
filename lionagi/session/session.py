@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Public session orchestration and graph-execution facade.
-
-Submit ordinary operation graphs through ``Session.flow``. Streaming graph surfaces
-must use the existing streaming flow kernel. Every new graph-execution surface must
-delegate through one of these paths and include conformance coverage.
-"""
+"""Public session orchestration and graph-execution facade; new graph-execution surfaces must delegate through ``Session.flow``/the streaming kernel and include conformance coverage."""
 
 import contextlib
 from collections.abc import Callable
@@ -60,9 +55,8 @@ class Session(Node, Relational):
 
     def __init__(self, *, memory: MemoryStore | None = None, **kwargs: Any):
         super().__init__(**kwargs)
-        # `_initialize_branches` may have already lazily created a store and
-        # wired it into branches; an explicit store here overrides it and
-        # rewires any branch still holding that temp store.
+        # `_initialize_branches` may have lazily created + wired a store already;
+        # an explicit store here overrides it and rewires branches holding the temp one.
         temp = self._memory
         if memory is not None:
             self._memory = memory
@@ -162,10 +156,7 @@ class Session(Node, Relational):
 
     @property
     def memory(self) -> MemoryStore:
-        """This session's memory store: an explicitly supplied backend, or a
-        lazily-created shared `InMemoryStore` on first access. Read-only —
-        the only way to give a `Session` its own store is the `memory=`
-        constructor parameter."""
+        """This session's memory store: explicit backend or lazily-created shared `InMemoryStore`. Read-only — only settable via the `memory=` constructor param."""
         if self._memory is None:
             self._memory = InMemoryStore()
         return self._memory
@@ -260,9 +251,8 @@ class Session(Node, Relational):
         self.branches.exclude(branch)
         self.exchange.unregister(branch.id)
 
-        # Routing infrastructure is session-owned: tear it down so a removed
-        # branch reverts to a clean standalone state and can be reparented.
-        # Branch data (messages, memory, logs) stays with the branch.
+        # Routing infra is session-owned: torn down so branch reverts to clean,
+        # reparentable state. Branch data (messages/memory/logs) stays with it.
         branch._owning_session_id = None
         branch._observer = None
         branch._hooks = None

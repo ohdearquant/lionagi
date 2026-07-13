@@ -69,9 +69,7 @@ class Structure:
     def operable(self) -> Operable | None:
         return self._operable
 
-    # ------------------------------------------------------------------
     # Builder
-    # ------------------------------------------------------------------
 
     def _clone(self, **overrides) -> Structure:
         base = overrides.pop("base", self._base_dict if self.is_dict_mode else self._base)
@@ -105,9 +103,7 @@ class Structure:
     def with_reason(self) -> Structure:
         return self._clone(reason=True)
 
-    # ------------------------------------------------------------------
     # Schema generation — delegates to Operable (model mode only)
-    # ------------------------------------------------------------------
 
     def request_schema(self) -> type[BaseModel] | dict[str, Any]:
         """Pydantic model for model mode; dict for dict mode."""
@@ -147,9 +143,7 @@ class Structure:
         data = {k: v for k, v in parsed.model_dump(mode="python").items() if k in base_fields}
         return self._base.model_validate(data)
 
-    # ------------------------------------------------------------------
     # Subclass interface
-    # ------------------------------------------------------------------
 
     def render(self) -> str:
         raise NotImplementedError
@@ -157,9 +151,7 @@ class Structure:
     def parse(self, text: str, **kw) -> BaseModel | dict:
         raise NotImplementedError
 
-    # ------------------------------------------------------------------
     # Private
-    # ------------------------------------------------------------------
 
     def _build_operable(self, user_specs: list[Spec] | tuple[Spec, ...]) -> Operable:
         from lionagi.operations.fields import get_default_field

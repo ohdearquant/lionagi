@@ -9,11 +9,7 @@ from lionagi.models import HashableModel
 
 
 class ReActAnalysis(HashableModel):
-    """Chain-of-thought output for one ReAct round: analysis, extension flag, and action strategy.
-
-    Round budget is framed as headroom to use, not a countdown — scarcity framing
-    makes models wrap up early. See prompts below.
-    """
+    """Chain-of-thought output for one ReAct round: analysis, extension flag, action strategy. Round budget is framed as headroom, not a countdown (avoids early wrap-up)."""
 
     FIRST_EXT_PROMPT: ClassVar[str] = (
         "This is a multi-step task. You have room for up to {extensions} reason-act "

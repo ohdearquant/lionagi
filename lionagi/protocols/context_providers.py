@@ -1,9 +1,8 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pre-turn context injection: an ordered ContextProvider registry that
-renders ephemeral knowledge into the first-message guidance fold — never
-the durable message record. See ADR-0008."""
+"""Pre-turn context injection: renders ephemeral knowledge into the
+first-message guidance fold, never the durable message record. See ADR-0008."""
 
 from __future__ import annotations
 
@@ -53,12 +52,8 @@ class _Entry:
 
 
 class ContextProviderRegistry:
-    """Ordered registry of ContextProviders with a total injection budget.
-
-    Providers are registered in the order they should render; when the
-    combined output exceeds `budget`, lowest-priority providers are dropped
-    first. A provider that raises is warned + skipped; the turn proceeds.
-    """
+    """Ordered ContextProviders under a total injection budget; drops
+    lowest-priority providers first over budget, warns + skips on error."""
 
     def __init__(self, budget: int = _DEFAULT_BUDGET):
         self.budget = budget
@@ -110,9 +105,8 @@ class ContextProviderRegistry:
                 continue
             successes.append((entry, text, tokens))
 
-        # Protect highest priority first; drop lowest priority first when
-        # the total would exceed budget. Stable sort preserves registration
-        # order among equal priorities.
+        # Drop lowest-priority first over budget; stable sort preserves
+        # registration order among equal priorities.
         by_priority = sorted(successes, key=lambda item: item[0].priority, reverse=True)
 
         kept_ids: set[int] = set()
@@ -132,10 +126,8 @@ class ContextProviderRegistry:
         return report
 
     async def gather_writeback(self, branch: Branch, action_responses: list) -> None:
-        """POST-turn hook: providers with an optional `writeback(branch, action_responses)`
-        method get a chance to persist from the turn's action responses. Same
-        containment as `gather` — a raising provider is warned + skipped, never
-        blocks the turn."""
+        """POST-turn hook: providers with an optional `writeback` method persist
+        from the turn's action responses; errors are warned + skipped, never block."""
         for entry in self._entries:
             hook = getattr(entry.provider, "writeback", None)
             if hook is None:

@@ -31,9 +31,8 @@ _LOOPBACK_NETS: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = [
     ipaddress.ip_network("::1/128"),
 ]
 
-# Only these exact hostname strings are accepted for allow_local=True.
-# Alternate encodings (2130706433, 0x7f000001, 127.1, ::ffff:127.0.0.1, etc.)
-# are intentionally excluded to prevent DNS-rebinding bypass.
+# Only these exact hostname strings are accepted for allow_local=True — alternate
+# encodings are intentionally excluded to prevent DNS-rebinding bypass.
 _CANONICAL_LOCAL_HOSTS: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1"})
 
 

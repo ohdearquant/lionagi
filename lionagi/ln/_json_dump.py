@@ -47,11 +47,8 @@ def _normalize_for_sorting(x: Any) -> str:
 
 
 def _stable_sorted_iterable(o: Iterable[Any]) -> list[Any]:
-    """
-    Deterministic ordering for sets (including mixed types).
-    Key: (class name, normalized str) avoids comparisons across unlike types
-    and removes memory address variance in default reprs.
-    """
+    """Deterministic ordering for sets (incl. mixed types); key=(class name,
+    normalized str) avoids cross-type comparisons and address variance."""
     return sorted(o, key=lambda x: (x.__class__.__name__, _normalize_for_sorting(x)))
 
 

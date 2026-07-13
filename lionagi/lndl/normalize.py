@@ -1,14 +1,8 @@
 # Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""LNDL text normalization — auto-fix common model-invented syntax errors.
-
-Models trained on XML/HTML/JSON sometimes drift into related-but-wrong forms.
-This module catches the most common drifts and rewrites them into valid LNDL
-before the parser runs, so the model isn't penalized for surface mistakes.
-
-Ported from krons.lndl.fuzzy.
-"""
+"""LNDL text normalization — auto-fixes common model-invented syntax drift
+(from XML/HTML/JSON training) into valid LNDL before the parser runs."""
 
 from __future__ import annotations
 
@@ -20,9 +14,8 @@ __all__ = ("normalize_lndl_text",)
 
 _XML_ATTR_RE = re.compile(r'\b\w+=["\'][^"\']*["\']')
 
-# `<lact alias fn(args)</lact>` — opening tag ate the closing `>`, the body
-# starts immediately. Detect by an opening tag containing `(` before the next
-# `>` and a `</lact>`/`</lvar>` further on.
+# Detects `<lact alias fn(args)</lact>` — opening tag ate the closing `>`,
+# body starts immediately (has `(` before next `>`, closed further on).
 _MISSING_GT_RE = re.compile(
     r"<(lvar|lact)\s+([A-Za-z_][\w.]*(?:\s+[A-Za-z_][\w.]*)?)\s+([^<>]*?\([^<>]*?)</\1>",
     re.DOTALL,
@@ -31,11 +24,7 @@ _MISSING_GT_RE = re.compile(
 
 def _fix_missing_gt(text: str) -> str:
     """Repair ``<lact alias fn(args)</lact>`` → ``<lact alias>fn(args)</lact>``.
-
-    Conservative: only touches tags where (a) the opening had a function
-    call (paren) inside it and (b) the closing tag is present. Common gpt
-    drift; cheap to fix; harmless if it never matches.
-    """
+    Conservative: only fires when the opening had a call-paren and the closing tag exists."""
 
     def repl(m: re.Match) -> str:
         tag = m.group(1)
@@ -47,18 +36,8 @@ def _fix_missing_gt(text: str) -> str:
 
 
 def normalize_lndl_text(text: str) -> str:
-    """Normalize model-invented syntax before lexing.
-
-    Handles:
-    - Curly-brace tags: ``{lact X}fn(){/lact}`` or ``{lact X}fn()</lact>``
-      → ``<lact X>fn()</lact>``
-    - XML attributes: ``<lact name="X" type="Y">`` → ``<lact X>``
-    - Tag opening missing ``>`` before body: ``<lact a fn()</lact>`` →
-      ``<lact a>fn()</lact>`` (when the body contains a parenthesised call).
-    - ``Note.`` namespace casing: ``<lvar Note.draft d>`` → ``<lvar note.draft d>``
-      (the note namespace and OUT{} ``note.x`` refs are matched case-sensitively
-      downstream, so model-invented capitalization must be normalized here).
-    """
+    """Normalize model-invented syntax before lexing: curly-brace tags,
+    XML attributes, missing-`>` opens, and ``Note.`` → ``note.`` casing."""
     if not text:
         return text
 
@@ -93,8 +72,7 @@ def normalize_lndl_text(text: str) -> str:
 
     text = re.sub(r"<(lvar|lact)\s+((?:[^>])*?)>", _clean_tag, text)
 
-    # 4) Note-namespace casing: `Note.` → `note.` inside tag bodies, so both
-    #    the note lvar declaration and any `note.x` OUT{} ref match the
-    #    case-sensitive `note.` prefix the assembler checks for.
+    # 4) Note-namespace casing: `Note.` → `note.` — the assembler matches
+    #    the `note.` prefix case-sensitively downstream.
     text = re.sub(r"<(lvar|lact)\s+Note\.", r"<\1 note.", text)
     return text

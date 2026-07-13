@@ -1,15 +1,8 @@
 # Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""LNDL — Lion Notation Definition Language.
-
-Structured output format for LLM responses. Tags allow models to mix
-natural reasoning with structured data.
-
-Core (no external deps beyond lionagi + pydantic):
-    lexer, parser, ast, assembler, extract, normalize, types, errors, prompt,
-    diagnostics, round_outcome
-"""
+"""LNDL — Lion Notation Definition Language. Structured output format for
+LLM responses; tags let models mix natural reasoning with structured data."""
 
 from .assembler import (
     NOTE_NAMESPACE,
