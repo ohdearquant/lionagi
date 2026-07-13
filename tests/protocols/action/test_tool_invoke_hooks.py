@@ -317,6 +317,86 @@ async def test_post_hook_advisory_reason_collected_but_does_not_change_outcome()
     assert fc.response == 2
 
 
+async def test_post_hook_note_surfaced_on_metadata_for_success():
+    """A post hook's ToolPostDecision.reason must not vanish: it is
+    collected by run_tool_post_hooks and attached to the returned
+    FunctionCalling event's metadata so callers/telemetry can observe it."""
+    order: list[str] = []
+    calls: list[tuple[int, int]] = []
+    manager, tool_name = _build_manager(order, calls)
+
+    async def annotate(name: str, arguments: dict, result, error) -> ToolPostDecision:
+        return ToolPostDecision(reason="looked fine to me")
+
+    manager.add_tool_post_hook(annotate)
+
+    fc = await manager.invoke({"function": tool_name, "arguments": {"a": 1, "b": 1}})
+
+    assert fc.status == EventStatus.COMPLETED
+    assert fc.metadata["tool_post_hook_notes"] == ["looked fine to me"]
+
+
+async def test_post_hook_note_surfaced_on_metadata_for_failure():
+    """The same note-surfacing must happen when the tool itself failed --
+    post hooks are advisory and still run in the finally block, and their
+    notes must reach the caller on the failure path too."""
+
+    async def boom(a: int) -> int:
+        raise RuntimeError("kaboom")
+
+    manager = ActionManager(Tool(func_callable=boom))
+
+    async def annotate(name: str, arguments: dict, result, error) -> ToolPostDecision:
+        return ToolPostDecision(reason=f"observed failure: {error}")
+
+    manager.add_tool_post_hook(annotate)
+
+    fc = await manager.invoke({"function": "boom", "arguments": {"a": 1}})
+
+    assert fc.status == EventStatus.FAILED
+    assert fc.metadata["tool_post_hook_notes"] == ["observed failure: kaboom"]
+
+
+async def test_post_hook_multiple_notes_collected_in_order():
+    order: list[str] = []
+    calls: list[tuple[int, int]] = []
+    manager, tool_name = _build_manager(order, calls)
+
+    async def first_note(name: str, arguments: dict, result, error) -> ToolPostDecision:
+        return ToolPostDecision(reason="first")
+
+    async def no_note(name: str, arguments: dict, result, error) -> ToolPostDecision:
+        return ToolPostDecision()
+
+    async def second_note(name: str, arguments: dict, result, error) -> ToolPostDecision:
+        return ToolPostDecision(reason="second")
+
+    manager.add_tool_post_hook(first_note)
+    manager.add_tool_post_hook(no_note)
+    manager.add_tool_post_hook(second_note)
+
+    fc = await manager.invoke({"function": tool_name, "arguments": {"a": 1, "b": 1}})
+
+    assert fc.metadata["tool_post_hook_notes"] == ["first", "second"]
+
+
+async def test_post_hook_no_notes_leaves_metadata_key_absent():
+    """When no post hook returns a reason, the metadata key is never added
+    -- absence, not an empty list, is the "nothing to observe" signal."""
+    order: list[str] = []
+    calls: list[tuple[int, int]] = []
+    manager, tool_name = _build_manager(order, calls)
+
+    async def silent(name: str, arguments: dict, result, error) -> None:
+        return None
+
+    manager.add_tool_post_hook(silent)
+
+    fc = await manager.invoke({"function": tool_name, "arguments": {"a": 1, "b": 1}})
+
+    assert "tool_post_hook_notes" not in fc.metadata
+
+
 async def test_post_hook_error_is_isolated_and_does_not_break_the_caller():
     order: list[str] = []
     calls: list[tuple[int, int]] = []

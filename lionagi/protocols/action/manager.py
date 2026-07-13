@@ -185,6 +185,10 @@ class ActionManager(Manager):
 
         Bypassing this manager (constructing ``FunctionCalling`` directly)
         skips the hook layer entirely. See docs/internals/core.md.
+
+        Non-empty tool-post-hook reasons are attached to the returned event
+        at ``metadata["tool_post_hook_notes"]`` and logged, on success and
+        failure paths alike.
         """
         function_calling = self.match_tool(func_call)
         tool_name = function_calling.function
@@ -204,13 +208,16 @@ class ActionManager(Manager):
             raise
         finally:
             if self._tool_post_hooks:
-                await run_tool_post_hooks(
+                notes = await run_tool_post_hooks(
                     self._tool_post_hooks,
                     tool_name,
                     function_calling.arguments,
                     function_calling.response,
                     error,
                 )
+                if notes:
+                    function_calling.metadata["tool_post_hook_notes"] = notes
+                    logger.info("tool post hook notes for %r: %s", tool_name, notes)
 
         return function_calling
 

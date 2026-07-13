@@ -533,7 +533,11 @@ CREATE TABLE IF NOT EXISTS schedule_runs (
   -- distinguish "crashed before dispatch, safe to re-fire" from
   -- "dispatched, outcome merely lost" (see SchedulerEngine._fire_inner and
   -- SchedulerEngine._recover_undispatched_fires).
-  dispatched_at           REAL
+  dispatched_at           REAL,
+  -- Nullable sidecar metadata blob for resuming a run, shaped like an
+  -- Element.to_dict(mode="db") payload (arbitrary JSON-serializable dict).
+  -- NULL means no resume state has been captured for this run.
+  resume_packet           JSON
 );
 
 CREATE INDEX IF NOT EXISTS idx_sched_runs_schedule
