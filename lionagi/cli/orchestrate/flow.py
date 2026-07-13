@@ -666,9 +666,15 @@ def _reconstruct_spawned_nodes(
         if spawn_id:
             metadata["spawn_id"] = spawn_id
             metadata["reference_id"] = spawn_id
+        parameters: dict[str, Any] = {"instruction": entry.get("instruction") or ""}
+        # context (e.g. a team round op's prior_team_messages) is optional —
+        # only checkpoints written after CHECKPOINT_VERSION 2's context
+        # capture carry it; older entries simply have none to restore.
+        if entry.get("context") is not None:
+            parameters["context"] = entry["context"]
         node = create_operation(
             entry["operation"],
-            parameters={"instruction": entry.get("instruction") or ""},
+            parameters=parameters,
             id=_UUID(node_id),
             metadata=metadata,
         )
@@ -931,6 +937,15 @@ async def _execute_dag(
                     # role_node_builder stamps spawn_id unconditionally, so
                     # it's captured the same way regardless of assignee.
                     spawn_fields["spawn_id"] = spawned_node.metadata.get("spawn_id")
+                    # context carries payload the generic `instruction` text
+                    # doesn't (e.g. a team round op's prior_team_messages) —
+                    # without it, resume reconstructs the node with only the
+                    # boilerplate instruction and silently loses that data.
+                    spawn_fields["context"] = (
+                        params.get("context")
+                        if isinstance(params, dict)
+                        else getattr(params, "context", None)
+                    )
             _checkpoint_tasks.append(
                 _asyncio.ensure_future(
                     _checkpoint_writer.record_spawned(
