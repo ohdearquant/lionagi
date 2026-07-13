@@ -74,6 +74,7 @@ _STATUS_COLOUR = {
     "gate_failed": _red,
     "cancelled": _red,
     "timed_out": _red,
+    "orphaned": _red,
     "pending": _yellow,
     "prepared": _yellow,
     "gated": _yellow,
@@ -87,6 +88,23 @@ _STATUS_COLOUR = {
 def _colour_status(status: str) -> str:
     fn = _STATUS_COLOUR.get(status, lambda t: t)
     return fn(status)
+
+
+def _display_status(row: dict[str, Any]) -> str:
+    """Human-facing status for a session row: reports "orphaned" instead of
+    the raw persisted "failed" when the row's reason code is the orphan-
+    sweep's canonical one (`lionagi.cli._orphan.sweep_orphaned_sessions`).
+
+    This is a read-time projection only — no "orphaned" value is ever
+    written to the `status` column (see ADR-0095 D4); raw SQL and every
+    other consumer still see the honest persisted status plus reason code.
+    """
+    from lionagi.state.reasons import RunReasons
+
+    status = row.get("status") or "?"
+    if status == "failed" and row.get("status_reason_code") == RunReasons.FAILED_ORPHANED_PARENT:
+        return "orphaned"
+    return status
 
 
 # ── Elapsed formatting ────────────────────────────────────────────────────────
@@ -427,7 +445,7 @@ def _session_to_row(sess: dict[str, Any]) -> dict[str, Any]:
         "id": sess["id"][:16],
         "type": sess.get("invocation_kind") or "session",
         "project": sess.get("project") or "-",
-        "status": sess.get("status") or "?",
+        "status": _display_status(sess),
         # live flow phase (executing/synthesizing) wins over the static
         # orchestrator/playbook name once a flow leaves planning.
         "phase": (
@@ -500,9 +518,10 @@ def _render_branch_lines(rows: list[dict[str, Any]], *, indent: str = "  ") -> l
 
 
 async def _detail_session(db: Any, sess: dict[str, Any]) -> str:
+    display_status = _display_status(sess)
     lines: list[str] = []
     lines.append(_bold(f"SESSION  {sess['id']}"))
-    lines.append(f"  status:    {_colour_status(sess.get('status') or '?')}")
+    lines.append(f"  status:    {_colour_status(display_status)}")
     lines.append(f"  kind:      {sess.get('invocation_kind') or '-'}")
     if sess.get("playbook_name"):
         lines.append(f"  playbook:  {sess['playbook_name']}")
@@ -520,8 +539,10 @@ async def _detail_session(db: Any, sess: dict[str, Any]) -> str:
 
     # Completion-trust evidence: surface why a terminal status landed where it
     # did, so trusting `completed` (or catching `completed_empty`) doesn't
-    # require a manual git read.
-    if sess.get("status") in ("completed", "completed_empty"):
+    # require a manual git read. An orphan-swept session (status="failed",
+    # display_status="orphaned") reuses the same evidence rendering to show
+    # its recovery capability (checkpoint_resume vs rerun_only).
+    if sess.get("status") in ("completed", "completed_empty") or display_status == "orphaned":
         reason_summary = sess.get("status_reason_summary")
         if reason_summary:
             lines.append(f"  reason:    {reason_summary}")
@@ -857,6 +878,9 @@ async def _run_table(
         if not DEFAULT_DB_PATH.exists():
             return _dim("(no state.db — run `li agent` at least once)")
         async with StateDB() as db:
+            from ._orphan import sweep_orphaned_sessions
+
+            await sweep_orphaned_sessions(db)
             rows = await _gather_table_rows(
                 db, since=since, entity_type=entity_type, project=project
             )
@@ -872,6 +896,9 @@ async def _run_detail(entity_id: str) -> str:
         if not DEFAULT_DB_PATH.exists():
             return _red(f"state.db not found — cannot look up {entity_id!r}")
         async with StateDB() as db:
+            from ._orphan import sweep_orphaned_sessions
+
+            await sweep_orphaned_sessions(db)
             result = await _find_entity(db, entity_id)
             if result is None:
                 return _red(f"entity {entity_id!r} not found in state.db")

@@ -17,6 +17,7 @@ from lionagi.cli.monitor import (
     _NON_TTY_MAX_COL_WIDTH,
     _cached_detect_project,
     _colour_status,
+    _display_status,
     _elapsed,
     _find_entity,
     _format_coordination_line,
@@ -37,6 +38,7 @@ from lionagi.cli.monitor import (
     _trunc,
 )
 from lionagi.state.db import StateDB
+from lionagi.state.reasons import RunReasons
 
 
 class _FakeStdout:
@@ -238,6 +240,47 @@ def test_colour_status_unknown():
     result = _colour_status("some_unknown_status")
     # Unknown statuses are returned as-is
     assert result == "some_unknown_status"
+
+
+def test_colour_status_orphaned_is_red():
+    import re
+
+    result = _colour_status("orphaned")
+    assert "orphaned" in result
+    # Red is ANSI code 31; strip codes to confirm the label itself renders.
+    assert re.sub(r"\033\[\d+m", "", result) == "orphaned"
+
+
+# ── _display_status (orphan-sweep read-time projection) ──────────────────────
+
+
+def test_display_status_passes_through_running():
+    assert _display_status({"status": "running"}) == "running"
+
+
+def test_display_status_passes_through_plain_failed():
+    assert (
+        _display_status({"status": "failed", "status_reason_code": RunReasons.FAILED_EXCEPTION})
+        == "failed"
+    )
+
+
+def test_display_status_projects_orphaned_for_orphan_reason_code():
+    row = {"status": "failed", "status_reason_code": RunReasons.FAILED_ORPHANED_PARENT}
+    assert _display_status(row) == "orphaned"
+
+
+def test_display_status_missing_status_falls_back_to_placeholder():
+    assert _display_status({}) == "?"
+
+
+def test_session_to_row_projects_orphaned_status():
+    sess = {
+        "id": "abc123def456",
+        "status": "failed",
+        "status_reason_code": RunReasons.FAILED_ORPHANED_PARENT,
+    }
+    assert _session_to_row(sess)["status"] == "orphaned"
 
 
 def test_pid_alive_none():
@@ -721,6 +764,63 @@ async def test_gather_table_rows_show_annotated_repo_matches_project(
 
     assert show_id[:16] in [r["id"] for r in rows]
     assert seen == ["/Users/lion/projects/proj-a"]
+
+
+# ── Orphan sweep wiring (`li monitor` self-heals before rendering) ──────────
+
+
+async def test_run_table_sweeps_orphaned_session_and_hides_it_from_default_view(
+    temp_db_path: Path,
+) -> None:
+    """A `li monitor` table render must sweep confirmed-dead-pid sessions
+    before querying rows: the swept session leaves the default (running-only)
+    view, and the underlying row is durably terminalized."""
+    import uuid
+
+    async with StateDB() as db:
+        sid = str(uuid.uuid4())
+        prog_id = str(uuid.uuid4())
+        await db.create_progression(prog_id)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": prog_id,
+                "status": "running",
+                "started_at": time.time(),
+                "node_metadata": {"pid": 999999999},
+            }
+        )
+
+    output = await _run_table(since=None, entity_type=None, project=None)
+    assert sid[:16] not in output
+
+    async with StateDB() as db:
+        row = await db.get_session(sid)
+    assert row["status"] == "failed"
+    assert row["status_reason_code"] == RunReasons.FAILED_ORPHANED_PARENT
+
+
+async def test_run_detail_sweeps_before_rendering_and_shows_orphaned(
+    temp_db_path: Path,
+) -> None:
+    import uuid
+
+    async with StateDB() as db:
+        sid = str(uuid.uuid4())
+        prog_id = str(uuid.uuid4())
+        await db.create_progression(prog_id)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": prog_id,
+                "status": "running",
+                "started_at": time.time(),
+                "node_metadata": {"pid": 999999999},
+            }
+        )
+
+    output = await _run_detail(sid)
+    assert "orphaned" in output
 
 
 def test_show_project_matches_strips_tab_separated_annotation(

@@ -431,6 +431,68 @@ li monitor --project myproject  # filter sessions by project
 | `-t, --type` | none | One of `session`, `invocation`, `show`, `play` |
 | `-p, --project` | none | Filter sessions by project name |
 
+### Orphan detection
+
+Every `li agent` / `li o flow` / `li o fanout` session records its own launcher
+process's `pid` and `pid_create_time` into `node_metadata` at session-creation
+time. If that process dies without running its own teardown — the terminal
+that held it closes, the parent harness restarts, a session gets compacted
+out from under it — the session's row is left at `status=running` with no
+live process behind it and no natural way to reach a terminal state on its
+own.
+
+`li monitor` sweeps for this on every table and detail render: it scans
+`running` sessions, confirms (kill-0 plus a process-creation-time check, to
+rule out an unrelated process that has since reused the same pid) that the
+recorded launcher pid is actually gone, and — only for a *confirmed* dead
+pid, never an unrecorded or unreadable one — transitions the row to `failed`
+with reason code `run.failed.orphaned_parent` through the same guarded
+transition path every other status change uses. The table and detail views
+then display that row as `orphaned` rather than `failed`; the persisted
+status and reason code are unchanged; anything reading the database directly
+sees the honest `failed` / `run.failed.orphaned_parent` pair. A session that
+is still alive, or whose liveness can't be determined (no pid recorded), is
+left alone — orphan detection only ever acts on positive evidence of death.
+
+Re-arming an orphaned row depends on what it was running:
+
+- A flow that reached a checkpoint can be resumed from where it left off:
+  `li o flow --resume <session_id>`. `li monitor <session_id>` on an orphaned
+  row shows the resume command when one applies.
+- Everything else (a bare agent turn, a fanout leg, a flow with no
+  checkpoint) has no resume frontier — re-arming means re-running the
+  original command. The sweep does not attempt this automatically; it only
+  clears the row out of `running` so downstream consumers (`li monitor`,
+  anything polling for completion) stop waiting on a session nothing is ever
+  going to finish.
+
+Play-level rows are not covered by this sweep — see the play reaper gap
+tracked separately.
+
+### Detached launch (surviving the launcher)
+
+A run that must keep going after the shell/terminal/harness that started it
+exits needs to be launched detached, not just backgrounded in the same
+process group:
+
+```bash
+li o flow claude/opus "long-running task" --save ./work --background
+```
+
+`--background` re-spawns the flow in its own session (`start_new_session`,
+the `setsid` equivalent) and returns immediately, printing the child's PID
+and a ready-to-use `li monitor <session_id>` pointer; the detached child logs
+to `<save>/flow.log`. Because the child is the process that actually records
+`node_metadata.pid`, it is exactly the process orphan detection watches —
+closing the original terminal has no effect on it, and if the machine itself
+loses the child (a reboot, an OOM kill), the row still self-heals via the
+sweep above instead of hanging at `running` forever.
+
+`li agent` has no built-in `--background` flag; for a long agent leg that
+must outlive its launcher, wrap it the same way (`nohup`/`setsid`, redirect
+output to a file, record the printed PID) and track it with `li monitor`
+plus the artifact/log path rather than holding a foreground shell open.
+
 ---
 
 ## `li invoke`

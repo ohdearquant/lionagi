@@ -70,6 +70,12 @@ class RunReasons:
     # cwd, and the spawned process then exited non-zero.
     FAILED_MISSING_CWD = "run.failed.missing_cwd"
     FAILED_ESCALATED = "run.failed.escalated"  # undeclared-artifact backstop
+    # The recorded launcher process (pid + pid_create_time in
+    # node_metadata) is confirmed dead — the parent that spawned this
+    # session (terminal closed, harness restart, session compaction) is
+    # gone and the row would otherwise stay "running" forever with no
+    # live process behind it. See docs/adr/ADR-0095.
+    FAILED_ORPHANED_PARENT = "run.failed.orphaned_parent"
     # Loop exited clean but no commits/artifacts were produced (completion-trust gate).
     COMPLETED_EMPTY_NO_EVIDENCE = "run.completed_empty.no_evidence"
     TIMED_OUT_DEADLINE = "run.timed_out.deadline"
