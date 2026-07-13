@@ -103,6 +103,7 @@ class Branch(Element, Relational):
     _operation_manager: OperationManager | None = PrivateAttr(None)
     _observer: Any = PrivateAttr(None)
     _hooks: Any = PrivateAttr(None)
+    _pending_hook_bus_entries: list = PrivateAttr(default_factory=list)
     _memory: MemoryStore | None = PrivateAttr(None)
     _owning_session_id: Any = PrivateAttr(None)
     _capabilities: Any = PrivateAttr(None)
@@ -338,6 +339,26 @@ class Branch(Element, Relational):
         if self._observer is None:
             return True
         return await self._observer.authorize(action)
+
+    def attach_hook_bus(self, bus: Any) -> None:
+        """Set this branch's :class:`HookBus` and flush any handlers queued
+        while it had none.
+
+        A standalone branch built via ``create_agent`` has no bus yet, so
+        ``hooks_external`` entries bound to bus-only events (``UserPromptSubmit``,
+        ``SessionStart``/``SessionEnd``/``PostToolUseFailure``) cannot attach
+        at config time; ``lionagi.agent.factory._wire_external_hooks`` queues
+        them onto ``_pending_hook_bus_entries`` instead of dropping them.
+        Every seam that later gives this branch a bus -- ``Session.include_branches``
+        and the lazy ``Session.hooks`` property -- must route the assignment
+        through this method so those queued handlers actually attach, rather
+        than a configured guard silently never firing.
+        """
+        self._hooks = bus
+        if bus is not None and self._pending_hook_bus_entries:
+            pending, self._pending_hook_bus_entries = self._pending_hook_bus_entries, []
+            for point, handler in pending:
+                bus.on(point, handler)
 
     async def _persist_via_bus(self, msg: Any) -> None:
         """on_message_added hook: emit MESSAGE_ADD for ordered persistence."""

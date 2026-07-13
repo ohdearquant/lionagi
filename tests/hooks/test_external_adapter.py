@@ -288,6 +288,31 @@ async def test_pre_tool_use_unrecognized_decision_fails_closed(monkeypatch):
     assert "maybe" in result.reason
 
 
+async def test_pre_tool_use_top_level_unrecognized_decision_fails_closed(monkeypatch):
+    """The top-level `decision` shape must fail closed the same way the nested
+    `hookSpecificOutput.permissionDecision` shape does: an explicit but
+    unrecognized value (e.g. "maybe") must never fall through to allow."""
+    stdout = json.dumps({"decision": "maybe", "reason": "unexpected"}).encode()
+    monkeypatch.setattr(
+        asyncio, "create_subprocess_exec", AsyncMock(return_value=_mock_proc(0, stdout=stdout))
+    )
+    hook = external_hook_adapter(event="PreToolUse", command=["guard"])
+    result = await hook("bash", {"command": ["ls"]})
+    assert result.decision == "deny"
+    assert "maybe" in result.reason
+
+
+@pytest.mark.parametrize("value", ["allow", "approve"])
+async def test_pre_tool_use_top_level_allow_synonyms_allow(monkeypatch, value):
+    stdout = json.dumps({"decision": value}).encode()
+    monkeypatch.setattr(
+        asyncio, "create_subprocess_exec", AsyncMock(return_value=_mock_proc(0, stdout=stdout))
+    )
+    hook = external_hook_adapter(event="PreToolUse", command=["guard"])
+    result = await hook("bash", {"command": ["ls"]})
+    assert result.decision == "allow"
+
+
 async def test_pre_tool_use_nonjson_stdout_is_treated_as_no_decision(monkeypatch):
     monkeypatch.setattr(
         asyncio,

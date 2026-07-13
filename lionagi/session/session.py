@@ -96,7 +96,7 @@ class Session(Node, Relational):
             branch._operation_manager = self._operation_manager
             branch._observer = self.observer
             if self._hooks is not None:
-                branch._hooks = self._hooks
+                branch.attach_hook_bus(self._hooks)
             if branch._memory is None:
                 # First claim wins; reading self.memory lazily creates and
                 # shares one store instance across every branch taken in.
@@ -142,7 +142,7 @@ class Session(Node, Relational):
 
             self._hooks = build_session_bus(observer=self.observer)
             for branch in self.branches:
-                branch._hooks = self._hooks
+                branch.attach_hook_bus(self._hooks)
         return self._hooks
 
     @property

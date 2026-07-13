@@ -243,20 +243,33 @@ def _run_import(source: str, path: str | None, cwd: str | None) -> int:
     return 0
 
 
-def _iter_untrusted_commands(project_dir: Path) -> list[dict[str, Any]]:
+def _iter_untrusted_commands(
+    project_dir: Path,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Return ``(pending, rejected)``: pending trust candidates plus a report
+    line per malformed candidate that ``validate_argv`` rejected -- a
+    malformed command (empty argv, a blank/non-string entry, ...) is never
+    added to ``pending``, so it can never be hash-recorded as trusted.
+    """
     import yaml
 
-    from lionagi.hooks.external import compute_command_hash, is_command_trusted
+    from lionagi.hooks.external import (
+        ExternalHookConfigError,
+        compute_command_hash,
+        is_command_trusted,
+        validate_argv,
+    )
 
     settings_path = project_dir / ".lionagi" / "settings.yaml"
     if not settings_path.is_file():
-        return []
+        return [], []
     data = yaml.safe_load(settings_path.read_text()) or {}
     hooks_external = data.get("hooks_external", {}) if isinstance(data, dict) else {}
     if not isinstance(hooks_external, dict):
-        return []
+        return [], []
 
     pending: list[dict[str, Any]] = []
+    rejected: list[str] = []
     seen_hashes: set[str] = set()
     for event, groups in hooks_external.items():
         if not isinstance(groups, list):
@@ -272,7 +285,12 @@ def _iter_untrusted_commands(project_dir: Path) -> list[dict[str, Any]]:
                     continue
                 source = spec.get("source")
                 command = spec.get("command")
-                if not source or not isinstance(command, list):
+                if not source:
+                    continue
+                try:
+                    validate_argv(command)
+                except ExternalHookConfigError as exc:
+                    rejected.append(f"[{event}] source={source!r} command={command!r}: {exc}")
                     continue
                 if is_command_trusted(command, source=source):
                     continue
@@ -283,14 +301,16 @@ def _iter_untrusted_commands(project_dir: Path) -> list[dict[str, Any]]:
                 pending.append(
                     {"event": event, "command": command, "source": source, "hash": command_hash}
                 )
-    return pending
+    return pending, rejected
 
 
 def _run_trust(cwd: str | None, *, assume_yes: bool) -> int:
     from lionagi.plugins._user_settings import read_user_settings, write_user_settings
 
     project_dir = Path(cwd) if cwd else Path.cwd()
-    pending = _iter_untrusted_commands(project_dir)
+    pending, rejected = _iter_untrusted_commands(project_dir)
+    for line in rejected:
+        print(f"rejected {line}")
     if not pending:
         print("(no pending imported hook commands)")
         return 0

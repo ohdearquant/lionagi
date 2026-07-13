@@ -178,3 +178,72 @@ def test_trust_is_idempotent_on_rerun(tmp_path):
 
     code = cli_main(["hooks", "trust", "--cwd", str(tmp_path)])
     assert code == 0  # nothing left pending -> no prompt needed
+
+
+def test_trust_rejects_malformed_argv_instead_of_recording_it(capsys, tmp_path):
+    """`li hooks trust` must not hash-record a malformed imported command
+    (an empty argv list here) -- it must reject it with a clear message,
+    matching the argv validation the config loader enforces at execution
+    time (ADR-0048 D4)."""
+    from lionagi.hooks.external import compute_command_hash
+
+    settings_path = tmp_path / ".lionagi" / "settings.yaml"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(
+        yaml.safe_dump(
+            {
+                "hooks_external": {
+                    "PreToolUse": [
+                        {
+                            "hooks": [
+                                {"command": [], "source": "imported:claude"},
+                            ]
+                        }
+                    ]
+                }
+            }
+        )
+    )
+
+    code = cli_main(["hooks", "trust", "--cwd", str(tmp_path), "--yes"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "rejected" in out
+    assert "no pending" in out
+
+    trusted = read_user_settings().get("trusted_hook_commands", [])
+    assert compute_command_hash([]) not in trusted
+
+
+@pytest.mark.parametrize(
+    "bad_command",
+    [
+        [],  # empty argv
+        ["guard", "   "],  # blank entry
+        ["guard", 1],  # non-string entry
+    ],
+    ids=["empty", "blank", "non-string"],
+)
+def test_trust_rejects_various_malformed_argv_shapes(capsys, tmp_path, bad_command):
+    from lionagi.hooks.external import compute_command_hash
+
+    settings_path = tmp_path / ".lionagi" / "settings.yaml"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(
+        yaml.safe_dump(
+            {
+                "hooks_external": {
+                    "PreToolUse": [
+                        {"hooks": [{"command": bad_command, "source": "imported:claude"}]}
+                    ]
+                }
+            }
+        )
+    )
+
+    code = cli_main(["hooks", "trust", "--cwd", str(tmp_path), "--yes"])
+    assert code == 0
+    assert "rejected" in capsys.readouterr().out
+
+    trusted = read_user_settings().get("trusted_hook_commands", [])
+    assert compute_command_hash(bad_command) not in trusted

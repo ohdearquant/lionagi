@@ -234,8 +234,15 @@ def _parse_stdout_decision(
 ) -> tuple[str | None, str, dict[str, Any] | None]:
     """Parse exit-0 stdout into ``(permission_decision, reason, updated_input)``.
 
-    Empty stdout, or non-empty stdout that fails to parse as JSON, both
-    return ``(None, "", None)`` -- "no structured output," never a block.
+    Empty stdout, non-empty stdout that fails to parse as JSON, or a JSON
+    body with no recognized decision field all return ``(None, "", None)``
+    -- "no structured output," never a block. A top-level ``decision`` of
+    ``"block"`` normalizes to ``"deny"``; ``"allow"``/``"approve"`` (or an
+    explicit ``null``) normalize to ``None`` (allow); any other explicit
+    value -- including ``"ask"`` or an unrecognized string -- passes through
+    unchanged so the caller's decision switch fails it closed, matching the
+    nested ``hookSpecificOutput.permissionDecision`` shape's handling of
+    unrecognized values.
     """
     text = stdout_bytes.decode(errors="replace").strip()
     if not text:
@@ -259,7 +266,16 @@ def _parse_stdout_decision(
     if "decision" in data:
         decision = data.get("decision")
         reason = data.get("reason") or ""
-        return ("deny" if decision == "block" else None), reason, None
+        if decision is None or decision in ("allow", "approve"):
+            return None, reason, None
+        if decision == "block":
+            return "deny", reason, None
+        # Any other explicit value (e.g. "ask", or an unrecognized string) is
+        # handed through as-is so `_execute_hook`'s decision switch applies
+        # the same fail-closed handling it uses for the nested
+        # `hookSpecificOutput.permissionDecision` shape -- an explicit but
+        # unrecognized top-level decision must never fall through to allow.
+        return decision, reason, None
     return None, "", None
 
 

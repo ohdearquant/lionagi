@@ -7,10 +7,17 @@ tool pre/post hook chain for PreToolUse/PostToolUse, HookBus for the rest."""
 
 from __future__ import annotations
 
-from lionagi.agent.factory import _wire_external_hooks
+import asyncio
+import json
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from lionagi.agent.factory import _wire_external_hooks, create_agent
 from lionagi.agent.spec import AgentSpec
 from lionagi.hooks.bus import HookBus, HookPoint
 from lionagi.session.branch import Branch
+from lionagi.session.session import Session
 
 
 def _spec_with(entries: list[dict]) -> AgentSpec:
@@ -99,6 +106,31 @@ def test_user_prompt_submit_skipped_without_hook_bus(caplog):
     assert branch._hooks is None
 
 
+def test_user_prompt_submit_without_hook_bus_is_queued_not_dropped():
+    """A HookBus-only external hook configured before the branch has a bus
+    must not be lost: it queues onto `_pending_hook_bus_entries` so it can
+    still attach once the branch acquires one (`Branch.attach_hook_bus`)."""
+    branch = Branch()
+    spec = _spec_with(
+        [
+            {
+                "event": "UserPromptSubmit",
+                "matcher": None,
+                "command": ["hygiene"],
+                "timeout": 30.0,
+                "source": None,
+            }
+        ]
+    )
+    _wire_external_hooks(branch, spec)
+    assert branch._hooks is None
+    assert len(branch._pending_hook_bus_entries) == 1
+
+    branch.attach_hook_bus(HookBus())
+    assert len(branch._hooks.handlers_for(HookPoint.USER_PROMPT_SUBMIT)) == 1
+    assert branch._pending_hook_bus_entries == []
+
+
 def test_session_start_and_error_route_to_hook_bus():
     branch = Branch()
     branch._hooks = HookBus()
@@ -156,3 +188,53 @@ def test_multiple_entries_wire_independently():
     _wire_external_hooks(branch, spec)
     assert len(branch.acts._tool_pre_hooks) == 2
     assert len(branch._hooks.handlers_for(HookPoint.USER_PROMPT_SUBMIT)) == 1
+
+
+# ---------------------------------------------------------------------------
+# Session-bus wiring: create_agent() always builds a standalone branch with
+# no HookBus yet; a configured UserPromptSubmit hook must still fire once
+# that branch joins a Session (the only thing that ever attaches a bus).
+# ---------------------------------------------------------------------------
+
+
+def _mock_proc(returncode: int, stdout: bytes = b"", stderr: bytes = b""):
+    proc = MagicMock()
+    proc.returncode = returncode
+    proc.communicate = AsyncMock(return_value=(stdout, stderr))
+    proc.pid = 4242
+    return proc
+
+
+async def test_user_prompt_submit_hook_fires_after_create_agent_and_session_inclusion(
+    monkeypatch,
+):
+    stdout = json.dumps({"decision": "block", "reason": "hygiene check failed"}).encode()
+    monkeypatch.setattr(
+        asyncio, "create_subprocess_exec", AsyncMock(return_value=_mock_proc(0, stdout=stdout))
+    )
+
+    spec = _spec_with(
+        [
+            {
+                "event": "UserPromptSubmit",
+                "matcher": None,
+                "command": ["hygiene"],
+                "timeout": 30.0,
+                "source": None,
+            }
+        ]
+    )
+    branch = await create_agent(spec, load_settings=False)
+    assert branch._hooks is None, "standalone branch: no bus exists yet"
+
+    session = Session()
+    session.include_branches(branch)
+    # Session.hooks lazily creates the bus and must flush the queued
+    # UserPromptSubmit handler onto every branch it already owns.
+    assert len(session.hooks.handlers_for(HookPoint.USER_PROMPT_SUBMIT)) == 1
+    assert branch._hooks is session.hooks
+
+    with pytest.raises(PermissionError, match="hygiene check failed"):
+        await branch._hooks.blocking_emit(
+            HookPoint.USER_PROMPT_SUBMIT, session_id=str(session.id), prompt="do a thing"
+        )

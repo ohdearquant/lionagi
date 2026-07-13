@@ -126,8 +126,13 @@ def _wire_external_hooks(branch: Branch, spec: AgentSpec) -> None:
     The remaining supported events attach to ``branch._hooks`` (a ``HookBus``)
     -- present only once the branch is owned by a ``Session``; a standalone
     branch built via ``create_agent`` has none yet, so those entries are
-    skipped with a warning rather than raising, matching the existing
-    no-hooks-bus-attached behavior elsewhere in the runtime.
+    queued on ``branch._pending_hook_bus_entries`` instead of dropped.
+    ``Branch.attach_hook_bus`` -- the only seam that ever assigns
+    ``branch._hooks`` (``Session.include_branches`` and the lazy
+    ``Session.hooks`` property) -- flushes the queue once a bus exists, so a
+    configured ``UserPromptSubmit``/``SessionStart``/``SessionEnd``/
+    ``PostToolUseFailure`` hook still attaches once this branch joins a
+    ``Session``, rather than silently never firing.
     """
     if not spec.external_hooks:
         return
@@ -160,9 +165,11 @@ def _wire_external_hooks(branch: Branch, spec: AgentSpec) -> None:
         elif branch._hooks is not None:
             branch._hooks.on(event_to_point[entry["event"]], handler)
         else:
-            logger.warning(
-                "hooks_external: %r configured but this branch has no HookBus "
-                "attached (not part of a Session yet) -- skipping until it is",
+            branch._pending_hook_bus_entries.append((event_to_point[entry["event"]], handler))
+            logger.debug(
+                "hooks_external: %r configured on a branch with no HookBus "
+                "attached yet (not part of a Session yet) -- queued for "
+                "attachment once it joins one",
                 entry["event"],
             )
 
