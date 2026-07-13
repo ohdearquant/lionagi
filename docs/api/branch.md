@@ -4,8 +4,17 @@
 class Branch(Element, Relational)
 ```
 
-Single conversation thread: manages message history, tools, model access, and LLM operations.
-Most SDK usage starts here.
+One stateful unit of model work: manages message history, tools, model access, logs,
+optional memory, and LLM operations. Most SDK usage starts here.
+
+| Need | Method |
+|------|--------|
+| Normal recorded turn, no tools | `communicate()` |
+| Structured output or tool execution | `operate()` |
+| Low-level unrecorded invocation | `chat()` |
+| Low-level invocation that is recorded | `chat_and_record()` |
+| Iterative tool use | `ReAct()` |
+| Stream a CLI-backed provider | `run()` |
 
 ## Constructor
 
@@ -22,6 +31,7 @@ branch = li.Branch(
 | `user` | `SenderRecipient \| None` | `None` | Branch owner/sender identity |
 | `name` | `str \| None` | `None` | Human label |
 | `system` | `System \| JsonValue` | `None` | System prompt (str or dict) |
+| `system_sender` | `SenderRecipient \| None` | `None` | Override the system message sender |
 | `chat_model` | `iModel \| dict \| str` | `None` | Primary model for chat / communicate / operate |
 | `parse_model` | `iModel \| dict \| str` | `None` | Model used for `parse()` retries |
 | `tools` | `FuncTool \| list[FuncTool]` | `None` | Pre-register tools on construction |
@@ -32,6 +42,7 @@ branch = li.Branch(
 | `system_template` | `str \| None` | `None` | **Deprecated** — emits `DeprecationWarning`, has no effect; will be removed in a future release |
 | `system_template_context` | `dict` | `None` | **Deprecated** — emits `DeprecationWarning`, has no effect; will be removed in a future release |
 | `use_lion_system_message` | `bool` | `False` | Prepend LIONAGI system preamble |
+| `memory` | `MemoryStore \| None` | `None` | Explicit memory backend; otherwise created lazily on first access |
 
 ## Properties
 
@@ -43,6 +54,7 @@ branch = li.Branch(
 | `chat_model` | `iModel` | Yes | Swap chat provider at runtime |
 | `parse_model` | `iModel` | Yes | Swap parse provider at runtime |
 | `tools` | `dict[str, Tool]` | No | Registered tool registry |
+| `memory` | `MemoryStore` | No | Explicit store, or a lazily-created private `InMemoryStore` |
 | `msgs` | `MessageManager` | No | Internal message manager |
 | `acts` | `ActionManager` | No | Internal action manager |
 | `mdls` | `iModelManager` | No | Internal model manager |
@@ -69,8 +81,9 @@ result = await branch.operate(
 ```
 
 Routes through the [Middle protocol](operations.md#middle-protocol): `communicate` for API
-endpoints, `run_and_collect` for CLI endpoints. Supports tool calling, structured output,
-and streaming persistence.
+endpoints and `run_and_collect` for CLI endpoints. Supports tool calling, structured output,
+and streaming persistence. Registered tools are only exposed and invoked when `actions=True`
+(or the supplied `Instruct` enables actions); passing `tools=` alone does not enable them.
 
 | Param | Type | Default | Notes |
 |-------|------|---------|-------|
@@ -128,18 +141,38 @@ Returns: `BaseModel | dict | str | None`
 
 ---
 
-### `chat()` — raw model invocation
+### `chat()` — low-level, unrecorded invocation
+
+```python
+text = await branch.chat("Draft an outline for a research paper on RAG.")
+# does NOT add to branch.messages — caller manages history
+```
+
+Low-level building block. It does **not** add messages to history and returns the
+assistant response value, usually a string, by default.
+
+Request the generated message objects explicitly when you need them:
 
 ```python
 instruction_msg, response_msg = await branch.chat(
     "Draft an outline for a research paper on RAG.",
-    response_format=None,
+    return_ins_res_message=True,
 )
-# does NOT add to branch.messages — caller manages history
 ```
 
-Low-level building block. Does **not** add messages to history.
-Returns `(Instruction, AssistantResponse)` tuple — use when you need explicit history control.
+Returns: `str` by default, or `(Instruction, AssistantResponse)` when
+`return_ins_res_message=True`.
+
+### `chat_and_record()` — low-level invocation with history
+
+```python
+text = await branch.chat_and_record("Draft an outline for a research paper on RAG.")
+```
+
+Calls `chat(return_ins_res_message=True)`, adds both generated messages through the
+hook-aware async message path, and returns the assistant response string. Use it when
+you need `chat()`'s low-level parameters but still want observers and persistence to
+see the turn. For ordinary stateful calls, prefer `communicate()`.
 
 ---
 
@@ -198,7 +231,7 @@ Returns: `BaseModel | dict | str | None`
 
 ```python
 responses = await branch.act(
-    action_request=[{"tool": "search", "arguments": {"query": "LLM benchmarks 2025"}}],
+    action_request=[{"function": "search", "arguments": {"query": "LLM benchmarks 2025"}}],
     strategy="concurrent",
 )
 ```
@@ -236,10 +269,11 @@ Multi-round reasoning with tool use. Iterates until `max_extensions` or a termin
 | `response_format` | `type[BaseModel]` | `None` | Final output schema |
 | `max_extensions` | `int \| None` | `3` | Max reasoning iterations |
 | `reasoning_effort` | `"low" \| "medium" \| "high"` | `None` | Reasoning depth hint |
-| `return_analysis` | `bool` | `False` | Also return list of intermediate steps |
+| `return_analysis` | `bool` | `False` | Return every collected output instead of only the final result |
 | `verbose` | `bool` | `False` | Print each iteration |
 
-Returns: `Any` or `(Any, list)` if `return_analysis=True`.
+Returns: the final answer or result by default. With `return_analysis=True`, returns
+the collected outputs as a `list`.
 
 For a full working example, see [Research synthesis](../cookbook/research-synthesis.md).
 

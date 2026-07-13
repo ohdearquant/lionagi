@@ -8,7 +8,7 @@ lionagi uses `__getattr__`-based lazy loading. Use public exports, not sub-packa
 # ✓ Works — public export surface
 from lionagi import Branch, iModel, Builder, HookRegistry
 
-# ✗ Fails — sub-package __init__.py is empty
+# ✗ Imports the module object, not the callable
 from lionagi.operations.communicate import communicate
 
 # ✓ Works — full module path to the .py file
@@ -46,17 +46,23 @@ Run artifacts live under `~/.lionagi/runs/{run_id}/`. Check what exists:
 
 ```bash
 ls ~/.lionagi/runs/
-li agent --resume <run-id>
+li o flow --resume <run-or-session-id>
 ```
+
+Flow resume accepts a run, session, or invocation ID. To resume one agent
+conversation instead, choose a snapshot filename under
+`~/.lionagi/runs/<run-id>/branches/` and pass that **branch ID** to
+`li agent --resume <branch-id>`.
 
 ## CLI: `--background` output not visible
 
-`--background` detaches the agent into a subprocess — output goes to the run directory,
-not to stdout. Read the artifacts directly:
+`--background` is a flow option. It requires `--save`, detaches the flow into a
+subprocess, and prints a monitorable session ID. Follow the log in the save
+directory:
 
 ```bash
-cat ~/.lionagi/runs/<run-id>/run.json
-cat ~/.lionagi/runs/<run-id>/stream/<branch-id>.buffer.jsonl
+li o flow codex "Audit this repository" --background --save ./audit-out
+tail -f ./audit-out/flow.log
 ```
 
 ## `stream_persist` JSONL behavior

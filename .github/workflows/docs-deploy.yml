@@ -36,7 +36,13 @@ jobs:
           source .venv/bin/activate
           echo "VIRTUAL_ENV=$GITHUB_WORKSPACE/.venv" >> $GITHUB_ENV
           echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
-          uv sync
+          uv sync --frozen --all-extras
+
+      - name: Validate documentation contracts
+        run: uv run pytest -n0 tests/docs
+
+      - name: Build documentation strictly
+        run: uv run mkdocs build --strict --site-dir /tmp/lionagi-docs-site
 
       - name: Deploy documentation
-        run: uv run mkdocs gh-deploy --force
+        run: uv run mkdocs gh-deploy --strict --force
