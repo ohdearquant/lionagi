@@ -329,22 +329,6 @@ def _rescan(record: PluginRecord) -> DiscoveredPlugin | None:
     return fresh if fresh.manifest is not None else None
 
 
-def _revalidate_trust(record: PluginRecord) -> TrustState:
-    """Recompute trust fresh against the files (and manifest) on disk right now.
-
-    Capability-exposing calls (resolving a profile file, importing a target)
-    must not trust the process-cached snapshot's verdict; they recompute
-    trust against a freshly re-scanned manifest + declared files right
-    before handing out content. Bundles are small, so a full rescan+rehash
-    per call is cheap — this avoids a second, separately-fallible staleness
-    signal (e.g. mtime).
-    """
-    fresh = _rescan(record)
-    if fresh is None:
-        return TrustState.CHANGED
-    return _trust_state(fresh)
-
-
 def _target_resolution_map(manifest: PluginManifest) -> dict[str, tuple[str, str | None]]:
     """Map each declared, activatable target string to ``(module_path, attr_or_None)``.
 
@@ -380,10 +364,11 @@ def _read_and_verify_target_bytes(*, bundle_dir: Path, module_path: str, plugin_
     currently-recorded trust hash for that exact declared path, and hand back
     those same bytes for the caller to compile/exec directly.
 
-    An earlier, broader trust check (``_revalidate_trust``) also hashes this
-    same file as part of validating the whole plugin, but that read is not
-    what gets executed — if the file were hashed there and then reopened
-    separately for import, an atomic replacement of the file in between
+    An earlier, broader trust check (the ``_rescan``/``_trust_state`` pair in
+    ``activate_target``) also hashes this same file as part of validating the
+    whole plugin, but that read is not what gets executed — if the file were
+    hashed there and then reopened separately for import, an atomic
+    replacement of the file in between
     would execute content that was never verified. This function is the one
     read that matters for that guarantee: the hash it checks and the bytes
     it returns come from the exact same ``read_bytes()`` call, with nothing
@@ -511,9 +496,11 @@ class PluginRegistry:
         for record in cls._ensure_loaded():
             if record.state is not PluginState.ACTIVE or record.manifest is None:
                 continue
-            if _revalidate_trust(record) is not TrustState.TRUSTED:
+            fresh = _rescan(record)
+            if fresh is None or _trust_state(fresh) is not TrustState.TRUSTED:
                 continue
-            for cap in record.manifest.capabilities.providers:
+            assert fresh.manifest is not None
+            for cap in fresh.manifest.capabilities.providers:
                 out.append((record.name, cap.module))
         return out
 

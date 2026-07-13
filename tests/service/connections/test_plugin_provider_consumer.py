@@ -18,7 +18,7 @@ import pytest
 
 from lionagi.plugins._user_settings import read_user_settings, write_user_settings
 from lionagi.plugins.discovery import discover_plugins
-from lionagi.plugins.registry import PluginRegistry
+from lionagi.plugins.registry import PluginActivationError, PluginRegistry, PluginState
 from lionagi.plugins.trust import trust_plugin
 from lionagi.service.connections.match_endpoint import match_endpoint
 from lionagi.service.connections.registry import EndpointRegistry
@@ -214,3 +214,40 @@ class TestPluginProviderExclusion:
 
         assert type(result).__name__ == "Endpoint"
         assert _module_key("web-research") not in sys.modules
+
+
+class TestPluginProviderStaleSnapshotRegression:
+    def test_manifest_target_replacement_resolves_without_a_registry_reset(self, write_plugin):
+        """``PluginRegistry._snapshot`` is process-cached; a plugin can be edited to
+        declare a *different* provider module and re-trusted without anyone calling
+        ``PluginRegistry.reset()``. The old target's own failure (no longer declared)
+        must not poison resolution of the new one -- enumeration has to come from the
+        same fresh rescan as the trust check, not the stale cached manifest."""
+        bundle = _write_provider_plugin(
+            write_plugin, "wr", name="web-research", provider="acme-old"
+        )
+
+        # Freeze the process-cached snapshot (state=ACTIVE, manifest declaring
+        # providers/endpoint.py) via an unrelated call, before anything changes.
+        assert PluginRegistry.get("web-research").state is PluginState.ACTIVE
+
+        (bundle / "providers" / "endpoint_b.py").write_text(
+            PROVIDER_MODULE.format(provider="acme-new")
+        )
+        (bundle / "plugin.yaml").write_text(
+            MANIFEST.format(name="web-research").replace(
+                "providers/endpoint.py", "providers/endpoint_b.py"
+            )
+        )
+        _trust("wr")
+
+        # The stale, no-longer-declared target fails on its own merits...
+        with pytest.raises(PluginActivationError, match="not declared"):
+            PluginRegistry.activate_target("web-research", "providers/endpoint.py")
+
+        # ...but that failure must not block resolution of the provider the
+        # manifest actually declares now, with no PluginRegistry.reset() in between.
+        result = match_endpoint(provider="acme-new", endpoint="chat")
+
+        assert type(result).__name__ == "PluginProviderEndpoint"
+        assert result.config.provider == "acme-new"
