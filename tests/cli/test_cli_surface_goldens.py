@@ -210,6 +210,7 @@ ORCHESTRATE_FLOW_FLAGS = [
     "--save",
     "--show-graph",
     "--team-attach",
+    "--team-max-rounds",
     "--team-mode",
     "--theme",
     "--timeout",

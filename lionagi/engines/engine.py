@@ -474,6 +474,7 @@ class EngineRun:
         executor_ref: dict[str, Any] | None = None,
         context: dict[str, Any] | None = None,
         spawn_branch_setup: Any = None,
+        on_op_complete: Any = None,
     ) -> dict[str, Any]:
         """Execute a prebuilt operation DAG on the run's session and return operation results."""
         from .flow_signals import flow_progress_signals  # noqa: PLC0415
@@ -491,6 +492,7 @@ class EngineRun:
                 on_progress=on_progress,
                 executor_ref=executor_ref,
                 spawn_branch_setup=spawn_branch_setup,
+                on_op_complete=on_op_complete,
             )
         return result
 

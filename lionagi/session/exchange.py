@@ -5,7 +5,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+import threading
+from typing import Any, cast
 from uuid import UUID
 
 from pydantic import PrivateAttr
@@ -32,6 +33,8 @@ class Exchange(Element):
     flows: Pile[Flow[Message, Progression]] = None  # type: ignore
     _owner_index: dict[UUID, UUID] = PrivateAttr(default_factory=dict)
     _stop: bool = PrivateAttr(default=False)
+    _in_flight: dict[UUID, list[Message]] = PrivateAttr(default_factory=dict)
+    _in_flight_lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -103,28 +106,83 @@ class Exchange(Element):
                             deliveries.append((other_id, message_copy))
                 elif message.recipient is not None and message.recipient in self._owner_index:
                     deliveries.append((message.recipient, message))
+            self._mark_in_flight(deliveries, increment=True)
         if deliveries:
-            await gather(
-                *[self._deliver_to(recipient_id, message) for recipient_id, message in deliveries],
-                return_exceptions=True,
-            )
+            try:
+                await gather(
+                    *[
+                        self._deliver_to(recipient_id, message)
+                        for recipient_id, message in deliveries
+                    ],
+                    return_exceptions=True,
+                )
+            finally:
+                self._mark_in_flight(deliveries, increment=False)
 
         unique_messages = {message.id for _, message in deliveries}
         return len(unique_messages)
 
-    async def _deliver_to(self, recipient_id: UUID, message: Message) -> None:
-        """Deliver to recipient inbox. No-op if recipient unregistered."""
+    def _mark_in_flight(self, deliveries: list[tuple[UUID, Message]], *, increment: bool) -> None:
+        """Track recipients while messages are between outbox and inbox."""
+        with self._in_flight_lock:
+            for recipient_id, message in deliveries:
+                if increment:
+                    self._in_flight.setdefault(recipient_id, []).append(message)
+                else:
+                    self._remove_in_flight_locked(recipient_id, message)
+
+    def _remove_in_flight_locked(self, recipient_id: UUID, message: Message) -> bool:
+        pending = self._in_flight.get(recipient_id)
+        if not pending:
+            return False
+        for index, candidate in enumerate(pending):
+            if candidate is message:
+                pending.pop(index)
+                if not pending:
+                    self._in_flight.pop(recipient_id, None)
+                return True
+        return False
+
+    def _deliver_locked(self, recipient_id: UUID, message: Message) -> None:
         recipient_flow = self.get(recipient_id)
         if recipient_flow is None:
-            return  # Recipient unregistered, drop message
+            return
 
-        inbox_name = _inbox_name(message.sender)
+        inbox_name = _inbox_name(cast(UUID, message.sender))
         try:
             recipient_flow.add_progression(Progression(name=inbox_name))
         except ItemExistsError:
             pass
-
         recipient_flow.add_item(message, progressions=inbox_name)
+
+    def peek_pending(self, owner_id: UUID) -> tuple[list[Message], bool]:
+        """Atomically peek at delivered and in-transit mail for an owner."""
+        with self._in_flight_lock:
+            return self.receive(owner_id), bool(self._in_flight.get(owner_id))
+
+    def drain_pending(self, owner_id: UUID) -> list[Message]:
+        """Atomically deliver and consume all pending mail for an owner."""
+        with self._in_flight_lock:
+            for message in list(self._in_flight.get(owner_id, [])):
+                self._deliver_locked(owner_id, message)
+                self._remove_in_flight_locked(owner_id, message)
+
+            pending = self.receive(owner_id)
+            drained: list[Message] = []
+            senders = {cast(UUID, message.sender) for message in pending}
+            for sender in senders:
+                while message := self.pop_message(owner_id=owner_id, sender=sender):
+                    drained.append(message)
+            return drained
+
+    async def _deliver_to(self, recipient_id: UUID, message: Message) -> None:
+        """Deliver to recipient inbox. No-op if recipient unregistered."""
+        with self._in_flight_lock:
+            pending = self._in_flight.get(recipient_id, [])
+            if not any(candidate is message for candidate in pending):
+                return
+            self._deliver_locked(recipient_id, message)
+            self._remove_in_flight_locked(recipient_id, message)
 
     async def collect_all(self) -> int:
         """Route all outboxes. Returns total messages routed."""
@@ -139,6 +197,53 @@ class Exchange(Element):
     async def sync(self) -> int:
         """Alias for collect_all(). Returns messages routed."""
         return await self.collect_all()
+
+    def collect_sync(self, owner_id: UUID) -> int:
+        """Synchronous twin of collect(), for callers that cannot await."""
+        flow = self.get(owner_id)
+        if flow is None:
+            raise ValueError(f"Owner {owner_id} not registered")
+
+        deliveries: list[tuple[UUID, Message]] = []
+        outbox = flow.get_progression(OUTBOX)
+        while len(outbox) > 0:
+            message_id = outbox.popleft()
+            message = flow.items.pop(message_id, None)
+            if message is None:
+                continue
+            if message.is_broadcast:
+                for other_id in self._owner_index:
+                    if other_id != owner_id:
+                        try:
+                            message_copy = message.model_copy(deep=True)
+                        except Exception:
+                            message_copy = message.model_copy()
+                        deliveries.append((other_id, message_copy))
+            elif message.recipient is not None and message.recipient in self._owner_index:
+                deliveries.append((message.recipient, message))
+
+        for recipient_id, message in deliveries:
+            recipient_flow = self.get(recipient_id)
+            if recipient_flow is None:
+                continue
+            inbox_name = _inbox_name(message.sender)
+            try:
+                recipient_flow.add_progression(Progression(name=inbox_name))
+            except ItemExistsError:
+                pass
+            recipient_flow.add_item(message, progressions=inbox_name)
+
+        return len({m.id for _, m in deliveries})
+
+    def collect_all_sync(self) -> int:
+        """Synchronous twin of collect_all()."""
+        total = 0
+        for owner_id in list(self._owner_index.keys()):
+            try:
+                total += self.collect_sync(owner_id)
+            except ValueError:
+                continue
+        return total
 
     async def run(self, interval: float = 1.0) -> None:
         """Continuous sync loop; call stop() to exit. Does not reset ``_stop`` on entry — a pre-issued stop() must make run() return immediately, not loop forever. Construct a fresh Exchange to reuse."""
