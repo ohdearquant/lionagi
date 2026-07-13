@@ -2,11 +2,44 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
+
+_DURATION_FIELDS = ("min", "mean", "median", "max")
 
 
 def load(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _validate_stat(name: str, side: str, stat: dict) -> str | None:
+    """Return an error message if `stat` (one arm's result entry for
+    scenario `name`) is not safe to compute a delta from, else None.
+
+    Without this, a missing or malformed numeric field flows straight into
+    the delta arithmetic below and silently produces a meaningless-but-
+    passing result: `stat.get("median", 0)` on a missing key defaults to
+    0.0 instead of failing, and a literal NaN -- valid JSON under the
+    stdlib parser's non-standard NaN/Infinity extension, and directly
+    reachable from a malformed or corrupted producer -- makes `delta >
+    threshold` evaluate to False for ANY threshold, since every comparison
+    against NaN is False in Python. Either way a broken measurement would
+    pass the regression gate instead of failing it, so every numeric field
+    is checked for presence, correct type, and finiteness before any delta
+    is computed.
+    """
+    runs = stat.get("runs")
+    if not isinstance(runs, int) or isinstance(runs, bool) or runs <= 0:
+        return f"{name} ({side}): 'runs' must be a positive integer, got {runs!r}"
+    for field in _DURATION_FIELDS:
+        value = stat.get(field)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return f"{name} ({side}): '{field}' must be a number, got {value!r}"
+        if not math.isfinite(value):
+            return f"{name} ({side}): '{field}' is not finite, got {value!r}"
+        if value < 0:
+            return f"{name} ({side}): '{field}' must be non-negative, got {value!r}"
+    return None
 
 
 def compare(
@@ -47,6 +80,13 @@ def compare(
             lines.append(f"- {name}: no baseline; skipping")
             continue
         compared += 1
+
+        error = _validate_stat(name, "current", cur) or _validate_stat(name, "baseline", base)
+        if error:
+            lines.append(f"- {name}: INVALID -- {error}")
+            ok = False
+            continue
+
         cur_med = float(cur.get("median", 0))
         base_med = float(base.get("median", 0))
 

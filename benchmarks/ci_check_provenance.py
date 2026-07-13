@@ -7,11 +7,26 @@ from pathlib import Path
 
 SUITES = ["concurrency-asyncio", "concurrency-trio", "ln-asyncio", "ln-trio", "fuzzy"]
 
-# Shared (non-lionagi) dependency versions recorded in each result JSON's
-# meta. These must match across baseline and current: the baseline venv's
-# install is now constrained to the current venv's resolved versions (see
-# benchmarks.yml), so any drift here means that constraint mechanism broke.
-SHARED_DEP_META_KEYS = ["anyio", "orjson"]
+# Suite -> shared (non-lionagi) dependency keys that suite's result JSON
+# meta MUST carry. Every bench script's system_info() records anyio; only
+# fuzzy_bench.py additionally records orjson (benchmarks/fuzzy_bench.py,
+# benchmarks/concurrency_bench.py, benchmarks/ln_bench.py). These must
+# match across baseline and current: the baseline venv's install is
+# constrained to the current venv's resolved versions (see
+# benchmarks.yml), so any drift here means that constraint mechanism
+# broke. This is a per-suite REQUIRED list, not "check whichever of these
+# keys happens to be present" -- a key missing from either arm on a suite
+# that's supposed to carry it is itself a failure (the dependency axis
+# went unverified), not something to skip. An unrecognized suite name
+# (e.g. a caller-supplied --suites value) falls back to requiring anyio,
+# since every currently-defined bench script records it.
+REQUIRED_DEP_META_KEYS: dict[str, list[str]] = {
+    "concurrency-asyncio": ["anyio"],
+    "concurrency-trio": ["anyio"],
+    "ln-asyncio": ["anyio"],
+    "ln-trio": ["anyio"],
+    "fuzzy": ["anyio", "orjson"],
+}
 
 # Interpreter identity recorded in each result JSON's meta
 # (benchmarks/_compat.py:lionagi_provenance). Unlike lionagi_file (must
@@ -74,7 +89,11 @@ def check(baseline_dir: Path, current_dir: Path, suites: list[str]) -> bool:
     compare delta could then reflect dependency drift instead of a
     lionagi change. benchmarks.yml constrains the baseline install to
     current's exact resolved versions; this is the check that the
-    constraint actually held.
+    constraint actually held. Each suite's REQUIRED_DEP_META_KEYS entry
+    must be present and equal on BOTH arms -- a key missing from either
+    side is a hard failure, not "not applicable to this suite" (that
+    distinction is what REQUIRED_DEP_META_KEYS itself encodes per suite;
+    it is not inferred from which keys happen to show up).
 
     (4) guards the interpreter itself, the one thing "same-machine A/B"
     assumes is truly shared: if the two venvs are created under different
@@ -176,11 +195,19 @@ def check(baseline_dir: Path, current_dir: Path, suites: list[str]) -> bool:
 
         b_meta = baseline.get("meta", {})
         c_meta = current.get("meta", {})
-        for dep in SHARED_DEP_META_KEYS:
+        for dep in REQUIRED_DEP_META_KEYS.get(suite, ["anyio"]):
             b_version = b_meta.get(dep)
             c_version = c_meta.get(dep)
             if not b_version or not c_version:
-                continue  # not applicable to this suite (e.g. orjson outside fuzzy)
+                print(
+                    f"[provenance] {suite}: {dep} is required for this suite but "
+                    f"missing from result metadata -- baseline={b_version!r} "
+                    f"current={c_version!r}. The dependency axis went unverified for "
+                    "this suite instead of failing loud.",
+                    file=sys.stderr,
+                )
+                ok = False
+                continue
             if b_version != c_version:
                 print(
                     f"[provenance] {suite}: {dep} version differs between arms -- "
