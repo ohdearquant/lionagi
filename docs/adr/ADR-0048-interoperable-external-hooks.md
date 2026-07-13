@@ -1,6 +1,6 @@
 # ADR-0048: Interoperable external hooks (Claude Code / Codex hook contract)
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Aspirational
 - **Area**: hooks
 - **Date**: 2026-07-12
@@ -647,3 +647,82 @@ imported entry. The tiers:
   appended here naming what changed and which side LionAGI takes; the loader and
   import command reference the profile version they implement. No revision happens
   silently.
+
+## Implementation status (2026-07-13)
+
+As of 2026-07-13, this ADR's internal-plumbing decisions are implemented and
+tested; its namesake capability — running an actual external hook binary — does
+not exist yet.
+
+**Implemented and tested:**
+
+- **D2, turn-origin verification.** The `USER_PROMPT_SUBMIT` `HookPoint` and its
+  turn-origin token mechanism are fully wired: minted at the public ingresses,
+  forwarded (never re-originated) through nested calls such as
+  `chat_and_record()` → `chat()`, and consumed exactly once at the
+  model-submission boundary. Internal turns (parse-repair, `ReAct` extension and
+  final-answer steps) correctly carry the no-origin disposition and emit
+  nothing. The acceptance matrix's exact-once emission counts are covered by
+  dedicated integration tests, and this is the most rigorously tested area of
+  the ADR.
+- **D3, the `ActionManager` chokepoint.** `ActionManager.invoke()` carries a
+  tool pre/post hook layer that runs for every tool routed through it — plain
+  function tools, `Tool` objects, and MCP-discovered tools alike — closing the
+  MCP coverage gap named in the Context. Ordering (external pre before the
+  spec-level chain, tool call, spec-level post, external post),
+  argument-rewrite revalidation against the tool's declared request model, and
+  the invariant that `security_pre` always sees post-rewrite arguments are all
+  implemented and covered by dedicated tests. The direct-`FunctionCalling`-
+  construction bypass is deliberately preserved and is itself covered by a test
+  asserting hooks do not fire on that path, matching this ADR's documented,
+  tested-limit framing.
+
+**Partially present (in-process analog only, no external wire mechanism):**
+
+- The `allow`/`deny`/`ask`/unrecognized-decision semantics of D5 exist as a
+  typed in-process decision object consumed by the tool-hook chain, and are
+  tested there. Nothing yet parses a `hookSpecificOutput` JSON payload off a
+  subprocess's stdout, so this semantics layer has no external hook to serve.
+- The event-vocabulary mapping of D2 for `SessionStart`/`SessionEnd`/
+  `PostToolUseFailure` targets `HookBus` points that pre-date this ADR and
+  remain wired; no code parses an external event-name string out of a
+  configuration file to route to them.
+- The fail-closed-on-timeout principle of Dv1-4/D1 is implemented and tested
+  for the in-process `ask` → deny path; no subprocess timeout code exists to
+  apply the same principle to an external hook process.
+- Argv-only, non-empty-list enforcement (D4) exists, but only as a plugin
+  manifest validator (`HookCommand`) for ADR-0088 bundles, not as a check on
+  any `.lionagi/settings.yaml` `hooks_external:` entry, because that settings
+  surface does not exist (see below).
+- A content-hash trust mechanism exists (`lionagi/plugins/trust.py`), but it
+  pins whole declared files for plugin bundles under ADR-0088, not a
+  per-hook-command argv hash gating a `hooks_external:` settings entry as D7
+  specifies. The two mechanisms overlap in shape (hash-pin, revert-on-change)
+  but differ in what they pin, what triggers them, and which configuration
+  surface they gate.
+
+**Not yet started:**
+
+The capability of executing an external hook binary against LionAGI does not
+exist yet. Concretely absent: the stdin wire envelope (D1) and any code that
+constructs or serializes it; the dedicated exec adapter (D4) that would parse
+stdout, distinguish exit 2 from other nonzero exits, and apply a configurable
+per-hook timeout — the pre-existing `_make_shell_hook` executor is unmodified
+and still collapses every nonzero exit to a single `PermissionError` with no
+stdout read-back; the `hooks_external:` block in `.lionagi/settings.yaml` and
+its loader (D6) — the settings loader reads only the legacy `hooks:` key; the
+`li hooks import claude|codex` and `li hooks trust` CLI commands (D6, D7) —
+neither verb exists in the CLI registry; and the cross-harness conformance
+matrix (D1's own acceptance gate) — the closest existing test asserts internal
+emission counts, not fixture hooks run against current Claude Code/Codex
+schemas. Until this layer lands, no foreign hook suite can run under LionAGI
+and no config can declare one.
+
+One additional defect, unrelated to the above scope but found while
+reconciling this ADR's D5 language against the current implementation:
+`ActionManager.invoke()` awaits its post-hook run inside a `finally` block
+without capturing the return value, so the `notes` list `run_tool_post_hooks`
+computes (populated when a post hook returns a block reason) is discarded and
+never reaches the branch as a system-visible message. This is a correctness
+gap in already-merged code, independent of the unstarted work above, and
+should be tracked as a bug fix on its own.
