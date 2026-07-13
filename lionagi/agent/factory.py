@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import Any
 
 from lionagi._errors import ConfigurationError
+from lionagi.ln.concurrency import is_coro_func
 from lionagi.session.branch import Branch
 
 from .spec import AgentSpec
@@ -198,6 +199,39 @@ def _chain_post_hooks(tool_name: str, hooks: list[Callable]) -> Callable | None:
     return chained
 
 
+def _compose_preprocessor(original: Callable | None, new: Callable) -> Callable:
+    """Compose a spec-derived preprocessor in front of a tool's existing one.
+
+    Ordering keeps the security recheck closest to the actual invocation:
+    the tool's own preprocessor (if any) runs first, then the spec chain.
+    """
+    if original is None:
+        return new
+
+    async def composed(args: dict, **kw) -> Any:
+        args = await original(args, **kw) if is_coro_func(original) else original(args, **kw)
+        return await new(args, **kw) if is_coro_func(new) else new(args, **kw)
+
+    return composed
+
+
+def _compose_postprocessor(original: Callable | None, new: Callable) -> Callable:
+    """Compose a spec-derived postprocessor around a tool's existing one.
+
+    Ordering mirrors `_compose_preprocessor`: the spec chain runs immediately
+    after the tool call (closest to invocation), then the tool's own
+    postprocessor (if any) runs last.
+    """
+    if original is None:
+        return new
+
+    async def composed(result: Any, **kw) -> Any:
+        result = await new(result, **kw) if is_coro_func(new) else new(result, **kw)
+        return await original(result, **kw) if is_coro_func(original) else original(result, **kw)
+
+    return composed
+
+
 def _attach_hooks(tool: Any, spec: AgentSpec, canonical_name: str) -> Any:
     security_hooks = _tool_hooks(spec, "security_pre", canonical_name)
     user_pre_hooks = _tool_hooks(spec, "pre", canonical_name)
@@ -205,9 +239,9 @@ def _attach_hooks(tool: Any, spec: AgentSpec, canonical_name: str) -> Any:
     pre = _chain_pre_hooks(canonical_name, security_hooks, user_pre_hooks)
     post = _chain_post_hooks(canonical_name, post_hooks)
     if pre is not None:
-        tool.preprocessor = pre
+        tool.preprocessor = _compose_preprocessor(tool.preprocessor, pre)
     if post is not None:
-        tool.postprocessor = post
+        tool.postprocessor = _compose_postprocessor(tool.postprocessor, post)
     return tool
 
 

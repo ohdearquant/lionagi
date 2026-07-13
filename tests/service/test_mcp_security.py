@@ -676,3 +676,36 @@ class TestPerServerPolicyPersistence:
             assert seen[-1] is None
         finally:
             self._reset()
+
+    async def test_reload_different_command_under_same_name_denies_recovered_policy(self, tmp_path):
+        """A policy trusted for one server's resolved transport must not be
+        recoverable after the same server name is reloaded with a different
+        command: register/trust a config under name X, cleanup/reload a
+        different command under the same name X, then an omitted-policy
+        load must stay fail-closed end to end (no `_create_client` stub --
+        the real transport validation must raise)."""
+        import json
+
+        self._reset()
+        try:
+            cfg_path = tmp_path / ".mcp.json"
+            cfg_path.write_text(
+                json.dumps({"mcpServers": {"same-name": {"command": "trusted-server"}}})
+            )
+            MCPConnectionPool.load_config(str(cfg_path))
+            policy = MCPSecurityConfig(allow_commands=True)
+            MCPConnectionPool.remember_security({"server": "same-name"}, policy)
+
+            # Cleanup/reload a DIFFERENT command under the SAME server name.
+            cfg_path.write_text(
+                json.dumps({"mcpServers": {"same-name": {"command": "untrusted-server"}}})
+            )
+            MCPConnectionPool.load_config(str(cfg_path))
+
+            # The omitted-policy path must not recover the prior trusted()
+            # decision for the reloaded transport.
+            with pytest.raises(PermissionError, match="allow_commands=False"):
+                await MCPConnectionPool.get_client({"server": "same-name"})
+        finally:
+            self._reset()
+            MCPConnectionPool._configs.pop("same-name", None)

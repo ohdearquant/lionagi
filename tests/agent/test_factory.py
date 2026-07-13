@@ -160,6 +160,55 @@ async def test_mcp_discovered_tool_gets_permission_preprocessor(tmp_path, monkey
         await mcp_tool.preprocessor({"action": "call", "foo": "bar"})
 
 
+async def test_mcp_discovered_tool_composes_existing_preprocessor(tmp_path, monkeypatch):
+    """_attach_hooks() must compose with a pre-existing tool preprocessor
+    instead of replacing it outright: an MCP-discovered Tool that already
+    carries one (e.g. an arg normalizer wired at construction) must still
+    run it, and the spec's permission gate must still block."""
+    from lionagi.agent.permissions import PermissionPolicy
+    from lionagi.protocols.action.manager import ActionManager
+    from lionagi.protocols.action.tool import Tool
+
+    mcp_file = tmp_path / "custom.mcp.json"
+    mcp_file.write_text('{"mcpServers": {"demo": {"command": "true"}}}')
+
+    calls = []
+
+    async def existing_preprocessor(args, **kw):
+        calls.append(dict(args))
+        return args
+
+    async def fake_load_mcp_config(
+        self, config_path, server_names=None, update=False, mcp_security=None
+    ):
+        async def demo_tool(**kwargs):
+            return "ok"
+
+        demo_tool.__name__ = "demo_tool"
+        self.register_tool(
+            Tool(func_callable=demo_tool, preprocessor=existing_preprocessor),
+            update=update,
+        )
+        return {"demo": ["demo_tool"]}
+
+    monkeypatch.setattr(ActionManager, "load_mcp_config", fake_load_mcp_config)
+
+    config = AgentSpec.compose("implementer")
+    config.mcp_config_path = str(mcp_file)
+    config.permissions = PermissionPolicy.deny_all()
+    branch = await create_agent(config, load_settings=False)
+
+    mcp_tool = branch.acts.registry["demo_tool"]
+    assert mcp_tool.preprocessor is not existing_preprocessor, (
+        "the spec's hook chain must be composed in, not left as a bare passthrough"
+    )
+    with pytest.raises(PermissionError):
+        await mcp_tool.preprocessor({"action": "call", "foo": "bar"})
+
+    # The tool's own preprocessor ran before the permission gate raised.
+    assert calls == [{"action": "call", "foo": "bar"}]
+
+
 async def test_create_agent_coding_permissions_recheck_user_mutated_args(tmp_path):
     """User pre-hooks must not be able to rewrite safe args after permission checks."""
     from lionagi.agent.permissions import PermissionPolicy
