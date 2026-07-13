@@ -331,6 +331,23 @@ async def _resolve_invocation_terminal_flow(
         return "failed", RunReasons.FAILED_EXCEPTION, "Flow failed.", evidence_refs, metadata
 
 
+def _fallback_notify_reason(status: str) -> str:
+    """Reason code for a best-effort terminal-notify envelope emitted when
+    invocation finalization itself raised (see `_run_flow`'s finally block)
+    -- *status* here is the flow's own already-computed terminal status, not
+    a value read back from the (never-committed) invocation row."""
+    from lionagi.state.reasons import RunReasons
+
+    return {
+        "completed": RunReasons.COMPLETED_OK,
+        "completed_empty": RunReasons.COMPLETED_EMPTY_NO_EVIDENCE,
+        "failed": RunReasons.FAILED_EXCEPTION,
+        "timed_out": RunReasons.TIMED_OUT_DEADLINE,
+        "aborted": RunReasons.ABORTED_USER,
+        "cancelled": RunReasons.CANCELLED_SYSTEM,
+    }.get(status, RunReasons.FAILED_EXCEPTION)
+
+
 def _earlier_dep_indices(depends_on: list[str] | None, position: int) -> list[int]:
     out: list[int] = []
     for ref in depends_on or []:
@@ -1752,6 +1769,42 @@ async def _run_flow(
                     _logging.getLogger("lionagi.cli").exception(
                         "Failed to finalize invocation %s", invocation_id
                     )
+                    # The guarded update_status() above never committed, so
+                    # the terminal-callback registry never emitted for this
+                    # invocation's entity -- any --notify / notify.on_terminal
+                    # handler scoped to it would otherwise be silently
+                    # dropped exactly when a notification is most needed.
+                    # Emit a best-effort envelope directly, using the flow's
+                    # own already-computed terminal status as a fallback
+                    # (mirrors the unconditional fire_terminal_notify() call
+                    # this code path replaced).
+                    try:
+                        import uuid as _uuid
+
+                        from lionagi.state.lifecycle.callbacks import (
+                            DEFAULT_TERMINAL_CALLBACKS,
+                            Correlation,
+                            EntityRef,
+                            RunTerminalEnvelope,
+                        )
+
+                        await DEFAULT_TERMINAL_CALLBACKS.emit(
+                            RunTerminalEnvelope(
+                                event_id=str(_uuid.uuid4()),
+                                entity=EntityRef(kind="invocation", id=invocation_id),
+                                previous_status=None,
+                                terminal_status=_terminal_status,
+                                reason_code=_fallback_notify_reason(_terminal_status),
+                                occurred_at=_ended_at,
+                                correlation=Correlation(invocation_id=invocation_id),
+                                durable=False,
+                            )
+                        )
+                    except Exception:
+                        _logging.getLogger("lionagi.cli").exception(
+                            "Failed to emit fallback terminal notify for invocation %s",
+                            invocation_id,
+                        )
 
             unregister_flow_notify_scope(_notify_scope_name)
             for _br in env.session.branches:
