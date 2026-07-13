@@ -1,6 +1,19 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0071 D1: the task-application submit surface. ``TaskApplication`` is the frozen submit shape every binding (in-process, CLI, HTTP) shares."""
+"""ADR-0071 D1: the task-application submit surface. ``TaskApplication`` is the frozen submit shape every binding (in-process, CLI, HTTP) shares.
+
+ADR-0071 D3/PR2 adds a synchronous admission pre-check to ``submit_task()``
+for the two conditions that are cheaply checkable at submission time -- the
+duration guard (D6) and the waiter cap (D-Cap), when a holder is already
+running for the derived ``concurrency_key``. A violation raises
+``AdmissionRejectedError`` immediately (D-Reject's "typed error to the caller"),
+so a submitter gets fast, observable feedback instead of a silent later
+vanish. This is a best-effort early rejection only: the authoritative gate is
+``lionagi.studio.scheduler.admit.admit()``, run again inside the worker claim
+loop with whatever concurrency configuration the worker actually uses, which
+is why the sign-off binding condition additionally requires claim-time
+rejections to surface observably (see ``worker._reject_claim``).
+"""
 
 from __future__ import annotations
 
@@ -18,9 +31,34 @@ from lionagi.state.reasons import RunReasons
 from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
 
 from ..scheduler import capabilities
+from ..scheduler.admit import (
+    DEFAULT_KEY_CONCURRENCY,
+    DEFAULT_WAITER_CAP_MULTIPLIER,
+    allows_deferred_over_cap,
+    declared_max_duration_seconds,
+    holder_is_running,
+    waiter_ahead_count,
+)
 from ..scheduler.subprocess import _ALIAS_ACTION_KINDS, _VALID_ACTION_KINDS
+from ..scheduler.worker import DEFAULT_LEASE_TTL_SECONDS
 
-__all__ = ("TaskApplication", "cancel_task", "submit_task")
+__all__ = ("AdmissionRejectedError", "TaskApplication", "cancel_task", "submit_task")
+
+
+class AdmissionRejectedError(ValueError):
+    """Typed rejection for a ``TaskApplication`` that admission policy would
+    reject (waiter cap or duration guard) -- raised at submit time so the
+    caller gets an immediate typed error rather than a silent later vanish
+    at claim time. Mirrors the terminal branch of
+    ``admit.AdmissionDecision`` (ADR-0071 D3/D-Reject). Subclasses
+    ``ValueError`` so existing ``pytest.raises(ValueError, ...)``-shaped
+    callers are unaffected."""
+
+    def __init__(self, reason_code: str, reason_summary: str) -> None:
+        self.reason_code = reason_code
+        self.reason_summary = reason_summary
+        super().__init__(reason_summary)
+
 
 # ADR-0071 D1: adds "workflow" (ADR-0073) to the launcher vocabulary as a CHECK widen,
 # not a rename -- reuses the launcher's own closed set + "playbook" alias.
@@ -82,11 +120,42 @@ def _derive_concurrency_key(required_capabilities: list[str]) -> str | None:
 
 async def submit_task(db: StateDB, app: TaskApplication) -> str:
     """Validate *app* and write a durable ``queued`` row. Returns the new
-    ``schedule_runs.id``."""
+    ``schedule_runs.id``.
+
+    Raises ``AdmissionRejectedError`` (D-Reject) when the submission's declared
+    ``args["admission"]`` opts already violate the duration guard, or the
+    waiter cap for an already-running holder of the derived
+    ``concurrency_key`` -- see the module docstring for why this is a
+    best-effort pre-check, not the authoritative gate.
+    """
     normalized_kind = _validate(app)
-    run_id = str(uuid.uuid4())
     now = time.time()
     concurrency_key = _derive_concurrency_key(app.required_capabilities)
+
+    max_duration = declared_max_duration_seconds(app.args)
+    if max_duration is not None and max_duration >= DEFAULT_LEASE_TTL_SECONDS:
+        raise AdmissionRejectedError(
+            RunReasons.SKIPPED_DURATION_EXCEEDS_LEASE,
+            f"declared max_duration_seconds={max_duration} >= lease TTL "
+            f"({DEFAULT_LEASE_TTL_SECONDS}s); lease renewal is not yet "
+            "shipped (ADR-0071 delta #5)",
+        )
+
+    if (
+        concurrency_key is not None
+        and not allows_deferred_over_cap(app.args)
+        and await holder_is_running(db, concurrency_key)
+    ):
+        cap = DEFAULT_KEY_CONCURRENCY * DEFAULT_WAITER_CAP_MULTIPLIER
+        ahead = await waiter_ahead_count(db, concurrency_key, before_queued_at=now)
+        if ahead >= cap:
+            raise AdmissionRejectedError(
+                RunReasons.SKIPPED_WAITER_CAP_EXCEEDED,
+                f"waiter cap ({cap}) exceeded for concurrency_key={concurrency_key!r}: "
+                f"{ahead} job(s) already waiting behind the running holder",
+            )
+
+    run_id = str(uuid.uuid4())
 
     async with db._tx() as conn:
         await conn.execute(
