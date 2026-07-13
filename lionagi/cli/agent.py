@@ -423,14 +423,19 @@ async def _run_agent(
         if fast:
             cfg.update(PROVIDER_FAST_KWARGS.get(provider, {}))
 
-    # Profile system prompt for a brand-new, non-preset branch only — see
-    # docs/internals/cli.md for why the preset/resume paths must skip this.
-    if (
-        profile
-        and profile.system_prompt
-        and not took_create_agent_path
-        and not (resume or continue_last)
-    ):
+    # Profile system prompt for every leg EXCEPT one whose branch carries (or
+    # would carry, on the resumed leg) a create_agent-composed system message
+    # (role header + policy block) — see docs/internals/cli.md. `preset` can
+    # never be set together with resume/continue_last (validated above), so
+    # on a resumed leg the only signal that the ORIGINAL branch went through
+    # create_agent is the profile's own `role:` key: it is stable per profile
+    # file, so a role-profile branch always took (and, if resumed, always
+    # took) the create_agent path. Plain profiles (no `role:` key) never go
+    # through create_agent, on a fresh branch or a resumed one, so they must
+    # keep getting their system prompt (re)applied here on every leg,
+    # including resume/continue-last.
+    composed_via_create_agent = took_create_agent_path or has_role_key
+    if profile and profile.system_prompt and not composed_via_create_agent:
         branch.msgs.add_message(system=profile.system_prompt)
 
     if timeout is not None:
