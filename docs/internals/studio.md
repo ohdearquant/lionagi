@@ -186,9 +186,8 @@ message ids) must not fall through to `0 or fallback`.
   preceding `BEGIN IMMEDIATE` in the same transaction as the status change)
   so the tail read is race-free; this function opens no transaction of its own.
 - **`require_approval`** — Validates a granted approval for exactly this
-  action and consumes it atomically. Not wired into any route yet — a future
-  mutating route calls it before its side effect, passing the same
-  action_kind/params it's about to act on.
+  action and consumes it atomically. A mutating route calls it before its side
+  effect, passing the same action_kind/params it's about to act on.
 
 ## lionagi/studio/services/definitions.py
 
@@ -232,13 +231,13 @@ message ids) must not fall through to `0 or fallback`.
   registry-resolved definitions) to the launcher vocabulary — a CHECK widen,
   reusing the launcher's closed set + `"playbook"` alias rather than a
   second copy.
-- **`idempotency_key`** — Part of the ADR-0072 dedup submit contract, but
-  submit-level dedup isn't built yet: `submit_task` rejects a non-`None`
-  value rather than silently double-enqueueing a retried application.
+- **`idempotency_key`** — Part of the ADR-0072 dedup submit contract:
+  `submit_task` rejects a non-`None` value rather than silently
+  double-enqueueing a retried application.
 - **`_derive_concurrency_key` (D4 rule)** — Only serialization-class tokens
   (per `capabilities.py`'s token→class map) fold into a host-scoped
   `concurrency_key`; eligibility/affinity-only tasks get none.
-- **`cancel_task`** — Only `queued -> cancelled` is permitted in this slice
+- **`cancel_task`** — Only `queued -> cancelled` is permitted
   (`transitions.py`'s ADR-0071 vocab gate rejects any other move, e.g. out
   from a leased/running row).
 
