@@ -43,18 +43,26 @@ name: Benchmarks
 # current venvs; only the lionagi implementation may differ. Temporal
 # drift (above) is one way that assumption quietly breaks; a diverging
 # interpreter is another, and it is not just "same version number is
-# enough": both venv-creation steps below now pin `--python
-# "$pythonLocation/bin/python"`, the literal binary actions/setup-python
-# just installed, rather than a version string uv resolves on its own --
-# a bare `uv venv` (no --python) ignores the setup-python toolcache
-# entirely and instead honors this repo's committed .python-version,
-# which previously put the current arm on a different Python MINOR
-# version than the baseline arm (which already pinned explicitly). Two
-# builds reporting the same version string are not guaranteed to be the
-# same binary either (an official PGO+LTO-optimized toolcache build can
-# measurably outperform a generic build on CPU-bound work), which is why
-# both venvs are pinned to the one path rather than to "3.12".
-# ci_check_provenance.py asserts the two arms' recorded interpreter
+# enough", and not just a matter of passing --python once: UV_PYTHON is
+# exported to $GITHUB_ENV right after the Setup Python step (see "Pin uv
+# to the toolcache interpreter"), pointing at the literal
+# "$pythonLocation/bin/python" binary actions/setup-python just installed,
+# so every uv invocation for the rest of the job -- venv creation, sync,
+# pip install, in both arms -- resolves that same binary rather than a
+# version string uv might resolve differently on its own. This had to be
+# ambient, not per-command: a bare `uv venv` (no --python) ignores the
+# setup-python toolcache and instead honors this repo's committed
+# .python-version, and `uv venv --python X` immediately followed by `uv
+# sync` in the same step is not enough either -- `uv sync` is a *project*
+# command that re-resolves against .python-version on its own regardless
+# of what the preceding `uv venv` in the same step just built, which is
+# exactly how the current arm ended up on a different Python MINOR
+# version than the baseline arm even after an explicit --python was added
+# to its `uv venv` call. Two builds reporting the same version string are
+# also not guaranteed to be the same binary (an official PGO+LTO-optimized
+# toolcache build can measurably outperform a generic build on CPU-bound
+# work), which is why both arms are pinned to the one path rather than to
+# "3.12". ci_check_provenance.py asserts the two arms' recorded interpreter
 # identity (full sys.version, python_build, python_compiler) actually
 # matches, not just their lionagi install paths. The remaining difference
 # between the two install commands -- current runs `uv sync --all-extras`,
@@ -96,6 +104,35 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Pin uv to the toolcache interpreter for the rest of this job
+        run: |
+          # UV_PYTHON, once exported to $GITHUB_ENV here, applies to every
+          # later step's uv invocation in this job -- this has to be a step
+          # (using $GITHUB_ENV), not a job-level `env:` block: a job-level
+          # `env:` is evaluated once at job start, before Setup Python has
+          # run, so it can not see $pythonLocation (verified against
+          # GitHub's own docs on variable scoping). $pythonLocation itself
+          # is the env var actions/setup-python exports once it runs,
+          # pointing at the exact interpreter it just installed.
+          #
+          # Why ambient rather than a per-command --python flag: `uv venv
+          # --python X` is not "sticky" for a later `uv sync` in the same
+          # step -- `uv sync` is a *project* command (it resolves against
+          # this repo's pyproject.toml/.python-version, not against
+          # whatever interpreter an earlier `uv venv` in the same step
+          # happened to build) and will silently re-resolve and REBUILD the
+          # venv under a different interpreter if it disagrees with the
+          # project pin. This repo has a committed .python-version (3.10),
+          # which is exactly what `uv sync --all-extras` in "Install
+          # dependencies" below picked up instead of the matrix's 3.12 --
+          # confirmed from a real job log: `uv venv --python
+          # "$pythonLocation/bin/python"` correctly built a 3.12 venv, and
+          # the very next command in the same step, `uv sync --all-extras`,
+          # then downloaded and rebuilt onto a uv-managed 3.10 install.
+          # UV_PYTHON removes that ambiguity for every uv subcommand
+          # (venv/sync/pip), including any added to this job later.
+          echo "UV_PYTHON=$pythonLocation/bin/python" >> "$GITHUB_ENV"
+
       - name: Install uv
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -103,16 +140,10 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # --python "$pythonLocation/bin/python" pins this venv to the
-          # exact interpreter actions/setup-python just installed (env var
-          # it exports for every later step). A bare `uv venv` ignores
-          # that and resolves its own interpreter instead -- this repo has
-          # a committed .python-version (3.10), which uv prefers over the
-          # matrix's 3.12 whenever no --python is given. That silently put
-          # this arm on a different Python MINOR version than the baseline
-          # arm below (which already pinned explicitly), and a same-machine
-          # A/B is not comparing the same machine if the two arms are not
-          # running the same interpreter. See the header comment.
+          # UV_PYTHON (set above) pins the interpreter for both commands
+          # below. The explicit --python on `uv venv` is redundant with it
+          # and kept anyway -- belt and suspenders, and it keeps this step
+          # readable without cross-referencing the earlier step.
           uv venv --python "$pythonLocation/bin/python"
           source .venv/bin/activate
           uv sync --all-extras
@@ -180,7 +211,13 @@ jobs:
           # measurably differ on CPU-bound work). Pointing both venvs at
           # the literal $pythonLocation binary removes that as a variable
           # entirely. ci_check_provenance.py asserts the two arms' recorded
-          # interpreter identity actually matches.
+          # interpreter identity actually matches. UV_PYTHON (set earlier
+          # in the job) already pins every uv command here too; every
+          # invocation in this step keeps its own explicit --python anyway
+          # since none of them are "project" commands that would silently
+          # re-resolve without it (unlike `uv sync` in "Install
+          # dependencies" above, which is why that step needed the ambient
+          # env var and not just a --python flag on its `uv venv` call).
           uv venv "$RUNNER_TEMP/.venv-baseline" --python "$pythonLocation/bin/python"
           # Same-machine A/B applies to the dependency axis too, not just
           # the interpreter and the OS: only the lionagi implementation
