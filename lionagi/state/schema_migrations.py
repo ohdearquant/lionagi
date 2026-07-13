@@ -134,6 +134,10 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # row whose occurrence-insert transaction committed but launch was
         # never confirmed -- see the CREATE TABLE comment in schema.sql.
         ("dispatched_at", "REAL"),
+        # Nullable sidecar metadata blob for resuming a run, shaped like an
+        # Element.to_dict(mode="db") payload. NULL means no resume state
+        # has been captured for this run.
+        ("resume_packet", "JSON"),
     ],
     # Phase C Move 2: engine run persistence.
     # New table created via schema.sql; these columns allow ALTER TABLE on
