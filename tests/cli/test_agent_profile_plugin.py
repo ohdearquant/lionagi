@@ -153,6 +153,31 @@ def test_resolve_worker_spec_falls_back_to_raw_model_spec_for_unknown_slash_toke
     assert profile is None
 
 
+def test_resolve_worker_spec_falls_back_to_raw_model_spec_for_nonexistent_bare_token(write_plugin):
+    """A `<namespace>/<name>` token with no dots (a valid profile-name shape) that matches no
+    real plugin or local profile misses via `FileNotFoundError`, not `ValueError` — a distinct
+    fallback branch from the dotted-model-version case below and must be exercised separately.
+    """
+    from lionagi.cli.orchestrate._orchestration import resolve_worker_spec
+
+    model, profile = resolve_worker_spec("unknown/role")
+
+    assert model == "unknown/role"
+    assert profile is None
+
+
+def test_resolve_worker_spec_falls_back_to_raw_model_spec_for_codex_token(write_plugin):
+    """`codex/gpt-5.5` (a dotted model version, matching no plugin profile) is a real-world
+    raw-spec token used by the orchestrator's own worker defaults and must resolve as such.
+    """
+    from lionagi.cli.orchestrate._orchestration import resolve_worker_spec
+
+    model, profile = resolve_worker_spec("codex/gpt-5.5")
+
+    assert model == "codex/gpt-5.5"
+    assert profile is None
+
+
 def test_resolve_worker_spec_falls_back_for_dotted_model_version(write_plugin):
     """A dotted model version (invalid as a bare profile-name component) must still fall back
     to a raw model spec instead of raising.
