@@ -12,7 +12,7 @@ registered.
 """
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from lionagi.agent.factory import _chain_pre_hooks
 from lionagi.protocols.action.function_calling import FunctionCalling
@@ -271,6 +271,54 @@ async def test_preprocessor_added_key_outside_schema_survives_revalidation():
     assert fc.response == 3
     assert calls == [{"a": 1, "b": 2, "audit_marker": "trusted"}]
     assert fc.arguments["audit_marker"] == "trusted"
+
+
+class AddArgsWithAlias(BaseModel):
+    a: int
+    b: int
+    c: int = Field(default=0, validation_alias="c_alias")
+
+
+async def test_preprocessor_added_known_field_via_alias_cannot_bypass_validation():
+    """A preprocessor must not be able to smuggle a value into a *declared*
+    schema field by writing its plain field name when that field only
+    accepts input through a validation alias. Because the field is then
+    left unset, it is absent from `model_dump(exclude_unset=True)` -- a
+    classifier that treats "not in the validated dump" as "extra" would
+    mistake this declared-but-unset field for an out-of-schema key and
+    forward its raw, unvalidated value straight to the callable. The
+    fixed classifier must recognize "c" as a declared field name (schema
+    membership, not dump membership) and refuse to forward it raw."""
+    calls: list[dict] = []
+
+    async def add(a: int, b: int, c: int = 0) -> int:
+        calls.append({"a": a, "b": b, "c": c})
+        return a + b
+
+    async def preprocessor(args: dict) -> dict:
+        # "c" is a real declared field, but pydantic only accepts it as
+        # *input* via its validation_alias "c_alias" -- writing the plain
+        # field name is the smuggling attempt the buggy classifier let
+        # through unvalidated.
+        return {**args, "c": "not-an-int"}
+
+    tool = Tool(
+        func_callable=add,
+        request_options=AddArgsWithAlias,
+        preprocessor=preprocessor,
+    )
+    manager = ActionManager(tool)
+
+    fc = await manager.invoke({"function": "add", "arguments": {"a": 1, "b": 2}})
+
+    assert fc.status == EventStatus.COMPLETED
+    # The raw string must never reach the callable as "c": since the
+    # write targets the plain field name rather than the accepted alias,
+    # the value is not schema input pydantic recognizes, so "c" keeps its
+    # validated default instead of the classifier smuggling the raw
+    # value through as a bogus "extra".
+    assert calls == [{"a": 1, "b": 2, "c": 0}]
+    assert fc.arguments.get("c") != "not-an-int"
 
 
 # ── Post hooks: success and failure ─────────────────────────────────────────
