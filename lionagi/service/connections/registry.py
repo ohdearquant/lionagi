@@ -68,17 +68,20 @@ class EndpointMeta:
 
 
 class _RegistryEntry:
-    __slots__ = ("meta", "cls")
+    __slots__ = ("meta", "cls", "plugin_name", "plugin_target")
 
     def __init__(self, meta: EndpointMeta, cls: type):
         self.meta = meta
         self.cls = cls
+        self.plugin_name: str | None = None
+        self.plugin_target: str | None = None
 
 
 class EndpointRegistry:
     _entries: ClassVar[list[_RegistryEntry]] = []
     _loaded: ClassVar[bool] = False
     _lock: ClassVar[threading.Lock] = threading.Lock()
+    _plugin_registration: ClassVar[threading.local] = threading.local()
 
     @classmethod
     def register(
@@ -108,7 +111,11 @@ class EndpointRegistry:
                 api_key_env=api_key_env,
             )
             endpoint_cls._ENDPOINT_META = meta
-            cls._entries.append(_RegistryEntry(meta=meta, cls=endpoint_cls))
+            entry = _RegistryEntry(meta=meta, cls=endpoint_cls)
+            provenance = getattr(cls._plugin_registration, "provenance", None)
+            if provenance is not None:
+                entry.plugin_name, entry.plugin_target = provenance
+            cls._entries.append(entry)
             return endpoint_cls
 
         return decorator
@@ -152,9 +159,11 @@ class EndpointRegistry:
     def _match_registered(cls, provider: str, endpoint: str, kwargs: dict[str, Any]) -> Any | None:
         """Scan currently-registered entries (built-in + any plugin-activated). ``None`` = no match."""
         first_for_provider = None
-        for entry in cls._entries:
+        for entry in tuple(cls._entries):
             m = entry.meta
             if not (provider == m.provider or provider in m.provider_aliases):
+                continue
+            if not cls._revalidate_plugin_entry(entry):
                 continue
             if first_for_provider is None:
                 first_for_provider = entry
@@ -168,13 +177,32 @@ class EndpointRegistry:
             prov = first_for_provider.meta.provider
             n = sum(
                 1
-                for e in cls._entries
+                for e in tuple(cls._entries)
                 if e.meta.provider == prov or prov in e.meta.provider_aliases
+                if cls._revalidate_plugin_entry(e)
             )
             if n == 1:
                 return first_for_provider.cls(None, **kwargs)
 
         return None
+
+    @classmethod
+    def _revalidate_plugin_entry(cls, entry: _RegistryEntry) -> bool:
+        """Keep plugin entries available only while their declared target remains trusted."""
+        if entry.plugin_name is None or entry.plugin_target is None:
+            return True
+
+        from lionagi.plugins import PluginActivationError, PluginRegistry
+
+        try:
+            PluginRegistry.activate_target(entry.plugin_name, entry.plugin_target)
+        except PluginActivationError:
+            try:
+                cls._entries.remove(entry)
+            except ValueError:
+                pass
+            return False
+        return True
 
     @classmethod
     def _consult_plugin_providers(cls) -> bool:
@@ -200,11 +228,23 @@ class EndpointRegistry:
 
         imported = False
         for plugin_name, module in targets:
+            previous = getattr(cls._plugin_registration, "provenance", None)
+            cls._plugin_registration.provenance = (plugin_name, module)
             try:
-                PluginRegistry.activate_target(plugin_name, module)
+                activated = PluginRegistry.activate_target(plugin_name, module)
+                module_name = getattr(activated, "__name__", None)
+                for entry in cls._entries:
+                    if module_name is not None and entry.cls.__module__ == module_name:
+                        entry.plugin_name = plugin_name
+                        entry.plugin_target = module
                 imported = True
             except PluginActivationError:
                 continue
+            finally:
+                if previous is None:
+                    del cls._plugin_registration.provenance
+                else:
+                    cls._plugin_registration.provenance = previous
         return imported
 
     @classmethod

@@ -132,6 +132,23 @@ class TestPluginProviderHit:
 
         assert type(first).__name__ == type(second).__name__ == "PluginProviderEndpoint"
 
+    def test_changed_provider_file_withdraws_an_already_registered_endpoint(self, write_plugin):
+        bundle = _write_provider_plugin(
+            write_plugin, "wr", name="web-research", provider="acme-llm"
+        )
+
+        first = match_endpoint(provider="acme-llm", endpoint="chat")
+        (bundle / "providers" / "endpoint.py").write_text(
+            PROVIDER_MODULE.format(provider="acme-llm") + "\n# changed after activation\n"
+        )
+
+        assert PluginRegistry.active_provider_targets() == []
+        second = match_endpoint(provider="acme-llm", endpoint="chat")
+
+        assert type(first).__name__ == "PluginProviderEndpoint"
+        assert type(second).__name__ == "Endpoint"
+        assert second.config.provider == "acme-llm"
+
 
 class TestPluginProviderMiss:
     def test_genuinely_unknown_provider_falls_back_identically(self, write_plugin):
