@@ -9,6 +9,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FRONTEND_DIR="$REPO_ROOT/apps/studio/frontend"
 MARKETPLACE_DIR="$REPO_ROOT/marketplace"
 NOTEBOOK_HYGIENE_SCRIPT="$REPO_ROOT/scripts/lint_notebook_hygiene.py"
+QUARANTINE_SCRIPT="$REPO_ROOT/scripts/quarantine.py"
 
 _has_cmd() { command -v "$1" &>/dev/null; }
 
@@ -31,6 +32,11 @@ lint-python() {
   fi
 }
 
+lint-quarantine() {
+  echo "==> pytest quarantine manifest"
+  uv run python "$QUARANTINE_SCRIPT" check --max-entries 15
+}
+
 fmt-python() {
   echo "==> ruff format"
   uv run ruff format "${@:-.}"
@@ -46,25 +52,65 @@ test-python() {
   # --max-worker-restart=0: a hard-crashed xdist worker ("node down") otherwise
   # wedges the session for ~15 minutes before the job dies with no test name;
   # failing fast prints "crashed while running <nodeid>" instead.
+  local report_args=()
+  if [ -n "${PYTEST_JUNIT_XML:-}" ]; then
+    mkdir -p "$(dirname "$PYTEST_JUNIT_XML")"
+    report_args=(-o junit_family=legacy --junitxml="$PYTEST_JUNIT_XML")
+  fi
+  local targets=("$@")
+  [ ${#targets[@]} -gt 0 ] || targets=(tests/)
   uv run pytest \
     --asyncio-mode=auto \
     --maxfail="${MAXFAIL:-3}" \
     --max-worker-restart="${MAX_WORKER_RESTART:-0}" \
-    -m "${PYTEST_MARKEXPR:-not performance}" \
+    -m "${PYTEST_MARKEXPR:-not performance and not flaky_quarantine}" \
     --disable-warnings \
-    "${@:-tests/}"
+    "${report_args[@]}" \
+    "${targets[@]}"
 }
 
 test-python-cov() {
   echo "==> pytest with coverage"
+  local report_args=()
+  if [ -n "${PYTEST_JUNIT_XML:-}" ]; then
+    mkdir -p "$(dirname "$PYTEST_JUNIT_XML")"
+    report_args=(-o junit_family=legacy --junitxml="$PYTEST_JUNIT_XML")
+  fi
+  local targets=("$@")
+  [ ${#targets[@]} -gt 0 ] || targets=(tests/)
   uv run pytest \
     --asyncio-mode=auto \
     --maxfail="${MAXFAIL:-1}" \
     --max-worker-restart="${MAX_WORKER_RESTART:-0}" \
-    -m "${PYTEST_MARKEXPR:-not performance}" \
+    -m "${PYTEST_MARKEXPR:-not performance and not flaky_quarantine}" \
     --disable-warnings \
     --cov=lionagi --cov-report=xml --cov-report=term \
-    "${@:-tests/}"
+    "${report_args[@]}" \
+    "${targets[@]}"
+}
+
+test-python-quarantine() {
+  echo "==> quarantined pytest lane"
+  local quarantine_count
+  quarantine_count=$(uv run python "$QUARANTINE_SCRIPT" count)
+  if [ "$quarantine_count" -eq 0 ]; then
+    echo "No quarantined tests; lane is green."
+    return 0
+  fi
+
+  local report_args=()
+  if [ -n "${PYTEST_JUNIT_XML:-}" ]; then
+    mkdir -p "$(dirname "$PYTEST_JUNIT_XML")"
+    report_args=(-o junit_family=legacy --junitxml="$PYTEST_JUNIT_XML")
+  fi
+  uv run pytest \
+    --asyncio-mode=auto \
+    --maxfail="${MAXFAIL:-0}" \
+    --max-worker-restart="${MAX_WORKER_RESTART:-0}" \
+    -m flaky_quarantine \
+    --disable-warnings \
+    "${report_args[@]}" \
+    tests/
 }
 
 # ---------------------------------------------------------------------------
@@ -346,6 +392,7 @@ lint-hygiene() {
 
 lint() {
   lint-python "$@"
+  lint-quarantine
   lint-frontend
   lint-marketplace
   lint-hygiene
@@ -359,6 +406,7 @@ fmt() {
 ci() {
   echo "=== CI: lint ==="
   lint-python
+  lint-quarantine
   lint-frontend
   lint-marketplace
   lint-hygiene
@@ -383,14 +431,15 @@ cmd="${1:-help}"
 shift 2>/dev/null || true
 
 case "$cmd" in
-  lint-python|fmt-python|test-python|test-python-cov) "$cmd" "$@" ;;
+  lint-python|lint-quarantine|fmt-python|test-python|test-python-cov|test-python-quarantine) "$cmd" "$@" ;;
   lint-frontend|fmt-frontend|fmt-check-frontend|build-frontend|typecheck-frontend|fe-install) "$cmd" "$@" ;;
   lint-marketplace|lint-hygiene) "$cmd" "$@" ;;
   lint|fmt|ci) "$cmd" "$@" ;;
   help|--help|-h)
     echo "Usage: scripts/ci.sh <command>"
     echo ""
-    echo "Python:      lint-python, fmt-python, test-python, test-python-cov"
+    echo "Python:      lint-python, lint-quarantine, fmt-python, test-python,"
+    echo "             test-python-cov, test-python-quarantine"
     echo "Frontend:    fe-install, lint-frontend, fmt-frontend, fmt-check-frontend,"
     echo "             build-frontend, typecheck-frontend"
     echo "Marketplace: lint-marketplace"

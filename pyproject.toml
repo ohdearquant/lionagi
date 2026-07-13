@@ -214,8 +214,11 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 timeout = 300
 timeout_method = "thread"
+faulthandler_timeout = 270
 markers = [
     "performance: marks tests as performance benchmarks",
+    "flaky_quarantine: temporarily excluded from required CI by tests/quarantine.txt",
+    "slow_timing: intentionally exercises a real wall-clock deadline with generous headroom",
     "slow: marks tests as slow (> 1 second)",
     "integration: exercises multiple Studio server components, FastAPI TestClient, SQLite, or filesystem state",
     "unit: marks tests as unit tests",

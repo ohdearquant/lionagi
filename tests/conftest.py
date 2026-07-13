@@ -5,10 +5,21 @@ import types
 
 import pytest
 
+from scripts.quarantine import apply_quarantine_markers, load_manifest
+
 # Load shared scripted/mock fixtures from the library so any test under tests/
 # can ask for ``mocked_branch``, ``scripted_branch``, ``test_data_loader``, etc.
 # Sub-conftests can override specific fixtures (see tests/docs/conftest.py).
 pytest_plugins = ["lionagi.testing.pytest_plugin"]
+
+_QUARANTINE = load_manifest()
+
+
+def pytest_collection_modifyitems(items):
+    """Apply quarantine markers from the checked-in exact-nodeid manifest."""
+
+    apply_quarantine_markers(items, _QUARANTINE, pytest.mark.flaky_quarantine)
+
 
 # Hypothesis: coverage instrumentation (5-10x slowdown) makes the default
 # 200ms deadline trip on async property tests. Register a "ci" profile with
