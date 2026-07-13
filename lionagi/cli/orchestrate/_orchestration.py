@@ -357,15 +357,26 @@ def team_history_context(
 def resolve_worker_spec(
     token: str,
 ) -> tuple[str, AgentProfile | None]:
-    """Resolve a worker token to (model_spec, profile_or_None)."""
-    if "/" in token:
-        return token, None
+    """Resolve a worker token to (model_spec, profile_or_None).
+
+    A token containing '/' is ambiguous: it may be a plugin-namespaced agent
+    profile (``<plugin>/<name>``) or a literal ``provider/model`` spec (e.g.
+    ``openai/gpt-4.1``, predating plugin-namespaced profiles). Always attempt
+    profile resolution first — ``load_agent_profile`` only succeeds for a
+    real ``<plugin>/<name>`` match — and fall back to treating the token as a
+    raw model spec on a miss (FileNotFoundError) or on a shape that can't be
+    a profile name at all (ValueError, e.g. a dotted model version).
+    """
     try:
         profile = load_agent_profile(token)
         # No hardcoded fallback — callers apply their own default so it doesn't rot.
         return profile.model or token, profile
     except FileNotFoundError:
         return token, None
+    except ValueError:
+        if "/" in token:
+            return token, None
+        raise
 
 
 @dataclass
