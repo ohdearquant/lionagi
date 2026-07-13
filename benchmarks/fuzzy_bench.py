@@ -16,7 +16,7 @@ from typing import Any
 import anyio
 import orjson
 
-from benchmarks._compat import dep_version, lionagi_provenance, soft_import
+from benchmarks._compat import cpu_probe, dep_version, lionagi_provenance, soft_import
 
 _sym = soft_import(
     "lionagi.ln.fuzzy",
@@ -232,6 +232,7 @@ def system_info() -> dict[str, Any]:
         "anyio": dep_version("anyio"),
         "orjson": dep_version("orjson"),
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "cpu_probe_seconds": cpu_probe(),
         **lionagi_provenance(),
     }
 

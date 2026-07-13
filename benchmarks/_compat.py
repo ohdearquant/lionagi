@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import importlib.metadata
 import sys
+import time
 
 
 def soft_import(module_path: str, names: list[str]) -> dict[str, object | None]:
@@ -85,3 +86,35 @@ def lionagi_provenance() -> dict[str, str]:
         "lionagi_version": lionagi_version,
         "python_executable": sys.executable,
     }
+
+
+def cpu_probe(iterations: int = 500_000) -> float:
+    """Wall time for a fixed, code-independent CPU workload -- a canary for
+    the runner's *current* effective speed, separate from anything the
+    benchmark scenarios themselves measure.
+
+    Same-machine A/B still assumes the machine's own speed is constant
+    across the job. Hosted CI runners can violate that: burstable-CPU
+    credit decay, thermal throttling, or a noisy neighbor can make the
+    runner measurably slower (or faster) later in the job than it was
+    earlier, with nothing to do with the code under test. Every result
+    JSON records this fixed-workload timing so that kind of drift is
+    directly visible in the artifacts (compare probe values across chunks/
+    arms) instead of only inferable after a compare gate fails for no
+    code-level reason. The iteration count is intentionally simple integer
+    arithmetic with no allocation-heavy or I/O-bound behavior, so it
+    isolates raw CPU throughput.
+
+    500k iterations costs ~0.05s on the hardware this was calibrated on --
+    a first pass used 20_000_000 (~13-20s measured locally) on the
+    assumption that a tight integer loop is negligible; it measurably is
+    not, and at that cost this probe would have added minutes across the
+    ~50 chunk invocations one CI run now makes. This count keeps the added
+    overhead low while still running long enough (tens of milliseconds) to
+    rise well above typical timer/scheduling jitter.
+    """
+    t0 = time.perf_counter()
+    x = 0
+    for _ in range(iterations):
+        x = (x * 1103515245 + 12345) & 0x7FFFFFFF
+    return time.perf_counter() - t0

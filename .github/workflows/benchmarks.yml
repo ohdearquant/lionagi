@@ -15,6 +15,27 @@ name: Benchmarks
 # benchmarks/_compat.py:lionagi_provenance and
 # benchmarks/ci_check_provenance.py, which asserts the two runs disagree
 # on which lionagi install they imported.
+#
+# Same-machine still assumes the machine's own speed is constant across the
+# job, and that assumption can be false on a hosted runner: burstable-CPU
+# credit decay, thermal throttling, or a noisy neighbor can make the runner
+# measurably slower (or faster) later in the job than earlier, with nothing
+# to do with the code under test. A naive "run the whole baseline arm, then
+# the whole current arm" ordering puts a full suite's wall-clock duration
+# (tens of seconds) between any baseline measurement and its paired current
+# measurement, which is enough for that kind of drift to look exactly like
+# a uniform, one-directional regression across every CPU-bound scenario.
+# Each suite below instead runs via benchmarks/run_paired_ab.py, which
+# alternates SHORT baseline/current chunks (baseline chunk 0, current chunk
+# 0, baseline chunk 1, current chunk 1, ...) and merges each arm's chunks
+# back into one result JSON, using the median of the per-chunk medians per
+# scenario. This shrinks the wall-clock gap between a baseline measurement
+# and its paired current measurement to roughly 1/chunks of the naive gap,
+# which is what actually cancels drift -- see run_paired_ab.py's own header
+# comment for the reasoning, and benchmarks/README.md for a local repro of
+# the false-positive this replaced. The merged JSON has the identical shape
+# the old two-run-per-suite design produced, so ci_check_provenance.py and
+# ci_compare.py below are unchanged.
 
 on:
   push:
@@ -153,66 +174,89 @@ jobs:
             exit 1
           fi
 
-      # Every suite below runs once under the baseline venv and once under
-      # the current venv, both times as `-m benchmarks.X` from the neutral
-      # harness directory built above (identical benchmark scripts, only
-      # the invoking interpreter's own site-packages install differs).
-      # --repeat counts are lower than a single-run-per-suite design would
-      # use: paired same-machine comparison removes cross-runner variance,
-      # the dominant noise source that produced false regressions under the
-      # old frozen-baseline design, so fewer repeats still give a reliable
-      # signal, and it keeps the doubled suite count close to the job's
-      # previous wall-clock time.
+      # Every suite below runs through run_paired_ab.py, which alternates
+      # short baseline/current chunks (see the header comment above and
+      # run_paired_ab.py's own docstring for why) and writes one merged
+      # result JSON per arm, in the same shape a plain `-m benchmarks.X`
+      # run always produced. --chunks 5 was picked by locally simulating the
+      # drift this replaced (benchmarks/README.md) -- it cuts a realistic
+      # false-positive delta from ~20%+ to low single digits without
+      # multiplying the job's wall-clock time by chunk count (interpreter
+      # startup is the per-chunk overhead, not the benchmarked work itself).
+      # --total-repeat matches this job's previous --repeat counts for
+      # concurrency (50); ln and fuzzy are bumped from the previous 10 to 20
+      # so 5 chunks still leaves 4 repeats/chunk instead of 2 -- a real
+      # local run at repeat 10/chunks 5 (2/chunk) showed materially noisier
+      # per-chunk medians for these suites' faster scenarios, since a
+      # 2-sample "median" is really just an average of two single
+      # timings. 4/chunk is still thin next to concurrency's 10/chunk, but
+      # it's the cheaper suites getting extra repeats, not fewer chunks
+      # (fewer chunks would weaken the temporal pairing this design exists
+      # for).
 
-      - name: Run concurrency benchmarks - baseline (asyncio)
+      - name: Run concurrency benchmarks (asyncio, paired baseline/current)
         run: |
-          cd "$RUNNER_TEMP/bench-harness"
-          "$RUNNER_TEMP/.venv-baseline/bin/python" -m benchmarks.concurrency_bench --repeat 50 --backend asyncio --output "$GITHUB_WORKSPACE/benchmarks/_ci_out/baseline/concurrency-asyncio.json"
+          source .venv/bin/activate
+          python benchmarks/run_paired_ab.py \
+            --module benchmarks.concurrency_bench \
+            --baseline-python "$RUNNER_TEMP/.venv-baseline/bin/python" \
+            --current-python "$GITHUB_WORKSPACE/.venv/bin/python" \
+            --total-repeat 50 --chunks 5 \
+            --extra-args "--backend asyncio" \
+            --baseline-output "$GITHUB_WORKSPACE/benchmarks/_ci_out/baseline/concurrency-asyncio.json" \
+            --current-output "$GITHUB_WORKSPACE/benchmarks/_ci_out/current/concurrency-asyncio.json" \
+            --work-dir "$RUNNER_TEMP/bench-harness"
 
-      - name: Run concurrency benchmarks - current (asyncio)
+      - name: Run concurrency benchmarks (trio, paired baseline/current)
         run: |
-          cd "$RUNNER_TEMP/bench-harness"
-          "$GITHUB_WORKSPACE/.venv/bin/python" -m benchmarks.concurrency_bench --repeat 50 --backend asyncio --output "$GITHUB_WORKSPACE/benchmarks/_ci_out/current/concurrency-asyncio.json"
+          source .venv/bin/activate
+          python benchmarks/run_paired_ab.py \
+            --module benchmarks.concurrency_bench \
+            --baseline-python "$RUNNER_TEMP/.venv-baseline/bin/python" \
+            --current-python "$GITHUB_WORKSPACE/.venv/bin/python" \
+            --total-repeat 50 --chunks 5 \
+            --extra-args "--backend trio" \
+            --baseline-output "$GITHUB_WORKSPACE/benchmarks/_ci_out/baseline/concurrency-trio.json" \
+            --current-output "$GITHUB_WORKSPACE/benchmarks/_ci_out/current/concurrency-trio.json" \
+            --work-dir "$RUNNER_TEMP/bench-harness"
 
-      - name: Run concurrency benchmarks - baseline (trio)
+      - name: Run ln benchmarks (asyncio, paired baseline/current)
         run: |
-          cd "$RUNNER_TEMP/bench-harness"
-          "$RUNNER_TEMP/.venv-baseline/bin/python" -m benchmarks.concurrency_bench --repeat 50 --backend trio --output "$GITHUB_WORKSPACE/benchmarks/_ci_out/baseline/concurrency-trio.json"
+          source .venv/bin/activate
+          python benchmarks/run_paired_ab.py \
+            --module benchmarks.ln_bench \
+            --baseline-python "$RUNNER_TEMP/.venv-baseline/bin/python" \
+            --current-python "$GITHUB_WORKSPACE/.venv/bin/python" \
+            --total-repeat 20 --chunks 5 \
+            --extra-args "--backend asyncio" \
+            --baseline-output "$GITHUB_WORKSPACE/benchmarks/_ci_out/baseline/ln-asyncio.json" \
+            --current-output "$GITHUB_WORKSPACE/benchmarks/_ci_out/current/ln-asyncio.json" \
+            --work-dir "$RUNNER_TEMP/bench-harness"
 
-      - name: Run concurrency benchmarks - current (trio)
+      - name: Run ln benchmarks (trio, paired baseline/current)
         run: |
-          cd "$RUNNER_TEMP/bench-harness"
-          "$GITHUB_WORKSPACE/.venv/bin/python" -m benchmarks.concurrency_bench --repeat 50 --backend trio --output "$GITHUB_WORKSPACE/benchmarks/_ci_out/current/concurrency-trio.json"
+          source .venv/bin/activate
+          python benchmarks/run_paired_ab.py \
+            --module benchmarks.ln_bench \
+            --baseline-python "$RUNNER_TEMP/.venv-baseline/bin/python" \
+            --current-python "$GITHUB_WORKSPACE/.venv/bin/python" \
+            --total-repeat 20 --chunks 5 \
+            --extra-args "--backend trio" \
+            --baseline-output "$GITHUB_WORKSPACE/benchmarks/_ci_out/baseline/ln-trio.json" \
+            --current-output "$GITHUB_WORKSPACE/benchmarks/_ci_out/current/ln-trio.json" \
+            --work-dir "$RUNNER_TEMP/bench-harness"
 
-      - name: Run ln benchmarks - baseline (asyncio)
+      - name: Run fuzzy benchmarks (paired baseline/current)
         run: |
-          cd "$RUNNER_TEMP/bench-harness"
-          "$RUNNER_TEMP/.venv-baseline/bin/python" -m benchmarks.ln_bench --repeat 10 --backend asyncio --output "$GITHUB_WORKSPACE/benchmarks/_ci_out/baseline/ln-asyncio.json"
-
-      - name: Run ln benchmarks - current (asyncio)
-        run: |
-          cd "$RUNNER_TEMP/bench-harness"
-          "$GITHUB_WORKSPACE/.venv/bin/python" -m benchmarks.ln_bench --repeat 10 --backend asyncio --output "$GITHUB_WORKSPACE/benchmarks/_ci_out/current/ln-asyncio.json"
-
-      - name: Run ln benchmarks - baseline (trio)
-        run: |
-          cd "$RUNNER_TEMP/bench-harness"
-          "$RUNNER_TEMP/.venv-baseline/bin/python" -m benchmarks.ln_bench --repeat 10 --backend trio --output "$GITHUB_WORKSPACE/benchmarks/_ci_out/baseline/ln-trio.json"
-
-      - name: Run ln benchmarks - current (trio)
-        run: |
-          cd "$RUNNER_TEMP/bench-harness"
-          "$GITHUB_WORKSPACE/.venv/bin/python" -m benchmarks.ln_bench --repeat 10 --backend trio --output "$GITHUB_WORKSPACE/benchmarks/_ci_out/current/ln-trio.json"
-
-      - name: Run fuzzy benchmarks - baseline
-        run: |
-          cd "$RUNNER_TEMP/bench-harness"
-          "$RUNNER_TEMP/.venv-baseline/bin/python" -m benchmarks.fuzzy_bench --repeat 10 --output "$GITHUB_WORKSPACE/benchmarks/_ci_out/baseline/fuzzy.json"
-
-      - name: Run fuzzy benchmarks - current
-        run: |
-          cd "$RUNNER_TEMP/bench-harness"
-          "$GITHUB_WORKSPACE/.venv/bin/python" -m benchmarks.fuzzy_bench --repeat 10 --output "$GITHUB_WORKSPACE/benchmarks/_ci_out/current/fuzzy.json"
+          source .venv/bin/activate
+          python benchmarks/run_paired_ab.py \
+            --module benchmarks.fuzzy_bench \
+            --baseline-python "$RUNNER_TEMP/.venv-baseline/bin/python" \
+            --current-python "$GITHUB_WORKSPACE/.venv/bin/python" \
+            --total-repeat 20 --chunks 5 \
+            --baseline-output "$GITHUB_WORKSPACE/benchmarks/_ci_out/baseline/fuzzy.json" \
+            --current-output "$GITHUB_WORKSPACE/benchmarks/_ci_out/current/fuzzy.json" \
+            --work-dir "$RUNNER_TEMP/bench-harness"
 
       - name: Verify lionagi provenance and scenario coverage (baseline vs current)
         run: |
