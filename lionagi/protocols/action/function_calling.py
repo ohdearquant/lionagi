@@ -3,13 +3,39 @@
 
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    AliasPath,
+    BaseModel,
+    Field,
+    field_validator,
+    model_validator,
+)
 from typing_extensions import Self
 
 from lionagi.ln.concurrency import is_coro_func
 
 from ..generic.event import Event
 from .tool import Tool
+
+
+def _add_alias_keys(alias: Any, keys: set[str]) -> None:
+    """Add the input key(s) an alias makes reachable to `keys`.
+
+    Handles a plain string alias, an `AliasPath` (whose reachable input
+    key is its top-level root -- `AliasPath("payload", "value")` accepts
+    input under the top-level key "payload"), and an `AliasChoices`
+    whose `.choices` may themselves contain any mix of strings and
+    nested `AliasPath` entries.
+    """
+    if isinstance(alias, str):
+        keys.add(alias)
+    elif isinstance(alias, AliasPath):
+        if alias.path and isinstance(alias.path[0], str):
+            keys.add(alias.path[0])
+    elif isinstance(alias, AliasChoices):
+        for choice in alias.choices:
+            _add_alias_keys(choice, keys)
 
 
 class FunctionCalling(Event):
@@ -91,16 +117,12 @@ class FunctionCalling(Event):
                 declared_keys.add(field_name)
                 if isinstance(field_info.alias, str):
                     declared_keys.add(field_info.alias)
-                validation_alias = field_info.validation_alias
-                if isinstance(validation_alias, str):
-                    declared_keys.add(validation_alias)
-                else:
-                    # AliasChoices/AliasPath: collect any plain string
-                    # choices so a key reachable via those still counts
-                    # as schema-covered.
-                    for choice in getattr(validation_alias, "choices", None) or ():
-                        if isinstance(choice, str):
-                            declared_keys.add(choice)
+                # AliasPath (direct or nested inside AliasChoices) still
+                # makes its top-level root key a declared input -- e.g.
+                # `AliasPath("payload", "value")` accepts input under
+                # "payload", not just via its own `.choices` string
+                # members.
+                _add_alias_keys(field_info.validation_alias, declared_keys)
             extra_args = {k: v for k, v in self.arguments.items() if k not in declared_keys}
             self.arguments = {**validated_args, **extra_args}
 

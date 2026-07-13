@@ -12,7 +12,7 @@ registered.
 """
 
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, AliasPath, BaseModel, Field
 
 from lionagi.agent.factory import _chain_pre_hooks
 from lionagi.protocols.action.function_calling import FunctionCalling
@@ -319,6 +319,100 @@ async def test_preprocessor_added_known_field_via_alias_cannot_bypass_validation
     # value through as a bogus "extra".
     assert calls == [{"a": 1, "b": 2, "c": 0}]
     assert fc.arguments.get("c") != "not-an-int"
+
+
+class AddArgsWithAliasPath(BaseModel):
+    a: int
+    b: int
+    # The Python field name ("data") is deliberately different from the
+    # AliasPath's top-level root ("payload") -- the field name alone
+    # (already declared via `declared_keys.add(field_name)`) must not be
+    # what makes this pass; the classifier has to recognize "payload"
+    # itself as a declared input key.
+    data: int = Field(default=0, validation_alias=AliasPath("payload", "value"))
+
+
+async def test_preprocessor_added_key_via_aliaspath_cannot_bypass_validation():
+    """A preprocessor must not be able to smuggle a raw value into a
+    *declared* schema field by writing its `AliasPath` root key directly
+    (e.g. flat `{"payload": ...}` instead of the accepted nested
+    `{"payload": {"value": ...}}`). `AliasPath` has `.path`, not
+    `.choices` -- a classifier that only understands `AliasChoices`
+    would miss this declared field entirely, treat the flat "payload"
+    key as "extra", and forward its raw, unvalidated value straight to
+    the callable, reopening the alias bypass this PR closed."""
+    calls: list[dict] = []
+
+    async def add(a: int, b: int, payload=None) -> int:
+        calls.append({"a": a, "b": b, "payload": payload})
+        return a + b
+
+    async def preprocessor(args: dict) -> dict:
+        # "payload" is the top-level root of a declared field's
+        # AliasPath, but pydantic only accepts it nested
+        # (payload.value) -- writing it as a flat top-level key is the
+        # smuggling attempt the buggy classifier let through.
+        return {**args, "payload": "malicious-raw-value"}
+
+    tool = Tool(
+        func_callable=add,
+        request_options=AddArgsWithAliasPath,
+        preprocessor=preprocessor,
+    )
+    manager = ActionManager(tool)
+
+    fc = await manager.invoke({"function": "add", "arguments": {"a": 1, "b": 2}})
+
+    assert fc.status == EventStatus.COMPLETED
+    # The raw string must never reach the callable as "payload": since
+    # the flat key doesn't match the accepted nested alias path, "payload"
+    # must not be forwarded at all -- the callable only sees its own
+    # default instead of the classifier smuggling the raw value through
+    # as a bogus "extra".
+    assert calls == [{"a": 1, "b": 2, "payload": None}]
+    assert fc.arguments.get("payload") != "malicious-raw-value"
+    assert "payload" not in fc.arguments
+
+
+class AddArgsWithAliasChoicesPath(BaseModel):
+    a: int
+    b: int
+    # Same field-name/alias-root split as above, but the AliasPath is
+    # nested inside an AliasChoices alongside a plain-string choice.
+    data: int = Field(
+        default=0,
+        validation_alias=AliasChoices("payload_alias", AliasPath("payload", "value")),
+    )
+
+
+async def test_preprocessor_added_key_via_aliaschoices_aliaspath_cannot_bypass_validation():
+    """Same smuggling attempt as above, but the `AliasPath` is nested
+    inside an `AliasChoices` alongside a plain-string choice. The
+    classifier must recurse into `AliasChoices.choices` and recognize
+    the `AliasPath` member's root key ("payload") as declared input,
+    not just the plain-string choice ("payload_alias")."""
+    calls: list[dict] = []
+
+    async def add(a: int, b: int, payload=None) -> int:
+        calls.append({"a": a, "b": b, "payload": payload})
+        return a + b
+
+    async def preprocessor(args: dict) -> dict:
+        return {**args, "payload": "malicious-raw-value"}
+
+    tool = Tool(
+        func_callable=add,
+        request_options=AddArgsWithAliasChoicesPath,
+        preprocessor=preprocessor,
+    )
+    manager = ActionManager(tool)
+
+    fc = await manager.invoke({"function": "add", "arguments": {"a": 1, "b": 2}})
+
+    assert fc.status == EventStatus.COMPLETED
+    assert calls == [{"a": 1, "b": 2, "payload": None}]
+    assert fc.arguments.get("payload") != "malicious-raw-value"
+    assert "payload" not in fc.arguments
 
 
 # ── Post hooks: success and failure ─────────────────────────────────────────
