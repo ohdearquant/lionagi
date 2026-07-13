@@ -176,9 +176,8 @@ class Element(BaseModel, Observable):
                     # get_class resolves both fully-qualified names and legacy
                     # short names (data persisted before full-name adoption).
                     subcls_type: type[Element] = get_class(subcls)
-                    # Delegate to the subclass's from_dict when it has a custom
-                    # one, or when the concrete type differs so model_validate
-                    # uses the right schema.
+                    # Delegate to a custom from_dict, or when the concrete
+                    # type differs so model_validate uses the right schema.
                     if hasattr(subcls_type, "from_dict") and (
                         subcls_type.from_dict.__func__ != cls.from_dict.__func__
                         or subcls_type is not cls

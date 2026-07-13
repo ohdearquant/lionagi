@@ -170,9 +170,8 @@ class SearchTool(LionTool):
 
     def __init__(self, workspace_root: str | None = None) -> None:
         self._tool = None
-        # Resolve to an absolute path ONCE here — a stored relative root would
-        # re-resolve against a later os.chdir()'d cwd and could escape the
-        # intended boundary.
+        # Resolved to absolute ONCE — a stored relative root would re-resolve
+        # against a later os.chdir()'d cwd and could escape the boundary.
         self._workspace_root = (
             str(Path(workspace_root).resolve()) if workspace_root is not None else None
         )
@@ -214,14 +213,8 @@ class SearchTool(LionTool):
         if self._tool is None:
 
             async def search_tool(**kwargs):
-                """
-                Search file contents or find files by name.
-
-                Use action='grep' to find lines matching a regex across files — supports
-                include glob to narrow the file set. Use action='find' to locate files
-                whose names match a glob pattern. Both actions use portable POSIX tools
-                (grep -E, find) with no external dependencies. Results are capped at
-                max_results (default 50/100) to avoid flooding context.
+                """Search file contents by regex (action='grep') or find files by name glob (action='find').
+                Uses portable POSIX tools (grep -E, find); results capped at max_results (default 50/100).
                 """
                 return (await self.handle_request(SearchRequest(**kwargs))).model_dump()
 

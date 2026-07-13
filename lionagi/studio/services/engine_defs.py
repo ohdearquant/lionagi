@@ -184,9 +184,8 @@ async def update_engine_def(def_id: str, fields: dict[str, Any]) -> dict[str, An
         if "options" in fields:
             _validate_options(fields["options"])
 
-        # Validate the EFFECTIVE merged definition, not just the patch: a kind
-        # change to 'coding' or an options patch dropping test_cmd would
-        # otherwise store a definition the engine CLI always rejects.
+        # Validate the EFFECTIVE merged definition, not just the patch — a kind
+        # change to 'coding' or dropping test_cmd would otherwise store a def the CLI rejects.
         effective_kind = fields.get("kind", existing.get("kind"))
         effective_options = fields["options"] if "options" in fields else existing.get("options")
         _validate_kind_options(effective_kind, effective_options)

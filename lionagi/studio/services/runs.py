@@ -456,11 +456,7 @@ def _session_liveness(s: dict[str, Any], ps_snapshot: str | None = None) -> bool
 
 
 def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None) -> dict[str, Any]:
-    """The canonical Run row shape, shared by list and detail routes so they
-    can't drift out of contract. Caller supplies a session dict carrying
-    branch_count / message_count / last_message_at, plus tri-state process
-    liveness (None = unknown) so a process-dead run can't render as healthy.
-    """
+    """Canonical Run row shape shared by list and detail routes."""
     from lionagi.state.health import classify_session_health
 
     health = classify_session_health(
@@ -575,14 +571,9 @@ async def get_run(
     message_limit: int = _sessions_svc.DEFAULT_MESSAGE_LIMIT,
     message_cursor: str | None = None,
 ) -> dict[str, Any] | None:
-    """Run detail from StateDB (flat-file run.json path removed, no callers).
-
-    Superset of the list Run row (via _run_row) plus detail-only fields.
-    branch_count / message_count are derived here since get_session() omits
-    those JOIN aggregates. Fields absent from DB (state_root, artifact_root,
-    task, error, cwd, manifest) return None/""/{} to keep the frontend
-    contract unchanged.
-    """
+    """Run detail from StateDB; superset of the list Run row (via _run_row)
+    plus detail-only fields. Fields absent from DB return None/""/{} to keep
+    the frontend contract unchanged."""
     session = await _sessions_svc.get_session(
         run_id, message_limit=message_limit, message_cursor=message_cursor
     )
@@ -597,10 +588,8 @@ async def get_run(
 
     state_root: Path | None = artifact_root.parent if artifact_root else None
 
-    # message_stats is computed over the full session progression (never the
-    # tail-windowed branches[].messages page), so the run-level count is
-    # correct regardless of the display window. Fall back to the windowed
-    # page length only for legacy payloads that predate message_stats.
+    # message_stats covers the full session progression, not the tail-windowed
+    # page; fall back to windowed length only for legacy pre-message_stats payloads.
     message_stats = (
         session.get("message_stats") if isinstance(session.get("message_stats"), dict) else None
     )
@@ -612,10 +601,8 @@ async def get_run(
             for b in branches
             if isinstance(b, dict)
         )
-    # session["last_message_at"] is the DB-maintained full-session aggregate
-    # (bumped on every message write, see state/db.py); prefer it over
-    # recomputing from branches[].messages, which is only the display window
-    # and reports the wrong value once the caller pages to an older cursor.
+    # DB-maintained full-session aggregate; prefer it over recomputing from
+    # branches[].messages, which is only the display window.
     last_message_at = session.get("last_message_at")
     if last_message_at is None:
         last_message_at = max(
@@ -670,16 +657,9 @@ async def get_run(
 
 
 def _build_steps_from_db(branches: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
-    """Build a steps list from DB-hydrated branch dicts.
-
-    `messages` per branch is a tail-windowed display page; `message_count`/
-    `roles` are read from the branch's full-session `message_stats` instead
-    (falling back to `message_total`, then windowed page length, for legacy
-    payloads predating message_stats). The `message_stats.message_count`
-    check is KEY-PRESENCE based, not truthiness: a legitimate 0 (stale
-    progression referencing pruned message ids) must not fall through to
-    `0 or fallback`, which would replace it with the wrong count.
-    """
+    """Build a steps list from DB-hydrated branch dicts. message_count/roles
+    read from full-session message_stats (key-presence checked, not
+    truthiness, so a legitimate 0 doesn't fall through to a fallback)."""
     if not branches:
         return None
     steps = []
@@ -765,17 +745,9 @@ async def get_run_route(
 
 def _open_regular_file_no_follow(root: Path, resolved: Path) -> int:
     """Open `resolved` (already containment-checked under `root`) through a
-    root-anchored, no-follow descriptor walk and return the open fd.
-
-    `resolve_workspace_path` only validates the path at check time — nothing
-    stops the target from being replaced with a symlink before a later
-    `open()`-by-path follows it out of the artifact root (CWE-367/59). This
-    walks each path component with `os.open(..., dir_fd=parent_fd)` instead:
-    every component is resolved relative to a directory descriptor obtained
-    *before* it, never by re-walking a path string, and `O_NOFOLLOW` refuses
-    a symlink at any position (including an intermediate directory). The
-    caller owns closing the returned fd.
-    """
+    root-anchored, no-follow descriptor walk (defends the TOCTOU window where
+    a path component could be swapped for a symlink after validation).
+    Caller owns closing the returned fd."""
     parts = resolved.relative_to(root).parts
     if not parts:
         raise PermissionError(f"no path components under root: {resolved!r}")
@@ -798,14 +770,8 @@ def _open_regular_file_no_follow(root: Path, resolved: Path) -> int:
 
 
 async def get_run_file(run_id: str, path: str) -> dict[str, Any]:
-    """Read-only content fetch for a file inside a run's artifact root.
-
-    Backs the message-renderer's clickable file links: a link is only ever
-    rendered when the frontend already believes the path is part of the
-    run's known file surface (message_stats.files / tool-call args), but a
-    file can still vanish between render and click — this always re-validates
-    against the live artifact root rather than trusting the caller.
-    """
+    """Read-only content fetch for a file inside a run's artifact root;
+    always re-validates against the live artifact root rather than trusting the caller."""
     session = await _sessions_svc.get_session(run_id, message_limit=1)
     if session is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
@@ -831,12 +797,8 @@ async def get_run_file(run_id: str, path: str) -> dict[str, Any]:
 
     try:
         size = os.fstat(fd).st_size
-        # Read at most cap+1 bytes total — the extra byte only decides
-        # `truncated`, never a full-file materialization regardless of actual
-        # file size. os.read may legally return fewer bytes than requested
-        # without signaling EOF, so accumulate until EOF or the allowance is
-        # exhausted; a single short read must not mislabel an oversized file
-        # as complete.
+        # Read at most cap+1 bytes total; accumulate until EOF since os.read
+        # may legally return short reads without signaling EOF.
         chunks: list[bytes] = []
         remaining = _MAX_FILE_READ_BYTES + 1
         while remaining > 0:
@@ -851,9 +813,8 @@ async def get_run_file(run_id: str, path: str) -> dict[str, Any]:
 
     truncated = len(raw) > _MAX_FILE_READ_BYTES
     if truncated:
-        # The cap can split a multibyte UTF-8 sequence at the boundary of an
-        # otherwise-valid file; that must read as truncation, not as a binary
-        # file. Only genuinely non-text files (untruncated branch) get a 415.
+        # A split multibyte UTF-8 sequence at the cap boundary must read as
+        # truncation, not a binary file — only the untruncated branch gets a 415.
         content = raw[:_MAX_FILE_READ_BYTES].decode("utf-8", errors="replace")
     else:
         try:

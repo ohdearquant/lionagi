@@ -43,11 +43,8 @@ __all__ = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Events — the pipeline vocabulary. The engine stamps ``eid`` (W/P/T/V/K, no
-# collision with hypothesis's F/Q/E/H/X/R/C/A); refs link a stage to its
-# upstream stage so the export is a walkable chain.
-# ---------------------------------------------------------------------------
+# --- Events — the pipeline vocabulary (eid prefixes W/P/T/V/K; no collision
+# with hypothesis's F/Q/E/H/X/R/C/A); refs link each stage to its upstream one. ---
 
 
 CodingChainEvent = ChainEvent
@@ -153,9 +150,7 @@ _REF_ATTRS = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Worker observability events (abort + heartbeat + activity)
-# ---------------------------------------------------------------------------
+# --- Worker observability events (abort + heartbeat + activity) ---
 
 
 class WorkAborted(EngineEvent):
@@ -181,11 +176,8 @@ class WorkerActivity(EngineEvent):
 
 
 class AutoRepairApplied(EngineEvent):
-    """Emitted when the harness auto-applies a repair command before a test gate.
-
-    Distinct from a worker fix round: the harness normalized the diff
-    mechanically (e.g. ``cargo fmt --all``), the worker didn't produce it.
-    """
+    """Emitted when the harness auto-applies a repair command before a test gate;
+    distinct from a worker fix round (the harness normalized the diff mechanically)."""
 
     cmd: str = Field(description="The auto-repair command that was run.")
     files: list[str] = Field(
@@ -197,9 +189,7 @@ class AutoRepairApplied(EngineEvent):
     )
 
 
-# ---------------------------------------------------------------------------
-# Spec lint
-# ---------------------------------------------------------------------------
+# --- Spec lint ---
 
 _RE_ACCEPTANCE = re.compile(r"acceptance.{0,20}criteria|acceptance:", re.IGNORECASE)
 _RE_TEST_CMD = re.compile(r"test_cmd\s*:", re.IGNORECASE)
@@ -235,9 +225,7 @@ def _lint_spec(
     return warnings
 
 
-# ---------------------------------------------------------------------------
-# Spec normalization
-# ---------------------------------------------------------------------------
+# --- Spec normalization ---
 
 
 def _normalize_spec(spec: str | dict[str, Any]) -> tuple[str, str]:
@@ -264,9 +252,7 @@ def _normalize_spec(spec: str | dict[str, Any]) -> tuple[str, str]:
     raise TypeError(f"coding spec must be str or dict, got {type(spec)!r}")
 
 
-# ---------------------------------------------------------------------------
-# Instructions
-# ---------------------------------------------------------------------------
+# --- Instructions ---
 
 
 def _plan_instruction(task_text: str, workspace: str) -> str:
@@ -337,9 +323,7 @@ def _verify_instruction(plan: WorkPlanned, change: ChangeProposed, t: TestsRan, 
     )
 
 
-# ---------------------------------------------------------------------------
-# Run context
-# ---------------------------------------------------------------------------
+# --- Run context ---
 
 
 class CodingRun(ChainRun):
@@ -452,9 +436,7 @@ def _render_report(run: CodingRun, report: str) -> str:
     return "".join(parts) + "\n"
 
 
-# ---------------------------------------------------------------------------
-# Engine
-# ---------------------------------------------------------------------------
+# --- Engine ---
 
 
 class CodingEngine(Engine):
@@ -576,11 +558,8 @@ class CodingEngine(Engine):
         if run._aborted:
             return await self._conclude(run, plan, passed=False, caveat="stage aborted by watchdog")
         if change is None:
-            # Emission is metadata; the workspace delta is ground truth.  Three
-            # outcomes after _implement returns None:
-            #   (a) delta non-empty  → work detected; proceed to test gate.
-            #   (b) delta empty      → no work; preserve no-change verdict.
-            #   (c) check failed     → unknown; fail open to test gate.
+            # Emission is metadata; the workspace delta is ground truth. Delta
+            # non-empty -> proceed to test gate; empty -> no-change verdict.
             delta, check_failed = await self._workspace_changed(run)
             run._ws_delta = delta
             if check_failed:
@@ -771,11 +750,7 @@ class CodingEngine(Engine):
         self, run: CodingRun, plan: WorkPlanned, change: ChangeProposed, tests: TestsRan
     ) -> tuple[ChangeProposed, TestsRan]:
         """Re-prompt the implementer on failure and re-test, bounded by max_fix_rounds.
-
-        Mechanical rounds (fixed by auto-repair alone) skip the judge gate;
-        substantive rounds go through it. fast_test_cmd, if configured, gates
-        intermediate rounds; test_cmd is always the final ground-truth leg.
-        """
+        Mechanical rounds (auto-repair alone) skip the judge gate; substantive ones go through."""
         agent = getattr(run, "_implementer", None)
         round_no = 0
         while not tests.passed and round_no < self.max_fix_rounds and agent is not None:
@@ -1034,13 +1009,8 @@ class CodingEngine(Engine):
         result = await run_sync(_subprocess_sync, ["git", "diff"], False, 30.0, run.workspace)
         tracked = result.get("stdout", "") if int(result.get("returncode", -1)) == 0 else ""
 
-        # Candidate set: union of the initial workspace delta (covers emission-
-        # failure rewrites) and every file any ChangeProposed claimed to touch,
-        # evaluated at verify time so fix-round additions are included.
-        # Normalized to workspace-relative POSIX before intersecting: files_touched
-        # often carries absolute paths (the coding tool schema asks for them) while
-        # git ls-files --others returns repo-relative ones; paths that escape the
-        # workspace are dropped since they can't be untracked files here.
+        # Candidate set: union of the workspace delta and every file any ChangeProposed
+        # claimed to touch, normalized to workspace-relative POSIX before intersecting.
         raw_candidates: set[str] = set(run._ws_delta)
         final_change = run.last(ChangeProposed)
         if final_change is not None:

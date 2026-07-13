@@ -23,9 +23,7 @@ if TYPE_CHECKING:
 
 __all__ = ("prepare_messages_for_chat",)
 
-# ---------------------------------------------------------------------------
 # Type aliases — production content types are canonical.
-# ---------------------------------------------------------------------------
 Instruction = InstructionContent
 System = SystemContent
 ActionRequest = ActionRequestContent

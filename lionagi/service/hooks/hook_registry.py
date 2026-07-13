@@ -127,11 +127,8 @@ class HookRegistry:
     async def pre_event_create(
         self, event_type: type[E], /, should_exit: bool = False, **kw
     ) -> tuple[E | Exception | None, bool, EventStatus]:
-        """Called before an event is created, to modify or validate creation params.
-
-        The hook can return an event instance, return None to use the
-        default creation path, or raise to cancel the event.
-        """
+        """Called before an event is created; may return an event instance, return None
+        for the default creation path, or raise to cancel. See docs/internals/runtime.md."""
         # Pop legacy exit alias from kw so it doesn't collide with should_exit.
         _exit_compat = kw.pop("exit", False)
         _should_exit = should_exit or bool(_exit_compat)
@@ -154,11 +151,8 @@ class HookRegistry:
     async def pre_invocation(
         self, event: E, /, should_exit: bool = False, **kw
     ) -> tuple[Any, bool, EventStatus]:
-        """Called right before a dequeued event is invoked, typically to check permissions.
-
-        Can raise to abort invocation (status: cancelled); cannot modify the
-        event instance.
-        """
+        """Called right before a dequeued event is invoked; can raise to abort
+        (status: cancelled), but cannot modify the event instance."""
         _exit_compat = kw.pop("exit", False)
         _should_exit = should_exit or bool(_exit_compat)
         kw["exit"] = _should_exit
@@ -179,10 +173,8 @@ class HookRegistry:
     async def post_invocation(
         self, event: E, /, should_exit: bool = False, **kw
     ) -> tuple[None | Exception, bool, EventStatus]:
-        """Called right after an event finishes execution.
-
-        Can raise to abort (status: aborted); cannot modify the event instance.
-        """
+        """Called right after an event finishes execution; can raise to abort
+        (status: aborted), but cannot modify the event instance."""
         _exit_compat = kw.pop("exit", False)
         _should_exit = should_exit or bool(_exit_compat)
         kw["exit"] = _should_exit
@@ -203,11 +195,8 @@ class HookRegistry:
     async def handle_streaming_chunk(
         self, chunk_type: str | type, chunk: Any, /, should_exit: bool = False, **kw
     ) -> tuple[Any, bool, EventStatus | None]:
-        """Called to consume streaming chunks, typically for logging or abortion.
-
-        Handler signature: `async def handler(chunk: Any) -> None`. Can raise
-        to mark the invocation "failed" (status: aborted).
-        """
+        """Called to consume streaming chunks; handler signature `async def handler(chunk) -> None`,
+        can raise to mark the invocation "failed" (status: aborted)."""
         _exit_compat = kw.pop("exit", False)
         _should_exit = should_exit or bool(_exit_compat)
         kw["exit"] = _should_exit
@@ -235,11 +224,8 @@ class HookRegistry:
         should_exit: bool = False,
         **kw,
     ):
-        """Call a hook or stream handler; `hook_type` wins if both are given.
-
-        Legacy ``exit`` keyword accepted in ``**kw`` for backward
-        compatibility, normalized to ``should_exit`` before dispatch.
-        """
+        """Call a hook or stream handler; `hook_type` wins if both are given. Legacy
+        ``exit`` keyword in ``**kw`` is normalized to ``should_exit`` before dispatch."""
         if hook_type is None and chunk_type is None:
             raise ValueError("Either method or chunk_type must be provided")
         if hook_type:

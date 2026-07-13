@@ -80,9 +80,8 @@ async def get_invocation(invocation_id: str) -> dict[str, Any] | None:
         sessions = await db.list_sessions_for_invocation(invocation_id)
         # Structured outcomes alongside child sessions for the invocation detail page.
         artifacts = await db.list_artifacts_for_invocation(invocation_id)
-        # ADR-0070: the schedule_run that fired this invocation, when it was a
-        # scheduled run, so the detail page can show exit_code/error_detail
-        # for a failed run without the UI having to correlate two IDs itself.
+        # The schedule_run that fired this invocation, when scheduled, so the
+        # detail page can show exit_code/error_detail without correlating IDs.
         schedule_run = await db.get_schedule_run_by_invocation(invocation_id)
     return {
         "id": row["id"],
@@ -173,9 +172,7 @@ async def list_invocations_route(
         "invocations": rows,
         "limit": limit,
         "offset": offset,
-        # We don't compute total separately — the page is the slice the
-        # client asked for. Studio's pagination uses has_next instead of
-        # absolute totals.
+        # No separate total: pagination uses has_next instead of absolute totals.
         "has_next": len(rows) == limit,
     }
 
@@ -204,9 +201,8 @@ async def get_artifact_route(artifact_id: str) -> dict[str, Any]:
     return data
 
 
-# Convenience: sessions don't have their own router-level artifacts endpoint
-# (sessions.router has never exposed one). This sub-route under /api/artifacts
-# keeps the artifact concern in one place.
+# Sessions have no router-level artifacts endpoint; this sub-route keeps
+# the artifact concern in one place.
 @studio_route(
     "/artifacts/by-session/{session_id}", method="GET", area="invocations", tags=["artifacts"]
 )

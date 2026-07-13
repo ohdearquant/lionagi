@@ -90,11 +90,7 @@ class FieldSpec(Element):
         return self
 
     def coerce(self, value: Any) -> Any:
-        """Attempt to coerce *value* to this field's declared type.
-
-        Returns the coerced value on success, raises ``TypeError`` on failure.
-        ``None`` is returned unchanged.
-        """
+        """Attempt to coerce *value* to this field's declared type; raises ``TypeError`` on failure, ``None`` passes through unchanged."""
         if value is None:
             return None
         target = _PYTHON_TYPE_MAP[self.type]
@@ -175,9 +171,7 @@ class WorkForm(Element):
         return self.model_copy(update={"status": new_status})
 
 
-# ---------------------------------------------------------------------------
 # Functional API
-# ---------------------------------------------------------------------------
 
 
 def fill_form(
@@ -186,11 +180,7 @@ def fill_form(
     *,
     ruleset: RuleSet | None = None,
 ) -> WorkForm:
-    """Merge *values* into *form* (applying FieldSpec defaults), then validate.
-
-    Returns a new WorkForm with status ``validated`` or ``error``; does not
-    mutate the source.
-    """
+    """Merge *values* into *form* (applying FieldSpec defaults), then validate; returns a new WorkForm (does not mutate the source)."""
     merged: dict[str, Any] = {}
     for name, spec in form.fields.items():
         if name in values:
@@ -213,11 +203,7 @@ def validate_form(
     *,
     ruleset: RuleSet | None = None,
 ) -> WorkForm:
-    """Validate *form* values against FieldSpec declarations (required + type coercion).
-
-    Optional *ruleset* rules run after spec checks; failures are treated
-    identically. Returns a new WorkForm with status ``validated`` or ``error``.
-    """
+    """Validate *form* values against FieldSpec declarations (required + type coercion); optional *ruleset* rules run after and are treated identically. Returns a new WorkForm."""
     errors: list[str] = []
     coerced_values: dict[str, Any] = dict(form.values)
 

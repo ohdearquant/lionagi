@@ -1,27 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Signal types and per-node lifecycle projection for the reactive bus (ADR-0033).
-
-Payload contract (schema_version=1):
-  RunStart        — no payload fields
-  RunEnd          — input_tokens, output_tokens, total_cost_usd, num_turns, duration_ms
-  RunFailed       — data: exception
-  NodeSpawned     — op_id, parent_id, independent, assignee, instruction
-  NodeQueued      — op_id, name, elapsed, parent_id, depends_on
-  NodeStarted     — op_id, name, elapsed, parent_id, depends_on
-  NodeCompleted   — op_id, name, elapsed, parent_id, depends_on
-  NodeFailed      — op_id, name, elapsed, parent_id, depends_on
-  NodeAwaitingApproval — op_id, name, reason
-  NodeEscalated   — op_id, name, reason, route, escalation_request
-  NodePaused      — op_id, name
-  GateDenied      — data: any
-  MessageAdded    — data: RoledMessage (stored as message_ref in payload)
-  DispatchSignal  — dispatch_id, kind, deliver_to, attempt, ack_token, body (ADR-0059)
-
-Version policy: schema_version is bumped on any breaking field removal or rename.
-Adding nullable fields is non-breaking and does not bump the version.
-"""
+"""Signal types and per-node lifecycle projection for the reactive bus (ADR-0033); see per-class docstrings for payload contract. schema_version bumps only on breaking field removal/rename."""
 
 from __future__ import annotations
 
@@ -77,12 +57,7 @@ class RunStart(Signal):
 
 
 class RunEnd(Signal):
-    """Run lifecycle: completed. Usage fields are populated when available.
-
-    total_cost_usd is None (unknown) unless a provider actually reports a
-    dollar cost -- providers that don't (bare API endpoints) must never be
-    recorded as a free (0.0) run.
-    """
+    """Run lifecycle: completed. total_cost_usd is None (unknown) unless a provider actually reports a dollar cost — never coerced to 0.0 (free)."""
 
     input_tokens: int = 0
     output_tokens: int = 0
@@ -144,11 +119,7 @@ class MessageAdded(Signal):
 
 
 class DispatchSignal(Signal):
-    """Outbound dispatch payload contract (ADR-0059); schema_version rides Signal.
-
-    One stable envelope (``to_dict(mode="json")``) shared by every dispatch kind,
-    so the transport template never churns per-kind.
-    """
+    """Outbound dispatch payload contract (ADR-0059); one stable envelope shared by every dispatch kind so the transport template never churns per-kind."""
 
     dispatch_id: str = ""
     kind: str = ""  # e.g. "revival_ping" | "terminal_notify"
@@ -158,10 +129,8 @@ class DispatchSignal(Signal):
     body: dict = {}
 
 
-# -- Extended node lifecycle (ADR-0033) ---------------------------------------
-# queued → running → awaiting_approval → succeeded | failed | escalated
-# NodeStarted/NodeCompleted/NodeFailed (above) cover running/succeeded/failed;
-# these three cover the remaining states.
+# -- Extended node lifecycle (ADR-0033): queued → running → awaiting_approval →
+# succeeded|failed|escalated. NodeStarted/Completed/Failed (above) cover running/succeeded/failed; these three cover the rest.
 
 
 class NodeQueued(Signal):
@@ -183,12 +152,7 @@ class NodeAwaitingApproval(Signal):
 
 
 class NodeEscalated(Signal):
-    """A DAG node escalated or sent a help signal.
-
-    route is "higher_tier" (retry), "give_up" (terminal), or "notify" (soft
-    help signal — informational only, the node's own lifecycle is
-    unaffected). See docs/reference/testing-state-session.md.
-    """
+    """A DAG node escalated or sent a help signal. route: "higher_tier" (retry), "give_up" (terminal), or "notify" (soft, non-terminal)."""
 
     op_id: str = ""
     name: str = ""
@@ -230,12 +194,8 @@ def _signal_to_state(sig: Any) -> NodeLifecycleState | None:
         return "failed"
     if isinstance(sig, NodeEscalated):
         req = sig.escalation_request
-        # A soft ("fyi") help signal is informational only — the emitting
-        # node keeps working toward its own terminal state, so it must not
-        # get pinned into the terminal "escalated" lane. Only a "blocked"
-        # urgency (the default, matching historical give_up/higher_tier
-        # behavior) or an unaccompanied signal (no request attached, e.g.
-        # a bare NodeEscalated built directly) is treated as escalated.
+        # Soft ("fyi") urgency is informational only, not terminal; only
+        # "blocked" urgency (default) or no request pins to "escalated".
         if getattr(req, "urgency", "blocked") == "fyi":
             return None
         return "escalated"
@@ -266,13 +226,7 @@ def lane_for(signals: Iterable[Signal | Any]) -> NodeLifecycleState:
 
 
 def _collect_branch_usage(branch: Any) -> dict[str, Any]:
-    """Sum provider-reported usage across all AssistantResponse messages on branch.
-    Keys: input_tokens, output_tokens, total_cost_usd, num_turns. input_tokens/
-    output_tokens/num_turns are additive and default to 0 (no usage reported is
-    indistinguishable from zero usage). total_cost_usd defaults to None (unknown)
-    and is only ever set to a float once at least one message actually reports a
-    cost -- most providers (bare API endpoints) never report a dollar cost, and
-    that must read as "unknown", not "free" (subscription runs, tests)."""
+    """Sum provider-reported usage across all AssistantResponse messages on branch. total_cost_usd stays None (unknown) until a message actually reports a cost — never coerced to 0.0 (free)."""
     input_tokens = 0
     output_tokens = 0
     total_cost_usd: float | None = None
@@ -292,11 +246,8 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
         usage = mr.get("usage") if isinstance(mr.get("usage"), dict) else mr
         input_tokens += int(usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0)
         output_tokens += int(usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0)
-        # Presence, not truthiness: a provider that explicitly reports
-        # total_cost_usd=0.0 (a real, known-free call) must not be treated
-        # the same as one that never reported a cost at all -- `x or y`
-        # would silently fall through the falsy 0.0 to the "cost" fallback
-        # (or None), losing the explicit zero.
+        # Presence, not truthiness: an explicit total_cost_usd=0.0 (real free
+        # call) must not fall through `x or y` to the cost/None fallback.
         if "total_cost_usd" in mr and mr["total_cost_usd"] is not None:
             cost = mr["total_cost_usd"]
         elif "cost" in mr and mr["cost"] is not None:
@@ -316,12 +267,7 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
 
 
 def _collect_multi_branch_usage(branches: Iterable[Any]) -> dict[str, Any]:
-    """Sum _collect_branch_usage across multiple branches (multi-leg DAG runs).
-
-    Same keys as _collect_branch_usage. duration_ms is deliberately excluded —
-    wall-clock across parallel legs isn't simply summable. total_cost_usd stays
-    None unless at least one branch actually reported a cost.
-    """
+    """Sum _collect_branch_usage across multiple branches (multi-leg DAG runs). duration_ms is excluded — wall-clock across parallel legs isn't simply summable."""
     input_tokens = 0
     output_tokens = 0
     total_cost_usd: float | None = None

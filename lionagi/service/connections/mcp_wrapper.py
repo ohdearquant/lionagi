@@ -71,12 +71,8 @@ class MCPSecurityConfig:
 
 
 # --- Generic-executor admission rule -----------------------------------
-#
-# Registration-time admission control for MCP tool descriptors. This is
-# independent of MCPSecurityConfig (transport authorization) and of
-# PermissionPolicy (invocation-time, keyed by tool name): it rejects a
-# caller-shaped generic command/process/script executor before it ever
-# reaches the tool registry, regardless of transport settings.
+# Registration-time admission control, independent of MCPSecurityConfig
+# (transport auth) and PermissionPolicy (invocation-time) — see docs/internals/runtime.md.
 
 AdmissionReason: TypeAlias = Literal[
     "unbounded-command-input",
@@ -233,10 +229,8 @@ _IDENTIFIER_LIKE_KEY_PATTERN = re.compile(
     r"^(?:[a-z0-9]+_)*(?:id|ids|path|paths|uri|url|uuid|slug)$"
 )
 
-# Tokens that make an otherwise identifier-shaped key (`*_path`, `*_id`, ...)
-# still executor-shaped: an `executable_path`/`script_path`/`command_path` is
-# a caller-controlled executor target, not a benign resource locator, even
-# though it lexically matches the identifier-like suffix pattern.
+# Tokens that taint an identifier-shaped key back to executor-shaped (e.g.
+# `executable_path`) — see docs/internals/runtime.md.
 _EXEC_TAINTED_KEY_TOKENS = frozenset(
     {"command", "cmd", "shell", "script", "program", "binary", "executable", "argv", "args"}
 )
@@ -244,27 +238,20 @@ _EXEC_TAINTED_KEY_TOKENS = frozenset(
 
 def _is_identifier_like_key(norm_key: str) -> bool:
     """True for dynamic-but-benign resource identifiers (`service_id`,
-    `resource_path`, `request_id`, ...). These are excluded from the
-    strong-name "must be affirmatively bounded" fallback: a fixed-operation
-    tool with a free-form identifier field is not executor-shaped, even
-    though the identifier itself is an unbounded string."""
+    `resource_path`, ...) — excluded from the strong-name bounding fallback.
+    See docs/internals/runtime.md."""
     return bool(_IDENTIFIER_LIKE_KEY_PATTERN.match(norm_key))
 
 
 def _is_exec_tainted_key(norm_key: str) -> bool:
     """True when a key's own tokens name an executor channel (`executable_path`,
-    `script_path`, `command_path`, `binary_path`, `program_path`, ...), even
-    though the key otherwise lexically matches the identifier-like suffix
-    exemption. Such a key must NOT be exempted from the strong-name fallback:
-    an arbitrary executable/script/command target is itself executor input."""
+    `script_path`, ...), overriding the identifier-suffix exemption.
+    See docs/internals/runtime.md."""
     return any(token in _EXEC_TAINTED_KEY_TOKENS for token in norm_key.split("_"))
 
 
-# Non-object JSON Schema types whose instances are not intrinsically
-# finite: a root `type` UNION that includes one of these (without a
-# top-level `enum`/`const` collapsing the whole instance to a fixed set) has
-# a branch that can carry an arbitrary value, bypassing every object-shaped
-# constraint (`properties`, `additionalProperties`, ...) entirely.
+# Non-object types whose instances aren't intrinsically finite; a type union
+# including one bypasses all object-shaped constraints. See docs/internals/runtime.md.
 _UNBOUNDED_NON_OBJECT_TYPES = frozenset({"string", "number", "integer", "array"})
 
 
@@ -274,45 +261,23 @@ def _type_union_has_free_form_alternative(top_type: list, schema: Mapping) -> bo
     return any(t in _UNBOUNDED_NON_OBJECT_TYPES for t in top_type)
 
 
-# Keywords on a node carrying a `$ref` that are annotation-only and never
-# themselves constrain the instance -- present alongside `$ref`, they add no
-# sibling obligation the sufficiency check needs to evaluate.
+# Keywords that are annotation-only when siblings of $ref — add no sibling
+# obligation. See docs/internals/runtime.md.
 _ANNOTATION_ONLY_REF_SIBLING_KEYWORDS = frozenset(
     {"description", "title", "$comment", "examples", "default", "$defs", "definitions"}
 )
 
 
 def _has_structural_ref_siblings(siblings: Mapping) -> bool:
-    """True when a `$ref` node's sibling keywords (the node minus `$ref`
-    itself) include anything beyond pure annotation -- i.e. something that,
-    per Draft 2020-12, constrains the same instance as the reference target
-    and must be evaluated in its own right rather than discarded."""
+    """True when a $ref node's siblings include anything beyond pure
+    annotation — i.e., per Draft 2020-12, something that constrains the same
+    instance and must be evaluated. See docs/internals/runtime.md."""
     return any(key not in _ANNOTATION_ONLY_REF_SIBLING_KEYWORDS for key in siblings)
 
 
 # --- Keyword registry for the sufficiency proof --------------------------
-#
-# The sufficiency proof answers exactly one question: "is this schema
-# document provably closed against an undeclared value?" An earlier
-# iteration answered it with a per-property "is this value a key channel"
-# discriminator deciding WHICH POSITIONS deserve full scrutiny -- the same
-# defect class as enumerating "which keywords are dangerous", just re-
-# entered through the traversal axis instead of the keyword axis: that
-# discriminator omitted the conditional applicators (`if`/`then`/`else`/
-# `not`) and the array applicators (`items`/`prefixItems`), so a property
-# value carrying one of them was never visited at all, and the allowlist
-# check that would have denied it never ran there.
-#
-# The fix: classify EVERY JSON Schema Draft 2020-12 keyword into EXACTLY ONE
-# of four classes (below), then walk the ENTIRE document -- every property
-# value, every composition branch, every `$ref` target, every `$defs` entry
-# -- UNCONDITIONALLY, checking each node's OWN keywords against this
-# registry (`_structural_coverage_insufficient`, defined further below).
-# There is no longer a discriminator deciding "should this node be
-# visited"; every schema-bearing position is visited, and the registry
-# alone decides what its keywords mean. A keyword not in the registry is
-# UNKNOWN and fails closed unless its value provably cannot carry a
-# subschema.
+# Classifies every Draft 2020-12 keyword into one of four classes, then
+# walks the whole document unconditionally. See docs/internals/runtime.md.
 
 # Annotation-only: carry no assertion that admits/denies an instance value.
 _INERT_ANNOTATION_KEYWORDS = frozenset(
@@ -332,15 +297,8 @@ _INERT_ANNOTATION_KEYWORDS = frozenset(
         "format",
         "contentEncoding",
         "contentMediaType",
-        # `contentSchema` KEEPS its own individually-argued caveat: its
-        # value is a mapping (schema-shaped), describing the DECODED
-        # content of a string instance, like `contentEncoding`/
-        # `contentMediaType` in the Draft 2020-12 Content vocabulary -- it
-        # asserts nothing about the instance itself. This holds ONLY while
-        # the content-assertion vocabulary stays disabled (the default
-        # dialect this module validates against); enabling that vocabulary
-        # in a future dialect configuration would require `contentSchema`
-        # to leave this class.
+        # `contentSchema`'s inertness holds ONLY while the content-assertion
+        # vocabulary is disabled (the default dialect). See docs/internals/runtime.md.
         "contentSchema",
     }
 )
@@ -385,13 +343,9 @@ _MODELED_APPLICATOR_KEYWORDS = frozenset(
     }
 )
 
-# Applicators recognized BY NAME but not modeled: presence anywhere in the
-# document denies the node outright, and the proof never recurses beneath
-# one (an ancestor denial already covers everything nested inside it).
-# Promoting one of these to modeled is a separate, individually-argued
-# change with its own oracle-soundness argument -- never a silent
-# reclassification. (If `items`/`prefixItems` for bounded arrays is ever
-# wanted, that is such a delta -- NOT this change.)
+# Applicators recognized by name but not modeled — presence anywhere denies
+# the node outright; promoting one requires its own soundness argument.
+# See docs/internals/runtime.md.
 _DENIED_APPLICATOR_KEYWORDS = frozenset(
     {
         "patternProperties",
@@ -418,9 +372,7 @@ _KeywordClass: TypeAlias = Literal["inert", "bounding", "modeled", "denied", "un
 
 def _classify_keyword(name: str) -> _KeywordClass:
     """Classify a JSON Schema keyword into exactly one of the four registry
-    classes above. A name in none of them is UNKNOWN -- the registry is a
-    closed enumeration, not a spelling heuristic, so a keyword this module
-    has never seen fails closed rather than being guessed at."""
+    classes; unrecognized names fail closed as UNKNOWN. See docs/internals/runtime.md."""
     if name in _INERT_ANNOTATION_KEYWORDS:
         return "inert"
     if name in _BOUNDING_KEYWORDS:
@@ -434,21 +386,8 @@ def _classify_keyword(name: str) -> _KeywordClass:
 
 def _property_value_may_be_object_shaped(value: object) -> bool:
     """True when a declared property's VALUE could itself resolve to an
-    OBJECT instance -- i.e. the object-boundedness proof's type-gate and
-    closedness reasoning must be re-run on it, rather than left to the
-    walker's key-name policy. Deliberately narrow: it only ever answers
-    "does closedness apply here", never "is a keyword modeled" -- that
-    second question is answered totally and unconditionally, for every
-    keyword at every position, by `_structural_coverage_insufficient`
-    below regardless of whether THIS gate recurses. So an omission here
-    (a value reachable only through a DENIED applicator such as `if`/
-    `then`/`items`) is harmless: the denied applicator's mere presence
-    already makes the whole document insufficient before object-
-    boundedness ever needs to look inside it. A scalar-typed, array-typed,
-    annotation-only, or bare free-form string property value returns
-    False here on purpose -- it is a VALUE, not an object-boundedness
-    position, and remains the walker's territory by key name
-    (`service_id: {"type": "string"}` stays admitted)."""
+    OBJECT instance, requiring the boundedness proof to recurse into it.
+    Deliberately narrow — see docs/internals/runtime.md."""
     if not isinstance(value, Mapping):
         return False
     value_type = value.get("type")
@@ -458,12 +397,9 @@ def _property_value_may_be_object_shaped(value: object) -> bool:
 
 
 def _schema_is_insufficient(input_schema: object) -> bool:
-    """Top-level sufficiency gate: insufficient (fail closed) if EITHER the
-    object-boundedness proof fails (root not provably closed to a finite
-    object shape) OR the structural-coverage proof finds a denied/unknown
-    keyword anywhere in the document. See the two functions below -- they
-    are deliberately independent, run over the same document, and combined
-    by OR."""
+    """Top-level sufficiency gate: insufficient if EITHER the
+    object-boundedness proof OR the structural-coverage proof fails,
+    combined by OR. See docs/internals/runtime.md."""
     if input_schema is None or not isinstance(input_schema, Mapping):
         return True
     if _object_boundedness_insufficient(input_schema, input_schema, frozenset(), 0, [0]):
@@ -478,63 +414,21 @@ def _object_boundedness_insufficient(
     depth: int,
     budget: list[int],
 ) -> bool:
-    """Recursive, union-aware TYPE-GATE + CLOSEDNESS check -- orthogonal to
-    `_structural_coverage_insufficient` below, and unaware of the keyword
-    registry: it never denies on keyword identity, only on whether the
-    instance is provably constrained to a closed, finite object shape.
-
-    Order of checks (binding; applicator delegation MUST run before the
-    omitted-type denial, or an applicator-root node that legitimately omits
-    a top-level `type` because `type` lives in its resolved target/branches
-    would false-deny):
-
-    1. Budget/depth cap -- fail closed.
-    2. `type` present and excludes `"object"` -- insufficient.
-    3. `type` is a union with a free-form (non-object) alternative and no
-       `const`/`enum` pinning the instance -- insufficient.
-    4. APPLICATOR DELEGATION -- `$ref` (resolve local `#/...` only, and
-       intersect structural siblings); then `oneOf`/`anyOf` (UNION: every
-       reachable branch must independently prove sufficient); then `allOf`
-       (INTERSECTION: one provably-bounded branch suffices). Each recurses,
-       re-applying this same predicate.
-    5. A top-level `const`/`enum` pins the whole instance to author-declared
-       literal value(s) -- sufficient, regardless of `type`.
-    6. LEAF-OBJECT branch (no applicator delegated): an omitted `type`
-       (with no `const`/`enum`, already handled above) is insufficient here
-       -- a bare non-object instance never reaches object keywords at all.
-       Otherwise, non-empty `properties` is only bounded if the object is
-       actually CLOSED (`additionalProperties: False`, or itself restricted
-       to a finite `enum`/`const`); empty/absent `properties` still needs
-       `additionalProperties: False` to admit only a bare `{}`. Once the
-       OUTER object is proven closed, each DECLARED property's own VALUE
-       that could itself be object-shaped
-       (`_property_value_may_be_object_shaped`) is re-checked by this same
-       predicate, or the node is insufficient. A value that cannot be
-       object-shaped is left to the walker's key-name policy; any DENIED
-       applicator such a value might carry is caught independently and
-       unconditionally by `_structural_coverage_insufficient`, so skipping
-       it here never reopens a hole.
-
-    Returns True (fail closed / insufficient) for an external, cyclic,
-    unresolvable, or budget/depth-exhausted reference or composition."""
+    """Recursive, union-aware TYPE-GATE + CLOSEDNESS check, orthogonal to
+    `_structural_coverage_insufficient`. See docs/internals/runtime.md for
+    the full 6-step order-of-checks argument."""
     budget[0] += 1
     if budget[0] > _MAX_SCHEMA_WALK_NODES or depth > _MAX_SCHEMA_WALK_DEPTH:
         return True
 
     top_type = schema.get("type")
-    # `type` may be a Draft 2020-12 type array (e.g. `["object", "null"]`);
-    # such a schema is an object schema whenever "object" is one of its
-    # allowed types, and its properties must still be inspected. Only a
-    # top-level type that excludes "object" entirely makes the schema
+    # A Draft 2020-12 type array (e.g. ["object","null"]) is an object schema
+    # if "object" is among its types; only excluding "object" entirely is
     # insufficient.
     if top_type is not None and not _schema_type_includes(top_type, "object"):
         return True
-    # A type UNION that includes "object" alongside a type that can itself
-    # carry a free-form value (`string`/`number`/`integer`/`array`, absent a
-    # top-level `enum`/`const` pinning the whole instance) is only as
-    # bounded as its least-bounded alternative: an instance satisfying the
-    # non-object branch never even reaches the object-specific
-    # `properties`/`additionalProperties` keywords below.
+    # A type union including "object" plus a free-form alternative is only as
+    # bounded as its least-bounded branch — see docs/internals/runtime.md.
     if isinstance(top_type, list) and _type_union_has_free_form_alternative(top_type, schema):
         return True
 
@@ -550,12 +444,9 @@ def _object_boundedness_insufficient(
         )
         if not target_insufficient:
             return False
-        # Draft 2020-12 evaluates `$ref` SIBLINGS -- they are not discarded.
-        # A closed/bounded target does not make the overall node sufficient
-        # if a sibling keyword (evaluated against the SAME instance)
-        # reopens it. Pure annotation siblings (`description`, `title`, ...)
-        # contribute nothing and must not force an otherwise-open target's
-        # insufficiency onto an unrelated, harmless caller-facing property.
+        # Draft 2020-12 evaluates $ref SIBLINGS — a closed target doesn't
+        # make the node sufficient if a structural sibling reopens it.
+        # See docs/internals/runtime.md.
         siblings = {k: v for k, v in schema.items() if k != _REF_KEYWORD}
         if _has_structural_ref_siblings(siblings):
             return _object_boundedness_insufficient(
@@ -587,16 +478,13 @@ def _object_boundedness_insufficient(
                 return False
         return True
 
-    # A top-level `const`/`enum` pins the entire instance to author-declared
-    # literal value(s) -- the caller cannot inject beyond the enumerated
-    # set, so this alone satisfies the type-gate regardless of `type`.
+    # A top-level const/enum pins the whole instance to literal value(s),
+    # satisfying the type-gate regardless of type.
     if "const" in schema or "enum" in schema:
         return False
 
-    # LEAF-OBJECT branch: no applicator delegated above, so `type` is
-    # evaluated node-locally. An omitted `type` (no `const`/`enum`, already
-    # handled) means a bare non-object instance never reaches the
-    # `properties`/`additionalProperties` keywords below at all.
+    # LEAF-OBJECT branch: type evaluated node-locally here; see the
+    # docstring above / docs/internals/runtime.md.
     if top_type is None:
         return True
 
@@ -607,23 +495,16 @@ def _object_boundedness_insufficient(
     additional = schema.get("additionalProperties")
     if not props:
         return additional is not False
-    # A non-empty `properties` mapping only proves the schema bounded if the
-    # object is actually CLOSED: JSON Schema's `additionalProperties`
-    # defaults to permissive (implicit `true`), so a caller can always add
-    # an undeclared key -- a fixed `operation` enum/const does not stop a
-    # `command` property from riding alongside it unless
-    # `additionalProperties` is `false` (or itself restricted to a finite
-    # enum/const of values).
+    # additionalProperties defaults to permissive; a fixed "operation" enum
+    # doesn't stop a sibling "command" property riding alongside it.
+    # See docs/internals/runtime.md.
     object_closed = additional is False or (
         isinstance(additional, Mapping) and ("enum" in additional or "const" in additional)
     )
     if not object_closed:
         return True
-    # The OUTER object being closed against undeclared keys says nothing
-    # about a DECLARED property's own VALUE: a value that could itself be
-    # object-shaped is re-checked with this same predicate (full type-gate
-    # + closedness, budget/depth/`$ref`-cycle guards included), or the node
-    # is insufficient.
+    # OUTER-object closedness says nothing about a DECLARED property's own
+    # object-shaped VALUE — re-checked recursively; see docstring above.
     for prop_value in props.values():
         if _property_value_may_be_object_shaped(prop_value) and _object_boundedness_insufficient(
             prop_value, root_schema, seen_refs, depth + 1, budget
@@ -639,34 +520,8 @@ def _structural_coverage_insufficient(
     depth: int,
     budget: list[int],
 ) -> bool:
-    """Total, registry-driven traversal answering "does any schema-bearing
-    position in this document carry a keyword the sufficiency proof does
-    not model?" -- independent of `_object_boundedness_insufficient`'s
-    type-gate and closedness reasoning; this function applies NEITHER. A
-    scalar leaf `{"type": "string"}` is sufficient here on its own, which is
-    what preserves a free-form identifier-key property (`service_id`)
-    alongside a fixed operation: it carries no denied/unknown keyword, so
-    this traversal has nothing to say about it, and the object-boundedness
-    proof never recurses into it either (it is not object-shaped).
-
-    Every schema-bearing position is visited UNCONDITIONALLY -- not gated
-    by the shape of its own value: every `properties` value, the
-    `additionalProperties` schema (when Mapping-valued), every composition
-    branch (`allOf`/`anyOf`/`oneOf`), every resolved local `$ref` target,
-    and every `$defs`/`definitions` entry (visited even when unreferenced
-    from anywhere in the document -- the fail-closed choice). This closes
-    the traversal-axis gap a per-position discriminator could always
-    reopen: there is no discriminator left that could omit a position.
-
-    Totality argument: every schema-bearing position in the document is
-    reached by exactly one of three routes -- (i) it sits under a chain of
-    MODELED applicators from the root, in which case this function's own
-    recursion visits it; (ii) it sits under a DENIED applicator, in which
-    case the ancestor node already returned True the moment it saw that
-    keyword, before ever needing to look inside it; or (iii) it sits under
-    an UNKNOWN keyword, which is itself checked for subschema-shaped value
-    and denied at that node. No fourth route exists, so no schema-bearing
-    position escapes the registry."""
+    """Total, registry-driven traversal: does any position carry a keyword
+    the sufficiency proof doesn't model? See docs/internals/runtime.md."""
     budget[0] += 1
     if budget[0] > _MAX_SCHEMA_WALK_NODES or depth > _MAX_SCHEMA_WALK_DEPTH:
         return True
@@ -726,12 +581,8 @@ def _structural_coverage_insufficient(
         elif key in ("$defs", "definitions"):
             if not isinstance(value, Mapping):
                 return True
-            # Visited UNCONDITIONALLY, not reachability-gated: an entry
-            # never referenced by any `$ref` in the document is still
-            # covered, so a future reference (or a caller relying on
-            # tooling that resolves `$defs` by convention rather than an
-            # explicit `$ref`) cannot smuggle an unmodeled keyword through
-            # an entry this proof never bothered to look at.
+            # $defs entries visited UNCONDITIONALLY even if unreferenced —
+            # see docs/internals/runtime.md.
             for sub_schema in value.values():
                 if not isinstance(sub_schema, Mapping):
                     return True
@@ -747,12 +598,8 @@ def _property_is_bounded(prop_schema: object) -> bool:
         return False
     if "enum" in prop_schema or "const" in prop_schema:
         return True
-    # Deliberately no array carve-out here: an array's boundedness depends on
-    # BOTH its `prefixItems` members and its `items` (rest-of-array) schema
-    # together (see `_array_reaches_free_form`) -- a bounded `items` alone
-    # (e.g. `items: {"enum": [...]}`) says nothing about an unbounded
-    # `prefixItems` member sitting alongside it, so this shortcut must not
-    # short-circuit before the full array check runs.
+    # Deliberately no array carve-out: array boundedness needs BOTH
+    # prefixItems and items checked together. See docs/internals/runtime.md.
     return False
 
 
@@ -770,27 +617,9 @@ def _item_schema_reaches_free_form_string(
     seen_refs: frozenset[str],
     result: _SchemaWalkResult,
 ) -> bool:
-    """True when an array's `items`/`prefixItems` member schema may itself
-    admit an arbitrary string value -- i.e. the array is a free-form,
-    argv-shaped channel at that position.
-
-    Item schemas are always treated conservatively: unlike a keyed object
-    property (which gets the identifier-suffix exemption), an array element
-    has no name of its own, so an opaque/unsupported/unconstrained item
-    shape -- `true`, `{}` (no constraints), an untyped schema, an external
-    or cyclic `$ref`, a malformed items entry -- is presumed free-form
-    rather than benign. Local `$ref` and `allOf`/`anyOf`/`oneOf`/
-    `if`/`then`/`else`/`not` composition are resolved/recursed so an item
-    schema that only reaches a string through one layer of indirection
-    (`{"anyOf": [{"type": "string"}]}`, a `$ref` to a string schema, ...) is
-    still caught. A nested array item (`items: {type: array, items: ...}`,
-    or `prefixItems` at that position) is itself recursed into with the
-    same depth cap / `$ref`-cycle guard / node budget: an immediate
-    `type: "array"` item is NOT non-string-and-therefore-bounded on its
-    own -- it is only bounded if its OWN item schema is bounded (e.g.
-    `enum`/`const`-restricted), otherwise a caller can smuggle a free-form
-    argv-shaped channel one array level deeper (`args: [["sh", "-c", ...]]`).
-    """
+    """True when an array's items/prefixItems member schema may itself
+    admit an arbitrary string — i.e. a free-form, argv-shaped channel.
+    See docs/internals/runtime.md."""
     if item_schema is True:
         return True
     if item_schema is False:
@@ -854,20 +683,9 @@ def _array_reaches_free_form(
     seen_refs: frozenset[str],
     result: _SchemaWalkResult,
 ) -> bool:
-    """True when an array-shaped schema node (property-level or nested
-    item-level) admits a free-form element -- i.e. is an argv-shaped
-    channel.
-
-    Draft 2020-12 `prefixItems`/`items` semantics: `prefixItems` validates
-    only the array's PREFIX positions; `items` validates every position AT
-    OR AFTER that prefix (the "rest" of the array). Critically, a MISSING
-    `items` keyword defaults to `true` -- an entirely unconstrained rest --
-    so an array whose `prefixItems` are all enum/const-bounded is still a
-    free-form channel unless `items` is explicitly present and itself
-    bounded (or `false`, closing the tuple to exactly its prefix). Every
-    `prefixItems` member is checked too: a bounded `items` schema says
-    nothing about an unbounded value sitting in the fixed prefix.
-    """
+    """True when an array-shaped schema node admits a free-form element
+    (argv-shaped channel). See docs/internals/runtime.md for the
+    prefixItems/items semantics."""
     prefix_items = array_schema.get("prefixItems")
     if isinstance(prefix_items, list):
         for item in prefix_items:
@@ -883,9 +701,7 @@ def _array_reaches_free_form(
 
     items_val = array_schema.get("items")
     if items_val is False:
-        # Explicitly closed: no elements beyond `prefixItems` are permitted
-        # at all, so the array's shape is exactly its (already-checked)
-        # prefix.
+        # items: false closes the tuple to exactly its (already-checked) prefix.
         return False
 
     return _item_schema_reaches_free_form_string(
@@ -923,32 +739,11 @@ _MAX_SCHEMA_WALK_DEPTH = 12
 _MAX_SCHEMA_WALK_NODES = 5000
 
 # --- Walker keyword whitelist -------------------------------------------
-#
-# The walker is a WHITELIST, not a blacklist of applicator keywords: earlier
-# rounds each closed specific evasions (nested `properties`, `anyOf`, `$ref`,
-# `additionalProperties`, `patternProperties`; then `if`/`then`/`else`,
-# `not`, `items`, `prefixItems`) only to have the next JSON Schema keyword
-# reopen the same class of bypass. Enumerating "keywords we deny" loses that
-# arms race by construction. Instead we enumerate keywords we affirmatively
-# understand (and walk or treat as inert scalars); ANY OTHER key whose value
-# could itself carry a subschema (a `dict`, or a `list` containing a `dict`)
-# is unresolvable -- future/unsupported schema-bearing keywords (e.g.
-# `unevaluatedProperties`, `dependentSchemas`, `contains`, `propertyNames`)
-# deny by default for executor-signaling tools instead of admitting by
-# default.
+# WHITELIST not blacklist — enumerating "keywords we understand" avoids the
+# denylist arms race. See docs/internals/runtime.md.
 
-# Keywords whose value never itself carries a subschema (or, for `$defs`/
-# `definitions`, is only reachable indirectly via `$ref` resolution, which
-# `_resolve_local_ref` already handles without needing to pre-walk them).
-# `contentSchema` is included on the same footing, as a deliberate, argued
-# exception rather than a relaxation: its value IS a mapping (schema-shaped),
-# but -- like `contentEncoding`/`contentMediaType` in the Draft 2020-12
-# Content vocabulary -- it describes the DECODED content of a string
-# instance and asserts nothing about the instance the walker is classifying,
-# so it is never itself a command-channel destination worth walking into.
-# This holds ONLY while the content-assertion vocabulary stays disabled (the
-# default dialect this module validates against) -- see the matching caveat
-# on `_INERT_ANNOTATION_KEYWORDS` above.
+# Keywords whose value never carries a subschema; contentSchema included by
+# the same argued exception as above. See docs/internals/runtime.md.
 _SCALAR_ONLY_SCHEMA_KEYWORDS = frozenset(
     {
         "type",
@@ -978,15 +773,9 @@ _PATTERN_PROPERTIES_KEYWORD = "patternProperties"
 _ADDITIONAL_PROPERTIES_KEYWORD = "additionalProperties"
 _REF_KEYWORD = "$ref"
 
-# Reference-bearing keywords the walker does NOT resolve: Draft 2020-12
-# `$dynamicRef` and Draft-2019-09 `$recursiveRef` are schema-bearing exactly
-# like `$ref`, but their VALUE is a plain string (a URI fragment / dynamic
-# anchor lookup), not a Mapping -- so `_could_carry_subschema`'s value-type
-# test (Mapping, or list-of-Mapping) never flags them, and a command channel
-# reachable only behind one of these keywords would otherwise be silently
-# admitted. Recognized by KEYWORD IDENTITY, always treated as unresolvable
-# (conservative: dynamic-scope `$dynamicAnchor` resolution is not something
-# this walker can safely reproduce).
+# $dynamicRef/$recursiveRef are schema-bearing but string-valued, so the
+# Mapping-shape check misses them — recognized by keyword identity instead.
+# See docs/internals/runtime.md.
 _UNRESOLVABLE_REFERENCE_KEYWORDS = frozenset({"$dynamicRef", "$recursiveRef"})
 
 _KNOWN_SCHEMA_KEYWORDS = (
@@ -1003,11 +792,8 @@ _KNOWN_SCHEMA_KEYWORDS = (
 )
 
 
-# The standardized numeric/size-bound keywords, all scalar-valued by spec.
-# An explicit enumeration, NOT a `min*`/`max*` spelling heuristic: a prefix
-# test would exempt an arbitrary unknown vocabulary key (`minCustomThing`)
-# from the could-carry-subschema check and reopen the whitelist bypass this
-# walker exists to close.
+# Explicit enumeration, NOT a min*/max* spelling heuristic — a prefix test
+# would reopen the whitelist bypass. See docs/internals/runtime.md.
 _NUMERIC_BOUND_KEYWORDS = frozenset(
     {
         "minLength",
@@ -1033,16 +819,8 @@ def _is_known_scalar_only_keyword(key: str) -> bool:
 
 def _could_carry_subschema(value: object, budget: list[int], depth: int = 0) -> bool:
     """True when an unrecognized keyword's value is shaped like it could
-    itself hold a schema (a mapping, or a list -- at any nesting depth --
-    containing a mapping) -- the signal that makes an unknown keyword
-    unresolvable rather than inert. Recurses through nested lists (a list of
-    lists of ... of mappings) under the same depth cap as the walker,
-    instead of only inspecting one level, so a schema-bearing value cannot
-    be laundered past the whitelist by wrapping it in extra list nesting.
-    Charges every visited element against the shared node budget and fails
-    closed (treated as could-carry) when either the depth cap or the node
-    budget is exhausted, so a pathologically wide value cannot force
-    unbounded traversal work."""
+    hold a schema (mapping, or nested list containing one) — the signal
+    that makes it unresolvable. See docs/internals/runtime.md."""
     budget[0] += 1
     if budget[0] > _MAX_SCHEMA_WALK_NODES or depth > _MAX_SCHEMA_WALK_DEPTH:
         return True
@@ -1054,16 +832,9 @@ def _could_carry_subschema(value: object, budget: list[int], depth: int = 0) -> 
 
 
 def _is_inert_annotation_value(value: object, budget: list[int], depth: int = 0) -> bool:
-    """True when `value` cannot itself carry a subschema: recursively, a
-    scalar (string/number/bool/None), or a list/mapping built entirely from
-    such values with no JSON-Schema-vocabulary key appearing anywhere inside
-    it. A vendor annotation whose value is genuinely just descriptive
-    UI/ordering metadata (`{"widget": "select", "order": 1}`) is inert; one
-    that embeds real schema vocabulary (`x-input-schema: {"properties":
-    {...}}`) is not, regardless of the `x-`/`$comment` key it hangs off --
-    the value's SHAPE decides inertness, not the key's spelling. Charges
-    every visited element against the shared node budget and fails closed
-    (not inert) on exhaustion, mirroring `_could_carry_subschema`."""
+    """True when value cannot itself carry a subschema (recursively scalar,
+    or a list/mapping of such with no schema-vocabulary keys).
+    See docs/internals/runtime.md."""
     budget[0] += 1
     if budget[0] > _MAX_SCHEMA_WALK_NODES or depth > _MAX_SCHEMA_WALK_DEPTH:
         return False
@@ -1079,48 +850,23 @@ def _is_inert_annotation_value(value: object, budget: list[int], depth: int = 0)
 
 
 def _is_vendor_annotation_keyword(key: str, value: object, budget: list[int]) -> bool:
-    """True for a keyword that is metadata/annotation-only, never an
-    applicator or reference, AND whose value carries no schema-bearing
-    content -- exempt from the unknown-subschema-bearing check. Narrow on
-    two axes: (1) only the `x-` vendor-extension convention (the
-    OpenAPI/JSON-Schema community convention for non-standard annotations,
-    e.g. `x-ui`, `x-order`) and JSON Schema's own `$comment` (annotation-only
-    by spec) are even considered; (2) even for those keys, the VALUE must be
-    demonstrably inert (`_is_inert_annotation_value`) -- a vendor extension
-    whose value is itself schema-shaped (`x-input-schema: {"properties":
-    {"command": {"type": "string"}}}`) is exactly the kind of hidden channel
-    this walker exists to catch, so it is NOT exempted just because its key
-    starts with `x-`. NEVER exempt `$`-prefixed keywords in general -- that
-    prefix is exactly where real reference/applicator keywords live (`$ref`,
-    `$dynamicRef`, `$recursiveRef`, ...), so a blanket `$*` exemption would
-    reopen the reference-bypass class this walker closes."""
+    """True for a keyword that is annotation-only AND whose value carries no
+    schema-bearing content (x- prefix or $comment, and demonstrably inert
+    value). See docs/internals/runtime.md."""
     if key != "$comment" and not key.startswith("x-"):
         return False
     return _is_inert_annotation_value(value, budget)
 
 
 def _mark_unknown_schema_keywords(schema: Mapping, result: _SchemaWalkResult) -> None:
-    """Whitelist enforcement: any keyword this walker does not explicitly
-    understand, whose value is shaped like it could itself carry a subschema,
-    is unresolvable. This is what makes an unsupported or future JSON Schema
-    keyword (`unevaluatedProperties`, `dependentSchemas`, `contains`,
-    `propertyNames`, ...) deny-by-default for executor-signaling tools
-    instead of admit-by-default -- applied to every schema node the
-    classifier inspects, including property schemas that are otherwise
-    treated as leaves.
-
-    Two carve-outs on top of the base whitelist test: (1) a `$dynamicRef`/
-    `$recursiveRef` anywhere on this node makes it unresolvable outright,
-    regardless of the (string-shaped) value's container type -- see
-    `_UNRESOLVABLE_REFERENCE_KEYWORDS`; (2) a vendor-extension/annotation
-    keyword (`_is_vendor_annotation_keyword`) is exempt even when
-    Mapping-valued, since it is never an applicator."""
+    """Whitelist enforcement: any keyword this walker doesn't understand,
+    with a subschema-shaped value, is unresolvable — deny-by-default for
+    unmodeled keywords. See docs/internals/runtime.md."""
     if any(key in schema for key in _UNRESOLVABLE_REFERENCE_KEYWORDS):
         result.unresolvable = True
         return
-    # Value inspection shares the walker's node budget: work spent deciding
-    # whether an unknown/annotation value is inert counts against the same
-    # cap as schema traversal, and exhaustion fails closed via the helpers.
+    # Value inspection shares the walker's node budget — exhaustion fails
+    # closed via the helpers. See docs/internals/runtime.md.
     budget = [result.nodes_visited]
     for key, value in schema.items():
         if key in _KNOWN_SCHEMA_KEYWORDS or _is_known_scalar_only_keyword(key):
@@ -1133,9 +879,9 @@ def _mark_unknown_schema_keywords(schema: Mapping, result: _SchemaWalkResult) ->
     result.nodes_visited = max(result.nodes_visited, budget[0])
 
 
-# Object-applicator keywords: presence of any of these on a property's own
-# schema means the property IS itself a restated/composed schema, not a leaf
-# value -- classify by recursing into it instead of treating it as a scalar.
+# Object-applicator keywords — presence means the property is a
+# restated/composed schema, not a leaf value; recurse instead of treating
+# as scalar.
 _OBJECT_CONTAINER_KEYWORDS = (
     _PROPERTIES_KEYWORD,
     _PATTERN_PROPERTIES_KEYWORD,
@@ -1149,11 +895,9 @@ _OBJECT_CONTAINER_KEYWORDS = (
     "else",
     "not",
 )
-# Array-shape keywords: an array property can be BOTH a free-form leaf
-# channel in its own right (e.g. `argv: array-of-strings`, matched by
-# `_property_is_free_form`) AND hide a command channel inside an
-# object-shaped item (`items`/`prefixItems`); both must be checked, so these
-# do not short-circuit leaf classification the way object applicators do.
+# Array-shape keywords — an array can be BOTH a free-form leaf channel AND
+# hide a command channel inside an object-shaped item; both checked, no
+# short-circuit.
 _ARRAY_ITEM_KEYWORDS = (_ITEMS_KEYWORD, "prefixItems")
 
 
@@ -1181,25 +925,18 @@ class _SchemaWalkResult:
         self.non_auxiliary_free_form_keys: set[str] = set()
         self.non_identifier_free_form_keys: set[str] = set()
         self.selector_key_present = False
-        # True when a channel could not be proven bounded: an external/
-        # unresolvable `$ref`, a `$ref` cycle, a depth-cap or node-budget
-        # trip, a malformed `properties`/composition/`patternProperties`
-        # shape, or an unrecognized schema-bearing keyword. Fed into
-        # fail-closed handling for descriptor-bearing tools whose name or
-        # description signals an executor; otherwise it is just
-        # insufficient evidence.
+        # unresolvable = a channel could not be proven bounded (unresolvable
+        # $ref, cycle, budget trip, malformed shape, unrecognized keyword).
+        # See docs/internals/runtime.md.
         self.unresolvable = False
-        # Total-work budget companion to the depth cap: bounds runtime
-        # against a schema with harmless but extremely wide fan-out (e.g.
-        # tens of thousands of `anyOf` branches).
+        # nodes_visited: total-work budget companion to the depth cap,
+        # bounds runtime against extreme fan-out (e.g. huge anyOf lists).
         self.nodes_visited = 0
 
 
 def _consume_node_budget(result: _SchemaWalkResult) -> bool:
-    """Count one unit of walker work; returns False (and marks the result
-    unresolvable) once the total-node budget is exceeded, so callers can stop
-    iterating further branches/properties instead of finishing a huge fan-out
-    node by node."""
+    """Count one unit of walker work; returns False once the node budget is
+    exceeded, so callers can stop early. See docs/internals/runtime.md."""
     result.nodes_visited += 1
     if result.nodes_visited > _MAX_SCHEMA_WALK_NODES:
         result.unresolvable = True
@@ -1224,9 +961,8 @@ def _resolve_local_ref(ref: str, root_schema: Mapping) -> Mapping | None:
 def _compile_pattern_or_mark_unresolvable(
     pattern: object, result: _SchemaWalkResult
 ) -> re.Pattern | None:
-    """Compile a `patternProperties` regex key; a non-string key or an
-    invalid regex cannot be inspected and must fail closed rather than be
-    silently skipped."""
+    """Compile a patternProperties regex key; a non-string key or invalid
+    regex fails closed rather than being silently skipped."""
     if not isinstance(pattern, str):
         result.unresolvable = True
         return None
@@ -1260,13 +996,9 @@ def _composition_branch_reaches_free_form(
     seen_refs: frozenset[str],
     result: _SchemaWalkResult,
 ) -> bool:
-    """True when any composition/conditional/`$ref` branch of a keyed
-    property resolves to a free-form leaf. A property like
-    `{"anyOf": [{"type": "string"}]}` or `{"if": ..., "then": {"type":
-    "string"}}` constrains the SAME instance the key names, so the key is an
-    unbounded channel even though the leaf type is expressed indirectly --
-    without this, wrapping a plain string schema in one applicator layer
-    would strip the key association the classifier relies on."""
+    """True when any composition/conditional/$ref branch of a keyed
+    property resolves to a free-form leaf — catches indirection like
+    anyOf/if-then wrapping. See docs/internals/runtime.md."""
     if not isinstance(prop_schema, Mapping):
         return False
     if depth > _MAX_SCHEMA_WALK_DEPTH:
@@ -1316,17 +1048,13 @@ def _consider_property(
         result.selector_key_present = True
 
     if isinstance(prop_schema, Mapping):
-        # A leaf-shaped property schema is never handed to _walk_schema, so
-        # enforce the unknown-keyword whitelist here as well; redundant for
-        # container-shaped properties (which are walked) but harmless.
+        # Leaf-shaped property schemas never reach _walk_schema, so the
+        # whitelist is enforced here too (redundant-but-harmless for
+        # container properties).
         _mark_unknown_schema_keywords(prop_schema, result)
         if any(k in prop_schema for k in _OBJECT_CONTAINER_KEYWORDS):
-            # A container (e.g. a nested `options` object) is not itself a
-            # command/process/script value; walk its own reachable
-            # properties instead of classifying the container's key -- but
-            # first attribute to the key any free-form leaf reachable purely
-            # through composition/conditional branches, which constrain the
-            # key's own value.
+            # A container isn't itself a command value; walk its properties,
+            # but first attribute composed free-form leaves. See docs/internals/runtime.md.
             if _composition_branch_reaches_free_form(
                 prop_schema,
                 root_schema,
@@ -1347,10 +1075,9 @@ def _consider_property(
             )
             return
         if any(k in prop_schema for k in _ARRAY_ITEM_KEYWORDS):
-            # Walk `items`/`prefixItems` for a hidden object-shaped command
-            # channel, but still fall through to the leaf check below: the
-            # array property itself may also be a free-form channel (e.g.
-            # `argv: array-of-strings`).
+            # Walk items/prefixItems for a hidden channel, but fall through
+            # to the leaf check — the array property itself may also be
+            # free-form.
             _walk_schema(
                 prop_schema,
                 root_schema,
@@ -1405,13 +1132,8 @@ def _walk_schema(
     result: _SchemaWalkResult,
 ) -> None:
     """Bounded, cycle-safe, budgeted traversal collecting classifier
-    evidence. Recognizes `properties` (including nested objects),
-    `allOf`/`anyOf`/`oneOf`, `if`/`then`/`else`/`not`, `items`/`prefixItems`,
-    local `$ref` resolution, `patternProperties`, and `additionalProperties`
-    (both as a scalar free-form map channel and, when object-valued, as a
-    nested subschema to recurse into). Any other keyword whose value could
-    itself carry a subschema is unresolvable -- see the whitelist rationale
-    above `_KNOWN_SCHEMA_KEYWORDS`."""
+    evidence over the whitelist of recognized keywords; any other
+    subschema-shaped keyword is unresolvable. See docs/internals/runtime.md."""
     if depth > _MAX_SCHEMA_WALK_DEPTH:
         result.unresolvable = True
         return
@@ -1440,11 +1162,8 @@ def _walk_schema(
             is_executor_description,
             result,
         )
-        # Draft 2020-12 evaluates `$ref` SIBLINGS -- they are not discarded.
-        # Fall through (no early `return`) so every other keyword on THIS
-        # node (`properties`, `additionalProperties`, `allOf`/`anyOf`, ...)
-        # is still walked for a free-form channel reachable alongside the
-        # reference, instead of being silently skipped.
+        # $ref SIBLINGS are not discarded — fall through so every other
+        # keyword on this node is still walked. See docs/internals/runtime.md.
 
     for comp_key in ("allOf", "anyOf", "oneOf", "prefixItems"):
         branches = schema.get(comp_key)
@@ -1550,10 +1269,9 @@ def _walk_schema(
     additional_properties = schema.get(_ADDITIONAL_PROPERTIES_KEYWORD)
     if additional_properties is not None and additional_properties is not False:
         if isinstance(additional_properties, Mapping) and _consume_node_budget(result):
-            # An object-valued map entry schema (e.g. every value under the
-            # map is itself `{"properties": {"command": ...}}`) is a reachable
-            # subschema in its own right; walk it so a command channel hidden
-            # behind a dynamic map key is not silently admitted.
+            # additionalProperties object-valued schema is a reachable
+            # subschema — walk it so a command channel behind a dynamic map
+            # key isn't missed.
             _walk_schema(
                 additional_properties,
                 root_schema,
@@ -1566,10 +1284,8 @@ def _walk_schema(
         if _property_is_free_form(
             additional_properties, True, root_schema, depth, seen_refs, result
         ):
-            # No fixed key name is available for a free-form map channel; it
-            # only counts as executor-shaped evidence when corroborated by
-            # the tool's own name or description (the same corroboration
-            # `unbounded-script-payload` already requires of payload keys).
+            # No fixed key name for a free-form map channel — only counts
+            # as evidence when corroborated by the tool's name/description.
             if is_strong_name or is_executor_description:
                 _record_free_form_key("<additionalProperties>", result)
 
@@ -1606,9 +1322,8 @@ def _classify_generic_executor(
     )
     s_broad = bool(result.non_auxiliary_free_form_keys)
 
-    # An unbounded command-shaped field is dangerous on its own; unrelated
-    # extra properties (benign or not) do not make it safe, and no name or
-    # description corroboration is required to deny it.
+    # An unbounded command-shaped field is dangerous alone — no name/
+    # description corroboration required to deny it. See docs/internals/runtime.md.
     if has_free_form_command:
         return "unbounded-command-input"
     if s_process:
@@ -1617,11 +1332,9 @@ def _classify_generic_executor(
         return "unbounded-script-payload"
     if is_executor_description and (s_broad or result.unresolvable):
         return "executor-description-with-broad-input"
-    # A strong executor identity must be affirmatively demonstrated safe
-    # (empty/no schema, or every property bounded via enum/const, or only
-    # auxiliary/identifier-like free-form fields); an unresolvable channel
-    # or a remaining executor-shaped free-form property leaves the identity
-    # uncorroborated.
+    # A strong executor identity must be affirmatively demonstrated safe —
+    # unresolvable or executor-shaped remainder leaves it uncorroborated.
+    # See docs/internals/runtime.md.
     if is_strong_name and (
         schema_insufficient or result.unresolvable or result.non_identifier_free_form_keys
     ):
@@ -1629,14 +1342,9 @@ def _classify_generic_executor(
     return None
 
 
-# `create_mcp_tool()` wraps every MCP tool in `async def mcp_callable(**kwargs)`.
-# When a `Tool` is built without an explicit `tool_schema` (e.g. a caller
-# constructs `Tool(mcp_config={"exec": {...}})` directly rather than going
-# through server discovery), `function_to_schema()` reflects that wrapper
-# into this exact deterministic shape. It carries no information from the
-# remote server -- it is a fixed artifact of the wrapper's own signature and
-# docstring -- and must not be treated as remote descriptor metadata by the
-# admission rule.
+# create_mcp_tool() wraps every tool in async def mcp_callable(**kwargs);
+# this is that wrapper's own deterministic reflected schema, not remote
+# descriptor metadata. See docs/internals/runtime.md.
 _SYNTHETIC_MCP_WRAPPER_PARAMETERS = {
     "type": "object",
     "properties": {"kwargs": {"type": "string", "description": None}},
@@ -1650,12 +1358,8 @@ def is_synthetic_mcp_wrapper_schema(
     input_schema: object,
     description: object,
 ) -> bool:
-    """True when a prebuilt `Tool`'s schema is the auto-generated `**kwargs` wrapper.
-
-    `mcp_tool_name` is the key under which the tool was registered in
-    `Tool.mcp_config` -- the identity `create_mcp_tool()` used to name and
-    document the wrapper callable.
-    """
+    """True when a prebuilt Tool's schema is the auto-generated **kwargs
+    wrapper (see the module comment above `_SYNTHETIC_MCP_WRAPPER_PARAMETERS`)."""
     return (
         advertised_name == mcp_tool_name
         and description == f"MCP tool: {mcp_tool_name}"
@@ -1668,13 +1372,8 @@ def validate_mcp_tool_admission(
     input_schema: object | None,
     description: str | None,
 ) -> None:
-    """Raise PermissionError when an MCP descriptor exposes a generic executor.
-
-    Pure and synchronous: does not read MCPSecurityConfig, environment
-    variables, files, pool state, or acquire a client. Registration-time
-    admission control only; it does not change transport authorization or
-    invocation-time permissions.
-    """
+    """Raise PermissionError when an MCP descriptor exposes a generic
+    executor. Pure/synchronous, registration-time only — see docs/internals/runtime.md."""
     reason = _classify_generic_executor(tool_name, input_schema, description)
     if reason is None:
         return
@@ -1805,13 +1504,9 @@ class MCPConnectionPool:
 
     @classmethod
     def load_config(cls, path: str = ".mcp.json") -> list[str]:
-        """Load MCP server configurations from a .mcp.json file.
-
-        Returns the server names declared in THIS file. The pool accumulates
-        configs across loads (``_configs`` is process-global), so callers
-        that mean "the servers from the file I just loaded" must use this
-        return value rather than enumerating ``_configs``.
-        """
+        """Load MCP server configurations from a .mcp.json file; returns
+        only the server names declared in THIS file (see docs/internals/runtime.md
+        for the _configs accumulation gotcha)."""
         config_path = Path(path)
         if not config_path.exists():
             raise FileNotFoundError(f"MCP config file not found: {path}")

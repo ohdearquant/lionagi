@@ -1,16 +1,8 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Sandbox backend seam — one contract for provision/run_cell/collect/teardown.
-
-Backend divergence (local worktree vs. Daytona vs. future backends) is absorbed
-in ``provision()`` and ``capabilities()``; ``run_cell()``'s signature never
-changes per backend. A ``Cell`` is one scored trial and declares a ``kind``:
-``prompt_cell`` (the provider call runs host-side, already authenticated; no
-secrets cross into the box) or ``exec_cell`` (untrusted code runs inside the
-box; secrets are injected explicitly). Callers read ``capabilities()`` to
-decide what a backend can do; they never branch on a backend's name.
-"""
+"""Sandbox backend seam (ADR-0090) — one contract for provision/run_cell/collect/teardown
+across backends; see docs/internals/runtime.md for the prompt_cell/exec_cell security contract."""
 
 from __future__ import annotations
 
@@ -46,9 +38,7 @@ __all__ = (
     "select_backend_for_cell",
 )
 
-# ---------------------------------------------------------------------------
 # ADR-0090 types, adopted verbatim (frozen, codeless data types).
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,9 +77,7 @@ class ExecutionTarget:
         )
 
 
-# ---------------------------------------------------------------------------
 # ADR-0090's stream event shape, absorbed here (ADR-0090 §4 Lineage).
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,18 +89,14 @@ class SubstrateStreamEvent:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
-# ---------------------------------------------------------------------------
 # New ADR-0090 seam types.
-# ---------------------------------------------------------------------------
 
 BackendName = Literal["local_worktree", "daytona"]
 CellKind = Literal["prompt_cell", "exec_cell"]
 ColdStartClass = Literal["sub100ms", "seconds", "minutes"]
 
-#: Sentinel artifact name: ``collect(handle, [DIFF_ARTIFACT])`` returns the
-#: workspace's unified diff instead of reading a literal file at that path.
-#: The same sentinel works across backends so callers never need a
-#: backend-specific way to ask for "what changed".
+#: Sentinel: ``collect(handle, [DIFF_ARTIFACT])`` returns the unified diff instead of
+#: reading a literal file — same sentinel works across all backends.
 DIFF_ARTIFACT = "__diff__"
 
 
@@ -195,13 +179,10 @@ class SandboxBackend(Protocol):
     def capabilities(self) -> Capabilities: ...
 
 
-# ---------------------------------------------------------------------------
 # local_worktree backend — wraps sandbox.py's SandboxSession lifecycle.
-# ---------------------------------------------------------------------------
 
-#: ``run_cell``'s subprocess never blanket-inherits the host environment
-#: (credential-leak vector). Only these variables are forwarded, plus
-#: whatever ``cell.env`` explicitly allow-lists.
+#: run_cell's subprocess never blanket-inherits the host env (credential-leak vector) —
+#: only these vars are forwarded, plus whatever cell.env explicitly allow-lists.
 _SAFE_ENV_KEYS = ("PATH", "HOME", "PYTHONPATH", "VIRTUAL_ENV")
 
 
@@ -298,9 +279,7 @@ class LocalWorktreeBackend:
             await _worktree.sandbox_discard(session)
 
 
-# ---------------------------------------------------------------------------
 # daytona backend — thin adapter over daytona.py; behavior unchanged there.
-# ---------------------------------------------------------------------------
 
 
 class DaytonaBackend:
@@ -421,9 +400,7 @@ class DaytonaBackend:
         await sandbox.delete()
 
 
-# ---------------------------------------------------------------------------
 # Registry + capability-driven selection.
-# ---------------------------------------------------------------------------
 
 _BACKENDS: dict[BackendName, SandboxBackend] = {}
 
@@ -441,11 +418,8 @@ def get_backend(name: BackendName) -> SandboxBackend:
 
 
 def select_backend_for_cell(cell: Cell, candidates: Sequence[SandboxBackend]) -> SandboxBackend:
-    """Pick the first candidate whose ``capabilities()`` can host ``cell``.
-
-    Reads ``capabilities()`` only — never a backend's name or type. This is
-    the pattern every caller is expected to follow (ADR-0090 §1).
-    """
+    """Pick the first candidate whose capabilities() can host cell — by capability
+    only, never by backend name/type (ADR-0090 §1)."""
     for backend in candidates:
         caps = backend.capabilities()
         if cell.kind == "prompt_cell" and not caps.hosts_prompt_cell_host_side:

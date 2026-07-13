@@ -11,10 +11,8 @@ from lionagi.ln.types import ModelConfig
 from .message import Message, MessageContent, MessageRole
 from .validators import validate_image_url
 
-# Pattern for a well-formed inline image data URI.  Only a bitmap MIME
-# allowlist is accepted and the payload must be non-empty base64.  This is
-# intentionally restrictive — active-content types (HTML, JS, and SVG, which
-# can carry scripts) are rejected, as are other data: schemes.
+# Bitmap MIME allowlist, non-empty base64 only. Deliberately excludes
+# active-content types (HTML/JS/SVG) and other data: schemes.
 _DATA_IMAGE_RE = re.compile(r"^data:image/(?:png|jpe?g|gif|webp);base64,[A-Za-z0-9+/]+=*$")
 
 _INSTRUCTION_SERIALIZE_EXCLUDE: frozenset[str] = frozenset(
@@ -70,17 +68,15 @@ class InstructionContent(MessageContent):
         object.__setattr__(self, "images", images if images is not None else [])
         object.__setattr__(self, "image_detail", image_detail)
         MessageContent.__post_init__(self)
-        # Build the structure from the tracked copy, not the caller's dict: a
-        # structure holding the caller's alias would let external mutation
-        # change the rendering without advancing the content revision.
+        # Build from the tracked copy, not the caller's dict: an alias would
+        # let external mutation change rendering without advancing the revision.
         object.__setattr__(
             self, "_structure_instance", _build_structure(self.response_format, structure_cls)
         )
 
     def __getstate__(self) -> tuple[Any, Any]:
-        # The private structure may cache a dynamically created request-model
-        # class that cannot be serialized; it is disposable state, excluded
-        # here and rebuilt from the restored public fields in __setstate__.
+        # _structure_instance may cache an unserializable dynamic class;
+        # excluded here, rebuilt from public fields in __setstate__.
         import dataclasses
 
         slots: dict[str, Any] = {}
@@ -94,10 +90,8 @@ class InstructionContent(MessageContent):
         return (None, slots)
 
     def __setstate__(self, state: tuple[Any, Any]) -> None:
-        # Restore copied/unpickled state through __setattr__ so mutable render
-        # inputs are re-wrapped, then rebuild the private structure from the
-        # restored response_format: keeping the copied structure would leave
-        # the renderer reading a dict detached from the restored public field.
+        # Restore via __setattr__, then rebuild _structure_instance from
+        # response_format — a copied structure would read a detached dict.
         dict_state, slots_state = state
         for source in (dict_state, slots_state):
             if not source:
@@ -111,9 +105,8 @@ class InstructionContent(MessageContent):
         )
 
     def to_dict(self, exclude: set[str] | frozenset[str] | None = None) -> dict[str, Any]:
-        # Conditionally include response_format when its value is a plain dict
-        # (JSON-serializable); keep excluding it for type/BaseModel references
-        # which cannot survive a round-trip through to_dict → from_dict.
+        # Include response_format only when it's a plain (JSON-serializable)
+        # dict; type/BaseModel forms can't round-trip through from_dict.
         base_exclude = set(_INSTRUCTION_SERIALIZE_EXCLUDE)
         if isinstance(self.response_format, dict):
             base_exclude.discard("response_format")
@@ -173,9 +166,8 @@ class InstructionContent(MessageContent):
                 inst.prompt_context.extend(ctx_list)
 
         if ts := data.get("tool_schemas"):
-            # Accept either a flat list of schemas or the {"tools": [...]} wrapper
-            # that ActionManager.get_tool_schema returns; store flat so the
-            # rendered "Tools:" section isn't nested under a spurious `- tools:`.
+            # Accept a flat list or the {"tools": [...]} wrapper from
+            # ActionManager.get_tool_schema; store flat to avoid nesting.
             if isinstance(ts, dict):
                 ts = ts.get("tools", [ts])
             inst.tool_schemas.extend(ts if isinstance(ts, list) else [ts])
@@ -241,9 +233,8 @@ class InstructionContent(MessageContent):
                 )
             url = idx
         elif "://" in idx or (idx.split(":")[0].isalpha() and ":" in idx):
-            # Looks like a URL with a non-http/https/data scheme (e.g. file://,
-            # javascript:, ftp://).  Delegate to validate_image_url which will
-            # reject all disallowed schemes with a clear error.
+            # Non-http/https/data scheme (e.g. file://, javascript:); delegate
+            # to validate_image_url, which rejects disallowed schemes.
             validate_image_url(idx)
             url = idx  # unreachable if validate_image_url raises
         else:

@@ -17,9 +17,8 @@ from ._path_safety import public_path, safe_path_join
 
 _PLAYBOOKS_ROOT = LIONAGI_HOME / "playbooks"
 
-# Bundled read-only templates — shipped inside the installed package (see the
-# `artifacts` entry in pyproject.toml) so they're available on a real
-# deployment, not just a repo checkout. See builtin_playbooks/README.md.
+# Bundled read-only templates, shipped inside the installed package (see
+# builtin_playbooks/README.md) so they're available on a real deployment.
 _BUILTIN_PLAYBOOKS_ROOT = Path(__file__).resolve().parent.parent / "builtin_playbooks"
 
 # Keys that stay dashed per CLI convention (all others: hyphens → underscores).
@@ -38,11 +37,7 @@ def _normalize_spec_keys(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _check_spec_fields(spec: dict[str, Any]) -> str | None:
-    """Validate playbook spec fields; return an error string or None.
-
-    Mirrors lionagi/cli/orchestrate/__init__.py::_validate_spec_fields() exactly.
-    Implemented inline to avoid loading the full orchestrate module at import time.
-    """
+    """Validate playbook spec fields; return an error string or None. Mirrors lionagi/cli/orchestrate/__init__.py::_validate_spec_fields() exactly -- keep the two in sync."""
     if "workers" in spec:
         workers = spec["workers"]
         if not isinstance(workers, int) or isinstance(workers, bool):
@@ -189,10 +184,7 @@ def get_builtin_playbook(name: str) -> dict[str, Any] | None:
 
 
 def install_builtin_playbook(name: str) -> dict[str, Any]:
-    """Idempotently copy a built-in template into ``~/.lionagi/playbooks`` so
-    it becomes a normal, user-editable playbook ``li play <name>`` can find.
-    No-op (``installed: False``) when the destination already exists.
-    """
+    """Idempotently copy a built-in template into ``~/.lionagi/playbooks`` as a normal, user-editable playbook. No-op when the destination already exists."""
     stem = name.removesuffix(".playbook.yaml").removesuffix(".yaml")
     safe_path_join(_BUILTIN_PLAYBOOKS_ROOT, f"{stem}.playbook.yaml")
     src = _BUILTIN_PLAYBOOKS_ROOT / f"{stem}.playbook.yaml"
@@ -226,21 +218,15 @@ _DECLARATIVE_KEYS: tuple[str, ...] = (
 
 
 def update_playbook(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
-    """Write a playbook YAML back to disk with conservative merge.
-
-    description overwrites when present; graph keys (use/steps/links) only when
-    non-empty; declarative keys overwrite or are cleared on None/""; all other
-    disk keys preserved.  Writes through symlinks to the real source file.
-    """
+    """Write a playbook YAML back to disk with a conservative merge: description overwrites when present, graph keys (use/steps/links) only when non-empty, declarative keys overwrite or clear on None/"", all other disk keys preserved."""
     stem = name.removesuffix(".playbook.yaml").removesuffix(".yaml")
     safe_path_join(_PLAYBOOKS_ROOT, f"{stem}.playbook.yaml")
     path = _PLAYBOOKS_ROOT / f"{stem}.playbook.yaml"
     if not path.exists():
         return None
 
-    # Validate spec fields before the merge: the merge silently drops unknown
-    # keys (e.g. 'workers'), so validating the raw payload catches bad values
-    # that would otherwise pass through to validate_playbook() undetected.
+    # Validate before the merge: the merge silently drops unknown keys (e.g. 'workers'),
+    # so validating the raw payload catches bad values that would otherwise pass through.
     spec_err = _check_spec_fields(_normalize_spec_keys(data))
     if spec_err:
         raise ValueError(spec_err)
@@ -296,12 +282,7 @@ def update_playbook(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def validate_playbook(name: str, data: dict[str, Any]) -> dict[str, Any]:
-    """Pre-save validation. Returns ``{ok, errors?}``.
-
-    Checks:
-    - spec fields (workers, max_ops, effort, with_synthesis) have valid types/ranges
-    - links don't reference non-existent steps
-    """
+    """Pre-save validation of spec fields and step-link references. Returns ``{ok, errors?}``."""
     errors: list[str] = []
 
     # Spec-field validation: normalize hyphenated keys first (max-ops → max_ops)

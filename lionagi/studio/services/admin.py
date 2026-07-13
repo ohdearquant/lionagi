@@ -122,12 +122,8 @@ def process_liveness(
     artifacts_path: Path | None,
     ps_snapshot: str | None = None,
 ) -> bool | None:
-    """Tri-state process liveness for a running session: True = observed alive;
-    False = confirmed dead (recorded pid no longer running, start-time verified
-    when recorded); None = unknown (no recorded pid, no process match — normal
-    for externally-driven sessions). Limitation: a bare recycled pid with no
-    recorded start time reads alive, failing toward live rather than falsely dead.
-    """
+    """Tri-state process liveness: True = observed alive, False = confirmed
+    dead, None = unknown (no recorded pid/no process match)."""
     pid: int | None = None
     create_time: float | None = None
 
@@ -158,9 +154,8 @@ def process_liveness(
             import psutil
 
             proc = psutil.Process(pid)
-            # A zombie has exited but not been reaped; it is not a live
-            # worker even though the pid still resolves and _pid_is_live()
-            # reports it as present.
+            # A zombie has exited but not been reaped; not a live worker
+            # even though _pid_is_live() still reports it as present.
             if proc.status() == psutil.STATUS_ZOMBIE:
                 return False
             if create_time is not None:
@@ -336,9 +331,8 @@ async def health_report() -> dict[str, Any]:
         )
         by_health[health.value] += 1
 
-        # A "running" row whose process is confirmed dead is not actually
-        # running; bucket it under its health verdict so by_status stays
-        # liveness-aware instead of echoing a stale DB status column.
+        # A "running" row whose process is confirmed dead isn't actually
+        # running; bucket it under its health verdict instead.
         status_bucket = status
         if status == "running" and health in (
             SessionHealth.STALE,
@@ -514,20 +508,10 @@ async def transition_sessions(
                         }
                     )
 
-            # CAS: swap running→target only if the snapshot still holds, then
-            # record the transition atomically (transaction() = BEGIN
-            # IMMEDIATE; commit on clean exit, rollback on exception).
-            #
-            # Intentional specialized CAS, not a bypass of the shared
-            # update_status() chokepoint: `WHERE status='running'` can only
-            # ever move running->target (a legal forward transition, never
-            # overwriting a terminal status) -- do not widen or drop that
-            # predicate. The last_message_at/updated_at equality guards are
-            # equally load-bearing: they stop this reconcile from clobbering
-            # a session that went active again between classification and
-            # write (the oscillation fix) -- update_status()'s
-            # expected_statuses guard doesn't compare on these columns, so
-            # routing through it would regress that protection.
+            # Intentional specialized CAS (not a bypass of update_status()):
+            # WHERE status='running' only allows a legal forward transition,
+            # and the last_message_at/updated_at equality guards stop this
+            # from clobbering a session that went active again mid-check.
             async with db.transaction() as conn:
                 result = await conn.execute(
                     text(
@@ -774,8 +758,7 @@ async def run_maintenance_route(body: MaintenanceBody) -> dict[str, Any]:
 
     except (sqlite3.OperationalError, _SAOperationalError) as exc:
         # Only genuine lock/busy contention is retryable; open/path failures
-        # are config problems that should surface as 500. Inspect .orig too
-        # since SQLAlchemy's wrapper message can omit the driver's own text.
+        # should surface as 500. Inspect .orig since SQLAlchemy's wrapper can omit it.
         msg = str(exc).lower()
         orig = getattr(exc, "orig", None)
         if orig is not None:

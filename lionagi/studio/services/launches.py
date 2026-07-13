@@ -95,9 +95,8 @@ def _validate_request(data: dict[str, Any]) -> None:
 async def launch(data: dict[str, Any]) -> dict[str, Any]:
     """Validate *data*, record an invocation, spawn a detached process, return identifiers.
 
-    Raises TooManyLaunchesError when the in-flight cap is reached.
-    Returns ``{invocation_id, action_kind}``; session IDs appear in the DB only after the
-    process starts.
+    Raises TooManyLaunchesError at the in-flight cap; session IDs appear in the DB
+    only after the process starts.
     """
     _validate_request(data)
 
@@ -115,9 +114,8 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
     }
     if data["action_kind"] == "engine":
         defn = await _resolve_engine_def(data["action_engine_def"])
-        # The saved definition supplies the engine kind (via the action_agent
-        # slot), default model, and engine flags; the request supplies the spec
-        # prompt and may override the model.
+        # The saved definition supplies engine kind/model/flags; the request
+        # supplies the spec prompt and may override the model.
         schedule_dict["action_agent"] = defn["kind"]
         if not schedule_dict["action_model"]:
             schedule_dict["action_model"] = defn.get("model") or ""

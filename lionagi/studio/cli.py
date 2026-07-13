@@ -20,10 +20,8 @@ from lionagi.cli._logging import warn
 _STUDIO_IMAGE = "ghcr.io/ohdearquant/lion-studio:latest"
 _HOSTED_URL = "https://lion-studio.khive.ai"
 
-# Keys the scheduler engine's chain-fire merge (`{**schedule, **chain_action}`,
-# see studio/scheduler/engine.py) actually understands. Anything else would
-# still shallow-merge into the fired child schedule row and silently clobber
-# unrelated columns (id, trigger_type, cron_expr, ...) — reject it up front.
+# Keys the scheduler engine's chain-fire merge actually understands;
+# anything else would shallow-merge into the fired child row and clobber columns.
 _CHAIN_ACTION_ALLOWED_KEYS = frozenset(
     {"kind", "action_kind", "model", "prompt", "agent", "playbook", "on_success", "on_fail"}
 )
@@ -51,10 +49,8 @@ def _is_mount_allowed(resolved_path: Path, allowed_roots: list[Path]) -> bool:
 
 
 def _add_studio_flags(parser: argparse.ArgumentParser, *, suppress_defaults: bool = False) -> None:
-    # The same flags are registered on both the parent `studio` parser and the
-    # `start` subparser. The subparser must SUPPRESS its defaults, otherwise its
-    # unset defaults overwrite values parsed at the parent level (e.g.
-    # `li studio --docker start` would silently lose --docker).
+    # The `start` subparser must SUPPRESS its defaults, or its unset defaults
+    # overwrite values parsed at the parent `studio` parser level.
     def _default(value):
         return argparse.SUPPRESS if suppress_defaults else value
 
@@ -130,9 +126,8 @@ def add_studio_subparser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _validate_mode_flags(args: argparse.Namespace) -> None:
-    # Mutual exclusion can be split across the parent parser and the `start`
-    # subparser (e.g. `li studio --docker start --web`), which argparse's
-    # per-parser groups cannot see. Validate the combined namespace.
+    # Mutual exclusion can be split across the parent and `start` subparser,
+    # which argparse's per-parser groups can't see — validate the combined namespace.
     selected = [
         flag
         for flag, attr in (
@@ -260,9 +255,7 @@ def _start_backend_only(host: str, port: int) -> int:
         return 1
 
     print(f"Lion Studio API: http://{host}:{port}")
-    # Export the actually-resolved bind host so the app's startup security
-    # warning (lionagi.studio.app) reflects the real bind address rather than a
-    # stale default — the app is loaded via import string and only sees env.
+    # Set before uvicorn.run: the app is loaded via import string and reads this from env.
     os.environ["LIONAGI_STUDIO_HOST"] = host
     uvicorn.run("lionagi.studio.app:app", host=host, port=port)
     return 0
@@ -385,9 +378,8 @@ def _start_local(
         # Production mode: build dist/ once, then uvicorn serves both UI and API
         # from the same origin — no second process needed.
         if _ensure_frontend_built(frontend_dir):
-            # Point the app at the built dist so the SPA fallback activates.
-            # app.py reads this env var at module import time; uvicorn loads the
-            # app fresh via the import string so the var must be set before the call.
+            # Must be set before uvicorn.run: app.py reads it at import time to
+            # activate the SPA fallback.
             dist_path = frontend_dir / "dist"
             os.environ["LIONAGI_STUDIO_FRONTEND_DIST"] = str(dist_path)
             print(f"Lion Studio: http://{host}:{port}")
@@ -397,9 +389,7 @@ def _start_local(
 
     print("Press Ctrl+C to stop")
 
-    # Export the actually-resolved bind host so the app's startup security
-    # warning (lionagi.studio.app) reflects the real bind address rather than a
-    # stale default — the app is loaded via import string and only sees env.
+    # Set before uvicorn.run: the app is loaded via import string and reads this from env.
     os.environ["LIONAGI_STUDIO_HOST"] = host
     try:
         uvicorn.run("lionagi.studio.app:app", host=host, port=port)
@@ -554,11 +544,8 @@ _warned_api_suffix = False
 def _base_url() -> str:
     if url := os.environ.get("LIONAGI_STUDIO_URL"):
         url = url.rstrip("/")
-        # Endpoint paths below add /api themselves; tolerate a base URL that
-        # already carries it (an older documented workaround) so requests
-        # don't hit /api/api/... and 404. Warn (once) rather than strip
-        # silently: a reverse proxy whose public prefix genuinely ends in
-        # /api needs to see why its path was rewritten.
+        # Endpoint paths below add /api themselves; strip a base URL that
+        # already carries it to avoid hitting /api/api/... and 404ing.
         if url.endswith("/api"):
             url = url.removesuffix("/api")
             global _warned_api_suffix
@@ -648,17 +635,7 @@ def _validate_chain_action_node(
     max_chain_depth: int,
 ) -> str | None:
     """Validate one chain_action node, recursing into its own nested
-    on_success/on_fail the same way the engine's chain-fire would reach them.
-
-    `label` is a human-readable path for error messages (e.g. "--on-success"
-    or "--on-success.on_success"). `self_field` is the chain field this node
-    was reached through — used for the re-fire warning: does this node set
-    its own copy of that field, or will it inherit the parent's via the
-    shallow merge? `chain_depth` is the engine chain_depth this node fires at
-    if reached (see scheduler/engine.py); recursion stops once that reaches
-    `max_chain_depth`, matching the engine's own `chain_depth < _MAX_CHAIN_DEPTH`
-    gate — beyond it, a node's own on_success/on_fail is never read.
-    """
+    on_success/on_fail the same way the engine's chain-fire would reach them."""
     if not isinstance(action, dict):
         return f"{label}: must be a JSON object, got {type(action).__name__}"
 
@@ -694,10 +671,7 @@ def _validate_chain_action_node(
 
 
 def _parse_chain_action(raw: str, flag: str) -> tuple[dict[str, Any] | None, str | None]:
-    """Parse+validate a --on-success/--on-fail JSON blob, recursively —
-    nested on_success/on_fail chain actions are validated the same way as
-    the top level, since they ride the same shallow merge into the engine's
-    fired child schedules.
+    """Parse+validate a --on-success/--on-fail JSON blob, recursively.
 
     Returns (parsed_dict, error_message); error_message is None on success.
     """
@@ -718,14 +692,8 @@ def _parse_chain_action(raw: str, flag: str) -> tuple[dict[str, Any] | None, str
 
 
 def _warn_if_cron_far_out(cron_expr: str) -> None:
-    """Best-effort heads-up when a cron expression's next fire is far out.
-
-    Addresses the date-pinned one-shot footgun: a cron schedule created
-    after its literal moment for this year (but meant to fire "today")
-    silently resolves to the same date *next* year instead. croniter is
-    part of the `studio` extra, not a core dependency, so this degrades to
-    a no-op rather than failing schedule creation when it isn't installed.
-    """
+    """Best-effort heads-up when a cron expression's next fire is far out
+    (e.g. a date-pinned one-shot created after this year's moment already passed)."""
     try:
         from croniter import croniter
     except ImportError:
@@ -793,9 +761,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
         if not isinstance(parsed_threshold, dict):
             print("Error: --threshold-config must be a JSON object.", file=sys.stderr)
             return 1
-        # Shape/value validation (metric/op vocab, positive window_minutes,
-        # etc.) happens server-side in _svc_validate_threshold_config --
-        # this is just the same JSON-object shape check --github-filter does.
+        # Full value validation happens server-side; this is just a shape check.
         body["threshold_config"] = parsed_threshold
     if getattr(args, "poll_interval", None) is not None:
         if args.poll_interval < 1:
@@ -846,9 +812,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
             print("Error: --action-command-args must be a JSON array.", file=sys.stderr)
             return 1
         body["action_command_args"] = parsed_command_args
-    # ADR-0070 delta 1: give the schedule a stable, persisted execution root
-    # instead of depending on wherever the Studio daemon happens to be
-    # running from when it eventually fires. An explicit --cwd always wins.
+    # ADR-0070 delta 1: persist a stable execution root instead of depending
+    # on the daemon's cwd when it fires. An explicit --cwd always wins.
     if getattr(args, "cwd", None):
         resolved_cwd = Path(args.cwd).expanduser().resolve()
         if not resolved_cwd.is_dir():
@@ -863,9 +828,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
         body["action_project"] = args.project
     else:
         # Best-effort: auto-capture the project from cwd (ADR-0063 detection
-        # cascade) so a schedule created inside a registered project resolves
-        # its spawn cwd at trigger time (see scheduler.engine._resolve_action_cwd).
-        # Any failure here must never block schedule creation.
+        # cascade). Any failure here must never block schedule creation.
         with contextlib.suppress(Exception):
             from lionagi.cli._project import detect_project
             from lionagi.studio.scheduler.subprocess import _validate_identifier
@@ -876,10 +839,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
                 body["action_project"] = detected
 
     if "action_cwd" not in body and "action_project" not in body:
-        # Neither an explicit --cwd nor a resolvable action_project: fall
-        # back to the CLI's own invocation directory (the "creating client's
-        # own cwd") so this schedule still carries a stable execution root
-        # rather than falling through to the daemon's fire-time cwd.
+        # Neither resolved: fall back to the CLI's own invocation directory
+        # so the schedule still carries a stable execution root.
         body["action_cwd"] = str(Path.cwd())
 
     if args.description:
@@ -950,10 +911,8 @@ def _cmd_runs(args: argparse.Namespace) -> int:
     return 0
 
 
-# Common wrong spellings/guesses mapped to the real flag they were probably
-# aiming for — checked before the generic difflib fuzzy match below, since
-# some of these (e.g. --every for --interval) aren't close enough by edit
-# distance for difflib to catch on its own.
+# Common wrong spellings mapped to the real flag, checked before the fuzzy
+# match below since some (e.g. --every) aren't close enough for difflib.
 _SCHEDULE_FLAG_SYNONYMS: dict[str, str] = {
     "--every": "--interval",
     "--at": "--cron",
@@ -969,12 +928,7 @@ _ALL_SCHEDULE_FLAGS: set[str] = set()
 
 
 def suggest_schedule_flag(token: str) -> str | None:
-    """Return a suggested correction for an unrecognized `li schedule` flag.
-
-    Checks the explicit synonym map first (catches guesses too far from the
-    real flag for edit-distance matching, e.g. "--every" for "--interval"),
-    then falls back to a fuzzy match against every registered flag.
-    """
+    """Return a suggested correction for an unrecognized `li schedule` flag."""
     if token in _SCHEDULE_FLAG_SYNONYMS:
         return _SCHEDULE_FLAG_SYNONYMS[token]
     import difflib

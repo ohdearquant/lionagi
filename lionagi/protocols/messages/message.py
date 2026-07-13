@@ -34,9 +34,8 @@ class _TrackedList(list):
             self._touch()
 
     def __reduce__(self):
-        # Copy/pickle as a plain list: the revision callback is bound to the
-        # owning content and must not survive reconstruction. The owning
-        # content re-wraps its fields when its own state is restored.
+        # Copy/pickle as a plain list: the revision callback must not
+        # survive reconstruction (the owning content re-wraps on restore).
         return (list, (list(self),))
 
     def append(self, value) -> None:
@@ -324,13 +323,8 @@ class Message(Node, Sendable):
             return None
 
     def _render_cached(self, variant: str, render: Callable[[], Any]) -> Any:
-        """Return a rendering cached by content identity and revision.
-
-        The entry retains the content object itself and is served only when
-        the stored content IS the current content: an id()-based key could
-        cross-wire two content objects whose lifetimes never overlap but
-        happen to reuse the same address.
-        """
+        """Return a rendering cached by content identity and revision (not
+        id(), which could cross-wire non-overlapping objects reusing an address)."""
         content = self.content
         revision = getattr(content, "_render_revision", 0)
         cached = self._render_cache.get(variant)

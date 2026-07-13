@@ -12,6 +12,7 @@ import re
 import shutil
 import sys
 import tempfile
+from collections.abc import Awaitable, Callable
 from importlib import metadata as importlib_metadata
 from pathlib import Path
 
@@ -552,6 +553,7 @@ async def spawn_and_wait(
     tmp_path: str | None = None,
     cwd: str | None = None,
     action_kind: str | None = None,
+    on_launched: Callable[[], Awaitable[None]] | None = None,
 ) -> tuple[int, str]:
     """Spawn subprocess and wait for completion. Returns (exit_code, stderr_tail).
 
@@ -573,6 +575,16 @@ async def spawn_and_wait(
     does not stop a spawn checked only at build_argv time. Passing
     *action_kind* here closes that gap: the check runs with no intervening
     await before ``create_subprocess_exec``.
+
+    *on_launched*, if given, is awaited immediately after
+    ``create_subprocess_exec`` returns -- i.e. once the OS process genuinely
+    exists -- and before waiting on its completion. The scheduler engine uses
+    this to durably mark a schedule_run "dispatched" the moment launch is
+    confirmed, closing the window a delivery-contract recovery scan would
+    otherwise treat as "committed but never launched" (see
+    SchedulerEngine._fire_inner). A failing callback is logged and swallowed,
+    never allowed to fail (or duplicate-spawn) the process that already
+    launched.
     """
     if action_kind == "command":
         command = argv[0] if argv else ""
@@ -594,6 +606,16 @@ async def spawn_and_wait(
         start_new_session=True,
     )
     # Pgid == proc.pid; pid-guard and platform check live in aterminate_process_group.
+
+    if on_launched is not None:
+        try:
+            await on_launched()
+        except Exception:
+            _log.exception(
+                "on_launched callback failed for invocation %s; the process "
+                "is already running regardless",
+                invocation_id,
+            )
 
     try:
         _, stderr = await proc.communicate()

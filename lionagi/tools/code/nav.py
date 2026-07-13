@@ -203,16 +203,8 @@ class NavTool(LionTool):
         if self._tool is None:
 
             async def code_nav(**kwargs):
-                """
-                Navigate Python source code without reading the full file.
-
-                Actions:
-                - 'outline': return all class/function signatures (cheaper context than reading).
-                - 'find_definition': locate where a named symbol is defined (class, function, or variable).
-                - 'find_references': find all Name/Attribute nodes referencing a symbol.
-
-                All actions operate on a single Python file via the stdlib ast module.
-                No external dependencies required.
+                """Navigate Python source code without reading the full file — outline signatures, find a definition, or find references.
+                Operates on a single Python file via the stdlib ast module; no external dependencies.
                 """
                 return (await self.handle_request(NavRequest(**kwargs))).model_dump()
 

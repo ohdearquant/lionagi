@@ -22,12 +22,8 @@ if TYPE_CHECKING:
     from lionagi.ln.types import Operable, Spec
 
 
-# Model classes, unlike Operative instances, contain no request/response state
-# and are shared across identical constructions. The sharing contract: callers
-# must not mutate a returned model class (mutation would be visible to every
-# later identical construction); LIONAGI_OPERATIVE_MODEL_CACHE_SIZE=0 disables
-# sharing entirely. The LRU bounds strong references to dynamically-created
-# base classes and their generated models.
+# Shared across identical constructions — callers must not mutate a returned model class.
+# LIONAGI_OPERATIVE_MODEL_CACHE_SIZE=0 disables sharing entirely.
 _model_type_cache: BoundedLRUCache[tuple[type[BaseModel], tuple], type[BaseModel]] = (
     BoundedLRUCache("LIONAGI_OPERATIVE_MODEL_CACHE_SIZE", 512)
 )

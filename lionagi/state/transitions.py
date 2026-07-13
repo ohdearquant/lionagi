@@ -1,19 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Guarded compare-and-swap state transitions (ADR-0059 slice 1, spec-gate ruling 1).
-
-ADR-0058's ``transition()`` API (entity-agnostic, idempotency-key-deduplicated)
-is proposed and unbuilt. This module ships a minimal fallback carrying the same
-request/result shape and reason-code discipline so 0058 can absorb it later as
-a refactor, not a migration. Scoped to ``entity_type='dispatch'``
-(``dispatch_outbox``) and ``entity_type='schedule_run'`` (``schedule_runs``)
-only — it is not a general TransitionStore.
-
-The guarded read/CAS/vocabulary/write algorithm itself now lives in
-``lionagi.state.lifecycle`` (shared with ``StateDB.update_status()``); this
-module keeps its own narrower entity-type boundary, its ``guard``/``patch``
-column allowlist, and the legacy ``TransitionResult`` return shape.
-"""
+"""Guarded compare-and-swap state transitions (ADR-0059) — minimal counterpart to ADR-0058's
+entity-agnostic API, scoped to dispatch/schedule_run entities. See docs/internals/runtime.md."""
 
 from __future__ import annotations
 
@@ -66,23 +54,14 @@ class TransitionResult(BaseModel):
     event_id: str | None = None
 
 
-# Entities the minimal fallback knows how to CAS-transition. ADR-0058's full
-# backend generalizes this; slice 1 needs only dispatch_outbox.
-# "schedule_run" is ADR-0071 D2's generalized task-application entity
-# (schedule_runs table, schedule_id now nullable) — registered here so ALL
-# status movement on it can route through this guarded CAS store rather than
-# a second, parallel implementation.
+# Entities the minimal fallback knows how to CAS-transition — see docs/internals/runtime.md.
 _ENTITY_TABLES: dict[str, str] = {
     "dispatch": "dispatch_outbox",
     "schedule_run": "schedule_runs",
 }
 
-# guard/patch column names are interpolated directly into SQL text (values are
-# still bound params) inside the lifecycle service. Every production call site
-# today passes literal dicts, but this module is a generic surface that a
-# future full transition backend will absorb, so a per-entity allowlist closes the
-# latent injection surface for future callers instead of trusting the
-# caller's dict keys outright.
+# guard/patch column names are interpolated into SQL text (values stay bound
+# params); allowlist closes the latent injection surface — see docs/internals/runtime.md.
 _GUARD_PATCH_COLUMNS: dict[str, frozenset[str]] = {
     "dispatch": frozenset({"attempt", "next_attempt_at", "last_error"}),
     "schedule_run": frozenset({"leased_by", "lease_expires_at", "lease_attempts"}),
@@ -97,27 +76,7 @@ async def transition(
     patch: dict[str, Any] | None = None,
 ) -> TransitionResult:
     """Guarded compare-and-swap transition: ``UPDATE ... WHERE id=:id AND status=:from``.
-
-    Writes the row status and an atomic ``status_transitions`` append inside
-    one transaction, via the shared ``lionagi.state.lifecycle`` service.
-    A mismatched current state reports a conflict rather than
-    raising or silently overwriting (CAS guard). An undeclared status move
-    (per the shared policy registry's edge graph) raises ``ValueError`` —
-    this surface has no override mechanism, unlike ``StateDB.update_status()``.
-
-    ``guard`` adds extra ``column = :expected`` equality constraints to the
-    WHERE clause beyond ``status`` — required whenever a transition can be a
-    same-state no-op (e.g. ``delivering -> delivering`` recovery claims),
-    where the status guard alone would match trivially and let two
-    concurrent callers both believe they won the claim. Callers pass the
-    value they read *before* the transition as the expected guard value;
-    only the caller whose guard value still matches at UPDATE time wins.
-
-    ``patch`` adds extra ``column = :value`` assignments to the SET clause,
-    applied atomically with the status change and the ``status_transitions``
-    append — for callers (e.g. an operator-forced retry resetting attempt
-    counters) that would otherwise need a second, non-atomic write.
-    """
+    ``guard``/``patch`` extend the WHERE/SET clauses — see docs/internals/runtime.md."""
     table = _ENTITY_TABLES.get(request.entity_type)
     if table is None:
         raise ValueError(f"transition(): unsupported entity_type {request.entity_type!r}")
@@ -166,11 +125,7 @@ async def transition(
             transition_id=uuid.uuid4().hex,
         )
 
-    # "rejected" is unreachable through this surface: run_legacy_transition()
-    # passes raise_on_undeclared_edge=True, so an undeclared edge (terminal
-    # or not) raises ValueError above rather than resolving to "rejected",
-    # and TransitionRequest carries no override field to trigger the
-    # override path either.
+    # "rejected" is unreachable here (raise_on_undeclared_edge=True) — see docs/internals/runtime.md.
     return TransitionResult(
         applied=True,
         conflict=False,

@@ -7,9 +7,7 @@ from __future__ import annotations
 
 import re
 
-# ---------------------------------------------------------------------------
-# Base hierarchy
-# ---------------------------------------------------------------------------
+# --- Base hierarchy ---
 
 
 class ProviderError(RuntimeError):
@@ -40,9 +38,7 @@ class ProviderContextError(ProviderError):
 
 
 class WorkerLivenessError(ProviderError):
-    """The worker CLI subprocess produced no first-stream output within the
-    liveness window across every retry attempt — a spawn/hang failure,
-    distinct from a classified provider-content error (quota/auth/context)."""
+    """Spawn/hang failure: no first-stream output within the liveness window across every retry, distinct from a classified content error."""
 
     def __init__(
         self,
@@ -56,9 +52,7 @@ class WorkerLivenessError(ProviderError):
         self.reason: str = reason
 
 
-# ---------------------------------------------------------------------------
-# Emission error (separate axis — not a provider subprocess failure)
-# ---------------------------------------------------------------------------
+# --- Emission error (separate axis — not a provider subprocess failure) ---
 
 
 class EmissionError(RuntimeError):
@@ -78,9 +72,7 @@ class EmissionError(RuntimeError):
         self.stage: str = stage
 
 
-# ---------------------------------------------------------------------------
-# Regex catalogue (case-insensitive patterns → subclass)
-# ---------------------------------------------------------------------------
+# --- Regex catalogue (case-insensitive patterns → subclass) ---
 
 # Each entry: (compiled_pattern, subclass)
 _QUOTA_PATTERNS: list[re.Pattern[str]] = [

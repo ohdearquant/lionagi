@@ -34,12 +34,7 @@ def make_parse_param(
     num_retries: int | None = None,
     fuzzy_kw: dict | None = None,
 ):
-    """Build a ParseParam with standard defaults for structured-output parsing.
-
-    Covers the common case (bare get_default_parse_call, empty FuzzyMatchKeysParams).
-    For communicate's per-call retry variant pass num_retries; for non-default fuzzy
-    settings pass fuzzy_kw (keys forwarded to FuzzyMatchKeysParams).
-    """
+    """Build a ParseParam with standard defaults for structured-output parsing; num_retries/fuzzy_kw customize per-call."""
     from lionagi.ln.fuzzy import FuzzyMatchKeysParams
 
     from .types import ParseParam

@@ -17,12 +17,8 @@ from ..registry import studio_route
 from ._db import open_db as _open_db
 from ._path_safety import validate_name_component
 
-# ---------------------------------------------------------------------------
-# Per-(kind, name) concurrency lock — shared across all requests in this
-# process.  Spans the DB write inside StateDB.save_definition() AND the
-# subsequent disk write so that both operations are atomic from the service's
-# perspective, so a crash between them cannot leave disk ahead of history.
-# ---------------------------------------------------------------------------
+# Per-(kind, name) concurrency lock, shared across all requests in this process.
+# Spans both the DB write and the disk write so a crash between them cannot leave disk ahead of history.
 
 _DEFINITION_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
 _DEFINITION_LOCKS_GUARD = asyncio.Lock()
@@ -205,11 +201,7 @@ async def save_definition(
     content: str,
     message: str | None = None,
 ) -> dict[str, Any]:
-    """Persist a definition version: DB write first, then disk (ADR-0077 D2).
-
-    DB write must succeed before the file is written; per-(kind, name) lock
-    serialises concurrent saves for the same definition.
-    """
+    """Persist a definition version: DB write first, then disk (ADR-0077 D2); per-(kind, name) lock serialises concurrent saves."""
     # Validate at the service boundary — reject traversal sequences, path
     # separators, NUL, and glob metacharacters.
     validate_name_component(kind, label="kind")
@@ -255,11 +247,7 @@ async def save_definition(
 
 
 async def rollback_definition(kind: str, name: str, target_version: int) -> dict[str, Any] | None:
-    """Restore a previous version: read old content from DB, write to disk, record as new version.
-
-    Returns
-        { version: N+1, rolled_back_from: current_version, rolled_back_to: N }
-    """
+    """Restore a previous version by reading it from DB and saving it as a new version."""
     validate_name_component(kind, label="kind")
     validate_name_component(name, label="name")
 
@@ -295,10 +283,7 @@ async def rollback_definition(kind: str, name: str, target_version: int) -> dict
 
 
 async def snapshot_current(kind: str | None = None) -> int:
-    """Snapshot all current disk files that don't have a matching version in DB.
-
-    Returns count of new versions recorded.
-    """
+    """Snapshot all current disk files that don't have a matching version in DB; returns count recorded."""
     count = 0
     defs = await list_definitions(kind)
 
@@ -326,13 +311,7 @@ _EXTENSIONS = (".md", ".playbook.yaml", ".yaml")
 
 
 def _find_definition_file(base: Path, name: str) -> Path | None:
-    """Locate the on-disk file for a definition.
-
-    ``name`` must be pre-validated by ``validate_name_component``. Candidates
-    are literal-path joins, not glob patterns. Symlinks outside ``base`` are
-    intentionally left unresolved-and-unrestricted — restricting them would
-    break symlinked agent definitions.
-    """
+    """Locate the on-disk file for a definition via literal-path joins (not glob). Symlinks outside ``base`` are intentionally left unrestricted -- restricting them would break symlinked agent definitions."""
     # Fast path 1: direct child (base/<name><ext>)
     for ext in _EXTENSIONS:
         candidate = base / f"{name}{ext}"
@@ -367,9 +346,7 @@ class SaveBody(BaseModel):
 
 @studio_route("/definitions/", method="GET", area="definitions", name="list_definitions")
 async def list_definitions_route(
-    # ADR-0077: "skill" removed — KIND_DIRS excludes it and ADR-0077
-    # §"What is editable" explicitly marks skills as not editable/not in the
-    # definitions write path.
+    # ADR-0077: "skill" removed -- KIND_DIRS excludes it as not editable.
     kind: str | None = Query(default=None, description="Filter by kind: agent, playbook"),
 ) -> dict[str, Any]:
     return {"definitions": await list_definitions(kind)}
