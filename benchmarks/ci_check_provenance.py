@@ -13,12 +13,22 @@ SUITES = ["concurrency-asyncio", "concurrency-trio", "ln-asyncio", "ln-trio", "f
 # benchmarks.yml), so any drift here means that constraint mechanism broke.
 SHARED_DEP_META_KEYS = ["anyio", "orjson"]
 
+# Interpreter identity recorded in each result JSON's meta
+# (benchmarks/_compat.py:lionagi_provenance). Unlike lionagi_file (must
+# DIFFER) and python_executable (a venv-local path, expected to differ
+# even on an identical interpreter binary), these describe the actual
+# Python build running the benchmark and must be IDENTICAL across arms --
+# always present, never suite-specific, so unlike SHARED_DEP_META_KEYS a
+# missing value here is itself a failure, not something to skip.
+PYTHON_IDENTITY_META_KEYS = ["python_full_version", "python_build", "python_compiler"]
+
 
 def check(baseline_dir: Path, current_dir: Path, suites: list[str]) -> bool:
     """Return True iff, for every suite: (1) baseline and current used
     distinct lionagi installs, (2) baseline and current scenario sets
-    overlap and current covers every scenario baseline reported, and
-    (3) shared dependency versions match across both arms.
+    overlap and current covers every scenario baseline reported,
+    (3) shared dependency versions match across both arms, and (4) the
+    two arms ran under the identical Python interpreter build.
 
     (1) is only meaningful if the baseline run and the current run
     actually imported different code. A prior version of this job ran
@@ -65,6 +75,23 @@ def check(baseline_dir: Path, current_dir: Path, suites: list[str]) -> bool:
     lionagi change. benchmarks.yml constrains the baseline install to
     current's exact resolved versions; this is the check that the
     constraint actually held.
+
+    (4) guards the interpreter itself, the one thing "same-machine A/B"
+    assumes is truly shared: if the two venvs are created under different
+    Python builds, every CPU-bound scenario can show a uniform,
+    one-directional delta that has nothing to do with the code under
+    test and survives even paired-in-time interleaving (drift-cancelling
+    only helps when the underlying speed difference is noise, not a
+    structural interpreter difference). This has actually happened here: a
+    bare `uv venv` (no --python) silently honored this repo's committed
+    .python-version instead of the CI matrix's Python version, putting one
+    arm on a materially different interpreter than the other.
+    benchmarks.yml now pins both venv creations to the literal
+    $pythonLocation binary rather than a version string; this is the check
+    that the pin actually held, comparing the fully-detailed version
+    string plus build/compiler identity rather than just the short
+    version -- two builds can report the same "3.12.13" while being
+    differently optimized (e.g. PGO+LTO vs. not).
     """
     ok = True
     for suite in suites:
@@ -162,6 +189,30 @@ def check(baseline_dir: Path, current_dir: Path, suites: list[str]) -> bool:
                     "instead of a lionagi change; the baseline install's constraint "
                     "on current's resolved versions (see benchmarks.yml) did not "
                     "hold.",
+                    file=sys.stderr,
+                )
+                ok = False
+
+        for key in PYTHON_IDENTITY_META_KEYS:
+            b_val = b_meta.get(key)
+            c_val = c_meta.get(key)
+            if not b_val or not c_val:
+                print(
+                    f"[provenance] {suite}: missing {key} in result metadata -- cannot "
+                    "verify baseline and current ran under the same interpreter build.",
+                    file=sys.stderr,
+                )
+                ok = False
+                continue
+            if b_val != c_val:
+                print(
+                    f"[provenance] {suite}: {key} differs between arms -- "
+                    f"baseline={b_val!r} current={c_val!r}. Same-machine A/B requires "
+                    "the exact same Python interpreter binary in both venvs -- only the "
+                    "lionagi implementation should differ. A CPU-bound compare delta "
+                    "here could reflect an interpreter/build difference (e.g. one arm's "
+                    "venv silently resolved a different Python than the other) instead "
+                    "of a lionagi change.",
                     file=sys.stderr,
                 )
                 ok = False

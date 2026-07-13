@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.metadata
+import platform
 import sys
 import time
 
@@ -60,7 +61,7 @@ def dep_version(distribution_name: str) -> str:
 
 
 def lionagi_provenance() -> dict[str, str]:
-    """Which lionagi install actually served this run.
+    """Which lionagi install, and which interpreter, actually served this run.
 
     `python -m benchmarks.X` prepends the current working directory to
     sys.path. If cwd happens to contain a `lionagi/` source directory (e.g.
@@ -72,6 +73,20 @@ def lionagi_provenance() -> dict[str, str]:
 
     Every result JSON records this so the mistake is visible in the data
     itself, and CI can assert baseline/current disagree on lionagi_file.
+
+    lionagi_file is expected to DIFFER between the two arms (that is the
+    point of the comparison); python_full_version/python_build/
+    python_compiler are the opposite -- a same-machine A/B is not actually
+    comparing "the same machine" if the two arms run under different
+    Python builds, and that can happen silently: a bare `uv venv` (no
+    --python) can resolve a different interpreter than one pinned
+    explicitly (e.g. a committed .python-version overriding a CI matrix
+    version), and even two interpreters reporting the identical short
+    version string can be materially different builds (an official
+    PGO+LTO-optimized toolcache build vs. a generic build measurably
+    differ on CPU-bound work). python_executable is a venv-local path and
+    is expected to differ even when the underlying binary is identical --
+    it is recorded for debugging, not asserted equal.
     """
     try:
         import lionagi as _lionagi
@@ -85,6 +100,9 @@ def lionagi_provenance() -> dict[str, str]:
         "lionagi_file": lionagi_file,
         "lionagi_version": lionagi_version,
         "python_executable": sys.executable,
+        "python_full_version": sys.version,
+        "python_build": " ".join(platform.python_build()),
+        "python_compiler": platform.python_compiler(),
     }
 
 

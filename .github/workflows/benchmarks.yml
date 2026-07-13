@@ -36,6 +36,35 @@ name: Benchmarks
 # the false-positive this replaced. The merged JSON has the identical shape
 # the old two-run-per-suite design produced, so ci_check_provenance.py and
 # ci_compare.py below are unchanged.
+#
+# Keep-arms-identical invariant: everything about how a benchmark scenario
+# actually runs -- interpreter binary, shared dependency versions, harness
+# code, working directory -- must be identical between the baseline and
+# current venvs; only the lionagi implementation may differ. Temporal
+# drift (above) is one way that assumption quietly breaks; a diverging
+# interpreter is another, and it is not just "same version number is
+# enough": both venv-creation steps below now pin `--python
+# "$pythonLocation/bin/python"`, the literal binary actions/setup-python
+# just installed, rather than a version string uv resolves on its own --
+# a bare `uv venv` (no --python) ignores the setup-python toolcache
+# entirely and instead honors this repo's committed .python-version,
+# which previously put the current arm on a different Python MINOR
+# version than the baseline arm (which already pinned explicitly). Two
+# builds reporting the same version string are not guaranteed to be the
+# same binary either (an official PGO+LTO-optimized toolcache build can
+# measurably outperform a generic build on CPU-bound work), which is why
+# both venvs are pinned to the one path rather than to "3.12".
+# ci_check_provenance.py asserts the two arms' recorded interpreter
+# identity (full sys.version, python_build, python_compiler) actually
+# matches, not just their lionagi install paths. The remaining difference
+# between the two install commands -- current runs `uv sync --all-extras`,
+# baseline runs a plain `uv pip install <path> trio` with no extras -- is
+# benign: every benchmarked module (lionagi.ln.concurrency, lionagi.ln,
+# lionagi.ln.fuzzy) is a core, non-optional dependency, none of this
+# repo's optional extras (reader/ollama/mcp/rich/schema/pandas/postgres)
+# touch them, and any shared dependency the two installs do have in
+# common is already pinned to the same version by the constraints file
+# below regardless of which extras requested it.
 
 on:
   push:
@@ -74,7 +103,17 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv venv
+          # --python "$pythonLocation/bin/python" pins this venv to the
+          # exact interpreter actions/setup-python just installed (env var
+          # it exports for every later step). A bare `uv venv` ignores
+          # that and resolves its own interpreter instead -- this repo has
+          # a committed .python-version (3.10), which uv prefers over the
+          # matrix's 3.12 whenever no --python is given. That silently put
+          # this arm on a different Python MINOR version than the baseline
+          # arm below (which already pinned explicitly), and a same-machine
+          # A/B is not comparing the same machine if the two arms are not
+          # running the same interpreter. See the header comment.
+          uv venv --python "$pythonLocation/bin/python"
           source .venv/bin/activate
           uv sync --all-extras
 
@@ -130,7 +169,19 @@ jobs:
         run: |
           set -euo pipefail
           git worktree add --detach "$RUNNER_TEMP/lionagi-baseline" "$BASELINE_SHA"
-          uv venv "$RUNNER_TEMP/.venv-baseline" --python ${{ matrix.python-version }}
+          # --python "$pythonLocation/bin/python" (not the bare version
+          # string "${{ matrix.python-version }}"): the interpreter binary
+          # must be identical to the current arm's venv above, not merely
+          # the same version *string*. uv can resolve "3.12" to its own
+          # downloaded build rather than reusing the toolcache interpreter
+          # actions/setup-python already installed, and two same-numbered
+          # builds are not guaranteed identical (e.g. a PGO+LTO-optimized
+          # official toolcache build vs. a generic community build can
+          # measurably differ on CPU-bound work). Pointing both venvs at
+          # the literal $pythonLocation binary removes that as a variable
+          # entirely. ci_check_provenance.py asserts the two arms' recorded
+          # interpreter identity actually matches.
+          uv venv "$RUNNER_TEMP/.venv-baseline" --python "$pythonLocation/bin/python"
           # Same-machine A/B applies to the dependency axis too, not just
           # the interpreter and the OS: only the lionagi implementation
           # should differ between arms. Export every package version
