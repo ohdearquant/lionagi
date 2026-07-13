@@ -71,6 +71,7 @@ def _isolate_endpoint_registry():
     into every later test in this file (and, if xdist schedules another
     provider-routing test into the same worker, into that file too).
     """
+    EndpointRegistry._ensure_loaded()
     saved_entries = list(EndpointRegistry._entries)
     saved_loaded = EndpointRegistry._loaded
     _clear_plugin_modules()
@@ -268,3 +269,12 @@ class TestPluginProviderStaleSnapshotRegression:
 
         assert type(result).__name__ == "PluginProviderEndpoint"
         assert result.config.provider == "acme-new"
+
+
+class TestBuiltinProviderRestoration:
+    def test_builtin_endpoint_remains_registered_after_plugin_provider_tests(self):
+        from lionagi.providers.openai.chat import OpenaiChatEndpoint
+
+        result = match_endpoint(provider="openai", endpoint="chat")
+
+        assert isinstance(result, OpenaiChatEndpoint)
