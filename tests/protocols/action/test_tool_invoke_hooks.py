@@ -12,7 +12,7 @@ registered.
 """
 
 import pytest
-from pydantic import BaseModel
+from pydantic import AliasChoices, AliasPath, BaseModel, Field
 
 from lionagi.agent.factory import _chain_pre_hooks
 from lionagi.protocols.action.function_calling import FunctionCalling
@@ -246,6 +246,173 @@ async def test_rewrite_that_fails_revalidation_is_rejected():
     # The spec-level security_pre chain still ran on the rewritten (invalid)
     # dict before the tool-body validation step catches the schema break.
     assert order == ["security_pre"]
+
+
+async def test_preprocessor_added_key_outside_schema_survives_revalidation():
+    """A tool-level preprocessor may add a key that isn't part of the
+    declared request_options schema (e.g. an audit marker). The
+    post-preprocessor revalidation step must not silently drop it --
+    only the schema-covered keys go through the model."""
+    calls: list[dict] = []
+
+    async def add(a: int, b: int, audit_marker: str | None = None) -> int:
+        calls.append({"a": a, "b": b, "audit_marker": audit_marker})
+        return a + b
+
+    async def preprocessor(args: dict) -> dict:
+        return {**args, "audit_marker": "trusted"}
+
+    tool = Tool(func_callable=add, request_options=AddArgs, preprocessor=preprocessor)
+    manager = ActionManager(tool)
+
+    fc = await manager.invoke({"function": "add", "arguments": {"a": 1, "b": 2}})
+
+    assert fc.status == EventStatus.COMPLETED
+    assert fc.response == 3
+    assert calls == [{"a": 1, "b": 2, "audit_marker": "trusted"}]
+    assert fc.arguments["audit_marker"] == "trusted"
+
+
+class AddArgsWithAlias(BaseModel):
+    a: int
+    b: int
+    c: int = Field(default=0, validation_alias="c_alias")
+
+
+async def test_preprocessor_added_known_field_via_alias_cannot_bypass_validation():
+    """A preprocessor must not be able to smuggle a value into a *declared*
+    schema field by writing its plain field name when that field only
+    accepts input through a validation alias. Because the field is then
+    left unset, it is absent from `model_dump(exclude_unset=True)` -- a
+    classifier that treats "not in the validated dump" as "extra" would
+    mistake this declared-but-unset field for an out-of-schema key and
+    forward its raw, unvalidated value straight to the callable. The
+    fixed classifier must recognize "c" as a declared field name (schema
+    membership, not dump membership) and refuse to forward it raw."""
+    calls: list[dict] = []
+
+    async def add(a: int, b: int, c: int = 0) -> int:
+        calls.append({"a": a, "b": b, "c": c})
+        return a + b
+
+    async def preprocessor(args: dict) -> dict:
+        # "c" is a real declared field, but pydantic only accepts it as
+        # *input* via its validation_alias "c_alias" -- writing the plain
+        # field name is the smuggling attempt the buggy classifier let
+        # through unvalidated.
+        return {**args, "c": "not-an-int"}
+
+    tool = Tool(
+        func_callable=add,
+        request_options=AddArgsWithAlias,
+        preprocessor=preprocessor,
+    )
+    manager = ActionManager(tool)
+
+    fc = await manager.invoke({"function": "add", "arguments": {"a": 1, "b": 2}})
+
+    assert fc.status == EventStatus.COMPLETED
+    # The raw string must never reach the callable as "c": since the
+    # write targets the plain field name rather than the accepted alias,
+    # the value is not schema input pydantic recognizes, so "c" keeps its
+    # validated default instead of the classifier smuggling the raw
+    # value through as a bogus "extra".
+    assert calls == [{"a": 1, "b": 2, "c": 0}]
+    assert fc.arguments.get("c") != "not-an-int"
+
+
+class AddArgsWithAliasPath(BaseModel):
+    a: int
+    b: int
+    # The Python field name ("data") is deliberately different from the
+    # AliasPath's top-level root ("payload") -- the field name alone
+    # (already declared via `declared_keys.add(field_name)`) must not be
+    # what makes this pass; the classifier has to recognize "payload"
+    # itself as a declared input key.
+    data: int = Field(default=0, validation_alias=AliasPath("payload", "value"))
+
+
+async def test_preprocessor_added_key_via_aliaspath_cannot_bypass_validation():
+    """A preprocessor must not be able to smuggle a raw value into a
+    *declared* schema field by writing its `AliasPath` root key directly
+    (e.g. flat `{"payload": ...}` instead of the accepted nested
+    `{"payload": {"value": ...}}`). `AliasPath` has `.path`, not
+    `.choices` -- a classifier that only understands `AliasChoices`
+    would miss this declared field entirely, treat the flat "payload"
+    key as "extra", and forward its raw, unvalidated value straight to
+    the callable, reopening the alias bypass this PR closed."""
+    calls: list[dict] = []
+
+    async def add(a: int, b: int, payload=None) -> int:
+        calls.append({"a": a, "b": b, "payload": payload})
+        return a + b
+
+    async def preprocessor(args: dict) -> dict:
+        # "payload" is the top-level root of a declared field's
+        # AliasPath, but pydantic only accepts it nested
+        # (payload.value) -- writing it as a flat top-level key is the
+        # smuggling attempt the buggy classifier let through.
+        return {**args, "payload": "malicious-raw-value"}
+
+    tool = Tool(
+        func_callable=add,
+        request_options=AddArgsWithAliasPath,
+        preprocessor=preprocessor,
+    )
+    manager = ActionManager(tool)
+
+    fc = await manager.invoke({"function": "add", "arguments": {"a": 1, "b": 2}})
+
+    assert fc.status == EventStatus.COMPLETED
+    # The raw string must never reach the callable as "payload": since
+    # the flat key doesn't match the accepted nested alias path, "payload"
+    # must not be forwarded at all -- the callable only sees its own
+    # default instead of the classifier smuggling the raw value through
+    # as a bogus "extra".
+    assert calls == [{"a": 1, "b": 2, "payload": None}]
+    assert fc.arguments.get("payload") != "malicious-raw-value"
+    assert "payload" not in fc.arguments
+
+
+class AddArgsWithAliasChoicesPath(BaseModel):
+    a: int
+    b: int
+    # Same field-name/alias-root split as above, but the AliasPath is
+    # nested inside an AliasChoices alongside a plain-string choice.
+    data: int = Field(
+        default=0,
+        validation_alias=AliasChoices("payload_alias", AliasPath("payload", "value")),
+    )
+
+
+async def test_preprocessor_added_key_via_aliaschoices_aliaspath_cannot_bypass_validation():
+    """Same smuggling attempt as above, but the `AliasPath` is nested
+    inside an `AliasChoices` alongside a plain-string choice. The
+    classifier must recurse into `AliasChoices.choices` and recognize
+    the `AliasPath` member's root key ("payload") as declared input,
+    not just the plain-string choice ("payload_alias")."""
+    calls: list[dict] = []
+
+    async def add(a: int, b: int, payload=None) -> int:
+        calls.append({"a": a, "b": b, "payload": payload})
+        return a + b
+
+    async def preprocessor(args: dict) -> dict:
+        return {**args, "payload": "malicious-raw-value"}
+
+    tool = Tool(
+        func_callable=add,
+        request_options=AddArgsWithAliasChoicesPath,
+        preprocessor=preprocessor,
+    )
+    manager = ActionManager(tool)
+
+    fc = await manager.invoke({"function": "add", "arguments": {"a": 1, "b": 2}})
+
+    assert fc.status == EventStatus.COMPLETED
+    assert calls == [{"a": 1, "b": 2, "payload": None}]
+    assert fc.arguments.get("payload") != "malicious-raw-value"
+    assert "payload" not in fc.arguments
 
 
 # ── Post hooks: success and failure ─────────────────────────────────────────
