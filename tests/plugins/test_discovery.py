@@ -104,6 +104,30 @@ capabilities:
     assert "absolute" in discovered[0].error.lower()
 
 
+def test_colon_in_declared_capability_path_is_excluded(write_plugin):
+    """A bundle-relative filename has no legitimate reason to contain ':' — it's reserved
+    as the tool-target/callable separator. Refused for every capability kind, not just
+    tool targets, so a colon-bearing filename can never even be declared."""
+    write_plugin(
+        "colon-name",
+        """\
+name: colon-name
+version: "0.1.0"
+lionagi: ">=0.0,<100.0"
+
+capabilities:
+  agents: ["agents/a:b.md"]
+""",
+        files={"agents/a:b.md": "x\n"},
+    )
+
+    discovered = discover_plugins()
+
+    assert len(discovered) == 1
+    assert discovered[0].manifest is None
+    assert "must not contain ':'" in discovered[0].error
+
+
 def test_symlink_escape_is_excluded(write_plugin, plugin_home: Path):
     bundle = write_plugin(
         "symlink-escape",

@@ -16,7 +16,7 @@ from pathlib import Path
 from lionagi._paths import find_lionagi_dirs
 from lionagi.libs.path_safety import has_traversal
 
-from .manifest import ManifestError, PluginManifest, parse_manifest
+from .manifest import ManifestError, PluginManifest, parse_manifest, parse_tool_target
 
 __all__ = (
     "DiscoveredPlugin",
@@ -39,20 +39,20 @@ class DiscoveredPlugin:
     """Bundle-relative paths the manifest declares (manifest itself + every capability file), for trust hashing."""
 
 
-def _tool_target_path(target: str) -> str:
-    if ":" not in target:
-        raise ValueError(f"tool target {target!r} must be 'relative/path.py:callable'")
-    path_part, _, callable_name = target.rpartition(":")
-    if not path_part or not callable_name:
-        raise ValueError(f"tool target {target!r} must be 'relative/path.py:callable'")
-    return path_part
-
-
 def _collect_declared_paths(manifest: PluginManifest) -> list[str]:
-    """Every bundle-relative file the manifest declares — the exact set the trust record hashes."""
+    """Every bundle-relative file the manifest declares — the exact set the trust record hashes.
+
+    A tool's file portion comes from ``parse_tool_target`` — the same parser
+    ``registry.activate_target`` resolves from later — so the file that gets
+    hashed here can never diverge from the file that gets imported there.
+    ``ToolCapability`` already validates ``target`` at manifest-parse time,
+    so this call cannot raise for a manifest that parsed successfully; it's
+    kept explicit rather than re-deriving the path some other way.
+    """
     paths: list[str] = []
     for tool in manifest.capabilities.tools:
-        paths.append(_tool_target_path(tool.target))
+        path_part, _ = parse_tool_target(tool.target, label="tool target")
+        paths.append(path_part)
     for matchers in manifest.capabilities.hooks_external.values():
         for matcher in matchers:
             for hook in matcher.hooks:
@@ -67,9 +67,22 @@ def _collect_declared_paths(manifest: PluginManifest) -> list[str]:
 
 
 def _validate_bundle_relative(bundle_dir: Path, rel: str, *, label: str) -> None:
-    """Raise ValueError if *rel* is empty, absolute, traversal-bearing, or escapes *bundle_dir*."""
+    """Raise ValueError if *rel* is empty, absolute, traversal-bearing, escapes *bundle_dir*,
+    or contains ``:``.
+
+    A bundle-relative filename has no legitimate reason to contain ``:`` —
+    it's reserved as the tool-target/callable separator (see
+    ``manifest.parse_tool_target``). Refusing it here too, not just in the
+    target parser, means a colon-bearing filename can never even be
+    declared, regardless of which capability kind is doing the declaring.
+    """
     if not rel or not rel.strip():
         raise ValueError(f"{label} entry is empty")
+    if ":" in rel:
+        raise ValueError(
+            f"{label} entry {rel!r} must not contain ':' "
+            "(reserved as the tool-target/callable separator)"
+        )
     candidate = Path(rel)
     if candidate.is_absolute():
         raise ValueError(f"{label} entry {rel!r} must be a bundle-relative path, not absolute")

@@ -284,3 +284,44 @@ class TestActivateTarget:
         (bundle / "agents" / "a.md").write_text("attacker-controlled instructions\n")
 
         assert "p1/a" not in PluginRegistry.active_agent_profile_files()
+
+
+class TestMultiColonTargetBypass:
+    def test_multi_colon_target_is_rejected_at_discovery_and_never_activatable(self, write_plugin):
+        """The concrete bypass: `target: tools/t.py:safe:run` where 'tools/t.py:safe' is a
+        real, benign file (what a 'last colon wins' split would hash) and a *different*,
+        undeclared 'tools/t.py' defines `globals()['safe:run']` (what a 'first colon wins'
+        split would import). The manifest must fail to parse outright — the plugin never
+        gets a declared-file set, never gets trusted, never reaches ACTIVE, and
+        activate_target() has no route to it at all."""
+        write_plugin(
+            "evil",
+            "name: evil\nversion: '0.1.0'\nlionagi: \">=0.0,<100.0\"\n"
+            "\ncapabilities:\n  tools:\n    - name: t\n      target: tools/t.py:safe:run\n",
+            files={
+                "tools/t.py:safe": "def run():\n    return 'benign'\n",
+                "tools/t.py": "globals()['safe:run'] = lambda: 'malicious'\n",
+            },
+        )
+
+        discovered = discover_plugins()
+        d = next(x for x in discovered if x.dir_name == "evil")
+        assert d.manifest is None
+        assert "exactly one" in (d.error or "")
+        assert d.declared_files == ()
+
+        record = PluginRegistry.get("evil")
+        assert record is not None
+        assert record.state is PluginState.INVALID
+
+        with pytest.raises(PluginActivationError):
+            PluginRegistry.activate_target("evil", "tools/t.py:safe:run")
+
+    def test_single_colon_target_still_activates_normally(self, write_plugin):
+        """The fix must not break the ordinary, well-formed case."""
+        _write_tool_plugin(write_plugin, "p1", tool_body="def t():\n    return 7\n")
+        _trust_by_dir_name("p1")
+        PluginRegistry.reset()
+
+        fn = PluginRegistry.activate_target("p1", "tools/t.py:t")
+        assert fn() == 7

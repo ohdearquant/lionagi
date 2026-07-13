@@ -35,7 +35,7 @@ from lionagi.version import __version__ as _lionagi_version
 
 from ._user_settings import read_user_settings
 from .discovery import DiscoveredPlugin, discover_plugins
-from .manifest import PluginManifest
+from .manifest import PluginManifest, parse_tool_target
 from .trust import TrustState
 from .trust import trust_state as _trust_state
 
@@ -322,20 +322,34 @@ def _revalidate_trust(record: PluginRecord) -> TrustState:
     return _trust_state(discovered)
 
 
-def _declared_activation_targets(manifest: PluginManifest) -> frozenset[str]:
-    """The exact ``target``/``module`` strings ``activate_target`` may import.
+def _target_resolution_map(manifest: PluginManifest) -> dict[str, tuple[str, str | None]]:
+    """Map each declared, activatable target string to ``(module_path, attr_or_None)``.
+
+    Built directly from the manifest's own typed capability lists — a
+    tool's path/callable split comes from ``parse_tool_target`` on
+    ``tool.target`` (the exact call ``discovery._collect_declared_paths``
+    makes when deciding what to hash), never by re-splitting the caller's
+    ``target`` argument independently. That's what makes the file that gets
+    imported here provably the same file that got content-hashed at trust
+    time — two separately written splitting expressions could disagree on
+    where a target's path ends and its callable begins; one shared parser
+    over the manifest's own field can't.
 
     Only tools and providers name Python-importable code; hooks run as
     external commands and agents/playbooks/packs are read as file content,
     so those never flow through this path. A caller-supplied target that
-    isn't literally one of these declared, already-path-validated strings
-    (an extra file in the bundle, a traversal-shaped string, a typo) is
-    rejected before any import is attempted — activation must stay confined
-    to what the trust disclosure actually showed the approver.
+    isn't literally a key in this map (an extra file in the bundle, a
+    traversal-shaped string, a typo) is rejected before any import is
+    attempted — activation must stay confined to what the trust disclosure
+    actually showed the approver.
     """
-    targets = {t.target for t in manifest.capabilities.tools}
-    targets.update(p.module for p in manifest.capabilities.providers)
-    return frozenset(targets)
+    resolved: dict[str, tuple[str, str | None]] = {}
+    for tool in manifest.capabilities.tools:
+        path_part, callable_name = parse_tool_target(tool.target, label="tool target")
+        resolved[tool.target] = (path_part, callable_name)
+    for provider in manifest.capabilities.providers:
+        resolved[provider.module] = (provider.module, None)
+    return resolved
 
 
 def _import_bundle_module(file_path: Path, *, module_key: str) -> Any:
@@ -456,7 +470,8 @@ class PluginRegistry:
         if cache_key in cls._activation_cache:
             return cls._activation_cache[cache_key]
 
-        if target not in _declared_activation_targets(record.manifest):
+        resolution = _target_resolution_map(record.manifest)
+        if target not in resolution:
             msg = (
                 f"target {target!r} is not declared by plugin {plugin_name!r}'s manifest "
                 "(only tool/provider targets can be activated)"
@@ -464,7 +479,7 @@ class PluginRegistry:
             cls._activation_errors[cache_key] = msg
             raise PluginActivationError(plugin_name, target, msg)
 
-        module_path, _, attr = target.partition(":")
+        module_path, attr = resolution[target]
         file_path = record.bundle_dir / module_path
         try:
             module = _import_bundle_module(
