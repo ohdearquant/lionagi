@@ -201,6 +201,87 @@ async def test_act_suppress_errors_false_reraises():
 
 
 @pytest.mark.asyncio
+async def test_act_pre_hook_denial_surfaces_as_observable_error_not_silent_none():
+    """A denied tool-pre hook must not read as a silent successful `None`
+    result -- ActionManager.invoke() captures the denial as FAILED status
+    instead of raising it, and _act() must route that through the same
+    error-response path used for any other action failure."""
+    from lionagi.protocols.action.tool_hooks import ToolPreDecision
+
+    branch = _make_branch_with_tool()
+
+    async def denier(name: str, arguments: dict):
+        return ToolPreDecision(decision="deny", reason="not today")
+
+    branch._action_manager.add_tool_pre_hook(denier)
+
+    req = {"function": "add", "arguments": {"a": 1, "b": 2}}
+    result = await _act(branch, req, suppress_errors=True)
+
+    assert isinstance(result, ActionResponseModel)
+    assert result.output is not None, "a denial must never surface as a bare `None` result"
+    assert "error" in result.output
+    assert "not today" in str(result.output["error"])
+
+    from lionagi.protocols.messages import ActionResponse
+
+    responses = [m for m in branch.messages if isinstance(m, ActionResponse)]
+    assert len(responses) == 1
+    assert "error" in responses[0].output
+    assert "not today" in str(responses[0].output["error"])
+
+
+@pytest.mark.asyncio
+async def test_act_pre_hook_denial_suppress_errors_false_reraises():
+    """suppress_errors=False must re-raise the denial (matching the
+    pre-existing re-raise contract for every other action failure), not
+    swallow it into a successful response."""
+    from lionagi.protocols.action.tool_hooks import ToolHookDeniedError, ToolPreDecision
+
+    branch = _make_branch_with_tool()
+
+    async def denier(name: str, arguments: dict):
+        return ToolPreDecision(decision="deny", reason="not today")
+
+    branch._action_manager.add_tool_pre_hook(denier)
+
+    req = {"function": "add", "arguments": {"a": 1, "b": 2}}
+    with pytest.raises(ToolHookDeniedError, match="not today"):
+        await _act(branch, req, suppress_errors=False)
+
+
+@pytest.mark.asyncio
+async def test_act_pre_hook_denial_fires_tool_error_not_tool_post():
+    """A denial must be routed through the TOOL_ERROR hook point, not
+    TOOL_POST -- the model/consumer-facing hook layer must see it as a
+    failure, never as a completed call."""
+    from lionagi.hooks.bus import HookBus, HookPoint
+    from lionagi.protocols.action.tool_hooks import ToolPreDecision
+
+    branch = _make_branch_with_tool()
+
+    async def denier(name: str, arguments: dict):
+        return ToolPreDecision(decision="deny", reason="not today")
+
+    branch._action_manager.add_tool_pre_hook(denier)
+
+    bus = HookBus()
+    tool_post_calls: list = []
+    tool_error_calls: list = []
+    bus.on(HookPoint.TOOL_POST, lambda **kw: tool_post_calls.append(kw))
+    bus.on(HookPoint.TOOL_ERROR, lambda **kw: tool_error_calls.append(kw))
+    branch._hooks = bus
+
+    req = {"function": "add", "arguments": {"a": 1, "b": 2}}
+    await _act(branch, req, suppress_errors=True)
+
+    assert tool_post_calls == []
+    assert len(tool_error_calls) == 1
+    assert tool_error_calls[0]["tool_name"] == "add"
+    assert "not today" in str(tool_error_calls[0]["error"])
+
+
+@pytest.mark.asyncio
 async def test_act_verbose_logging(caplog):
     """verbose_action=True emits debug log lines (lines 52-54, 57-60)."""
     import logging

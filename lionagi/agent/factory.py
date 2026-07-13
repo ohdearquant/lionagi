@@ -11,7 +11,24 @@ from lionagi.session.branch import Branch
 
 from .spec import AgentSpec
 
-__all__ = ("create_agent", "_chain_pre_hooks", "_chain_post_hooks")
+__all__ = (
+    "create_agent",
+    "CREATE_AGENT_BRANCH_ORIGIN_KEY",
+    "_chain_pre_hooks",
+    "_chain_post_hooks",
+)
+
+# Stamped into `branch.metadata` for every Branch this factory produces. The
+# key's presence (not the current invocation's profile) is the durable,
+# immutable record that a branch's system message was composed via
+# create_agent (role header + policy block) rather than a bare profile body.
+# It round-trips through Branch.to_dict()/from_dict() with the rest of
+# `metadata`, so a later resume/continue-last leg can consult the PERSISTED
+# branch itself instead of re-deriving "was this create_agent-composed?"
+# from whatever profile happens to be supplied on the resuming invocation
+# (which may differ, or may have since dropped its `role:` key) — see
+# lionagi/cli/agent.py `_run_agent`'s system-prompt reapply guard.
+CREATE_AGENT_BRANCH_ORIGIN_KEY = "create_agent_origin"
 
 
 async def create_agent(
@@ -86,6 +103,10 @@ async def create_agent(
         branch_kwargs["log_config"] = log_config
 
     branch = Branch(**branch_kwargs)
+    # Immutable branch-origin marker (see CREATE_AGENT_BRANCH_ORIGIN_KEY):
+    # stamped once, here, on every branch this factory builds; never read or
+    # written anywhere else in the branch's lifetime.
+    branch.metadata[CREATE_AGENT_BRANCH_ORIGIN_KEY] = True
 
     system_message = spec.build_system_message()
     if "coding" in spec.tools and getattr(spec, "context_management", True):

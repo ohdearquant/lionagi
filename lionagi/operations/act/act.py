@@ -9,6 +9,8 @@ from pydantic import BaseModel
 
 from lionagi._errors import ConfigurationError
 from lionagi.ln import AlcallParams
+from lionagi.protocols.action.tool_hooks import ActionGovernanceDeniedError
+from lionagi.protocols.generic.event import EventStatus
 from lionagi.protocols.messages import ActionRequest, ActionResponse
 
 from .._defaults import get_default_action_call as _get_default_call_params
@@ -90,6 +92,24 @@ async def _act(
         func_call = await branch._action_manager.invoke(_request)
         if verbose_action:
             logger.debug("Action %s invoked, status: %s.", _request["function"], func_call.status)
+
+        # ActionManager.invoke() is total: a pre-hook denial, a schema-
+        # revalidation failure, or an ordinary tool exception is captured as
+        # FAILED status + execution.error rather than raised. A denial
+        # (ToolHookDeniedError) or a schema-revalidation failure
+        # (RevalidationDeniedError) is a governance/policy outcome, not a
+        # business result -- it must be visibly distinguishable from a tool
+        # that legitimately returned `None`, so route it through the same
+        # except-block error path below instead of the success path.
+        # Matching is on ActionGovernanceDeniedError specifically (not the
+        # broader PermissionError) so an ordinary tool exception -- including
+        # a tool body that itself raises a plain PermissionError for its own
+        # business reasons -- keeps the historical degrade-to-`None` contract
+        # under suppress_errors=True (test_invoke_action_suppress_errors).
+        if func_call.status == EventStatus.FAILED and isinstance(
+            func_call.execution.error, ActionGovernanceDeniedError
+        ):
+            raise func_call.execution.error
 
         if _hooks is not None:
             from lionagi.hooks.bus import HookPoint

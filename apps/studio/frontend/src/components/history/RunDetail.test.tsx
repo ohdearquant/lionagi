@@ -273,6 +273,58 @@ describe("runFiles union logic (mirrors the useMemo body) — file outside the l
   });
 });
 
+// ─── NodeEscalated route=notify badge ──────────────────────────────────────────
+// A soft ("fyi" urgency) EscalationRequest resolves to route="notify" and
+// fires NodeEscalated purely for observability — the node itself keeps
+// working. The per-event timeline badge must not label that "escalated"
+// (error tone) the same as a real, terminal escalation.
+
+describe("history/RunDetail.tsx — badgeForEvent (NodeEscalated route=notify)", () => {
+  it("labels a route=notify NodeEscalated as notify, not escalated", async () => {
+    const { badgeForEvent } = await import("./RunDetail");
+    const badge = badgeForEvent({
+      id: "1",
+      session_id: "s1",
+      seq: 0,
+      kind: "NodeEscalated",
+      op_id: "op-a",
+      ts: 1,
+      payload: { route: "notify" },
+    });
+    expect(badge.label).toBe("notify");
+    expect(badge.tone).not.toMatch(/error/);
+  });
+
+  it("still labels a route=higher_tier NodeEscalated as escalated", async () => {
+    const { badgeForEvent } = await import("./RunDetail");
+    const badge = badgeForEvent({
+      id: "1",
+      session_id: "s1",
+      seq: 0,
+      kind: "NodeEscalated",
+      op_id: "op-a",
+      ts: 1,
+      payload: { route: "higher_tier" },
+    });
+    expect(badge.label).toBe("escalated");
+    expect(badge.tone).toMatch(/error/);
+  });
+
+  it("still labels a bare NodeEscalated (no route) as escalated — back-compat", async () => {
+    const { badgeForEvent } = await import("./RunDetail");
+    const badge = badgeForEvent({
+      id: "1",
+      session_id: "s1",
+      seq: 0,
+      kind: "NodeEscalated",
+      op_id: "op-a",
+      ts: 1,
+      payload: {},
+    });
+    expect(badge.label).toBe("escalated");
+  });
+});
+
 describe("stale-write guard predicate (mirrors the done handler's merge condition)", () => {
   function mergeIfSameSession(
     prev: { id: string; status: string } | null,
