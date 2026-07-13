@@ -894,12 +894,12 @@ Index("idx_workflow_defs_updated", workflow_defs.c.updated_at)
 # One row per operator control verb queued against a live session. A poller task
 # in `cli/orchestrate/flow.py`'s `_execute_dag` reads unapplied rows and applies
 # them against the running executor. Apply/stamp ordering is verb-classed:
-# pause/resume/stop are
+# pause/resume are
 # idempotent (apply, then stamp — safe to re-apply on a poller crash); message
 # is not (stamp 'applying', then apply, then finalize — a crash surfaces as an
 # unapplied 'applying' row rather than risking a double injection). 'stop' is
-# schema-reserved for a later slice (the checkpoint writer); no CLI verb emits
-# it yet.
+# schema-reserved and currently unsupported; no CLI verb emits it and the
+# poller rejects it.
 
 session_controls = Table(
     "session_controls",

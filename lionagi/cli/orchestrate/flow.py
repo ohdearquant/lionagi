@@ -458,7 +458,7 @@ async def _build_dag(
         worker_models.append(w_model)
         role_base.setdefault(ta.assignee, w_branch)
 
-        # ADR-0064: fold this leg's OWN declared artifact contract (profile
+        # Fold this leg's OWN declared artifact contract (profile
         # first, else the casts role's artifact_defaults — e.g. reviewer/
         # critic) into the flow-wide contract, namespaced under this leg's
         # own artifact subdirectory. A role that declares nothing leaves the
@@ -1000,8 +1000,8 @@ async def _execute_dag(
     n_spawned = dag_result.get("spawned_operations", 0)
 
     # Escalation backstop: a leg the executor tracked as escalated (gave up
-    # instead of producing a result — see NodeEscalated / EscalationRequest,
-    # ADR-0072/0083) reads as a normal completed op_result to the loop below.
+    # instead of producing a result — see NodeEscalated / EscalationRequest)
+    # reads as a normal completed op_result to the loop below.
     # Without this, a reviewer/critic that emits EscalationRequest(route=
     # "give_up") instead of writing its artifact is indistinguishable from a
     # clean completion once execution finishes — this makes it loud at

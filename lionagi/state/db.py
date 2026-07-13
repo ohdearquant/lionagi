@@ -1747,8 +1747,8 @@ class StateDB:
             warn(
                 f"{caller_name}({entity_id!r}, status={status_value!r}) "
                 "called without reason_code; defaulting to "
-                f"{reason_code!r}. Pass reason_code explicitly "
-                "(ADR-0028 Phase 2 deprecation).",
+                f"{reason_code!r}. Pass reason_code explicitly; "
+                "the default is deprecated and will be removed.",
                 DeprecationWarning,
                 stacklevel=3,
             )
@@ -1827,7 +1827,7 @@ class StateDB:
         if override and (not override_actor or not override_justification):
             raise ValueError(
                 "override=True requires both override_actor and "
-                "override_justification (ADR-0094 operational-repair trail)."
+                "override_justification (ADR-0035 D5 operational-repair trail)."
             )
         canonical_type = _validate_entity_type_for_reason(entity_type)
         _validate_reason_code(reason_code)
