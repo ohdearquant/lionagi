@@ -1898,6 +1898,7 @@ class StateDB:
         node_metadata: dict[str, Any] | None = None,
         project: str | None = None,
         project_source: str | None = None,
+        cc_session_id: str | None = None,
     ) -> None:
         """Write attribution/provenance fields without touching updated_at.
 
@@ -1918,6 +1919,9 @@ class StateDB:
             params["project"] = project
             sets.append("project_source = :project_source")
             params["project_source"] = project_source
+        if cc_session_id is not None:
+            sets.append("cc_session_id = :cc_session_id")
+            params["cc_session_id"] = cc_session_id
         if not sets:
             return
         params["_id"] = session_id
