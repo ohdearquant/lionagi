@@ -356,6 +356,29 @@ def _register_providers(branch: Branch, spec: AgentSpec) -> None:
     branch.providers.register(KhiveInjectionProvider(policy))
 
 
+def register_profile_injection(branch: Branch, role_name: str, profile: Any) -> None:
+    """Register a CLI agent profile's khive injection provider onto ``branch``.
+
+    Shared by the orchestrate path and the bare ``li agent`` path so both honor a
+    profile's ``khive_injection`` opt-in without routing through the coding preset —
+    injection is a context-provider concern, orthogonal to CodingToolkit/path-guards.
+    The provider is keyed on ``{role_name}-recall-v1`` (role_name is the invoked
+    profile name). None/False disables; the env kill-switch is honored by
+    ``_register_providers``.
+    """
+    configured = getattr(profile, "khive_injection", None)
+    # Only None/False disable — an empty mapping is a valid opt-in (see _register_providers).
+    if configured is None or configured is False:
+        return
+
+    from lionagi.casts.pattern import Role
+    from lionagi.casts.profile import Profile
+
+    identity = Profile(name=role_name, role=Role(name=role_name, description="", body=""))
+    provider_spec = AgentSpec(profile=identity, pack=None, khive_injection=configured)
+    _register_providers(branch, provider_spec)
+
+
 def _register_coding_tools(branch: Branch, spec: AgentSpec) -> None:
     from pathlib import Path
 
