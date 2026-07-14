@@ -2755,15 +2755,17 @@ class StateDB:
         self,
         schedule_id: str,
         *,
-        status: str | None = None,
+        status: str | list[str] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         conds: list[str] = ["schedule_id = :schedule_id"]
         params: dict[str, Any] = {"schedule_id": schedule_id}
-        if status:
-            conds.append("status = :status")
-            params["status"] = status
+        statuses = [status] if isinstance(status, str) else (status or [])
+        if statuses:
+            placeholders = ", ".join(f":status{i}" for i in range(len(statuses)))
+            conds.append(f"status IN ({placeholders})")
+            params.update({f"status{i}": s for i, s in enumerate(statuses)})
         query = "SELECT * FROM schedule_runs WHERE " + " AND ".join(conds)  # noqa: S608
         query += " ORDER BY fired_at DESC LIMIT :limit OFFSET :offset"
         params["limit"] = limit
