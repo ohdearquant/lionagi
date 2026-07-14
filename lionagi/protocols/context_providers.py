@@ -93,17 +93,16 @@ class ContextProviderRegistry:
         for entry in self._entries:
             try:
                 text = await entry.provider.provide(branch, instruction)
+                if not text:
+                    continue
+                tokens = TokenCalculator.tokenize(text)
+                if entry.max_tokens and tokens > entry.max_tokens:
+                    report.skipped.append(entry.name)
+                    continue
+                successes.append((entry, text, tokens))
             except Exception:
                 logger.warning("context provider %r raised; skipping", entry.name, exc_info=True)
                 report.failed.append(entry.name)
-                continue
-            if not text:
-                continue
-            tokens = TokenCalculator.tokenize(text)
-            if entry.max_tokens and tokens > entry.max_tokens:
-                report.skipped.append(entry.name)
-                continue
-            successes.append((entry, text, tokens))
 
         # Drop lowest-priority first over budget; stable sort preserves
         # registration order among equal priorities.

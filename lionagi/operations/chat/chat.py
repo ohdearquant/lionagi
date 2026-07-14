@@ -53,11 +53,16 @@ async def chat(
 
     await _emit_user_prompt_submit(branch, chat_param, ins)
 
-    await _apply_context_providers(branch, instruction, chat_param, ins=ins)
-    try:
-        ins, kw = _prepare_run_kwargs(branch, instruction, chat_param, ins=ins)
-    finally:
-        branch._context_injection_slot = None
+    provider_ins, context_report = await _apply_context_providers(
+        branch, instruction, chat_param, ins=ins
+    )
+    ins, kw = _prepare_run_kwargs(
+        branch,
+        instruction,
+        chat_param,
+        ins=provider_ins or ins,
+        context_blocks=context_report.blocks if context_report else None,
+    )
 
     imodel = chat_param.imodel or branch.chat_model
     if not chat_param._is_sentinel(chat_param.include_token_usage_to_model):

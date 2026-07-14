@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections.abc import AsyncGenerator, Callable
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, JsonValue, PrivateAttr, field_serializer
@@ -109,8 +110,9 @@ class Branch(Element, Relational):
     _loop_control: "LoopControl | None" = PrivateAttr(None)
     _signal_tasks: list = PrivateAttr(default_factory=list)
     _context_providers: "ContextProviderRegistry | None" = PrivateAttr(None)
-    _context_injection_slot: list[str] | None = PrivateAttr(None)
-    _last_context_report: Any = PrivateAttr(None)
+    _last_context_report: ContextVar[Any] = PrivateAttr(
+        default_factory=lambda: ContextVar("last_context_report", default=None)
+    )
 
     def __init__(
         self,
@@ -283,11 +285,13 @@ class Branch(Element, Relational):
 
     @property
     def last_context_report(self):
-        """ProviderReport from the most recent turn's provider pass, or None
-        when no providers are registered. When the branch has no system
-        message there is no render target, so providers are not invoked and
-        the report lists every registered provider under `skipped`."""
-        return self._last_context_report
+        """ProviderReport from this task's most recent provider pass, or None.
+
+        When the branch has no system message there is no render target, so
+        providers are not invoked and the report lists every registered
+        provider under ``skipped``.
+        """
+        return self._last_context_report.get()
 
     @property
     def chat_model(self) -> iModel:

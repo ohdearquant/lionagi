@@ -386,11 +386,16 @@ async def run(
                     "run: observer raised during RunStart emission; run proceeds normally"
                 )
 
-        await _apply_context_providers(branch, instruction, param, ins=ins)
-        try:
-            ins, kw = _prepare_run_kwargs(branch, instruction, param, ins=ins)
-        finally:
-            branch._context_injection_slot = None
+        provider_ins, context_report = await _apply_context_providers(
+            branch, instruction, param, ins=ins
+        )
+        ins, kw = _prepare_run_kwargs(
+            branch,
+            instruction,
+            param,
+            ins=provider_ins or ins,
+            context_blocks=context_report.blocks if context_report else None,
+        )
 
         # Committed before the yield below: any consumer that receives this
         # Instruction from the generator must find it already present in
