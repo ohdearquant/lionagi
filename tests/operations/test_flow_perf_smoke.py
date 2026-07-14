@@ -40,8 +40,13 @@ linear=718ms / fanout=502ms. The ceilings below are ~10x this host's noisy
 local median, which comfortably clears both that quiet-host reference and
 every noisy sample observed here.
 
-This is a wall-clock performance gate and therefore runs in the repository's
-dedicated performance lane, outside the required correctness suite.
+The wall-clock CEILING asserts run in the repository's dedicated performance
+lane (advisory, outside the required correctness suite) because they are
+timing-sensitive to shared-host CPU variance. The scheduling CORRECTNESS that
+those ceilings depend on — that the executor drives every node of a linear
+chain and a wide fan-out to COMPLETED — is asserted separately at a small,
+scale-independent size and runs in the required suite, so a scheduling
+regression that fails nodes is caught even when the timing lane is advisory.
 """
 
 from __future__ import annotations
@@ -57,9 +62,12 @@ from lionagi.protocols.types import EventStatus
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
 
-pytestmark = pytest.mark.performance
-
 N_NODES = 1000
+
+# A small, scale-independent size for the required-suite correctness checks —
+# large enough to exercise real linear + fan-out scheduling, small enough that
+# there is no meaningful wall-clock component to be flaky about.
+SMALL_N = 25
 
 # ~10x the measured local median on this host (see module docstring).
 LINEAR_CEILING_S = 75.0
@@ -128,6 +136,23 @@ async def _run_flow(builder: OperationGraphBuilder, n: int) -> float:
     return elapsed
 
 
+@pytest.mark.xdist_group(name="flow_perf_smoke")
+async def test_linear_flow_completes_all_nodes(stub_branch_chat):
+    # Correctness gate (required suite, NOT performance-marked): the executor
+    # drives every node of a small linear chain to COMPLETED. No wall-clock
+    # assertion — _run_flow already fails if any node is not COMPLETED, so a
+    # scheduling regression that fails nodes trips required CI even though the
+    # 1000-node timing ceilings below are advisory-only.
+    await _run_flow(_build_linear(SMALL_N), SMALL_N)
+
+
+@pytest.mark.xdist_group(name="flow_perf_smoke")
+async def test_fanout_flow_completes_all_nodes(stub_branch_chat):
+    # Correctness gate (required suite, NOT performance-marked) — wide fan-out.
+    await _run_flow(_build_fanout(SMALL_N), SMALL_N)
+
+
+@pytest.mark.performance
 @pytest.mark.timeout(TEST_TIMEOUT_S)
 @pytest.mark.xdist_group(name="flow_perf_smoke")
 async def test_linear_flow_1000_nodes_under_ceiling(stub_branch_chat):
@@ -140,6 +165,7 @@ async def test_linear_flow_1000_nodes_under_ceiling(stub_branch_chat):
     )
 
 
+@pytest.mark.performance
 @pytest.mark.timeout(TEST_TIMEOUT_S)
 @pytest.mark.xdist_group(name="flow_perf_smoke")
 async def test_fanout_flow_1000_nodes_under_ceiling(stub_branch_chat):
