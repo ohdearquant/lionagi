@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -248,6 +250,54 @@ def test_reap_stale_shows_reaps_dead_child_session(tmp_path, monkeypatch):
 
     show = run_async(_get_show(db_path, show_id))
     assert show["status"] == "completed"
+
+
+def test_reap_stale_shows_skips_live_unlinked_play_pid(tmp_path, monkeypatch):
+    """A child process may be live before its play row is linked to a session."""
+    db_path = tmp_path / "state.db"
+    show_dir = tmp_path / "shows" / "live-unlinked-topic"
+    play_id = str(uuid.uuid4())
+    play_name = f"play-{play_id[:8]}"
+    _write_play_meta(show_dir, play_name, status="running")
+    (show_dir / play_name / ".pid").write_text(str(os.getpid()))
+    (show_dir / "_ABORT").write_text("")
+    _monkey_db(monkeypatch, db_path)
+
+    show_id = run_async(_seed_show(db_path, show_dir, updated_at=_STALE))
+    run_async(_seed_play_row(db_path, show_id, play_id=play_id, session_id=None))
+
+    from lionagi.studio.services.lifecycle import reap_stale_shows
+
+    count = run_async(reap_stale_shows(stale_hours=6.0))
+    assert count == 0
+
+    show = run_async(_get_show(db_path, show_id))
+    assert show["status"] == "active"
+
+
+def test_reap_stale_shows_reaps_dead_unlinked_play_pid(tmp_path, monkeypatch):
+    """A dead unlinked play PID does not block an otherwise reapable show."""
+    db_path = tmp_path / "state.db"
+    show_dir = tmp_path / "shows" / "dead-unlinked-topic"
+    play_id = str(uuid.uuid4())
+    play_name = f"play-{play_id[:8]}"
+    _write_play_meta(show_dir, play_name, status="running")
+    proc = subprocess.Popen(["/bin/sleep", "0"])  # noqa: S603
+    proc.wait()
+    (show_dir / play_name / ".pid").write_text(str(proc.pid))
+    (show_dir / "_ABORT").write_text("")
+    _monkey_db(monkeypatch, db_path)
+
+    show_id = run_async(_seed_show(db_path, show_dir, updated_at=_STALE))
+    run_async(_seed_play_row(db_path, show_id, play_id=play_id, session_id=None))
+
+    from lionagi.studio.services.lifecycle import reap_stale_shows
+
+    count = run_async(reap_stale_shows(stale_hours=6.0))
+    assert count == 1
+
+    show = run_async(_get_show(db_path, show_id))
+    assert show["status"] == "aborted"
 
 
 # ── already-terminal: never reaped ────────────────────────────────────────────

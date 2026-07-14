@@ -692,7 +692,23 @@ async def reap_stale_shows(*, stale_hours: float | None = None) -> int:
                     show_dir_raw = row.get("show_dir")
                     if not show_dir_raw:
                         continue
-                    recomputed = _recompute_show_status_from_disk(Path(show_dir_raw))
+                    show_dir = Path(show_dir_raw)
+                    for play_dir in _play_dirs(show_dir):
+                        try:
+                            play_pid = int((play_dir / ".pid").read_text().strip())
+                        except (OSError, ValueError):
+                            continue
+                        if play_pid <= 1:
+                            continue
+                        session = {"id": "", "node_metadata": {"pid": play_pid}}
+                        if process_liveness(session, None, ps_snapshot) is True:
+                            live = True
+                            break
+                    if live:
+                        # The play PID is written before its session is linked.
+                        continue
+
+                    recomputed = _recompute_show_status_from_disk(show_dir)
                     if recomputed is None:
                         # Still genuinely in flight on disk — nothing to reap.
                         continue
