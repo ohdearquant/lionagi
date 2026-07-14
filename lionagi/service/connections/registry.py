@@ -29,6 +29,10 @@ _FileStat = tuple[int, int, int, int]
 # (manifest_digest, target_digest) for one plugin entry -- see _plugin_entry_digest.
 _ContentDigest = tuple[str, str]
 
+# Manifest metadata, every manifest-declared path's metadata, and the user
+# settings source mtime -- see _plugin_entry_stat.
+_PluginStatSignature = tuple[_FileStat, tuple[tuple[str, _FileStat], ...], int | None]
+
 
 class EndpointType(Enum):
     API = "api"
@@ -95,11 +99,11 @@ class _RegistryEntry:
         self.plugin_name: str | None = None
         self.plugin_target: str | None = None
         # Fast-path cache for _revalidate_plugin_entry: the PluginRegistry
-        # snapshot generation, (manifest, target) stat signatures, and
+        # snapshot generation, full plugin stat signature, and the entry's
         # (manifest, target) content digests as of the last clean
         # activate_target() call. See _revalidate_plugin_entry.
         self._validated_generation: int | None = None
-        self._validated_stat: tuple[_FileStat, _FileStat] | None = None
+        self._validated_stat: _PluginStatSignature | None = None
         self._validated_digest: _ContentDigest | None = None
 
 
@@ -179,6 +183,7 @@ class EndpointRegistry:
     @classmethod
     def _match_registered(cls, provider: str, endpoint: str, kwargs: dict[str, Any]) -> Any | None:
         """Scan currently-registered entries (built-in + any plugin-activated). ``None`` = no match."""
+        provider = provider.lower()
         first_for_provider = None
         for entry in tuple(cls._entries):
             m = entry.meta
@@ -195,11 +200,10 @@ class EndpointRegistry:
             # Single-endpoint providers (claude_code, codex, pi) always match; non-empty unmatched falls through.
             if not endpoint:
                 return first_for_provider.cls(None, **kwargs)
-            prov = first_for_provider.meta.provider
             n = sum(
                 1
                 for e in tuple(cls._entries)
-                if e.meta.provider == prov or prov in e.meta.provider_aliases
+                if e.meta.provider == provider or provider in e.meta.provider_aliases
                 if cls._revalidate_plugin_entry(e)
             )
             if n == 1:
@@ -215,12 +219,11 @@ class EndpointRegistry:
         too expensive to pay on every ``match()`` hit against an endpoint
         that already activated cleanly. Only re-runs it when the
         ``PluginRegistry`` snapshot generation has strictly advanced (a
-        ``reset()`` happened), when this plugin's manifest or declared
-        target file's cheap stat signature (see ``_plugin_entry_stat``) no
-        longer matches the last clean revalidation, or -- when that stat
-        signature still matches -- when its content digest (see
-        ``_plugin_entry_digest``) no longer matches either; otherwise reuses
-        that prior result.
+        ``reset()`` happened), when this plugin's manifest, any declared
+        path, or user settings source changed (see ``_plugin_entry_stat``),
+        or -- when that stat signature still matches -- when the entry's own
+        content digest (see ``_plugin_entry_digest``) no longer matches
+        either; otherwise reuses that prior result.
 
         The stat signature alone is not a portable content-change
         guarantee: ``os.utime()`` restores a spoofed mtime after an edit,
@@ -265,20 +268,19 @@ class EndpointRegistry:
         return True
 
     @classmethod
-    def _plugin_entry_stat(
-        cls, plugin_name: str, target: str
-    ) -> tuple[_FileStat, _FileStat] | None:
-        """``(manifest_stat, target_stat)`` for a plugin-provided endpoint's
-        backing files -- a cheap ``has anything on disk changed`` first gate
-        for ``_revalidate_plugin_entry``'s fast path. It is a *probabilistic*
-        signal, not a correctness guarantee; see ``_plugin_entry_digest``
-        for the guarantee this gate feeds into.
+    def _plugin_entry_stat(cls, plugin_name: str, target: str) -> _PluginStatSignature | None:
+        """Metadata for the manifest, every declared path, and user settings.
 
-        Each element is ``(mtime_ns, ctime_ns, size, inode)``. mtime ALONE is
-        not a valid content-pinning signal: ``os.utime()`` lets a caller edit
-        a file's bytes and then restore its original mtime. ctime narrows
-        that hole on filesystems where it tracks inode metadata changes, but
-        it is not portable: current CPython documents ``st_ctime``/
+        This is the cheap ``has anything relevant changed`` first gate for
+        ``_revalidate_plugin_entry``. It is a *probabilistic* signal, not a
+        correctness guarantee; see ``_plugin_entry_digest`` for the content
+        guarantee this gate feeds into for the entry's own executable files.
+
+        Each file metadata value is ``(mtime_ns, ctime_ns, size, inode)``.
+        mtime ALONE is not a valid content-pinning signal: ``os.utime()`` lets
+        a caller edit a file's bytes and then restore its original mtime.
+        ctime narrows that hole on filesystems where it tracks inode metadata
+        changes, but it is not portable: current CPython documents ``st_ctime``/
         ``st_ctime_ns`` as file *creation* time on Windows, so neither a
         content write nor ``os.utime()`` advances it there, and timestamp
         resolution is filesystem-dependent in general. size and inode are
@@ -290,20 +292,46 @@ class EndpointRegistry:
         before trusting it -- that confirmation, not this stat tuple, is
         what makes the fast path safe to serve from cache.
 
-        ``None`` (unknown plugin, unresolvable path, either file missing)
-        always forces the caller back onto the full ``activate_target()`` path.
+        ``None`` (unknown plugin, invalid manifest, unresolvable path, or a
+        declared file missing) always forces the caller back onto the full
+        ``activate_target()`` path.
         """
         from lionagi.plugins import PluginRegistry
+        from lionagi.plugins._user_settings import user_settings_path
+        from lionagi.plugins.discovery import _collect_declared_paths
 
         record = PluginRegistry.get(plugin_name)
-        if record is None:
+        if record is None or record.manifest is None:
             return None
-        module_path = target.split(":", 1)[0]
+        declared_paths = set(_collect_declared_paths(record.manifest))
+        if target.split(":", 1)[0] not in declared_paths:
+            return None
         try:
             manifest_stat = record.manifest_path.stat()
-            target_stat = (record.bundle_dir / module_path).stat()
+            declared_stats = []
+            for relative_path in sorted(declared_paths):
+                path_stat = (record.bundle_dir / relative_path).stat()
+                declared_stats.append(
+                    (
+                        relative_path,
+                        (
+                            path_stat.st_mtime_ns,
+                            path_stat.st_ctime_ns,
+                            path_stat.st_size,
+                            path_stat.st_ino,
+                        ),
+                    )
+                )
         except OSError:
             return None
+
+        try:
+            settings_mtime_ns = user_settings_path().stat().st_mtime_ns
+        except FileNotFoundError:
+            settings_mtime_ns = None
+        except OSError:
+            return None
+
         return (
             (
                 manifest_stat.st_mtime_ns,
@@ -311,29 +339,21 @@ class EndpointRegistry:
                 manifest_stat.st_size,
                 manifest_stat.st_ino,
             ),
-            (
-                target_stat.st_mtime_ns,
-                target_stat.st_ctime_ns,
-                target_stat.st_size,
-                target_stat.st_ino,
-            ),
+            tuple(declared_stats),
+            settings_mtime_ns,
         )
 
     @classmethod
     def _plugin_entry_digest(cls, plugin_name: str, target: str) -> _ContentDigest | None:
-        """``(manifest_digest, target_digest)`` -- a content hash of the same
-        two files ``_plugin_entry_stat`` stats, and the correctness
-        guarantee ``_revalidate_plugin_entry``'s fast path actually relies
-        on. Unlike any timestamp/size/inode signature, a hash of the file's
-        bytes always changes when the bytes do, on every platform and
-        filesystem -- there is no metadata field to spoof or leave static.
-        Only computed on the stat-stable path (see ``_plugin_entry_stat``):
-        plugin manifest and target files are small, so the extra read here
-        is cheap, and an entry whose stat signature already looks different
-        skips straight to ``activate_target()`` without paying for it.
+        """Content hashes for an entry's manifest and active target.
 
-        ``None`` under the same conditions ``_plugin_entry_stat`` returns
-        ``None`` for (unknown plugin, unresolvable path, either file missing).
+        Unlike any timestamp/size/inode signature, these hashes always
+        change when either entry file's bytes do. They are only computed on
+        ``_plugin_entry_stat``'s stat-stable path; a signature that already
+        looks different skips straight to ``activate_target()``.
+
+        ``None`` means the plugin is unknown or either entry file could not
+        be read.
         """
         from lionagi.plugins import PluginRegistry
 
@@ -368,24 +388,32 @@ class EndpointRegistry:
 
         imported = False
         for plugin_name, module in targets:
-            previous = getattr(cls._plugin_registration, "provenance", None)
-            cls._plugin_registration.provenance = (plugin_name, module)
-            try:
-                activated = PluginRegistry.activate_target(plugin_name, module)
-                module_name = getattr(activated, "__name__", None)
-                for entry in cls._entries:
-                    if module_name is not None and entry.cls.__module__ == module_name:
-                        entry.plugin_name = plugin_name
-                        entry.plugin_target = module
-                cls._reject_builtin_collisions(plugin_name, module, module_name)
-                imported = True
-            except PluginActivationError:
-                continue
-            finally:
-                if previous is None:
-                    del cls._plugin_registration.provenance
-                else:
-                    cls._plugin_registration.provenance = previous
+            with cls._lock:
+                if any(
+                    entry.plugin_name == plugin_name and entry.plugin_target == module
+                    for entry in cls._entries
+                ):
+                    imported = True
+                    continue
+
+                previous = getattr(cls._plugin_registration, "provenance", None)
+                cls._plugin_registration.provenance = (plugin_name, module)
+                try:
+                    activated = PluginRegistry.activate_target(plugin_name, module)
+                    module_name = getattr(activated, "__name__", None)
+                    for entry in cls._entries:
+                        if module_name is not None and entry.cls.__module__ == module_name:
+                            entry.plugin_name = plugin_name
+                            entry.plugin_target = module
+                    cls._reject_builtin_collisions(plugin_name, module, module_name)
+                    imported = True
+                except PluginActivationError:
+                    continue
+                finally:
+                    if previous is None:
+                        del cls._plugin_registration.provenance
+                    else:
+                        cls._plugin_registration.provenance = previous
         return imported
 
     @classmethod
