@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import os
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 
 __all__ = (
     "LIONAGI_HOME",
     "RUNS_ROOT",
+    "clear_lionagi_dirs_cache",
     "find_lionagi_dirs",
 )
 
@@ -35,30 +37,46 @@ def _find_git_root(cwd: Path) -> Path | None:
     return None
 
 
-def find_lionagi_dirs() -> list[Path]:
-    """Find .lionagi/ directories, project-local first then global ~/.lionagi/."""
+@lru_cache(maxsize=32)
+def _find_lionagi_dirs_cached(cwd: Path, home: Path) -> tuple[Path, ...]:
+    """Find .lionagi/ directories for a stable cwd/home pair."""
     dirs: list[Path] = []
 
     # 1. Git root
-    git_root = _find_git_root(Path.cwd())
+    git_root = _find_git_root(cwd)
     if git_root is not None:
         candidate = git_root / ".lionagi"
         if candidate.is_dir():
             dirs.append(candidate)
 
     # 2. Walk up from cwd
-    cwd = Path.cwd()
     for parent in [cwd, *cwd.parents]:
         candidate = parent / ".lionagi"
         if candidate.is_dir() and candidate not in dirs:
             dirs.append(candidate)
 
     # 3. Global ~/.lionagi/ (always check)
-    home_candidate = Path.home() / ".lionagi"
+    home_candidate = home / ".lionagi"
     if home_candidate.is_dir() and home_candidate not in dirs:
         dirs.append(home_candidate)
 
-    return dirs
+    return tuple(dirs)
+
+
+def find_lionagi_dirs() -> list[Path]:
+    """Find .lionagi/ directories, project-local first then global ~/.lionagi/."""
+    return list(_find_lionagi_dirs_cached(Path.cwd(), Path.home()))
+
+
+def clear_lionagi_dirs_cache() -> None:
+    """Clear cached directory discovery after filesystem topology changes."""
+    _find_lionagi_dirs_cached.cache_clear()
+
+
+# Keep the conventional lru_cache hook available on the public finder while
+# caching by cwd/home internally so in-process directory changes cannot reuse
+# stale discovery results.
+find_lionagi_dirs.cache_clear = clear_lionagi_dirs_cache
 
 
 # Private alias for callers that imported the old name.
