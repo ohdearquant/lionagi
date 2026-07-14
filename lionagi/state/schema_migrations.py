@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ALTER TABLE column definitions consumed by StateDB._reconcile_columns for schema migrations."""
+"""Additive schema definitions consumed by StateDB's runtime migrations."""
 
 from __future__ import annotations
 
@@ -176,4 +176,17 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("expires_at", "REAL"),
         ("updated_at", "REAL"),
     ],
+}
+
+# metadata.create_all() skips indexes when their table already exists. Keep
+# dialect-specific, idempotent DDL here for indexes introduced after deployment.
+MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
+    "sqlite": (
+        "CREATE INDEX IF NOT EXISTS idx_sessions_cc_session "
+        "ON sessions(cc_session_id) WHERE cc_session_id IS NOT NULL",
+    ),
+    "postgresql": (
+        "CREATE INDEX IF NOT EXISTS idx_sessions_cc_session "
+        "ON sessions(cc_session_id) WHERE cc_session_id IS NOT NULL",
+    ),
 }

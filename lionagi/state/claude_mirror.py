@@ -250,7 +250,7 @@ async def mirror_session(
             }
         )
     else:
-        if not existing.get("cc_session_id"):
+        if existing.get("cc_session_id") is None:
             await db.update_session(sid, cc_session_id=session_uid)
         if project and not existing.get("project"):
             # Backfill attribution for an already-seen session (INSERT OR IGNORE never

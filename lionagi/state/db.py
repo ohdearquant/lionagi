@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import JSON, MetaData, bindparam, event, inspect, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.schema import CreateTable
 
 from lionagi._paths import LIONAGI_HOME
@@ -51,6 +51,7 @@ from lionagi.state.reasons import (
 from lionagi.state.schema_meta import metadata
 from lionagi.state.schema_meta import schedules as _schedules_table
 from lionagi.state.schema_migrations import MIGRATION_COLUMNS as _MIGRATION_COLUMNS
+from lionagi.state.schema_migrations import MIGRATION_INDEXES as _MIGRATION_INDEXES
 
 _RUN_DEFAULTS: dict[str, str] = {
     "running": _RunReasons.STARTED_OK,
@@ -612,6 +613,7 @@ class StateDB:
             await self._drop_legacy_schedule_runs_check()
         async with self._engine.begin() as conn:
             await conn.run_sync(metadata.create_all)
+            await self._reconcile_indexes(conn)
             # Seed immutable reference rows; ON CONFLICT DO NOTHING is safe to
             # re-run on every open() because the rows are identity-stable.
             await conn.execute(
@@ -641,6 +643,7 @@ class StateDB:
             )
 
     _MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = _MIGRATION_COLUMNS
+    _MIGRATION_INDEXES: dict[str, tuple[str, ...]] = _MIGRATION_INDEXES
 
     async def _reconcile_columns(self) -> None:
         for table, columns in self._MIGRATION_COLUMNS.items():
@@ -656,10 +659,35 @@ class StateDB:
                 continue
             for name, defn in columns:
                 if name not in existing:
-                    async with self._engine.begin() as conn:
-                        await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {defn}"))
-                        if table == "schedule_runs" and name == "dispatched_at":
-                            await self._backfill_dispatched_at(conn)
+                    add_column = f"ALTER TABLE {table} ADD COLUMN {name} {defn}"
+                    if self.dialect == "postgresql":
+                        add_column = f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {defn}"
+                    try:
+                        async with self._engine.begin() as conn:
+                            await conn.execute(text(add_column))
+                            if table == "schedule_runs" and name == "dispatched_at":
+                                await self._backfill_dispatched_at(conn)
+                    except OperationalError:
+                        # SQLite has no ADD COLUMN IF NOT EXISTS. Another process
+                        # may commit the same migration after our inspection but
+                        # before our ALTER obtains the WAL write lock. Only
+                        # suppress the error when a fresh inspection proves that
+                        # the requested column now exists.
+                        if self.dialect != "sqlite":
+                            raise
+                        async with self._engine.connect() as conn:
+                            reconciled = await conn.run_sync(
+                                lambda c, t=table, n=name: (
+                                    n in {col["name"] for col in inspect(c).get_columns(t)}
+                                )
+                            )
+                        if not reconciled:
+                            raise
+
+    async def _reconcile_indexes(self, conn) -> None:
+        """Create indexes that ``metadata.create_all`` cannot add to existing tables."""
+        for statement in self._MIGRATION_INDEXES.get(self.dialect, ()):
+            await conn.execute(text(statement))
 
     async def _backfill_dispatched_at(self, conn) -> None:
         """One-time migration backfill for the ``dispatched_at`` column just
