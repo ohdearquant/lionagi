@@ -293,15 +293,20 @@ Code anchors: `lionagi/dispatch/outbox.py`; `lionagi/state/transitions.py`.
 - Missing or invalid `dispatch.notify_template` resolves to `None` and is handled as a transport
   failure, not a scheduler crash.
 - Template configuration must be a non-empty list of strings. Otherwise it is treated as absent.
+- Enqueue validates `deliver_to` as a non-blank string without NUL bytes. Delivery repeats that
+  validation for legacy or externally-written rows before executing transport.
+- A configured template must contain an exact `{deliver_to}` argv element. Omitting it is a
+  destination-configuration failure and follows the same bounded retry/dead-letter path as a
+  transport failure; a destination is never silently discarded.
 - `{payload}` and `{deliver_to}` are substituted only when an entire argv element exactly equals the
   token. Partial-string interpolation is not performed.
 - Execution uses `asyncio.create_subprocess_exec`, never a shell. Shell metacharacters in route or
   payload are inert argv/stdin data.
-- If `{payload}` is absent, JSON payload is sent on stdin. If `{deliver_to}` is absent, the route is
-  not supplied by any fallback mechanism.
-- Stdout and stderr are captured. Exit code zero is success. A non-zero result uses stripped stderr
-  or `exit <code>` and truncates the stored error to 2,000 characters; no rationale is recorded for
-  that exact cap.
+- If `{payload}` is absent, JSON payload is sent on stdin.
+- Stdout and stderr are captured. Exit code zero means only that the transport command succeeded;
+  it does not mean a consumer received, committed, or acknowledged the payload. A non-zero result
+  uses stripped stderr or `exit <code>` and truncates the stored error to 2,000 characters; no
+  rationale is recorded for that exact cap.
 - A ten-second timeout kills the subprocess and reports a timeout error. The timeout value is
   inherited without a recorded transport benchmark. The additional five-second claim margin gives
   the live attempt a short window beyond the configured timeout before crash recovery may reclaim.
@@ -351,6 +356,10 @@ The ordinary outcome matrix is:
 Code anchors: `lionagi/dispatch/outbox.py`; `lionagi/state/reasons.py`.
 
 **Exact semantics.**
+
+- `delivered` is transport-command success, not consumer acknowledgement. Only an
+  `ack_required` row whose token is later presented reaches `acked`; a successful transport for
+  such a row returns to `pending` while acknowledgement is outstanding.
 
 - Attempt increments on claim before transport runs. With the standard flow, the first failure uses
   `backoff_seconds(1) = 60`, followed by 120, 240, 480, 960, then the 1,800-second cap. The

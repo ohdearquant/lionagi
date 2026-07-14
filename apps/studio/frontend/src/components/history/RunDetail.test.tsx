@@ -6,11 +6,55 @@
  * - It does not import Drawer (master-detail doctrine)
  */
 
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as React from "react";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { IntlProvider } from "use-intl";
+import RunStepCard from "@/components/RunStepCard";
+import enMessages from "@/messages/en.json";
+import type { RunStep } from "@/lib/types";
+
+vi.mock("@/components/ui/Markdown", () => ({
+  default: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
 
 const HISTORY_DIR = path.resolve(__dirname);
+const mountedCards: Array<{ container: HTMLDivElement; root: Root }> = [];
+
+afterEach(() => {
+  for (const { container, root } of mountedCards) {
+    act(() => root.unmount());
+    container.remove();
+  }
+  mountedCards.length = 0;
+});
+
+function renderRunStepCards(steps: RunStep[], defaultExpanded = false) {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  mountedCards.push({ container, root });
+
+  const rerender = (nextSteps: RunStep[]) => {
+    act(() => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          {nextSteps.map((step, index) => (
+            <div key={`${step.step}-${index}`} data-segment-index={index}>
+              <RunStepCard step={step} defaultExpanded={defaultExpanded} />
+            </div>
+          ))}
+        </IntlProvider>,
+      );
+    });
+  };
+
+  rerender(steps);
+  return { container, rerender };
+}
 
 // ─── File existence ───────────────────────────────────────────────────────────
 
@@ -270,6 +314,295 @@ describe("runFiles union logic (mirrors the useMemo body) — file outside the l
   it("degrades gracefully when message_stats is absent (older/partial session payloads)", () => {
     const result = computeRunFiles(undefined, ["c.md"]);
     expect(result).toEqual(["c.md"]);
+  });
+});
+
+describe("history/RunDetail.tsx — persisted branch totals survive message pagination", () => {
+  it("uses full-progression timestamps and message totals instead of the loaded tail", async () => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const runStep = branchToRunStep(
+      {
+        id: "branch-1",
+        name: "worker",
+        created_at: 10,
+        first_message_at: 10,
+        last_message_at: 610,
+        message_total: 30_525,
+        messages: [
+          {
+            id: "recent-1",
+            role: "assistant",
+            content: { assistant_response: "tail" },
+            sender: "worker",
+            timestamp: 600,
+            lion_class: "AssistantResponse",
+          },
+          {
+            id: "recent-2",
+            role: "assistant",
+            content: { assistant_response: "tail end" },
+            sender: "worker",
+            timestamp: 610,
+            lion_class: "AssistantResponse",
+          },
+        ],
+      },
+      "completed",
+    );
+
+    expect(runStep.result?.duration_sec).toBe(600);
+    expect(runStep.result?.message_count).toBe(30_525);
+  });
+});
+
+describe("history/RunDetail.tsx — live branch aggregates", () => {
+  it("refreshes the rendered memoized card duration after a terminal refetch", () => {
+    const messages = [
+      {
+        role: "assistant",
+        content: "finished",
+        sender: "worker",
+        timestamp: 20,
+      },
+    ];
+    const runningStep: RunStep = {
+      step: "worker",
+      status: "completed",
+      timestamp: 10,
+      messages,
+      result: { agent: "worker", message_count: 1, duration_sec: 10 },
+    };
+    const terminalStep: RunStep = {
+      ...runningStep,
+      messages,
+      result: { ...runningStep.result, duration_sec: 50 },
+    };
+    const { container, rerender } = renderRunStepCards([runningStep]);
+
+    expect(container.textContent).toContain("10s");
+
+    rerender([terminalStep]);
+
+    expect(container.textContent).not.toContain("10s");
+    expect(container.textContent).toContain("50s");
+  });
+
+  it("renders a streamed message once and advances duration through the terminal refetch", async () => {
+    const { appendStreamedMessage, branchToRunStep, mergeCompletedSession } =
+      await import("./RunDetail");
+    const initial = {
+      id: "run-1",
+      name: "run",
+      created_at: 10,
+      updated_at: 20,
+      status: "running",
+      branches: [
+        {
+          id: "branch-1",
+          name: "worker",
+          created_at: 10,
+          first_message_at: 10,
+          last_message_at: 20,
+          message_total: 2,
+          messages: [
+            {
+              id: "older-1",
+              role: "assistant",
+              content: { assistant_response: "oldest loaded" },
+              sender: "worker",
+              timestamp: 10,
+              lion_class: "AssistantResponse",
+            },
+            {
+              id: "initial-tail",
+              role: "assistant",
+              content: { assistant_response: "initial tail" },
+              sender: "worker",
+              timestamp: 20,
+              lion_class: "AssistantResponse",
+            },
+          ],
+        },
+      ],
+    };
+    const streamedMessage = {
+      id: "streamed-later",
+      role: "assistant",
+      branch_id: "branch-1",
+      content: { assistant_response: "live" },
+      sender: "worker",
+      timestamp: 50,
+      lion_class: "AssistantResponse",
+    };
+
+    const afterFirstEvent = appendStreamedMessage(initial, "branch-1", streamedMessage);
+    const afterDuplicateEvent = appendStreamedMessage(afterFirstEvent, "branch-1", streamedMessage);
+    const firstStep = branchToRunStep(afterFirstEvent.branches[0], "running");
+    const duplicateStep = branchToRunStep(afterDuplicateEvent.branches[0], "running");
+    const { container, rerender } = renderRunStepCards([firstStep], true);
+    const conversationBadge = () =>
+      container.querySelector('[id$="-tab-conversation"] span')?.textContent;
+    const renderedDuration = () =>
+      Array.from(container.querySelectorAll<HTMLElement>("#step-worker > button span"))
+        .map((element) => element.textContent)
+        .find((text) => /^(?:\d+m )?\d+s$/.test(text ?? ""));
+    const renderedLiveResponses = () =>
+      Array.from(container.querySelectorAll<HTMLElement>('[id^="step-worker-r"]')).filter(
+        (response) => response.textContent?.includes("live"),
+      );
+    const conversationTab = container.querySelector<HTMLButtonElement>(
+      '[role="tab"][id$="-tab-conversation"]',
+    );
+
+    expect(conversationTab).not.toBeNull();
+    await act(async () => conversationTab?.click());
+
+    const firstBadge = conversationBadge();
+    const firstDuration = renderedDuration();
+    expect(renderedLiveResponses()).toHaveLength(1);
+    expect(firstBadge).toBe("3");
+    expect(firstDuration).toBe("40s");
+
+    rerender([duplicateStep]);
+
+    expect(renderedLiveResponses()).toHaveLength(1);
+    expect(conversationBadge()).toBe(firstBadge);
+    expect(renderedDuration()).toBe(firstDuration);
+
+    const completed = mergeCompletedSession(afterDuplicateEvent, {
+      ...initial,
+      status: "completed",
+      updated_at: 60,
+      ended_at: 60,
+      branches: [
+        {
+          ...initial.branches[0],
+          last_message_at: 60,
+          message_total: 4,
+          messages: [
+            {
+              id: "terminal-tail",
+              role: "assistant",
+              content: { assistant_response: "done" },
+              sender: "worker",
+              timestamp: 60,
+              lion_class: "AssistantResponse",
+            },
+          ],
+        },
+      ],
+    });
+    const completedStep = branchToRunStep(completed.branches[0], "completed");
+
+    expect(completedStep.result?.duration_sec).toBe(50);
+    expect(completedStep.result?.message_count).toBe(4);
+    expect(completed.branches[0].messages.map((message) => message.id)).toEqual([
+      "older-1",
+      "initial-tail",
+      "streamed-later",
+      "terminal-tail",
+    ]);
+  });
+});
+
+describe("history/RunDetail.tsx — segmented branch totals", () => {
+  it("omits intermediate window counts and shows the persisted branch total only on the final segment", async () => {
+    const { buildRunSteps } = await import("./RunDetail");
+    const steps = buildRunSteps(
+      {
+        id: "run-1",
+        name: "run",
+        created_at: 0,
+        updated_at: 200,
+        branches: [
+          {
+            id: "branch-1",
+            name: "worker",
+            created_at: 0,
+            first_message_at: 10,
+            last_message_at: 190,
+            message_total: 6,
+            messages: [
+              {
+                id: "loaded-from-first-segment",
+                role: "assistant",
+                content: { assistant_response: "first segment tail" },
+                sender: "worker",
+                timestamp: 90,
+                lion_class: "AssistantResponse",
+              },
+              {
+                id: "loaded-from-final-segment",
+                role: "assistant",
+                content: { assistant_response: "final segment tail" },
+                sender: "worker",
+                timestamp: 190,
+                lion_class: "AssistantResponse",
+              },
+            ],
+          },
+        ],
+      },
+      "completed",
+      [
+        {
+          op_id: "op-1",
+          branch_id: "branch-1",
+          branch_name: "worker",
+          status: "completed",
+          started_at: 0,
+          ended_at: 99,
+        },
+        {
+          op_id: "op-2",
+          branch_id: "branch-1",
+          branch_name: "worker",
+          status: "completed",
+          started_at: 100,
+          ended_at: 200,
+        },
+      ],
+    );
+
+    expect(steps).toHaveLength(2);
+    expect(steps[0].messages).toHaveLength(1);
+    expect(steps[0].result?.message_count).toBeNull();
+    expect(steps[1].messages).toHaveLength(1);
+    expect(steps[1].result?.message_count).toBe(6);
+
+    const { container } = renderRunStepCards(steps, true);
+    const cards = container.querySelectorAll<HTMLElement>("[data-segment-index]");
+    const intermediateBadge = cards[0]?.querySelector('[id$="-tab-conversation"] span');
+    const finalBadge = cards[1]?.querySelector('[id$="-tab-conversation"] span');
+
+    expect(intermediateBadge).toBeNull();
+    expect(finalBadge?.textContent).toBe("6");
+  });
+});
+
+describe("history/RunDetail.tsx — overview aggregates are lifetime totals", () => {
+  it("prefers full-session aggregate counts to the loaded message window", async () => {
+    const { resolveOverviewCounts } = await import("./RunDetail");
+    expect(
+      resolveOverviewCounts(
+        {
+          message_count: 30_525,
+          roles: {},
+          tool_call_count: 21_741,
+          error_count: 42,
+          files: [],
+        },
+        { toolCallCount: 2, errorCount: 1 },
+      ),
+    ).toEqual({ toolCallCount: 21_741, errorCount: 42 });
+  });
+
+  it("does not select recent-qualified labels for partial message windows", () => {
+    const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
+    const start = src.indexOf("function OverviewSection");
+    const end = src.indexOf("// ── Branches section", start);
+    const overview = src.slice(start, end);
+    expect(overview).not.toMatch(/statToolCallsRecent|statErrorsRecent/);
   });
 });
 

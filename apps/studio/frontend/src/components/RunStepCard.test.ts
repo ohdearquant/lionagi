@@ -22,6 +22,7 @@ import {
   stepPropsEqual,
   collapsedTextFor,
   extractFilePaths,
+  pathFromArgs,
 } from "./RunStepCard";
 import type { RunMessage, RunStep } from "@/lib/types";
 
@@ -318,5 +319,48 @@ describe("RunDetail older-message wiring", () => {
     expect(src).toMatch(/onLoadOlder=\{handleLoadOlder\}/);
     expect(src).toMatch(/olderMessagesRemaining=\{hiddenOlderCount\}/);
     expect(src).toMatch(/loadingOlder=\{loadingOlder\}/);
+  });
+});
+
+describe("pathFromArgs — shell-derived file paths", () => {
+  it("strips shell separators and dedupes the normalized file path", () => {
+    expect(
+      pathFromArgs(
+        { command: "python /repo/scripts/check.py; sed -n '1p' /repo/scripts/check.py" },
+        "",
+      ),
+    ).toEqual(["/repo/scripts/check.py"]);
+  });
+
+  it("excludes root markers, directory-looking paths, and interpreter binaries", () => {
+    expect(
+      pathFromArgs(
+        { command: "cd //; cd /repo/worktree; /repo/.venv/bin/li run /repo/src/main.py" },
+        "",
+      ),
+    ).toEqual(["/repo/src/main.py"]);
+  });
+
+  it("trusts structured file_path values even when a filename has no extension", () => {
+    expect(pathFromArgs({ file_path: "/repo/Makefile" }, "", "Read")).toEqual(["/repo/Makefile"]);
+  });
+
+  it("does not treat a directory-valued path from a search tool as a file", () => {
+    expect(pathFromArgs({ path: "/repo/src" }, "", "Glob")).toEqual([]);
+  });
+
+  it.each([
+    ["cat src/worker.py", ["src/worker.py"]],
+    ["cat ./README", ["README"]],
+    ["cat ./.env", [".env"]],
+    ["cat bin/config.json", ["bin/config.json"]],
+  ])("retains ordinary Bash file operand from %s", (command, expected) => {
+    expect(pathFromArgs({ command }, "", "Bash")).toEqual(expected);
+  });
+
+  it("normalizes lexical aliases before deduplication", () => {
+    expect(
+      pathFromArgs({ command: "cat /repo/src/a.py /repo/src/../src/a.py" }, "", "Bash"),
+    ).toEqual(["/repo/src/a.py"]);
   });
 });

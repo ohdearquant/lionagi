@@ -73,7 +73,81 @@ export function shouldRenderAuthoredGraph(
   return !(isEdgeless && opGraph.edges.length > 0);
 }
 
-function branchToRunStep(branch: SessionBranch, status: string): RunStep {
+export function appendStreamedMessage(
+  session: SessionDetail,
+  branchId: string,
+  message: SessionMessage,
+): SessionDetail {
+  const existing = session.branches.find((branch) => branch.id === branchId);
+  if (!existing) {
+    return {
+      ...session,
+      branches: [
+        ...session.branches,
+        {
+          id: branchId,
+          name: branchId.slice(0, 8),
+          created_at: message.timestamp,
+          first_message_at: message.timestamp,
+          last_message_at: message.timestamp,
+          message_total: 1,
+          messages: [message],
+        },
+      ],
+    };
+  }
+  if (existing.messages.some((candidate) => candidate.id === message.id)) return session;
+
+  return {
+    ...session,
+    branches: session.branches.map((branch) => {
+      if (branch.id !== branchId) return branch;
+      const firstMessageAt = branch.first_message_at ?? branch.started_at;
+      const lastMessageAt = branch.last_message_at ?? branch.ended_at;
+      return {
+        ...branch,
+        messages: [...branch.messages, message],
+        message_total:
+          Math.max(branch.message_total ?? branch.messages.length, branch.messages.length) + 1,
+        first_message_at:
+          firstMessageAt == null ? message.timestamp : Math.min(firstMessageAt, message.timestamp),
+        last_message_at:
+          lastMessageAt == null ? message.timestamp : Math.max(lastMessageAt, message.timestamp),
+      };
+    }),
+  };
+}
+
+export function mergeCompletedSession(
+  previous: SessionDetail,
+  fresh: SessionDetail,
+): SessionDetail {
+  const freshById = new Map(fresh.branches.map((branch) => [branch.id, branch]));
+  const previousIds = new Set(previous.branches.map((branch) => branch.id));
+  const branches = previous.branches.map((branch) => {
+    const freshBranch = freshById.get(branch.id);
+    if (!freshBranch) return branch;
+    const seen = new Set(branch.messages.map((message) => message.id));
+    return {
+      ...branch,
+      ...freshBranch,
+      messages: [
+        ...branch.messages,
+        ...freshBranch.messages.filter((message) => !seen.has(message.id)),
+      ],
+    };
+  });
+  for (const freshBranch of fresh.branches) {
+    if (!previousIds.has(freshBranch.id)) branches.push(freshBranch);
+  }
+  return { ...previous, ...fresh, branches };
+}
+
+export function branchToRunStep(
+  branch: SessionBranch,
+  status: string,
+  options?: { messageCount: number | null },
+): RunStep {
   const msgs = branch.messages;
   const runMessages: RunMessage[] = [];
 
@@ -171,18 +245,80 @@ function branchToRunStep(branch: SessionBranch, status: string): RunStep {
     rolesCounts[rm.role] = (rolesCounts[rm.role] ?? 0) + 1;
   }
 
+  const firstMessageAt = branch.first_message_at ?? branch.started_at ?? null;
+  const lastMessageAt = branch.last_message_at ?? branch.ended_at ?? null;
+  const durationSec =
+    firstMessageAt != null && lastMessageAt != null
+      ? Math.max(0, Math.round(lastMessageAt - firstMessageAt))
+      : undefined;
+  const messageCount =
+    options?.messageCount ??
+    (options ? null : Math.max(branch.message_total ?? 0, runMessages.length));
+
   return {
     step: branch.name || branch.id.slice(0, 8),
     status,
     result: {
       agent: branch.agent_name ?? branch.name ?? branch.id.slice(0, 8),
       model: branch.model ?? branch.provider ?? null,
-      message_count: runMessages.length,
+      message_count: messageCount,
       roles: rolesCounts,
+      duration_sec: durationSec,
     },
     messages: runMessages,
     timestamp: branch.created_at,
   };
+}
+
+export interface SessionSegment {
+  op_id: string;
+  branch_id: string;
+  branch_name: string;
+  status: string;
+  started_at: number | null;
+  ended_at: number | null;
+}
+
+export function buildRunSteps(
+  session: SessionDetail,
+  sessionStatus: string,
+  segments: SessionSegment[],
+): RunStep[] {
+  const result: RunStep[] = [];
+  for (const branch of session.branches) {
+    const branchStatus = (branch as unknown as Record<string, unknown>).status as string | null;
+    const branchSegments = segments.filter((segment) => segment.branch_id === branch.id);
+    if (branchSegments.length <= 1) {
+      result.push(branchToRunStep(branch, branchStatus || sessionStatus));
+      continue;
+    }
+
+    branchSegments.forEach((segment, index) => {
+      const segmentMessages = branch.messages.filter((message) => {
+        const timestamp = message.timestamp;
+        const after = segment.started_at == null || timestamp >= segment.started_at;
+        const before = segment.ended_at == null || timestamp <= segment.ended_at + 1;
+        return after && before;
+      });
+      result.push(
+        branchToRunStep(
+          {
+            ...branch,
+            messages: segmentMessages,
+            name: `${branch.name || branch.id.slice(0, 8)} [${segment.op_id}]`,
+            first_message_at: segment.started_at,
+            last_message_at: segment.ended_at,
+          },
+          segment.status || branchStatus || sessionStatus,
+          {
+            messageCount:
+              index === branchSegments.length - 1 ? (branch.message_total ?? null) : null,
+          },
+        ),
+      );
+    });
+  }
+  return result;
 }
 
 // ── Section shared header ─────────────────────────────────────────────────────
@@ -223,7 +359,6 @@ interface OverviewData {
   messageCount: number;
   toolCallCount: number;
   errorCount: number;
-  partialWindow: boolean;
   showTopic?: string | null;
   showPlayName?: string | null;
   playbookName?: string | null;
@@ -239,11 +374,11 @@ function OverviewSection({ data }: { data: OverviewData }) {
     { label: t("statBranches"), value: String(data.branchCount) },
     { label: t("statMessages"), value: String(data.messageCount) },
     {
-      label: data.partialWindow ? t("statToolCallsRecent") : t("statToolCalls"),
+      label: t("statToolCalls"),
       value: String(data.toolCallCount),
     },
     {
-      label: data.partialWindow ? t("statErrorsRecent") : t("statErrors"),
+      label: t("statErrors"),
       value: String(data.errorCount),
       tone: data.errorCount > 0 ? ("error" as const) : ("ok" as const),
     },
@@ -294,6 +429,16 @@ function OverviewSection({ data }: { data: OverviewData }) {
       </div>
     </div>
   );
+}
+
+export function resolveOverviewCounts(
+  messageStats: SessionDetail["message_stats"],
+  loaded: { toolCallCount: number; errorCount: number },
+): { toolCallCount: number; errorCount: number } {
+  return {
+    toolCallCount: messageStats?.tool_call_count ?? loaded.toolCallCount,
+    errorCount: messageStats?.error_count ?? loaded.errorCount,
+  };
 }
 
 // ── Branches section ──────────────────────────────────────────────────────────
@@ -768,15 +913,7 @@ export default function RunDetail({ id }: RunDetailProps) {
           .then((fresh) => {
             if (cancelled) return;
             setSession((prev) =>
-              prev && prev.id === fresh.id
-                ? {
-                    ...prev,
-                    status: fresh.status,
-                    status_reason_code: fresh.status_reason_code,
-                    status_reason_summary: fresh.status_reason_summary,
-                    ended_at: fresh.ended_at,
-                  }
-                : prev,
+              prev && prev.id === fresh.id ? mergeCompletedSession(prev, fresh) : prev,
             );
           })
           .catch(() => {});
@@ -788,28 +925,7 @@ export default function RunDetail({ id }: RunDetailProps) {
         setSession((prev) => {
           if (!prev) return prev;
           const branchId = String(event.branch_id);
-          const existing = prev.branches.find((b) => b.id === branchId);
-          if (existing) {
-            if (existing.messages.some((m) => m.id === msg.id)) return prev;
-            return {
-              ...prev,
-              branches: prev.branches.map((b) =>
-                b.id === branchId ? { ...b, messages: [...b.messages, msg] } : b,
-              ),
-            };
-          }
-          return {
-            ...prev,
-            branches: [
-              ...prev.branches,
-              {
-                id: branchId,
-                name: branchId.slice(0, 8),
-                created_at: msg.timestamp,
-                messages: [msg],
-              },
-            ],
-          };
+          return appendStreamedMessage(prev, branchId, msg);
         });
       }
     });
@@ -900,54 +1016,15 @@ export default function RunDetail({ id }: RunDetailProps) {
   const sessionStatus = done ? "completed" : live ? "running" : "completed";
 
   const segments = useMemo(() => {
-    if (!session)
-      return [] as Array<{
-        op_id: string;
-        branch_id: string;
-        branch_name: string;
-        status: string;
-        started_at: number | null;
-        ended_at: number | null;
-      }>;
+    if (!session) return [] as SessionSegment[];
     const raw = (session as unknown as Record<string, unknown>).segments;
-    return (Array.isArray(raw) ? raw : []) as Array<{
-      op_id: string;
-      branch_id: string;
-      branch_name: string;
-      status: string;
-      started_at: number | null;
-      ended_at: number | null;
-    }>;
+    return (Array.isArray(raw) ? raw : []) as SessionSegment[];
   }, [session]);
 
-  const steps = useMemo(() => {
-    if (!session) return [];
-    const result: RunStep[] = [];
-    for (const b of session.branches) {
-      const bStatus = (b as unknown as Record<string, unknown>).status as string | null;
-      const branchSegs = segments.filter((s) => s.branch_id === b.id);
-      if (branchSegs.length <= 1) {
-        result.push(branchToRunStep(b, bStatus || sessionStatus));
-      } else {
-        for (const seg of branchSegs) {
-          const segMsgs = b.messages.filter((m) => {
-            const ts = m.timestamp;
-            if (ts == null) return false;
-            const after = seg.started_at == null || ts >= seg.started_at;
-            const before = seg.ended_at == null || ts <= seg.ended_at + 1;
-            return after && before;
-          });
-          const segBranch = {
-            ...b,
-            messages: segMsgs,
-            name: `${b.name || b.id.slice(0, 8)} [${seg.op_id}]`,
-          };
-          result.push(branchToRunStep(segBranch, seg.status || bStatus || sessionStatus));
-        }
-      }
-    }
-    return result;
-  }, [session, sessionStatus, segments]);
+  const steps = useMemo(
+    () => (session ? buildRunSteps(session, sessionStatus, segments) : []),
+    [session, sessionStatus, segments],
+  );
 
   // Run-wide known file surface (union across every step/agent branch) —
   // the file-link resolver's save-root fallback when a bare filename isn't
@@ -1075,9 +1152,13 @@ export default function RunDetail({ id }: RunDetailProps) {
   const partialWindow = session.branches.some((b) => (b.message_total ?? 0) > b.messages.length);
   const durationSec =
     startRef != null && endRef != null ? Math.max(0, Math.round(endRef - startRef)) : null;
-  const toolCallCount = steps.reduce((n, s) => {
+  const loadedToolCallCount = steps.reduce((n, s) => {
     return n + (s.messages ?? []).filter((m) => m.role === "tool_call").length;
   }, 0);
+  const { toolCallCount, errorCount } = resolveOverviewCounts(session.message_stats, {
+    toolCallCount: loadedToolCallCount,
+    errorCount: errors.length,
+  });
 
   // DESIGN-BRIEF §0: derive from the real status_reason fields, not the
   // done/live booleans — those conflate every terminal status (including
@@ -1095,8 +1176,7 @@ export default function RunDetail({ id }: RunDetailProps) {
     branchCount: session.branches.length,
     messageCount: totalMessages,
     toolCallCount,
-    errorCount: errors.length,
-    partialWindow,
+    errorCount,
     showTopic: (session as unknown as Record<string, unknown>).show_topic as
       | string
       | null

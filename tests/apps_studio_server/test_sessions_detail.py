@@ -834,6 +834,20 @@ async def test_get_session_windows_newest_messages_by_default(patched_sessions_d
     assert branch["message_offset"] == 0
 
 
+async def test_get_session_branch_bounds_cover_full_progression_when_messages_are_windowed(
+    patched_sessions_db,
+):
+    svc, db_path = patched_sessions_db
+    await seed_paginated_session(db_path, count=10)
+
+    result = await svc.get_session("sess-paged", message_limit=3)
+
+    branch = result["branches"][0]
+    assert [m["timestamp"] for m in branch["messages"]] == [107.0, 108.0, 109.0]
+    assert branch["first_message_at"] == 100.0
+    assert branch["last_message_at"] == 109.0
+
+
 async def test_get_session_offset_pages_older_history(patched_sessions_db):
     svc, db_path = patched_sessions_db
     await seed_paginated_session(db_path, count=10)
@@ -1040,6 +1054,37 @@ async def test_get_session_action_stats_match_canonical_fully_qualified_lion_cla
     assert stats["tool_call_count"] == 1
     assert stats["error_count"] == 1
     assert "/tmp/canonical.txt" in stats["files"]
+
+
+def test_branch_file_stats_only_accept_structured_file_tool_paths():
+    from lionagi.studio.services.sessions import _branch_message_stats
+
+    action_messages = [
+        {
+            "id": "read",
+            "lion_class": "ActionRequest",
+            "content": {"function": "Read", "arguments": {"file_path": "/repo/src/main.py"}},
+        },
+        {
+            "id": "edit",
+            "lion_class": "ActionRequest",
+            "content": {"function": "Edit", "arguments": {"path": "/repo/Makefile"}},
+        },
+        {
+            "id": "glob",
+            "lion_class": "ActionRequest",
+            "content": {"function": "Glob", "arguments": {"path": "/repo/src"}},
+        },
+        {
+            "id": "bash",
+            "lion_class": "ActionRequest",
+            "content": {"function": "Bash", "arguments": {"path": "//"}},
+        },
+    ]
+
+    stats = _branch_message_stats(4, {"action": 4}, action_messages)
+
+    assert stats["files"] == ["/repo/Makefile", "/repo/src/main.py"]
 
 
 async def test_get_session_message_count_is_db_aggregate_not_progression_length(

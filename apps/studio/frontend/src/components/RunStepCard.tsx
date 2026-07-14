@@ -33,7 +33,8 @@ interface RolesBreakdown {
 interface StepResult {
   agent?: string;
   model?: string;
-  message_count?: number;
+  message_count?: number | null;
+  duration_sec?: number;
   roles?: RolesBreakdown;
   [key: string]: unknown;
 }
@@ -162,24 +163,120 @@ function isEditTool(fn: string): boolean {
   return /Edit|patch/i.test(fn);
 }
 
-export function pathFromArgs(args: Record<string, unknown>, summary: string): string[] {
+const SHELL_FILE_NAMES = new Set([
+  "Dockerfile",
+  "Gemfile",
+  "Justfile",
+  "Makefile",
+  "Procfile",
+  "Rakefile",
+]);
+const SHELL_INTERPRETER_NAMES = new Set([
+  "bash",
+  "bun",
+  "deno",
+  "li",
+  "node",
+  "perl",
+  "php",
+  "python",
+  "python2",
+  "python3",
+  "ruby",
+  "sh",
+  "zsh",
+]);
+
+function normalizeShellPath(path: string): string {
+  const absolute = path.startsWith("/");
+  const normalized: string[] = [];
+  for (const segment of path.split("/")) {
+    if (!segment || segment === ".") continue;
+    if (segment === "..") {
+      const previous = normalized.at(-1);
+      if (previous && previous !== "..") normalized.pop();
+      else if (!absolute) normalized.push(segment);
+      continue;
+    }
+    normalized.push(segment);
+  }
+  return `${absolute ? "/" : ""}${normalized.join("/")}`;
+}
+
+function shellFilePath(token: string): string | null {
+  const path = token.replace(/[,:]+$/, "");
+  if (!path || path.startsWith("-") || path.endsWith("/")) return null;
+  const normalized = normalizeShellPath(path);
+  if (!normalized || normalized === "/") return null;
+  const segments = normalized.split("/").filter(Boolean);
+  const basename = segments.at(-1);
+  if (!basename || basename === "." || basename === "..") return null;
+  if (SHELL_INTERPRETER_NAMES.has(basename.toLowerCase())) return null;
+  if (/(?:^|\/)\.?venv\/bin\/[^/]+$/.test(normalized)) return null;
+  const looksLikeFile =
+    SHELL_FILE_NAMES.has(basename) ||
+    path.includes("/") ||
+    (basename.includes(".") && !basename.endsWith("."));
+  return looksLikeFile ? normalized : null;
+}
+
+function shellFilePaths(command: string): string[] {
+  const paths = new Set<string>();
+  for (const segment of command.split(/(?:&&|\|\||[;|<>\n])/)) {
+    const words = Array.from(segment.matchAll(/"([^"]*)"|'([^']*)'|`([^`]*)`|([^\s]+)/g)).map(
+      (match) => match[1] ?? match[2] ?? match[3] ?? match[4] ?? "",
+    );
+    let commandIndex = 0;
+    while (commandIndex < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[commandIndex])) {
+      commandIndex += 1;
+    }
+    const commandName = words[commandIndex]?.split("/").at(-1)?.toLowerCase();
+    if (commandName === "cd" || commandName === "pushd" || commandName === "popd") continue;
+    for (const word of words.slice(commandIndex + 1)) {
+      const path = shellFilePath(word);
+      if (path) paths.add(path);
+    }
+  }
+  return Array.from(paths);
+}
+
+function isStructuredFileTool(fn: string): boolean {
+  if (!fn) return true;
+  const name = fn.toLowerCase().replaceAll("-", "_").split("__").at(-1)?.split(".").at(-1);
+  return (
+    name != null &&
+    [
+      "read",
+      "read_file",
+      "write",
+      "write_file",
+      "edit",
+      "edit_file",
+      "multiedit",
+      "notebookedit",
+    ].includes(name)
+  );
+}
+
+export function pathFromArgs(
+  args: Record<string, unknown>,
+  _summary: string,
+  functionName = "",
+): string[] {
   const out: string[] = [];
-  if (args.file_path) out.push(String(args.file_path));
-  if (args.path) out.push(String(args.path));
-  if (args.changes && Array.isArray(args.changes)) {
+  if (isStructuredFileTool(functionName)) {
+    if (args.file_path) out.push(String(args.file_path));
+    if (args.path) out.push(String(args.path));
+  }
+  if ((!functionName || /patch|edit/i.test(functionName)) && Array.isArray(args.changes)) {
     for (const c of args.changes) {
       if (c && typeof c === "object" && "path" in c) out.push(String((c as { path: string }).path));
     }
   }
-  // Try to extract paths from `cmd`/`command` like `sed -n '1,220p' /path/to/file`
-  if (out.length === 0 && (args.cmd || args.command || summary)) {
-    const text = String(args.cmd || args.command || summary);
-    const pathMatch = text.match(/(?:^|\s)(\/[^\s'"`)]+(?:\.\w+)?)/g);
-    if (pathMatch) {
-      for (const p of pathMatch) out.push(p.trim());
-    }
+  if (out.length === 0 && (args.cmd || args.command)) {
+    out.push(...shellFilePaths(String(args.cmd || args.command)));
   }
-  return out;
+  return Array.from(new Set(out));
 }
 
 /** The run's known file surface for one branch's messages — same source
@@ -190,7 +287,7 @@ export function extractFilePaths(messages: RunMessage[]): string[] {
   const paths = new Set<string>();
   for (const t of toolMessages) {
     const args = (t.arguments as Record<string, unknown>) ?? {};
-    for (const p of pathFromArgs(args, t.summary || "")) paths.add(p);
+    for (const p of pathFromArgs(args, t.summary || "", t.function || "")) paths.add(p);
   }
   return Array.from(paths);
 }
@@ -275,7 +372,7 @@ function RunStepCard({
     for (const t of toolMessages) {
       const args = (t.arguments as Record<string, unknown>) ?? {};
       const fn = t.function || "";
-      const paths = pathFromArgs(args, t.summary || "");
+      const paths = pathFromArgs(args, t.summary || "", fn);
       for (const p of paths) {
         if (!fileMap.has(p)) {
           fileMap.set(p, { path: p, ops: { read: 0, write: 0, edit: 0, other: 0 } });
@@ -309,7 +406,12 @@ function RunStepCard({
       if (firstTs == null) firstTs = m.timestamp;
       lastTs = m.timestamp;
     }
-    const durationSec = firstTs != null && lastTs != null ? Math.round(lastTs - firstTs) : null;
+    const durationSec =
+      typeof result.duration_sec === "number"
+        ? result.duration_sec
+        : firstTs != null && lastTs != null
+          ? Math.round(lastTs - firstTs)
+          : null;
 
     return {
       toolCount: toolMessages.length,
@@ -325,7 +427,7 @@ function RunStepCard({
       firstTs,
       lastTs,
     };
-  }, [messages]);
+  }, [messages, result.duration_sec]);
 
   // File-link resolution context (shared by the overview + conversation
   // Markdown renderers): agent dir first, then the run-wide file surface.
@@ -487,7 +589,11 @@ function RunStepCard({
               active={tab}
               onSelect={setTab}
               label={t("tabConversation")}
-              count={messages.length}
+              count={
+                result.message_count === null
+                  ? undefined
+                  : Math.max(result.message_count ?? 0, messages.length)
+              }
               panelId={`step-${step.step}-panel-conversation`}
               buttonId={`step-${step.step}-tab-conversation`}
               tabIndex={tab === "conversation" ? 0 : -1}
@@ -659,6 +765,8 @@ export function stepPropsEqual(prev: RunStepCardProps, next: RunStepCardProps): 
     prev.step.timestamp === next.step.timestamp &&
     prevResult.agent === nextResult.agent &&
     prevResult.model === nextResult.model &&
+    prevResult.message_count === nextResult.message_count &&
+    prevResult.duration_sec === nextResult.duration_sec &&
     prev.runId === next.runId &&
     prev.artifactRoot === next.artifactRoot &&
     prev.runFiles === next.runFiles &&
@@ -923,7 +1031,6 @@ function OverviewPanel({
 
 function FileRow({ file }: { file: FileChange }) {
   const ops = file.ops;
-  const total = ops.read + ops.write + ops.edit + ops.other;
   return (
     <li className="flex items-center justify-between gap-2 text-body">
       <span className="truncate font-mono text-content-secondary" title={file.path}>
@@ -934,7 +1041,6 @@ function FileRow({ file }: { file: FileChange }) {
         {ops.edit > 0 && <span className="text-status-warning">e{ops.edit}</span>}
         {ops.write > 0 && <span className="text-status-success">w{ops.write}</span>}
         {ops.other > 0 && <span className="text-content-muted">·{ops.other}</span>}
-        <span className="ml-1 text-content-muted">({total})</span>
       </span>
     </li>
   );
