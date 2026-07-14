@@ -882,6 +882,86 @@ async def test_broken_handler_surfaces_admin_event_and_fire_completes(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_handler_cancelled_error_at_exit_mint_does_not_cancel_completed_run(
+    tmp_path, monkeypatch
+):
+    """A handler-raised cancellation is a handler failure, not scheduler shutdown."""
+    import lionagi.state.db as state_db_mod
+    from lionagi.state.db import StateDB
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    fake_db = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+
+    svc = _make_svc()
+    bus = SchedulerSignalBus()
+
+    async def _cancelled(sig):
+        raise asyncio.CancelledError()
+
+    bus.observe(ScheduleRunSucceeded, handler=_cancelled)
+    engine = SchedulerEngine(svc=svc, signal_bus=bus)
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._fire(
+            _minimal_schedule(), "run-handler-cancel", trigger_context={"scheduled": True}
+        )
+
+    terminal_statuses = [
+        call.kwargs.get("new_status") for call in svc.update_status.await_args_list
+    ]
+    assert "completed" in terminal_statuses
+    assert "cancelled" not in terminal_statuses
+    assert all(
+        call.kwargs.get("error_detail") != "Scheduler shutdown"
+        for call in svc.update_schedule_run.await_args_list
+    )
+
+    async with StateDB(fake_db) as db:
+        events = await db.list_admin_events(action="scheduler_signal_handler_failed")
+    assert len(events) == 1
+    assert events[0]["target_id"] == "run-handler-cancel"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_signal_preserves_real_task_cancellation():
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    started = asyncio.Event()
+    bus = SchedulerSignalBus()
+
+    async def _wait_forever(sig):
+        started.set()
+        await asyncio.Event().wait()
+
+    bus.observe(ScheduleRunSucceeded, handler=_wait_forever)
+    engine = SchedulerEngine(svc=_make_svc(), signal_bus=bus)
+    signal = ScheduleRunSucceeded(
+        run_id="run-real-cancel",
+        schedule_id="sched-001",
+        reason_code=RunReasons.COMPLETED_OK,
+    )
+
+    with patch("lionagi.studio.scheduler.engine.record_handler_failure", new=AsyncMock()) as record:
+        task = asyncio.create_task(engine._dispatch_signal(signal))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    record.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_broken_predicate_does_not_block_sibling_handler_and_surfaces_admin_event(
     tmp_path, monkeypatch
 ):
