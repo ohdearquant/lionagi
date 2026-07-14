@@ -234,6 +234,7 @@ async def mirror_session(
         await db.create_session(
             {
                 "id": sid,
+                "cc_session_id": session_uid,
                 "created_at": created_at,
                 "progression_id": sprog,
                 "name": name or "Claude Code session",
@@ -248,10 +249,13 @@ async def mirror_session(
                 "updated_at": last_ts,
             }
         )
-    elif project and not existing.get("project"):
-        # Backfill attribution for an already-seen session (INSERT OR IGNORE never
-        # updates); writes without disturbing the liveness clock.
-        await db.set_session_provenance(sid, project=project, project_source=project_source)
+    else:
+        if existing.get("cc_session_id") is None:
+            await db.update_session(sid, cc_session_id=session_uid)
+        if project and not existing.get("project"):
+            # Backfill attribution for an already-seen session (INSERT OR IGNORE never
+            # updates); writes without disturbing the liveness clock.
+            await db.set_session_provenance(sid, project=project, project_source=project_source)
     await db.create_branch(
         {
             "id": branch_id,

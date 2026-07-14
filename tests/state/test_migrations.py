@@ -5,10 +5,21 @@
 
 from __future__ import annotations
 
+import asyncio
+import multiprocessing
+import queue
+import sqlite3
+import traceback
+from contextlib import asynccontextmanager
+from pathlib import Path
+
 import aiosqlite
 import pytest
 
 from lionagi.state.schema_migrations import MIGRATION_COLUMNS
+
+_NUM_CONCURRENT_WORKERS = 4
+_BARRIER_TIMEOUT_SECONDS = 15
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -17,6 +28,70 @@ async def _column_names(db: aiosqlite.Connection, table: str) -> set[str]:
     cur = await db.execute(f"PRAGMA table_info({table})")
     rows = await cur.fetchall()
     return {row["name"] for row in rows}
+
+
+def _create_pre_cc_session_db(db_path: Path) -> None:
+    """Create a current SQLite schema whose sessions table predates cc_session_id."""
+    from lionagi.state.db import _SCHEMA_PATH
+
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(_SCHEMA_PATH.read_text())
+        conn.execute("DROP INDEX idx_sessions_cc_session")
+        conn.execute("ALTER TABLE sessions RENAME COLUMN cc_session_id TO legacy_cc_session_id")
+
+
+def _open_state_db_worker(
+    db_path: str,
+    start_barrier,
+    inspection_barrier,
+    result_queue,
+) -> None:
+    """Open and close one StateDB in a spawned process."""
+    import lionagi.state.db as state_db_module
+    from lionagi.state.db import StateDB
+
+    original_make_engine = state_db_module.make_engine
+
+    class _SynchronizedEngine:
+        def __init__(self, engine) -> None:
+            self._engine = engine
+            self._alter_synchronized = False
+
+        def begin(self):
+            if not self._alter_synchronized:
+                self._alter_synchronized = True
+
+                @asynccontextmanager
+                async def synchronized_begin():
+                    inspection_barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
+                    async with self._engine.begin() as connection:
+                        yield connection
+
+                return synchronized_begin()
+            return self._engine.begin()
+
+        def __getattr__(self, name: str):
+            return getattr(self._engine, name)
+
+    def synchronized_make_engine(*args, **kwargs):
+        return _SynchronizedEngine(original_make_engine(*args, **kwargs))
+
+    # This fixture is missing only cc_session_id, so the first begin() follows
+    # its missing-column inspection and immediately precedes its ALTER.
+    state_db_module.make_engine = synchronized_make_engine
+
+    async def _open() -> None:
+        state = StateDB(db_path)
+        await state.open()
+        await state.close()
+
+    try:
+        start_barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
+        asyncio.run(_open())
+    except Exception:  # noqa: BLE001
+        result_queue.put(traceback.format_exc())
+    else:
+        result_queue.put(None)
 
 
 # ── Old-schema fixture ────────────────────────────────────────────────────────
@@ -183,6 +258,106 @@ async def test_reconcile_is_idempotent(old_schema_db):
             continue  # new table not in old_schema_db — skip
         for col_name, _ in columns:
             assert col_name in actual
+
+
+async def test_statedb_upgrade_adds_cc_session_lookup_index(tmp_path: Path) -> None:
+    """Existing databases gain the partial lookup index after the column migration."""
+    from sqlalchemy import text
+
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "pre-cc-session.db"
+    _create_pre_cc_session_db(db_path)
+
+    state = StateDB(db_path)
+    await state.open()
+    try:
+        await state.create_progression("progression-1")
+        await state.execute(
+            "INSERT INTO sessions "
+            "(id, cc_session_id, created_at, progression_id, updated_at) "
+            "VALUES (:id, :cc_session_id, :created_at, :progression_id, :updated_at)",
+            {
+                "id": "session-1",
+                "cc_session_id": "cc-session-1",
+                "created_at": 1.0,
+                "progression_id": "progression-1",
+                "updated_at": 1.0,
+            },
+        )
+        async with state._read() as conn:
+            indexes = (await conn.execute(text("PRAGMA index_list(sessions)"))).mappings().all()
+            plan = (
+                (
+                    await conn.execute(
+                        text(
+                            "EXPLAIN QUERY PLAN SELECT * FROM sessions "
+                            "WHERE cc_session_id = :cc_session_id LIMIT 1"
+                        ),
+                        {"cc_session_id": "cc-session-1"},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+    finally:
+        await state.close()
+
+    assert "idx_sessions_cc_session" in {row["name"] for row in indexes}
+    details = [row["detail"] for row in plan]
+    assert any("SEARCH sessions" in detail for detail in details), details
+    assert any("idx_sessions_cc_session" in detail for detail in details), details
+
+
+def test_concurrent_statedb_opens_reconcile_cc_session_column(tmp_path: Path) -> None:
+    """Concurrent first opens tolerate another process winning the ALTER race."""
+    db_path = tmp_path / "concurrent-pre-cc-session.db"
+    _create_pre_cc_session_db(db_path)
+
+    context = multiprocessing.get_context("spawn")
+    start_barrier = context.Barrier(_NUM_CONCURRENT_WORKERS + 1)
+    inspection_barrier = context.Barrier(_NUM_CONCURRENT_WORKERS)
+    result_queue = context.Queue()
+    processes = [
+        context.Process(
+            target=_open_state_db_worker,
+            args=(
+                str(db_path),
+                start_barrier,
+                inspection_barrier,
+                result_queue,
+            ),
+        )
+        for _ in range(_NUM_CONCURRENT_WORKERS)
+    ]
+
+    results: list[str | None] = []
+    try:
+        for process in processes:
+            process.start()
+        start_barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
+        for process in processes:
+            process.join(timeout=30)
+        for _ in processes:
+            try:
+                results.append(result_queue.get(timeout=2))
+            except queue.Empty:
+                results.append("worker exited without reporting a result")
+    finally:
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5)
+        result_queue.close()
+        result_queue.join_thread()
+
+    exit_codes = [process.exitcode for process in processes]
+    assert all(code == 0 for code in exit_codes), exit_codes
+    assert results == [None] * len(processes), results
+
+    with sqlite3.connect(db_path) as conn:
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(sessions)")]
+    assert columns.count("cc_session_id") == 1
 
 
 async def test_sessions_upgrade_path_populates_adr0028_columns(old_schema_db):
