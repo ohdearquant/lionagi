@@ -121,7 +121,7 @@ class iModel:  # noqa: N801
         post_invoke_event_hook_timeout: float = 30.0,
         post_invoke_event_hook_params: dict = None,
         **kwargs,
-    ) -> tuple[HookEvent | None, APICalling]:
+    ) -> APICalling:
         h_ev = None
         if self.hook_registry._can_handle(ht_=HookEventTypes.PreEventCreate):
             h_ev = HookEvent(
