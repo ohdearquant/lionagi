@@ -6,12 +6,13 @@
 from __future__ import annotations
 
 import importlib
+from uuid import UUID
 
 import pytest
 
 from lionagi._errors import ItemNotFoundError
 from lionagi.protocols.generic.element import Element
-from lionagi.protocols.generic.pile import Pile
+from lionagi.protocols.generic.pile import Pile, to_list_type
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -24,6 +25,40 @@ class Item(Element):
 
 class OtherItem(Element):
     name: str = ""
+
+
+@pytest.mark.parametrize("reference_type", ["uuid", "uuid_string", "element"])
+def test_to_list_type_returns_list_for_single_reference(reference_type):
+    item = Item(value=1)
+    reference = {
+        "uuid": item.id,
+        "uuid_string": str(item.id),
+        "element": item,
+    }[reference_type]
+
+    result = to_list_type(reference)
+
+    assert isinstance(result, list)
+    assert len(result) == 1
+    if reference_type == "element":
+        assert result == [item]
+    else:
+        assert result == [item.id]
+        assert isinstance(result[0], UUID)
+
+
+def test_uuid_string_reference_access_paths():
+    item = Item(value=1)
+    item_id = str(item.id)
+
+    pile = Pile(collections=[item], order=item_id)
+    assert pile[item_id] is item
+
+    inserted = Pile()
+    inserted[item_id] = item
+    assert inserted[item_id] is item
+    inserted.exclude(item_id)
+    assert len(inserted) == 0
 
 
 @pytest.fixture

@@ -71,7 +71,15 @@ class Graph(Element, Relational, Generic[T]):
 
     @field_validator("internal_nodes", "internal_edges", mode="before")
     def _deserialize_nodes_edges(cls, value: Any):
-        return Pile.from_dict(value)
+        if isinstance(value, Pile):
+            return value
+        if isinstance(value, dict):
+            value = dict(value)
+            metadata = dict(value.get("metadata") or {})
+            metadata.pop("lion_class", None)
+            value["metadata"] = metadata
+            return Pile.from_dict(value)
+        return value
 
     @_graph_synchronized
     def _invalidate_adjacency(self, *node_ids: Any) -> None:
@@ -90,9 +98,9 @@ class Graph(Element, Relational, Generic[T]):
         self._successor_cache = successor_cache
 
     @_graph_synchronized
-    def add_node(self, node: Relational) -> None:
-        if not isinstance(node, Relational):
-            raise RelationError("Failed to add node: Invalid node type: not a <Relational> entity.")
+    def add_node(self, node: Node) -> None:
+        if not isinstance(node, Node):
+            raise RelationError("Failed to add node: Invalid node type: not a <Node> entity.")
         _id = ID.get_id(node)
         try:
             self.internal_nodes.insert(len(self.internal_nodes), node)
