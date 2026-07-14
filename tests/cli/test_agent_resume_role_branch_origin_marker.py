@@ -144,6 +144,24 @@ async def _make_persisted_role_branch(tmp_path: Path) -> tuple[str, str]:
     return branch_id, rendered
 
 
+def _make_markerless_role_branch(tmp_path: Path) -> tuple[str, str]:
+    """Persist a role-composed-looking branch without using the factory marker."""
+    from lionagi import Branch
+
+    rendered = (
+        "# Reviewer\n\nReview the requested work critically.\n\n"
+        "## Authority\n- Inspect and report on the supplied implementation."
+    )
+    branch = Branch(chat_model="claude_code/sonnet")
+    branch.msgs.set_system(branch.msgs.create_system(system=rendered))
+
+    branch_dir = tmp_path / "branches"
+    branch_dir.mkdir(parents=True, exist_ok=True)
+    branch_id = str(branch.id)
+    (branch_dir / f"{branch_id}.json").write_text(json.dumps(branch.to_dict()))
+    return branch_id, rendered
+
+
 @pytest.mark.asyncio
 async def test_resume_with_different_plain_profile_preserves_composed_system_message(
     monkeypatch, tmp_path
@@ -226,3 +244,33 @@ async def test_continue_last_with_different_plain_profile_preserves_composed_sys
         "--continue-last on a role-composed branch under a different plain "
         "profile must not replace its persisted composed system message"
     )
+
+
+@pytest.mark.asyncio
+async def test_resume_markerless_role_branch_backfills_origin_and_preserves_system(
+    monkeypatch, tmp_path
+):
+    """Older role branches with a System message are protected and upgraded on resume."""
+    from lionagi.agent.factory import CREATE_AGENT_BRANCH_ORIGIN_KEY
+
+    branch_id, original_rendered = _make_markerless_role_branch(tmp_path)
+    branches_created = _wire_agent_stubs(monkeypatch, tmp_path)
+    _stub_profile(
+        monkeypatch,
+        "reviewer",
+        "---\nmodel: claude_code/sonnet\nrole: reviewer\n---\nUpdated reviewer body.",
+    )
+
+    import lionagi.cli.agent as agent_mod
+
+    monkeypatch.setattr(
+        agent_mod, "find_branch", lambda bid: ("run-x", tmp_path / "branches" / f"{bid}.json")
+    )
+
+    from lionagi.cli.agent import _run_agent
+
+    await _run_agent(None, "keep going", resume=branch_id, agent_name="reviewer")
+
+    branch = branches_created[-1]
+    assert _rendered_system(branch) == original_rendered
+    assert branch.metadata[CREATE_AGENT_BRANCH_ORIGIN_KEY] is True

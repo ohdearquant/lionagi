@@ -328,14 +328,30 @@ class AgentProfile:
     extra: dict = field(default_factory=dict)
 
 
-def _resolve_profile_path(agents_dir: Path, name: str) -> Path | None:
-    """Return profile path for NAME: directory layout (<name>/<name>.md) before flat (<name>.md)."""
-    dir_candidate = agents_dir / name / f"{name}.md"
-    if dir_candidate.is_file():
-        return dir_candidate
-    flat_candidate = agents_dir / f"{name}.md"
-    if flat_candidate.is_file():
-        return flat_candidate
+def _unreadable_symlink_target(path: Path) -> str | None:
+    """Return a broken/non-file symlink's declared target, if applicable."""
+    if not path.is_symlink() or path.is_file():
+        return None
+    try:
+        return str(path.readlink())
+    except OSError:
+        return "<unreadable>"
+
+
+def _resolve_profile_path(
+    agents_dir: Path,
+    name: str,
+    *,
+    unreadable_symlinks: list[tuple[Path, str]] | None = None,
+) -> Path | None:
+    """Return profile path for NAME, recording unreadable candidate symlinks."""
+    candidates = (agents_dir / name / f"{name}.md", agents_dir / f"{name}.md")
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+        target = _unreadable_symlink_target(candidate)
+        if target is not None and unreadable_symlinks is not None:
+            unreadable_symlinks.append((candidate, target))
     return None
 
 
@@ -363,10 +379,15 @@ def list_agents() -> list[str]:
             continue
         # Directory layout
         for child in agents_dir.iterdir():
-            if child.is_dir() and (child / f"{child.name}.md").is_file():
+            profile_path = child / f"{child.name}.md"
+            if _unreadable_symlink_target(profile_path) is not None:
+                continue
+            if child.is_dir() and profile_path.is_file():
                 seen.add(child.name)
         # Flat legacy layout
         for p in agents_dir.glob("*.md"):
+            if _unreadable_symlink_target(p) is not None:
+                continue
             if p.is_file():
                 seen.add(p.stem)
     seen.update(_plugin_agent_profiles().keys())
@@ -431,9 +452,14 @@ def load_agent_profile(name: str) -> AgentProfile:
         _validate_bare_name(name)
 
     dirs = _find_lionagi_dirs()
+    unreadable_symlinks: list[tuple[Path, str]] = []
     if not plugin_token:
         for d in dirs:
-            path = _resolve_profile_path(d / "agents", name)
+            path = _resolve_profile_path(
+                d / "agents",
+                name,
+                unreadable_symlinks=unreadable_symlinks,
+            )
             if path is not None:
                 _warn_if_shadowing_plugin_profile(name)
                 text = path.read_text()
@@ -449,8 +475,10 @@ def load_agent_profile(name: str) -> AgentProfile:
             "or ~/.lionagi/agents/ globally."
         )
 
-    available = list_agents()
+    available = [] if plugin_token else list_agents()
     msg = f"Agent profile '{name}' not found"
+    for path, target in unreadable_symlinks:
+        msg += f"\n{path} exists but its symlink target is unreadable: {target}"
     if available:
         msg += f"\nAvailable: {', '.join(available)}"
     raise FileNotFoundError(msg)

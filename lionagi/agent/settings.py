@@ -48,21 +48,14 @@ def load_settings(
     if not include_project:
         return merged
 
-    if project_dir:
-        local_path = Path(project_dir) / ".lionagi" / "settings.yaml"
-        if local_path.is_file():
-            with open(local_path) as f:
+    project_root = Path(project_dir) if project_dir else Path.cwd()
+    for parent in [project_root, *project_root.parents]:
+        candidate = parent / ".lionagi" / "settings.yaml"
+        if candidate.is_file():
+            with open(candidate) as f:
                 local_settings = yaml.safe_load(f) or {}
             _deep_merge(merged, local_settings)
-    else:
-        cwd = Path.cwd()
-        for parent in [cwd, *cwd.parents]:
-            candidate = parent / ".lionagi" / "settings.yaml"
-            if candidate.is_file():
-                with open(candidate) as f:
-                    local_settings = yaml.safe_load(f) or {}
-                _deep_merge(merged, local_settings)
-                break
+            break
 
     return merged
 
