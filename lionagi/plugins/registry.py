@@ -257,8 +257,10 @@ def _build_snapshot() -> list[PluginRecord]:
     for surface, extractor in _NAMED_SURFACES:
         owners: dict[str, list[str]] = {}
         for d in candidates:
-            for cap_name in extractor(d.manifest):
-                owners.setdefault(cap_name, []).append(d.manifest.name)
+            manifest = d.manifest
+            assert manifest is not None
+            for cap_name in extractor(manifest):
+                owners.setdefault(cap_name, []).append(manifest.name)
         for cap_name, owner_names in owners.items():
             if len(owner_names) > 1:
                 msg = (
@@ -560,31 +562,44 @@ class PluginRegistry:
     def activate_target(cls, plugin_name: str, target: str) -> Any:
         """Stage 2: resolve a bundle-relative ``path.py:callable`` (or bare
         ``path.py`` module) reference. Eligibility and trust are revalidated
-        fresh on every call, never from the cached snapshot. See
-        docs/internals/runtime.md for the single-read and cache-key contract.
+        fresh on every call by rescanning only the requested plugin; the
+        cached snapshot supplies its bundle-directory candidate, not a trust
+        verdict. See docs/internals/runtime.md for the single-read and
+        cache-key contract.
         """
-        active, _, by_name = _fresh_active_plugins(cls._ensure_loaded())
-        fresh = active.get(plugin_name)
-        if fresh is None:
-            matches = by_name.get(plugin_name, [])
-            if len(matches) == 1:
-                candidate = matches[0]
-                assert candidate.manifest is not None
-                if (
-                    _is_live_active(candidate.manifest)
-                    and _trust_state(candidate) is not TrustState.TRUSTED
-                ):
-                    msg = (
-                        f"plugin {plugin_name!r} is no longer trusted (the manifest or a "
-                        f"declared file changed since the cached scan) — re-run "
-                        f"`li plugin trust {plugin_name}` or `li plugin list` to refresh"
-                    )
-                    raise PluginActivationError(plugin_name, target, msg)
+        records = cls._ensure_loaded()
+        record = cls.get(plugin_name)
+        if record is None or sum(item.name == plugin_name for item in records) != 1:
             msg = f"plugin {plugin_name!r} is not active (no such plugin, or untrusted/disabled/incompatible)"
+            raise PluginActivationError(plugin_name, target, msg)
+
+        fresh = _rescan(record)
+        if fresh is None:
+            msg = (
+                f"plugin {plugin_name!r} is no longer trusted (the manifest or a "
+                f"declared file changed since the cached scan) — re-run "
+                f"`li plugin trust {plugin_name}` or `li plugin list` to refresh"
+            )
             raise PluginActivationError(plugin_name, target, msg)
         assert fresh.manifest is not None
 
-        resolution = _target_resolution_map(fresh.manifest)
+        manifest = fresh.manifest
+        if not _is_live_active(manifest):
+            msg = f"plugin {plugin_name!r} is not active (no such plugin, or untrusted/disabled/incompatible)"
+            raise PluginActivationError(plugin_name, target, msg)
+        if manifest.name != plugin_name or _trust_state(fresh) is not TrustState.TRUSTED:
+            msg = (
+                f"plugin {plugin_name!r} is no longer trusted (the manifest or a "
+                f"declared file changed since the cached scan) — re-run "
+                f"`li plugin trust {plugin_name}` or `li plugin list` to refresh"
+            )
+            raise PluginActivationError(plugin_name, target, msg)
+        tool_names = _tool_names(manifest)
+        if len(tool_names) != len(set(tool_names)):
+            msg = f"plugin {plugin_name!r} is not active (no such plugin, or untrusted/disabled/incompatible)"
+            raise PluginActivationError(plugin_name, target, msg)
+
+        resolution = _target_resolution_map(manifest)
         if target not in resolution:
             msg = (
                 f"target {target!r} is not declared by plugin {plugin_name!r}'s manifest "

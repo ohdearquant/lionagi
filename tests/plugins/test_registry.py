@@ -235,6 +235,30 @@ capabilities:
 
 
 class TestActivateTarget:
+    def test_activation_rescans_only_the_requested_plugin(self, write_plugin, monkeypatch):
+        import lionagi.plugins.registry as registry_mod
+
+        requested_bundle = _write_tool_plugin(write_plugin, "p1", tool_name="tool1")
+        unrelated_bundle = _write_tool_plugin(write_plugin, "p2", tool_name="tool2")
+        _trust_by_dir_name("p1")
+        _trust_by_dir_name("p2")
+        PluginRegistry.reset()
+
+        real_rescan = registry_mod._rescan
+        rescanned = []
+
+        def recording_rescan(record):
+            rescanned.append(record.bundle_dir)
+            return real_rescan(record)
+
+        monkeypatch.setattr(registry_mod, "_rescan", recording_rescan)
+
+        fn = PluginRegistry.activate_target("p1", "tools/t.py:t")
+
+        assert fn() == 1
+        assert rescanned == [requested_bundle]
+        assert unrelated_bundle not in rescanned
+
     def test_activates_lazily_and_caches(self, write_plugin):
         _write_tool_plugin(write_plugin, "p1", tool_body="def t():\n    return 42\n")
         _trust_by_dir_name("p1")
@@ -425,9 +449,7 @@ class TestActivePlaybookFiles:
         assert "p1/research" in files
         assert "p2/research" in files
 
-    def test_editing_playbook_after_first_access_removes_it_from_active_files(
-        self, write_plugin
-    ):
+    def test_editing_playbook_after_first_access_removes_it_from_active_files(self, write_plugin):
         bundle = _write_playbook_plugin(write_plugin, "p1", playbook="deep-research")
         _trust_by_dir_name("p1")
         PluginRegistry.reset()
