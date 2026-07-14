@@ -125,6 +125,20 @@ async def _count_transitions(db_path: Path, entity_id: str) -> int:
         return row["n"] if row else 0
 
 
+async def _count_reaping_transitions(db_path: Path, entity_id: str) -> int:
+    # Count transitions out of a real prior status, excluding the synthetic
+    # initial creation row (previous_status IS NULL). Use this for entities
+    # created through the managed insert path (which now records a creation
+    # row) when asserting that no reaping transition occurred.
+    async with StateDB(db_path) as db:
+        row = await db.fetch_one(
+            "SELECT COUNT(*) AS n FROM status_transitions "
+            "WHERE entity_id = ? AND previous_status IS NOT NULL",
+            (entity_id,),
+        )
+        return row["n"] if row else 0
+
+
 # ── invocation deadline reaper ────────────────────────────────────────────────
 
 
@@ -267,7 +281,7 @@ def test_reap_stale_invocations_per_kind_override(tmp_path, monkeypatch):
     assert agent_inv["status"] == "timed_out", "agent kind exceeded its 1800 s deadline"
     assert flow_inv["status"] == "running", "flow kind within global 7200 s deadline"
     assert run_async(_count_transitions(db_path, agent_iid)) >= 1
-    assert run_async(_count_transitions(db_path, flow_iid)) == 0
+    assert run_async(_count_reaping_transitions(db_path, flow_iid)) == 0
 
 
 # ── null-status session detector ─────────────────────────────────────────────
