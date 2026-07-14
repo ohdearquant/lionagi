@@ -32,6 +32,21 @@ async def test_coding_spec_registers_default_khive_injection_provider():
 
 
 @pytest.mark.asyncio
+async def test_empty_mapping_opt_in_applies_fleet_defaults():
+    # An empty mapping is a valid opt-in (a dict without writeback) and must
+    # receive the fleet defaults rather than being silently disabled as falsey.
+    branch = await create_agent(
+        AgentSpec.coding(khive_injection={}),
+        load_settings=False,
+    )
+
+    provider = _registered_provider(branch)
+    assert provider.policy.profile_id == "implementer-recall-v1"
+    assert provider.policy.writeback.enabled is True
+    assert provider.policy.compose.enabled is False
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("value", ["0", "false", "no", "off", " OFF "])
 async def test_khive_injection_env_kill_switch_disables_registration(monkeypatch, value):
     monkeypatch.setenv("LIONAGI_KHIVE_INJECTION", value)

@@ -311,7 +311,9 @@ def _register_providers(branch: Branch, spec: AgentSpec) -> None:
         return
 
     configured = spec.khive_injection
-    if not configured:
+    # Only None/False disable — an empty mapping is a valid opt-in that must
+    # still receive the fleet defaults (derived profile_id + writeback on).
+    if configured is None or configured is False:
         return
 
     from lionagi.tools.khive_injection import (

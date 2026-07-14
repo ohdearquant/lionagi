@@ -91,7 +91,8 @@ def _register_profile_providers(
 ) -> None:
     """Register providers from a verbatim CLI profile without changing its prompt."""
     configured = getattr(profile, "khive_injection", None)
-    if not configured:
+    # Only None/False disable — an empty mapping is a valid opt-in (see _register_providers).
+    if configured is None or configured is False:
         return
 
     from lionagi.agent.factory import _register_providers
