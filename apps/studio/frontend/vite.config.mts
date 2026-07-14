@@ -14,9 +14,9 @@ import path from 'path'
 // runtime override. Gating on VERCEL keeps source/Docker single-origin builds
 // (which run the same `vite build`) on their correct same-origin default.
 // Loopback http from an https page is exempt from mixed-content blocking.
-function hostedApiBaseInjector(): Plugin {
-  const onVercel = !!process.env.VERCEL
-  const base = process.env.STUDIO_HOSTED_API_BASE ?? 'http://127.0.0.1:8765'
+export function hostedApiBaseInjector(env: NodeJS.ProcessEnv = process.env): Plugin {
+  const onVercel = env.VERCEL === '1'
+  const base = env.STUDIO_HOSTED_API_BASE ?? 'http://127.0.0.1:8765'
   return {
     name: 'studio-hosted-api-base',
     apply: 'build',

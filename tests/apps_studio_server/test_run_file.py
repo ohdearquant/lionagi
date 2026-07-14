@@ -201,6 +201,29 @@ async def test_untruncated_binary_file_still_returns_415(patched_runs_svc, tmp_p
     assert exc_info.value.status_code == 415
 
 
+async def test_truncated_binary_file_over_cap_still_returns_415(
+    patched_runs_svc, tmp_path, monkeypatch
+):
+    """A genuinely non-text file that exceeds the read cap must still 415 --
+    the boundary-truncation leniency is only for otherwise-valid UTF-8 whose
+    trailing multibyte character was split by the cap, not a blanket pass
+    for any file that happens to be larger than the cap."""
+    svc, db_path = patched_runs_svc
+    monkeypatch.setattr(svc, "_MAX_FILE_READ_BYTES", 10)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    target = artifact_root / "blob.bin"
+    # Invalid UTF-8 start bytes scattered through a slice well over the cap --
+    # nothing here is a boundary-split multibyte character, it is simply not
+    # text.
+    target.write_bytes(b"\xff\xfe\x00\x01binary-blob-that-is-not-utf8-text")
+    await seed_session(db_path, session_id="run-14", artifacts_path=str(artifact_root))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await svc.get_run_file("run-14", str(target))
+    assert exc_info.value.status_code == 415
+
+
 # ---------------------------------------------------------------------------
 # Bounded read: the cap must be enforced by the read itself, not by slicing
 # an already-materialized full read (Path.read_bytes() then [:cap] would
@@ -469,6 +492,22 @@ def test_route_non_utf8_returns_415(tmp_path, monkeypatch):
     _run_async(_seed(db_path, session_id="route-7", artifacts_path=str(artifact_root)))
 
     resp = client.get("/api/runs/route-7/file", params={"path": str(binary)})
+    assert resp.status_code == 415
+
+
+def test_route_binary_file_over_cap_returns_415(tmp_path, monkeypatch):
+    import lionagi.studio.services.runs as runs_svc
+
+    db_path = tmp_path / "state.db"
+    client = _make_client(db_path, monkeypatch)
+    monkeypatch.setattr(runs_svc, "_MAX_FILE_READ_BYTES", 16)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    binary = artifact_root / "big.bin"
+    binary.write_bytes(b"\xff\xfe\x00\x01" + b"binary-blob-well-over-the-cap" * 4)
+    _run_async(_seed(db_path, session_id="route-10", artifacts_path=str(artifact_root)))
+
+    resp = client.get("/api/runs/route-10/file", params={"path": str(binary)})
     assert resp.status_code == 415
 
 

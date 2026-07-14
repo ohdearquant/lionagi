@@ -7,8 +7,7 @@ all progress to a log file. Resume any branch afterward with `li agent -r`.
 
 ```bash
 pip install lionagi          # or: uv add lionagi
-# claude — Option A (subscription): npm install -g @anthropic-ai/claude-code && claude login
-#          Option B (API key):      export ANTHROPIC_API_KEY="sk-ant-..."
+# claude — npm install -g @anthropic-ai/claude-code && claude login
 ```
 
 ## Launch
@@ -24,8 +23,8 @@ li o flow claude/sonnet \
 ```text
 # output:
 Flow running in background (PID 84231)
+Session: 4c7c2ac9-75c7-4b  →  li monitor 4c7c2ac9-75c7-4b
 Output: auth-audit/flow.log
-Monitor: tail -f auth-audit/flow.log
 ```
 
 The parent exits immediately. The subprocess runs the full flow and writes all output to
@@ -34,39 +33,29 @@ The parent exits immediately. The subprocess runs the full flow and writes all o
 ## Monitor progress
 
 ```bash
+# structured run and branch status
+li monitor 4c7c2ac9-75c7-4b
+
+# raw subprocess output
 tail -f ./auth-audit/flow.log
 ```
 
-```text
-# output:
-Planning DAG...
-Plan done (1.8s): 3 agents, 3 ops — o1:r1 | o2:i1 ← o1 | o3:rv1 ← o2
-Executing DAG: 3 agents / 3 ops...
-  ▶ r1 started
-  ✓ r1 done (9.4s)
-[...4 more lines...]
-Saved to /path/to/auth-audit
-Total: 47.2s
-```
+Use the session prefix printed by your launcher; the value above is illustrative. The
+log contains planner and worker progress, final results, and resume hints.
 
 ## Find branch IDs
 
-Branch snapshots land under `~/.lionagi/runs/<run_id>/branches/`. Read the run manifest:
+When the flow finishes, its log includes one resume command for the orchestrator and
+each worker. Extract those hints directly:
 
 ```bash
-cat ~/.lionagi/runs/$(ls -t ~/.lionagi/runs/ | head -1)/run.json
+grep 'li agent -r' ./auth-audit/flow.log
 ```
 
 ```text
 # output:
-{
-  "run_id": "20260420T140312-a1b2c3",
-  "kind": "flow",
-  "branches": [
-    {"id": "b7f2a1e3...", "provider": "anthropic"},
-    {"id": "c4d8e9f0...", "provider": "anthropic"}
-  ]
-}
+[orchestrator] li agent -r b7f2a1e3... "..."
+[researcher]   li agent -r c4d8e9f0... "..."
 ```
 
 ## Resume a branch
@@ -90,7 +79,7 @@ The highest-severity gaps in the auth module are:
 
 ```text
 ~/.lionagi/runs/<run_id>/
-  run.json                           # manifest: command, branches, artifact_root
+  checkpoint.json                    # resumable flow plan and operation state
   branches/<branch_id>.json          # branch snapshot — restore point for -r
   stream/<branch_id>.buffer.jsonl    # live chunk buffer during stream
 

@@ -542,7 +542,7 @@ class CodingToolkit(LionTool):
             cwd: str = None,
         ) -> dict:
             """Execute a single shell command and return stdout, stderr, and return code.
-            One command per call — shell operators (&&, ||, |, ;, redirects, backticks) are rejected; pass cwd= to run in a directory.
+            One command per call — shell operators (&&, ||, |, ;, redirects, backticks, $(...)) are rejected; pass cwd= to run in a directory. Output is truncated if it exceeds 100 KB per stream.
             """
             timeout_ms = max(1, min(timeout or 30000, 300000))
             timeout_s = timeout_ms / 1000.0

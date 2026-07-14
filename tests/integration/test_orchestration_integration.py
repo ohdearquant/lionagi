@@ -362,7 +362,7 @@ def test_hook_bus_lifecycle_integration():
     3. The bus is bound to the observer
     4. Default hook points all have at least one handler
     """
-    from lionagi.hooks import DEFAULT_HOOKS, HookBus, HookPoint
+    from lionagi.hooks import DEFAULT_HOOKS, HookBus
     from lionagi.session.session import Session
 
     session = Session()
@@ -370,20 +370,13 @@ def test_hook_bus_lifecycle_integration():
 
     assert isinstance(bus, HookBus)
 
-    # All four default hook points must have handlers registered
-    for point in (
-        HookPoint.SESSION_START,
-        HookPoint.SESSION_END,
-        HookPoint.MESSAGE_ADD,
-        HookPoint.BRANCH_CREATE,
-    ):
+    # Every configured default point must include its declared handlers.
+    for point, default_handlers in DEFAULT_HOOKS.items():
         handlers = bus.handlers_for(point)
         assert len(handlers) >= 1, (
             f"HookPoint.{point.name} must have at least one default handler registered; "
             f"got {handlers!r}"
         )
-        # The handlers must come from DEFAULT_HOOKS
-        default_handlers = DEFAULT_HOOKS[point]
         for h in default_handlers:
             assert h in handlers, (
                 f"Default handler {h.__name__!r} missing from bus for {point.name}"

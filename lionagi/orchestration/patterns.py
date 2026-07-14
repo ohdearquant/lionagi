@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import itertools
+import json
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -26,6 +27,7 @@ from .prompts import (
     DECOMPOSE_DAG_INSTRUCTION,
     DECOMPOSE_DISCIPLINE,
     DECOMPOSE_INSTRUCTION,
+    SPAWN_GUIDANCE,
     SYNTHESIS_INSTRUCTION,
 )
 
@@ -37,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = (
     "grant_spawn",
+    "normalize_dep_indices",
     "role_node_builder",
     "spawn_roles",
     "plan",
@@ -59,9 +62,43 @@ _MAX_TASKS_CONSTRAINT = (
 )
 
 
-def grant_spawn(branch: Branch, *, prompt: bool = True) -> None:
-    """Let an agent grow the live DAG by emitting a ``SpawnRequest``; grants the capability and, when *prompt*, injects the instruction block."""
-    branch.grant_capabilities(build_emission_operable((SpawnRequest,), name="spawn"), prompt=prompt)
+def grant_spawn(
+    branch: Branch,
+    *,
+    prompt: bool = True,
+    assignees: list[str] | tuple[str, ...] | set[str] | None = None,
+) -> None:
+    """Grant ``SpawnRequest`` emission and render its routing contract."""
+    operable = build_emission_operable((SpawnRequest,), name="spawn")
+    branch.grant_capabilities(operable, prompt=prompt)
+    if not prompt:
+        return
+
+    from lionagi.session.capabilities import CAP_END
+
+    roster = sorted(set(assignees or ()))
+    roster_text = (
+        "Valid assignees: " + ", ".join(roster) + "."
+        if roster
+        else "Valid assignees: omit `assignee` to keep the work on your branch."
+    )
+    operations = ", ".join(sorted(SPAWN_ALLOWED_OPERATIONS))
+    example_request: dict[str, Any] = {
+        "instruction": "Verify the discovered edge case",
+        "independent": False,
+        "reason": "The edge case must be checked before completion",
+        "operation": "operate",
+    }
+    if roster:
+        example_request["assignee"] = roster[0]
+    specialized = (
+        f"## Spawn-request guidance\n\n{SPAWN_GUIDANCE}\n\n"
+        f"{roster_text}\n\nAllowed operations: {operations}.\n\n"
+        f"Example:\n```json\n{json.dumps({'spawn_request': example_request}, indent=2)}\n```"
+    )
+    current = branch._system_text()
+    enhanced = current.replace(CAP_END, f"\n\n{specialized}\n{CAP_END}", 1)
+    branch.msgs.set_system(branch.msgs.create_system(system=enhanced))
 
 
 def role_node_builder(
@@ -137,7 +174,7 @@ async def spawn_roles(
         branch.name = name
         session.include_branches(branch)
         if name in spawn_set:
-            grant_spawn(branch)
+            grant_spawn(branch, assignees=set(specs))
         roles[name] = branch
     return roles
 
@@ -189,9 +226,15 @@ async def plan(
     return valid
 
 
-def _resolve_dep_indices(assignments: list[TaskAssignment]) -> dict[int, list[int]]:
-    """Map assignment index → 0-based predecessor indices; drops invalid/self refs."""
-    deps: dict[int, list[int]] = {}
+def normalize_dep_indices(assignments: list[TaskAssignment]) -> list[list[int]]:
+    """Normalize one-based dependency ordinals into earlier zero-based indices.
+
+    Forward references are dropped after the structurally valid reference graph
+    is checked for cycles. This matches incremental CLI construction, keeps the
+    planner's "earlier assignments" contract, and rejects cyclic input instead
+    of silently repairing it by discarding one of the cycle's forward edges.
+    """
+    candidates: list[list[int]] = []
     n = len(assignments)
     for i, ta in enumerate(assignments):
         preds: list[int] = []
@@ -199,16 +242,42 @@ def _resolve_dep_indices(assignments: list[TaskAssignment]) -> dict[int, list[in
             try:
                 j = int(str(ref).strip()) - 1
             except (TypeError, ValueError):
-                logger.warning("build_dag_graph: non-integer depends_on %r on step %d", ref, i + 1)
+                logger.warning("depends_on: non-integer ref %r on step %d; dropping", ref, i + 1)
                 continue
-            if j == i or not (0 <= j < n):
-                logger.warning(
-                    "build_dag_graph: dropping out-of-range dep %r on step %d", ref, i + 1
-                )
+            if j == i:
+                logger.warning("depends_on: self ref %r on step %d; dropping", ref, i + 1)
+                continue
+            if not (0 <= j < n):
+                logger.warning("depends_on: out-of-range ref %r on step %d; dropping", ref, i + 1)
                 continue
             preds.append(j)
-        deps[i] = preds
-    return deps
+        candidates.append(preds)
+
+    state = [0] * n
+
+    def visit(node: int) -> None:
+        if state[node] == 1:
+            raise ValueError(f"depends_on cycle detected at step {node + 1}")
+        if state[node] == 2:
+            return
+        state[node] = 1
+        for pred in candidates[node]:
+            visit(pred)
+        state[node] = 2
+
+    for node in range(n):
+        visit(node)
+
+    normalized: list[list[int]] = []
+    for i, preds in enumerate(candidates):
+        earlier: list[int] = []
+        for pred in preds:
+            if pred < i:
+                earlier.append(pred)
+            else:
+                logger.warning("depends_on: forward ref %d on step %d; dropping", pred + 1, i + 1)
+        normalized.append(earlier)
+    return normalized
 
 
 def build_fanout_graph(
@@ -269,7 +338,7 @@ def build_dag_graph(
 ) -> tuple[Graph, list[str | None]]:
     """Wire assignments into a dependency DAG honouring depends_on; pure, does not execute."""
     graph = Graph()
-    deps = _resolve_dep_indices(assignments)
+    deps = normalize_dep_indices(assignments)
     nodes: list[Operation | None] = []
 
     for ta in assignments:

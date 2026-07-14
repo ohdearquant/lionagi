@@ -7,7 +7,10 @@ Covers submit_task's round-trip write, the CAS-governed queued -> cancelled
 cancel path, and rejection of a malformed TaskApplication. The transition
 vocabulary's negative-boundary tests (queued -> running is now allowed by
 D3; terminal re-entry is rejected) live in test_task_worker.py alongside the
-worker that exercises the queued -> running edge.
+worker that exercises the queued -> running edge. ADR-0071 D3's
+submit-time AdmissionRejectedError pre-check (duration guard, waiter cap) is
+covered in the final section; the authoritative claim-time admit() gate is
+covered in test_admit.py and test_worker_admission.py.
 """
 
 from __future__ import annotations
@@ -18,8 +21,14 @@ import socket
 import pytest
 
 from lionagi.state.db import StateDB
-from lionagi.state.transitions import Actor
-from lionagi.studio.services.task_applications import TaskApplication, cancel_task, submit_task
+from lionagi.state.reasons import RunReasons
+from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
+from lionagi.studio.services.task_applications import (
+    AdmissionRejectedError,
+    TaskApplication,
+    cancel_task,
+    submit_task,
+)
 
 
 @pytest.fixture
@@ -198,3 +207,124 @@ async def test_submit_task_rejects_idempotency_key_until_dedup_exists(db: StateD
 
     row = await db.fetch_one("SELECT COUNT(*) AS n FROM schedule_runs")
     assert row["n"] == 0
+
+
+# ── 4. ADR-0071 D3: submit-time AdmissionRejectedError pre-check ──────────
+
+
+async def test_submit_task_rejects_duration_at_or_above_lease_ttl(db: StateDB) -> None:
+    """A declared max_duration_seconds >= the worker lease TTL is rejected
+    immediately (D-Reject's "typed error to the caller"), never enqueued."""
+    app = TaskApplication(
+        action_kind="agent",
+        args={"admission": {"max_duration_seconds": 300}},
+        execution_target="host",
+    )
+    with pytest.raises(AdmissionRejectedError, match="max_duration_seconds") as exc_info:
+        await submit_task(db, app)
+
+    assert exc_info.value.reason_code == RunReasons.SKIPPED_DURATION_EXCEEDS_LEASE
+    row = await db.fetch_one("SELECT COUNT(*) AS n FROM schedule_runs")
+    assert row["n"] == 0
+
+
+async def test_submit_task_allows_duration_below_lease_ttl(db: StateDB) -> None:
+    app = TaskApplication(
+        action_kind="agent",
+        args={"admission": {"max_duration_seconds": 60}},
+        execution_target="host",
+    )
+    run_id = await submit_task(db, app)
+    row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
+    assert row["status"] == "queued"
+
+
+async def test_submit_task_rejects_waiter_cap_overflow_when_holder_already_running(
+    db: StateDB,
+) -> None:
+    """Once a holder is already running for the derived concurrency_key, a
+    submission that would push the waiter count beyond the default cap (2x
+    worker concurrency) is rejected at submit time rather than silently
+    enqueued to busy-wait."""
+    holder_app = TaskApplication(
+        action_kind="agent",
+        args={},
+        execution_target="host",
+        required_capabilities=["gpu-exclusive"],
+    )
+    holder_id = await submit_task(db, holder_app)
+    result = await transition(
+        db,
+        TransitionRequest(
+            entity_type="schedule_run",
+            entity_id=holder_id,
+            from_state="queued",
+            to_state="running",
+            reason=StateReason(code=RunReasons.STARTED_OK, summary="held"),
+            actor=Actor(type="system", id="test-holder"),
+            idempotency_key=f"claim:{holder_id}",
+        ),
+        patch={"leased_by": "test-holder", "lease_expires_at": None, "lease_attempts": 1},
+    )
+    assert result.applied is True
+
+    waiter_app = TaskApplication(
+        action_kind="agent",
+        args={},
+        execution_target="host",
+        required_capabilities=["gpu-exclusive"],
+    )
+    # Default cap = 1 (key_concurrency) * 2 (waiter_cap_multiplier) = 2.
+    await submit_task(db, waiter_app)
+    await submit_task(db, waiter_app)
+    with pytest.raises(AdmissionRejectedError, match="waiter cap") as exc_info:
+        await submit_task(db, waiter_app)
+
+    assert exc_info.value.reason_code == RunReasons.SKIPPED_WAITER_CAP_EXCEEDED
+    row = await db.fetch_one("SELECT COUNT(*) AS n FROM schedule_runs WHERE status = 'queued'")
+    assert row["n"] == 2  # the two in-cap waiters; the third was never inserted
+
+
+async def test_submit_task_waiter_cap_opt_out_bypasses_the_pre_check(db: StateDB) -> None:
+    """A submission that opts into deferred/parked semantics
+    (admission.allow_deferred_over_cap) is never submit-time rejected for
+    waiter-cap overflow, even with a holder already running."""
+    holder_app = TaskApplication(
+        action_kind="agent",
+        args={},
+        execution_target="host",
+        required_capabilities=["gpu-exclusive"],
+    )
+    holder_id = await submit_task(db, holder_app)
+    await transition(
+        db,
+        TransitionRequest(
+            entity_type="schedule_run",
+            entity_id=holder_id,
+            from_state="queued",
+            to_state="running",
+            reason=StateReason(code=RunReasons.STARTED_OK, summary="held"),
+            actor=Actor(type="system", id="test-holder"),
+            idempotency_key=f"claim:{holder_id}",
+        ),
+        patch={"leased_by": "test-holder", "lease_expires_at": None, "lease_attempts": 1},
+    )
+
+    waiter_app = TaskApplication(
+        action_kind="agent",
+        args={},
+        execution_target="host",
+        required_capabilities=["gpu-exclusive"],
+    )
+    await submit_task(db, waiter_app)
+    await submit_task(db, waiter_app)
+
+    deferred_app = TaskApplication(
+        action_kind="agent",
+        args={"admission": {"allow_deferred_over_cap": True}},
+        execution_target="host",
+        required_capabilities=["gpu-exclusive"],
+    )
+    run_id = await submit_task(db, deferred_app)  # would be over cap, but opted in
+    row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
+    assert row["status"] == "queued"

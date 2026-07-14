@@ -152,7 +152,7 @@ async def test_persist_message_legacy_progression_id_still_works():
     )
 
 
-async def test_default_message_hook_retries_middle_transaction_failure(
+async def test_explicit_message_hook_retries_middle_transaction_failure(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ):
@@ -174,7 +174,7 @@ async def test_default_message_hook_retries_middle_transaction_failure(
     session_prog_id = "hook-retry-session-progression"
     await _seed_session(db, session_id, session_prog_id)
     await _seed_branch(db, branch_id, session_id, branch_prog_id)
-    bus = build_session_bus()
+    bus = build_session_bus({"message.add": ["persist_message"]})
     progression_updates = 0
 
     def fail_second_progression(conn, cursor, statement, parameters, context, executemany):

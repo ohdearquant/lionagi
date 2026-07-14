@@ -64,9 +64,10 @@ class GithubPollResult(NamedTuple):
 
 _client: httpx.AsyncClient | None = None
 
-# Last token known to have authenticated (set after any non-401 response).
+# Last token known to have authenticated (set after responses other than
+# 401/403).
 # Checked before _get_gh_token() so a healthy poll skips GITHUB_TOKEN /
-# `gh auth token`; a fresh 401 clears it to force re-resolution.
+# `gh auth token`; a fresh 401 or 403 clears it to force re-resolution.
 _cached_token: str | None = None
 
 # Bounds how many pages github_poll() will fetch hunting for an older,
@@ -304,8 +305,10 @@ async def github_poll(schedule: dict) -> GithubPollResult:
         )
         return GithubPollResult(items=[], scan_complete=True, poll_status="auth_error")
 
-    # Any non-401 response proves `token` authenticated; cache until the next 401.
-    _cached_token = token
+    # A forbidden response does not prove the token is reusable: it may reflect
+    # revoked permissions or an installation whose access changed. Re-resolve
+    # on the next poll instead of pinning the cache to it.
+    _cached_token = None if resp.status_code == 403 else token
 
     if resp.status_code == 304:
         return GithubPollResult(items=[], scan_complete=True, poll_status="ok")
@@ -358,7 +361,7 @@ async def github_poll(schedule: dict) -> GithubPollResult:
                 scan_complete = False
                 break
             if resp.status_code != 200:
-                if resp.status_code == 401:
+                if resp.status_code in (401, 403):
                     # Rejected mid-pagination; drop the token so the next poll re-resolves.
                     _cached_token = None
                 _log.warning(

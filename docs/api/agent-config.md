@@ -2,7 +2,7 @@
 
 ```python
 from lionagi.agent import AgentSpec, create_agent, PermissionPolicy
-from lionagi.agent.hooks import guard_destructive, guard_paths, log_tool_use
+from lionagi.agent.hooks import guard_destructive, guard_paths, log_tool_call
 ```
 
 `AgentSpec` captures what an agent needs — role/identity, model, tools, hooks, permissions,
@@ -43,6 +43,7 @@ dataclass directly.
 | `yolo` | `bool` | `False` | Auto-approve all tool calls (pass-through to provider kwargs) |
 | `mcp_servers` | `list[str] \| None` | `None` | MCP server names to load from `.mcp.json` |
 | `mcp_config_path` | `str \| None` | `None` | Explicit path to `.mcp.json` (overrides auto-discovery) |
+| `context_management` | `bool` | `True` | Include the coding toolkit's context tool and prompt guidance |
 
 `mcp_servers` and `mcp_config_path` are not `compose()` keyword arguments — set them as
 attributes after building the spec:
@@ -59,12 +60,16 @@ Inherited from `HooksMixin`:
 
 ```python
 spec.pre("bash", handler)       # register a pre-hook for the bash tool
+spec.security_pre("bash", guard) # non-negotiable guard, rechecked after user rewrites
 spec.post("editor", handler)    # register a post-hook for the editor tool
 spec.on_error("*", handler)     # register an error hook for all tools
 ```
 
 - `pre` hooks: `async (tool_name: str, action: str, args: dict) -> dict | None`
   Return a modified `args` dict to rewrite the call, or raise `PermissionError` to block.
+- `security_pre` hooks use the same callable contract, run before user pre-hooks, and
+  run again after a user pre-hook rewrites arguments. The secure preset and
+  `PermissionPolicy` use this phase.
 - `post` hooks: `async (tool_name: str, action: str, args: dict, result: dict) -> dict | None`
   Return a modified `result` dict, or `None` to pass through unchanged.
 - Tool name `"*"` matches all tools.
@@ -106,19 +111,23 @@ spec = AgentSpec.compose("implementer", tools=["coding"], model="openai/gpt-4.1"
 def coding(
     cls,
     *,
+    role: str = "implementer",
     model: str | None = None,
     effort: str | None = "high",
     system_prompt: str | None = None,
     cwd: str | None = None,
     secure: bool = True,
+    context_management: bool = True,
     **kwargs,
 ) -> AgentSpec
 ```
 
-Preset for a coding agent — `implementer` role + `tools=["coding"]` (reader, editor, bash,
-search, context, subagent). Extra `**kwargs` flow through to `compose()`.
+Preset for a coding agent — the `implementer` role by default plus `tools=["coding"]`
+(reader, editor, bash, search, code check, code navigation, AST search, and context).
+Set `role=` to choose another role. Set `context_management=False` to omit the context
+tool and its system-prompt guidance. Extra `**kwargs` flow through to `compose()`.
 
-By default (`secure=True`) it wires two guards:
+By default (`secure=True`) it wires two guards in the `security_pre` phase:
 
 - `guard_destructive` as a pre-hook on `bash` — blocks destructive shell commands
   (`rm -rf`, force-push, etc.).
@@ -146,6 +155,7 @@ role: implementer
 model: openai/gpt-4.1
 effort: high
 tools: [coding]
+context_management: true
 system_prompt: |
   You are a coding agent...
 permissions:
@@ -164,7 +174,10 @@ permissions:
 def to_yaml(self, path: str | Path) -> None
 ```
 
-Save spec fields to YAML. `hook_handlers` (callables) are omitted.
+Save the portable core fields to YAML: role, modes, model, effort, tools, pack,
+system prompt, cwd, yolo, lion-system selection, and context management. Runtime
+callables, permissions, MCP selection, and emission overrides are not serialized by
+`to_yaml()`; persist those separately or set them after loading.
 
 ---
 
@@ -203,8 +216,15 @@ Returns a `Branch` ready for use with all tools registered and hooks attached.
 ```python
 spec = AgentSpec.coding(model="openai/gpt-4.1")
 branch = await create_agent(spec)
-response = await branch.chat("Refactor the auth module")
+response = await branch.operate(
+    instruction="Inspect the import cycle and make the smallest safe edit.",
+    actions=True,
+)
 ```
+
+`create_agent()` registers tools; it does not change the semantics of `chat()` or
+`communicate()`. Use `operate(actions=True)` for a tool-enabled turn or `ReAct()` for
+an iterative tool workflow.
 
 **Settings loading order** (project-local wins):
 
@@ -351,18 +371,21 @@ spec.pre("reader", guard_paths(allowed_paths=["/path/to/project/"]))
 spec.pre("editor", guard_paths(denied_paths=[".env", "*.key"]))
 ```
 
-### `log_tool_use`
+### `log_tool_call`
 
 ```python
-async def log_tool_use(tool_name: str, action: str, args: dict, result: dict) -> dict | None
+async def log_tool_call(tool_name: str, action: str, args: dict, result: dict) -> dict | None
 ```
 
 Post-hook for any tool. Logs `tool=<name> action=<action> success=<bool>` at `INFO` level
 via the standard `logging` module. Returns `None` (does not modify result).
 
 ```python
-spec.post("*", log_tool_use)
+spec.post("*", log_tool_call)
 ```
+
+`log_tool_use` remains as a deprecated compatibility alias and emits a
+`DeprecationWarning`; new code should import `log_tool_call`.
 
 ### `auto_format_python`
 

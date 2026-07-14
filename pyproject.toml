@@ -1,6 +1,6 @@
 [project]
 name = "lionagi"
-version = "0.28.0"
+version = "0.29.0"
 description = "An Intelligence Operating System."
 authors = [
     { name = "HaiyangLi", email = "quantocean.li@gmail.com" },
@@ -261,9 +261,8 @@ exclude = [
 ]
 
 [tool.pyright]
-include = ["lionagi"]
+include = ["lionagi", "tests/typing/branch_chat.py"]
 exclude = [
-    "tests",
     "apps/studio/frontend",
     "**/__pycache__",
     "**/node_modules",

@@ -32,8 +32,20 @@ from lionagi.dispatch import (
 )
 from lionagi.state.db import StateDB
 
-_SUCCESS_TEMPLATE = [sys.executable, "-c", "import sys; sys.exit(0)"]
-_FAIL_TEMPLATE = [sys.executable, "-c", "import sys; sys.exit(1)"]
+_SUCCESS_TEMPLATE = [
+    sys.executable,
+    "-c",
+    "import sys; sys.exit(0)",
+    "{deliver_to}",
+    "{payload}",
+]
+_FAIL_TEMPLATE = [
+    sys.executable,
+    "-c",
+    "import sys; sys.exit(1)",
+    "{deliver_to}",
+    "{payload}",
+]
 
 
 def _details(event: dict) -> dict:
@@ -112,6 +124,27 @@ async def test_dedup_key_none_allows_multiple_rows(tmp_path: Path):
         rows = await list_dispatches(db)
 
     assert len(rows) == 2
+
+
+@pytest.mark.parametrize("deliver_to", ["", "   ", "seat\x00name", 42])
+async def test_enqueue_rejects_invalid_destination(tmp_path: Path, deliver_to):
+    db_path = tmp_path / "state.db"
+    async with StateDB(db_path) as db:
+        with pytest.raises(ValueError, match="deliver_to"):
+            await enqueue_dispatch(db, kind="terminal_notify", deliver_to=deliver_to)
+
+
+async def test_delivery_rejects_template_that_omits_destination(tmp_path: Path):
+    db_path = tmp_path / "state.db"
+    template = [sys.executable, "-c", "import sys; sys.exit(0)", "{payload}"]
+    async with StateDB(db_path) as db:
+        dispatch_id = await enqueue_dispatch(db, kind="terminal_notify", deliver_to="seat-1")
+        counts = await deliver_due_dispatches(db, now=time.time(), notify_template=template)
+        row = await get_dispatch(db, dispatch_id)
+
+    assert counts["retried"] == 1
+    assert row["status"] == "pending"
+    assert "{deliver_to}" in row["last_error"]
 
 
 # ── delivery loop: backoff / dead_letter / expiry ────────────────────────────
@@ -341,6 +374,37 @@ async def test_ack_required_tier_loops_back_to_pending_on_success(tmp_path: Path
     assert row["next_attempt_at"] > time.time()
 
 
+async def test_transport_exit_success_is_distinct_from_consumer_ack(tmp_path: Path):
+    """A successful transport process is not evidence that a consumer acked."""
+    db_path = tmp_path / "state.db"
+    async with StateDB(db_path) as db:
+        transport_only_id = await enqueue_dispatch(
+            db, kind="terminal_notify", deliver_to="seat-transport"
+        )
+        acked_id = await enqueue_dispatch(
+            db,
+            kind="terminal_notify",
+            deliver_to="seat-ack",
+            ack_required=True,
+        )
+
+        counts = await deliver_due_dispatches(
+            db, now=time.time(), notify_template=_SUCCESS_TEMPLATE
+        )
+        transport_only = await get_dispatch(db, transport_only_id)
+        awaiting_ack = await get_dispatch(db, acked_id)
+
+        assert counts["delivered"] == 2
+        assert transport_only["status"] == "delivered"
+        assert awaiting_ack["status"] == "pending"
+
+        applied = await ack_dispatch(db, acked_id, awaiting_ack["ack_token"])
+        after_ack = await get_dispatch(db, acked_id)
+
+    assert applied is True
+    assert after_ack["status"] == "acked"
+
+
 async def test_ack_required_with_no_expiry_is_bounded_by_max_attempts(tmp_path: Path):
     """ack_required=True + expires_at=None must not re-deliver forever: a
     successful transport still exhausts at max_attempts sends, going to
@@ -435,6 +499,7 @@ async def test_overlapping_scans_do_not_double_execute_transport(tmp_path: Path)
         "import pathlib, sys, time; p = pathlib.Path(sys.argv[1]); "
         "time.sleep(0.3); p.write_text((p.read_text() if p.exists() else '') + 'x\\n')",
         str(hits),
+        "{deliver_to}",
     ]
     db_path = tmp_path / "state.db"
     async with StateDB(db_path) as db:

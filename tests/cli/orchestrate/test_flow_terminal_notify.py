@@ -385,6 +385,52 @@ async def test_run_flow_no_hook_configured_is_a_noop(
     spawn_shell.assert_not_called()
 
 
+async def test_run_flow_notify_still_fires_when_invocation_finalize_raises(
+    temp_db_path: Path, tmp_path: Path
+):
+    """Regression: when `_resolve_invocation_terminal_flow` (or the
+    subsequent `update_status('invocation', ...)` write) raises, the guarded
+    lifecycle transition never commits and so never pushes a terminal
+    envelope through the registry for this invocation's entity -- but the
+    `--notify` hook explicitly scoped to that entity must still fire,
+    reporting the flow's own already-computed terminal status, not be
+    silently dropped."""
+    env = _make_env(tmp_path)
+    invocation_id = str(uuid4())
+    await _make_invocation(temp_db_path, invocation_id)
+    out_file = tmp_path / "captured.json"
+
+    with (
+        patch(
+            "lionagi.cli.orchestrate.flow.setup_orchestration",
+            AsyncMock(return_value=env),
+        ),
+        patch(
+            "lionagi.cli.orchestrate.flow._run_flow_inner",
+            AsyncMock(return_value="ok result"),
+        ),
+        patch(
+            "lionagi.cli.orchestrate.flow._resolve_invocation_terminal_flow",
+            AsyncMock(side_effect=RuntimeError("db hiccup during invocation finalize")),
+        ),
+    ):
+        result, terminal_status = await _run_flow(
+            "claude",
+            "do the thing",
+            invocation_id=invocation_id,
+            notify=_capture_command(out_file),
+        )
+
+    # The run's own outcome must be unaffected by the finalize failure.
+    assert result == "ok result"
+    assert terminal_status == "completed"
+
+    assert out_file.exists(), "notify hook never fired despite invocation finalize raising"
+    payload = json.loads(out_file.read_text())
+    assert payload["invocation_id"] == invocation_id
+    assert payload["status"] == "completed"
+
+
 async def test_run_flow_fires_hook_without_invocation_id(temp_db_path: Path, tmp_path: Path):
     """A `--notify` run with no --invocation scopes to the session id
     instead, and the payload's own invocation_id field stays null; no

@@ -36,9 +36,32 @@ jobs:
 
   docs:
     needs: changes
+    if: ${{ always() && needs.changes.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.10"
+
+    - name: Install uv
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+    - name: Install docs dependencies
+      run: uv sync --frozen --all-extras
+
+    - name: Test documentation contracts
+      run: uv run pytest -n0 tests/docs
+
+    - name: Build documentation strictly
+      run: uv run mkdocs build --strict --site-dir /tmp/lionagi-docs-site
 
     - name: Lint markdown (formatting)
       uses: DavidAnson/markdownlint-cli2-action@v24
@@ -49,27 +72,19 @@ jobs:
     - name: Check internal links
       uses: lycheeverse/lychee-action@v2
       with:
-        args: "--no-progress --offline docs/ README.md AGENT.md CLAUDE.md CONTRIBUTING.md"
+        # --fallback-extensions md: pages use mkdocs directory URLs (href="api/operations/")
+        #   which map to source api/operations.md; let lychee resolve the .md source offline.
+        # --exclude-path docs/overrides: theme template partials contain Jinja ({{ ... }}),
+        #   not documentation links.
+        args: "--no-progress --offline --fallback-extensions md --exclude-path docs/overrides docs/ README.md AGENT.md CLAUDE.md CONTRIBUTING.md"
         fail: true
 
     # Only when docs/adr/ or the lifecycle policy registry itself changed —
     # this check compares the two against each other, so an unrelated docs
     # PR has nothing new to verify.
-    - name: Install uv
-      if: needs.changes.outputs.adr == 'true'
-      run: |
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-        # The installer prefers XDG_BIN_HOME then ~/.local/bin; ~/.cargo/bin is
-        # a legacy fallback — put both on PATH so either layout resolves.
-        echo "$HOME/.local/bin" >> $GITHUB_PATH
-        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
     - name: Check ADR status sets against the lifecycle policy registry
       if: needs.changes.outputs.adr == 'true'
-      run: |
-        uv venv
-        uv sync --all-extras
-        uv run python scripts/check_adr_status_sets.py
+      run: uv run python scripts/check_adr_status_sets.py
 
   test:
     runs-on: ubuntu-latest

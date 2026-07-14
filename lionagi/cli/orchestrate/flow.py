@@ -18,7 +18,7 @@ from lionagi._errors import LionError
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.casts.emission import SpawnRequest, TaskAssignment
 from lionagi.ln.concurrency import CancelScope, move_on_after
-from lionagi.orchestration import plan, role_node_builder
+from lionagi.orchestration import normalize_dep_indices, plan, role_node_builder
 from lionagi.session.exchange import Exchange
 from lionagi.tools.communication.messenger import LionMessenger
 
@@ -331,18 +331,21 @@ async def _resolve_invocation_terminal_flow(
         return "failed", RunReasons.FAILED_EXCEPTION, "Flow failed.", evidence_refs, metadata
 
 
-def _earlier_dep_indices(depends_on: list[str] | None, position: int) -> list[int]:
-    out: list[int] = []
-    for ref in depends_on or []:
-        try:
-            j = int(str(ref).strip()) - 1
-        except (TypeError, ValueError):
-            continue
-        if 0 <= j < position:
-            out.append(j)
-        elif j >= position:
-            logger.warning("Dropped forward dep ref %s (index %d >= position %d)", ref, j, position)
-    return out
+def _fallback_notify_reason(status: str) -> str:
+    """Reason code for a best-effort terminal-notify envelope emitted when
+    invocation finalization itself raised (see `_run_flow`'s finally block)
+    -- *status* here is the flow's own already-computed terminal status, not
+    a value read back from the (never-committed) invocation row."""
+    from lionagi.state.reasons import RunReasons
+
+    return {
+        "completed": RunReasons.COMPLETED_OK,
+        "completed_empty": RunReasons.COMPLETED_EMPTY_NO_EVIDENCE,
+        "failed": RunReasons.FAILED_EXCEPTION,
+        "timed_out": RunReasons.TIMED_OUT_DEADLINE,
+        "aborted": RunReasons.ABORTED_USER,
+        "cancelled": RunReasons.CANCELLED_SYSTEM,
+    }.get(status, RunReasons.FAILED_EXCEPTION)
 
 
 def _parse_reactive(spec: str | None) -> tuple[bool, set[str] | None]:
@@ -441,6 +444,7 @@ async def _build_dag(
     role_artifact_defaults: dict[str, dict | None] = {}
     worker_branches: dict[str, object] = {}
     worker_messenger_bound: dict[str, bool] = {}
+    spawn_assignees = sorted({ta.assignee for ta in assignments})
 
     for i, ta in enumerate(assignments):
         w_branch, w_model, w_profile, messenger_bound = await build_worker_branch(
@@ -450,6 +454,7 @@ async def _build_dag(
             model_override=pool[i % len(pool)] if pool else None,
             explicit_name=agent_ids[i],
             grant_spawn=_may_spawn(ta.assignee),
+            spawn_assignees=spawn_assignees,
             modes=ta.modes or None,
         )
         worker_branches[agent_ids[i]] = w_branch
@@ -666,9 +671,15 @@ def _reconstruct_spawned_nodes(
         if spawn_id:
             metadata["spawn_id"] = spawn_id
             metadata["reference_id"] = spawn_id
+        parameters: dict[str, Any] = {"instruction": entry.get("instruction") or ""}
+        # context (e.g. a team round op's prior_team_messages) is optional —
+        # only checkpoints written after CHECKPOINT_VERSION 2's context
+        # capture carry it; older entries simply have none to restore.
+        if entry.get("context") is not None:
+            parameters["context"] = entry["context"]
         node = create_operation(
             entry["operation"],
-            parameters={"instruction": entry.get("instruction") or ""},
+            parameters=parameters,
             id=_UUID(node_id),
             metadata=metadata,
         )
@@ -931,6 +942,15 @@ async def _execute_dag(
                     # role_node_builder stamps spawn_id unconditionally, so
                     # it's captured the same way regardless of assignee.
                     spawn_fields["spawn_id"] = spawned_node.metadata.get("spawn_id")
+                    # context carries payload the generic `instruction` text
+                    # doesn't (e.g. a team round op's prior_team_messages) —
+                    # without it, resume reconstructs the node with only the
+                    # boilerplate instruction and silently loses that data.
+                    spawn_fields["context"] = (
+                        params.get("context")
+                        if isinstance(params, dict)
+                        else getattr(params, "context", None)
+                    )
             _checkpoint_tasks.append(
                 _asyncio.ensure_future(
                     _checkpoint_writer.record_spawned(
@@ -1737,6 +1757,42 @@ async def _run_flow(
                     _logging.getLogger("lionagi.cli").exception(
                         "Failed to finalize invocation %s", invocation_id
                     )
+                    # The guarded update_status() above never committed, so
+                    # the terminal-callback registry never emitted for this
+                    # invocation's entity -- any --notify / notify.on_terminal
+                    # handler scoped to it would otherwise be silently
+                    # dropped exactly when a notification is most needed.
+                    # Emit a best-effort envelope directly, using the flow's
+                    # own already-computed terminal status as a fallback
+                    # (mirrors the unconditional fire_terminal_notify() call
+                    # this code path replaced).
+                    try:
+                        import uuid as _uuid
+
+                        from lionagi.state.lifecycle.callbacks import (
+                            DEFAULT_TERMINAL_CALLBACKS,
+                            Correlation,
+                            EntityRef,
+                            RunTerminalEnvelope,
+                        )
+
+                        await DEFAULT_TERMINAL_CALLBACKS.emit(
+                            RunTerminalEnvelope(
+                                event_id=str(_uuid.uuid4()),
+                                entity=EntityRef(kind="invocation", id=invocation_id),
+                                previous_status=None,
+                                terminal_status=_terminal_status,
+                                reason_code=_fallback_notify_reason(_terminal_status),
+                                occurred_at=_ended_at,
+                                correlation=Correlation(invocation_id=invocation_id),
+                                durable=False,
+                            )
+                        )
+                    except Exception:
+                        _logging.getLogger("lionagi.cli").exception(
+                            "Failed to emit fallback terminal notify for invocation %s",
+                            invocation_id,
+                        )
 
             unregister_flow_notify_scope(_notify_scope_name)
             for _br in env.session.branches:
@@ -1772,7 +1828,7 @@ async def _run_flow_inner(
     if resume_checkpoint is not None:
         # Resume: replay the persisted plan verbatim — no planner LLM call.
         # dep_indices are already 0-based positions (persisted, not the raw
-        # depends_on ordinal refs), so _earlier_dep_indices is skipped
+        # depends_on ordinal refs), so normalization is skipped
         # entirely, not just its LLM-facing caller.
         plan_entries = resume_checkpoint.get("plan") or []
         if not plan_entries:
@@ -1805,20 +1861,31 @@ async def _run_flow_inner(
         )
 
         progress("Planning DAG...")
-        assignments = await plan(
-            env.orc_branch, prompt, roles=roster, dag=True, guidance=guidance, max_tasks=max_ops
-        )
+        try:
+            assignments = await plan(
+                env.orc_branch, prompt, roles=roster, dag=True, guidance=guidance, max_tasks=max_ops
+            )
+        except ValueError as exc:
+            # plan() raises a bare ValueError when the orchestrator still
+            # overshoots max_tasks after the cap was stated in guidance —
+            # route it through the same clean-failure channel as every
+            # other plan-time failure in this function.
+            raise FlowPlanError(str(exc)) from exc
         if not assignments:
             # Fail loud rather than silently exiting 0 with no work done.
             _warn("Orchestrator returned no assignments; retrying once with a sharper instruction.")
-            assignments = await plan(
-                env.orc_branch,
-                prompt,
-                roles=roster,
-                dag=True,
-                guidance=guidance + " Return ONLY the assignments list — do not perform the task.",
-                max_tasks=max_ops,
-            )
+            try:
+                assignments = await plan(
+                    env.orc_branch,
+                    prompt,
+                    roles=roster,
+                    dag=True,
+                    guidance=guidance
+                    + " Return ONLY the assignments list — do not perform the task.",
+                    max_tasks=max_ops,
+                )
+            except ValueError as exc:
+                raise FlowPlanError(str(exc)) from exc
         if not assignments:
             raise FlowPlanError(
                 "Orchestrator produced no usable plan (an empty TaskAssignment list) after a "
@@ -1838,7 +1905,10 @@ async def _run_flow_inner(
 
         agent_ids = [env.assign_name(ta.assignee) for ta in assignments]
 
-        dep_indices = [_earlier_dep_indices(ta.depends_on, i) for i, ta in enumerate(assignments)]
+        try:
+            dep_indices = normalize_dep_indices(assignments)
+        except ValueError as exc:
+            raise FlowPlanError(str(exc)) from exc
 
     # --workers overrides model only; --bare also drops profiles (distinct behaviors).
     pool = [s.strip() for s in workers_str.split(",")] if workers_str else []

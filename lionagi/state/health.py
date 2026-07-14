@@ -7,7 +7,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from .staleness import DEFAULT_STALE_THRESHOLD, STALE_THRESHOLDS
+from .staleness import staleness_check
 
 # The 1h "quiet" floor below which a session is HEALTHY regardless of activity.
 IDLE_THRESHOLD: int = 3600
@@ -66,8 +66,7 @@ def classify_session_health(
     )
     idle_seconds = now - last_activity
 
-    kind = session.get("invocation_kind")
-    threshold = STALE_THRESHOLDS.get(kind, DEFAULT_STALE_THRESHOLD)
+    is_stale = staleness_check(session, now=now) is not None
 
     if process_alive is not True:
         # Orphan check first (crashed before any message/artifact) — see docs/internals/runtime.md.
@@ -77,14 +76,14 @@ def classify_session_health(
             # Confirmed dead outranks the activity guard below.
             return SessionHealth.STALE
         # Unknown liveness: activity is the stronger life-evidence here — see docs/internals/runtime.md.
-        if idle_seconds <= threshold:
+        if not is_stale:
             if idle_seconds > IDLE_THRESHOLD:
                 return SessionHealth.IDLE
             return SessionHealth.HEALTHY
         return SessionHealth.STALE
 
     # Process alive — classify by activity gap.
-    if idle_seconds > threshold:
+    if is_stale:
         return SessionHealth.UNRESPONSIVE
     if idle_seconds > IDLE_THRESHOLD:
         return SessionHealth.IDLE
