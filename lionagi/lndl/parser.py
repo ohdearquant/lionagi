@@ -73,6 +73,20 @@ class ParseError(LNDLError):
         super().__init__(f"Parse error at line {token.line}, column {token.column}: {message}")
 
 
+def _coerce_num_token(token: Token) -> int | float:
+    """Convert one NUM token to its finite Python numeric value."""
+    num_str = token.value
+    try:
+        if any(c in num_str for c in ".eE"):
+            parsed = float(num_str)
+            if not math.isfinite(parsed):
+                raise ValueError("non-finite number literal")
+            return parsed
+        return int(num_str)
+    except ValueError as e:
+        raise ParseError(f"Invalid number literal '{num_str}'", token) from e
+
+
 class Parser:
     """Recursive descent parser for LNDL. Not thread-safe."""
 
@@ -347,9 +361,13 @@ class Parser:
                     name = f"{name}.{self.current_token().value}"
                     self.advance()
                 items.append(name)
-            elif self.match(TokenType.STR) or self.match(TokenType.NUM):
+            elif self.match(TokenType.STR):
                 items.append(self.current_token().value)
                 self.advance()
+            elif self.match(TokenType.NUM):
+                token = self.current_token()
+                self.advance()
+                items.append(_coerce_num_token(token))
             else:
                 self.advance()
             self.skip_newlines()
@@ -454,20 +472,8 @@ class Parser:
 
             elif self.match(TokenType.NUM):
                 num_token = self.current_token()
-                num_str = num_token.value
                 self.advance()
-                try:
-                    is_float = any(c in num_str for c in ".eE")
-                    if is_float:
-                        parsed = float(num_str)
-                        # Overflow-to-inf (e.g. 1e400) serializes to invalid JSON downstream.
-                        if not math.isfinite(parsed):
-                            raise ValueError("non-finite number literal")
-                        fields[field_name] = parsed
-                    else:
-                        fields[field_name] = int(num_str)
-                except ValueError as e:
-                    raise ParseError(f"Invalid number literal '{num_str}'", num_token) from e
+                fields[field_name] = _coerce_num_token(num_token)
 
             elif self.match(TokenType.ID):
                 value = self.current_token().value

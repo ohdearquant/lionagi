@@ -556,7 +556,8 @@ async def test_transition_store_governs_schedule_run_status(db: StateDB) -> None
     assert row["status"] == "completed"
 
     audit_rows = await db.fetch_all(
-        "SELECT previous_status, status, entity_type FROM status_transitions WHERE entity_id = ?",
+        "SELECT previous_status, status, entity_type FROM status_transitions "
+        "WHERE entity_id = ? AND previous_status IS NOT NULL",
         (run_id,),
     )
     assert len(audit_rows) == 1
@@ -689,7 +690,8 @@ async def test_transition_rejects_unknown_patch_column(db: StateDB) -> None:
 # update_schedule_run through _route_status_change/update_status), on a
 # schema without this change. `id`, `schedule_id`, and `created_at` are
 # caller-generated/wall-clock and excluded from the golden dict; every other
-# column produced by the existing write path must match exactly.
+# column produced by the existing write path must match exactly except the
+# initial lifecycle reason fields, which creation now fills atomically.
 
 _GOLDEN_ROW_AFTER_CREATE = {
     "action_args": '{"prompt": "hello"}',
@@ -702,9 +704,9 @@ _GOLDEN_ROW_AFTER_CREATE = {
     "fired_at": 1700000000.0,
     "invocation_id": None,
     "status": "running",
-    "status_evidence_refs": None,
-    "status_reason_code": None,
-    "status_reason_summary": None,
+    "status_evidence_refs": "[]",
+    "status_reason_code": "run.started.ok",
+    "status_reason_summary": "",
     "trigger_context": '{"trigger": "interval"}',
 }
 
@@ -775,10 +777,8 @@ def _strip(row: dict) -> dict:
 
 async def test_schedule_spawned_run_stays_byte_identical(db: StateDB) -> None:
     """The schedule_id-populated path (create_schedule_run + update_schedule_run,
-    i.e. an ordinary schedule fire) writes the same rows with the same column
-    values, and produces the same status_transitions sequence, as the
-    pre-ADR-0071 code — this codepath was not touched by the schema
-    generalization; new queue/task columns simply default to NULL.
+    i.e. an ordinary schedule fire) preserves the queue/task column contract
+    while also recording the managed entity's initial lifecycle reason.
     """
     sched_id = _uid()
     await db.create_schedule(
@@ -840,7 +840,7 @@ async def test_schedule_spawned_run_stays_byte_identical(db: StateDB) -> None:
     transitions = await db.fetch_all(
         "SELECT entity_type, entity_id, previous_status, status, reason_code, "
         "reason_summary, source, actor FROM status_transitions "
-        "WHERE entity_id = ? ORDER BY created_at",
+        "WHERE entity_id = ? AND previous_status IS NOT NULL ORDER BY created_at",
         (run_id,),
     )
     stripped_transitions = [

@@ -29,7 +29,14 @@ class SchedulerStateService(Protocol):
 
     async def update_schedule(self, schedule_id: str, **fields: Any) -> None: ...
 
-    async def count_schedule_runs(self, schedule_id: str, *, chain_depth: int = 0) -> int: ...
+    async def count_schedule_runs(
+        self,
+        schedule_id: str,
+        *,
+        chain_depth: int = 0,
+        statuses: tuple[str, ...] = ("completed", "failed", "cancelled"),
+        fired_after: float | None = None,
+    ) -> int: ...
 
     async def sum_schedule_spend(self, schedule_id: str) -> dict[str, Any]: ...
 
@@ -102,9 +109,21 @@ class _DBSchedulerStateService:
         async with StateDB() as db:
             await db.update_schedule(schedule_id, **fields)
 
-    async def count_schedule_runs(self, schedule_id: str, *, chain_depth: int = 0) -> int:
+    async def count_schedule_runs(
+        self,
+        schedule_id: str,
+        *,
+        chain_depth: int = 0,
+        statuses: tuple[str, ...] = ("completed", "failed", "cancelled"),
+        fired_after: float | None = None,
+    ) -> int:
         async with StateDB() as db:
-            return await db.count_schedule_runs(schedule_id, chain_depth=chain_depth)
+            return await db.count_schedule_runs(
+                schedule_id,
+                chain_depth=chain_depth,
+                statuses=statuses,
+                fired_after=fired_after,
+            )
 
     async def sum_schedule_spend(self, schedule_id: str) -> dict[str, Any]:
         async with StateDB() as db:

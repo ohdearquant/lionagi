@@ -94,6 +94,8 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # Cumulative spend budget: NULL means unlimited.
         ("budget_usd", "REAL"),
         ("budget_tokens", "INTEGER"),
+        # Rolling-window fire cap: {max_fires, window_sec}; NULL is unlimited.
+        ("rate_limit", "JSON"),
         # Metric threshold alerts: {metric, op, value, window_minutes}
         # config blob + the cooldown timestamp of the last breach fire.
         ("threshold_config", "JSON"),

@@ -601,6 +601,11 @@ export interface SessionBranch {
   id: string;
   name: string;
   created_at: number;
+  /** Persisted full-progression bounds, independent of the messages window. */
+  first_message_at?: number | null;
+  last_message_at?: number | null;
+  started_at?: number | null;
+  ended_at?: number | null;
   messages: SessionMessage[];
   /** Full progression length; messages is a tail window of it. */
   message_total?: number;

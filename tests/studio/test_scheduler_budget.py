@@ -1,11 +1,11 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for SchedulerEngine's per-schedule token/spend budget.
+"""Unit tests for SchedulerEngine's per-schedule fire and spend budgets.
 
 Covers _check_budget() in isolation, and the three fire entry points
 (_maybe_fire, _tick_github, fire_now) that enforce the budget as a pre-fire
 cumulative gate -- a pure read, unlike max_runs / the global slot which are
-claim/release reservations.
+claim/release reservations, plus the rolling-window fire cap.
 """
 
 from __future__ import annotations
@@ -79,6 +79,31 @@ def test_svc_validate_budget_usd_accepts_finite_positive(good_value):
     from lionagi.studio.services.schedules import _svc_validate_budget_usd
 
     _svc_validate_budget_usd(good_value)  # does not raise
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [
+        {},
+        {"max_fires": 1},
+        {"window_sec": 60},
+        {"max_fires": 0, "window_sec": 60},
+        {"max_fires": True, "window_sec": 60},
+        {"max_fires": 1, "window_sec": 0},
+        {"max_fires": 1, "window_sec": 60, "burst": 2},
+    ],
+)
+def test_validate_rate_limit_rejects_malformed_config(bad_value):
+    from lionagi.studio.scheduler.admit import validate_rate_limit
+
+    with pytest.raises(ValueError, match="rate_limit"):
+        validate_rate_limit(bad_value)
+
+
+def test_validate_rate_limit_accepts_positive_window_cap():
+    from lionagi.studio.scheduler.admit import validate_rate_limit
+
+    assert validate_rate_limit({"max_fires": 3, "window_sec": 120}) == (3, 120)
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +239,104 @@ async def test_maybe_fire_fires_normally_when_under_budget():
         await engine._maybe_fire(schedule, now=1000.0)
 
     mock_tracked.assert_called_once()
+    svc.update_schedule.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# rolling-window fire cap — reserve capacity, defer automatic fires
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_reservation_uses_rolling_window_cutoff():
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(rate_limit={"max_fires": 2, "window_sec": 60})
+
+    allowed, claim = await engine._reserve_rate_limit(schedule, now=1000.0)
+
+    assert allowed is True
+    assert claim is not None
+    svc.count_schedule_runs.assert_awaited_once_with(
+        "sched-001",
+        chain_depth=0,
+        statuses=("running", "completed", "failed", "timed_out", "cancelled"),
+        fired_after=940.0,
+    )
+    claim.release()
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_reservation_counts_inflight_fires():
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(rate_limit={"max_fires": 1, "window_sec": 60})
+
+    first_allowed, first_claim = await engine._reserve_rate_limit(schedule, now=1000.0)
+    second_allowed, second_claim = await engine._reserve_rate_limit(schedule, now=1000.0)
+
+    assert first_allowed is True
+    assert first_claim is not None
+    assert second_allowed is False
+    assert second_claim is None
+    first_claim.release()
+
+
+@pytest.mark.asyncio
+async def test_maybe_fire_rate_limit_defers_without_disabling_or_advancing():
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.count_schedule_runs = AsyncMock(return_value=2)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(rate_limit={"max_fires": 2, "window_sec": 60}, next_fire_at=1000.0)
+
+    with patch.object(engine, "_tracked_fire") as mock_tracked:
+        await engine._maybe_fire(schedule, now=1000.0)
+
+    mock_tracked.assert_not_called()
+    svc.update_schedule.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fire_now_refuses_rate_limited_schedule_without_disabling():
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.get_schedule = AsyncMock(
+        return_value=_minimal_schedule(rate_limit={"max_fires": 1, "window_sec": 60})
+    )
+    svc.count_schedule_runs = AsyncMock(return_value=1)
+    engine = SchedulerEngine(svc=svc)
+
+    with pytest.raises(ValueError, match="rate limit"):
+        await engine.fire_now("sched-001")
+
+    svc.update_schedule.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_tick_github_rate_limit_defers_without_polling_or_disabling():
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.count_schedule_runs = AsyncMock(return_value=1)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(
+        trigger_type="github_poll",
+        github_repo="acme/widgets",
+        last_fired_at=0,
+        rate_limit={"max_fires": 1, "window_sec": 60},
+    )
+
+    with patch("lionagi.studio.scheduler.github.github_poll", new=AsyncMock()) as mock_poll:
+        await engine._tick_github(schedule, now=10_000.0)
+
+    mock_poll.assert_not_awaited()
     svc.update_schedule.assert_not_awaited()
 
 
@@ -401,4 +524,63 @@ async def test_sum_schedule_spend_zero_for_schedule_with_no_runs():
     spend = await state.sum_schedule_spend("sched-spend-empty")
     assert spend == {"cost_usd": 0.0, "tokens": 0}
 
+    await state.close()
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_roundtrips_and_counts_only_fires_inside_window():
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+    await state.create_schedule(
+        {
+            "id": "sched-window",
+            "name": "window-test",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+            "rate_limit": {"max_fires": 2, "window_sec": 60},
+        }
+    )
+
+    for fired_at in (10.0, 100.0):
+        await state.create_schedule_run(
+            {
+                "id": f"run-{int(fired_at)}",
+                "schedule_id": "sched-window",
+                "trigger_context": {},
+                "action_kind": "agent",
+                "action_args": [],
+                "status": "completed",
+                "chain_depth": 0,
+                "fired_at": fired_at,
+            }
+        )
+
+    await state.create_schedule_run(
+        {
+            "id": "run-running",
+            "schedule_id": "sched-window",
+            "trigger_context": {},
+            "action_kind": "agent",
+            "action_args": [],
+            "status": "running",
+            "chain_depth": 0,
+            "fired_at": 110.0,
+        }
+    )
+
+    schedule = await state.get_schedule("sched-window")
+    recent = await state.count_schedule_runs("sched-window", chain_depth=0, fired_after=50.0)
+    admitted_recent = await state.count_schedule_runs(
+        "sched-window",
+        chain_depth=0,
+        statuses=("running", "completed", "failed", "timed_out", "cancelled"),
+        fired_after=50.0,
+    )
+
+    assert schedule["rate_limit"] == {"max_fires": 2, "window_sec": 60}
+    assert recent == 1
+    assert admitted_recent == 2
     await state.close()

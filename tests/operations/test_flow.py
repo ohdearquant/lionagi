@@ -530,16 +530,15 @@ def test_cleanup_flow_results_non_dict_returned_unchanged():
 
 
 @pytest.mark.asyncio
-async def test_flow_rejects_non_edge_condition_object_via_public_flow():
-    """flow raises TypeError when an edge has a Condition that is not EdgeCondition."""
+async def test_flow_rejects_non_condition_object_via_public_flow():
+    """flow rejects apply-shaped objects outside the documented Condition contract."""
     from lionagi.operations.flow import flow
     from lionagi.operations.node import Operation
-    from lionagi.protocols._concepts import Condition
     from lionagi.protocols.graph.edge import Edge
     from lionagi.protocols.graph.graph import Graph
     from lionagi.session.session import Session
 
-    class _RawCondition(Condition):
+    class _ApplyOnlyObject:
         async def apply(self, *args, **kwargs):
             return True
 
@@ -550,7 +549,8 @@ async def test_flow_rejects_non_edge_condition_object_via_public_flow():
     graph.add_node(op1)
     graph.add_node(op2)
 
-    bad_edge = Edge(head=op1.id, tail=op2.id, condition=_RawCondition())
+    bad_edge = Edge(head=op1.id, tail=op2.id)
+    bad_edge.properties["condition"] = _ApplyOnlyObject()
     graph.add_edge(bad_edge)
 
     session = Session()

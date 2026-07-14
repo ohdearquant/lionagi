@@ -50,6 +50,59 @@ def test_schedule_create_subcommand_args():
     assert args.prompt == "ping"
 
 
+def test_schedule_action_kind_choices_match_store_vocabulary():
+    from lionagi.studio.cli import add_schedule_subparser
+    from lionagi.studio.scheduler.subprocess import (
+        _ALIAS_ACTION_KINDS,
+        _VALID_ACTION_KINDS,
+    )
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    schedule_parser = sub.choices["schedule"]
+    action_subparsers = next(
+        action
+        for action in schedule_parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    create_parser = action_subparsers.choices["create"]
+    action_kind = next(action for action in create_parser._actions if action.dest == "action_kind")
+
+    assert set(action_kind.choices) == _VALID_ACTION_KINDS | set(_ALIAS_ACTION_KINDS)
+
+
+def test_schedule_create_normalizes_action_kind_alias(monkeypatch):
+    import lionagi.studio.cli as schedule_cli
+
+    captured = {}
+
+    def fake_api(path, method="GET", body=None):
+        captured.update(path=path, method=method, body=body)
+        return {"id": "schedule-id"}
+
+    monkeypatch.setattr(schedule_cli, "_api", fake_api)
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    schedule_cli.add_schedule_subparser(sub)
+    args = parser.parse_args(
+        [
+            "schedule",
+            "create",
+            "nightly",
+            "--cron",
+            "0 0 * * *",
+            "--action-kind",
+            "playbook",
+            "--playbook",
+            "review",
+        ]
+    )
+
+    assert schedule_cli.run_schedule(args) == 0
+    assert captured["body"]["action_kind"] == "play"
+
+
 def test_schedule_enable_disable_trigger_delete_accept_id():
     """enable/disable/trigger/delete all take an id positional arg."""
     from lionagi.studio.cli import add_schedule_subparser

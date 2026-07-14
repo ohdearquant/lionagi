@@ -83,6 +83,7 @@ __all__ = (
     "holder_is_running",
     "normalize_action_args",
     "notify_request",
+    "validate_rate_limit",
     "waiter_ahead_count",
 )
 
@@ -166,6 +167,35 @@ def normalize_action_args(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
     return {}
+
+
+def validate_rate_limit(value: Any) -> tuple[int, int] | None:
+    """Validate and normalize a schedule rolling-window fire cap.
+
+    ``None`` means unlimited. A configured cap must contain exactly the two
+    positive integer fields ``max_fires`` and ``window_sec``. Returning the
+    normalized pair keeps service-boundary validation and engine admission on
+    one definition of the persisted JSON shape.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("rate_limit must be an object") from exc
+    if not isinstance(value, Mapping):
+        raise ValueError("rate_limit must be an object")
+    expected = {"max_fires", "window_sec"}
+    if set(value) != expected:
+        raise ValueError("rate_limit must contain exactly max_fires and window_sec")
+    max_fires = value["max_fires"]
+    window_sec = value["window_sec"]
+    if isinstance(max_fires, bool) or not isinstance(max_fires, int) or max_fires <= 0:
+        raise ValueError("rate_limit.max_fires must be a positive integer")
+    if isinstance(window_sec, bool) or not isinstance(window_sec, int) or window_sec <= 0:
+        raise ValueError("rate_limit.window_sec must be a positive integer")
+    return max_fires, window_sec
 
 
 def _admission_opts(action_args: Mapping[str, Any]) -> dict[str, Any]:

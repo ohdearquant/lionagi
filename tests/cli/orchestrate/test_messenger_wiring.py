@@ -11,6 +11,7 @@ from uuid import uuid4
 import pytest
 
 from lionagi import iModel
+from lionagi.casts.emission import TaskAssignment
 from lionagi.cli.orchestrate._common import (
     TEAM_COORD_SECTION,
     TEAM_COORD_SECTION_MESSENGER,
@@ -809,3 +810,179 @@ async def test_every_advertised_messenger_recipient_is_actually_reachable(tmp_pa
     # and pre-fix, orchestrator).
     assert checked_reachable > 0
     assert checked_unreachable > 0
+
+
+@pytest.mark.asyncio
+async def test_reactive_worker_prompt_renders_spawn_affordance_and_roster(tmp_path):
+    env = _make_env(tmp_path)
+
+    with patch(
+        "lionagi.cli.orchestrate._orchestration.build_imodel_from_spec",
+        side_effect=_api_imodel,
+    ):
+        branch, *_ = await build_worker_branch(
+            env,
+            agent_id="researcher",
+            role="researcher",
+            explicit_name="researcher",
+            grant_spawn=True,
+            spawn_assignees=["researcher", "reviewer"],
+        )
+
+    prompt = branch.system.rendered
+    assert "Do NOT spawn sub-agents" not in prompt
+    assert "## Workflow expansion" in prompt
+    assert "## Spawn-request guidance" in prompt
+    assert "Valid assignees: researcher, reviewer." in prompt
+    assert "Allowed operations:" in prompt
+    assert '"spawn_request"' in prompt
+
+
+@pytest.mark.asyncio
+async def test_non_reactive_worker_prompt_keeps_leaf_executor_rule(tmp_path):
+    env = _make_env(tmp_path)
+
+    with patch(
+        "lionagi.cli.orchestrate._orchestration.build_imodel_from_spec",
+        side_effect=_api_imodel,
+    ):
+        branch, *_ = await build_worker_branch(
+            env,
+            agent_id="researcher",
+            role="researcher",
+            explicit_name="researcher",
+        )
+
+    assert "Do NOT spawn sub-agents or delegate further" in branch.system.rendered
+
+
+class _EntrypointSession(_FakeSession):
+    async def flow(self, _graph, **_kwargs):
+        return {"operation_results": {}}
+
+
+def _entrypoint_env(tmp_path):
+    env = _make_env(tmp_path)
+    env.session = _EntrypointSession()
+    env.builder = OperationGraphBuilder()
+    env.run = SimpleNamespace(
+        artifact_root=tmp_path,
+        dag_image_path=tmp_path / "dag.png",
+        synthesis_path=tmp_path / "synthesis.md",
+        agent_artifact_dir=lambda name: tmp_path / name,
+    )
+    return env
+
+
+def _model_for_mixed_pool(spec, *_args, **_kwargs):
+    if str(spec).startswith("codex/"):
+        return _cli_imodel()
+    return _api_imodel()
+
+
+@pytest.mark.asyncio
+async def test_fanout_entrypoint_prepass_matches_worker_binding(tmp_path, monkeypatch):
+    import lionagi.cli.orchestrate.fanout as fanout_module
+
+    assignments = [
+        TaskAssignment(task="api work", assignee="researcher"),
+        TaskAssignment(task="cli work", assignee="reviewer"),
+    ]
+    worker_names = ["researcher", "reviewer"]
+    env = _entrypoint_env(tmp_path)
+    observed: dict[str, bool] = {}
+
+    async def fake_plan(*_args, **_kwargs):
+        return assignments
+
+    async def tracked_build(env, **kwargs):
+        result = await build_worker_branch(env, **kwargs)
+        name = kwargs["explicit_name"]
+        observed[name] = result[3]
+        assert (name in env.messenger_names) is result[3]
+        return result
+
+    monkeypatch.setattr(fanout_module, "plan", fake_plan)
+    monkeypatch.setattr(fanout_module, "build_worker_branch", tracked_build)
+    monkeypatch.setattr(
+        fanout_module,
+        "_create_fanout_team",
+        lambda name, members: {
+            "id": "team-id",
+            "name": name,
+            "members": ["orchestrator", *members],
+        },
+    )
+    monkeypatch.setattr(fanout_module, "_post_results_to_team", lambda *_a, **_kw: None)
+    monkeypatch.setattr(fanout_module, "finalize_orchestration", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        "lionagi.cli.orchestrate._orchestration.build_imodel_from_spec",
+        _model_for_mixed_pool,
+    )
+
+    await fanout_module._run_fanout_inner(
+        "openai/gpt-4o-mini",
+        "mixed work",
+        env=env,
+        workers_str="openai/gpt-4o-mini,codex/gpt-5.5",
+        team_name="mixed",
+    )
+
+    assert env.messenger_names == frozenset({"researcher"})
+    assert observed == dict(zip(worker_names, (True, False), strict=True))
+
+
+@pytest.mark.asyncio
+async def test_flow_entrypoint_prepass_matches_worker_binding(tmp_path, monkeypatch):
+    import lionagi.cli.orchestrate.flow as flow_module
+
+    assignments = [
+        TaskAssignment(task="api work", assignee="researcher"),
+        TaskAssignment(task="cli work", assignee="reviewer"),
+    ]
+    worker_names = ["researcher", "reviewer"]
+    env = _entrypoint_env(tmp_path)
+    observed: dict[str, bool] = {}
+
+    async def fake_plan(*_args, **_kwargs):
+        return assignments
+
+    async def tracked_build(env, **kwargs):
+        result = await build_worker_branch(env, **kwargs)
+        name = kwargs["explicit_name"]
+        observed[name] = result[3]
+        assert (name in env.messenger_names) is result[3]
+        return result
+
+    async def fake_execute(*_args, **_kwargs):
+        return flow_module._ExecResult(agent_results=[], n_spawned=0, t_exec_elapsed=0.0)
+
+    monkeypatch.setattr(flow_module, "plan", fake_plan)
+    monkeypatch.setattr(flow_module, "build_worker_branch", tracked_build)
+    monkeypatch.setattr(flow_module, "_execute_dag", fake_execute)
+    monkeypatch.setattr(flow_module, "_finalize_flow", lambda *_a, **_kw: "")
+    monkeypatch.setattr(
+        flow_module,
+        "_create_fanout_team",
+        lambda name, members: {
+            "id": "team-id",
+            "name": name,
+            "members": ["orchestrator", *members],
+        },
+    )
+    monkeypatch.setattr(
+        "lionagi.cli.orchestrate._orchestration.build_imodel_from_spec",
+        _model_for_mixed_pool,
+    )
+
+    await flow_module._run_flow_inner(
+        "openai/gpt-4o-mini",
+        "mixed work",
+        env=env,
+        workers_str="openai/gpt-4o-mini,codex/gpt-5.5",
+        team_name="mixed",
+        reactive_spec="off",
+    )
+
+    assert env.messenger_names == frozenset({"researcher"})
+    assert observed == dict(zip(worker_names, (True, False), strict=True))

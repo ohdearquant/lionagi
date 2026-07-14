@@ -236,9 +236,23 @@ def test_dispatch_purge_single_row_honors_dry_run(monkeypatch, tmp_path, capsys)
         from lionagi.dispatch import get_dispatch
 
         async with StateDB(db_path) as db:
-            return await get_dispatch(db, dispatch_id)
+            row = await get_dispatch(db, dispatch_id)
+            events = await db.list_admin_events(action="dispatch_purge", target_id=dispatch_id)
+            return row, events
 
-    assert asyncio.run(check()) is not None
+    row, events = asyncio.run(check())
+    assert row is not None
+    assert len(events) == 1
+    assert events[0]["actor"] == "li_dispatch_purge"
+    import json
+
+    details = json.loads(events[0]["details"])
+    assert details == {
+        "dispatch_id": dispatch_id,
+        "dry_run": True,
+        "status": "pending",
+        "total": 1,
+    }
 
 
 def test_dispatch_purge_bare_before_leaves_pending_row_alone(monkeypatch, tmp_path, capsys):

@@ -453,7 +453,10 @@ async def test_conflict_never_writes_status_transitions_row(db: StateDB) -> None
         _command(entity_id=sid, to_status="completed", expected_statuses=frozenset({"failed"}))
     )
 
-    rows = await db.fetch_all("SELECT * FROM status_transitions WHERE entity_id = ?", (sid,))
+    rows = await db.fetch_all(
+        "SELECT * FROM status_transitions WHERE entity_id = ? AND previous_status IS NOT NULL",
+        (sid,),
+    )
     assert rows == []
     row = await db.get_session(sid)
     assert row["status"] == "running"
@@ -469,7 +472,10 @@ async def test_rejection_commits_only_its_admin_event_not_a_status_transitions_r
     outcome = await service.transition(_command(entity_id=sid, to_status="running"))
     assert outcome.result == "rejected"
 
-    transitions = await db.fetch_all("SELECT * FROM status_transitions WHERE entity_id = ?", (sid,))
+    transitions = await db.fetch_all(
+        "SELECT * FROM status_transitions WHERE entity_id = ? AND previous_status IS NOT NULL",
+        (sid,),
+    )
     assert transitions == []
 
     events = await db.list_admin_events(action="status_transition_rejected", target_id=sid)
@@ -529,7 +535,9 @@ async def test_guarded_update_reasserts_expected_version(db: StateDB) -> None:
             expected_version=stale_version,
         )
     )
-    assert outcome.result == "conflict"
+    assert outcome.result == "rejected"
+    events = await db.list_admin_events(action="status_transition_rejected", target_id=sid)
+    assert len(events) == 1
 
 
 @pytest.mark.asyncio

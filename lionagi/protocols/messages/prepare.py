@@ -1,6 +1,14 @@
 # Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
+"""Low-level, opt-in compilation of message history for provider requests.
+
+``Branch.chat()``, ``Branch.operate()``, and ``Branch.parse()`` do not accept
+``CustomRenderer`` or ``CustomParser`` hooks. Integrations that need those
+protocols call ``prepare_messages_for_chat`` themselves and own the subsequent
+provider request and response parsing. See ``docs/api/operations.md``.
+"""
+
 from __future__ import annotations
 
 import copy
@@ -99,7 +107,15 @@ def prepare_messages_for_chat(
     round_notifications: bool = False,
     scratchpad: dict[str, str] | None = None,
 ) -> list[MessageContent] | list[dict[str, Any]]:
-    """Prepare a message Pile for the chat API: embed system, fold action outputs into context, merge consecutive assistant turns, append new_instruction."""
+    """Compile history for a caller-owned chat request.
+
+    This explicit opt-in path embeds the system message, folds action outputs
+    into context, merges consecutive assistant turns, and appends
+    ``new_instruction``. With ``to_chat=True`` it returns provider-shaped role
+    dictionaries; with ``False`` it returns content models for further custom
+    processing. It does not invoke a model, ``CustomRenderer``, or
+    ``CustomParser``.
+    """
     to_use: Pile[Message] = messages if progression is None else messages[progression]
 
     if len(to_use) == 0:

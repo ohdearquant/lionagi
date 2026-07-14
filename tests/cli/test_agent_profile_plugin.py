@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.cli._providers import list_agents, load_agent_profile
+from lionagi.cli._providers import build_agent_profile_catalog, list_agents, load_agent_profile
 from lionagi.plugins.discovery import discover_plugins
 from lionagi.plugins.trust import trust_plugin
 
@@ -66,6 +66,40 @@ def test_active_plugin_profile_resolves_by_namespaced_token(write_plugin):
     profile = load_agent_profile("web-research/researcher")
     assert profile.model == "codex/gpt-5.5"
     assert "research body" in profile.system_prompt
+
+
+def test_agent_profile_catalog_indexes_resolved_configuration(write_plugin):
+    _write_plugin_profile(
+        write_plugin,
+        "wr",
+        "web-research",
+        "researcher",
+        """\
+---
+model: codex/gpt-5.5
+effort: high
+role: researcher
+pack: research-pack
+---
+
+research body
+""",
+    )
+
+    catalog = build_agent_profile_catalog()
+
+    assert catalog["web-research/researcher"] == {
+        "bypass": False,
+        "effort": "high",
+        "fast_mode": False,
+        "lion_system": True,
+        "model": "codex/gpt-5.5",
+        "pack": "research-pack",
+        "resume_on_timeout": False,
+        "role": "researcher",
+        "timeout": None,
+        "yolo": False,
+    }
 
 
 def test_unambiguous_bare_name_resolves_to_plugin(write_plugin):

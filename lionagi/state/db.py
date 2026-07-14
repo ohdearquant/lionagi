@@ -29,12 +29,25 @@ from lionagi.state.engine import (
 from lionagi.state.lifecycle import LifecycleNotFoundError as _LifecycleNotFoundError
 from lionagi.state.lifecycle import adapters as _lifecycle_adapters
 from lionagi.state.lifecycle import policy as _lifecycle_policy
+from lionagi.state.lifecycle.models import (
+    ActorRecord as _ActorRecord,
+)
+from lionagi.state.lifecycle.models import (
+    InitialStateCommand as _InitialStateCommand,
+)
+from lionagi.state.lifecycle.models import (
+    ReasonRecord as _ReasonRecord,
+)
 from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService as _LifecycleService
+from lionagi.state.reasons import LEGACY_IMPORTED as _LEGACY_IMPORTED
 from lionagi.state.reasons import (
     PlayReasons as _PlayReasons,
 )
 from lionagi.state.reasons import (
     RunReasons as _RunReasons,
+)
+from lionagi.state.reasons import (
+    ScheduleReasons as _ScheduleReasons,
 )
 from lionagi.state.reasons import (
     ShowReasons as _ShowReasons,
@@ -71,6 +84,18 @@ _PLAY_DEFAULTS: dict[str, str] = {
     "merged": _PlayReasons.MERGED_OK,
     "escalated": _PlayReasons.ESCALATED_GATE_TWICE,
     "gate_failed": _PlayReasons.GATE_FAILED_VERDICT,
+}
+
+_INITIAL_REASON_CODES: dict[tuple[str, str], str] = {
+    ("session", "running"): _RunReasons.STARTED_OK,
+    ("invocation", "running"): _RunReasons.STARTED_OK,
+    ("show", "active"): _ShowReasons.ACTIVE_CREATED,
+    ("show", "imported"): _LEGACY_IMPORTED,
+    ("play", "pending"): _PlayReasons.PENDING_CREATED,
+    ("schedule_run", "queued"): _ScheduleReasons.QUEUED_CREATED,
+    ("schedule_run", "running"): _RunReasons.STARTED_OK,
+    ("schedule_run", "failed"): _RunReasons.FAILED_EXCEPTION,
+    ("schedule_run", "skipped"): _ScheduleReasons.SKIPPED_PRECONDITION,
 }
 
 
@@ -286,6 +311,7 @@ TEAM_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["team"]
 # two transactions that a crash between them could leave inconsistent.
 EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     "session": frozenset({"ended_at"}),
+    "invocation": frozenset({"ended_at"}),
 }
 
 # ── ADR-0035 status vocabulary (valid, not just terminal) ──────────────
@@ -424,6 +450,46 @@ class StateDB:
         if self.__lifecycle_service is None:
             self.__lifecycle_service = _LifecycleService(self)
         return self.__lifecycle_service
+
+    async def _initialize_managed_entity_in_tx(
+        self,
+        conn,
+        *,
+        entity_type: str,
+        entity_id: str,
+        status: str,
+        actor_id: str,
+    ) -> None:
+        reason_code = _INITIAL_REASON_CODES.get((entity_type, status))
+        if reason_code is None:
+            # Compatibility repositories may insert historical terminal rows
+            # directly. Those are not declared lifecycle initial states and
+            # must not receive a fabricated creation event.
+            return
+        policy = _lifecycle_policy.DEFAULT_REGISTRY.get(entity_type)
+        await conn.execute(
+            text(
+                f"UPDATE {policy.table} SET status_reason_code = :reason_code, "  # noqa: S608
+                "status_reason_summary = :reason_summary, "
+                "status_evidence_refs = :evidence_refs WHERE id = :entity_id"
+            ).bindparams(bindparam("evidence_refs", type_=JSON)),
+            {
+                "reason_code": reason_code,
+                "reason_summary": "",
+                "evidence_refs": [],
+                "entity_id": entity_id,
+            },
+        )
+        await self._lifecycle_service().initialize_in_transaction(
+            conn,
+            _InitialStateCommand(
+                entity_type=entity_type,
+                entity_id=entity_id,
+                status=status,
+                reason=_ReasonRecord(code=reason_code),
+                actor=_ActorRecord(type="system", id=actor_id),
+            ),
+        )
 
     # ── backward-compat path property ─────────────────────────────────
 
@@ -1589,6 +1655,14 @@ class StateDB:
                 },
             )
             # Only increment session_count when INSERT actually created a row.
+            if result.rowcount and session.get("status") is not None:
+                await self._initialize_managed_entity_in_tx(
+                    conn,
+                    entity_type="session",
+                    entity_id=session["id"],
+                    status=session["status"],
+                    actor_id="create_session",
+                )
             if session.get("invocation_id") and result.rowcount:
                 await conn.execute(
                     text(
@@ -1827,6 +1901,8 @@ class StateDB:
         status_value = fields.pop("status", None)
         if status_value is None:
             return
+        allowed_extra = EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE.get(entity_type, frozenset())
+        extra_fields = {name: fields.pop(name) for name in allowed_extra if name in fields}
         if reason_code is None:
             from warnings import warn
 
@@ -1856,6 +1932,7 @@ class StateDB:
             evidence_refs=evidence_refs,
             source=reason_source,
             actor=reason_actor,
+            extra_fields=extra_fields or None,
             override=override,
             override_actor=override_actor,
             override_justification=override_justification,
@@ -2220,6 +2297,7 @@ class StateDB:
                         action_extra_args, action_command, action_command_args,
                         on_success, on_fail, last_fired_at, next_fire_at,
                         missed_fire_policy, overlap_policy, max_runs, budget_usd, budget_tokens,
+                        rate_limit,
                         project, threshold_config, last_alert_at, created_at, updated_at)
                        VALUES (:id, :name, :description, :enabled, :trigger_type,
                                :cron_expr, :interval_sec, :github_repo, :github_filter,
@@ -2229,6 +2307,7 @@ class StateDB:
                                :action_extra_args, :action_command, :action_command_args,
                                :on_success, :on_fail, :last_fired_at, :next_fire_at,
                                :missed_fire_policy, :overlap_policy, :max_runs, :budget_usd, :budget_tokens,
+                               :rate_limit,
                                :project, :threshold_config, :last_alert_at, :created_at, :updated_at)"""
                 ).bindparams(
                     bindparam("github_filter", type_=JSON),
@@ -2236,6 +2315,7 @@ class StateDB:
                     bindparam("action_command_args", type_=JSON),
                     bindparam("on_success", type_=JSON),
                     bindparam("on_fail", type_=JSON),
+                    bindparam("rate_limit", type_=JSON),
                     bindparam("threshold_config", type_=JSON),
                 ),
                 {
@@ -2270,6 +2350,7 @@ class StateDB:
                     "max_runs": schedule.get("max_runs"),
                     "budget_usd": schedule.get("budget_usd"),
                     "budget_tokens": schedule.get("budget_tokens"),
+                    "rate_limit": schedule.get("rate_limit"),
                     "project": schedule.get("project"),
                     "threshold_config": schedule.get("threshold_config"),
                     "last_alert_at": schedule.get("last_alert_at"),
@@ -2371,6 +2452,7 @@ class StateDB:
             "max_runs",
             "budget_usd",
             "budget_tokens",
+            "rate_limit",
             "project",
             "threshold_config",
             "last_alert_at",
@@ -2404,6 +2486,7 @@ class StateDB:
             "action_command_args",
             "on_success",
             "on_fail",
+            "rate_limit",
             "threshold_config",
         }
         fields = dict(fields)
@@ -2435,6 +2518,13 @@ class StateDB:
         stmt, params = self._build_schedule_run_insert_stmt(run)
         async with self._tx() as conn:
             await conn.execute(stmt, params)
+            await self._initialize_managed_entity_in_tx(
+                conn,
+                entity_type="schedule_run",
+                entity_id=params["id"],
+                status=params["status"],
+                actor_id="create_schedule_run",
+            )
 
     @staticmethod
     def _build_schedule_run_insert_stmt(run: dict[str, Any]):
@@ -2492,6 +2582,13 @@ class StateDB:
         sched_stmt, sched_params = self._build_update_schedule_stmt(schedule_id, schedule_fields)
         async with self._tx() as conn:
             await conn.execute(run_stmt, run_params)
+            await self._initialize_managed_entity_in_tx(
+                conn,
+                entity_type="schedule_run",
+                entity_id=run_params["id"],
+                status=run_params["status"],
+                actor_id="create_schedule_run_and_advance",
+            )
             await conn.execute(sched_stmt, sched_params)
 
     async def tombstone_and_replace_schedule_run(
@@ -2528,6 +2625,13 @@ class StateDB:
             if result.rowcount == 0:
                 return False
             await conn.execute(run_stmt, run_params)
+            await self._initialize_managed_entity_in_tx(
+                conn,
+                entity_type="schedule_run",
+                entity_id=run_params["id"],
+                status=run_params["status"],
+                actor_id="tombstone_and_replace_schedule_run",
+            )
         return True
 
     async def update_schedule_run(
@@ -2616,6 +2720,7 @@ class StateDB:
         *,
         chain_depth: int = 0,
         statuses: tuple[str, ...] = ("completed", "failed", "cancelled"),
+        fired_after: float | None = None,
     ) -> int:
         """Count runs that actually fired and reached a terminal status.
 
@@ -2628,6 +2733,9 @@ class StateDB:
         params: dict[str, Any] = {"schedule_id": schedule_id, "chain_depth": chain_depth}
         params.update({f"status{i}": s for i, s in enumerate(statuses)})
         query = f"SELECT COUNT(*) AS n FROM schedule_runs WHERE schedule_id = :schedule_id AND chain_depth = :chain_depth AND status IN ({placeholders})"  # noqa: S608
+        if fired_after is not None:
+            query += " AND fired_at >= :fired_after"
+            params["fired_after"] = fired_after
         async with self._read() as conn:
             row = (await conn.execute(text(query), params)).mappings().first()
         return int(row["n"]) if row else 0
@@ -2949,7 +3057,7 @@ class StateDB:
         )
         now = time.time()
         async with self._tx() as conn:
-            await conn.execute(
+            result = await conn.execute(
                 text(
                     """INSERT INTO invocations
                        (id, skill, plugin, prompt, started_at, ended_at, status,
@@ -2972,6 +3080,14 @@ class StateDB:
                     "node_metadata": invocation.get("node_metadata"),
                 },
             )
+            if result.rowcount:
+                await self._initialize_managed_entity_in_tx(
+                    conn,
+                    entity_type="invocation",
+                    entity_id=invocation["id"],
+                    status=status,
+                    actor_id="create_invocation",
+                )
 
     async def update_invocation(
         self,
@@ -3528,7 +3644,7 @@ class StateDB:
         )
         now = time.time()
         async with self._tx() as conn:
-            await conn.execute(
+            result = await conn.execute(
                 text(
                     """INSERT INTO shows (id, topic, goal, repo, base_branch,
                        integration_branch, status, show_dir, status_source,
@@ -3552,6 +3668,14 @@ class StateDB:
                     "updated_at": now,
                 },
             )
+            if result.rowcount:
+                await self._initialize_managed_entity_in_tx(
+                    conn,
+                    entity_type="show",
+                    entity_id=show["id"],
+                    status=show.get("status", "active"),
+                    actor_id="create_show",
+                )
 
     async def get_show(self, show_id: str) -> dict[str, Any] | None:
         async with self._read() as conn:
@@ -3662,7 +3786,7 @@ class StateDB:
         )
         now = time.time()
         async with self._tx() as conn:
-            await conn.execute(
+            result = await conn.execute(
                 text(
                     """INSERT INTO plays (id, show_id, name, playbook, effort,
                        status, attempt, session_id, started_at, ended_at, exit_code,
@@ -3698,6 +3822,14 @@ class StateDB:
                     "updated_at": now,
                 },
             )
+            if result.rowcount:
+                await self._initialize_managed_entity_in_tx(
+                    conn,
+                    entity_type="play",
+                    entity_id=play["id"],
+                    status=play.get("status", "pending"),
+                    actor_id="create_play",
+                )
 
     async def get_play(self, play_id: str) -> dict[str, Any] | None:
         async with self._read() as conn:
@@ -4504,6 +4636,7 @@ class StateDB:
             "trigger_context",
             "action_args",
             "threshold_config",
+            "rate_limit",
             "artifact_contract_json",
             "artifact_verification_json",
             "status_evidence_refs",
