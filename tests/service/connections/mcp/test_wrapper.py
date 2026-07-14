@@ -22,6 +22,7 @@ from lionagi.service.connections.mcp_wrapper import (
     MCPConnectionPool,
     MCPSecurityConfig,
     _classify_keyword,
+    _property_is_bounded,
     _schema_is_insufficient,
     create_mcp_tool,
     validate_mcp_tool_admission,
@@ -2274,6 +2275,83 @@ class TestValidateMcpToolAdmission:
         with pytest.raises(PermissionError):
             validate_mcp_tool_admission("exec", schema, None)
         assert Draft202012Validator(schema).is_valid(injected_instance)
+
+    def test_explicit_open_unevaluated_items_denies_closed_tuple(self):
+        array_schema = {
+            "type": "array",
+            "prefixItems": [{"const": "a"}],
+            "items": False,
+            "unevaluatedItems": True,
+        }
+        schema = {
+            "type": "object",
+            "properties": {
+                "operation": {"const": "status"},
+                "args": array_schema,
+            },
+            "additionalProperties": False,
+        }
+
+        assert not _property_is_bounded(array_schema)
+        with pytest.raises(PermissionError):
+            validate_mcp_tool_admission("exec", schema, None)
+
+    def test_malformed_prefix_items_denies_closed_tuple(self):
+        array_schema = {
+            "type": "array",
+            "prefixItems": None,
+            "items": False,
+        }
+        schema = {
+            "type": "object",
+            "properties": {
+                "operation": {"const": "status"},
+                "args": array_schema,
+            },
+            "additionalProperties": False,
+        }
+
+        assert not _property_is_bounded(array_schema)
+        with pytest.raises(PermissionError):
+            validate_mcp_tool_admission("exec", schema, None)
+
+    def test_cyclic_bounded_array_short_circuits_and_denies(self):
+        array_schema = {"type": "array"}
+        array_schema["items"] = array_schema
+        schema = {
+            "type": "object",
+            "properties": {
+                "operation": {"const": "status"},
+                "args": array_schema,
+            },
+            "additionalProperties": False,
+        }
+
+        with patch(
+            "lionagi.service.connections.mcp_wrapper._property_is_bounded",
+            wraps=_property_is_bounded,
+        ) as bounded:
+            assert not bounded(array_schema)
+            assert bounded.call_count == 2
+        with pytest.raises(PermissionError):
+            validate_mcp_tool_admission("exec", schema, None)
+
+    def test_deep_bounded_array_denies(self):
+        array_schema = {"type": "array", "items": False}
+        for _ in range(20):
+            array_schema = {"type": "array", "items": array_schema}
+        schema = {
+            "type": "object",
+            "properties": {
+                "operation": {"const": "status"},
+                "args": array_schema,
+            },
+            "additionalProperties": False,
+        }
+
+        assert not _property_is_bounded(array_schema)
+        with pytest.raises(PermissionError):
+            validate_mcp_tool_admission("exec", schema, None)
 
     SYNTHETIC_UNKNOWN_KEYWORD_DENY_CASES = [
         pytest.param(

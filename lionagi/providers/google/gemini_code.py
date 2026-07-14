@@ -356,6 +356,7 @@ async def stream_gemini_cli(
     _start = asyncio.get_running_loop().time()
 
     saw_object = False
+    teardown_error_emitted = False
     try:
         async with contextlib.aclosing(stream_gemini_cli_events(request)) as stream:
             async for obj in stream:
@@ -424,11 +425,12 @@ async def stream_gemini_cli(
             error = ProviderTeardownError("agy teardown failed: Event loop is closed")
             sc = StreamChunk(type="error", content=str(error), is_error=True)
             session.chunks.append(sc)
+            teardown_error_emitted = True
             yield sc
         else:
             raise
 
-    if not saw_object and not session.result:
+    if not teardown_error_emitted and not saw_object and not session.result:
         # rc==0 but nothing parseable (e.g. agy printed a plain-text error line).
         session.is_error = True
         session.result = "agy produced no parseable json response"

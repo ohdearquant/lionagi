@@ -265,9 +265,32 @@ async def test_loop_closed_during_teardown_preserves_text_and_is_retryable():
     assert session.result == "completed review"
     assert session.is_error is True
     assert len(error_chunks) == 1
+    assert yielded.index(text_chunks[0]) < yielded.index(error_chunks[0])
     error = classify_provider_error(error_chunks[0].content)
     assert isinstance(error, ProviderTeardownError)
     assert error.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_loop_closed_before_output_emits_one_retryable_error():
+    async def teardown_failure(_request):
+        raise RuntimeError("Event loop is closed")
+        yield
+
+    yielded = []
+    with patch(
+        "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+        side_effect=teardown_failure,
+    ):
+        async for item in stream_gemini_cli(_make_request()):
+            yielded.append(item)
+
+    assert [getattr(item, "type", None) for item in yielded] == ["error", None]
+    error = classify_provider_error(yielded[0].content)
+    assert isinstance(error, ProviderTeardownError)
+    assert error.retryable is True
+    assert isinstance(yielded[1], GeminiSession)
+    assert yielded[1].is_error is True
 
 
 @pytest.mark.asyncio
