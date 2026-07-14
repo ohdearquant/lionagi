@@ -419,6 +419,7 @@ class OrchestrationEnv:
     # None = no budget configured; workers skip the BUDGET preamble.
     total_budget: int | None = None
     _live_persist: dict | None = field(default=None, repr=False)
+    _run_manifest: dict[str, Any] = field(default_factory=dict, repr=False)
     _name_counts: dict[str, int] = field(default_factory=dict)
     _all_names: list[str] = field(default_factory=list)
 
@@ -1181,6 +1182,17 @@ async def start_live_persist(
     project: str | None = None,
     extra_node_metadata: dict | None = None,
 ) -> None:
+    env._run_manifest = {
+        "branch_id": str(env.orc_branch.id),
+        "agent_name": agent_name,
+        "provider": provider,
+        "model": model,
+        "invocation_kind": invocation_kind,
+        "status": "running",
+        "started_at": time.time(),
+        "ended_at": None,
+    }
+    env.run.write_manifest(env._run_manifest)
     ctx = await setup_orchestration_persist(
         env.session,
         invocation_kind=invocation_kind,
@@ -1216,5 +1228,11 @@ async def stop_live_persist(
         escalated_evidence=escalated_evidence,
         cwd=env.cwd,
     )
+    env._run_manifest["status"] = final_status
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+
+    if final_status in SESSION_TERMINAL_STATUSES:
+        env._run_manifest["ended_at"] = time.time()
+    env.run.write_manifest(env._run_manifest)
     env._live_persist = None
     return final_status

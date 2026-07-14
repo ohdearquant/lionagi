@@ -159,6 +159,13 @@ def allocate_run(
     run = RunDir(run_id=rid, state_root=state_root, artifact_root=artifact_root)
     run.ensure_state_dirs()
     run.ensure_artifact_root()
+    run.write_manifest(
+        {
+            "status": "running",
+            "started_at": time.time(),
+            "ended_at": None,
+        }
+    )
     return run
 
 

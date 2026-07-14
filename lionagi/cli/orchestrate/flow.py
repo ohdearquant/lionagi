@@ -44,6 +44,7 @@ from ._orchestration import (
     make_help_coordinator,
     mode_roster,
     parse_orchestrator_provider,
+    register_branch_hook,
     resolve_modes,
     resolve_worker_spec,
     role_config,
@@ -800,6 +801,7 @@ async def _execute_dag(
     # checkpoint writer's per-completion hook read from it.
     _executor_ref: dict[str, object] = {}
     _checkpoint_tasks: list = []
+    _branch_status_tasks: list = []
 
     _checkpoint_writer: CheckpointWriter | None = None
     if checkpoint_config is not None:
@@ -882,7 +884,7 @@ async def _execute_dag(
                     kw["ended_at"] = time.time()
                 await ctx["db"].update_branch(str(branch.id), **kw)
 
-        _asyncio.ensure_future(_do())
+        _branch_status_tasks.append(_asyncio.ensure_future(_do()))
 
     def _record_segment(op_id: str, branch_name: str, new_status: str):
         branch = next((b for b in env.session.branches if b.name == branch_name), None)
@@ -1187,6 +1189,9 @@ async def _execute_dag(
             verbose=env.verbose,
             executor_ref=_executor_ref,
             context=checkpoint_flow_context,
+            on_branch_created=lambda branch: (
+                register_branch_hook(env._live_persist, branch) if env._live_persist else None
+            ),
             spawn_branch_setup=_spawn_branch_setup if reactive else None,
             on_op_complete=_on_team_op_complete if _team_coordinator is not None else None,
         )
@@ -1203,13 +1208,15 @@ async def _execute_dag(
                 await _exch_task
             # Route any final outbox sends left over after the last collect tick.
             await _exchange.collect_all()
+        # Completion observers schedule persistence writes synchronously but the
+        # writes themselves are async. Drain them while the live DB is still open.
+        if _branch_status_tasks:
+            with contextlib.suppress(Exception):
+                await _asyncio.gather(*_branch_status_tasks, return_exceptions=True)
+        if _checkpoint_tasks:
+            with contextlib.suppress(Exception):
+                await _asyncio.gather(*_checkpoint_tasks, return_exceptions=True)
     t_exec_elapsed = time.monotonic() - t_exec
-
-    # Drain every scheduled checkpoint write before returning — the last op's
-    # completion must be durably on disk, not queued behind a fire-and-forget task.
-    if _checkpoint_tasks:
-        with contextlib.suppress(Exception):
-            await _asyncio.gather(*_checkpoint_tasks, return_exceptions=True)
 
     op_results = dag_result.get("operation_results", {})
     # Includes restored spawns from a prior checkpoint generation, not just
@@ -1740,7 +1747,12 @@ async def _run_flow(
             if invocation_id:
                 from lionagi.state.db import StateDB
 
+                _invocation_previous_status = "unknown"
                 try:
+                    async with StateDB() as _status_db:
+                        _invocation_row = await _status_db.get_invocation(invocation_id)
+                    if _invocation_row and _invocation_row.get("status"):
+                        _invocation_previous_status = str(_invocation_row["status"])
                     (
                         inv_status,
                         inv_rc,
@@ -1792,7 +1804,7 @@ async def _run_flow(
                             RunTerminalEnvelope(
                                 event_id=str(_uuid.uuid4()),
                                 entity=EntityRef(kind="invocation", id=invocation_id),
-                                previous_status=None,
+                                previous_status=_invocation_previous_status,
                                 terminal_status=_terminal_status,
                                 reason_code=_fallback_notify_reason(_terminal_status),
                                 occurred_at=_ended_at,

@@ -102,6 +102,42 @@ async def test_start_creates_session_and_registers_hook_on_orc_branch(
     await stop_live_persist(env, status="completed")
 
 
+async def test_orchestration_manifest_tracks_start_and_terminal_status(
+    temp_db_path: Path, tmp_path: Path
+):
+    from lionagi.cli._runs import RunDir
+
+    env = _minimal_env()
+    env.run = RunDir(
+        run_id="orchestration-run",
+        state_root=tmp_path / "state",
+        artifact_root=tmp_path / "artifacts",
+    )
+    env.run.ensure_state_dirs()
+    env.run.ensure_artifact_root()
+
+    await start_live_persist(
+        env,
+        invocation_kind="flow",
+        agent_name="orchestrator",
+        model="codex/model",
+        provider="codex",
+    )
+
+    started = env.run.read_manifest()
+    assert started["branch_id"] == str(env.orc_branch.id)
+    assert started["agent_name"] == "orchestrator"
+    assert started["provider"] == "codex"
+    assert started["status"] == "running"
+    assert started["ended_at"] is None
+
+    await stop_live_persist(env, status="completed")
+
+    completed = env.run.read_manifest()
+    assert completed["status"] == "completed"
+    assert completed["ended_at"] >= completed["started_at"]
+
+
 # ── start_live_persist: failure path closes the DB ────────────────────────────
 
 
@@ -1819,6 +1855,83 @@ async def test_execute_dag_escalation_without_artifact_declaration_fails_loud(
     evidence = s["status_evidence_refs"]
     evidence = _json.loads(evidence) if isinstance(evidence, str) else evidence
     assert any(e.get("id") == "worker" for e in evidence)
+
+
+async def test_execute_dag_drains_inflight_branch_status_before_teardown(
+    temp_db_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionagi.engines import PlanningEngine
+    from lionagi.session.signal import NodeCompleted
+
+    env = _minimal_env()
+    worker = Branch(name="worker")
+    env.session.include_branches(worker)
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+    write_started = asyncio.Event()
+    release_write = asyncio.Event()
+    events: list[str] = []
+    real_update_branch = ctx["db"].update_branch
+
+    async def delayed_update_branch(branch_id, **kwargs):
+        events.append("write-started")
+        write_started.set()
+        await release_write.wait()
+        await real_update_branch(branch_id, **kwargs)
+        events.append("write-finished")
+
+    monkeypatch.setattr(ctx["db"], "update_branch", delayed_update_branch)
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="work", assignee="worker")],
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={"worker": worker},
+        worker_models=["codex/model"],
+    )
+
+    async def run_dag(graph, **kwargs):
+        await env.session.emit(NodeCompleted(op_id="node-0", name="worker"))
+        return {
+            "operation_results": {"node-0": "done"},
+            "spawned_operations": 0,
+            "escalated_operations": [],
+        }
+
+    engine_run = SimpleNamespace(run_dag=run_dag)
+    with patch.object(PlanningEngine, "new_run", return_value=engine_run):
+
+        async def execute_then_teardown():
+            await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+            events.append("teardown-started")
+            await stop_live_persist(env, status="completed")
+
+        execute_task = asyncio.create_task(execute_then_teardown())
+        await write_started.wait()
+        await asyncio.sleep(0)
+        assert not execute_task.done()
+        events.append("teardown-waiting")
+        release_write.set()
+        await execute_task
+
+    assert events.index("write-finished") < events.index("teardown-started")
+    assert env._live_persist is None
 
 
 async def test_execute_dag_escalation_backstop_catches_reactively_spawned_node(

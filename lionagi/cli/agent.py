@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 from lionagi import Branch
@@ -460,10 +461,22 @@ async def _run_agent(
 
     run = allocate_run()
     branch_id = str(branch.id)
-    if context_from:
-        run.write_manifest({"branch_id": branch_id, "context_from": list(context_from)})
-
     resolved_model_spec = _provenance.resolve_model_spec(provider, model)
+    run_manifest = {
+        "branch_id": branch_id,
+        "agent_name": agent_name,
+        "provider": provider,
+        "model": resolved_model_spec,
+        "status": "running",
+        "started_at": time.time(),
+        "ended_at": None,
+    }
+    if context_from:
+        run_manifest["context_from"] = list(context_from)
+    _write_run_manifest = getattr(run, "write_manifest", None)
+    if _write_run_manifest is not None:
+        _write_run_manifest(run_manifest)
+
     artifact_contract = resolve_artifact_contract(
         playbook_artifacts=None,
         agent_defaults=profile.artifact_defaults if profile else None,
@@ -560,6 +573,13 @@ async def _run_agent(
             )
             if effective_status != _terminal_status:
                 _terminal_status = effective_status
+            from lionagi.state.db import SESSION_TERMINAL_STATUSES
+
+            run_manifest["status"] = _terminal_status
+            if _terminal_status in SESSION_TERMINAL_STATUSES:
+                run_manifest["ended_at"] = time.time()
+            if _write_run_manifest is not None:
+                _write_run_manifest(run_manifest)
             await branch.mdls.shutdown()
 
     is_resume = bool(resume or continue_last)
@@ -569,6 +589,10 @@ async def _run_agent(
             f"re-run without -r (resume target: {resume or 'last'})"
         )
         _terminal_status = "failed"
+        run_manifest["status"] = _terminal_status
+        run_manifest["ended_at"] = time.time()
+        if _write_run_manifest is not None:
+            _write_run_manifest(run_manifest)
 
     save_last_branch_pointer(run.run_id, branch_id)
 

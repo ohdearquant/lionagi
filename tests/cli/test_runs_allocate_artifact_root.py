@@ -14,6 +14,8 @@ _classify_phantom coverage).
 
 from __future__ import annotations
 
+import json
+
 import lionagi.cli._runs as runs_mod
 from lionagi.cli._runs import allocate_run
 
@@ -49,3 +51,15 @@ def test_allocate_run_artifact_root_creation_is_idempotent(tmp_path, monkeypatch
 
     assert first.artifact_root == second.artifact_root
     assert second.artifact_root.is_dir()
+
+
+def test_allocate_run_writes_running_placeholder_manifest(tmp_path, monkeypatch):
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+
+    run = allocate_run(run_id="allocated-run")
+
+    manifest = json.loads(run.manifest_path.read_text())
+    assert manifest["run_id"] == "allocated-run"
+    assert manifest["status"] == "running"
+    assert manifest["started_at"] > 0
+    assert manifest["ended_at"] is None
