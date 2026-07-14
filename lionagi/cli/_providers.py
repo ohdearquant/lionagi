@@ -502,7 +502,7 @@ def load_agent_profile(name: str) -> AgentProfile:
             "or ~/.lionagi/agents/ globally."
         )
 
-    available = [] if plugin_token else list_agents()
+    available = sorted(_plugin_agent_profiles().keys()) if plugin_token else list_agents()
     msg = f"Agent profile '{name}' not found"
     for path, target in unreadable_symlinks:
         msg += f"\n{path} exists but its symlink target is unreadable: {target}"
