@@ -214,10 +214,9 @@ async def _run_agent(
     session_id is None whenever live persistence never started.
     """
     effort = normalize_effort(effort)
-    # Fail fast: a nonexistent --cwd must never silently spawn into a
-    # provider-created directory (or a deep, opaque subprocess failure) —
-    # validate before any run is allocated or persistence is set up.
-    # Forward the returned tilde-expanded path; providers never expand `~`.
+    # Fail fast before any run is allocated: a nonexistent --cwd must not spawn
+    # into a provider-created dir. Forward the tilde-expanded path — providers
+    # never expand `~`.
     cwd = validate_cwd_exists(cwd)
     if resume and continue_last:
         raise ConfigurationError("--resume / -r and --continue-last / -c are mutually exclusive.")
@@ -298,9 +297,8 @@ async def _run_agent(
             hint(f"[resume] prefix-matched {resume} → {resolved_branch_id}")
         branch = Branch.from_dict(json.loads(branch_path.read_text()))
 
-    # Captured before the `branch is None` new-branch block below reassigns
-    # `branch` — the only reliable way to tell "this leg reopened an existing
-    # branch" from "this leg is minting a brand-new one" once that block runs.
+    # Capture before the new-branch block below reassigns `branch`: the only
+    # reliable "reopened existing" vs "minting new" signal once that block runs.
     is_resumed_branch = branch is not None
 
     if model_str is not None:
@@ -380,31 +378,23 @@ async def _run_agent(
                 chat_model=chat_model,
                 log_config=DataLoggerConfig(auto_save_on_exit=False),
             )
-            # A bare `li agent -a <profile>` leg (no --preset coding, no role key)
-            # still honors the profile's khive_injection opt-in — injection is a
-            # context-provider concern, independent of the coding preset. Keyed on
-            # `{agent_name}-recall-v1` (the invoked profile name, which equals
-            # profile.name for a loaded profile), matching the orchestrate path.
-            # Pass agent_name — guaranteed a non-empty str on this path — rather
-            # than profile.name, so a profile object without a `name` attribute
-            # and no injection opt-in does not trip an eager attribute access
-            # before the helper's khive_injection guard can early-return.
+            # A bare `-a <profile>` leg still honors the profile's khive_injection
+            # opt-in (a context-provider concern, independent of the coding preset),
+            # keyed on `{agent_name}-recall-v1` to match the orchestrate path. Pass
+            # agent_name (guaranteed non-empty here), NOT profile.name — the latter's
+            # eager attribute access fires before the helper's guard can early-return.
             if profile is not None:
                 from lionagi.agent.factory import register_profile_injection
 
                 register_profile_injection(branch, agent_name, profile)
 
-        # Fail fast: `li agent` only drives CLI-backed providers (the `run`
-        # operation raises this same ValueError deep inside
-        # operations/run/run.py once the turn is already streaming).
-        # Catching a bare/mistyped model spec here — before
-        # allocate_run/setup_agent_persist — means a bad provider prefix
-        # (e.g. 'gpt-5.3-codex-spark' instead of 'codex/gpt-5.3-codex-spark')
-        # never allocates a run or persists a session that would otherwise be
-        # recorded as a failed reliability event. Scoped to a brand-new
-        # branch only: a --resume/--continue-last model override changes
-        # only the model name under the branch's existing (already-CLI)
-        # provider, never the provider itself, so it can't regress this way.
+        # Fail fast: `li agent` only drives CLI-backed providers. The `run` op
+        # raises this same error deep inside once streaming — catching it here,
+        # before allocate_run/setup_agent_persist, keeps a bad provider prefix
+        # (e.g. 'gpt-5.3-codex-spark' vs 'codex/gpt-5.3-codex-spark') from
+        # persisting a run/session that would be recorded as a failed reliability
+        # event. New-branch only: a resume model override swaps only the model
+        # under the branch's existing (already-CLI) provider, never the provider.
         if not branch.chat_model.is_cli:
             cli_provider = getattr(branch.chat_model.endpoint.config, "provider", provider)
             raise ConfigurationError(
@@ -451,23 +441,13 @@ async def _run_agent(
         if fast:
             cfg.update(PROVIDER_FAST_KWARGS.get(provider, {}))
 
-    # Profile system prompt for every leg EXCEPT one whose branch carries (or
-    # would carry, on a brand-new leg) a create_agent-composed system message
-    # (role header + policy block) — see docs/internals/cli.md. `preset` can
-    # never be set together with resume/continue_last (validated above), so
-    # `took_create_agent_path` alone is authoritative for a brand-new branch.
-    #
-    # A RESUMED branch is different: the profile loaded for *this*
-    # invocation (and therefore `has_role_key`) describes only what was
-    # passed to *this* leg, not how the persisted branch was originally
-    # built — it may have been created via create_agent under a role profile
-    # and now be resumed with a different, plain `-a` profile (or the same
-    # profile with `role:` since removed). Re-deriving the guard from the
-    # current profile would then clobber that branch's composed role/policy
-    # system message. The persisted branch itself carries the answer: every
-    # branch create_agent builds is stamped with an immutable origin marker
-    # in `branch.metadata` (see CREATE_AGENT_BRANCH_ORIGIN_KEY) that
-    # round-trips through save/resume — consult THAT instead.
+    # Add the profile system prompt for every leg EXCEPT one whose branch carries
+    # (or, on a brand-new leg, would carry) a create_agent-composed system message
+    # (role header + policy block) — full rationale in docs/internals/cli.md.
+    # Brand-new branch: `took_create_agent_path` is authoritative (preset can't
+    # combine with resume). Resumed branch: never re-derive from the current
+    # profile (it describes only THIS leg and would clobber a persisted role/policy
+    # message) — consult the immutable CREATE_AGENT_BRANCH_ORIGIN_KEY in metadata.
     if is_resumed_branch:
         from lionagi.agent.factory import CREATE_AGENT_BRANCH_ORIGIN_KEY
 
