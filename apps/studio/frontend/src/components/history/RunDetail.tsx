@@ -73,7 +73,7 @@ export function shouldRenderAuthoredGraph(
   return !(isEdgeless && opGraph.edges.length > 0);
 }
 
-function branchToRunStep(branch: SessionBranch, status: string): RunStep {
+export function branchToRunStep(branch: SessionBranch, status: string): RunStep {
   const msgs = branch.messages;
   const runMessages: RunMessage[] = [];
 
@@ -171,6 +171,13 @@ function branchToRunStep(branch: SessionBranch, status: string): RunStep {
     rolesCounts[rm.role] = (rolesCounts[rm.role] ?? 0) + 1;
   }
 
+  const firstMessageAt = branch.first_message_at ?? branch.started_at ?? null;
+  const lastMessageAt = branch.last_message_at ?? branch.ended_at ?? null;
+  const durationSec =
+    firstMessageAt != null && lastMessageAt != null
+      ? Math.max(0, Math.round(lastMessageAt - firstMessageAt))
+      : undefined;
+
   return {
     step: branch.name || branch.id.slice(0, 8),
     status,
@@ -179,6 +186,7 @@ function branchToRunStep(branch: SessionBranch, status: string): RunStep {
       model: branch.model ?? branch.provider ?? null,
       message_count: runMessages.length,
       roles: rolesCounts,
+      duration_sec: durationSec,
     },
     messages: runMessages,
     timestamp: branch.created_at,
@@ -934,6 +942,9 @@ export default function RunDetail({ id }: RunDetailProps) {
             ...b,
             messages: segMsgs,
             name: `${b.name || b.id.slice(0, 8)} [${seg.op_id}]`,
+            message_total: segMsgs.length,
+            first_message_at: seg.started_at,
+            last_message_at: seg.ended_at,
           };
           result.push(branchToRunStep(segBranch, seg.status || bStatus || sessionStatus));
         }

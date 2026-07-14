@@ -34,6 +34,7 @@ interface StepResult {
   agent?: string;
   model?: string;
   message_count?: number;
+  duration_sec?: number;
   roles?: RolesBreakdown;
   [key: string]: unknown;
 }
@@ -301,7 +302,12 @@ function RunStepCard({
       if (firstTs == null) firstTs = m.timestamp;
       lastTs = m.timestamp;
     }
-    const durationSec = firstTs != null && lastTs != null ? Math.round(lastTs - firstTs) : null;
+    const durationSec =
+      typeof result.duration_sec === "number"
+        ? result.duration_sec
+        : firstTs != null && lastTs != null
+          ? Math.round(lastTs - firstTs)
+          : null;
 
     return {
       toolCount: toolMessages.length,
@@ -649,6 +655,8 @@ export function stepPropsEqual(prev: RunStepCardProps, next: RunStepCardProps): 
     prev.step.timestamp === next.step.timestamp &&
     prevResult.agent === nextResult.agent &&
     prevResult.model === nextResult.model &&
+    prevResult.message_count === nextResult.message_count &&
+    prevResult.duration_sec === nextResult.duration_sec &&
     prev.runId === next.runId &&
     prev.artifactRoot === next.artifactRoot &&
     prev.runFiles === next.runFiles &&

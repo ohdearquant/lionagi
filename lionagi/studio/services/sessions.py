@@ -345,6 +345,25 @@ async def _fetch_role_counts(db: aiosqlite.Connection, msg_ids: list[str]) -> di
     return counts
 
 
+async def _fetch_message_bounds(
+    db: aiosqlite.Connection, msg_ids: list[str]
+) -> tuple[float | None, float | None]:
+    """Return persisted timestamp bounds without hydrating message content."""
+    if not msg_ids:
+        return None, None
+    cur = await db.execute(
+        """SELECT MIN(m.created_at) AS first_message_at,
+                  MAX(m.created_at) AS last_message_at
+           FROM json_each(?) AS ids
+           JOIN messages m ON m.id = ids.value""",
+        (json.dumps(msg_ids),),
+    )
+    row = await cur.fetchone()
+    if row is None:
+        return None, None
+    return row["first_message_at"], row["last_message_at"]
+
+
 async def _fetch_action_messages(
     db: aiosqlite.Connection, msg_ids: list[str]
 ) -> list[dict[str, Any]]:
@@ -544,6 +563,7 @@ async def get_session(
             messages = [by_id[mid] for mid in window_ids if mid in by_id]
 
             role_counts = await _fetch_role_counts(db, full_msg_ids)
+            first_message_at, last_message_at = await _fetch_message_bounds(db, full_msg_ids)
             action_messages = await _fetch_action_messages(db, full_msg_ids)
             # message_count is the DB role-aggregate, not message_total: a
             # progression can reference ids whose row was pruned, so the two can diverge.
@@ -576,6 +596,8 @@ async def get_session(
                     "messages_truncated": message_total > len(messages),
                     "message_has_older": has_older,
                     "message_stats": full_stats["branches"][branch_id],
+                    "first_message_at": first_message_at,
+                    "last_message_at": last_message_at,
                     "model": br["model"],
                     "provider": br["provider"],
                     "agent_name": br["agent_name"],
