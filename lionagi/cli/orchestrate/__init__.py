@@ -805,16 +805,6 @@ def add_orchestrate_subparser(
             "restore. Without this flag such ops refuse loudly, naming them."
         ),
     )
-    fl.add_argument(
-        "--notify",
-        metavar="CMD",
-        default=None,
-        help=(
-            "Shell command template run once this run reaches its terminal "
-            "status. Overrides .lionagi/settings.yaml notify.on_terminal. "
-            "Substitutes {payload} (full JSON), {status}, {invocation_id}."
-        ),
-    )
     add_common_cli_args(fl)
 
     # `li o ctl status <id>` aliases the same status renderer as `li agent
@@ -959,6 +949,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 invocation_id=getattr(args, "invocation", None),
                 project=getattr(args, "project", None),
                 pack=getattr(args, "pack", None),
+                notify=getattr(args, "notify", None),
             ),
             verbose=args.verbose,
         )
