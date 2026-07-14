@@ -316,6 +316,33 @@ async def test_act_nonraising_failed_call_emits_error_and_persists_error_respons
 
 
 @pytest.mark.asyncio
+async def test_act_nonraising_failed_call_suppress_errors_false_persists_and_reraises():
+    """A FunctionCalling captured as FAILED (invoke() stays total, no
+    exception escapes it) must still surface through branch.messages even
+    when suppress_errors=False -- and then propagate the captured failure
+    to the caller instead of swallowing it."""
+    from lionagi.protocols.messages import ActionRequest, ActionResponse
+
+    def fail_tool() -> None:
+        raise RuntimeError("tool failed without raising from invoke")
+
+    branch = _make_branch_with_tool(fail_tool)
+
+    with pytest.raises(RuntimeError, match="tool failed without raising"):
+        await _act(
+            branch,
+            {"function": "fail_tool", "arguments": {}},
+            suppress_errors=False,
+        )
+
+    action_requests = [m for m in branch.messages if isinstance(m, ActionRequest)]
+    action_responses = [m for m in branch.messages if isinstance(m, ActionResponse)]
+    assert len(action_requests) == 1, "Failed ActionRequest must be in branch.messages"
+    assert len(action_responses) == 1, "Error ActionResponse must be in branch.messages"
+    assert "tool failed without raising" in str(action_responses[0].output["error"])
+
+
+@pytest.mark.asyncio
 async def test_act_verbose_logging(caplog):
     """verbose_action=True emits debug log lines (lines 52-54, 57-60)."""
     import logging
