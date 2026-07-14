@@ -13,7 +13,7 @@ from lionagi.orchestration.prompts import SYNTHESIS_INSTRUCTION
 from lionagi.session.exchange import Exchange
 from lionagi.tools.communication.messenger import LionMessenger
 
-from .._logging import log_error, progress
+from .._logging import log_error, progress, warn
 from .._providers import parse_model_spec
 from .._util import classify_exception
 from ._common import (
@@ -135,6 +135,8 @@ async def _run_fanout(
                 raise LionTimeoutError(msg)
         else:
             result = await _run_fanout_inner(model_spec, prompt, **inner_kw)
+        if _shared.get("artifact_failures"):
+            _terminal_status = "failed"
     except BaseException as exc:
         _terminal_status = classify_exception(exc)
         raise
@@ -247,6 +249,7 @@ async def _run_fanout_inner(
     graph = env.builder.get_graph()
     node_workers = {str(node_id): (i + 1, node_id) for i, node_id in enumerate(fanned_nodes)}
     saved_workers: dict[int, dict] = {}
+    artifact_failures: dict[int, dict] = {}
 
     from lionagi.engines import PlanningEngine
     from lionagi.session.signal import NodeCompleted
@@ -265,7 +268,21 @@ async def _run_fanout_inner(
             "response": response_text,
             "time_ms": sig.elapsed * 1000,
         }
-        (env.run.artifact_root / f"worker_{worker_number}.md").write_text(response_text)
+        artifact_path = env.run.artifact_root / f"worker_{worker_number}.md"
+        try:
+            artifact_path.write_text(response_text)
+        except OSError as exc:
+            artifact_failures[worker_number] = {
+                "worker": worker_number,
+                "path": str(artifact_path),
+                "error": str(exc),
+            }
+            warn(f"Failed to save worker {worker_number} artifact to {artifact_path}: {exc}")
+            if _shared is not None:
+                _shared["artifact_failures"] = [
+                    artifact_failures[i] for i in sorted(artifact_failures)
+                ]
+            return
         saved_workers[worker_number] = worker_result
         if _shared is not None:
             _shared["saved_workers"] = [saved_workers[i] for i in sorted(saved_workers)]
@@ -314,9 +331,9 @@ async def _run_fanout_inner(
 
     progress(f"Phase 2 done ({t_fanout:.1f}s).")
 
-    progress(f"Saved {len(worker_results)} worker results to {env.run.artifact_root}")
+    progress(f"Saved {len(saved_workers)} worker results to {env.run.artifact_root}")
     if _shared is not None:
-        _shared["saved_workers"] = worker_results
+        _shared["saved_workers"] = [saved_workers[i] for i in sorted(saved_workers)]
 
     synthesis_result = None
     if with_synthesis and contexts:

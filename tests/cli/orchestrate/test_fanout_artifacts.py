@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -20,9 +21,7 @@ from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.session.signal import NodeCompleted
 
 
-async def test_timeout_keeps_each_worker_artifact_completed_before_cancellation(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-):
+def _fanout_env(tmp_path) -> tuple[OrchestrationEnv, RunDir, Session]:
     orchestrator = Branch(name="orchestrator")
     session = Session(default_branch=orchestrator)
     run = RunDir(
@@ -48,6 +47,13 @@ async def test_timeout_keeps_each_worker_artifact_completed_before_cancellation(
         fast=False,
         cwd=None,
     )
+    return env, run, session
+
+
+async def test_timeout_keeps_each_worker_artifact_completed_before_cancellation(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    env, run, session = _fanout_env(tmp_path)
     assignments = [
         TaskAssignment(task="first", assignee="worker"),
         TaskAssignment(task="second", assignee="worker"),
@@ -89,3 +95,66 @@ async def test_timeout_keeps_each_worker_artifact_completed_before_cancellation(
 
     assert (run.artifact_root / "worker_1.md").read_text() == "first worker result"
     assert not (run.artifact_root / "worker_2.md").exists()
+
+
+async def test_worker_write_failure_is_recorded_without_losing_other_artifacts(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    env, run, session = _fanout_env(tmp_path)
+    assignments = [
+        TaskAssignment(task="first", assignee="worker"),
+        TaskAssignment(task="second", assignee="worker"),
+    ]
+
+    async def build_worker(env, *, explicit_name, **kwargs):
+        branch = Branch(name=explicit_name)
+        env.session.include_branches(branch)
+        return branch, "codex/model", None, False
+
+    async def run_dag(graph, **kwargs):
+        operation_results = {}
+        emits = []
+        for number, node in enumerate(graph.internal_nodes.values(), start=1):
+            response = f"worker {number} result"
+            node.execution.response = response
+            operation_results[node.id] = response
+            emits.append(
+                asyncio.create_task(
+                    session.emit(NodeCompleted(op_id=str(node.id), name="worker", elapsed=0.01))
+                )
+            )
+        await asyncio.gather(*emits, return_exceptions=True)
+        return {"operation_results": operation_results}
+
+    real_write_text = Path.write_text
+
+    def fail_first_worker(path, data, *args, **kwargs):
+        if path.name == "worker_1.md":
+            raise OSError("disk full")
+        return real_write_text(path, data, *args, **kwargs)
+
+    warnings: list[str] = []
+    progress_messages: list[str] = []
+    engine_run = type("EngineRunStub", (), {"run_dag": staticmethod(run_dag)})()
+    monkeypatch.setattr(fanout_module, "setup_orchestration", AsyncMock(return_value=env))
+    monkeypatch.setattr(fanout_module, "start_live_persist", AsyncMock())
+    stop_persist = AsyncMock(side_effect=lambda env, status: status)
+    monkeypatch.setattr(fanout_module, "stop_live_persist", stop_persist)
+    monkeypatch.setattr(fanout_module, "plan", AsyncMock(return_value=assignments))
+    monkeypatch.setattr(fanout_module, "available_roles", lambda: ["worker"])
+    monkeypatch.setattr(fanout_module, "role_roster", lambda model: "worker")
+    monkeypatch.setattr(fanout_module, "build_worker_branch", build_worker)
+    monkeypatch.setattr(fanout_module, "finalize_orchestration", lambda *args, **kwargs: None)
+    monkeypatch.setattr(fanout_module, "progress", progress_messages.append)
+    monkeypatch.setattr(fanout_module, "warn", warnings.append, raising=False)
+    monkeypatch.setattr(Path, "write_text", fail_first_worker)
+    monkeypatch.setattr(PlanningEngine, "new_run", lambda self, **kwargs: engine_run)
+
+    _, terminal_status = await fanout_module._run_fanout("codex/model", "work", num_workers=2)
+
+    assert not (run.artifact_root / "worker_1.md").exists()
+    assert (run.artifact_root / "worker_2.md").read_text() == "worker 2 result"
+    assert any(message.startswith("Saved 1 worker results") for message in progress_messages)
+    assert any("worker 1" in message and "worker_1.md" in message for message in warnings)
+    assert terminal_status == "failed"
+    stop_persist.assert_awaited_once_with(env, status="failed")
