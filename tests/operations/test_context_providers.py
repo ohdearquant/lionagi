@@ -55,8 +55,9 @@ class _BadOutputProvider:
 
 
 class _WritebackProvider:
-    def __init__(self, name="writer"):
+    def __init__(self, name="writer", records_written=0):
         self.name = name
+        self.records_written = records_written
         self.calls = []
 
     async def provide(self, branch, instruction):
@@ -64,6 +65,7 @@ class _WritebackProvider:
 
     async def writeback(self, branch, action_responses):
         self.calls.append((branch, action_responses))
+        return self.records_written
 
 
 class _RaisingWritebackProvider:
@@ -113,6 +115,8 @@ async def test_gather_reports_fired_names_and_token_counts():
     assert len(report.fired) == 1
     assert report.fired[0]["provider_name"] == "p1"
     assert report.fired[0]["tokens"] > 0
+    assert registry.stats["recall_turns"] == 1
+    assert registry.stats["blocks_injected"] == 1
 
 
 @pytest.mark.asyncio
@@ -161,6 +165,7 @@ async def test_gather_contains_raising_provider_and_still_renders_others():
     assert "raiser" in report.failed
     assert report.blocks == ["survivor"]
     assert report.fired[0]["provider_name"] == "survivor"
+    assert registry.stats["failed"] == 1
 
 
 @pytest.mark.asyncio
@@ -178,7 +183,7 @@ async def test_gather_contains_bad_provider_output_and_still_renders_others():
 @pytest.mark.asyncio
 async def test_gather_writeback_calls_registered_hook():
     registry = ContextProviderRegistry()
-    writer = _WritebackProvider()
+    writer = _WritebackProvider(records_written=3)
     registry.register(writer)
     branch = object()
     action_responses = [object()]
@@ -186,6 +191,7 @@ async def test_gather_writeback_calls_registered_hook():
     await registry.gather_writeback(branch, action_responses)
 
     assert writer.calls == [(branch, action_responses)]
+    assert registry.stats["writeback_records"] == 3
 
 
 @pytest.mark.asyncio
@@ -211,6 +217,7 @@ async def test_gather_writeback_warns_and_continues_to_sibling(caplog):
 
     assert writer.calls == [(None, ["response"])]
     assert "context provider 'raising-writer' writeback raised; skipping" in caplog.text
+    assert registry.stats["writeback_failed"] == 1
 
 
 def test_registry_is_falsy_when_empty():

@@ -321,6 +321,7 @@ class AgentProfile:
     bypass: bool = False
     fast_mode: bool = False
     lion_system: bool = True
+    khive_injection: Any = None
     artifact_defaults: dict | None = None
     timeout: int | None = None
     """Default --timeout (seconds) used when the CLI flag is not given."""
@@ -413,6 +414,7 @@ def build_agent_profile_catalog() -> dict[str, dict[str, Any]]:
             "bypass": profile.bypass,
             "fast_mode": profile.fast_mode,
             "lion_system": profile.lion_system,
+            "khive_injection": profile.khive_injection,
             "timeout": profile.timeout,
             "resume_on_timeout": profile.resume_on_timeout,
         }
@@ -563,6 +565,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         bypass=bool(frontmatter.get("bypass", False)),
         fast_mode=bool(frontmatter.get("fast_mode", False)),
         lion_system=lion_system,
+        khive_injection=frontmatter.get("khive_injection"),
         artifact_defaults=frontmatter.get("artifact_defaults"),
         timeout=_parse_profile_timeout(name, frontmatter.get("timeout")),
         resume_on_timeout=_parse_profile_resume_on_timeout(
@@ -579,6 +582,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
                 "bypass",
                 "fast_mode",
                 "lion_system",
+                "khive_injection",
                 "artifact_defaults",
                 "timeout",
                 "resume_on_timeout",

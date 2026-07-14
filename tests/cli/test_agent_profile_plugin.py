@@ -92,6 +92,7 @@ research body
         "bypass": False,
         "effort": "high",
         "fast_mode": False,
+        "khive_injection": None,
         "lion_system": True,
         "model": "codex/gpt-5.5",
         "pack": "research-pack",

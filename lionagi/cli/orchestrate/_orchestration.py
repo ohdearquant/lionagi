@@ -84,6 +84,33 @@ def parse_orchestrator_provider(model_spec: str) -> tuple[str | None, str | None
     return ms.model, provider
 
 
+def _register_profile_providers(
+    branch: Branch,
+    role_name: str,
+    profile: AgentProfile,
+) -> None:
+    """Register providers from a verbatim CLI profile without changing its prompt."""
+    configured = getattr(profile, "khive_injection", None)
+    # Only None/False disable — an empty mapping is a valid opt-in (see _register_providers).
+    if configured is None or configured is False:
+        return
+
+    from lionagi.agent.factory import _register_providers
+    from lionagi.casts.pattern import Role
+    from lionagi.casts.profile import Profile
+
+    identity = Profile(
+        name=role_name,
+        role=Role(name=role_name, description="", body=""),
+    )
+    provider_spec = AgentSpec(
+        profile=identity,
+        pack=None,
+        khive_injection=configured,
+    )
+    _register_providers(branch, provider_spec)
+
+
 def available_roles() -> list[str]:
     """Casts roles + user profiles the orchestrator may assign to."""
     from lionagi.casts.pattern import list_roles
@@ -513,6 +540,7 @@ async def setup_orchestration(
             log_config=orc_log_config,
             name="orchestrator",
         )
+        _register_profile_providers(orc_branch, "orchestrator", orc_profile)
     else:
         # Built-in "orchestrator" casts role via AgentSpec.compose + factory.
         orc_spec = AgentSpec.compose("orchestrator", pack=loaded_pack, grant_emissions=False)
@@ -685,6 +713,7 @@ async def build_worker_branch(
             pack=env.pack if env.pack is not None else "default",
             grant_emissions=False,
             system_prompt=team_section,
+            khive_injection=(getattr(w_profile, "khive_injection", None) if w_profile else None),
         )
         wb = await create_agent(
             spec,
@@ -701,6 +730,8 @@ async def build_worker_branch(
             log_config=log_config,
             name=wname,
         )
+        if w_profile is not None:
+            _register_profile_providers(wb, role, w_profile)
 
     env.session.include_branches(wb)
 
@@ -953,9 +984,24 @@ def finalize_orchestration(
     log = logging.getLogger("lionagi.cli")
 
     branch_ids: list[tuple[str, str, str]] = []
+    injection_stats = {
+        "recall_turns": 0,
+        "blocks_injected": 0,
+        "failed": 0,
+        "writeback_records": 0,
+        "writeback_failed": 0,
+    }
+    injection_activity = False
     for branch in env.session.branches:
         provider = branch.chat_model.endpoint.config.provider
         branch_ids.append((provider, str(branch.id), branch.name))
+
+        registry = getattr(branch, "_context_providers", None)
+        stats = getattr(registry, "stats", None) if registry else None
+        if stats and any(stats.values()):
+            injection_activity = True
+            for counter in injection_stats:
+                injection_stats[counter] += stats.get(counter, 0)
 
         # Snapshot failure must not abort finalize; only `li agent -r` is affected.
         try:
@@ -969,8 +1015,11 @@ def finalize_orchestration(
                 exc_info=True,
             )
 
-    if extras:
-        env._finalize_extras = extras
+    finalize_extras = dict(extras or {})
+    if injection_activity:
+        finalize_extras["khive_injection"] = injection_stats
+    if finalize_extras:
+        env._finalize_extras = finalize_extras
 
     orc_branch_id = str(env.orc_branch.id)
     save_last_branch_pointer(env.run.run_id, orc_branch_id)
