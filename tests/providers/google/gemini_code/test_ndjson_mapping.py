@@ -339,6 +339,28 @@ async def test_on_text_and_on_final_fire():
     assert finals[0].result == "hello world"
 
 
+@pytest.mark.asyncio
+async def test_on_text_loop_closed_error_propagates():
+    async def fake_events(_request):
+        yield _success_obj(response="hello world")
+
+    def failing_callback(_text):
+        raise RuntimeError("Event loop is closed")
+
+    with (
+        patch(
+            "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+            side_effect=fake_events,
+        ),
+        pytest.raises(RuntimeError, match="Event loop is closed"),
+    ):
+        async for _ in stream_gemini_cli(
+            _make_request(),
+            on_text=failing_callback,
+        ):
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Model resolution
 # ---------------------------------------------------------------------------

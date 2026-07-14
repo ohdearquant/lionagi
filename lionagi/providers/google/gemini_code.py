@@ -357,9 +357,25 @@ async def stream_gemini_cli(
 
     saw_object = False
     teardown_error_emitted = False
-    try:
-        async with contextlib.aclosing(stream_gemini_cli_events(request)) as stream:
-            async for obj in stream:
+    async with contextlib.aclosing(stream_gemini_cli_events(request)) as stream:
+        while True:
+            try:
+                obj = await anext(stream)
+            except StopAsyncIteration:
+                break
+            except RuntimeError as exc:
+                if isinstance(exc, ProviderTeardownError) or (
+                    "event loop is closed" in str(exc).casefold()
+                ):
+                    session.is_error = True
+                    error = ProviderTeardownError("agy teardown failed: Event loop is closed")
+                    sc = StreamChunk(type="error", content=str(error), is_error=True)
+                    session.chunks.append(sc)
+                    teardown_error_emitted = True
+                    yield sc
+                    break
+                raise
+            else:
                 if not isinstance(obj, dict):
                     continue
                 saw_object = True
@@ -419,16 +435,6 @@ async def stream_gemini_cli(
                     result_sc = StreamChunk(type="result", metadata=result_meta)
                     session.chunks.append(result_sc)
                     yield result_sc
-    except RuntimeError as exc:
-        if isinstance(exc, ProviderTeardownError) or "event loop is closed" in str(exc).casefold():
-            session.is_error = True
-            error = ProviderTeardownError("agy teardown failed: Event loop is closed")
-            sc = StreamChunk(type="error", content=str(error), is_error=True)
-            session.chunks.append(sc)
-            teardown_error_emitted = True
-            yield sc
-        else:
-            raise
 
     if not teardown_error_emitted and not saw_object and not session.result:
         # rc==0 but nothing parseable (e.g. agy printed a plain-text error line).
