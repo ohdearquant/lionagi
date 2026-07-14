@@ -1,5 +1,6 @@
 import pytest
 from pydantic import BaseModel
+from typing_extensions import assert_type
 
 from lionagi.operations.fields import ActionResponseModel
 from lionagi.protocols.generic.log import LogManagerConfig
@@ -11,6 +12,19 @@ from lionagi.protocols.types import (
 )
 from lionagi.service.manager import iModel
 from lionagi.session.branch import Branch
+
+
+async def _assert_chat_return_types(branch: Branch, flag: bool) -> None:
+    assert_type(await branch.chat(), str)
+    assert_type(await branch.chat(return_ins_res_message=False), str)
+    assert_type(
+        await branch.chat(return_ins_res_message=True),
+        tuple[Instruction, AssistantResponse],
+    )
+    assert_type(
+        await branch.chat(return_ins_res_message=flag),
+        str | tuple[Instruction, AssistantResponse],
+    )
 
 
 @pytest.fixture

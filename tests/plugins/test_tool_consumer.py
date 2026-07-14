@@ -398,3 +398,36 @@ class TestBuiltinToolCollisionDiagnostic:
             manager.match_tool({"function": "greet", "arguments": {}})
 
         assert caplog.text.count("greeter") == 1
+
+    def test_shadow_resolution_is_cached_until_snapshot_changes(self, write_plugin, monkeypatch):
+        def greet():
+            return "local"
+
+        manager = ActionManager()
+        manager.register_tool(greet)
+
+        _write_tool_plugin(write_plugin, "p1", name="greeter", tool_name="greet")
+        _trust("p1")
+        PluginRegistry.reset()
+
+        resolve = PluginRegistry.resolve_tool_target
+        calls = 0
+
+        def counting_resolve(name):
+            nonlocal calls
+            calls += 1
+            return resolve(name)
+
+        monkeypatch.setattr(
+            PluginRegistry,
+            "resolve_tool_target",
+            staticmethod(counting_resolve),
+        )
+
+        manager.match_tool({"function": "greet", "arguments": {}})
+        manager.match_tool({"function": "greet", "arguments": {}})
+        assert calls == 1
+
+        PluginRegistry.reset()
+        manager.match_tool({"function": "greet", "arguments": {}})
+        assert calls == 2
