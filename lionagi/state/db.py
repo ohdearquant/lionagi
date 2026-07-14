@@ -2220,6 +2220,7 @@ class StateDB:
                         action_extra_args, action_command, action_command_args,
                         on_success, on_fail, last_fired_at, next_fire_at,
                         missed_fire_policy, overlap_policy, max_runs, budget_usd, budget_tokens,
+                        rate_limit,
                         project, threshold_config, last_alert_at, created_at, updated_at)
                        VALUES (:id, :name, :description, :enabled, :trigger_type,
                                :cron_expr, :interval_sec, :github_repo, :github_filter,
@@ -2229,6 +2230,7 @@ class StateDB:
                                :action_extra_args, :action_command, :action_command_args,
                                :on_success, :on_fail, :last_fired_at, :next_fire_at,
                                :missed_fire_policy, :overlap_policy, :max_runs, :budget_usd, :budget_tokens,
+                               :rate_limit,
                                :project, :threshold_config, :last_alert_at, :created_at, :updated_at)"""
                 ).bindparams(
                     bindparam("github_filter", type_=JSON),
@@ -2236,6 +2238,7 @@ class StateDB:
                     bindparam("action_command_args", type_=JSON),
                     bindparam("on_success", type_=JSON),
                     bindparam("on_fail", type_=JSON),
+                    bindparam("rate_limit", type_=JSON),
                     bindparam("threshold_config", type_=JSON),
                 ),
                 {
@@ -2270,6 +2273,7 @@ class StateDB:
                     "max_runs": schedule.get("max_runs"),
                     "budget_usd": schedule.get("budget_usd"),
                     "budget_tokens": schedule.get("budget_tokens"),
+                    "rate_limit": schedule.get("rate_limit"),
                     "project": schedule.get("project"),
                     "threshold_config": schedule.get("threshold_config"),
                     "last_alert_at": schedule.get("last_alert_at"),
@@ -2371,6 +2375,7 @@ class StateDB:
             "max_runs",
             "budget_usd",
             "budget_tokens",
+            "rate_limit",
             "project",
             "threshold_config",
             "last_alert_at",
@@ -2404,6 +2409,7 @@ class StateDB:
             "action_command_args",
             "on_success",
             "on_fail",
+            "rate_limit",
             "threshold_config",
         }
         fields = dict(fields)
@@ -2616,6 +2622,7 @@ class StateDB:
         *,
         chain_depth: int = 0,
         statuses: tuple[str, ...] = ("completed", "failed", "cancelled"),
+        fired_after: float | None = None,
     ) -> int:
         """Count runs that actually fired and reached a terminal status.
 
@@ -2628,6 +2635,9 @@ class StateDB:
         params: dict[str, Any] = {"schedule_id": schedule_id, "chain_depth": chain_depth}
         params.update({f"status{i}": s for i, s in enumerate(statuses)})
         query = f"SELECT COUNT(*) AS n FROM schedule_runs WHERE schedule_id = :schedule_id AND chain_depth = :chain_depth AND status IN ({placeholders})"  # noqa: S608
+        if fired_after is not None:
+            query += " AND fired_at >= :fired_after"
+            params["fired_after"] = fired_after
         async with self._read() as conn:
             row = (await conn.execute(text(query), params)).mappings().first()
         return int(row["n"]) if row else 0
@@ -4504,6 +4514,7 @@ class StateDB:
             "trigger_context",
             "action_args",
             "threshold_config",
+            "rate_limit",
             "artifact_contract_json",
             "artifact_verification_json",
             "status_evidence_refs",
