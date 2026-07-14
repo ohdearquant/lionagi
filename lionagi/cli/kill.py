@@ -8,6 +8,7 @@ import argparse
 import os
 import signal
 import time
+from collections import deque
 from typing import Any
 
 import psutil
@@ -159,6 +160,7 @@ def _terminate_pid(
 
 # Only sessions/invocations carry PIDs; plays/shows are orchestrators.
 _STALE_SWEEP_ORDER = ("sessions", "invocations")
+_MAX_RECURSIVE_CHILDREN = 100
 
 
 async def _list_running_children(
@@ -173,6 +175,20 @@ async def _list_running_children(
         )
         for row in rows:
             children.append(("plays", "play", db._row_to_dict(row)))
+
+    if entity_type == "play":
+        rows = await db.fetch_all(
+            "SELECT sessions.* FROM plays "
+            "JOIN sessions ON sessions.id = plays.session_id "
+            "WHERE plays.id = ? AND sessions.status = 'running'",
+            (entity_id,),
+        )
+        if not rows:
+            warn(f"play {entity_id[:12]} has no running worker session to reap")
+        for row in rows:
+            session_row = db._row_to_dict(row)
+            children.append(("sessions", "session", session_row))
+            children.extend(await _list_running_children(db, "session", session_row["id"]))
 
     if entity_type == "session":
         rows = await db.fetch_all(
@@ -193,6 +209,34 @@ async def _list_running_children(
         )
         for row in rows:
             children.append(("sessions", "session", db._row_to_dict(row)))
+
+    return children
+
+
+async def _walk_running_children(
+    db: Any, entity_type: str, entity_id: str
+) -> list[tuple[str, str, dict[str, Any]]]:
+    """Breadth-first running descendants, bounded against malformed cycles."""
+    frontier = deque(await _list_running_children(db, entity_type, entity_id))
+    seen = {(entity_type, entity_id)}
+    children: list[tuple[str, str, dict[str, Any]]] = []
+
+    while frontier:
+        table, child_type, child_row = frontier.popleft()
+        child_id = child_row["id"]
+        child_key = (child_type, child_id)
+        if child_key in seen:
+            continue
+        if len(children) >= _MAX_RECURSIVE_CHILDREN:
+            warn(
+                f"recursive kill stopped after {_MAX_RECURSIVE_CHILDREN} children; "
+                "remaining descendants were not reaped"
+            )
+            break
+
+        seen.add(child_key)
+        children.append((table, child_type, child_row))
+        frontier.extend(await _list_running_children(db, child_type, child_id))
 
     return children
 
@@ -372,8 +416,8 @@ async def _do_kill(
         results = []
         blocked = []
 
-        if recursive:
-            children = await _list_running_children(db, entity_type, row["id"])
+        if recursive or entity_type == "play":
+            children = await _walk_running_children(db, entity_type, row["id"])
             for _child_table, child_type, child_row in children:
                 r = await _kill_one(
                     db,
@@ -630,8 +674,9 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
             "or 'aborted' (shows) with reason tracking per ADR-0028.\n\n"
             "Examples:\n"
             "  li kill abc123                        # kill by id prefix\n"
+            "  li kill <play-id>                     # also reap linked workers\n"
             "  li kill abc123 --reason 'stuck'\n"
-            "  li kill abc123 --recursive            # kill + child invocations\n"
+            "  li kill abc123 --recursive            # kill + transitive descendants\n"
             "  li kill --all-stale                   # sweep dead-PID rows\n"
             "  li kill --all-stale --threshold 3600  # only rows older than 1h\n"
             "  li kill --all-stale --dry-run\n"
@@ -655,7 +700,10 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
     kill.add_argument(
         "--recursive",
         action="store_true",
-        help="Also kill child entities (e.g. invocations spawned by a session).",
+        help=(
+            "Also kill transitive child entities (e.g. invocations spawned by a session). "
+            "Play kills always reap their linked workers."
+        ),
     )
     kill.add_argument(
         "--all-stale",
@@ -663,7 +711,7 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
         help=(
             "Sweep stale sessions and invocations with dead PIDs older than --threshold. "
             "Plays and shows are not swept (they are orchestrators without direct PIDs; "
-            "use --recursive with an explicit ID instead)."
+            "use an explicit ID instead; play kills reap linked workers automatically)."
         ),
     )
     kill.add_argument(

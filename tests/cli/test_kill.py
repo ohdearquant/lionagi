@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import json
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -11,6 +13,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 from lionagi.cli.kill import (
     _check_pid_identity,
@@ -96,7 +99,13 @@ async def _seed_show(db: StateDB, *, status: str = "active") -> str:
     return show_id
 
 
-async def _seed_play(db: StateDB, show_id: str, *, status: str = "running") -> str:
+async def _seed_play(
+    db: StateDB,
+    show_id: str,
+    *,
+    status: str = "running",
+    session_id: str | None = None,
+) -> str:
     play_id = str(uuid.uuid4())
     await db.create_play(
         {
@@ -104,6 +113,7 @@ async def _seed_play(db: StateDB, show_id: str, *, status: str = "running") -> s
             "show_id": show_id,
             "name": f"play-{play_id[:8]}",
             "status": status,
+            "session_id": session_id,
         }
     )
     return play_id
@@ -818,6 +828,146 @@ async def test_do_kill_all_stale_uses_stale_auto_reason(
 
 
 # ── cascade kill ───────────────────────────────────────────────────────────────
+
+
+async def test_list_running_children_show_behavior_is_unchanged(temp_db_path: Path):
+    """The existing show branch continues to return only running direct plays."""
+    async with StateDB() as db:
+        show_id = await _seed_show(db)
+        running_play_id = await _seed_play(db, show_id, status="running")
+        await _seed_play(db, show_id, status="blocked")
+
+        children = await _list_running_children(db, "show", show_id)
+
+    assert [(kind, row["id"]) for _, kind, row in children] == [("play", running_play_id)]
+
+
+async def test_walk_running_children_stops_at_safety_cap(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The transitive walk terminates and warns if malformed links exceed its cap."""
+    import lionagi.cli.kill as kill_mod
+
+    async def fake_children(db: Any, entity_type: str, entity_id: str):
+        next_id = str(int(entity_id) + 1)
+        return [("sessions", "session", {"id": next_id})]
+
+    warnings: list[str] = []
+    monkeypatch.setattr(kill_mod, "_MAX_RECURSIVE_CHILDREN", 2)
+    monkeypatch.setattr(kill_mod, "_list_running_children", fake_children)
+    monkeypatch.setattr(kill_mod, "warn", warnings.append)
+
+    children = await kill_mod._walk_running_children(object(), "play", "0")
+
+    assert [row["id"] for _, _, row in children] == ["1", "2"]
+    assert warnings == [
+        "recursive kill stopped after 2 children; remaining descendants were not reaped"
+    ]
+
+
+async def test_do_kill_play_reaps_worker_chain_without_recursive_flag(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A bare play kill reaps its linked session and invocation before the play."""
+    signalled_pids: list[int] = []
+
+    def fake_terminate(pid: int, **kwargs: Any) -> str:
+        assert pid > 1
+        signalled_pids.append(pid)
+        return "sigterm"
+
+    monkeypatch.setattr("lionagi.cli.kill._terminate_pid", fake_terminate)
+
+    async with StateDB() as db:
+        invocation_id = await _seed_invocation(db, status="running", pid=42002)
+        session_id = await _seed_session(db, status="running", pid=42001)
+        await db.update_session(session_id, invocation_id=invocation_id)
+        show_id = await _seed_show(db)
+        play_id = await _seed_play(db, show_id, session_id=session_id)
+
+    rc = await _do_kill(play_id)
+
+    assert rc == 0
+    assert signalled_pids == [42001, 42002]
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (session_id,)))[
+            "status"
+        ] == "cancelled"
+        assert (
+            await db.fetch_one("SELECT status FROM invocations WHERE id = ?", (invocation_id,))
+        )["status"] == "cancelled"
+        assert (await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,)))[
+            "status"
+        ] == "blocked"
+
+
+async def test_do_kill_emits_settings_terminal_notification(temp_db_path: Path, tmp_path: Path):
+    """The kill transition still reaches the settings notify handler exactly once."""
+    async with StateDB() as db:
+        session_id = await _seed_session(db, status="running")
+
+    output_path = tmp_path / "kill-notify.jsonl"
+    project_dir = tmp_path / "project"
+    settings_dir = project_dir / ".lionagi"
+    settings_dir.mkdir(parents=True)
+    capture_script = (
+        "import pathlib, sys; pathlib.Path(sys.argv[1]).open('a').write(sys.stdin.read() + '\\n')"
+    )
+    (settings_dir / "settings.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "notify": {
+                    "on_terminal": {
+                        "enabled": True,
+                        "adapter": {
+                            "kind": "exec",
+                            "argv": [sys.executable, "-c", capture_script, str(output_path)],
+                        },
+                        "filter": {"ids": [session_id]},
+                    }
+                }
+            }
+        )
+    )
+
+    from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
+    from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
+
+    callback_name = "notify.settings.on_terminal"
+    DEFAULT_TERMINAL_CALLBACKS.unregister(callback_name)
+    assert register_settings_terminal_callback(project_dir=str(project_dir)) is True
+    try:
+        assert await _do_kill(session_id) == 0
+    finally:
+        DEFAULT_TERMINAL_CALLBACKS.unregister(callback_name)
+
+    payloads = [json.loads(line) for line in output_path.read_text().splitlines()]
+    assert len(payloads) == 1
+    assert payloads[0]["entity"] == {"kind": "session", "id": session_id}
+    assert payloads[0]["terminal_status"] == "cancelled"
+    assert payloads[0]["reason_code"] == RunReasons.CANCELLED_MANUAL_KILL
+
+
+async def test_do_kill_play_without_session_warns_and_continues(
+    temp_db_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """A NULL play session link is status-only but never silently misleading."""
+    from lionagi.cli._logging import configure_cli_logging
+
+    configure_cli_logging(verbose=False)
+    async with StateDB() as db:
+        show_id = await _seed_show(db)
+        play_id = await _seed_play(db, show_id, session_id=None)
+
+    capsys.readouterr()
+    rc = await _do_kill(play_id)
+
+    assert rc == 0
+    assert f"play {play_id[:12]} has no running worker session to reap" in capsys.readouterr().err
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,)))[
+            "status"
+        ] == "blocked"
 
 
 async def test_do_kill_recursive_kills_child_invocations(
