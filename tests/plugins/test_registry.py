@@ -164,6 +164,22 @@ class TestCollisions:
         assert "shared_tool" in r1.error
         assert "tools" in r1.error
 
+    def test_activate_target_rejects_cross_plugin_tool_name_collision(self, write_plugin):
+        """A plugin's own manifest can be internally consistent (unique name,
+        no duplicate tool within itself) while still being in PluginState.COLLISION
+        because another enabled plugin declares the same tool name. activate_target()
+        must reject it rather than only checking the target plugin in isolation."""
+        _write_tool_plugin(write_plugin, "p1", tool_name="shared_tool", agent_name="a1")
+        _write_tool_plugin(write_plugin, "p2", tool_name="shared_tool", agent_name="a2")
+        _trust_by_dir_name("p1")
+        _trust_by_dir_name("p2")
+
+        PluginRegistry.reset()
+        assert PluginRegistry.get("p1").state is PluginState.COLLISION
+
+        with pytest.raises(PluginActivationError, match="shared_tool"):
+            PluginRegistry.activate_target("p1", "tools/t.py:t")
+
     def test_two_active_plugins_same_agent_name_is_not_a_collision(self, write_plugin):
         """Agent profiles are namespaced (<plugin>/<name>) — same local name across two
         plugins is not a hard error, only the bare name becomes ambiguous (resolver's job)."""
