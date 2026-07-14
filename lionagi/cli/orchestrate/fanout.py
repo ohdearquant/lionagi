@@ -13,6 +13,7 @@ from lionagi.orchestration.prompts import SYNTHESIS_INSTRUCTION
 from lionagi.session.exchange import Exchange
 from lionagi.tools.communication.messenger import LionMessenger
 
+from .._agent_depth import stamp_worker_depth
 from .._logging import log_error, progress, warn
 from .._providers import parse_model_spec
 from .._util import classify_exception
@@ -72,6 +73,8 @@ async def _run_fanout(
     teardown path settles on) reaches the caller's exit code instead of being
     silently dropped in favour of a hardcoded success.
     """
+    stamp_worker_depth()
+
     env = await setup_orchestration(
         pattern_name="Fanout",
         model_spec=model_spec,

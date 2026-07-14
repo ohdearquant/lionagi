@@ -22,6 +22,7 @@ from lionagi.orchestration import normalize_dep_indices, plan, role_node_builder
 from lionagi.session.exchange import Exchange
 from lionagi.tools.communication.messenger import LionMessenger
 
+from .._agent_depth import stamp_worker_depth
 from .._logging import progress
 from .._logging import warn as _warn
 from .._providers import parse_model_spec
@@ -1572,6 +1573,8 @@ async def _run_flow(
     **legacy_kwargs,
 ) -> tuple[str, str]:
     """Returns (output, terminal_status)."""
+    stamp_worker_depth()
+
     if "max_agents" in legacy_kwargs and max_ops == 0:
         max_ops = legacy_kwargs.pop("max_agents")
     elif "max_agents" in legacy_kwargs:
