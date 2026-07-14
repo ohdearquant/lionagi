@@ -387,7 +387,7 @@ describe("history/RunDetail.tsx — live branch aggregates", () => {
     expect(container.textContent).toContain("50s");
   });
 
-  it("advances duration through a streamed message and terminal refetch without dropping loaded history", async () => {
+  it("renders a streamed message once and advances duration through the terminal refetch", async () => {
     const { appendStreamedMessage, branchToRunStep, mergeCompletedSession } =
       await import("./RunDetail");
     const initial = {
@@ -437,20 +437,37 @@ describe("history/RunDetail.tsx — live branch aggregates", () => {
 
     const afterFirstEvent = appendStreamedMessage(initial, "branch-1", streamedMessage);
     const afterDuplicateEvent = appendStreamedMessage(afterFirstEvent, "branch-1", streamedMessage);
-    const firstDuration = branchToRunStep(afterFirstEvent.branches[0], "running").result
-      ?.duration_sec;
+    const firstStep = branchToRunStep(afterFirstEvent.branches[0], "running");
+    const duplicateStep = branchToRunStep(afterDuplicateEvent.branches[0], "running");
+    const { container, rerender } = renderRunStepCards([firstStep], true);
+    const conversationBadge = () =>
+      container.querySelector('[id$="-tab-conversation"] span')?.textContent;
+    const renderedDuration = () =>
+      Array.from(container.querySelectorAll<HTMLElement>("#step-worker > button span"))
+        .map((element) => element.textContent)
+        .find((text) => /^(?:\d+m )?\d+s$/.test(text ?? ""));
+    const renderedLiveResponses = () =>
+      Array.from(container.querySelectorAll<HTMLElement>('[id^="step-worker-r"]')).filter(
+        (response) => response.textContent?.includes("live"),
+      );
+    const conversationTab = container.querySelector<HTMLButtonElement>(
+      '[role="tab"][id$="-tab-conversation"]',
+    );
 
-    expect(afterDuplicateEvent.branches[0].messages.map((message) => message.id)).toEqual(
-      afterFirstEvent.branches[0].messages.map((message) => message.id),
-    );
-    expect(afterDuplicateEvent.branches[0].message_total).toBe(
-      afterFirstEvent.branches[0].message_total,
-    );
-    expect(branchToRunStep(afterDuplicateEvent.branches[0], "running").result?.duration_sec).toBe(
-      firstDuration,
-    );
-    expect(firstDuration).toBe(40);
-    expect(afterDuplicateEvent.branches[0].message_total).toBe(3);
+    expect(conversationTab).not.toBeNull();
+    await act(async () => conversationTab?.click());
+
+    const firstBadge = conversationBadge();
+    const firstDuration = renderedDuration();
+    expect(renderedLiveResponses()).toHaveLength(1);
+    expect(firstBadge).toBe("3");
+    expect(firstDuration).toBe("40s");
+
+    rerender([duplicateStep]);
+
+    expect(renderedLiveResponses()).toHaveLength(1);
+    expect(conversationBadge()).toBe(firstBadge);
+    expect(renderedDuration()).toBe(firstDuration);
 
     const completed = mergeCompletedSession(afterDuplicateEvent, {
       ...initial,
