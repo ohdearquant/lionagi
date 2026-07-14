@@ -132,3 +132,43 @@ async def test_dependent_op_streams_after_predecessor():
 
     results = [ev.result async for ev in session.flow_stream(g)]
     assert results == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_non_mapping_response_context_reports_failed_progress():
+    async def bad_context(**kw):
+        return {"context": ["not", "a", "mapping"]}
+
+    session = _session(bad_context=bad_context)
+    graph = Graph()
+    node = create_operation("bad_context", parameters={})
+    graph.add_node(node)
+    progress: list[str] = []
+
+    result = await session.flow(
+        graph,
+        parallel=False,
+        on_progress=lambda _op_id, _name, status, _elapsed: progress.append(status),
+    )
+
+    assert progress == ["queued", "started", "failed"]
+    assert node.execution.status.value == "failed"
+    assert "must be a Mapping" in result["operation_results"][node.id]["error"]
+
+
+@pytest.mark.asyncio
+async def test_non_mapping_response_context_streams_failed_event():
+    async def bad_context(**kw):
+        return {"context": "not-a-mapping"}
+
+    session = _session(bad_context=bad_context)
+    graph = Graph()
+    node = create_operation("bad_context", parameters={})
+    graph.add_node(node)
+
+    events = [event async for event in session.flow_stream(graph)]
+
+    assert len(events) == 1
+    assert events[0].status == "failed"
+    assert not events[0].ok
+    assert "must be a Mapping" in events[0].result["error"]

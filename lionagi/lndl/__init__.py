@@ -34,7 +34,7 @@ from .lexer import Lexer, Token, TokenType
 from .normalize import normalize_lndl_text
 from .parser import ParseError, Parser
 from .prompt import LNDL_SYSTEM_PROMPT, get_lndl_system_prompt
-from .round_outcome import Continue, Exhausted, Failed, Retry, RoundOutcome, Success
+from .round_outcome import Continue, Retry, RoundOutcome, Success
 from .types import (
     ActionCall,
     LactMetadata,
@@ -53,8 +53,6 @@ __all__ = (
     "NOTE_NAMESPACE",
     "ActionCall",
     "Continue",
-    "Exhausted",
-    "Failed",
     "Identifier",
     "InvalidConstructorError",
     "LNDLError",

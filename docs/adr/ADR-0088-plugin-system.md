@@ -486,7 +486,10 @@ end-to-end.
   safety property holding only by the plugin branch being structurally
   unreachable — `EndpointRegistry._reject_builtin_collisions` and
   `ActionManager._warn_if_plugin_tool_shadowed`, both covered by dedicated
-  tests.
+  tests. Trust records for a plugin whose bundle directory has been removed
+  are garbage-collected on `li plugin list` (`gc_trust_records`), printing
+  which entries were pruned and why; a plugin later reappearing under the
+  same name is not resurrected from the removed record and must be re-trusted.
 
 **Known gaps:**
 
@@ -507,5 +510,3 @@ end-to-end.
   consequence of ADR-0048's external-hook execution layer not existing yet
   (see that ADR's own implementation-status annex): a plugin's declared hooks
   have nowhere to attach until that layer lands.
-- Trust records for a plugin whose directory has since been deleted are not
-  garbage-collected, so they persist indefinitely in the user's settings file.

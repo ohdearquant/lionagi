@@ -282,6 +282,73 @@ async def test_missed_fire_recovery_still_fires_past_capacity_deferred_skip(tmp_
 
 
 @pytest.mark.asyncio
+async def test_missed_fire_recovery_still_fires_past_chain_child_only_row(tmp_path, monkeypatch):
+    """(c3) A chain-child row (chain_depth > 0, e.g. an on_success/on_fail follow-on)
+    shares the parent's schedule_id but is not itself a top-level occurrence of the
+    schedule. schedule_run_exists_since() must exclude chain-child rows so a
+    genuinely-due top-level occurrence is not masked and silently dropped."""
+    import lionagi.state.db as state_db_mod
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    sid = "sched-c3"
+    due_at = 1000.0
+
+    async with StateDB(db_path) as db:
+        await db.create_schedule(
+            _schedule_row(sid, next_fire_at=due_at, missed_fire_policy="run_once")
+        )
+        # Only a chain-child row exists at-or-after due_at -- e.g. an
+        # on_success follow-on from some earlier, unrelated top-level fire.
+        # This must NOT satisfy the "already fired" check for the due
+        # top-level occurrence. chain_parent_id is a self-referential FK, so
+        # the parent row must exist first (its own fired_at is deliberately
+        # well before due_at -- it is not itself a fresh top-level fire).
+        await db.create_schedule_run(
+            _run_row("run-parent", sid, fired_at=due_at - 500.0, status="completed")
+        )
+        await db.create_schedule_run(
+            _run_row(
+                "run-chain-child",
+                sid,
+                fired_at=due_at,
+                status="completed",
+                chain_parent_id="run-parent",
+                chain_depth=1,
+            )
+        )
+        exists = await db.schedule_run_exists_since(sid, since=due_at)
+
+    # Direct check: a chain-child-only row must not count as a top-level fire.
+    assert exists is False
+
+    svc = _DBSchedulerStateService()
+    engine = SchedulerEngine(svc=svc)
+
+    with (
+        patch.object(engine, "_recover_missed_fire_run_once") as mock_recover,
+        patch.object(engine, "_record_missed_fire_skip") as mock_skip,
+    ):
+        await engine._check_missed_fires()
+
+    # Recovery must take the run_once branch for this due occurrence rather
+    # than silently advancing next_fire_at because the chain-child row was
+    # mistaken for an already-recorded top-level fire.
+    mock_recover.assert_called_once()
+    mock_skip.assert_not_called()
+
+    # A genuine top-level row at-or-after due_at is unaffected by the
+    # chain_depth exclusion: it still counts as "already recorded".
+    async with StateDB(db_path) as db:
+        await db.create_schedule_run(
+            _run_row("run-top-level", sid, fired_at=due_at, status="completed")
+        )
+        exists = await db.schedule_run_exists_since(sid, since=due_at)
+    assert exists is True
+
+
+@pytest.mark.asyncio
 async def test_recovery_refires_occurrence_committed_but_never_dispatched(tmp_path, monkeypatch):
     """(e) A crash between the occurrence-insert/cursor-advance commit and spawn_and_wait() confirming launch leaves a durable status='running' row with dispatched_at NULL, past the cursor -- invisible to ordinary missed-fire recovery. _recover_undispatched_fires() must tombstone the orphan and re-fire a fresh occurrence carrying the same trigger_context, the at-least-once side of the delivery contract."""
     import lionagi.state.db as state_db_mod

@@ -22,11 +22,32 @@ from lionagi.providers.openai.audio import (
     OpenaiAudioSpeechEndpoint,
     OpenaiAudioTranscriptionEndpoint,
 )
-from lionagi.providers.openai.images import OpenaiImageEditEndpoint
+from lionagi.providers.openai.audio import (
+    _replayable_file_factory as audio_file_factory,
+)
+from lionagi.providers.openai.images import (
+    OpenaiImageEditEndpoint,
+)
+from lionagi.providers.openai.images import (
+    _replayable_file_factory as image_file_factory,
+)
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.resilience import RetryConfig
 
 _NO_SLEEP = patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock())
+
+
+@pytest.mark.parametrize("factory", [audio_file_factory, image_file_factory])
+def test_single_shot_seekable_stream_is_not_buffered(factory):
+    class SeekableNoBuffer:
+        def seekable(self):
+            return True
+
+        def read(self):
+            raise AssertionError("single-shot stream must not be read eagerly")
+
+    stream = SeekableNoBuffer()
+    assert factory(stream, "file", require_replayable=False)() is stream
 
 
 def _config(name: str, endpoint: str, base_url: str, **overrides) -> EndpointConfig:

@@ -11,8 +11,6 @@ from typing import Any
 
 __all__ = (
     "Continue",
-    "Exhausted",
-    "Failed",
     "Retry",
     "RoundOutcome",
     "Success",
@@ -43,19 +41,4 @@ class Retry:
     note_keys: tuple[str, ...] = ()
 
 
-@dataclass(slots=True, frozen=True)
-class Exhausted:
-    """Hit the round budget without a Success. Carries the most recent
-    error so the caller can surface something useful."""
-
-    last_error: str | None = None
-
-
-@dataclass(slots=True, frozen=True)
-class Failed:
-    """Unrecoverable error — no point retrying. Caller should raise."""
-
-    error: BaseException
-
-
-RoundOutcome = Success | Continue | Retry | Exhausted | Failed
+RoundOutcome = Success | Continue | Retry

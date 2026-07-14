@@ -51,9 +51,15 @@ guidelines and instructions for contributing to this project.
 
 2. **Running Tests Locally**: Run `uv run pytest` (parallel, `-n auto`) before
    submitting. Use `uv run pytest tests/<file>.py -v` for a focused run and
-   `uv run pytest -n0 -s ...` to debug. Performance-sensitive changes should be
-   checked against the benchmarks in `benchmarks/` (`ci_compare.py` gates
-   regressions).
+   `uv run pytest -n0 -s ...` to debug. Performance-sensitive changes are
+   gated in CI by a same-machine A/B comparison, not a frozen baseline file.
+   See `benchmarks/README.md`'s "CI gating (same-machine A/B)" section for
+   how the baseline/current result JSONs are produced
+   (`benchmarks/run_paired_ab.py`) before `benchmarks/ci_compare.py` diffs
+   them. Running `ci_compare.py --baseline ... --current ...` directly
+   requires both result files to already exist; it exits 1, not a graceful
+   skip, if either is missing, since a missing baseline in CI means the A/B
+   setup itself failed rather than "nothing to gate on".
 
 ## Coding Standards
 

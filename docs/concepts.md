@@ -1,271 +1,277 @@
 # Concepts
 
-Six terms you need to use lionagi. For full API tables see [api/](api/index.md).
+lionagi has two connected surfaces:
 
----
+- **Run work** with one agent, a parallel fan-out, a dependency-aware flow, or a
+  reusable engine.
+- **Operate work** with durable run state, monitoring, control messages, schedules,
+  and Studio.
+
+The CLI is the shortest path to both surfaces. The Python API exposes the same core
+building blocks when an application needs direct control.
+
+## Choose the shape of the work
+
+| Shape | CLI | Python | Use it for |
+|-------|-----|--------|------------|
+| One stateful worker | `li agent` | `Branch` | A focused task or conversation |
+| Independent workers | `li o fanout` | Separate branches | Research or review that can run in parallel |
+| Dependent or reactive work | `li o flow` / `li play` | `Builder` + `Session.flow()` | Multi-step work with explicit dependencies |
+| A domain pipeline | `li engine run` | `lionagi.engines` | Planning, research, review, hypothesis, or coding workflows |
+
+Start with the smallest shape that fits. A single agent is easier to inspect and
+resume than a graph; use a flow when dependencies or distinct worker contexts are
+part of the problem.
 
 ## Branch
 
-A single conversation thread. Holds message history, registered tools, and model config.
-All LLM calls happen through a Branch.
+A `Branch` is one stateful unit of model work. It owns message history, registered
+tools, model configuration, logs, and optional memory.
 
 ```python
 import lionagi as li
+
 branch = li.Branch(
-    chat_model=li.iModel(model="gpt-4o-mini"),
-    system="You are a technical writer.",
+    chat_model=li.iModel(model="openai/gpt-4.1-mini"),
+    system="You are a concise technical writer.",
 )
-result = await branch.communicate("What is a DAG?")
+answer = await branch.communicate("Explain dependency-aware execution.")
 ```
 
-**Use when**: you need a stateful unit of LLM work in Python.
-**Don't use a single Branch for parallel workers** — give each worker its own Branch
-(or let `li o fanout` / `li o flow` do it for you).
+Choose the operation deliberately:
 
-→ Full reference: [`Branch`](api/branch.md)
+| Method | Records the turn | Executes tools | Best for |
+|--------|------------------|----------------|----------|
+| `communicate()` | Yes | No | A normal stateful model turn |
+| `operate()` | Yes | Optional | Structured output and tool-enabled work |
+| `chat()` | No | No | A low-level call when you manage history yourself |
+| `chat_and_record()` | Yes | No | `chat()` semantics with a recorded turn |
+| `ReAct()` | Yes | Yes | Several think-act-observe rounds |
+| `run()` | Yes, as streamed messages | Provider-managed | Streaming a CLI-backed model |
 
----
+`chat()` returns the response value, usually a string, by default. Pass
+`return_ins_res_message=True` only when you need the generated `Instruction` and
+`AssistantResponse` objects.
 
-## Session
+→ [`Branch` reference](api/branch.md)
 
-Orchestrates multiple Branches with a shared in-process message bus and a DAG engine.
+## Tools and structured output
 
-```python
-session = li.Session()
-session.include_branches([b1, b2])
-session.send(sender=b1.id, recipient=b2.id, content="draft ready")
-await session.sync()
-```
-
-**Use when**: embedding lionagi in Python and needing programmatic multi-branch control.
-**Don't use directly** if you're running `li o flow` — the CLI manages Session internally.
-
-→ Full reference: [`Session`](api/session.md)
-
----
-
-## Provider & Endpoint
-
-A provider wraps one LLM/API service. An endpoint is one capability of that provider.
-
-```python
-model = li.iModel(provider="openai", endpoint="chat")
-```
-
-That's all most users need. The directory structure is the capability map:
-
-```text
-lionagi/providers/openai/   → chat, embed, images, audio, response, codex
-lionagi/providers/anthropic/ → chat, response
-lionagi/providers/gemini/    → chat, embed
-```
-
-Providers are registered via `@register` decorator; the registry resolves both
-`iModel(provider="openai")` (single-endpoint shorthand) and
-`iModel(provider="openai", endpoint="embed")` (explicit).
-
-→ Full table: [reference/providers.md](reference/providers.md)
-
----
-
-## flow
-
-A DAG of named agent operations. Dependencies are declared explicitly; independent steps
-execute in parallel. The orchestrator LLM plans the graph before execution starts.
-
-```bash
-li o flow claude/sonnet "Research async patterns and write a guide" --save ./out
-li o flow claude/sonnet "Research async patterns and write a guide" --dry-run
-```
-
-**Use when**: you have ≥2 steps that could run concurrently, or want role-typed agents
-(researcher → implementer → reviewer) with separate memory.
-**Don't use** if your pipeline is strictly sequential — `branch.operate()` in a loop is simpler.
-
-→ Cookbook: [Multi-model pipeline](cookbook/multi-model-pipeline.md)
-
----
-
-## team
-
-Persistent, file-backed inbox for coordinating agents across separate CLI invocations.
-Messages survive process restarts, stored at `~/.lionagi/teams/{id}.json`.
-
-```bash
-li team create "research-team" -m "researcher,writer,reviewer"
-li team send "draft ready" --team research-team --to writer --from researcher
-li team receive --team research-team --as writer
-```
-
-**Use when**: coordination spans separate CLI runs or background processes.
-**Don't use** within a single `li o flow` — the orchestrator's dependency graph is sufficient.
-
-→ Cookbook: [Team coordination](cookbook/team-coordination.md)
-
----
-
-## operate
-
-The universal Python method for an LLM turn with tool invocation, structured output,
-and streaming. Automatically routes to the right backend (API vs CLI endpoint).
+`operate()` is the general Python entry point for a recorded turn with structured
+output, tool schemas, and tool invocation.
 
 ```python
 from pydantic import BaseModel
-class Result(BaseModel):
+
+class Finding(BaseModel):
     summary: str
-    risk: str
+    severity: str
 
 result = await branch.operate(
-    instruction="Analyze this diff for security issues:\n" + diff,
-    response_format=Result,
+    instruction="Inspect the supplied change and report its highest-risk issue.",
+    context={"diff": diff},
+    response_format=Finding,
 )
 ```
 
-**Use when**: you need tools, structured output, or streaming in Python.
-**Don't use** for raw message objects — use `branch.chat()`. For live stream chunks — use `branch.run()`.
+Registering a tool does not make `chat()` or `communicate()` execute it. Enable the
+action path explicitly:
 
-→ Full reference: [`operate()`](api/operations.md)
+```python
+branch.register_tools([search_docs])
 
----
-
-## persist — run_id
-
-Every CLI invocation writes state to `~/.lionagi/runs/{run_id}/` (format: `YYYYMMDDTHHMMSS-{uuid6}`).
-
-```text
-~/.lionagi/runs/20260420T103404-abc123/
-├── run.json          ← manifest
-├── branches/         ← branch snapshots
-├── stream/           ← live chunks (stream_persist=True)
-└── artifacts/        ← agent-written files
+result = await branch.operate(
+    instruction="Find the current retry policy and summarize it.",
+    actions=True,
+    tools=["search_docs"],
+)
 ```
 
-Resume a previous run:
+For a task that may require multiple tool rounds, use `ReAct()` instead of assuming
+one `operate()` call will complete an open-ended workflow.
+
+→ [`operate()` and the Middle protocol](api/operations.md)
+
+## Session and flow
+
+A `Session` owns one or more branches, their in-process exchange, shared memory, and
+the graph execution kernel. A default branch is created automatically.
+
+```python
+import lionagi as li
+
+session = li.Session()
+researcher = session.new_branch(name="researcher", chat_model="openai/gpt-4.1-mini")
+writer = session.new_branch(name="writer", chat_model="anthropic/claude-sonnet-4")
+
+session.send(researcher.id, writer.id, "Research is ready")
+await session.sync()
+messages = session.receive(writer.id)
+```
+
+For Python DAGs, `Builder` creates operations and `Session.flow()` executes them:
+
+```python
+builder = li.Builder()
+research = builder.add_operation(
+    "communicate",
+    instruction="Research the trade-offs of the proposed design.",
+)
+summary = builder.add_operation(
+    "communicate",
+    depends_on=[research],
+    instruction="Turn the research into an executive summary.",
+)
+
+result = await session.flow(builder.get_graph())
+print(result["operation_results"][summary])
+```
+
+`Builder` is incremental: after the first node, omitting `depends_on` attaches the
+new operation after the builder's current head or heads. It is chaining shorthand,
+not a way to create a new independent root. Use explicit dependencies or
+`expand_from_result(..., strategy=ExpansionStrategy.CONCURRENT)` for parallel work.
+
+The CLI's `li o flow` uses the same execution kernel but has a model plan the graph
+from a task. `li play NAME` runs a reusable, parameterized flow specification.
+
+→ [`Session` reference](api/session.md) · [Python DAG API](api/flow.md)
+
+## Durable runs and control
+
+Task-producing CLI commands persist run/session state under `~/.lionagi/` and in
+StateDB. This is what makes background execution, monitoring, and resume possible.
+User-facing artifacts go to `--save` when supplied; durable state is not the same as
+the artifact directory.
 
 ```bash
-li agent -r "follow up on the auth module"          # last branch
-li agent -r b_abc456 "deepen section 3"             # specific branch
+li agent claude "Review the authentication module"
+li agent -r BRANCH_ID "Now propose the smallest fix"
+
+li o flow claude "Audit, fix, and verify the package" --save ./out --background
+li monitor --watch
+li wait RUN_ID
+li o ctl status RUN_ID
 ```
 
-**Use when**: you want reproducibility, inspection, or resume without re-running.
-**Persist is CLI-only** — driving Branch from Python? Use `branch.to_df()` for history export.
+`li o flow --resume ID` restarts a checkpointed flow after its process ended.
+`li o ctl resume ID` is different: it unpauses a flow that is still running.
 
-→ Cookbook: [Resumable background](cookbook/resumable-background.md)
+Python users control serialization themselves with `to_dict()`, `from_dict()`,
+`to_df()`, and log persistence. The CLI/Studio run lifecycle is not automatically
+created merely by constructing a `Branch`.
 
----
+→ [CLI reference](cli-reference.md)
 
----
+## Providers and endpoints
 
-## Agent Infrastructure
+A **provider** selects a backend family. An **endpoint** selects one capability from
+that family. `iModel` resolves the pair through the endpoint registry.
 
-`AgentSpec` + `create_agent()` — preset configurations for common agent patterns that wire a
-fully configured `Branch` without boilerplate.
+```python
+api_model = li.iModel(provider="openai", endpoint="chat", model="gpt-4.1-mini")
+cli_model = li.iModel(provider="claude_code", model="sonnet")
+```
+
+Keep API and CLI providers distinct:
+
+- `openai`, `anthropic`, and `gemini` call hosted APIs and use API keys.
+- `codex`, `claude_code`, `gemini_code`, and `pi` launch installed command-line
+  agents and use those tools' authentication.
+- Model strings with a slash, such as `anthropic/claude-sonnet-4`, infer the provider
+  from the prefix.
+
+Provider packages are organized by implementation owner, not always by public
+alias: Gemini endpoints live in `lionagi/providers/google/`, while users select
+`provider="gemini"` or `provider="gemini_code"`.
+
+→ [`iModel` reference](api/imodel.md) · [Provider matrix](reference/providers.md)
+
+## Reusable definitions
+
+The CLI supports four different kinds of reusable material:
+
+| Definition | Typical location | Purpose |
+|------------|------------------|---------|
+| Agent profile | `.lionagi/agents/<name>/<name>.md` | Model defaults and system prompt |
+| Skill | `.lionagi/skills/<name>/SKILL.md` | Static instructions loaded on demand |
+| Playbook | `.lionagi/playbooks/<name>.playbook.yaml` | Parameterized flow invocation |
+| Plugin | `.lionagi/plugins/<name>/plugin.yaml` | A trusted bundle of profiles, playbooks, providers, or other extensions |
+
+Project-local definitions take precedence where supported. Plugins are inert until
+their declared contents are explicitly trusted and enabled.
+
+```bash
+li agent -a reviewer "Review this patch"
+li skill show commit
+li play audit --mode security "the auth package"
+li plugin info my-plugin
+```
+
+## AgentSpec and permissions
+
+`AgentSpec` is the Python equivalent of a repeatable agent configuration. It combines
+a role/profile with model, tools, permissions, policy pack, context management, and
+tool hooks, then `create_agent()` wires a ready-to-use `Branch`.
 
 ```python
 from lionagi.agent import AgentSpec, create_agent
+from lionagi.agent.hooks import log_tool_call
 
-# Preset: coding agent with file tools and a strict system prompt
-spec = AgentSpec.coding(model="openai/gpt-4.1", cwd="/path/to/project")
+spec = AgentSpec.coding(
+    model="openai/gpt-4.1",
+    cwd="/path/to/project",
+    secure=True,
+)
+spec.post("*", log_tool_call)
 
-# Add guardrail hooks
-from lionagi.agent.hooks import guard_destructive, log_tool_use
-spec.pre("bash", guard_destructive)
-spec.post("*", log_tool_use)
-
-# Create — returns a ready-to-use Branch
 branch = await create_agent(spec)
-response = await branch.chat("Fix the import cycle in utils.py")
+result = await branch.operate(
+    instruction="Inspect the import cycle and make the smallest safe edit.",
+    actions=True,
+)
 ```
 
-**Why it exists**: `Branch` is a blank slate. `AgentSpec` captures what role, tools, permissions,
-and system prompt belong together so that the same agent definition can be reused, tested, and
-serialized to YAML without manually wiring hooks each time.
+The secure coding preset installs destructive-command and workspace-containment
+guards in the `security_pre` hook phase. Permissions and guards are complementary:
+permissions decide which calls are allowed, while guards enforce non-negotiable
+safety checks and re-check rewritten arguments.
 
-**Permission system**: rules on `AgentSpec.permissions` express what each tool is allowed to
-do. `mode="rules"` checks allow/deny/escalate lists per tool call before execution. Convenience
-presets: `PermissionPolicy.read_only()`, `PermissionPolicy.safe()`, `PermissionPolicy.deny_all()`.
+→ [`AgentSpec`, permissions, and hooks](api/agent-config.md)
 
-**Hook system**: pre/post/error hooks attach at the tool phase level. `spec.pre("bash", fn)`
-runs `fn(tool_name, action, args)` before the bash tool executes; return a modified `args` dict
-to rewrite the call or raise `PermissionError` to block it. Post-hooks receive the result and
-can mutate it. Built-in hooks live in `lionagi.agent.hooks`.
+## Team
 
-**Settings loading**: `create_agent()` reads `~/.lionagi/settings.yaml` (global) and optionally
-`.lionagi/settings.yaml` (project-local, only when `trust_project_settings=True`). The YAML can
-declare shell-command hooks and Python-import hooks without writing Python code.
+A CLI team is a durable, named inbox shared across separate processes. It is useful
+when coordination outlives one flow invocation.
 
-```yaml
-# ~/.lionagi/settings.yaml
-hooks:
-  pre:
-    bash:
-      - python: "lionagi.agent.hooks:guard_destructive"
-  post:
-    "*":
-      - python: "lionagi.agent.hooks:log_tool_use"
+```bash
+li team create docs-team -m researcher,writer,reviewer
+li team send "Draft ready" --team docs-team --to writer --from researcher
+li team receive --team docs-team --as writer
 ```
 
-**Use when**: you need a repeatable agent configuration — same tools, same guardrails, multiple
-runs. For one-off Python use, wiring a `Branch` directly is fine.
-
-**Don't use** if you're running `li agent` from the CLI — profiles (`~/.lionagi/agents/`) serve
-that role.
-
-→ Full reference: [`AgentSpec` and `create_agent()`](api/agent-config.md)
-
----
+Within one Python process, use the `Session` exchange. Within a single dependency
+graph, prefer graph edges unless workers genuinely need asynchronous messages.
 
 ## Sandbox
 
-`SandboxSession` wraps a git worktree for isolated, reversible code changes.
+`SandboxSession` creates an isolated git worktree for reversible code changes.
 
 ```python
-from lionagi.tools.sandbox import create_sandbox, sandbox_diff, sandbox_commit, sandbox_merge, sandbox_discard
+from lionagi.tools.sandbox import create_sandbox, sandbox_diff, sandbox_discard
 
-# Create: a new branch + worktree at <repo>/.worktrees/sandbox-<id>/
-session = await create_sandbox(repo_root="/path/to/project")
+sandbox = await create_sandbox(repo_root="/path/to/project")
+agent = await create_agent(AgentSpec.coding(cwd=sandbox.worktree_path))
+await agent.operate(instruction="Refactor the auth module.", actions=True)
 
-# Hand the worktree path to an agent
-branch = await create_agent(AgentSpec.coding(cwd=session.worktree_path))
-await branch.chat("Refactor the auth module")
-
-# Inspect before committing
-diff = await sandbox_diff(session)
-print(diff["stat"])
-
-# Commit inside the sandbox branch
-await sandbox_commit(session, "refactor: split auth into separate module")
-
-# Approve → merge back into the base branch
-await sandbox_merge(session)
-
-# OR reject → delete worktree, no trace left
-await sandbox_discard(session)
+print((await sandbox_diff(sandbox))["stat"])
+await sandbox_discard(sandbox)  # or commit and merge after review
 ```
 
-**Why worktrees instead of temp dirs**:
+Use a sandbox for speculative writes that need an explicit review boundary. A
+read-only analysis does not need the worktree overhead.
 
-- The agent sees the real repo (same file history, same git objects) — not a copy.
-- Changes become a real git branch: reviewable via `git diff`, mergeable with `git merge --no-ff`.
-- `discard()` removes the branch and worktree atomically — the base branch is never modified.
+→ [`SandboxSession` reference](api/sandbox.md)
 
-**Lifecycle**:
-
-```text
-create_sandbox() → [agent edits files] → sandbox_diff()
-    → sandbox_commit() → sandbox_merge()   # accepted
-                       → sandbox_discard() # rejected
-```
-
-`session.is_active` is `True` until `sandbox_merge()` or `sandbox_discard()` completes.
-
-**Use when**: an agent might make destructive or speculative changes you need to review before
-merging. Pair with `AgentSpec.coding(cwd=session.worktree_path)` to confine the agent.
-**Don't use** for read-only analysis — worktrees have overhead; just point the agent at the repo.
-
-→ Full reference: [`SandboxSession`](api/sandbox.md)
-
----
-
-Next: [CLI reference](cli-reference.md) for full flag tables, or [API reference](api/index.md)
-for the Python SDK surface.
+Next: [Choose a surface](choosing-a-surface.md), [CLI reference](cli-reference.md),
+or [Python API reference](api/index.md).

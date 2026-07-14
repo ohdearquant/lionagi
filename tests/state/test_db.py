@@ -15,6 +15,7 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import text
 
 from lionagi.state.db import StateDB
 
@@ -140,6 +141,125 @@ async def test_context_manager():
         version = await state.schema_version()
         assert version == "1"
     assert state._engine is None
+
+
+async def test_managed_entity_creations_write_initial_lifecycle_history(db: StateDB):
+    progression_id = uid()
+    await db.create_progression(progression_id)
+    session_id = uid()
+    await db.create_session(
+        {"id": session_id, "progression_id": progression_id, "status": "running"}
+    )
+
+    invocation_id = uid()
+    await db.create_invocation({"id": invocation_id, "skill": "test", "started_at": time.time()})
+
+    show_id = uid()
+    await db.create_show({"id": show_id, "topic": "creation-history", "show_dir": "shows/history"})
+    play_id = uid()
+    await db.create_play({"id": play_id, "show_id": show_id, "name": "first"})
+
+    schedule_id = uid()
+    await db.create_schedule(
+        {
+            "id": schedule_id,
+            "name": "creation-history",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    schedule_run_id = uid()
+    await db.create_schedule_run(
+        {
+            "id": schedule_run_id,
+            "schedule_id": schedule_id,
+            "trigger_context": {},
+            "action_kind": "agent",
+            "action_args": [],
+            "status": "running",
+            "fired_at": time.time(),
+        }
+    )
+    advanced_run_id = uid()
+    advanced_run = {
+        "id": advanced_run_id,
+        "schedule_id": schedule_id,
+        "trigger_context": {},
+        "action_kind": "agent",
+        "action_args": [],
+        "status": "running",
+        "fired_at": time.time(),
+    }
+    await db.create_schedule_run_and_advance(
+        advanced_run,
+        schedule_id=schedule_id,
+        schedule_fields={"last_fired_at": time.time()},
+    )
+    replacement_run_id = uid()
+    replacement_run = {**advanced_run, "id": replacement_run_id}
+    assert await db.tombstone_and_replace_schedule_run(
+        schedule_run_id,
+        replacement_run,
+    )
+
+    # Idempotent creation retries do not append another creation event.
+    await db.create_session(
+        {"id": session_id, "progression_id": progression_id, "status": "running"}
+    )
+
+    expected = {
+        session_id: ("session", "running"),
+        invocation_id: ("invocation", "running"),
+        show_id: ("show", "active"),
+        play_id: ("play", "pending"),
+        schedule_run_id: ("schedule_run", "running"),
+        advanced_run_id: ("schedule_run", "running"),
+        replacement_run_id: ("schedule_run", "running"),
+    }
+    placeholders = ", ".join(f":id{i}" for i in range(len(expected)))
+    params = {f"id{i}": entity_id for i, entity_id in enumerate(expected)}
+    async with db._read() as conn:
+        rows = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT entity_type, entity_id, previous_status, status "
+                        f"FROM status_transitions WHERE entity_id IN ({placeholders})"
+                    ),
+                    params,
+                )
+            )
+            .mappings()
+            .all()
+        )
+
+    assert len(rows) == len(expected)
+    for row in rows:
+        assert row["previous_status"] is None
+        assert (row["entity_type"], row["status"]) == expected[row["entity_id"]]
+
+
+async def test_creation_history_failure_rolls_back_managed_entity(
+    db: StateDB, monkeypatch: pytest.MonkeyPatch
+):
+    from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService
+
+    async def _fail_initial_history(self, connection, command):
+        raise RuntimeError("forced history failure")
+
+    monkeypatch.setattr(
+        SQLAlchemyLifecycleService,
+        "initialize_in_transaction",
+        _fail_initial_history,
+    )
+    invocation_id = uid()
+    with pytest.raises(RuntimeError, match="forced history failure"):
+        await db.create_invocation(
+            {"id": invocation_id, "skill": "test", "started_at": time.time()}
+        )
+
+    assert await db.get_invocation(invocation_id) is None
 
 
 async def test_engine_is_none_when_closed():

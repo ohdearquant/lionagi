@@ -226,23 +226,31 @@ class Message(Node, Sendable):
 
     content: Any = None
     _render_cache: dict[str, tuple[Any, int, Any]] = PrivateAttr(default_factory=dict)
+    # Memoized "fully JSON-safe" verdict, keyed by (content identity, tracked
+    # revision) — see `_content_is_render_safe`. Only ever holds a *safe*
+    # verdict; an unsafe (untracked-mutable) verdict is never cached.
+    _untracked_mutable_safe: tuple[Any, int] | None = PrivateAttr(default=None)
 
     def __getstate__(self) -> dict[str, Any]:
         # A clone must start uncached: the copied entry would hold the source
         # content/revision pair and never be servable.
         state = super().__getstate__()
         private = state.get("__pydantic_private__")
-        if private and private.get("_render_cache"):
+        if private and (private.get("_render_cache") or private.get("_untracked_mutable_safe")):
             private = dict(private)
             private["_render_cache"] = {}
+            private["_untracked_mutable_safe"] = None
             state = {**state, "__pydantic_private__": private}
         return state
 
     def __deepcopy__(self, memo: dict | None = None) -> "Message":
         clone = super().__deepcopy__(memo)
         private = getattr(clone, "__pydantic_private__", None)
-        if private is not None and private.get("_render_cache"):
-            private["_render_cache"] = {}
+        if private is not None:
+            if private.get("_render_cache"):
+                private["_render_cache"] = {}
+            if private.get("_untracked_mutable_safe"):
+                private["_untracked_mutable_safe"] = None
         return clone
 
     @field_validator("content", mode="before")
@@ -324,8 +332,13 @@ class Message(Node, Sendable):
 
     def _render_cached(self, variant: str, render: Callable[[], Any]) -> Any:
         """Return a rendering cached by content identity and revision (not
-        id(), which could cross-wire non-overlapping objects reusing an address)."""
+        id(), which could cross-wire non-overlapping objects reusing an address).
+        Bypasses the cache entirely when content holds a value the revision
+        tracker cannot observe in-place mutation of."""
         content = self.content
+        if not self._content_is_render_safe(content):
+            return render()
+
         revision = getattr(content, "_render_revision", 0)
         cached = self._render_cache.get(variant)
         if cached is not None and cached[0] is content and cached[1] == revision:
@@ -334,6 +347,30 @@ class Message(Node, Sendable):
         rendered = render()
         self._render_cache[variant] = (content, revision, _copy_rendered(rendered))
         return rendered
+
+    def _content_is_render_safe(self, content: Any) -> bool:
+        """True if `content` is fully JSON-safe (no untracked-mutable value
+        reachable at any depth, including dict keys) — memoized per
+        (content identity, tracked revision) so a warm JSON-safe content is
+        walked at most once per revision instead of on every render.
+
+        Only the *safe* verdict is ever cached. An untracked-mutable object
+        can mutate without bumping the tracked revision (that is the whole
+        reason the render cache must bypass for it), so a cached *unsafe*
+        verdict has no revision to reliably invalidate on; recomputing it
+        every call is the only way to keep it honest. Content that never
+        clears the walk is presumably rare, so re-walking it is cheap in
+        practice.
+        """
+        revision = getattr(content, "_render_revision", 0)
+        verdict = self._untracked_mutable_safe
+        if verdict is not None and verdict[0] is content and verdict[1] == revision:
+            return True
+
+        safe = not _content_has_untracked_mutable(content)
+        if safe:
+            self._untracked_mutable_safe = (content, revision)
+        return safe
 
     @property
     def rendered(self) -> str:
@@ -371,6 +408,81 @@ class Message(Node, Sendable):
         if isinstance(msg_, dict) and isinstance(msg_["content"], list):
             return [i for i in msg_["content"] if i["type"] == "image_url"]
         return None
+
+
+_JSON_SAFE_LEAF_TYPES = (type(None), bool, int, float, str, bytes)
+_UNTRACKED_MUTABLE_MAX_DEPTH = 1000
+
+
+class _ExitFrame:
+    """Stack marker: pops `obj_id` off `on_path` once all of its children
+    have been visited, so a later *sibling* reference to the same container
+    is not mistaken for a cycle back through an ancestor."""
+
+    __slots__ = ("obj_id",)
+
+    def __init__(self, obj_id: int) -> None:
+        self.obj_id = obj_id
+
+
+def _has_untracked_mutable(root: Any) -> bool:
+    """True if `root` holds — at any depth, including dict keys — a mutable
+    object whose in-place mutation `_TrackedList`/`_TrackedDict` cannot
+    observe: anything besides JSON-safe primitives and list/dict/tuple/
+    frozenset nesting of them. `type` objects are exempt — content only
+    ever reads their class-level schema, never live instance state (see
+    `_build_structure` in instruction.py).
+
+    Iterative (explicit stack, not recursion) so deeply nested-but-safe
+    input cannot raise `RecursionError`. Fails safe — returns True without
+    raising — for a self-referential (cyclic) container or once traversal
+    exceeds a bounded depth, since neither can be proven safe to cache.
+    """
+    stack: list[tuple[Any, int]] = [(root, 0)]
+    on_path: set[int] = set()
+
+    while stack:
+        value, depth = stack.pop()
+
+        if isinstance(value, _ExitFrame):
+            on_path.discard(value.obj_id)
+            continue
+
+        if isinstance(value, _JSON_SAFE_LEAF_TYPES) or isinstance(value, type):
+            continue
+
+        if isinstance(value, (list, tuple, frozenset, dict)):
+            if depth > _UNTRACKED_MUTABLE_MAX_DEPTH:
+                return True
+
+            obj_id = id(value)
+            if obj_id in on_path:
+                return True  # cyclic reference: cannot prove safe
+
+            on_path.add(obj_id)
+            stack.append((_ExitFrame(obj_id), depth))
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    stack.append((key, depth + 1))
+                    stack.append((item, depth + 1))
+            else:
+                for item in value:
+                    stack.append((item, depth + 1))
+            continue
+
+        return True
+
+    return False
+
+
+def _content_has_untracked_mutable(content: Any) -> bool:
+    """True if any render-input field on `content` carries a value the
+    revision tracker cannot observe in-place mutation of — the cache must
+    not trust its revision counter and should re-render on every call."""
+    allowed = getattr(content, "allowed", None)
+    if not callable(allowed):
+        return False
+    return any(_has_untracked_mutable(getattr(content, name, None)) for name in allowed())
 
 
 def _copy_rendered(rendered: Any) -> Any:

@@ -150,6 +150,7 @@ sessions = Table(
     "sessions",
     metadata,
     Column("id", Text, primary_key=True),
+    Column("cc_session_id", Text),
     Column("created_at", Float, nullable=False),
     Column("node_metadata", JSON),
     Column("name", Text),
@@ -234,6 +235,12 @@ Index(
     sessions.c.project,
     sqlite_where=text("project IS NOT NULL"),
     postgresql_where=text("project IS NOT NULL"),
+)
+Index(
+    "idx_sessions_cc_session",
+    sessions.c.cc_session_id,
+    sqlite_where=text("cc_session_id IS NOT NULL"),
+    postgresql_where=text("cc_session_id IS NOT NULL"),
 )
 
 # ── branches ──────────────────────────────────────────────────────────────────
@@ -519,6 +526,8 @@ schedules = Table(
     # Cumulative spend budget: NULL means unlimited (see schema.sql).
     Column("budget_usd", Float),
     Column("budget_tokens", Integer),
+    # Rolling-window fire cap: NULL means unlimited (see schema.sql).
+    Column("rate_limit", JSON),
     Column("project", Text),
     # Metric threshold alerts config + last breach fire; see schema.sql.
     Column("threshold_config", JSON),

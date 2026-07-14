@@ -10,7 +10,12 @@ import types as _types
 from typing import Any, Union, get_args, get_origin
 
 from .ast import Lact, Lvar, Program, RLvar
-from .errors import InvalidConstructorError, MissingFieldError, MissingLvarError
+from .errors import (
+    InvalidConstructorError,
+    MissingFieldError,
+    MissingLvarError,
+    TypeMismatchError,
+)
 from .types import ActionCall
 
 NOTE_NAMESPACE = "note"
@@ -128,6 +133,17 @@ def _alias_field(node: Lvar | RLvar | Lact) -> str | None:
     return None
 
 
+def _target_model_name(target_type: Any) -> str | None:
+    """Return the nested model class name expected by a spec, if any."""
+    target_type = _unwrap_optional(target_type)
+    if get_origin(target_type) is list:
+        args = get_args(target_type)
+        target_type = _unwrap_optional(args[0]) if args else Any
+    if _is_model_cls(target_type):
+        return target_type.__name__
+    return None
+
+
 def build_action_call(alias: str, node: Lact) -> ActionCall:
     """Parse a lact node's call text into an ``ActionCall`` placeholder.
     Raises ``InvalidConstructorError`` if the call text isn't a parseable ``fn(args)`` expression."""
@@ -183,6 +199,7 @@ def assemble_spec_value(
     scratchpad: dict[str, Any] | None = None,
 ) -> Any:
     """Resolve OUT{}-listed aliases into a value matching ``target_type``."""
+    expected_model = _target_model_name(target_type)
     parts: list[tuple[str | None, Any]] = []
     for alias in refs:
         # Defensive: aliases must be hashable strings. Skip nested structures
@@ -195,6 +212,12 @@ def assemble_spec_value(
         if not found:
             continue
         node = lacts_by_alias.get(alias) or lvars_by_alias.get(alias)
+        declared_model = getattr(node, "model", None)
+        if expected_model and declared_model and declared_model != expected_model:
+            raise TypeMismatchError(
+                f"alias '{alias}' declares model '{declared_model}', "
+                f"but the target spec expects '{expected_model}'"
+            )
         field = _alias_field(node) if node else None
         parts.append((field, value))
 

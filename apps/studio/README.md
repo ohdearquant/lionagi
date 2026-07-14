@@ -30,7 +30,7 @@ All variables are optional; defaults are shown.
 | `LIONAGI_STUDIO_PORT` | `8765` | FastAPI bind port |
 | `LIONAGI_STUDIO_AUTH_TOKEN` | *(unset)* | Bearer token for `/api/*` routes |
 | `LIONAGI_STUDIO_FRONTEND_DIST` | `apps/studio/frontend/dist` | Path to built SPA dist/ |
-| `LIONAGI_DATA_ROOT` | `~/.lionagi` | Base LionAGI data directory |
+| `LIONAGI_HOME` | `~/.lionagi` | Base LionAGI data directory (holds `state.db`) |
 | `LIONAGI_SHOWS_ROOT` | `~/khive-work/shows` | Show artifact root |
 | `CORS_ORIGINS` | `localhost:5173,localhost:3000` | Comma-separated allowed browser origins |
 
@@ -84,7 +84,7 @@ Authorization: Bearer <token>
 
 ## Database
 
-Studio uses the LionAGI state database at `$LIONAGI_DATA_ROOT/state.db`
+Studio uses the LionAGI state database at `$LIONAGI_HOME/state.db`
 (default `~/.lionagi/state.db`).
 
 ## Testing

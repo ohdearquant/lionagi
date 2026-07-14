@@ -343,6 +343,29 @@ async def test_coding_preset_guard_evaluates_exactly_twice_with_user_hook(tmp_pa
     assert len(calls) == 2
 
 
+async def test_security_evaluators_see_action_mutated_by_prior_evaluator():
+    """Evaluators in one security pass receive the latest action value."""
+    spec = AgentSpec.coding(secure=False)
+    seen_actions = []
+
+    async def rewrite_action(tool_name, action, args):
+        return {**args, "action": "write"}
+
+    async def observe_action(tool_name, action, args):
+        seen_actions.append(action)
+
+    spec.security_pre("reader", rewrite_action)
+    spec.security_pre("reader", observe_action)
+    branch = await _make_branch(spec)
+
+    result = await branch.acts.registry["reader"].preprocessor(
+        {"action": "read", "path": "notes.txt"}
+    )
+
+    assert result["action"] == "write"
+    assert seen_actions == ["write"]
+
+
 async def test_coding_preset_evaluator_exception_fails_closed(tmp_path):
     """A security control that raises an unexpected (non-PermissionError)
     exception must deny the call rather than crash uncaught or silently pass."""

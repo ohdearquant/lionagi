@@ -12,6 +12,7 @@ import pytest
 
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
+from lionagi.state.claude_mirror import session_db_id  # noqa: E402
 from lionagi.state.db import StateDB  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -285,6 +286,24 @@ async def test_get_session_returns_none_graph_for_null_node_metadata(patched_ses
     assert result["branches"] == []
     assert result["duration_ms"] is None
     assert result["source_kind"] == "live"
+
+
+# ---------------------------------------------------------------------------
+# Test 1.8a — get_session_by_cc_id: legacy rows fall back to deterministic id
+# ---------------------------------------------------------------------------
+
+
+async def test_get_session_by_cc_id_falls_back_for_legacy_row(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    cc_uid = "11111111-2222-3333-4444-555555555555"
+    legacy_session_id = session_db_id(cc_uid)
+    await seed_session(db_path, session_id=legacy_session_id)
+
+    result = await svc.get_session_by_cc_id(cc_uid)
+
+    assert result is not None
+    assert result["id"] == legacy_session_id
+    assert result["name"] == "Test Session"
 
 
 # ---------------------------------------------------------------------------
@@ -834,6 +853,20 @@ async def test_get_session_windows_newest_messages_by_default(patched_sessions_d
     assert branch["message_offset"] == 0
 
 
+async def test_get_session_branch_bounds_cover_full_progression_when_messages_are_windowed(
+    patched_sessions_db,
+):
+    svc, db_path = patched_sessions_db
+    await seed_paginated_session(db_path, count=10)
+
+    result = await svc.get_session("sess-paged", message_limit=3)
+
+    branch = result["branches"][0]
+    assert [m["timestamp"] for m in branch["messages"]] == [107.0, 108.0, 109.0]
+    assert branch["first_message_at"] == 100.0
+    assert branch["last_message_at"] == 109.0
+
+
 async def test_get_session_offset_pages_older_history(patched_sessions_db):
     svc, db_path = patched_sessions_db
     await seed_paginated_session(db_path, count=10)
@@ -1040,6 +1073,37 @@ async def test_get_session_action_stats_match_canonical_fully_qualified_lion_cla
     assert stats["tool_call_count"] == 1
     assert stats["error_count"] == 1
     assert "/tmp/canonical.txt" in stats["files"]
+
+
+def test_branch_file_stats_only_accept_structured_file_tool_paths():
+    from lionagi.studio.services.sessions import _branch_message_stats
+
+    action_messages = [
+        {
+            "id": "read",
+            "lion_class": "ActionRequest",
+            "content": {"function": "Read", "arguments": {"file_path": "/repo/src/main.py"}},
+        },
+        {
+            "id": "edit",
+            "lion_class": "ActionRequest",
+            "content": {"function": "Edit", "arguments": {"path": "/repo/Makefile"}},
+        },
+        {
+            "id": "glob",
+            "lion_class": "ActionRequest",
+            "content": {"function": "Glob", "arguments": {"path": "/repo/src"}},
+        },
+        {
+            "id": "bash",
+            "lion_class": "ActionRequest",
+            "content": {"function": "Bash", "arguments": {"path": "//"}},
+        },
+    ]
+
+    stats = _branch_message_stats(4, {"action": 4}, action_messages)
+
+    assert stats["files"] == ["/repo/Makefile", "/repo/src/main.py"]
 
 
 async def test_get_session_message_count_is_db_aggregate_not_progression_length(

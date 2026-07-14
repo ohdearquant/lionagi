@@ -293,6 +293,32 @@ async def test_run_guard_rejection_no_pre_guard_side_effects():
     assert not any(isinstance(m, Instruction) for m in branch.messages)
 
 
+async def test_chat_guard_rejection_no_pre_guard_side_effects():
+    """Mirrors test_run_guard_rejection_no_pre_guard_side_effects for chat():
+    a rejected prompt must never let a registered context provider run its
+    (potentially side-effecting) gather — the guard is the first awaited
+    operation for chat()'s turn, strictly before context providers run,
+    matching run()'s ordering."""
+    branch = LionAGIMockFactory.create_mocked_branch(response="hello", system="be helpful")
+
+    spy = _SpyContextProvider()
+    branch.providers.register(spy, name="spy")
+
+    bus = HookBus()
+
+    async def reject_submit(**kw):
+        raise PermissionError("blocked")
+
+    bus.on(HookPoint.USER_PROMPT_SUBMIT, reject_submit)
+    branch._hooks = bus
+
+    with pytest.raises(PermissionError):
+        await branch.chat("SECRET=top-secret")
+
+    assert spy.calls == [], "context providers must never run on a rejected prompt"
+    assert not any(isinstance(m, Instruction) for m in branch.messages)
+
+
 async def test_run_yielded_instruction_already_in_branch_messages():
     """A consumer that receives the first yielded Instruction must find it
     already committed to branch.messages at that moment — the guard runs

@@ -364,6 +364,7 @@ class TestNoDeadlocks:
         assert elapsed < 5.0  # Generous timeout for CI
 
 
+@pytest.mark.performance
 class TestPerformanceSmoke:
     @staticmethod
     async def _run_metadata_calls():

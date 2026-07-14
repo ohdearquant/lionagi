@@ -139,6 +139,13 @@ def _svc_validate_budget_tokens(budget_tokens: Any) -> None:
         raise ValueError(f"budget_tokens must be a positive integer, got {budget_tokens!r}")
 
 
+def _svc_validate_rate_limit(rate_limit: Any) -> None:
+    """Service-boundary check for the optional rolling-window fire cap."""
+    from lionagi.studio.scheduler.admit import validate_rate_limit
+
+    validate_rate_limit(rate_limit)
+
+
 def _svc_validate_interval_sec(interval: Any, *, required: bool = False) -> None:
     """Service-boundary check: reject a missing or non-positive interval.
     `required=True` rejects a missing/null value — otherwise the schedule
@@ -330,6 +337,7 @@ CREATE TABLE IF NOT EXISTS schedules (
     max_runs            INTEGER,
     budget_usd          REAL,
     budget_tokens       INTEGER,
+    rate_limit          JSON,
     project             TEXT,
     created_at          REAL    NOT NULL,
     updated_at          REAL    NOT NULL
@@ -435,6 +443,7 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     _svc_validate_max_runs(data.get("max_runs"))
     _svc_validate_budget_usd(data.get("budget_usd"))
     _svc_validate_budget_tokens(data.get("budget_tokens"))
+    _svc_validate_rate_limit(data.get("rate_limit"))
     _svc_validate_threshold_config(data.get("threshold_config"))
     if data.get("trigger_type") == "cron":
         _svc_validate_cron_expr(data.get("cron_expr"), required=True)
@@ -531,6 +540,8 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
             _svc_validate_budget_usd(fields["budget_usd"])
         if "budget_tokens" in fields:
             _svc_validate_budget_tokens(fields["budget_tokens"])
+        if "rate_limit" in fields:
+            _svc_validate_rate_limit(fields["rate_limit"])
         if "threshold_config" in fields:
             _svc_validate_threshold_config(fields["threshold_config"])
 
@@ -679,6 +690,7 @@ class CreateScheduleRequest(BaseModel):
     max_runs: int | None = None
     budget_usd: float | None = None
     budget_tokens: int | None = None
+    rate_limit: dict | None = None
     project: str | None = None
     threshold_config: dict | None = None
 
@@ -710,6 +722,7 @@ class UpdateScheduleRequest(BaseModel):
     max_runs: int | None = None
     budget_usd: float | None = None
     budget_tokens: int | None = None
+    rate_limit: dict | None = None
     project: str | None = None
     threshold_config: dict | None = None
 

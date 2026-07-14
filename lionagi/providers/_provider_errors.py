@@ -72,6 +72,12 @@ class ProviderStreamDisconnectError(ProviderError):
     retryable: ClassVar[bool] = True
 
 
+class ProviderTeardownError(ProviderError):
+    """A provider transport failed while releasing its stream or session."""
+
+    retryable: ClassVar[bool] = True
+
+
 class ProviderAdapterError(ProviderError):
     """A CLI adapter reported a non-success status with no more specific cause
     identified from the message text (e.g. an `agy` turn ending status=ERROR)."""
@@ -163,6 +169,10 @@ _STREAM_DISCONNECT_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"stream\s+disconnected\s+before\s+completion", re.IGNORECASE),
 ]
 
+_TEARDOWN_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"agy\s+teardown\s+failed:\s*event\s+loop\s+is\s+closed", re.IGNORECASE),
+]
+
 # Catch-all for adapters (e.g. `agy`) that report a bare non-success status
 # with no parseable cause in the message. Checked last — a more specific
 # pattern above always wins when the adapter's own text names one.
@@ -206,6 +216,10 @@ def classify_provider_error(
     for pat in _STREAM_DISCONNECT_PATTERNS:
         if pat.search(combined):
             return ProviderStreamDisconnectError(content, stderr_tail=stderr_tail, raw=content)
+
+    for pat in _TEARDOWN_PATTERNS:
+        if pat.search(combined):
+            return ProviderTeardownError(content, stderr_tail=stderr_tail, raw=content)
 
     for pat in _ADAPTER_PATTERNS:
         if pat.search(combined):

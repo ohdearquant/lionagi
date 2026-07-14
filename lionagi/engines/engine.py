@@ -473,6 +473,7 @@ class EngineRun:
         verbose: bool = False,
         executor_ref: dict[str, Any] | None = None,
         context: dict[str, Any] | None = None,
+        on_branch_created: Any = None,
         spawn_branch_setup: Any = None,
         on_op_complete: Any = None,
     ) -> dict[str, Any]:
@@ -491,6 +492,7 @@ class EngineRun:
                 verbose=verbose,
                 on_progress=on_progress,
                 executor_ref=executor_ref,
+                on_branch_created=on_branch_created,
                 spawn_branch_setup=spawn_branch_setup,
                 on_op_complete=on_op_complete,
             )

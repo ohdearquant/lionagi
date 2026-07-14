@@ -3,8 +3,11 @@
 """Durable dispatch outbox core (ADR-0059).
 
 Durability and delivery are separate guarantees (row persists; scheduler
-retries with backoff); transport is argv-safe, never shell-interpolated.
-See docs/internals/runtime.md.
+retries with backoff); transport is argv-safe, never shell-interpolated. A
+``delivered`` row means the configured transport command exited zero, not that
+the destination's consumer committed or acknowledged the payload. Consumer
+acknowledgement exists only for ``ack_required`` rows that reach ``acked``.
+See docs/adr/ADR-0059-durable-dispatch-outbox.md.
 """
 
 from __future__ import annotations
@@ -59,6 +62,28 @@ _PAYLOAD_TOKEN = "{payload}"  # noqa: S105 -- template placeholder, not a creden
 _DELIVER_TO_TOKEN = "{deliver_to}"  # noqa: S105 -- template placeholder, not a credential
 
 
+def _validate_destination(deliver_to: Any) -> None:
+    """Reject a destination that cannot be passed as one safe argv value."""
+    if not isinstance(deliver_to, str) or not deliver_to.strip():
+        raise ValueError("deliver_to must be a non-empty string")
+    if "\x00" in deliver_to:
+        raise ValueError("deliver_to must not contain a NUL byte")
+
+
+def _validate_notify_template(template: Any) -> None:
+    """Validate the configured argv transport and its destination binding."""
+    if (
+        not isinstance(template, list)
+        or not template
+        or not all(isinstance(part, str) for part in template)
+    ):
+        raise ValueError("dispatch.notify_template must be a non-empty list of strings")
+    if not template[0].strip() or any("\x00" in part for part in template):
+        raise ValueError("dispatch.notify_template contains an invalid argv value")
+    if _DELIVER_TO_TOKEN not in template:
+        raise ValueError("dispatch.notify_template must include an exact {deliver_to} argv token")
+
+
 def backoff_seconds(attempt: int) -> float:
     """``min(30 * 2**attempt, 1800)`` seconds (ADR-0059; no jitter)."""
     return min(_BASE_BACKOFF_SECONDS * (2**attempt), _MAX_BACKOFF_SECONDS)
@@ -100,7 +125,16 @@ async def _exec_notify_template(
     deliver_to: str,
     timeout: float = NOTIFY_TIMEOUT_SECONDS,
 ) -> tuple[bool, str]:
-    """Run the notify template argv-exec (never through a shell); returns (success, error)."""
+    """Run the notify template argv-exec (never through a shell); returns (success, error).
+
+    Success means only that the transport command exited zero. It is not a
+    consumer acknowledgement.
+    """
+    try:
+        _validate_notify_template(template)
+        _validate_destination(deliver_to)
+    except ValueError as exc:
+        return False, f"invalid dispatch destination config: {exc}"
     argv = _render_notify_argv(template, payload_json=payload_json, deliver_to=deliver_to)
     # If the template does not place the payload inline, feed it on stdin so
     # templates that read the body from stdin still receive it.
@@ -152,6 +186,7 @@ async def enqueue_dispatch(
     Idempotent on ``dedup_key``. ``max_attempts`` bounds delivery even for
     ack_required rows (dead_letter on exhaustion). See docs/internals/runtime.md.
     """
+    _validate_destination(deliver_to)
     now = time.time()
     dispatch_id = uuid.uuid4().hex
     ack_token = uuid.uuid4().hex if ack_required else None
@@ -454,7 +489,7 @@ async def _deliver_one_due_row(
                 to_state=to_state,
                 reason=StateReason(
                     code=DispatchReasons.DELIVERED_TRANSPORT_OK,
-                    summary="transport succeeded",
+                    summary=("transport command exited 0; consumer acknowledgement not implied"),
                 ),
                 actor=Actor(type="scheduler", id="dispatch_delivery_loop"),
                 idempotency_key=f"delivered:{dispatch_id}:{next_attempt}",

@@ -1,73 +1,106 @@
-# Install
+# Install LionAGI
+
+LionAGI requires Python 3.10 or newer. Install the CLI in an isolated tool
+environment, or add LionAGI to a Python project.
+
+## CLI installation
+
+With [uv](https://docs.astral.sh/uv/):
 
 ```bash
-pip install lionagi   # or: uv add lionagi
+uv tool install lionagi
+li --version
 ```
 
-## Authenticate your CLI providers
-
-lionagi's CLI aliases (`claude`, `codex`) spawn subprocess tools, not REST API calls.
-Each requires its own login step.
-
-### `claude` (Claude Code CLI)
-
-Option A — subscription login (recommended if you have Claude Max):
+With `pip`:
 
 ```bash
-npm install -g @anthropic-ai/claude-code
-claude login
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install lionagi
+li --version
 ```
 
-Option B — API key (works without a subscription):
+On Windows PowerShell, activate the environment with
+`.venv\Scripts\Activate.ps1`.
+
+## Python project installation
+
+Create a project and add LionAGI as a dependency:
 
 ```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
+mkdir lionagi-quickstart
+cd lionagi-quickstart
+uv init --bare
+uv add lionagi
+uv run python -c "import lionagi; print(lionagi.__version__)"
 ```
 
-### `codex` (OpenAI Codex CLI)
+The printed version is the success check. The equivalent `pip` command inside
+an activated environment is `python -m pip install lionagi`.
 
-Requires ChatGPT Plus or Pro subscription. No API key — uses CLI session:
+## Choose one provider mode
+
+CLI-backed providers run the provider's own coding-agent executable. They use
+that executable's login and do not need an API key in LionAGI.
+
+### Codex CLI
 
 ```bash
 npm install -g @openai/codex
 codex login
+codex --version
 ```
 
-### OpenAI API models (`gpt-4.1-mini`, etc.)
+Use the LionAGI model alias `codex`.
 
-Used by `Branch(chat_model=iModel(model="gpt-4o-mini"))` in Python, not by `li agent`:
+### Claude Code
 
 ```bash
-export OPENAI_API_KEY="sk-..."
+npm install -g @anthropic-ai/claude-code
+claude login
+claude --version
 ```
 
-Add any export to `~/.zshrc` or `~/.bashrc` to persist across shells.
+Use the LionAGI model alias `claude`.
 
-## Verify
+API-backed providers are most useful from Python. Export the matching key
+before running your program:
 
 ```bash
-li --help
+export OPENAI_API_KEY="..."
 ```
 
-```text
-# output:
-usage: li [-h] {orchestrate,o,agent,team} ...
+Other supported keys include `ANTHROPIC_API_KEY` and `GEMINI_API_KEY`. An API
+key does not sign the `codex` or `claude` CLI into its subscription-backed
+session; those CLIs still use their own login commands.
 
-lionagi command line — spawn subagents via any CLI-backed provider.
+## Run the preflight
 
-positional arguments:
-  {orchestrate,o,agent,team}
-    orchestrate (o)     Multi-agent orchestration patterns.
-    agent               Spawn one-shot subagent (blocking); prints final response.
-    team                Team messaging — send/receive between named agents.
+```bash
+li doctor
 ```
 
-## Optional extras
+Healthy core checks use a check mark. A warning that the Studio daemon is not
+running is expected until you start Studio; it does not prevent `li agent` or
+`li o flow` from running. A failed import, dependency, or `~/.lionagi` write
+check must be fixed before continuing.
 
-| Extra | Installs | Command |
-|-------|----------|---------|
-| `reader` | PDF/HTML document parsing | `uv add "lionagi[reader]"` |
-| `ollama` | Local model support via Ollama | `uv add "lionagi[ollama]"` |
-| `rich` | Richer terminal output | `uv add "lionagi[rich]"` |
+For machine-readable diagnostics:
 
-Next: [Your first flow](first-flow.md)
+```bash
+li doctor --json
+```
+
+## If installation fails
+
+- If `li` is not found after `uv tool install`, ensure uv's tool bin directory
+  is on `PATH` with `uv tool update-shell`, then open a new terminal.
+- If a provider command is missing, rerun `codex --version` or
+  `claude --version` directly. LionAGI cannot start a CLI-backed agent until
+  that executable works on its own.
+- If Python cannot import LionAGI, run it through the environment that owns the
+  dependency: `uv run python ...` or activate `.venv` first.
+
+Next, choose the [CLI quickstart](first-flow.md) or the
+[Python quickstart](python.md).

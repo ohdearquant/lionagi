@@ -127,7 +127,7 @@ def main() -> int:
         "--threshold",
         type=_finite_float,
         default=0.2,
-        help="Relative regression threshold (e.g., 0.2 = 20%)",
+        help="Relative regression threshold (e.g., 0.2 = 20%%)",
     )
     ap.add_argument(
         "--normalize-by",

@@ -120,4 +120,5 @@ async def run_gate_pass(
             return args, result
         if result.mutated_args is not None:
             args = result.mutated_args
+            action = args.get("action", action)
     return args, None

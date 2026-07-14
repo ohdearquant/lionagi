@@ -99,7 +99,7 @@ Fixtures: `scripted_branch_factory`, `scripted_branch`, `scripted_endpoint_for`,
 
 ## State: session health and staleness
 
-### Session health (ADR-0024)
+### Session health ([ADR-0057](../adr/ADR-0057-operational-lifecycle-and-transition-audit.md))
 
 Six-level health model replacing the binary "phantom / not":
 
@@ -115,11 +115,11 @@ Six-level health model replacing the binary "phantom / not":
 Health is orthogonal to status: a `status='running'` session can be
 `health=stale`. Derived at read time from three signals:
 
-1. `status` (ADR-0025) — what the CLI last wrote.
-2. `last_message_at` vs the kind-aware threshold (ADR-0019) — activity.
+1. `status` — what the CLI last wrote.
+2. `last_message_at` vs the kind-aware threshold — activity.
 3. Process liveness — does the OS still own the PID recorded?
 
-### Staleness thresholds (ADR-0019)
+### Staleness thresholds ([ADR-0057](../adr/ADR-0057-operational-lifecycle-and-transition-audit.md))
 
 Kind-aware thresholds distinguish "stuck" from "still working":
 

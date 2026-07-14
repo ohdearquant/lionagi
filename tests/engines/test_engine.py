@@ -268,6 +268,28 @@ async def test_run_dag_emits_node_lifecycle_signals():
     assert len(completed) == 1  # NodeCompleted carried the op id
 
 
+@pytest.mark.asyncio
+async def test_run_dag_forwards_on_branch_created_to_session_flow():
+    """The DAG entrypoint must preserve the persistence callback supplied by callers."""
+    from unittest.mock import AsyncMock, patch
+
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.session.session import Session
+
+    session = Session()
+    callback = lambda branch: None
+
+    with patch.object(
+        Session,
+        "flow",
+        new=AsyncMock(return_value={"operation_results": {}}),
+    ) as session_flow:
+        run = Engine().new_run(session=session)
+        await run.run_dag(OperationGraphBuilder().get_graph(), on_branch_created=callback)
+
+    assert session_flow.await_args.kwargs["on_branch_created"] is callback
+
+
 # -- spawned task failures surface to caller ----------------------------------
 
 

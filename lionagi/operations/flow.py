@@ -12,7 +12,7 @@ import logging
 import math
 import os
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -388,7 +388,27 @@ class DependencyAwareExecutor:
                     if isinstance(operation.response, dict) and "context" in operation.response:
                         from lionagi.libs.nested import deep_update
 
-                        deep_update(self.context.content, operation.response["context"])
+                        response_context = operation.response["context"]
+                        if not isinstance(response_context, Mapping):
+                            error = TypeError(
+                                f"Operation {ref_id} response['context'] must be a Mapping, "
+                                f"got {type(response_context).__name__}."
+                            )
+                            operation.execution.status = EventStatus.FAILED
+                            operation.execution.error = error
+                            self.results[operation.id] = {"error": str(error)}
+                            if self.on_progress:
+                                self.on_progress(str(operation.id), branch_name, "failed", elapsed)
+                            if self.verbose:
+                                logger.error(
+                                    "Operation %s failed (%.1fs): %s",
+                                    ref_id,
+                                    elapsed,
+                                    error,
+                                )
+                            return
+
+                        deep_update(self.context.content, dict(response_context))
 
                     if self.on_progress:
                         self.on_progress(str(operation.id), branch_name, "completed", elapsed)
@@ -601,12 +621,12 @@ class DependencyAwareExecutor:
         """Validate that all edge conditions are properly configured."""
         for edge in self.graph.internal_edges.values():
             if edge.condition is not None:
-                from lionagi.protocols.graph.edge import EdgeCondition
+                from lionagi.protocols._concepts import Condition
 
-                if not isinstance(edge.condition, EdgeCondition):
+                if not isinstance(edge.condition, Condition):
                     raise TypeError(
                         f"Edge {edge.id} has invalid condition type: {type(edge.condition)}. "
-                        "Must be EdgeCondition or None."
+                        "Must be a Condition subclass or None."
                     )
 
                 if not hasattr(edge.condition, "apply"):
@@ -672,11 +692,12 @@ class ReactiveExecutor(DependencyAwareExecutor):
         spawn_type: type | None = None,
         node_builder: Any = None,
         max_spawn: int = 50,
+        on_branch_created: Callable[[Any], None] | None = None,
         spawn_branch_setup: Callable[[Operation, Any], None] | None = None,
         on_op_complete: Callable[[Operation], None] | None = None,
         **kwargs: Any,
     ):
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, on_branch_created=on_branch_created, **kwargs)
         if spawn_type is None:
             from lionagi.casts.emission import SpawnRequest
 
@@ -1076,11 +1097,8 @@ class ReactiveExecutor(DependencyAwareExecutor):
 
         clone = base.clone(sender=self.session.id)
         self.session.include_branches(clone)
-        # NOTE: reactive self-expansion clones branches here too; a persisted
-        # reactive run would need the same self._on_branch_created(clone) call
-        # as _preallocate_all_branches to pick up mid-run spawned branches.
-        # Not wired: workflow_run (the only caller threading on_branch_created
-        # today) never runs with reactive=True.
+        if self._on_branch_created is not None:
+            self._on_branch_created(clone)
         if self.spawn_branch_setup is not None:
             self.spawn_branch_setup(child, clone)
         self.operation_branches[child.id] = clone
@@ -1136,6 +1154,7 @@ async def flow(
             node_builder=node_builder,
             max_spawn=max_spawn,
             executor_ref=executor_ref,
+            on_branch_created=on_branch_created,
             spawn_branch_setup=spawn_branch_setup,
             on_op_complete=on_op_complete,
         )

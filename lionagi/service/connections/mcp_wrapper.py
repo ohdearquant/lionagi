@@ -69,6 +69,16 @@ class MCPSecurityConfig:
     filter_sensitive_env: bool = True
     max_connections_per_server: int = 5
 
+    @classmethod
+    def trusted(cls) -> MCPSecurityConfig:
+        """The named, observable transport-trust decision (ADR-0011 delta row 3).
+
+        Allows command and URL transports. A caller must reach for this
+        deliberately -- omitting a policy at MCP load time no longer implies
+        trust; it now preserves the fail-closed default above instead.
+        """
+        return cls(allow_commands=True, allow_urls=True)
+
 
 # --- Generic-executor admission rule -----------------------------------
 # Registration-time admission control, independent of MCPSecurityConfig
@@ -529,6 +539,20 @@ def _structural_coverage_insufficient(
         return True
 
     for key, value in schema.items():
+        if key in ("items", "prefixItems", "unevaluatedItems") and _property_is_bounded(schema):
+            if key == "items" and isinstance(value, Mapping):
+                if _structural_coverage_insufficient(
+                    value, root_schema, seen_refs, depth + 1, budget
+                ):
+                    return True
+            elif key == "prefixItems":
+                for item in value:
+                    if isinstance(item, Mapping) and _structural_coverage_insufficient(
+                        item, root_schema, seen_refs, depth + 1, budget
+                    ):
+                        return True
+            continue
+
         keyword_class = _classify_keyword(key)
         if keyword_class == "inert" or keyword_class == "bounding":
             continue
@@ -593,14 +617,39 @@ def _structural_coverage_insufficient(
     return False
 
 
-def _property_is_bounded(prop_schema: object) -> bool:
+def _property_is_bounded(
+    prop_schema: object,
+    *,
+    _depth: int = 0,
+    _seen: frozenset[int] = frozenset(),
+) -> bool:
     if not isinstance(prop_schema, Mapping):
         return False
     if "enum" in prop_schema or "const" in prop_schema:
         return True
-    # Deliberately no array carve-out: array boundedness needs BOTH
-    # prefixItems and items checked together. See docs/internals/runtime.md.
-    return False
+    if _depth > _MAX_SCHEMA_WALK_DEPTH or id(prop_schema) in _seen:
+        return False
+
+    prop_type = prop_schema.get("type")
+    if not _schema_type_includes(prop_type, "array"):
+        return False
+    if isinstance(prop_type, list) and any(item not in ("array", "null") for item in prop_type):
+        return False
+    if "items" not in prop_schema:
+        return False
+    if prop_schema.get("unevaluatedItems", False) is not False:
+        return False
+
+    seen = _seen | {id(prop_schema)}
+    prefix_items = prop_schema.get("prefixItems", [])
+    if not isinstance(prefix_items, list):
+        return False
+    for item in prefix_items:
+        if item is not False and not _property_is_bounded(item, _depth=_depth + 1, _seen=seen):
+            return False
+
+    items = prop_schema["items"]
+    return items is False or _property_is_bounded(items, _depth=_depth + 1, _seen=seen)
 
 
 def _schema_type_includes(type_value: object, target: str) -> bool:
@@ -1466,21 +1515,46 @@ class MCPConnectionPool:
     _server_security: dict[str, MCPSecurityConfig] = {}
 
     @staticmethod
-    def _policy_key(server_config: dict[str, Any]) -> str:
-        """Content-based key for per-server policy registry."""
-        if "server" in server_config:
-            return f"server:{server_config['server']}"
-        material = {k: v for k, v in server_config.items() if not k.startswith("_")}
+    def _policy_key(config: dict[str, Any]) -> str:
+        """Content-based key for the per-server policy registry.
+
+        Callers MUST pass an already-*resolved* transport config (see
+        `_resolve_config`) -- never a bare `{"server": name}` reference.
+        Keying on the logical name alone would let a server that is later
+        reloaded with a different command/URL under the same name recover
+        a policy that was only ever authorized for the prior transport.
+        """
+        material = {k: v for k, v in config.items() if not k.startswith("_")}
         blob = json.dumps(material, sort_keys=True, default=str)
-        return f"inline:{compute_hash(blob)}"
+        return compute_hash(blob)
+
+    @classmethod
+    def _resolve_config(cls, server_config: dict[str, Any]) -> dict[str, Any]:
+        """Resolve a `{"server": name}` reference to its concrete transport
+        config (command/args/env or url), loading `.mcp.json` first if the
+        name hasn't been loaded yet. Inline configs pass through unchanged.
+
+        Policy and cached-client identity must always be derived from the
+        RESOLVED config returned here, never from the bare server name.
+        """
+        if "server" in server_config:
+            server_name = server_config["server"]
+            if server_name not in cls._configs:
+                cls.load_config()
+            if server_name not in cls._configs:
+                raise ValueError(f"Unknown MCP server: {server_name}")
+            return cls._configs[server_name]
+        return server_config
 
     @classmethod
     def remember_security(
         cls, server_config: dict[str, Any], security: MCPSecurityConfig | None
     ) -> None:
-        """Record the policy a server was authorized under. No-op if None."""
+        """Record the policy a server was authorized under, keyed by its
+        resolved transport config. No-op if None."""
         if security is not None:
-            cls._server_security[cls._policy_key(server_config)] = security
+            config = cls._resolve_config(server_config)
+            cls._server_security[cls._policy_key(config)] = security
 
     @classmethod
     def _get_lock(cls) -> Lock:
@@ -1526,6 +1600,19 @@ class MCPConnectionPool:
         if not isinstance(servers, dict):
             raise ValueError("mcpServers must be a dictionary")
 
+        for name, new_server_config in servers.items():
+            old_server_config = cls._configs.get(name)
+            if old_server_config is not None and old_server_config != new_server_config:
+                # This name now resolves to a different transport. Drop the
+                # policy and any pooled client keyed off the OLD transport's
+                # fingerprint so a subsequent omitted-policy get_client()
+                # cannot recover a trust decision that was never made for
+                # the new one.
+                cls._server_security.pop(cls._policy_key(old_server_config), None)
+                stale_prefix = f"server:{name}:"
+                for cache_key in [k for k in cls._clients if k.startswith(stale_prefix)]:
+                    cls._clients.pop(cache_key, None)
+
         cls._configs.update(servers)
         return list(servers.keys())
 
@@ -1536,25 +1623,28 @@ class MCPConnectionPool:
         security: MCPSecurityConfig | None = None,
     ) -> Any:
         """Get or create a pooled MCP client."""
-        # Explicit policy authorizes this server for future reconnects;
-        # absent one, recover the policy the server was loaded under.
-        if security is not None:
-            cls.remember_security(server_config, security)
-        else:
-            security = cls._server_security.get(cls._policy_key(server_config))
-
+        # Resolve `{"server": name}` references to their concrete transport
+        # config FIRST: policy recovery and cache identity must bind to the
+        # RESOLVED transport, not the bare logical name. Otherwise reloading
+        # a different command/URL under the same name would let an
+        # omitted-policy call recover (and reconnect using) a policy that
+        # was only ever authorized for the prior transport.
         if "server" in server_config:
             server_name = server_config["server"]
-            if server_name not in cls._configs:
-                cls.load_config()
-            if server_name not in cls._configs:
-                raise ValueError(f"Unknown MCP server: {server_name}")
-
-            config = cls._configs[server_name]
-            cache_key = f"server:{server_name}"
+            config = cls._resolve_config(server_config)
+            policy_key = cls._policy_key(config)
+            cache_key = f"server:{server_name}:{policy_key}"
         else:
             config = server_config
+            policy_key = cls._policy_key(config)
             cache_key = f"inline:{config.get('command')}:{id(config)}"
+
+        # Explicit policy authorizes this resolved transport for future
+        # reconnects; absent one, recover the policy it was loaded under.
+        if security is not None:
+            cls._server_security[policy_key] = security
+        else:
+            security = cls._server_security.get(policy_key)
 
         async with cls._get_lock():
             if cache_key in cls._clients:

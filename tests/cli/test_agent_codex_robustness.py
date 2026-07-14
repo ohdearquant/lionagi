@@ -164,19 +164,15 @@ async def test_run_agent_threads_bypass_to_build_chat_model(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_run_agent_codex_no_bypass_emits_warning(monkeypatch, tmp_path, capsys):
-    """Naked codex without --bypass or --yolo warns only in verbose runs."""
+async def test_run_agent_codex_no_bypass_emits_warning(monkeypatch, tmp_path):
+    """Naked codex without --bypass or --yolo warns even without verbose output."""
     captured: list = []
     _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured)
 
     warnings_emitted: list[str] = []
 
-    import lionagi.cli.agent as agent_mod
-
-    original_warn = None
     import lionagi.cli._logging as logging_mod
-
-    original_warn = logging_mod.warn
+    import lionagi.cli.agent as agent_mod
 
     def capture_warn(msg):
         warnings_emitted.append(msg)
@@ -188,15 +184,47 @@ async def test_run_agent_codex_no_bypass_emits_warning(monkeypatch, tmp_path, ca
     from lionagi.cli.agent import _run_agent
 
     await _run_agent("codex/gpt-5.3-codex-spark", "do stuff", bypass=False, yolo=False)
-    assert not warnings_emitted, f"Expected silence without verbose, got: {warnings_emitted}"
-
-    await _run_agent(
-        "codex/gpt-5.3-codex-spark", "do stuff", bypass=False, yolo=False, verbose=True
-    )
 
     assert any("--bypass" in w or "bypass" in w.lower() for w in warnings_emitted), (
         f"Expected a bypass warning, got: {warnings_emitted}"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile_flag", ["bypass", "yolo"])
+async def test_run_agent_codex_profile_approval_flag_suppresses_warning(
+    monkeypatch, tmp_path, profile_flag
+):
+    """An approval flag explicitly enabled by a loaded profile suppresses the warning."""
+    captured: list = []
+    _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured)
+
+    warnings_emitted: list[str] = []
+    import lionagi.cli._logging as logging_mod
+
+    monkeypatch.setattr(logging_mod, "warn", lambda msg: warnings_emitted.append(msg))
+
+    import lionagi.cli.agent as agent_mod
+    from lionagi.cli._providers import _parse_profile
+
+    profile = _parse_profile(
+        "approved",
+        "---\n"
+        "model: codex/gpt-5.3-codex-spark\n"
+        f"{profile_flag}: true\n"
+        "lion_system: false\n"
+        "---\n"
+        "Profile body.",
+    )
+    monkeypatch.setattr(agent_mod, "load_agent_profile", lambda _name: profile)
+    monkeypatch.setattr(agent_mod, "build_chat_model", lambda *a, **kw: "codex/gpt-5.3-codex-spark")
+
+    from lionagi.cli.agent import _run_agent
+
+    await _run_agent(None, "do stuff", agent_name="approved")
+
+    bypass_warns = [w for w in warnings_emitted if "require" in w.lower() and "bypass" in w.lower()]
+    assert not bypass_warns
 
 
 @pytest.mark.asyncio
