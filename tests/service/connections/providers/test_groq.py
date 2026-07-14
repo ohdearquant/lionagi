@@ -16,11 +16,26 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
-from lionagi.providers.groq.audio_transcription import GroqAudioTranscriptionEndpoint
+from lionagi.providers.groq.audio_transcription import (
+    GroqAudioTranscriptionEndpoint,
+    _replayable_file_factory,
+)
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.resilience import RetryConfig
 
 _NO_SLEEP = patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock())
+
+
+def test_single_shot_seekable_stream_is_not_buffered():
+    class SeekableNoBuffer:
+        def seekable(self):
+            return True
+
+        def read(self):
+            raise AssertionError("single-shot stream must not be read eagerly")
+
+    stream = SeekableNoBuffer()
+    assert _replayable_file_factory(stream, "file", require_replayable=False)() is stream
 
 
 def _config(base_url: str, **overrides) -> EndpointConfig:

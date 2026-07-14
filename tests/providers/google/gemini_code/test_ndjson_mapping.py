@@ -16,6 +16,10 @@ from unittest.mock import patch
 
 import pytest
 
+from lionagi.providers._provider_errors import (
+    ProviderTeardownError,
+    classify_provider_error,
+)
 from lionagi.providers.google.gemini_code import (
     GeminiCodeRequest,
     GeminiSession,
@@ -239,6 +243,50 @@ async def test_error_chunk_without_response_names_status():
     assert error_chunks[0].content == "agy returned status=FAILURE"
 
 
+@pytest.mark.asyncio
+async def test_loop_closed_during_teardown_preserves_text_and_is_retryable():
+    async def events_then_teardown_failure(_request):
+        yield _success_obj(response="completed review")
+        raise RuntimeError("Event loop is closed")
+
+    yielded = []
+    with patch(
+        "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+        side_effect=events_then_teardown_failure,
+    ):
+        async for item in stream_gemini_cli(_make_request()):
+            yielded.append(item)
+
+    text_chunks = [item for item in yielded if getattr(item, "type", None) == "text"]
+    error_chunks = [item for item in yielded if getattr(item, "type", None) == "error"]
+    session = next(item for item in yielded if isinstance(item, GeminiSession))
+
+    assert [chunk.content for chunk in text_chunks] == ["completed review"]
+    assert session.result == "completed review"
+    assert session.is_error is True
+    assert len(error_chunks) == 1
+    error = classify_provider_error(error_chunks[0].content)
+    assert isinstance(error, ProviderTeardownError)
+    assert error.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_unrelated_runtime_error_is_not_reclassified_as_teardown():
+    async def failing_events(_request):
+        raise RuntimeError("parser invariant failed")
+        yield
+
+    with (
+        patch(
+            "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+            side_effect=failing_events,
+        ),
+        pytest.raises(RuntimeError, match="parser invariant failed"),
+    ):
+        async for _ in stream_gemini_cli(_make_request()):
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Callbacks
 # ---------------------------------------------------------------------------
@@ -334,7 +382,7 @@ def test_resolve_agy_model_effort_ignored_for_cross_family_alias():
 
 # ---------------------------------------------------------------------------
 # Model resolution — reapply_effort (li agent -r --effort re-applying effort
-# to an already-resolved persisted model, e.g. issue #1595)
+# to an already-resolved persisted model)
 # ---------------------------------------------------------------------------
 
 

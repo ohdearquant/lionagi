@@ -529,6 +529,20 @@ def _structural_coverage_insufficient(
         return True
 
     for key, value in schema.items():
+        if key in ("items", "prefixItems", "unevaluatedItems") and _property_is_bounded(schema):
+            if key == "items" and isinstance(value, Mapping):
+                if _structural_coverage_insufficient(
+                    value, root_schema, seen_refs, depth + 1, budget
+                ):
+                    return True
+            elif key == "prefixItems":
+                for item in value:
+                    if isinstance(item, Mapping) and _structural_coverage_insufficient(
+                        item, root_schema, seen_refs, depth + 1, budget
+                    ):
+                        return True
+            continue
+
         keyword_class = _classify_keyword(key)
         if keyword_class == "inert" or keyword_class == "bounding":
             continue
@@ -593,14 +607,39 @@ def _structural_coverage_insufficient(
     return False
 
 
-def _property_is_bounded(prop_schema: object) -> bool:
+def _property_is_bounded(
+    prop_schema: object,
+    *,
+    _depth: int = 0,
+    _seen: frozenset[int] = frozenset(),
+) -> bool:
     if not isinstance(prop_schema, Mapping):
         return False
     if "enum" in prop_schema or "const" in prop_schema:
         return True
-    # Deliberately no array carve-out: array boundedness needs BOTH
-    # prefixItems and items checked together. See docs/internals/runtime.md.
-    return False
+    if _depth > _MAX_SCHEMA_WALK_DEPTH or id(prop_schema) in _seen:
+        return False
+
+    prop_type = prop_schema.get("type")
+    if not _schema_type_includes(prop_type, "array"):
+        return False
+    if isinstance(prop_type, list) and any(item not in ("array", "null") for item in prop_type):
+        return False
+    if "items" not in prop_schema:
+        return False
+    if prop_schema.get("unevaluatedItems", False) is not False:
+        return False
+
+    seen = _seen | {id(prop_schema)}
+    prefix_items = prop_schema.get("prefixItems", [])
+    if not isinstance(prefix_items, list):
+        return False
+    for item in prefix_items:
+        if item is not False and not _property_is_bounded(item, _depth=_depth + 1, _seen=seen):
+            return False
+
+    items = prop_schema["items"]
+    return items is False or _property_is_bounded(items, _depth=_depth + 1, _seen=seen)
 
 
 def _schema_type_includes(type_value: object, target: str) -> bool:

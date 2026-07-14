@@ -26,6 +26,7 @@ from lionagi.providers._cli_subprocess import (
     resolve_cli_workspace,
     validate_message_prompt,
 )
+from lionagi.providers._provider_errors import ProviderTeardownError
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.providers import _clamp_gemini_effort
@@ -355,67 +356,77 @@ async def stream_gemini_cli(
     _start = asyncio.get_running_loop().time()
 
     saw_object = False
-    async with contextlib.aclosing(stream_gemini_cli_events(request)) as stream:
-        async for obj in stream:
-            if not isinstance(obj, dict):
-                continue
-            saw_object = True
-            status = str(obj.get("status", "")).upper()
-            response = (obj.get("response") or "").strip()
+    try:
+        async with contextlib.aclosing(stream_gemini_cli_events(request)) as stream:
+            async for obj in stream:
+                if not isinstance(obj, dict):
+                    continue
+                saw_object = True
+                status = str(obj.get("status", "")).upper()
+                response = (obj.get("response") or "").strip()
 
-            session.session_id = obj.get("conversation_id") or session.session_id
-            session.model = resolve_agy_model(request.model)
-            session.result = response
-            session.usage = obj.get("usage", {}) or {}
-            session.num_turns = obj.get("num_turns")
-            duration = obj.get("duration_seconds")
-            if duration is not None:
-                session.duration_ms = int(float(duration) * 1000)
-            session.is_error = status not in ("SUCCESS", "")
+                session.session_id = obj.get("conversation_id") or session.session_id
+                session.model = resolve_agy_model(request.model)
+                session.result = response
+                session.usage = obj.get("usage", {}) or {}
+                session.num_turns = obj.get("num_turns")
+                duration = obj.get("duration_seconds")
+                if duration is not None:
+                    session.duration_ms = int(float(duration) * 1000)
+                session.is_error = status not in ("SUCCESS", "")
 
-            # Session id must be captured before the error branch — a failed
-            # turn can still report a live conversation id to resume into.
-            if session.session_id:
-                sys_sc = StreamChunk(
-                    type="system",
-                    metadata={"session_id": session.session_id, "model": session.model},
-                )
-                session.chunks.append(sys_sc)
-                yield sys_sc
+                # Session id must be captured before the error branch — a failed
+                # turn can still report a live conversation id to resume into.
+                if session.session_id:
+                    sys_sc = StreamChunk(
+                        type="system",
+                        metadata={"session_id": session.session_id, "model": session.model},
+                    )
+                    session.chunks.append(sys_sc)
+                    yield sys_sc
 
-            if session.is_error:
-                # Error chunk leads with status, not delivered content — a degraded
-                # termination after a complete response would otherwise impersonate it.
-                detail = f": {response[:500]}" if response else ""
-                msg = f"agy returned status={status or 'UNKNOWN'}{detail}"
-                sc = StreamChunk(type="error", content=msg, is_error=True, metadata=obj)
-                session.chunks.append(sc)
-                yield sc
-            else:
-                if on_text and response:
-                    await maybe_await(on_text(response))
-                if request.verbose_output and response:
-                    _pp_text(response, theme)
-                sc = StreamChunk(type="text", content=response, metadata=obj)
-                session.chunks.append(sc)
-                yield sc
+                if session.is_error:
+                    # Error chunk leads with status, not delivered content — a degraded
+                    # termination after a complete response would otherwise impersonate it.
+                    detail = f": {response[:500]}" if response else ""
+                    msg = f"agy returned status={status or 'UNKNOWN'}{detail}"
+                    sc = StreamChunk(type="error", content=msg, is_error=True, metadata=obj)
+                    session.chunks.append(sc)
+                    yield sc
+                else:
+                    if on_text and response:
+                        await maybe_await(on_text(response))
+                    if request.verbose_output and response:
+                        _pp_text(response, theme)
+                    sc = StreamChunk(type="text", content=response, metadata=obj)
+                    session.chunks.append(sc)
+                    yield sc
 
-                # Terminal usage/turns/duration — the only channel run.py reads
-                # provider-reported usage from (persisted onto model_response).
-                result_meta: dict[str, Any] = {
-                    "model": session.model,
-                    "conversation_id": session.session_id,
-                    "status": status or "SUCCESS",
-                }
-                if session.usage:
-                    result_meta["usage"] = session.usage
-                if session.num_turns is not None:
-                    result_meta["num_turns"] = session.num_turns
-                if session.duration_ms is not None:
-                    result_meta["duration_ms"] = session.duration_ms
-                result_sc = StreamChunk(type="result", metadata=result_meta)
-                session.chunks.append(result_sc)
-                yield result_sc
+                    # Terminal usage/turns/duration — the only channel run.py reads
+                    # provider-reported usage from (persisted onto model_response).
+                    result_meta: dict[str, Any] = {
+                        "model": session.model,
+                        "conversation_id": session.session_id,
+                        "status": status or "SUCCESS",
+                    }
+                    if session.usage:
+                        result_meta["usage"] = session.usage
+                    if session.num_turns is not None:
+                        result_meta["num_turns"] = session.num_turns
+                    if session.duration_ms is not None:
+                        result_meta["duration_ms"] = session.duration_ms
+                    result_sc = StreamChunk(type="result", metadata=result_meta)
+                    session.chunks.append(result_sc)
+                    yield result_sc
+    except RuntimeError as exc:
+        if isinstance(exc, ProviderTeardownError) or "event loop is closed" in str(exc).casefold():
+            session.is_error = True
+            error = ProviderTeardownError("agy teardown failed: Event loop is closed")
+            sc = StreamChunk(type="error", content=str(error), is_error=True)
+            session.chunks.append(sc)
+            yield sc
+        else:
+            raise
 
     if not saw_object and not session.result:
         # rc==0 but nothing parseable (e.g. agy printed a plain-text error line).
