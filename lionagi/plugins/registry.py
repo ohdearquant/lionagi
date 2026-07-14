@@ -599,6 +599,32 @@ class PluginRegistry:
             msg = f"plugin {plugin_name!r} is not active (no such plugin, or untrusted/disabled/incompatible)"
             raise PluginActivationError(plugin_name, target, msg)
 
+        # ADR-0088 D6: a tool name shared with another live-eligible plugin is a
+        # hard error, not a shadow. Only the requested plugin is rescanned above;
+        # other plugins' tool ownership comes from their cached manifests, but
+        # enabled/compatible is still re-derived live (via _is_live_active) so
+        # disabling the other plugin resolves the collision without a reset().
+        other_tool_owners: dict[str, list[str]] = {}
+        for other in records:
+            if other.name == plugin_name or other.manifest is None:
+                continue
+            if other.state not in (PluginState.ACTIVE, PluginState.COLLISION):
+                continue
+            if not _is_live_active(other.manifest):
+                continue
+            for other_tool_name in _tool_names(other.manifest):
+                other_tool_owners.setdefault(other_tool_name, []).append(other.name)
+
+        for tool_name in tool_names:
+            colliding_owners = list(dict.fromkeys(other_tool_owners.get(tool_name, [])))
+            if colliding_owners:
+                names = ", ".join([plugin_name, *colliding_owners])
+                msg = (
+                    f"tool {tool_name!r} is declared by multiple enabled plugins "
+                    f"({names}) — disable one with `li plugin disable <name>`"
+                )
+                raise PluginActivationError(plugin_name, target, msg)
+
         resolution = _target_resolution_map(manifest)
         if target not in resolution:
             msg = (
