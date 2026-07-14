@@ -329,11 +329,11 @@ cannot carry a subschema.
 - `_DENIED_APPLICATOR_KEYWORDS` — applicators recognized BY NAME but deliberately NOT modeled
   (patternProperties, propertyNames, unevaluatedProperties, unevaluatedItems,
   dependentSchemas, if, then, else, not, contains, items, prefixItems, `$dynamicRef`,
-  `$dynamicAnchor`, `$recursiveRef`, `$recursiveAnchor`): presence anywhere denies the node
-  outright, and the proof never recurses beneath one since an ancestor denial already covers
-  everything nested. Promoting one to modeled (e.g. bounded-array support via
-  items/prefixItems) is a separate, individually-argued change with its own soundness argument
-  — never a silent reclassification.
+  `$dynamicAnchor`, `$recursiveRef`, `$recursiveAnchor`): presence denies the node unless the
+  bounded-array proof establishes that every `prefixItems` position and the `items` tail is
+  enum/const-bounded (recursively for nested arrays), the tail is explicit, and
+  `unevaluatedItems` cannot reopen evaluation. The structural walker then still visits each
+  bounded item subschema, so an unrelated denied or unknown applicator remains fail-closed.
 - `_classify_keyword()` — classifies a keyword into inert/bounding/modeled/denied;
   unrecognized names are UNKNOWN. The registry is a CLOSED enumeration, not a spelling
   heuristic — an unseen keyword fails closed rather than being guessed at.

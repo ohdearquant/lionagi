@@ -536,6 +536,7 @@ def _import_all_providers():
         "lionagi.providers.openai.chat",
         "lionagi.providers.openai.codex",
         "lionagi.providers.openai.audio",
+        "lionagi.providers.openai.batch",
         "lionagi.providers.openai.images",
         "lionagi.providers.openai.embed",
         "lionagi.providers.openai.response",
