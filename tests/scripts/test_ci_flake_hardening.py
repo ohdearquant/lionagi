@@ -210,3 +210,12 @@ def test_required_ci_wrapper_excludes_only_performance_and_quarantine() -> None:
     assert "not performance and not flaky_quarantine" in script
     assert '--max-worker-restart="${MAX_WORKER_RESTART:-0}"' in script
     assert "pytest-rerunfailures" not in script
+
+
+def test_every_required_ci_exclusion_has_a_workflow_lane() -> None:
+    workflow = CI_WORKFLOW.read_text()
+    performance_job = workflow.split("  performance:", 1)[1].split("  quarantine:", 1)[0]
+
+    assert 'uv run pytest -m "performance"' in performance_job
+    assert "continue-on-error" not in performance_job
+    assert "run: scripts/ci.sh test-python-quarantine" in workflow

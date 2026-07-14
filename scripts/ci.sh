@@ -45,7 +45,7 @@ fmt-python() {
 }
 
 # Wall-clock perf/scaling tests are unreliable under CI load + coverage; they
-# are gated behind the `performance` marker and validated by benchmarks.yml.
+# are gated behind the `performance` marker and run by ci.yml's dedicated lane.
 # Override with PYTEST_MARKEXPR=performance (or "") to run them locally.
 test-python() {
   echo "==> pytest"

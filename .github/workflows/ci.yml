@@ -177,6 +177,31 @@ jobs:
         token: ${{ secrets.CODECOV_TOKEN }}
         slug: ohdearquant/lionagi
 
+  # Wall-clock gates run serially on one primary interpreter, outside coverage
+  # and xdist. This job is intentionally advisory (absent from ci-gate) because
+  # hosted-runner load can move timing, but failures remain visible as a red job.
+  performance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      UV_PYTHON: "3.12"
+    steps:
+    - uses: actions/checkout@v7
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.12"
+    - name: Install uv
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+    - name: Install dependencies
+      run: |
+        uv venv
+        uv sync --all-extras
+    - name: Run performance tests serially
+      run: uv run pytest -m "performance" -p no:randomly -n 0 -q --timeout=300 --maxfail=0
+
   # A visible holding lane for known flakes. It is deliberately absent from
   # ci-gate and cannot block merges; exact tests come from tests/quarantine.txt.
   quarantine:

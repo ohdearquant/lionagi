@@ -2741,16 +2741,9 @@ class TestValidateMcpToolAdmission:
         assert "maintenance" in message
         assert "unbounded-command-input" in message
 
-    @pytest.mark.performance
-    def test_wide_anyof_fanout_stays_bounded_and_denies(self):
-        """A 10,000-branch `anyOf` fan-out (all harmless enum-bounded
-        properties) must not be fully walked node-by-node: the node-work
-        budget trips, and for an executor-signaling tool that unresolvable
-        result denies fail-closed -- in well under a second, not the
-        multi-second cost of walking every branch."""
-        import time
-
-        huge_schema = {
+    @staticmethod
+    def _wide_anyof_schema():
+        return {
             "type": "object",
             "anyOf": [
                 {"properties": {f"field_{i}": {"type": "string", "enum": ["a", "b"]}}}
@@ -2758,12 +2751,30 @@ class TestValidateMcpToolAdmission:
             ],
         }
 
-        start = time.perf_counter()
+    def test_wide_anyof_fanout_denies_fail_closed(self):
+        """A traversal that exhausts its node budget must deny fail-closed."""
         with pytest.raises(PermissionError) as exc_info:
+            validate_mcp_tool_admission(
+                "maintenance", self._wide_anyof_schema(), "runs shell commands"
+            )
+
+        assert "executor-description-with-broad-input" in str(exc_info.value)
+
+    @pytest.mark.performance
+    def test_wide_anyof_fanout_stays_bounded(self):
+        """A 10,000-branch `anyOf` fan-out (all harmless enum-bounded
+        properties) must not be fully walked node-by-node: the node-work
+        budget trips, and for an executor-signaling tool that unresolvable
+        result denies fail-closed -- in well under a second, not the
+        multi-second cost of walking every branch."""
+        import time
+
+        huge_schema = self._wide_anyof_schema()
+        start = time.perf_counter()
+        with pytest.raises(PermissionError):
             validate_mcp_tool_admission("maintenance", huge_schema, "runs shell commands")
         elapsed = time.perf_counter() - start
 
-        assert "executor-description-with-broad-input" in str(exc_info.value)
         assert elapsed < 2.0
 
     def test_wide_anyof_fanout_admits_when_not_executor_signaling(self):

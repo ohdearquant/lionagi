@@ -312,9 +312,8 @@ class TestNoDeadlocks:
             "(possible deadlock or extreme scheduler starvation)"
         )
 
-    @pytest.mark.anyio
-    @pytest.mark.performance
-    async def test_high_concurrency_no_resource_exhaustion(self, patch_cancellation):
+    @staticmethod
+    async def _run_high_concurrency_hooks():
         async def simple_hook(ev, **kw):
             return "simple"
 
@@ -339,25 +338,73 @@ class TestNoDeadlocks:
             *[hook_event.invoke() for hook_event in hook_events],
             return_exceptions=True,
         )
-        end_time = anyio.current_time()
+        elapsed = anyio.current_time() - start_time
+
+        return hook_events, results, elapsed
+
+    @pytest.mark.anyio
+    async def test_high_concurrency_no_resource_exhaustion(self, patch_cancellation):
+        hook_events, results, _ = await self._run_high_concurrency_hooks()
 
         # All should succeed
         assert len(results) == 50
         for i, result in enumerate(results):
             assert not isinstance(result, Exception), f"Event {i} failed: {result}"
 
-        # Should complete in reasonable time
-        assert end_time - start_time < 5.0  # Generous timeout for CI
-
         # Check all hook events completed successfully
         for i, hook_event in enumerate(hook_events):
             assert hook_event.execution.status == EventStatus.COMPLETED
             assert hook_event.execution.response == "simple"
 
-
-@pytest.mark.performance
-class TestPerformanceSmoke:
     @pytest.mark.anyio
+    @pytest.mark.performance
+    async def test_high_concurrency_completes_under_ceiling(self, patch_cancellation):
+        _, _, elapsed = await self._run_high_concurrency_hooks()
+
+        assert elapsed < 5.0  # Generous timeout for CI
+
+
+class TestPerformanceSmoke:
+    @staticmethod
+    async def _run_metadata_calls():
+        async def metadata_hook(ev, **kw):
+            return "metadata_test"
+
+        registry = HookRegistry(hooks={HookEventTypes.PostInvocation: metadata_hook})
+        start_time = anyio.current_time()
+        tasks = [
+            registry.call(
+                FakeEvent(f"large_event_{i}", i * 1000.0),
+                hook_type=HookEventTypes.PostInvocation,
+                exit=False,
+            )
+            for i in range(100)
+        ]
+        results = await asyncio.gather(*tasks)
+        return results, anyio.current_time() - start_time
+
+    @staticmethod
+    async def _run_mixed_error_calls():
+        async def sometimes_failing_hook(ev, **kw):
+            if int(ev.id.split("_")[-1]) % 2 == 0:
+                raise RuntimeError("planned failure")
+            return "success"
+
+        registry = HookRegistry(hooks={HookEventTypes.PreInvocation: sometimes_failing_hook})
+        start_time = anyio.current_time()
+        tasks = [
+            registry.call(
+                FakeEvent(f"test_event_{i}", i),
+                hook_type=HookEventTypes.PreInvocation,
+                exit=False,
+            )
+            for i in range(50)
+        ]
+        results = await asyncio.gather(*tasks)
+        return results, anyio.current_time() - start_time
+
+    @pytest.mark.anyio
+    @pytest.mark.performance
     async def test_hook_invocation_overhead_minimal(self, patch_cancellation):
         call_times = []
 
@@ -391,30 +438,8 @@ class TestPerformanceSmoke:
         assert max(call_times) < 0.5  # No call over 500ms
 
     @pytest.mark.anyio
-    async def test_metadata_creation_efficient(self, patch_cancellation):
-        async def metadata_hook(ev, **kw):
-            return "metadata_test"
-
-        registry = HookRegistry(hooks={HookEventTypes.PostInvocation: metadata_hook})
-
-        start_time = anyio.current_time()
-
-        # Make many calls that generate metadata
-        tasks = []
-        for i in range(100):
-            task = registry.call(
-                FakeEvent(f"large_event_{i}", i * 1000.0),
-                hook_type=HookEventTypes.PostInvocation,
-                exit=False,
-            )
-            tasks.append(task)
-
-        results = await asyncio.gather(*tasks)
-        end_time = anyio.current_time()
-
-        # Should complete in reasonable time
-        total_time = end_time - start_time
-        assert total_time < 1.0  # 100 calls in under 1 second
+    async def test_metadata_creation_is_correct(self, patch_cancellation):
+        results, _ = await self._run_metadata_calls()
 
         # All should have correct metadata
         for i, ((res, se, st), meta) in enumerate(results):
@@ -423,37 +448,25 @@ class TestPerformanceSmoke:
             assert meta["lion_class"] == "tests.service.hooks.conftest.FakeEvent"
 
     @pytest.mark.anyio
-    async def test_error_handling_performance(self, patch_cancellation):
-        async def sometimes_failing_hook(ev, **kw):
-            # Fail every other call
-            if int(ev.id.split("_")[-1]) % 2 == 0:
-                raise RuntimeError("planned failure")
-            return "success"
-
-        registry = HookRegistry(hooks={HookEventTypes.PreInvocation: sometimes_failing_hook})
-
-        start_time = anyio.current_time()
-
-        # Make many calls with mixed success/failure
-        tasks = []
-        for i in range(50):
-            task = registry.call(
-                FakeEvent(f"test_event_{i}", i),
-                hook_type=HookEventTypes.PreInvocation,
-                exit=False,
-            )
-            tasks.append(task)
-
-        results = await asyncio.gather(*tasks)
-        end_time = anyio.current_time()
-
-        # Should complete in reasonable time despite errors
-        total_time = end_time - start_time
-        assert total_time < 2.0  # Generous allowance for error handling
-
+    async def test_error_handling_results_are_correct(self, patch_cancellation):
+        results, _ = await self._run_mixed_error_calls()
         # Check that we got expected mix of success/failure
         successes = sum(1 for (res, se, st), _ in results if st == EventStatus.COMPLETED)
         failures = sum(1 for (res, se, st), _ in results if st == EventStatus.CANCELLED)
 
         assert successes == 25  # Half should succeed
         assert failures == 25  # Half should fail
+
+    @pytest.mark.anyio
+    @pytest.mark.performance
+    async def test_metadata_creation_under_ceiling(self, patch_cancellation):
+        _, elapsed = await self._run_metadata_calls()
+
+        assert elapsed < 1.0  # 100 calls in under 1 second
+
+    @pytest.mark.anyio
+    @pytest.mark.performance
+    async def test_error_handling_under_ceiling(self, patch_cancellation):
+        _, elapsed = await self._run_mixed_error_calls()
+
+        assert elapsed < 2.0  # Generous allowance for error handling
