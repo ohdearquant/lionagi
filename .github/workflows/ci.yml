@@ -36,6 +36,7 @@ jobs:
 
   docs:
     needs: changes
+    if: ${{ always() && needs.changes.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
