@@ -774,7 +774,7 @@ def _resolve_model_and_prompt(args: argparse.Namespace) -> tuple[str | None, str
 
 def run_agent(args: argparse.Namespace) -> int:
     """Dispatch agent command."""
-    if args.list_profiles:
+    if getattr(args, "list_profiles", False):
         from lionagi.cli._providers import build_agent_profile_catalog
 
         print(json.dumps(build_agent_profile_catalog(), indent=2, sort_keys=True))
