@@ -146,9 +146,12 @@ class ContextProviderRegistry:
             if hook is None:
                 continue
             try:
-                self.stats["writeback_records"] += int(await hook(branch, action_responses) or 0)
+                result = await hook(branch, action_responses)
             except Exception:
                 self.stats["writeback_failed"] += 1
                 logger.warning(
                     "context provider %r writeback raised; skipping", entry.name, exc_info=True
                 )
+                continue
+            if isinstance(result, int):
+                self.stats["writeback_records"] += result

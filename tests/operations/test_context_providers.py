@@ -78,6 +78,16 @@ class _RaisingWritebackProvider:
         raise RuntimeError("writeback failed")
 
 
+class _NonIntWritebackProvider:
+    name = "non-int-writer"
+
+    async def provide(self, branch, instruction):
+        return None
+
+    async def writeback(self, branch, action_responses):
+        return {"written": 3}
+
+
 def _chat_param(branch, **overrides):
     kw = dict(
         guidance=None,
@@ -218,6 +228,18 @@ async def test_gather_writeback_warns_and_continues_to_sibling(caplog):
     assert writer.calls == [(None, ["response"])]
     assert "context provider 'raising-writer' writeback raised; skipping" in caplog.text
     assert registry.stats["writeback_failed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_gather_writeback_non_int_return_is_not_a_failure(caplog):
+    registry = ContextProviderRegistry()
+    registry.register(_NonIntWritebackProvider())
+
+    await registry.gather_writeback(None, ["response"])
+
+    assert registry.stats["writeback_failed"] == 0
+    assert registry.stats["writeback_records"] == 0
+    assert "writeback raised" not in caplog.text
 
 
 def test_registry_is_falsy_when_empty():
