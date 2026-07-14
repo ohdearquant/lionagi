@@ -26,8 +26,9 @@ logger = logging.getLogger(__name__)
 # A cheap first gate only; see _plugin_entry_digest for the correctness guarantee.
 _FileStat = tuple[int, int, int, int]
 
-# (manifest_digest, target_digest) for one plugin entry -- see _plugin_entry_digest.
-_ContentDigest = tuple[str, str]
+# The manifest digest and every declared path's digest for one plugin entry --
+# see _plugin_entry_digest.
+_ContentDigest = tuple[str, tuple[tuple[str, str], ...]]
 
 # Manifest metadata, every manifest-declared path's metadata, and the user
 # settings source mtime -- see _plugin_entry_stat.
@@ -100,7 +101,7 @@ class _RegistryEntry:
         self.plugin_target: str | None = None
         # Fast-path cache for _revalidate_plugin_entry: the PluginRegistry
         # snapshot generation, full plugin stat signature, and the entry's
-        # (manifest, target) content digests as of the last clean
+        # manifest + all-declared-path content digests as of the last clean
         # activate_target() call. See _revalidate_plugin_entry.
         self._validated_generation: int | None = None
         self._validated_stat: _PluginStatSignature | None = None
@@ -110,7 +111,7 @@ class _RegistryEntry:
 class EndpointRegistry:
     _entries: ClassVar[list[_RegistryEntry]] = []
     _loaded: ClassVar[bool] = False
-    _lock: ClassVar[threading.Lock] = threading.Lock()
+    _lock: ClassVar[threading.RLock] = threading.RLock()
     _plugin_registration: ClassVar[threading.local] = threading.local()
 
     @classmethod
@@ -222,8 +223,8 @@ class EndpointRegistry:
         ``reset()`` happened), when this plugin's manifest, any declared
         path, or user settings source changed (see ``_plugin_entry_stat``),
         or -- when that stat signature still matches -- when the entry's own
-        content digest (see ``_plugin_entry_digest``) no longer matches
-        either; otherwise reuses that prior result.
+        content digest (see ``_plugin_entry_digest``) no longer matches;
+        otherwise reuses that prior result.
 
         The stat signature alone is not a portable content-change
         guarantee: ``os.utime()`` restores a spoofed mtime after an edit,
@@ -234,7 +235,7 @@ class EndpointRegistry:
         content digest is only computed on that stat-stable path -- the
         files plugins declare are small, so paying for the read there is
         cheap -- and closes that hole on every platform: it always changes
-        when either file's bytes do.
+        when the manifest or any declared capability file's bytes do.
         """
         if entry.plugin_name is None or entry.plugin_target is None:
             return True
@@ -274,7 +275,7 @@ class EndpointRegistry:
         This is the cheap ``has anything relevant changed`` first gate for
         ``_revalidate_plugin_entry``. It is a *probabilistic* signal, not a
         correctness guarantee; see ``_plugin_entry_digest`` for the content
-        guarantee this gate feeds into for the entry's own executable files.
+        guarantee this gate feeds into for every declared capability file.
 
         Each file metadata value is ``(mtime_ns, ctime_ns, size, inode)``.
         mtime ALONE is not a valid content-pinning signal: ``os.utime()`` lets
@@ -345,37 +346,50 @@ class EndpointRegistry:
 
     @classmethod
     def _plugin_entry_digest(cls, plugin_name: str, target: str) -> _ContentDigest | None:
-        """Content hashes for an entry's manifest and active target.
+        """Content hashes for an entry's manifest and every declared path.
 
         Unlike any timestamp/size/inode signature, these hashes always
-        change when either entry file's bytes do. They are only computed on
-        ``_plugin_entry_stat``'s stat-stable path; a signature that already
-        looks different skips straight to ``activate_target()``.
+        change when any file covered by the plugin's trust record changes.
+        They are only computed on ``_plugin_entry_stat``'s stat-stable path;
+        a signature that already looks different skips straight to
+        ``activate_target()``.
 
-        ``None`` means the plugin is unknown or either entry file could not
-        be read.
+        ``None`` means the plugin is unknown, the target is undeclared, or a
+        covered file could not be read.
         """
         from lionagi.plugins import PluginRegistry
+        from lionagi.plugins.discovery import _collect_declared_paths
 
         record = PluginRegistry.get(plugin_name)
-        if record is None:
+        if record is None or record.manifest is None:
             return None
         module_path = target.split(":", 1)[0]
+        declared_paths = set(_collect_declared_paths(record.manifest))
+        if module_path not in declared_paths:
+            return None
         try:
             manifest_bytes = record.manifest_path.read_bytes()
-            target_bytes = (record.bundle_dir / module_path).read_bytes()
+            declared_digests = tuple(
+                (
+                    relative_path,
+                    hashlib.blake2b((record.bundle_dir / relative_path).read_bytes()).hexdigest(),
+                )
+                for relative_path in sorted(declared_paths)
+            )
         except OSError:
             return None
         return (
             hashlib.blake2b(manifest_bytes).hexdigest(),
-            hashlib.blake2b(target_bytes).hexdigest(),
+            declared_digests,
         )
 
     @classmethod
     def _consult_plugin_providers(cls) -> bool:
         """Import every ACTIVE plugin's declared provider module (ADR-0088
         D3), lazily, only from ``match()`` after a registered-entry miss —
-        never at import time. Returns whether any import succeeded.
+        never at import time. The reentrant lock keeps activation atomic
+        across threads while allowing activated code to perform a nested
+        endpoint lookup. Returns whether any import succeeded.
         """
         try:
             from lionagi.plugins import PluginActivationError, PluginRegistry
