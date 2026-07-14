@@ -362,6 +362,8 @@ async def _run_agent(
                 system_prompt=profile_extra or None,
                 role=profile_role if has_role_key else "implementer",
             )
+            if profile is not None:
+                spec.khive_injection = getattr(profile, "khive_injection", None)
             # AgentSpec.coding()/compose() default lion_system=True regardless
             # of the profile's frontmatter — propagate an explicit opt-out.
             if profile is not None and not profile.lion_system:

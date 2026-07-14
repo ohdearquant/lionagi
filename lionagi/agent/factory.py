@@ -127,6 +127,7 @@ async def create_agent(
 
     _apply_permissions(spec)
     _register_tools(branch, spec)
+    _register_providers(branch, spec)
     await _load_mcp(branch, spec, trust_project_settings=trust_project_settings)
     _forward_mcp_to_cli_request(branch, spec, trust_project_settings=trust_project_settings)
 
@@ -295,6 +296,46 @@ def _register_tools(branch: Branch, spec: AgentSpec) -> None:
                 SearchTool(workspace_root=workspace_root).to_tool(), spec, "search"
             )
             branch.register_tools(tool)
+
+
+def _register_providers(branch: Branch, spec: AgentSpec) -> None:
+    configured = spec.khive_injection
+    if not configured:
+        return
+
+    from lionagi.tools.khive_injection import (
+        ComposePolicy,
+        KhiveInjectionPolicy,
+        KhiveInjectionProvider,
+        RecallPolicy,
+        WritebackPolicy,
+    )
+
+    if isinstance(configured, KhiveInjectionPolicy):
+        policy = configured
+    elif isinstance(configured, dict):
+        policy_kwargs = dict(configured)
+        nested_policy_types = {
+            "recall": RecallPolicy,
+            "compose": ComposePolicy,
+            "writeback": WritebackPolicy,
+        }
+        for field_name, policy_type in nested_policy_types.items():
+            value = policy_kwargs.get(field_name)
+            if isinstance(value, dict):
+                policy_kwargs[field_name] = policy_type(**value)
+        defaults = {}
+        if "profile_id" not in policy_kwargs:
+            defaults["profile_id"] = f"{spec.profile.role.name}-recall-v1"
+        policy = KhiveInjectionPolicy(**{**defaults, **policy_kwargs})
+    elif configured is True:
+        policy = KhiveInjectionPolicy(profile_id=f"{spec.profile.role.name}-recall-v1")
+    else:
+        raise TypeError(
+            "khive_injection must be None, a bool, a mapping, or a KhiveInjectionPolicy"
+        )
+
+    branch.providers.register(KhiveInjectionProvider(policy))
 
 
 def _register_coding_tools(branch: Branch, spec: AgentSpec) -> None:

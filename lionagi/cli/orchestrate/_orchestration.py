@@ -84,6 +84,32 @@ def parse_orchestrator_provider(model_spec: str) -> tuple[str | None, str | None
     return ms.model, provider
 
 
+def _register_profile_providers(
+    branch: Branch,
+    role_name: str,
+    profile: AgentProfile,
+) -> None:
+    """Register providers from a verbatim CLI profile without changing its prompt."""
+    configured = getattr(profile, "khive_injection", None)
+    if not configured:
+        return
+
+    from lionagi.agent.factory import _register_providers
+    from lionagi.casts.pattern import Role
+    from lionagi.casts.profile import Profile
+
+    identity = Profile(
+        name=role_name,
+        role=Role(name=role_name, description="", body=""),
+    )
+    provider_spec = AgentSpec(
+        profile=identity,
+        pack=None,
+        khive_injection=configured,
+    )
+    _register_providers(branch, provider_spec)
+
+
 def available_roles() -> list[str]:
     """Casts roles + user profiles the orchestrator may assign to."""
     from lionagi.casts.pattern import list_roles
@@ -513,6 +539,7 @@ async def setup_orchestration(
             log_config=orc_log_config,
             name="orchestrator",
         )
+        _register_profile_providers(orc_branch, "orchestrator", orc_profile)
     else:
         # Built-in "orchestrator" casts role via AgentSpec.compose + factory.
         orc_spec = AgentSpec.compose("orchestrator", pack=loaded_pack, grant_emissions=False)
@@ -685,6 +712,7 @@ async def build_worker_branch(
             pack=env.pack if env.pack is not None else "default",
             grant_emissions=False,
             system_prompt=team_section,
+            khive_injection=(getattr(w_profile, "khive_injection", None) if w_profile else None),
         )
         wb = await create_agent(
             spec,
@@ -701,6 +729,8 @@ async def build_worker_branch(
             log_config=log_config,
             name=wname,
         )
+        if w_profile is not None:
+            _register_profile_providers(wb, role, w_profile)
 
     env.session.include_branches(wb)
 

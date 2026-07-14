@@ -1,0 +1,106 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+"""Tests for opt-in khive context-provider registration on agent spawn."""
+
+import pytest
+
+from lionagi.agent.factory import create_agent
+from lionagi.agent.spec import AgentSpec
+from lionagi.tools.khive_injection import KhiveInjectionPolicy
+
+
+def _registered_provider(branch):
+    registry = branch._context_providers
+    assert registry is not None
+    assert len(registry) == 1
+    return registry._entries[0].provider
+
+
+@pytest.mark.asyncio
+async def test_coding_spec_registers_default_khive_injection_provider():
+    branch = await create_agent(
+        AgentSpec.coding(khive_injection=True),
+        load_settings=False,
+    )
+
+    provider = _registered_provider(branch)
+    assert provider.name.startswith("khive_injection:")
+    assert provider.policy.profile_id == "implementer-recall-v1"
+
+
+@pytest.mark.asyncio
+async def test_default_spec_does_not_create_context_provider_registry():
+    branch = await create_agent(AgentSpec.coding(), load_settings=False)
+
+    assert branch._context_providers is None
+
+
+@pytest.mark.asyncio
+async def test_policy_mapping_registers_configured_provider():
+    branch = await create_agent(
+        AgentSpec.coding(
+            khive_injection={
+                "profile_id": "researcher-recall-v1",
+                "compose": {"enabled": True},
+            }
+        ),
+        load_settings=False,
+    )
+
+    provider = _registered_provider(branch)
+    assert provider.policy.profile_id == "researcher-recall-v1"
+    assert provider.policy.compose.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_policy_instance_is_registered_unchanged():
+    policy = KhiveInjectionPolicy(profile_id="reviewer-recall-v1")
+
+    branch = await create_agent(
+        AgentSpec.coding(khive_injection=policy),
+        load_settings=False,
+    )
+
+    assert _registered_provider(branch).policy is policy
+
+
+@pytest.mark.asyncio
+async def test_invalid_policy_configuration_fails_at_spawn():
+    with pytest.raises(TypeError, match="khive_injection must be"):
+        await create_agent(
+            AgentSpec.coding(khive_injection="enabled"),
+            load_settings=False,
+        )
+
+
+@pytest.mark.parametrize(
+    "configured",
+    [
+        True,
+        {
+            "profile_id": "researcher-recall-v1",
+            "compose": {"enabled": True},
+        },
+    ],
+)
+def test_agent_spec_yaml_round_trip_preserves_serializable_injection(tmp_path, configured):
+    spec = AgentSpec.coding(khive_injection=configured)
+    path = tmp_path / "agent.yaml"
+
+    spec.to_yaml(path)
+    loaded = AgentSpec.from_yaml(path)
+
+    assert loaded.khive_injection == configured
+
+
+def test_agent_spec_yaml_skips_policy_instance(tmp_path):
+    spec = AgentSpec.coding(
+        khive_injection=KhiveInjectionPolicy(profile_id="implementer-recall-v1")
+    )
+    path = tmp_path / "agent.yaml"
+
+    spec.to_yaml(path)
+    loaded = AgentSpec.from_yaml(path)
+
+    assert loaded.khive_injection is None
