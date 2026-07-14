@@ -17,6 +17,7 @@ from lionagi.utils import to_list
 from .function_calling import FunctionCalling
 from .tool import FuncTool, FuncToolRef, Tool, ToolRef
 from .tool_hooks import (
+    ToolHookDeniedError,
     ToolPostHook,
     ToolPreHook,
     run_tool_post_hooks,
@@ -218,28 +219,45 @@ class ActionManager(Manager):
         Bypassing this manager (constructing ``FunctionCalling`` directly)
         skips the hook layer entirely. See docs/internals/core.md.
 
+        A denying tool-pre hook fails the call closed the same way every
+        other denial/validation-failure path in this module does: the
+        returned ``FunctionCalling`` ends up ``FAILED`` with the denial
+        captured as its error, never raised out of ``invoke()``.
+
         Non-empty tool-post-hook reasons are attached to the returned event
         at ``metadata["tool_post_hook_notes"]`` and logged, on success and
-        failure paths alike.
+        failure paths alike. Tool-post hooks are skipped while a
+        cancellation (or other non-``Exception`` ``BaseException``) is
+        unwinding, so a slow or hanging hook can never delay that propagation.
         """
         function_calling = self.match_tool(func_call)
         tool_name = function_calling.function
 
-        if self._tool_pre_hooks:
-            function_calling.arguments = await run_tool_pre_hooks(
-                self._tool_pre_hooks, tool_name, function_calling.arguments
-            )
-
         error: BaseException | None = None
+        denied = False
+        if self._tool_pre_hooks:
+            try:
+                function_calling.arguments = await run_tool_pre_hooks(
+                    self._tool_pre_hooks, tool_name, function_calling.arguments
+                )
+            except ToolHookDeniedError as exc:
+                denied = True
+                error = exc
+                function_calling.status = EventStatus.FAILED
+                function_calling.execution.add_error(exc)
+
+        cancelling = False
         try:
-            await function_calling.invoke()
-            if function_calling.status == EventStatus.FAILED:
-                error = function_calling.execution.error
+            if not denied:
+                await function_calling.invoke()
+                if function_calling.status == EventStatus.FAILED:
+                    error = function_calling.execution.error
         except BaseException as exc:
             error = exc
+            cancelling = True
             raise
         finally:
-            if self._tool_post_hooks:
+            if self._tool_post_hooks and not cancelling:
                 notes = await run_tool_post_hooks(
                     self._tool_post_hooks,
                     tool_name,
@@ -422,15 +440,14 @@ class ActionManager(Manager):
         update: bool = False,
         mcp_security: "MCPSecurityConfig | None" = None,
     ) -> dict[str, list[str]]:
-        from lionagi.service.connections.mcp_wrapper import (
-            MCPConnectionPool,
-            MCPSecurityConfig,
-        )
+        from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
 
-        # Explicit config load trusts declared transports by default.
-        if mcp_security is None:
-            mcp_security = MCPSecurityConfig(allow_commands=True, allow_urls=True)
-
+        # An omitted policy is no longer implicitly trusted (ADR-0011 delta
+        # row 3): `mcp_security` stays None and flows through to
+        # `register_mcp_server` -> `MCPConnectionPool.get_client`, which
+        # falls back to the wrapper's own fail-closed `MCPSecurityConfig()`
+        # default. A caller that wants the previous permissive behavior must
+        # pass `mcp_security=MCPSecurityConfig.trusted()` explicitly.
         loaded_names = MCPConnectionPool.load_config(config_path)
 
         if server_names is None:
@@ -462,15 +479,13 @@ async def load_mcp_tools(
     update: bool = False,
     mcp_security: "MCPSecurityConfig | None" = None,
 ) -> list[Tool]:
-    from lionagi.service.connections.mcp_wrapper import (
-        MCPConnectionPool,
-        MCPSecurityConfig,
-    )
+    from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
 
     manager = ActionManager()
 
-    if mcp_security is None:
-        mcp_security = MCPSecurityConfig(allow_commands=True, allow_urls=True)
+    # See load_mcp_config's matching comment: an omitted policy stays None
+    # and falls through to the wrapper's fail-closed default rather than
+    # being silently upgraded to a permissive one (ADR-0011 delta row 3).
 
     if config_path:
         MCPConnectionPool.load_config(config_path)

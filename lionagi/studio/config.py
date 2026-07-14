@@ -29,7 +29,6 @@ def _system_local_tz_name() -> str:
 
 STUDIO_PORT: int = int(os.environ.get("LIONAGI_STUDIO_PORT", "8765"))
 HOST: str = os.environ.get("LIONAGI_STUDIO_HOST", "127.0.0.1")
-DATA_ROOT: Path = Path(os.environ.get("LIONAGI_DATA_ROOT", "~/.lionagi")).expanduser()
 SHOWS_ROOT: Path = Path(os.environ.get("LIONAGI_SHOWS_ROOT", "~/khive-work/shows")).expanduser()
 
 _raw_origins = os.environ.get("CORS_ORIGINS", "")
@@ -88,6 +87,14 @@ PLAY_STALE_HOURS: float = float(os.environ.get("LIONAGI_STUDIO_PLAY_STALE_HOURS"
 SCHEDULE_RUN_STALE_HOURS: float = float(
     os.environ.get("LIONAGI_STUDIO_SCHEDULE_RUN_STALE_HOURS", "24.0")
 )
+# Staleness threshold for the show-level reaper. A show's status is derived
+# only once, at mirror-row creation (`shows.import_shows()`); a show
+# mirrored while its plays are still in flight is never re-evaluated once
+# those plays later merge or abort on disk. This reaper re-derives the
+# terminal state from on-disk play/verdict evidence past this staleness
+# window. Liveness-first means a show with any child play whose session
+# process is still alive is never reaped regardless of this value.
+SHOW_STALE_HOURS: float = float(os.environ.get("LIONAGI_STUDIO_SHOW_STALE_HOURS", "6.0"))
 # Minimum seconds between consecutive periodic reaper runs (throttle).
 REAPER_INTERVAL_SECONDS: int = int(os.environ.get("LIONAGI_STUDIO_REAPER_INTERVAL_SECONDS", "300"))
 

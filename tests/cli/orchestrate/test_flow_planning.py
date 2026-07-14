@@ -155,6 +155,59 @@ async def test_dry_run_lists_assignments_with_deps(tmp_path):
     assert len(orc.operate_calls) == 1  # no retry needed
 
 
+@pytest.mark.asyncio
+async def test_dry_run_drops_forward_dependency(tmp_path):
+    orc = _FakeOrcBranch(
+        [
+            SimpleNamespace(
+                assignments=[
+                    TaskAssignment(task="first", assignee="researcher", depends_on=["2"]),
+                    TaskAssignment(task="second", assignee="architect"),
+                ]
+            )
+        ]
+    )
+
+    out = await _run_flow_inner("codex/gpt-5.5", "task", env=_env(tmp_path, orc), dry_run=True)
+
+    assert "depends_on:" not in out
+
+
+@pytest.mark.asyncio
+async def test_dry_run_drops_self_non_integer_and_out_of_range_dependencies(tmp_path):
+    orc = _FakeOrcBranch(
+        [
+            SimpleNamespace(
+                assignments=[
+                    TaskAssignment(task="first", assignee="researcher", depends_on=["1"]),
+                    TaskAssignment(task="second", assignee="architect", depends_on=["x", "9"]),
+                ]
+            )
+        ]
+    )
+
+    out = await _run_flow_inner("codex/gpt-5.5", "task", env=_env(tmp_path, orc), dry_run=True)
+
+    assert "depends_on:" not in out
+
+
+@pytest.mark.asyncio
+async def test_dry_run_rejects_dependency_cycle(tmp_path):
+    orc = _FakeOrcBranch(
+        [
+            SimpleNamespace(
+                assignments=[
+                    TaskAssignment(task="first", assignee="researcher", depends_on=["2"]),
+                    TaskAssignment(task="second", assignee="architect", depends_on=["1"]),
+                ]
+            )
+        ]
+    )
+
+    with pytest.raises(FlowPlanError, match="cycle"):
+        await _run_flow_inner("codex/gpt-5.5", "task", env=_env(tmp_path, orc), dry_run=True)
+
+
 class TestParseReactive:
     """--reactive MODE → (reactive, spawn_roles) for grant-gating."""
 

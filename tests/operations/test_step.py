@@ -148,3 +148,98 @@ def test_operative_model_type_cache_size_zero_restores_per_call_classes(
     second = Step.request_operative(base_type=Payload)
 
     assert first.request_type is not second.request_type
+
+
+def test_is_cache_safe_value_classifies_mutable_and_immutable_metadata():
+    """Lists, dicts, bound methods, and arbitrary objects are never cache-safe; scalars, tuples, frozensets, and plain functions are."""
+    from lionagi.adapters.spec_adapters import pydantic_field
+
+    class Validators:
+        def check(self, v):
+            return v
+
+    def plain_fn(v):
+        return v
+
+    unsafe_values = [[1, 2], {"a": 1}, Validators().check, Validators()]
+    for value in unsafe_values:
+        assert pydantic_field._is_cache_safe_value(value) is False
+
+    safe_values = [1, "s", True, 1.5, None, int, (1, 2), frozenset({1, 2}), plain_fn]
+    for value in safe_values:
+        assert pydantic_field._is_cache_safe_value(value) is True
+
+
+def test_model_type_cache_key_opts_out_for_bound_method_validator(monkeypatch):
+    """A bound-method validator is hashable (so the hash() fallback alone would not catch it) -- the opt-out relies specifically on _is_cache_safe_value rejecting it."""
+    from lionagi.adapters.spec_adapters import pydantic_field
+
+    class Validators:
+        def check(self, v):
+            return v
+
+    spec = Spec(int, name="value", validator=Validators().check)
+
+    def build_key():
+        return pydantic_field._model_type_cache_key(
+            base_type=BaseModel,
+            model_name="Payload",
+            specs=(spec,),
+            include=None,
+            exclude=None,
+            doc=None,
+        )
+
+    assert build_key() is None
+
+    # Simulate a regression where _is_cache_safe_value stops flagging this
+    # value as unsafe: the hash() fallback does not save us here (bound
+    # methods hash cleanly), so the key would silently become cacheable.
+    monkeypatch.setattr(pydantic_field, "_is_cache_safe_value", lambda value: True)
+    assert build_key() is not None
+
+
+def test_model_type_cache_key_opts_out_for_list_and_dict_metadata():
+    """List-valued and dict-valued metadata (e.g. a multi-validator list or a mutable default) opt out of caching too."""
+    from lionagi.adapters.spec_adapters import pydantic_field
+
+    def fn_a(v):
+        return v
+
+    def fn_b(v):
+        return v
+
+    list_validator_spec = Spec(int, name="value", validator=[fn_a, fn_b])
+    dict_metadata_spec = Spec(int, name="value", json_schema_extra={"x": 1})
+
+    for spec in (list_validator_spec, dict_metadata_spec):
+        key = pydantic_field._model_type_cache_key(
+            base_type=BaseModel,
+            model_name="Payload",
+            specs=(spec,),
+            include=None,
+            exclude=None,
+            doc=None,
+        )
+        assert key is None
+
+
+def test_step_request_operative_with_mutable_default_metadata_bypasses_cache():
+    """Distinct mutable-default Specs never raise and never get cross-wired to the wrong shared model type (regression class: type-identity cache collision)."""
+
+    class Payload(BaseModel):
+        value: int
+
+    spec1 = Spec(list, name="tags", default=[1])
+    spec2 = Spec(list, name="tags", default=[2])
+
+    op1 = Step.request_operative(base_type=Payload, fields={"tags": spec1})
+    op2 = Step.request_operative(base_type=Payload, fields={"tags": spec2})
+
+    assert op1.request_type is not op2.request_type
+
+    inst1 = op1.request_type.model_validate({"value": 1})
+    inst2 = op2.request_type.model_validate({"value": 2})
+
+    assert inst1.tags == [1]
+    assert inst2.tags == [2]

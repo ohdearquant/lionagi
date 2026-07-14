@@ -100,6 +100,22 @@ def test_load_settings_discovers_parent_project_settings_from_cwd(tmp_path, monk
     assert settings.get("x", {}).get("y") == 1
 
 
+def test_load_settings_discovers_parent_of_explicit_project_dir(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".lionagi").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+
+    project = tmp_path / "project"
+    overridden_cwd = project / "nested" / "worktree"
+    overridden_cwd.mkdir(parents=True)
+    (project / ".lionagi").mkdir(parents=True)
+    (project / ".lionagi" / "settings.yaml").write_text("notifications:\n  enabled: true\n")
+
+    settings = load_settings(project_dir=overridden_cwd, include_project=True)
+
+    assert settings["notifications"]["enabled"] is True
+
+
 # ---------------------------------------------------------------------------
 # A3: untrusted python hook rejected via explicit trusted_hook_modules
 # ---------------------------------------------------------------------------

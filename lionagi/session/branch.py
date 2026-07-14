@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections.abc import AsyncGenerator, Callable
-from typing import TYPE_CHECKING, Any, Literal
+from contextvars import ContextVar
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from pydantic import BaseModel, JsonValue, PrivateAttr, field_serializer
 
@@ -109,8 +110,10 @@ class Branch(Element, Relational):
     _loop_control: "LoopControl | None" = PrivateAttr(None)
     _signal_tasks: list = PrivateAttr(default_factory=list)
     _context_providers: "ContextProviderRegistry | None" = PrivateAttr(None)
-    _context_injection_slot: list[str] | None = PrivateAttr(None)
-    _last_context_report: Any = PrivateAttr(None)
+    _last_context_report: ContextVar[Any] = PrivateAttr(
+        default_factory=lambda: ContextVar("last_context_report", default=None)
+    )
+    _last_context_report_fallback: Any = PrivateAttr(None)
 
     def __init__(
         self,
@@ -283,11 +286,20 @@ class Branch(Element, Relational):
 
     @property
     def last_context_report(self):
-        """ProviderReport from the most recent turn's provider pass, or None
-        when no providers are registered. When the branch has no system
-        message there is no render target, so providers are not invoked and
-        the report lists every registered provider under `skipped`."""
-        return self._last_context_report
+        """ProviderReport from this task's latest provider pass, when present.
+
+        Otherwise returns the branch's most recently completed provider pass
+        for backward compatibility. Concurrent passes use last-writer semantics
+        for that branch-level fallback.
+
+        When the branch has no system message there is no render target, so
+        providers are not invoked and the report lists every registered
+        provider under ``skipped``.
+        """
+        task_report = self._last_context_report.get()
+        if task_report is not None:
+            return task_report
+        return self._last_context_report_fallback
 
     @property
     def chat_model(self) -> iModel:
@@ -647,6 +659,72 @@ class Branch(Element, Relational):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self._log_manager.adump(clear=True)
 
+    @overload
+    async def chat(
+        self,
+        instruction: Instruction | JsonValue = None,
+        guidance: JsonValue = None,
+        context: JsonValue = None,
+        sender: ID.Ref = None,
+        recipient: ID.Ref = None,
+        request_fields: list[str] | dict[str, JsonValue] = None,
+        response_format: type[BaseModel] | BaseModel = None,
+        progression: Progression | list[ID[RoledMessage].ID] = None,
+        imodel: iModel = None,
+        tool_schemas: list[dict] = None,
+        images: list = None,
+        image_detail: Literal["low", "high", "auto"] = None,
+        plain_content: str = None,
+        return_ins_res_message: Literal[False] = False,
+        include_token_usage_to_model: bool = False,
+        _turn_origin: Any = None,
+        **kwargs,
+    ) -> str: ...
+
+    @overload
+    async def chat(
+        self,
+        instruction: Instruction | JsonValue = None,
+        guidance: JsonValue = None,
+        context: JsonValue = None,
+        sender: ID.Ref = None,
+        recipient: ID.Ref = None,
+        request_fields: list[str] | dict[str, JsonValue] = None,
+        response_format: type[BaseModel] | BaseModel = None,
+        progression: Progression | list[ID[RoledMessage].ID] = None,
+        imodel: iModel = None,
+        tool_schemas: list[dict] = None,
+        images: list = None,
+        image_detail: Literal["low", "high", "auto"] = None,
+        plain_content: str = None,
+        return_ins_res_message: Literal[True] = ...,
+        include_token_usage_to_model: bool = False,
+        _turn_origin: Any = None,
+        **kwargs,
+    ) -> tuple[Instruction, AssistantResponse]: ...
+
+    @overload
+    async def chat(
+        self,
+        instruction: Instruction | JsonValue = None,
+        guidance: JsonValue = None,
+        context: JsonValue = None,
+        sender: ID.Ref = None,
+        recipient: ID.Ref = None,
+        request_fields: list[str] | dict[str, JsonValue] = None,
+        response_format: type[BaseModel] | BaseModel = None,
+        progression: Progression | list[ID[RoledMessage].ID] = None,
+        imodel: iModel = None,
+        tool_schemas: list[dict] = None,
+        images: list = None,
+        image_detail: Literal["low", "high", "auto"] = None,
+        plain_content: str = None,
+        return_ins_res_message: bool = ...,
+        include_token_usage_to_model: bool = False,
+        _turn_origin: Any = None,
+        **kwargs,
+    ) -> str | tuple[Instruction, AssistantResponse]: ...
+
     async def chat(
         self,
         instruction: Instruction | JsonValue = None,
@@ -666,7 +744,7 @@ class Branch(Element, Relational):
         include_token_usage_to_model: bool = False,
         _turn_origin: Any = None,
         **kwargs,
-    ) -> tuple[Instruction, AssistantResponse]:
+    ) -> str | tuple[Instruction, AssistantResponse]:
         """Invoke the chat model. Does not auto-add messages to the branch."""
         from lionagi.operations.chat.chat import ChatParam, chat
 

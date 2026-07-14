@@ -14,6 +14,8 @@ interleaving.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -29,7 +31,7 @@ def test_locked_user_settings_serializes_concurrent_writers(plugin_home):
     """Two concurrent read-modify-write sections -- one shaped like GC pruning a
     trust record, one shaped like `li plugin disable` setting `enabled: false` --
     must both land. Neither may be lost to the other's stale read, which is
-    exactly what happened before GC's mutation was locked (finding #2)."""
+    exactly what happened before GC's mutation was locked."""
     barrier = threading.Barrier(2)
     errors: list[BaseException] = []
 
@@ -66,6 +68,34 @@ def test_locked_user_settings_serializes_concurrent_writers(plugin_home):
     settings = read_user_settings()
     assert settings["trusted_plugins"]["web-research"]["manifest"] == "deadbeef"
     assert settings["plugins"]["other-plugin"]["enabled"] is False
+
+
+def test_plugins_imports_on_win32_without_fcntl():
+    script = """
+import importlib
+import sys
+import lionagi.plugins
+
+for module_name in (
+    "lionagi.plugins",
+    "lionagi.plugins.registry",
+    "lionagi.plugins.trust",
+    "lionagi.plugins._user_settings",
+):
+    sys.modules.pop(module_name, None)
+
+sys.platform = "win32"
+sys.modules["fcntl"] = None
+importlib.import_module("lionagi.plugins")
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_locked_user_settings_no_op_writes_nothing(plugin_home):

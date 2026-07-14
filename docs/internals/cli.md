@@ -445,6 +445,18 @@ its persisted system message — which, for a role/preset branch, is the compose
 block, not the bare profile body — so `add_message` must not run for it either, or it clobbers
 that persisted message via `set_system`.
 
+For a brand-new branch, `took_create_agent_path` (set in the same leg that builds the branch)
+is the authoritative signal. A resumed/continued branch cannot use the *current* invocation's
+profile for this decision — the profile reloaded this leg (`has_role_key`) describes only what
+was passed to *this* `-a`, not how the persisted branch was originally built; resuming a
+role-composed branch under a different, plain profile (or the same profile with `role:` since
+removed) would then make the guard treat it as plain and clobber its composed message. Instead,
+`create_agent` (`lionagi/agent/factory.py`) stamps every branch it builds with an immutable
+`CREATE_AGENT_BRANCH_ORIGIN_KEY` marker in `branch.metadata`, which round-trips through
+`Branch.to_dict()`/`from_dict()` with the rest of `metadata`. On a resumed/continued leg,
+`_run_agent` consults that marker on the reloaded branch instead of re-deriving the guard from
+the current profile.
+
 **`_run_agent` auto-resume terminal-status guard** — known before teardown runs: an auto-resume
 leg is about to fire on this same session, so this leg's teardown must not stamp a terminal
 status the resumed leg would then be blocked from overwriting by the ADR-0035 terminal guard

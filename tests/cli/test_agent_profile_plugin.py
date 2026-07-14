@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.cli._providers import list_agents, load_agent_profile
+from lionagi.cli._providers import build_agent_profile_catalog, list_agents, load_agent_profile
 from lionagi.plugins.discovery import discover_plugins
 from lionagi.plugins.trust import trust_plugin
 
@@ -68,6 +68,40 @@ def test_active_plugin_profile_resolves_by_namespaced_token(write_plugin):
     assert "research body" in profile.system_prompt
 
 
+def test_agent_profile_catalog_indexes_resolved_configuration(write_plugin):
+    _write_plugin_profile(
+        write_plugin,
+        "wr",
+        "web-research",
+        "researcher",
+        """\
+---
+model: codex/gpt-5.5
+effort: high
+role: researcher
+pack: research-pack
+---
+
+research body
+""",
+    )
+
+    catalog = build_agent_profile_catalog()
+
+    assert catalog["web-research/researcher"] == {
+        "bypass": False,
+        "effort": "high",
+        "fast_mode": False,
+        "lion_system": True,
+        "model": "codex/gpt-5.5",
+        "pack": "research-pack",
+        "resume_on_timeout": False,
+        "role": "researcher",
+        "timeout": None,
+        "yolo": False,
+    }
+
+
 def test_unambiguous_bare_name_resolves_to_plugin(write_plugin):
     _write_plugin_profile(
         write_plugin, "wr", "web-research", "researcher", "---\nmodel: codex/gpt-5.5\n---\n\nbody\n"
@@ -118,6 +152,84 @@ def test_local_shadow_logs_a_warning(write_plugin, plugin_home, caplog):
         load_agent_profile("researcher")
 
     assert any("web-research" in rec.message for rec in caplog.records)
+
+
+def test_resolve_worker_spec_resolves_plugin_namespaced_role(write_plugin):
+    """A `<plugin>/<name>` role assigned by the orchestrator's planner must resolve to the
+    plugin's declared profile, not silently fall back to a bare model spec.
+    """
+    from lionagi.cli.orchestrate._orchestration import resolve_worker_spec
+
+    _write_plugin_profile(
+        write_plugin,
+        "wr",
+        "web-research",
+        "researcher",
+        "---\nmodel: codex/gpt-5.5\n---\n\nresearch body\n",
+    )
+
+    model, profile = resolve_worker_spec("web-research/researcher")
+
+    assert model == "codex/gpt-5.5"
+    assert profile is not None
+    assert profile.name == "web-research/researcher"
+
+
+def test_resolve_worker_spec_falls_back_to_raw_model_spec_for_unknown_slash_token(write_plugin):
+    """A literal `provider/model` token (no matching plugin profile) still resolves as a raw
+    model spec, unaffected by the plugin-namespaced-role fix.
+    """
+    from lionagi.cli.orchestrate._orchestration import resolve_worker_spec
+
+    model, profile = resolve_worker_spec("openai/gpt-4.1")
+
+    assert model == "openai/gpt-4.1"
+    assert profile is None
+
+
+def test_resolve_worker_spec_falls_back_to_raw_model_spec_for_nonexistent_bare_token(write_plugin):
+    """A `<namespace>/<name>` token with no dots (a valid profile-name shape) that matches no
+    real plugin or local profile misses via `FileNotFoundError`, not `ValueError` — a distinct
+    fallback branch from the dotted-model-version case below and must be exercised separately.
+    """
+    from lionagi.cli.orchestrate._orchestration import resolve_worker_spec
+
+    model, profile = resolve_worker_spec("unknown/role")
+
+    assert model == "unknown/role"
+    assert profile is None
+
+
+def test_resolve_worker_spec_falls_back_to_raw_model_spec_for_codex_token(write_plugin):
+    """`codex/gpt-5.5` (a dotted model version, matching no plugin profile) is a real-world
+    raw-spec token used by the orchestrator's own worker defaults and must resolve as such.
+    """
+    from lionagi.cli.orchestrate._orchestration import resolve_worker_spec
+
+    model, profile = resolve_worker_spec("codex/gpt-5.5")
+
+    assert model == "codex/gpt-5.5"
+    assert profile is None
+
+
+def test_resolve_worker_spec_falls_back_for_dotted_model_version(write_plugin):
+    """A dotted model version (invalid as a bare profile-name component) must still fall back
+    to a raw model spec instead of raising.
+    """
+    from lionagi.cli.orchestrate._orchestration import resolve_worker_spec
+
+    _write_plugin_profile(
+        write_plugin,
+        "wr",
+        "web-research",
+        "researcher",
+        "---\nmodel: codex/gpt-5.5\n---\n\nresearch body\n",
+    )
+
+    model, profile = resolve_worker_spec("anthropic/claude-3.7")
+
+    assert model == "anthropic/claude-3.7"
+    assert profile is None
 
 
 def test_disabled_plugin_profile_is_unreachable(write_plugin):

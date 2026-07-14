@@ -21,14 +21,17 @@ daemon process needs (``schedule_runs`` is already the durable record).
 Failure semantics: :meth:`SchedulerSignalBus.emit` never swallows a handler
 exception. Handlers run concurrently with ``return_exceptions=True``; any
 failures are raised together as an :class:`ExceptionGroup` after every
-handler has had a chance to run. The mint call site (``engine.py``) catches
-that group, writes a durable ``admin_events`` row describing the failure,
-and lets the tick loop continue — a broken handler must never be invisible
-and must never stop unrelated schedules from firing.
+handler has had a chance to run. A handler-raised ``CancelledError`` cannot be
+nested in ``ExceptionGroup``, so it is surfaced as the distinct
+``SchedulerHandlerCancelled`` marker. The mint call site (``engine.py``)
+records either form. Cancellation of the emitter task remains a plain
+``CancelledError`` and propagates, so a broken handler is visible without
+stopping unrelated schedules or swallowing scheduler shutdown.
 """
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import time
@@ -43,6 +46,7 @@ __all__ = (
     "ScheduleRunSucceeded",
     "ScheduleRunFailed",
     "ScheduleRunCancelled",
+    "SchedulerHandlerCancelled",
     "SchedulerSignalBus",
     "Handler",
     "Predicate",
@@ -57,6 +61,10 @@ Handler = Callable[[Signal], Any]
 Predicate = Callable[[Signal], bool]
 
 _NO_MATCH = object()
+
+
+class SchedulerHandlerCancelled(asyncio.CancelledError):
+    """Marks a ``CancelledError`` raised by a signal handler, not the emitter task."""
 
 
 class ScheduleRunSucceeded(Signal):
@@ -232,9 +240,10 @@ class SchedulerSignalBus:
 
         ``asyncio.CancelledError`` (and any other non-``Exception``
         ``BaseException``) is excluded from that group — the stdlib
-        ``ExceptionGroup`` cannot nest a bare ``BaseException`` — and is
-        re-raised directly instead, since cancellation must propagate and is
-        not a handler bug to record.
+        ``ExceptionGroup`` cannot nest a bare ``BaseException``. A handler
+        cancellation is therefore re-raised as ``SchedulerHandlerCancelled``
+        so the mint site can record it without confusing it with cancellation
+        of the task that is running ``emit``.
         """
         candidates = [entry for entry in self._subs if not entry[0] or isinstance(signal, entry[0])]
 
@@ -281,12 +290,13 @@ class SchedulerSignalBus:
 
         if cancellations:
             cancellation = cancellations[0]
+            handler_cancelled = SchedulerHandlerCancelled(str(cancellation))
             if errors:
-                raise cancellation from ExceptionGroup(
+                raise handler_cancelled from ExceptionGroup(
                     f"{len(errors)} scheduler signal handler(s) failed for {type(signal).__name__}",
                     errors,
                 )
-            raise cancellation
+            raise handler_cancelled from cancellation
         if errors:
             raise ExceptionGroup(
                 f"{len(errors)} scheduler signal handler(s) failed for {type(signal).__name__}",
@@ -320,7 +330,7 @@ async def record_handler_failure(exc_group: BaseException, signal: Signal) -> No
     """Write a durable ``admin_events`` row describing a handler-dispatch failure.
 
     Called by the mint call site after :meth:`SchedulerSignalBus.emit` raises
-    an :class:`ExceptionGroup` — the schedule_run/invocation row is already
+    an :class:`ExceptionGroup` or handler-originated cancellation — the schedule_run/invocation row is already
     committed by the time this runs, so a failure here never corrupts that
     write; it only means the diagnostic record itself couldn't be persisted,
     which is logged and swallowed the same way ``bind_db_persistence``'s

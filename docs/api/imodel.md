@@ -1,10 +1,13 @@
 # `iModel`
 
 ```python
-class iModel(Element)
+class iModel:
+    ...
 ```
 
-Uniform interface to any LLM provider with rate limiting, queuing, and hooks.
+Uniform wrapper around one resolved provider endpoint, with rate limiting, queuing,
+streaming, and invocation hooks. `iModel` is intentionally lower-level than
+`Branch`; most applications should make model turns through a branch.
 
 ## Constructor
 
@@ -31,7 +34,7 @@ model = li.iModel(
 | `limit_tokens` | `int \| None` | `None` | Max tokens per rate-limit cycle |
 | `concurrency_limit` | `int \| None` | `None` | Max concurrent streams |
 | `streaming_process_func` | `Callable \| None` | `None` | Custom chunk processor for streaming responses |
-| `provider_metadata` | `dict \| None` | `None` | Provider-specific metadata (e.g., CLI session IDs) |
+| `provider_metadata` | `dict \| None` | `None` | Auxiliary provider metadata; non-CLI session lookup reads its `session_id` key |
 | `hook_registry` | `HookRegistry \| dict \| None` | `HookRegistry()` | Pre/post invocation hooks |
 | `**kwargs` | — | — | Provider-specific config (e.g., `model="gpt-4o"`, `temperature=0.7`) |
 
@@ -55,11 +58,11 @@ model = li.iModel(
 
 | `provider=` | `endpoint=` | Key env var |
 |-------------|-------------|-------------|
+| `"openai"` | `"embed"` / `"embeddings"` | `OPENAI_API_KEY` |
+| `"ollama"` | `"embed"` / `"embeddings"` | — (local) |
 | `"nvidia_nim"` | `"embed"` | `NVIDIA_NIM_API_KEY` |
 
-`OpenaiEmbedEndpoint` and `NvidiaNimEmbedEndpoint` exist as classes but only
-`nvidia_nim` embed is routed via `match_endpoint()`. Pass an `Endpoint` instance
-directly for the others.
+These endpoints are all registered and routable through `match_endpoint()`.
 
 ### OpenAI responses API
 
@@ -75,10 +78,14 @@ directly for the others.
 | `"codex"` | — | OpenAI Codex CLI |
 | `"gemini_code"` | `"gemini-code"`, `"gemini_cli"`, `"gemini-cli"` | Gemini CLI |
 | `"pi"` | `"pi-code"`, `"pi_code"` | Pi CLI |
-| `"ag2"` | — | AG2 GroupChat (stream-only; requires `pip install lionagi[ag2]`) |
+| `"ag2"` | `"autogen"` | AG2 GroupChat/Agent run in-process; NLIP uses remote HTTP (stream-only; requires `pip install lionagi[ag2]`) |
 
-CLI endpoints set `is_cli = True`. `Branch.operate()` routes to `run_and_collect`
-instead of `communicate`. See [operations.md#middle-protocol](operations.md#middle-protocol).
+Agentic endpoints report `is_cli = True`, which makes `Branch.operate()` route them
+to `run_and_collect` instead of `communicate`. Only the CLI-backed providers
+(`claude_code`, `codex`, `gemini_code`, and `pi`) launch installed subprocess tools
+and use those tools' authentication. AG2 GroupChat and Agent execute in-process;
+AG2 NLIP connects to a remote HTTP endpoint. See
+[operations.md#middle-protocol](operations.md#middle-protocol).
 
 ### Search
 
@@ -97,8 +104,9 @@ instead of `communicate`. See [operations.md#middle-protocol](operations.md#midd
 
 ### Fallback
 
-Any unrecognized `provider` falls back to an OpenAI-compatible generic chat
-endpoint. Pass `base_url=` to point at your custom host.
+After built-ins and trusted, enabled plugin providers are consulted, an unrecognized
+`provider` falls back to a generic OpenAI-compatible endpoint. Pass `base_url=` for
+the custom host; a provider name alone cannot supply a usable URL.
 
 ## Endpoint matching
 
@@ -108,12 +116,15 @@ iModel(provider="openai", endpoint="chat")
   → OpenaiChatEndpoint
 ```
 
-`match_endpoint()` dispatches on `(provider, endpoint)` string containment:
+`match_endpoint()` dispatches through `EndpointRegistry` using exact canonical
+provider/endpoint names or their declared aliases:
 
 - Default `endpoint="chat"` resolves to the provider's chat class.
-- Single-endpoint providers (`claude_code`, `codex`, `gemini_code`, `pi`) ignore
-  the `endpoint` argument and always return their only class.
-- Unrecognized providers fall back to a generic OpenAI-compatible `Endpoint`.
+- A single-endpoint provider can resolve its sole endpoint even when the caller uses
+  the default `endpoint="chat"`.
+- On a built-in miss, trusted and enabled plugin provider targets are loaded lazily.
+- Built-in provider names win if a plugin declares a collision.
+- A final miss returns the generic OpenAI-compatible `Endpoint` fallback.
 
 ## Common construction patterns
 
@@ -145,7 +156,7 @@ model = li.iModel(provider="deepseek", model="deepseek-chat")
 # OpenAI Responses API
 model = li.iModel(provider="openai", endpoint="response", model="gpt-4o")
 
-# CLI endpoints (stream-only — use with Branch.run())
+# CLI endpoints (use Branch.run() for chunks or Branch.operate() to collect)
 model = li.iModel(provider="claude_code", model="sonnet")
 model = li.iModel(provider="codex", model="codex-mini-latest")
 model = li.iModel(provider="gemini_code", model="gemini-2.5-pro")
@@ -184,7 +195,7 @@ Sends a rate-limited request. Returns `APICalling` with `.response` attribute.
 ### `stream()`
 
 ```python
-async for chunk in await model.stream(messages=[...]):
+async for chunk in model.stream(messages=[...]):
     print(chunk, end="", flush=True)
 ```
 
@@ -233,9 +244,9 @@ async with li.iModel(model="gpt-4o") as model:
 | Property | Type | Notes |
 |----------|------|-------|
 | `model_name` | `str` | Model identifier string |
-| `is_cli` | `bool` | `True` for CLI endpoints (`claude_code`, `codex`, `gemini_code`) |
+| `is_cli` | `bool` | `True` for agentic/CLI endpoints such as `claude_code`, `codex`, `gemini_code`, `pi`, and AG2 |
 | `request_options` | `type[BaseModel] \| None` | Endpoint-specific request schema |
-| `provider_session_id` | `str \| None` | CLI session ID for resumption |
+| `provider_session_id` | `str \| None` | `endpoint.session_id` for agentic/CLI endpoints; otherwise `provider_metadata["session_id"]` |
 
 ## Provider resolution
 

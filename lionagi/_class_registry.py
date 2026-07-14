@@ -55,7 +55,7 @@ def get_class(class_name: str) -> type:
             cls = import_module(mod, import_name=name)
             if isinstance(cls, type):
                 return cls
-        except (ImportError, AttributeError):
+        except Exception:  # noqa: BLE001, S110 — normalize import failure to lookup failure
             pass
 
     for mod_name in _BUILTIN_MODULES:

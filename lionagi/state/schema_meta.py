@@ -519,6 +519,8 @@ schedules = Table(
     # Cumulative spend budget: NULL means unlimited (see schema.sql).
     Column("budget_usd", Float),
     Column("budget_tokens", Integer),
+    # Rolling-window fire cap: NULL means unlimited (see schema.sql).
+    Column("rate_limit", JSON),
     Column("project", Text),
     # Metric threshold alerts config + last breach fire; see schema.sql.
     Column("threshold_config", JSON),

@@ -32,8 +32,10 @@ It emits exactly one `RunEnd` (clean exit or consumer abandon) or `RunFailed` pe
 
 ### `ReActStream`
 
-Core reactive loop. Yields `(analysis, formatted_str)` tuples per extension round.
-`ReAct_v1` collects all outputs; `ReAct` is the legacy public wrapper.
+Core reactive loop. By default, it yields each analysis/result object followed by the
+final-answer object. With `verbose_analysis=True`, every item is instead a
+`(result, formatted_markdown)` tuple, including the final answer. `ReAct_v1` collects
+all outputs; `ReAct` is the legacy public wrapper.
 
 ### `operate()`
 

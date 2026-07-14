@@ -1,8 +1,9 @@
 # Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for custom render/parser protocols: StructureFormat, CustomRenderer/Parser, validate_image_url, and message content additions."""
+"""Tests for custom rendering, parsing, validation, and message preparation."""
 
+import json
 from typing import Any
 
 import pytest
@@ -21,6 +22,8 @@ from lionagi.protocols.messages import (
 )
 from lionagi.protocols.messages.rendering import CustomParser, CustomRenderer, StructureFormat
 from lionagi.protocols.messages.validators import validate_image_url
+from lionagi.service.manager import iModel
+from lionagi.session.branch import Branch
 
 
 @pytest.fixture(autouse=True)
@@ -79,6 +82,98 @@ class TestCustomParserProtocol:
                 return {k: text.upper() for k in target_keys}
 
         assert isinstance(UpperCaseParser(), CustomParser)
+
+
+@pytest.mark.asyncio
+async def test_manual_renderer_provider_parser_pipeline_is_explicit():
+    class TargetModel(BaseModel):
+        answer: str
+
+    class RecordingRenderer:
+        def __init__(self) -> None:
+            self.calls: list[type[BaseModel]] = []
+
+        def __call__(self, model: type[BaseModel], **kwargs: Any) -> str:
+            self.calls.append(model)
+            return f"Return these fields: {', '.join(model.model_fields)}"
+
+    class RecordingParser:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, list[str]]] = []
+
+        def __call__(self, text: str, target_keys: list[str], **kwargs: Any) -> dict[str, Any]:
+            self.calls.append((text, target_keys))
+            decoded = json.loads(text)
+            return {key: decoded[key] for key in target_keys}
+
+    model = iModel(provider="groq", model="llama-3.3-70b-versatile")
+
+    async def invoke_model(**kwargs: Any):
+        from lionagi.protocols.generic.event import EventStatus, Execution
+
+        api_call = model.create_api_calling(**kwargs)
+        api_call.execution = Execution(
+            status=EventStatus.COMPLETED,
+            response='{"answer": "normal operation"}',
+            duration=0.1,
+            error=None,
+        )
+        return api_call
+
+    model.invoke = invoke_model
+    branch = Branch(
+        system="Keep answers concise.",
+        chat_model=model,
+        log_config={"auto_save_on_exit": False},
+    )
+    await branch.msgs.a_add_message(
+        instruction="What is the status?", sender="user", recipient=branch.id
+    )
+
+    renderer = RecordingRenderer()
+    parser = RecordingParser()
+    branch.metadata["custom_renderer"] = renderer
+    branch.metadata["custom_parser"] = parser
+
+    provider_payload = prepare_messages_for_chat(branch.messages, to_chat=True)
+    provider_payload.append({"role": "user", "content": renderer(TargetModel)})
+
+    submitted_payloads: list[list[dict[str, Any]]] = []
+
+    async def invoke_provider(messages: list[dict[str, Any]]) -> str:
+        submitted_payloads.append([dict(message) for message in messages])
+        return '{"answer": "manual pipeline"}'
+
+    response_text = await invoke_provider(provider_payload)
+    result = parser(response_text, list(TargetModel.model_fields))
+
+    assert result == {"answer": "manual pipeline"}
+    assert len(submitted_payloads) == 1
+    submitted = submitted_payloads[0]
+    assert all(set(message) == {"role", "content"} for message in submitted)
+    assert submitted[-1] == {
+        "role": "user",
+        "content": "Return these fields: answer",
+    }
+    assert "Keep answers concise." in submitted[0]["content"]
+    assert "What is the status?" in submitted[0]["content"]
+    assert renderer.calls == [TargetModel]
+    assert parser.calls == [(response_text, ["answer"])]
+
+    assert await branch.chat("Use the normal chat path.") == '{"answer": "normal operation"}'
+    assert (
+        await branch.operate(
+            instruction="Use the normal operate path.",
+            invoke_actions=False,
+            skip_validation=True,
+        )
+        == '{"answer": "normal operation"}'
+    )
+    assert await branch.parse(
+        '{"answer": "normal parse"}', request_type=TargetModel
+    ) == TargetModel(answer="normal parse")
+    assert renderer.calls == [TargetModel]
+    assert parser.calls == [(response_text, ["answer"])]
 
 
 class TestValidateImageUrl:

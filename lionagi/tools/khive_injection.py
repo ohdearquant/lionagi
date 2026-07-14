@@ -80,7 +80,7 @@ async def _call_khive(ops: str, mcp_config: dict) -> Any:
     transport is only touched here, never at module load."""
     from lionagi.service.connections.mcp_wrapper import MCPConnectionPool, MCPSecurityConfig
 
-    security = MCPSecurityConfig(allow_commands=True, allow_urls=True)
+    security = MCPSecurityConfig.trusted()
     client = await MCPConnectionPool.get_client(mcp_config, security=security)
     result = await client.call_tool("request", {"ops": ops})
     return _unwrap(result)

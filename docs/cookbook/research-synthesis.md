@@ -7,8 +7,7 @@ Two commands. One branch. Full context carried across both turns.
 
 ```bash
 pip install lionagi          # or: uv add lionagi
-# claude — Option A (subscription): npm install -g @anthropic-ai/claude-code && claude login
-#          Option B (API key):      export ANTHROPIC_API_KEY="sk-ant-..."
+# claude — npm install -g @anthropic-ai/claude-code && claude login
 ```
 
 ## Command

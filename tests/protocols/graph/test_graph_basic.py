@@ -73,6 +73,10 @@ class TestGraphBasics:
         with pytest.raises(RelationError):
             empty_graph.add_node("not a node")
 
+    def test_add_relational_non_node(self, empty_graph):
+        with pytest.raises(RelationError):
+            empty_graph.add_node(Graph())
+
     def test_add_duplicate_node(self, empty_graph):
         node = create_test_node("TestNode")
         empty_graph.add_node(node)
@@ -95,6 +99,37 @@ class TestGraphBasics:
         edge = Edge(head=node1, tail=node2)
         with pytest.raises(RelationError):
             empty_graph.add_edge(edge)
+
+    def test_graph_dict_round_trip(self, simple_graph):
+        graph, node1, node2, edge = simple_graph
+        graph.metadata["marker"] = "graph"
+        edge.metadata["marker"] = "edge"
+
+        restored = Graph.from_dict(graph.to_dict())
+
+        assert restored.id == graph.id
+        assert restored.created_at == graph.created_at
+        assert restored.metadata["marker"] == "graph"
+        assert set(restored.internal_nodes.keys()) == {node1.id, node2.id}
+        assert set(restored.internal_edges.keys()) == {edge.id}
+        assert restored.node_edge_mapping[node1.id]["out"][edge.id] == node2.id
+
+
+class TestEdgeRoundTrip:
+    def test_edge_dict_round_trip_preserves_element_fields(self):
+        node1 = create_test_node("Node1")
+        node2 = create_test_node("Node2")
+        edge = Edge(head=node1, tail=node2, weight=3)
+        edge.metadata["marker"] = "edge"
+
+        restored = Edge.from_dict(edge.to_dict())
+
+        assert restored.id == edge.id
+        assert restored.created_at == edge.created_at
+        assert restored.metadata["marker"] == "edge"
+        assert restored.head == edge.head
+        assert restored.tail == edge.tail
+        assert restored.properties == edge.properties
 
 
 class TestGraphModification:

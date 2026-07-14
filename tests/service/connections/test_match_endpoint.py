@@ -150,26 +150,16 @@ class TestMatchEndpoint:
 
         assert isinstance(endpoint, OpenaiChatEndpoint)
 
-    def test_provider_case_sensitive_routing(self):
+    def test_provider_case_insensitive_routing(self):
         from lionagi.providers.openai.chat import OpenaiChatEndpoint
 
         endpoint_lower = match_endpoint(provider="openai", endpoint="chat", model="gpt-4.1-mini")
 
         endpoint_upper = match_endpoint(provider="OPENAI", endpoint="chat", model="gpt-4.1-mini")
 
-        # EndpointRegistry.match compares provider strings exactly, so an
-        # exact-case "openai" routes to the concrete registered endpoint
-        # while a differently-cased "OPENAI" misses the registry entry and
-        # falls through to the generic fallback Endpoint. `EndpointConfig`
-        # separately lower-cases `config.provider` on validation, so both
-        # instances still report `config.provider == "openai"` — asserting
-        # only that string equality is too weak, because it stays true even
-        # when the uppercase input silently misses registered routing. The
-        # class-identity checks below are what actually distinguish
-        # registered routing from the generic fallback.
         assert isinstance(endpoint_lower, OpenaiChatEndpoint)
-        assert type(endpoint_upper).__name__ == "Endpoint"
-        assert type(endpoint_lower) is not type(endpoint_upper)
+        assert isinstance(endpoint_upper, OpenaiChatEndpoint)
+        assert type(endpoint_lower) is type(endpoint_upper)
         assert endpoint_lower.config.provider == endpoint_upper.config.provider == "openai"
 
     def test_multiple_providers_isolation(self):

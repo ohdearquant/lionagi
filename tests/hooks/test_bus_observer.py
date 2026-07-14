@@ -109,7 +109,7 @@ async def test_stop_hook_short_circuits_yet_still_records():
     assert len(obs.by_type(HookSignal)) == 1  # a short-circuited emit is still recorded
 
 
-async def test_blocking_guard_pass_records_but_raise_does_not():
+async def test_blocking_guard_records_pass_and_denial_before_reraising():
     obs = SessionObserver()
     bus = HookBus(observer=obs)
 
@@ -128,9 +128,15 @@ async def test_blocking_guard_pass_records_but_raise_does_not():
     bus.on(HookPoint.TOOL_PRE, guard_block)
     with pytest.raises(PermissionError, match="denied"):
         await bus.emit(HookPoint.TOOL_PRE, tool_name="rm")
-    # Blocking raise propagates and is NOT recorded — deny-audit arrives with
-    # the real pre-invoke gate (ADR-0047 Follow-up 1).
-    assert len(obs.by_type(HookSignal)) == 1
+
+    records = obs.by_type(HookSignal)
+    assert len(records) == 2
+    assert records[-1].point == HookPoint.TOOL_PRE
+    assert records[-1].kwargs == {
+        "tool_name": "rm",
+        "denied": True,
+        "exception": "PermissionError: denied",
+    }
 
 
 # ── Transport isolation ──────────────────────────────────────────────────────

@@ -116,6 +116,7 @@ class SessionReasons:
 class PlayReasons:
     """Show-play lifecycle reasons (ADR-0057 play vocabulary)."""
 
+    PENDING_CREATED = "play.pending.created"
     PENDING_WAITING_DEPS = "play.pending.waiting_on_deps"
     PENDING_READY = "play.pending.ready"
     BLOCKED_INVALID_DEPS = "play.blocked.invalid_deps"
@@ -128,15 +129,22 @@ class PlayReasons:
 class ShowReasons:
     """Show-level orchestration reasons."""
 
+    ACTIVE_CREATED = "show.active.created"
     BLOCKED_NO_READY_PLAYS = "show.blocked.no_ready_plays"
     COMPLETED_FINAL_GATE = "show.completed.final_gate"
     ABORTED_OPERATOR = "show.aborted.operator"
+    # A show reached completion without ever landing a `_final_verdict.json`
+    # (e.g. the last play merged and nothing else ran a final gate); derived
+    # by the lifecycle reaper from every child play's on-disk status.
+    COMPLETED_ALL_PLAYS_MERGED = "show.completed.all_plays_merged"
 
 
 class ScheduleReasons:
     """ADR-0070 schedule-fire outcomes."""
 
+    QUEUED_CREATED = "schedule.queued.created"
     FIRED_DUE = "schedule.fired.due"
+    SKIPPED_PRECONDITION = "schedule.skipped.precondition"
     SKIPPED_OVERLAP = "schedule.skipped.overlap"
     SKIPPED_MISSED_FIRE = "schedule.skipped.missed_fire"
     DEFERRED_CAPACITY = "schedule.deferred.capacity"

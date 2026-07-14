@@ -125,14 +125,15 @@ async def _run_parity_suite(db: StateDB) -> None:
     assert updated["status"] == "completed"
     assert updated["status_reason_code"] == RunReasons.COMPLETED_OK
 
-    # 4. status_transitions row was written
+    # 4. Creation and transition history were written.
     async with db._read() as conn:
         rows = (
             (
                 await conn.execute(
                     text(
                         "SELECT entity_type, previous_status, status, reason_code "
-                        "FROM status_transitions WHERE entity_id = :id"
+                        "FROM status_transitions WHERE entity_id = :id "
+                        "ORDER BY created_at"
                     ),
                     {"id": session_id},
                 )
@@ -140,8 +141,15 @@ async def _run_parity_suite(db: StateDB) -> None:
             .mappings()
             .all()
         )
-    assert len(rows) == 1
-    t = dict(rows[0])
+    assert len(rows) == 2
+    initial = dict(rows[0])
+    assert initial == {
+        "entity_type": "session",
+        "previous_status": None,
+        "status": "running",
+        "reason_code": RunReasons.STARTED_OK,
+    }
+    t = dict(rows[1])
     assert t["entity_type"] == "session"
     assert t["previous_status"] == "running"
     assert t["status"] == "completed"

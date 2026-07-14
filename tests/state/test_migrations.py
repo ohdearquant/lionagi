@@ -266,7 +266,7 @@ async def test_schedule_runs_upgrade_path_gains_resume_packet(old_schema_db):
 
 
 async def test_schedules_upgrade_path_gains_budget_columns(old_schema_db):
-    """After upgrade, an existing schedules table gains budget_usd/budget_tokens."""
+    """After upgrade, an existing schedules table gains its optional budget columns."""
     db = old_schema_db
 
     for table, columns in MIGRATION_COLUMNS.items():
@@ -281,7 +281,7 @@ async def test_schedules_upgrade_path_gains_budget_columns(old_schema_db):
     await db.commit()
 
     actual = await _column_names(db, "schedules")
-    assert {"budget_usd", "budget_tokens"} <= actual
+    assert {"budget_usd", "budget_tokens", "rate_limit"} <= actual
 
 
 async def test_drop_legacy_invocations_status_check_with_fk_referencing_rows(tmp_path):
@@ -653,3 +653,133 @@ async def test_update_schedule_run_rejects_unknown_field():
         await state.update_schedule_run("run-resume-3", not_a_real_field="x")
 
     await state.close()
+
+
+async def test_dispatched_at_migration_backfills_preexisting_running_rows(tmp_path):
+    """A ``schedule_runs`` row already at ``status='running'`` when the
+    ``dispatched_at`` column is first added must have it backfilled to its
+    ``fired_at`` — not left ``NULL``.
+
+    Without the backfill, ``dispatched_at IS NULL`` is indistinguishable
+    between "genuinely never dispatched" and "predates the column
+    entirely", so ``list_undispatched_schedule_runs()`` (consumed by
+    ``SchedulerEngine._recover_undispatched_fires()`` on the next daemon
+    startup) would treat every pre-existing running row as crashed and
+    duplicate-fire a replacement for it — including one that is still
+    genuinely executing across the upgrade restart.
+    """
+    from sqlalchemy import text
+
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "legacy_no_dispatched_at.db"
+
+    async with aiosqlite.connect(str(db_path)) as raw:
+        await raw.execute(
+            """
+            CREATE TABLE schedules (
+              id           TEXT    PRIMARY KEY,
+              name         TEXT    NOT NULL UNIQUE,
+              enabled      INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+              trigger_type TEXT    NOT NULL CHECK(trigger_type IN ('cron', 'interval', 'github_poll')),
+              action_kind  TEXT    NOT NULL CHECK(action_kind IN ('agent', 'flow', 'fanout', 'play', 'flow_yaml')),
+              created_at   REAL    NOT NULL,
+              updated_at   REAL    NOT NULL
+            )
+            """
+        )
+        # schedule_runs at ADR-0071 D4 shape (lease_attempts present) but
+        # pre-dating the dispatched_at / resume_packet columns entirely.
+        await raw.execute(
+            """
+            CREATE TABLE schedule_runs (
+              id                  TEXT    PRIMARY KEY,
+              schedule_id         TEXT    REFERENCES schedules(id) ON DELETE CASCADE,
+              invocation_id       TEXT,
+              trigger_context     JSON    NOT NULL,
+              action_kind         TEXT    NOT NULL,
+              action_args         JSON    NOT NULL,
+              status              TEXT    NOT NULL DEFAULT 'running'
+                                  CHECK(status IN ('queued', 'waiting_dependency', 'running',
+                                                   'retry_wait', 'completed', 'failed',
+                                                   'timed_out', 'skipped', 'cancelled')),
+              exit_code           INTEGER,
+              chain_parent_id     TEXT    REFERENCES schedule_runs(id),
+              chain_depth         INTEGER NOT NULL DEFAULT 0,
+              fired_at            REAL    NOT NULL,
+              ended_at            REAL,
+              error_detail        TEXT,
+              created_at          REAL    NOT NULL,
+              updated_at          REAL,
+              status_reason_code     TEXT,
+              status_reason_summary  TEXT,
+              status_evidence_refs   JSON,
+              queued_at           REAL,
+              leased_by           TEXT,
+              lease_expires_at    REAL,
+              concurrency_key     TEXT,
+              lease_attempts      INTEGER NOT NULL DEFAULT 0,
+              required_capabilities  JSON,
+              execution_target       TEXT,
+              library_ref             TEXT,
+              library_content_hash    TEXT
+            )
+            """
+        )
+        await raw.execute(
+            "INSERT INTO schedules (id, name, trigger_type, action_kind, created_at, updated_at) "
+            "VALUES ('sched-da', 'sched-da', 'interval', 'agent', 1.0, 1.0)"
+        )
+        # A row still genuinely running (or orphaned by an unrelated earlier
+        # crash) at the moment of the upgrade -- fired_at is deliberately
+        # far in the past so a naive "treat as undispatched" scan would be
+        # the only thing standing between it and a duplicate re-fire.
+        await raw.execute(
+            "INSERT INTO schedule_runs "
+            "(id, schedule_id, trigger_context, action_kind, action_args, status, "
+            " chain_depth, fired_at, created_at) "
+            "VALUES ('run-da-running', 'sched-da', '{}', 'agent', '{}', 'running', 0, 100.0, 100.0)"
+        )
+        # A row already terminal before the upgrade -- must NOT be touched
+        # by the backfill (it was never a candidate for the recovery scan).
+        await raw.execute(
+            "INSERT INTO schedule_runs "
+            "(id, schedule_id, trigger_context, action_kind, action_args, status, "
+            " chain_depth, fired_at, created_at) "
+            "VALUES ('run-da-completed', 'sched-da', '{}', 'agent', '{}', 'completed', 0, 50.0, 50.0)"
+        )
+        await raw.commit()
+
+    state = StateDB(db_path)
+    await state.open()
+    try:
+        async with state._read() as conn:
+            running_row = (
+                (
+                    await conn.execute(
+                        text("SELECT * FROM schedule_runs WHERE id = :id"),
+                        {"id": "run-da-running"},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            completed_row = (
+                (
+                    await conn.execute(
+                        text("SELECT * FROM schedule_runs WHERE id = :id"),
+                        {"id": "run-da-completed"},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        assert running_row["dispatched_at"] == running_row["fired_at"] == 100.0
+        assert completed_row["dispatched_at"] is None
+
+        # The whole point of the backfill: the recovery scan must no longer
+        # pick up the pre-existing running row as an undispatched orphan.
+        orphans = await state.list_undispatched_schedule_runs()
+        assert orphans == []
+    finally:
+        await state.close()

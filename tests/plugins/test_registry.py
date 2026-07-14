@@ -235,6 +235,30 @@ capabilities:
 
 
 class TestActivateTarget:
+    def test_activation_rescans_only_the_requested_plugin(self, write_plugin, monkeypatch):
+        import lionagi.plugins.registry as registry_mod
+
+        requested_bundle = _write_tool_plugin(write_plugin, "p1", tool_name="tool1")
+        unrelated_bundle = _write_tool_plugin(write_plugin, "p2", tool_name="tool2")
+        _trust_by_dir_name("p1")
+        _trust_by_dir_name("p2")
+        PluginRegistry.reset()
+
+        real_rescan = registry_mod._rescan
+        rescanned = []
+
+        def recording_rescan(record):
+            rescanned.append(record.bundle_dir)
+            return real_rescan(record)
+
+        monkeypatch.setattr(registry_mod, "_rescan", recording_rescan)
+
+        fn = PluginRegistry.activate_target("p1", "tools/t.py:t")
+
+        assert fn() == 1
+        assert rescanned == [requested_bundle]
+        assert unrelated_bundle not in rescanned
+
     def test_activates_lazily_and_caches(self, write_plugin):
         _write_tool_plugin(write_plugin, "p1", tool_body="def t():\n    return 42\n")
         _trust_by_dir_name("p1")
@@ -425,9 +449,7 @@ class TestActivePlaybookFiles:
         assert "p1/research" in files
         assert "p2/research" in files
 
-    def test_editing_playbook_after_first_access_removes_it_from_active_files(
-        self, write_plugin
-    ):
+    def test_editing_playbook_after_first_access_removes_it_from_active_files(self, write_plugin):
         bundle = _write_playbook_plugin(write_plugin, "p1", playbook="deep-research")
         _trust_by_dir_name("p1")
         PluginRegistry.reset()
@@ -608,3 +630,46 @@ class TestMultiColonTargetBypass:
 
         fn = PluginRegistry.activate_target("p1", "tools/t.py:t")
         assert fn() == 7
+
+
+class TestSnapshotGenerationMonotonicity:
+    """``snapshot_generation()`` is a trust token: a consumer that already
+    fully revalidated a plugin entry treats an unchanged token as ``nothing
+    was reset since`` and skips the expensive full recheck. An ``id()``-based
+    token is unsound for this: ``id()`` is a memory address, reusable once
+    the prior snapshot list is garbage-collected, so a rebuilt snapshot can
+    land at the SAME address as an earlier one a caller cached -- making a
+    stale, no-longer-eligible entry look current. A monotonic counter that
+    only ever increases cannot repeat.
+    """
+
+    def test_generation_strictly_increases_across_many_resets(self, write_plugin):
+        _write_tool_plugin(write_plugin, "p1")
+        _trust_by_dir_name("p1")
+
+        seen: list[int] = []
+        for _ in range(40):
+            PluginRegistry.reset()
+            seen.append(PluginRegistry.snapshot_generation())
+
+        assert seen == sorted(seen), "generation must never decrease across resets"
+        assert len(set(seen)) == len(seen), (
+            "generation token repeated across resets -- a rebuilt snapshot "
+            "must never be able to masquerade as an earlier one"
+        )
+        assert all(b > a for a, b in zip(seen, seen[1:])), (
+            "generation must strictly increase on every rebuild, not merely stay non-decreasing"
+        )
+
+    def test_generation_is_stable_between_resets(self, write_plugin):
+        _write_tool_plugin(write_plugin, "p1")
+        _trust_by_dir_name("p1")
+        PluginRegistry.reset()
+
+        first = PluginRegistry.snapshot_generation()
+        # Repeat reads (and touching the cached snapshot via list_plugins())
+        # without an intervening reset() must not bump the token.
+        PluginRegistry.list_plugins()
+        second = PluginRegistry.snapshot_generation()
+
+        assert first == second

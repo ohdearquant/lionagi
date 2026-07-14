@@ -22,7 +22,9 @@ class Middle(Protocol):
 ```
 
 A Middle receives the branch state and instruction, runs the model, optionally parses output,
-and returns text, dict, or `BaseModel`. It advances the branch by exactly one assistant turn.
+and returns text, dict, or `BaseModel`. The built-in middles advance the branch by exactly one
+assistant turn. A custom middle owns its own model-call and message-recording semantics — for
+example, a cache-hit path that returns before calling `communicate()` records no turn at all.
 
 **Built-in middles**:
 
@@ -36,7 +38,9 @@ recorded replay for deterministic tests, logging/tracing decorators.
 
 ## `MorphParam` Base Class
 
-All param types are frozen dataclasses — immutable, hashable, reproducible:
+All param types are frozen, slotted dataclasses. Freezing prevents field rebinding, but
+it is shallow: nested lists and dictionaries remain mutable, and values such as those
+can make a param instance unhashable.
 
 ```python
 @dataclass(slots=True, frozen=True, init=False)
@@ -60,6 +64,7 @@ from lionagi.operations.types import ChatParam
 | `sender` | `SenderRecipient` | `None` | Message sender identity |
 | `recipient` | `SenderRecipient` | `None` | Message recipient identity |
 | `response_format` | `type[BaseModel] \| dict` | `None` | Structured output schema |
+| `structure` | `type[Structure] \| str \| None` | `None` | Structure class or string selector used to render the response format in the instruction |
 | `progression` | `ID.RefSeq` | `None` | Custom message ordering |
 | `tool_schemas` | `list[dict]` | `None` | Raw tool schemas (override registered tools) |
 | `images` | `list` | `None` | Image inputs |
@@ -68,6 +73,7 @@ from lionagi.operations.types import ChatParam
 | `include_token_usage_to_model` | `bool` | `False` | Inject token stats into next prompt |
 | `imodel` | `iModel` | `None` | Override branch's chat model for this call |
 | `imodel_kw` | `dict` | `None` | Extra kwargs merged into model invocation |
+| `turn_origin` | `TurnOrigin` | `None` | Tri-state user-turn disposition for `USER_PROMPT_SUBMIT`; `None` resolves to an unset origin, while internal calls use forwarded or no-origin values to avoid duplicate hooks |
 
 ### `RunParam` — for `run()` (extends `ChatParam`)
 
@@ -79,6 +85,7 @@ from lionagi.operations.types import RunParam
 |-------|------|---------|-------|
 | `stream_persist` | `bool` | `False` | Write chunks to JSONL as they arrive |
 | `persist_dir` | `str \| Path` | `~/.lionagi/logs/runs` | JSONL output directory |
+| `snapshot_dir` | `str \| Path \| None` | `None` | Optional branch-snapshot directory for streaming persistence; falls back to `persist_dir` when unset |
 
 ### `ParseParam` — for `parse()`
 
@@ -89,6 +96,7 @@ from lionagi.operations.types import ParseParam
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
 | `response_format` | `type[BaseModel] \| dict` | `None` | Target Pydantic model |
+| `structure` | `Structure \| None` | `None` | Concrete structure instance used to parse the response; may be propagated from the instruction |
 | `fuzzy_match_params` | `FuzzyMatchKeysParams \| dict` | `None` | Fuzzy key matching config |
 | `handle_validation` | `HandleValidation` | `"raise"` | Failure behavior (see below) |
 | `alcall_params` | `AlcallParams \| dict` | `None` | Async call params for retry loop |
@@ -134,6 +142,31 @@ HandleValidation = Literal["raise", "return_value", "return_none"]
 | `"raise"` | Raise `ValueError` |
 | `"return_value"` | Return the raw string |
 | `"return_none"` | Return `None` |
+
+## Manual custom rendering and parsing
+
+`CustomRenderer` and `CustomParser` are opt-in protocols for integrations that
+own their provider call. `Branch.chat()`, `Branch.operate()`, and
+`Branch.parse()` do not accept these objects and do not discover them
+implicitly. Use `prepare_messages_for_chat()` directly when building a custom
+request pipeline:
+
+```python
+from lionagi.protocols.messages import prepare_messages_for_chat
+
+chat_messages = prepare_messages_for_chat(branch.messages, to_chat=True)
+schema_instruction = renderer(TargetModel)
+chat_messages.append({"role": "user", "content": schema_instruction})
+
+# Submit chat_messages through the provider integration you control.
+response_text = await invoke_provider(chat_messages)
+result = parser(response_text, list(TargetModel.model_fields))
+```
+
+Use `to_chat=False` when the integration needs the prepared message-content
+models instead of provider-shaped `{"role", "content"}` dictionaries. The
+preparation helper only compiles history; the caller remains responsible for
+invoking the renderer, sending the request, and parsing the response.
 
 ## Custom middle example
 

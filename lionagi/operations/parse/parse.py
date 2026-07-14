@@ -192,7 +192,7 @@ def _extract_lndl(text: str, operable: "Operable") -> Any:
 
     blocks = extract_lndl_blocks(text)
     if blocks:
-        return blocks[0]
+        return "\n\n".join(blocks)
     return text
 
 
