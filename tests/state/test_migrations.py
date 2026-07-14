@@ -10,12 +10,16 @@ import multiprocessing
 import queue
 import sqlite3
 import traceback
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import aiosqlite
 import pytest
 
 from lionagi.state.schema_migrations import MIGRATION_COLUMNS
+
+_NUM_CONCURRENT_WORKERS = 4
+_BARRIER_TIMEOUT_SECONDS = 15
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -36,17 +40,53 @@ def _create_pre_cc_session_db(db_path: Path) -> None:
         conn.execute("ALTER TABLE sessions RENAME COLUMN cc_session_id TO legacy_cc_session_id")
 
 
-def _open_state_db_worker(db_path: str, start_gate, result_queue) -> None:
+def _open_state_db_worker(
+    db_path: str,
+    start_barrier,
+    inspection_barrier,
+    result_queue,
+) -> None:
     """Open and close one StateDB in a spawned process."""
+    import lionagi.state.db as state_db_module
     from lionagi.state.db import StateDB
+
+    original_make_engine = state_db_module.make_engine
+
+    class _SynchronizedEngine:
+        def __init__(self, engine) -> None:
+            self._engine = engine
+            self._alter_synchronized = False
+
+        def begin(self):
+            if not self._alter_synchronized:
+                self._alter_synchronized = True
+
+                @asynccontextmanager
+                async def synchronized_begin():
+                    inspection_barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
+                    async with self._engine.begin() as connection:
+                        yield connection
+
+                return synchronized_begin()
+            return self._engine.begin()
+
+        def __getattr__(self, name: str):
+            return getattr(self._engine, name)
+
+    def synchronized_make_engine(*args, **kwargs):
+        return _SynchronizedEngine(original_make_engine(*args, **kwargs))
+
+    # This fixture is missing only cc_session_id, so the first begin() follows
+    # its missing-column inspection and immediately precedes its ALTER.
+    state_db_module.make_engine = synchronized_make_engine
 
     async def _open() -> None:
         state = StateDB(db_path)
         await state.open()
         await state.close()
 
-    start_gate.wait(timeout=30)
     try:
+        start_barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
         asyncio.run(_open())
     except Exception:  # noqa: BLE001
         result_queue.put(traceback.format_exc())
@@ -275,21 +315,27 @@ def test_concurrent_statedb_opens_reconcile_cc_session_column(tmp_path: Path) ->
     _create_pre_cc_session_db(db_path)
 
     context = multiprocessing.get_context("spawn")
-    start_gate = context.Event()
+    start_barrier = context.Barrier(_NUM_CONCURRENT_WORKERS + 1)
+    inspection_barrier = context.Barrier(_NUM_CONCURRENT_WORKERS)
     result_queue = context.Queue()
     processes = [
         context.Process(
             target=_open_state_db_worker,
-            args=(str(db_path), start_gate, result_queue),
+            args=(
+                str(db_path),
+                start_barrier,
+                inspection_barrier,
+                result_queue,
+            ),
         )
-        for _ in range(4)
+        for _ in range(_NUM_CONCURRENT_WORKERS)
     ]
 
     results: list[str | None] = []
     try:
         for process in processes:
             process.start()
-        start_gate.set()
+        start_barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
         for process in processes:
             process.join(timeout=30)
         for _ in processes:
