@@ -380,6 +380,19 @@ async def _run_agent(
                 chat_model=chat_model,
                 log_config=DataLoggerConfig(auto_save_on_exit=False),
             )
+            # A bare `li agent -a <profile>` leg (no --preset coding, no role key)
+            # still honors the profile's khive_injection opt-in — injection is a
+            # context-provider concern, independent of the coding preset. Keyed on
+            # `{agent_name}-recall-v1` (the invoked profile name, which equals
+            # profile.name for a loaded profile), matching the orchestrate path.
+            # Pass agent_name — guaranteed a non-empty str on this path — rather
+            # than profile.name, so a profile object without a `name` attribute
+            # and no injection opt-in does not trip an eager attribute access
+            # before the helper's khive_injection guard can early-return.
+            if profile is not None:
+                from lionagi.agent.factory import register_profile_injection
+
+                register_profile_injection(branch, agent_name, profile)
 
         # Fail fast: `li agent` only drives CLI-backed providers (the `run`
         # operation raises this same ValueError deep inside
