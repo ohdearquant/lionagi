@@ -216,7 +216,7 @@ async def _list_running_children(
 async def _walk_running_children(
     db: Any, entity_type: str, entity_id: str
 ) -> list[tuple[str, str, dict[str, Any]]]:
-    """Breadth-first running descendants, bounded against malformed cycles."""
+    """Discover running descendants breadth-first and return them deepest-first."""
     frontier = deque(await _list_running_children(db, entity_type, entity_id))
     seen = {(entity_type, entity_id)}
     children: list[tuple[str, str, dict[str, Any]]] = []
@@ -238,6 +238,7 @@ async def _walk_running_children(
         children.append((table, child_type, child_row))
         frontier.extend(await _list_running_children(db, child_type, child_id))
 
+    children.reverse()
     return children
 
 
@@ -416,8 +417,14 @@ async def _do_kill(
         results = []
         blocked = []
 
-        if recursive or entity_type == "play":
+        if entity_type == "play":
             children = await _walk_running_children(db, entity_type, row["id"])
+        elif recursive:
+            children = await _list_running_children(db, entity_type, row["id"])
+        else:
+            children = []
+
+        if children:
             for _child_table, child_type, child_row in children:
                 r = await _kill_one(
                     db,
@@ -676,7 +683,7 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
             "  li kill abc123                        # kill by id prefix\n"
             "  li kill <play-id>                     # also reap linked workers\n"
             "  li kill abc123 --reason 'stuck'\n"
-            "  li kill abc123 --recursive            # kill + transitive descendants\n"
+            "  li kill abc123 --recursive            # kill + direct children\n"
             "  li kill --all-stale                   # sweep dead-PID rows\n"
             "  li kill --all-stale --threshold 3600  # only rows older than 1h\n"
             "  li kill --all-stale --dry-run\n"
@@ -701,7 +708,7 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
         "--recursive",
         action="store_true",
         help=(
-            "Also kill transitive child entities (e.g. invocations spawned by a session). "
+            "Also kill direct child entities (e.g. invocations spawned by a session). "
             "Play kills always reap their linked workers."
         ),
     )

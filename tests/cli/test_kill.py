@@ -859,24 +859,70 @@ async def test_walk_running_children_stops_at_safety_cap(
 
     children = await kill_mod._walk_running_children(object(), "play", "0")
 
-    assert [row["id"] for _, _, row in children] == ["1", "2"]
+    assert [row["id"] for _, _, row in children] == ["2", "1"]
     assert warnings == [
         "recursive kill stopped after 2 children; remaining descendants were not reaped"
     ]
+
+
+async def test_walk_running_children_cycle_terminates_without_cap_warning(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A finite session/invocation cycle is deduplicated before the cap check."""
+    import lionagi.cli.kill as kill_mod
+
+    session = ("sessions", "session", {"id": "session-a"})
+    invocation = ("invocations", "invocation", {"id": "invocation-b"})
+    graph = {
+        ("play", "play-root"): [session],
+        ("session", "session-a"): [invocation],
+        ("invocation", "invocation-b"): [session],
+    }
+    calls: list[tuple[str, str]] = []
+
+    async def fake_children(db: Any, entity_type: str, entity_id: str):
+        calls.append((entity_type, entity_id))
+        return graph.get((entity_type, entity_id), [])
+
+    warnings: list[str] = []
+    monkeypatch.setattr(kill_mod, "_MAX_RECURSIVE_CHILDREN", 2)
+    monkeypatch.setattr(kill_mod, "_list_running_children", fake_children)
+    monkeypatch.setattr(kill_mod, "warn", warnings.append)
+
+    children = await kill_mod._walk_running_children(object(), "play", "play-root")
+
+    assert [row["id"] for _, _, row in children] == ["invocation-b", "session-a"]
+    assert calls == [
+        ("play", "play-root"),
+        ("session", "session-a"),
+        ("invocation", "invocation-b"),
+    ]
+    assert warnings == []
 
 
 async def test_do_kill_play_reaps_worker_chain_without_recursive_flag(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """A bare play kill reaps its linked session and invocation before the play."""
+    import lionagi.cli.kill as kill_mod
+
     signalled_pids: list[int] = []
+    persisted_entities: list[tuple[str, str]] = []
+    original_persist_cancel = kill_mod._persist_cancel
 
     def fake_terminate(pid: int, **kwargs: Any) -> str:
         assert pid > 1
         signalled_pids.append(pid)
         return "sigterm"
 
-    monkeypatch.setattr("lionagi.cli.kill._terminate_pid", fake_terminate)
+    async def record_persist_cancel(
+        db: Any, entity_type: str, entity_id: str, **kwargs: Any
+    ) -> None:
+        persisted_entities.append((entity_type, entity_id))
+        await original_persist_cancel(db, entity_type, entity_id, **kwargs)
+
+    monkeypatch.setattr(kill_mod, "_terminate_pid", fake_terminate)
+    monkeypatch.setattr(kill_mod, "_persist_cancel", record_persist_cancel)
 
     async with StateDB() as db:
         invocation_id = await _seed_invocation(db, status="running", pid=42002)
@@ -888,7 +934,12 @@ async def test_do_kill_play_reaps_worker_chain_without_recursive_flag(
     rc = await _do_kill(play_id)
 
     assert rc == 0
-    assert signalled_pids == [42001, 42002]
+    assert signalled_pids == [42002, 42001]
+    assert persisted_entities == [
+        ("invocation", invocation_id),
+        ("session", session_id),
+        ("play", play_id),
+    ]
     async with StateDB() as db:
         assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (session_id,)))[
             "status"
@@ -899,6 +950,51 @@ async def test_do_kill_play_reaps_worker_chain_without_recursive_flag(
         assert (await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,)))[
             "status"
         ] == "blocked"
+
+
+async def test_do_kill_recursive_show_does_not_reap_play_workers(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A recursive show kill remains limited to its direct running plays."""
+    signalled_pids: list[int] = []
+
+    def fake_terminate(pid: int, **kwargs: Any) -> str:
+        signalled_pids.append(pid)
+        return "sigterm"
+
+    async with StateDB() as db:
+        invocation_id = await _seed_invocation(db, status="running", pid=43002)
+        session_id = await _seed_session(db, status="running", pid=43001)
+        await db.update_session(session_id, invocation_id=invocation_id)
+        show_id = await _seed_show(db)
+        play_id = await _seed_play(db, show_id, session_id=session_id)
+
+    async def resolve_running_show(db: StateDB, id_or_short: str):
+        assert id_or_short == show_id
+        show_row = await db.fetch_one("SELECT * FROM shows WHERE id = ?", (show_id,))
+        assert show_row is not None
+        show_row["status"] = "running"
+        return "shows", "show", show_row
+
+    monkeypatch.setattr("lionagi.cli.kill._resolve_entity", resolve_running_show)
+    monkeypatch.setattr("lionagi.cli.kill._terminate_pid", fake_terminate)
+
+    assert await _do_kill(show_id, recursive=True) == 0
+    assert signalled_pids == []
+
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM shows WHERE id = ?", (show_id,)))[
+            "status"
+        ] == "aborted"
+        assert (await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,)))[
+            "status"
+        ] == "blocked"
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (session_id,)))[
+            "status"
+        ] == "running"
+        assert (
+            await db.fetch_one("SELECT status FROM invocations WHERE id = ?", (invocation_id,))
+        )["status"] == "running"
 
 
 async def test_do_kill_emits_settings_terminal_notification(temp_db_path: Path, tmp_path: Path):
@@ -948,6 +1044,44 @@ async def test_do_kill_emits_settings_terminal_notification(temp_db_path: Path, 
     assert payloads[0]["reason_code"] == RunReasons.CANCELLED_MANUAL_KILL
 
 
+async def test_do_kill_play_emits_blocked_terminal_envelope(temp_db_path: Path):
+    """A play kill emits its blocked envelope through the lifecycle callback seam."""
+    from lionagi.state.lifecycle.callbacks import (
+        DEFAULT_TERMINAL_CALLBACKS,
+        RunTerminalEnvelope,
+    )
+
+    async with StateDB() as db:
+        session_id = await _seed_session(db, status="running")
+        show_id = await _seed_show(db)
+        play_id = await _seed_play(db, show_id, session_id=session_id)
+
+    received: list[RunTerminalEnvelope] = []
+
+    async def collect(envelope: RunTerminalEnvelope) -> None:
+        received.append(envelope)
+
+    callback_name = "test.kill.play-terminal"
+    DEFAULT_TERMINAL_CALLBACKS.register(
+        callback_name,
+        collect,
+        kinds=["play"],
+        ids=[play_id],
+    )
+    try:
+        assert await _do_kill(play_id) == 0
+    finally:
+        DEFAULT_TERMINAL_CALLBACKS.unregister(callback_name)
+
+    assert len(received) == 1
+    envelope = received[0]
+    assert envelope.entity.kind == "play"
+    assert envelope.entity.id == play_id
+    assert envelope.previous_status == "running"
+    assert envelope.terminal_status == "blocked"
+    assert envelope.reason_code == RunReasons.CANCELLED_MANUAL_KILL
+
+
 async def test_do_kill_play_without_session_warns_and_continues(
     temp_db_path: Path, capsys: pytest.CaptureFixture[str]
 ):
@@ -963,6 +1097,36 @@ async def test_do_kill_play_without_session_warns_and_continues(
     rc = await _do_kill(play_id)
 
     assert rc == 0
+    assert f"play {play_id[:12]} has no running worker session to reap" in capsys.readouterr().err
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,)))[
+            "status"
+        ] == "blocked"
+
+
+async def test_do_kill_play_with_dangling_session_warns_and_continues(
+    temp_db_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """A non-NULL play link with no session row warns and still blocks the play."""
+    import sqlite3
+
+    from lionagi.cli._logging import configure_cli_logging
+
+    configure_cli_logging(verbose=False)
+    dangling_session_id = str(uuid.uuid4())
+    async with StateDB() as db:
+        show_id = await _seed_show(db)
+        play_id = await _seed_play(db, show_id)
+
+    with sqlite3.connect(temp_db_path) as conn:
+        conn.execute(
+            "UPDATE plays SET session_id = ? WHERE id = ?",
+            (dangling_session_id, play_id),
+        )
+
+    capsys.readouterr()
+    assert await _do_kill(play_id) == 0
+
     assert f"play {play_id[:12]} has no running worker session to reap" in capsys.readouterr().err
     async with StateDB() as db:
         assert (await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,)))[
