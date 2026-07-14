@@ -14,8 +14,54 @@ from lionagi.state.health import (
     classify_session_health,
     worst_health,
 )
+from lionagi.state.staleness import staleness_check, threshold_for_kind
 
 NOW = 1_000_000.0
+
+
+@pytest.mark.parametrize(
+    ("offset", "stale_result", "alive_health", "unknown_health"),
+    [
+        (-1, None, SessionHealth.IDLE, SessionHealth.IDLE),
+        (0, None, SessionHealth.IDLE, SessionHealth.IDLE),
+        (1, "stale", SessionHealth.UNRESPONSIVE, SessionHealth.STALE),
+    ],
+)
+def test_health_and_staleness_entry_points_share_threshold_boundary(
+    offset: int,
+    stale_result: str | None,
+    alive_health: SessionHealth,
+    unknown_health: SessionHealth,
+) -> None:
+    threshold = threshold_for_kind("agent")
+    session = {
+        "status": "running",
+        "invocation_kind": "agent",
+        "last_message_at": NOW - threshold - offset,
+        "message_count": 1,
+    }
+
+    assert staleness_check(session, now=NOW) == stale_result
+    assert (
+        classify_session_health(
+            session,
+            now=NOW,
+            process_alive=True,
+            has_artifacts=True,
+            has_stale_locks=False,
+        )
+        == alive_health
+    )
+    assert (
+        classify_session_health(
+            session,
+            now=NOW,
+            process_alive=None,
+            has_artifacts=True,
+            has_stale_locks=False,
+        )
+        == unknown_health
+    )
 
 
 # ── Terminal sessions ────────────────────────────────────────────────────────

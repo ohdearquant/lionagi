@@ -255,7 +255,8 @@ class TestUpdateStatusAtomic:
                     await conn.execute(
                         text(
                             "SELECT entity_type, entity_id, previous_status, status, "
-                            "       reason_code, source FROM status_transitions WHERE entity_id = :id"
+                            "       reason_code, source FROM status_transitions "
+                            "WHERE entity_id = :id AND previous_status IS NOT NULL"
                         ),
                         {"id": sid},
                     )
@@ -296,7 +297,10 @@ class TestUpdateStatusAtomic:
             row = (
                 (
                     await conn.execute(
-                        text("SELECT COUNT(*) AS n FROM status_transitions WHERE entity_id = :id"),
+                        text(
+                            "SELECT COUNT(*) AS n FROM status_transitions "
+                            "WHERE entity_id = :id AND previous_status IS NOT NULL"
+                        ),
                         {"id": sid},
                     )
                 )
@@ -329,7 +333,8 @@ class TestUpdateStatusAtomic:
                     await conn.execute(
                         text(
                             "SELECT entity_type, COUNT(*) AS n FROM status_transitions "
-                            "WHERE entity_id = :id GROUP BY entity_type"
+                            "WHERE entity_id = :id AND previous_status IS NOT NULL "
+                            "GROUP BY entity_type"
                         ),
                         {"id": sid},
                     )
@@ -390,7 +395,7 @@ class TestUpdateStatusValidation:
             )
         row = dict(row)
         assert row["status"] == "running"
-        assert row["status_reason_code"] is None
+        assert row["status_reason_code"] == RunReasons.STARTED_OK
 
     async def test_invalid_entity_type_raises_valueerror(self, db: StateDB):
         with pytest.raises(ValueError, match="invalid entity_type"):
@@ -463,7 +468,10 @@ class TestUpdateStatusValidation:
             count = (
                 (
                     await conn.execute(
-                        text("SELECT COUNT(*) AS n FROM status_transitions WHERE entity_id = :id"),
+                        text(
+                            "SELECT COUNT(*) AS n FROM status_transitions "
+                            "WHERE entity_id = :id AND previous_status IS NOT NULL"
+                        ),
                         {"id": sid},
                     )
                 )
@@ -622,7 +630,8 @@ class TestInvocationTransition:
                     await conn.execute(
                         text(
                             "SELECT entity_type, previous_status, status, reason_code "
-                            "FROM status_transitions WHERE entity_id = :id"
+                            "FROM status_transitions WHERE entity_id = :id "
+                            "AND previous_status IS NOT NULL"
                         ),
                         {"id": inv_id},
                     )
@@ -672,7 +681,10 @@ class TestInvocationTransition:
             count = (
                 (
                     await conn.execute(
-                        text("SELECT COUNT(*) AS n FROM status_transitions WHERE entity_id = :id"),
+                        text(
+                            "SELECT COUNT(*) AS n FROM status_transitions "
+                            "WHERE entity_id = :id AND previous_status IS NOT NULL"
+                        ),
                         {"id": inv_id},
                     )
                 )
@@ -680,6 +692,33 @@ class TestInvocationTransition:
                 .first()
             )
         assert count["n"] == 1
+
+    async def test_update_invocation_guards_ended_at_with_terminal_status(
+        self, db: StateDB, monkeypatch: pytest.MonkeyPatch
+    ):
+        from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService
+
+        inv_id = await _create_invocation(db)
+        ended_at = time.time()
+        original_write = SQLAlchemyLifecycleService._write
+
+        async def _write_then_fail(self, conn, table, command, **kwargs):
+            assert command.patch["ended_at"] == ended_at
+            await original_write(self, conn, table, command, **kwargs)
+            raise RuntimeError("forced rollback")
+
+        monkeypatch.setattr(SQLAlchemyLifecycleService, "_write", _write_then_fail)
+        with pytest.raises(RuntimeError, match="forced rollback"):
+            await db.update_invocation(
+                inv_id,
+                status="completed",
+                ended_at=ended_at,
+                reason_code=RunReasons.COMPLETED_OK,
+            )
+
+        row = await db.get_invocation(inv_id)
+        assert row["status"] == "running"
+        assert row["ended_at"] is None
 
     async def test_update_invocation_compat_warns_when_reason_omitted(self, db: StateDB):
         """Legacy callers that pass status without reason_code get a deprecation
@@ -726,13 +765,16 @@ class TestInvocationTransition:
             )
         row = dict(row)
         assert row["status"] == "running"  # unchanged
-        assert row["status_reason_code"] is None  # never touched
+        assert row["status_reason_code"] == RunReasons.STARTED_OK
 
         async with db._read() as conn:
             count = (
                 (
                     await conn.execute(
-                        text("SELECT COUNT(*) AS n FROM status_transitions WHERE entity_id = :id"),
+                        text(
+                            "SELECT COUNT(*) AS n FROM status_transitions "
+                            "WHERE entity_id = :id AND previous_status IS NOT NULL"
+                        ),
                         {"id": inv_id},
                     )
                 )
@@ -781,7 +823,8 @@ class TestUpdateSessionRoutesStatusThroughHistory:
                     await conn.execute(
                         text(
                             "SELECT entity_type, previous_status, status, reason_code "
-                            "FROM status_transitions WHERE entity_id = :id"
+                            "FROM status_transitions WHERE entity_id = :id "
+                            "AND previous_status IS NOT NULL"
                         ),
                         {"id": sid},
                     )
@@ -812,7 +855,10 @@ class TestUpdateSessionRoutesStatusThroughHistory:
             count = (
                 (
                     await conn.execute(
-                        text("SELECT COUNT(*) AS n FROM status_transitions WHERE entity_id = :id"),
+                        text(
+                            "SELECT COUNT(*) AS n FROM status_transitions "
+                            "WHERE entity_id = :id AND previous_status IS NOT NULL"
+                        ),
                         {"id": sid},
                     )
                 )
@@ -843,7 +889,10 @@ class TestUpdateSessionRoutesStatusThroughHistory:
             count = (
                 (
                     await conn.execute(
-                        text("SELECT COUNT(*) AS n FROM status_transitions WHERE entity_id = :id"),
+                        text(
+                            "SELECT COUNT(*) AS n FROM status_transitions "
+                            "WHERE entity_id = :id AND previous_status IS NOT NULL"
+                        ),
                         {"id": sid},
                     )
                 )
@@ -898,13 +947,16 @@ class TestUpdateStatusSourceValidation:
             )
         row = dict(row)
         assert row["status"] == "running", "entity row must be unchanged on invalid source"
-        assert row["status_reason_code"] is None
+        assert row["status_reason_code"] == RunReasons.STARTED_OK
 
         async with db._read() as conn:
             count = (
                 (
                     await conn.execute(
-                        text("SELECT COUNT(*) AS n FROM status_transitions WHERE entity_id = :id"),
+                        text(
+                            "SELECT COUNT(*) AS n FROM status_transitions "
+                            "WHERE entity_id = :id AND previous_status IS NOT NULL"
+                        ),
                         {"id": sid},
                     )
                 )
@@ -927,7 +979,10 @@ class TestUpdateStatusSourceValidation:
             row = (
                 (
                     await conn.execute(
-                        text("SELECT source FROM status_transitions WHERE entity_id = :id"),
+                        text(
+                            "SELECT source FROM status_transitions WHERE entity_id = :id "
+                            "AND previous_status IS NOT NULL"
+                        ),
                         {"id": sid},
                     )
                 )
