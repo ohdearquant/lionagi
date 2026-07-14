@@ -7,7 +7,9 @@ import pytest
 from pydantic import BaseModel
 
 from lionagi.ln.fuzzy import FuzzyMatchKeysParams
+from lionagi.ln.types import Operable
 from lionagi.operations.parse.parse import (
+    _extract_lndl,
     _validate_dict_or_model,
     get_default_call,
     prepare_parse_kws,
@@ -325,6 +327,22 @@ class TestAdvancedFeatures:
         # Second call returns same instance
         call2 = get_default_call()
         assert call1 is call2  # Same object
+
+
+class TestLndlExtraction:
+    def test_multiple_blocks_are_joined_in_source_order(self):
+        text = (
+            "reasoning\n"
+            "```lndl\n<lvar answer a>first</lvar>\n```\n"
+            "more reasoning\n"
+            "```lndl\nOUT{answer: [a]}\n```"
+        )
+
+        result = _extract_lndl(text, Operable())
+
+        assert result.index("<lvar") < result.index("OUT{")
+        assert "<lvar answer a>first</lvar>" in result
+        assert "OUT{answer: [a]}" in result
 
 
 # ============================================================================
