@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useCallback, useMemo, useRef, useState } from "react";
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslations } from "use-intl";
 import Badge from "@/components/ui/Badge";
 import FilterChip from "@/components/ui/FilterChip";
@@ -54,6 +54,11 @@ export interface RunStepCardProps {
    * so a bare filename this step didn't itself touch can still resolve
    * against a sibling agent's output — the run's save-root fallback. */
   runFiles?: string[];
+  /** Requests the next older server page when overview navigation reaches
+   * the beginning of the currently loaded message window. */
+  onLoadOlder?: () => void;
+  olderMessagesRemaining?: number;
+  loadingOlder?: boolean;
 }
 
 const STATUS_TONE: Record<string, "ok" | "pending" | "failed"> = {
@@ -295,6 +300,9 @@ function RunStepCard({
   runId,
   artifactRoot,
   runFiles,
+  onLoadOlder,
+  olderMessagesRemaining = 0,
+  loadingOlder = false,
 }: RunStepCardProps) {
   const t = useTranslations("runCard");
   const [internalExpanded, setInternalExpanded] = useState(defaultExpanded);
@@ -619,9 +627,11 @@ function RunStepCard({
             >
               <OverviewPanel
                 summary={summary}
-                lastAssistant={lastAssistant}
-                onJumpToConversation={() => setTab("conversation")}
+                messages={messages}
                 fileContext={fileContext}
+                onLoadOlder={onLoadOlder}
+                olderMessagesRemaining={olderMessagesRemaining}
+                loadingOlder={loadingOlder}
               />
             </div>
           )}
@@ -760,6 +770,9 @@ export function stepPropsEqual(prev: RunStepCardProps, next: RunStepCardProps): 
     prev.runId === next.runId &&
     prev.artifactRoot === next.artifactRoot &&
     prev.runFiles === next.runFiles &&
+    prev.onLoadOlder === next.onLoadOlder &&
+    prev.olderMessagesRemaining === next.olderMessagesRemaining &&
+    prev.loadingOlder === next.loadingOlder &&
     runMessagesEqualForMemo(prev.step.messages, next.step.messages)
   );
 }
@@ -820,9 +833,11 @@ const TabButton = React.forwardRef<
 
 function OverviewPanel({
   summary,
-  lastAssistant,
-  onJumpToConversation,
+  messages,
   fileContext,
+  onLoadOlder,
+  olderMessagesRemaining = 0,
+  loadingOlder = false,
 }: {
   summary: {
     toolCount: number;
@@ -832,11 +847,52 @@ function OverviewPanel({
     failedTools: RunMessage[];
     durationSec: number | null;
   };
-  lastAssistant: RunMessage | null;
-  onJumpToConversation: () => void;
+  messages: RunMessage[];
   fileContext?: FileResolutionContext;
+  onLoadOlder?: () => void;
+  olderMessagesRemaining?: number;
+  loadingOlder?: boolean;
 }) {
   const t = useTranslations("runCard");
+  const [messageIndex, setMessageIndex] = useState(() => Math.max(0, messages.length - 1));
+  const previousMessagesRef = useRef(messages);
+
+  useEffect(() => {
+    const previousMessages = previousMessagesRef.current;
+    if (previousMessages === messages) return;
+    // Preserve the selected message when an older page is prepended. When the
+    // operator was already at the latest message, follow newly appended live
+    // messages instead.
+    setMessageIndex((current) => {
+      if (messages.length === 0) return 0;
+      if (previousMessages.length === 0 || current >= previousMessages.length - 1) {
+        return messages.length - 1;
+      }
+      const selectedKey = runMessageMemoKey(previousMessages[current]);
+      const preservedIndex = messages.findIndex(
+        (message) => runMessageMemoKey(message) === selectedKey,
+      );
+      return preservedIndex >= 0 ? preservedIndex : Math.min(current, messages.length - 1);
+    });
+    previousMessagesRef.current = messages;
+  }, [messages]);
+
+  const selectedMessage = messages[messageIndex] ?? null;
+  const selectedContent = selectedMessage
+    ? selectedMessage.content || selectedMessage.output || selectedMessage.summary || ""
+    : "";
+  const canLoadOlder = olderMessagesRemaining > 0 && onLoadOlder !== undefined;
+  const atFirstMessage = messageIndex <= 0;
+  const atLastMessage = messageIndex >= messages.length - 1;
+
+  const showPrevious = () => {
+    if (!atFirstMessage) {
+      setMessageIndex((current) => Math.max(0, current - 1));
+    } else if (canLoadOlder) {
+      onLoadOlder();
+    }
+  };
+
   return (
     <div className="grid grid-cols-1 gap-2 p-2 lg:grid-cols-3">
       <div className="lg:col-span-2 rounded border border-edge bg-surface-raised p-3">
@@ -844,26 +900,54 @@ function OverviewPanel({
           <span className="text-[length:var(--t-xs)] font-semibold uppercase tracking-wider text-content-muted">
             {t("latestMessage")}
           </span>
+          {selectedMessage && (
+            <>
+              <span className="font-mono text-meta text-content-muted">
+                {messageIndex + 1}/{messages.length} · {selectedMessage.role}
+              </span>
+              <div className="ml-auto flex items-center gap-1">
+                <button
+                  type="button"
+                  aria-label="Previous message"
+                  title={
+                    atFirstMessage && canLoadOlder
+                      ? t("showEarlier", { count: olderMessagesRemaining })
+                      : "Previous message"
+                  }
+                  onClick={showPrevious}
+                  disabled={(atFirstMessage && !canLoadOlder) || loadingOlder}
+                  className="rounded border border-edge px-2 py-0.5 font-mono text-meta text-content-secondary hover:border-edge-strong hover:text-content-primary disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {loadingOlder && atFirstMessage ? "…" : "←"}
+                </button>
+                <button
+                  type="button"
+                  aria-label="Next message"
+                  title="Next message"
+                  onClick={() =>
+                    setMessageIndex((current) => Math.min(messages.length - 1, current + 1))
+                  }
+                  disabled={atLastMessage}
+                  className="rounded border border-edge px-2 py-0.5 font-mono text-meta text-content-secondary hover:border-edge-strong hover:text-content-primary disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  →
+                </button>
+              </div>
+            </>
+          )}
         </div>
-        {lastAssistant?.content ? (
-          <>
-            <Suspense fallback={null}>
-              <Markdown className="text-body leading-snug" fileContext={fileContext}>
-                {lastAssistant.content.length > 1200
-                  ? lastAssistant.content.slice(0, 1200) + "\n\n…"
-                  : lastAssistant.content}
-              </Markdown>
-            </Suspense>
-            {lastAssistant.content.length > 1200 && (
-              <button
-                type="button"
-                onClick={onJumpToConversation}
-                className="mt-2 text-meta text-status-running hover:text-status-running/80 transition-colors"
-              >
-                {t("viewFullConversation")}
-              </button>
+        {selectedMessage ? (
+          <div data-overview-message-body className="max-h-72 overflow-y-auto pr-1">
+            {selectedContent ? (
+              <Suspense fallback={null}>
+                <Markdown className="text-body leading-snug" fileContext={fileContext}>
+                  {selectedContent}
+                </Markdown>
+              </Suspense>
+            ) : (
+              <p className="text-body text-content-muted">{t("noOutput")}</p>
             )}
-          </>
+          </div>
         ) : (
           <p className="text-body text-content-muted">{t("noFinalResponse")}</p>
         )}

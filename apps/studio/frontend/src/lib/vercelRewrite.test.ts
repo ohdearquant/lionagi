@@ -9,9 +9,15 @@
  * fall through to their static file, every other path gets the SPA shell.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
+
+vi.mock("@tanstack/router-plugin/vite", () => ({
+  TanStackRouterVite: () => ({ name: "router-test-plugin" }),
+}));
+
+import { hostedApiBaseInjector } from "../../vite.config.mjs";
 
 const vercelConfig = JSON.parse(
   fs.readFileSync(path.resolve(__dirname, "../../vercel.json"), "utf-8"),
@@ -43,5 +49,26 @@ describe("vercel.json SPA rewrite pattern (RegExp approximation of path-to-regex
     // documented approximation gap between a plain RegExp and path-to-regexp
     // route matching, not a claim that this is the desired behavior.
     expect(pattern.test("/docs/assets/foo")).toBe(true);
+  });
+});
+
+describe("hosted API base injection", () => {
+  function transformFor(env: NodeJS.ProcessEnv) {
+    const transform = hostedApiBaseInjector(env).transformIndexHtml as () => unknown;
+    return transform();
+  }
+
+  it("prepends the loopback API-base override to hosted builds", () => {
+    expect(transformFor({ VERCEL: "1" })).toEqual([
+      {
+        tag: "script",
+        children: 'window.__STUDIO_API_BASE__="http://127.0.0.1:8765";',
+        injectTo: "head-prepend",
+      },
+    ]);
+  });
+
+  it("injects nothing into plain builds", () => {
+    expect(transformFor({})).toBeUndefined();
   });
 });

@@ -451,6 +451,9 @@ function BranchesSection({
   runId,
   artifactRoot,
   runFiles,
+  onLoadOlder,
+  olderMessagesRemaining,
+  loadingOlder,
 }: {
   steps: RunStep[];
   live: boolean;
@@ -459,6 +462,9 @@ function BranchesSection({
   runId?: string;
   artifactRoot?: string | null;
   runFiles?: string[];
+  onLoadOlder?: () => void;
+  olderMessagesRemaining?: number;
+  loadingOlder?: boolean;
 }) {
   const t = useTranslations("history.detail");
   return (
@@ -489,6 +495,9 @@ function BranchesSection({
               runId={runId}
               artifactRoot={artifactRoot}
               runFiles={runFiles}
+              onLoadOlder={onLoadOlder}
+              olderMessagesRemaining={olderMessagesRemaining}
+              loadingOlder={loadingOlder}
             />
           ))
         )}
@@ -972,7 +981,7 @@ export default function RunDetail({ id }: RunDetailProps) {
     }, 0);
   }, [session]);
 
-  const handleLoadOlder = () => {
+  const handleLoadOlder = useCallback(() => {
     if (!id || loadingOlder) return;
     setLoadingOlder(true);
     suppressAutoScrollRef.current = true;
@@ -1002,7 +1011,7 @@ export default function RunDetail({ id }: RunDetailProps) {
       })
       .catch((e: unknown) => setError(String(e)))
       .finally(() => setLoadingOlder(false));
-  };
+  }, [id, loadingOlder]);
 
   const sessionStatus = done ? "completed" : live ? "running" : "completed";
 
@@ -1252,6 +1261,9 @@ export default function RunDetail({ id }: RunDetailProps) {
         runId={session.id}
         artifactRoot={session.artifacts_path}
         runFiles={runFiles}
+        onLoadOlder={handleLoadOlder}
+        olderMessagesRemaining={hiddenOlderCount}
+        loadingOlder={loadingOlder}
       />
       <ErrorsSection errors={errors} partial={partialWindow} />
       <FilesSection files={files} partial={partialWindow} />
