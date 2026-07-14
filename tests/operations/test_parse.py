@@ -340,9 +340,7 @@ class TestLndlExtraction:
 
         result = _extract_lndl(text, Operable())
 
-        assert result.index("<lvar") < result.index("OUT{")
-        assert "<lvar answer a>first</lvar>" in result
-        assert "OUT{answer: [a]}" in result
+        assert result == "<lvar answer a>first</lvar>\n\n\nOUT{answer: [a]}\n"
 
 
 # ============================================================================
