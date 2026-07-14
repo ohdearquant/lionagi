@@ -1,7 +1,9 @@
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 import pytest
 
+from lionagi.protocols.generic import element as element_mod
 from lionagi.protocols.generic.element import ID, Element, validate_order
 
 
@@ -28,9 +30,11 @@ def test_element_metadata_validation():
     assert element.metadata == {"key": "value"}
 
 
-def test_element_timestamp():
+def test_element_timestamp(monkeypatch):
+    fixed = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(element_mod, "now_utc", lambda: fixed)
     element = Element()
-    assert element.created_at > 0
+    assert element.created_at == fixed.timestamp()
 
 
 def test_element_equality():

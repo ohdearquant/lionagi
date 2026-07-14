@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import pytest
 
 from lionagi.ln import compute_hash
+from lionagi.protocols.graph import node as node_mod
 from lionagi.protocols.graph.node import Node
 from lionagi.protocols.graph.node_factory import create_node
 
@@ -17,6 +18,17 @@ from lionagi.protocols.graph.node_factory import create_node
 def _content_hash(content):
     """Wrapper for compute_hash matching the old rehash() calling convention."""
     return compute_hash(content, none_as_valid=True)
+
+
+def _frozen_datetime(fixed):
+    """A datetime subclass whose now() always returns `fixed`."""
+
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed
+
+    return _Frozen
 
 
 class TestNodeSoftDelete:
@@ -39,12 +51,13 @@ class TestNodeSoftDelete:
         d.soft_delete()
         assert d.is_deleted is True
 
-    def test_soft_delete_sets_deleted_at(self):
+    def test_soft_delete_sets_deleted_at(self, monkeypatch):
+        fixed = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr(node_mod, "datetime", _frozen_datetime(fixed))
         cls = create_node("Del", soft_delete=True)
         d = cls()
         d.soft_delete()
-        ts = d.deleted_at
-        assert datetime.fromisoformat(ts).tzinfo == timezone.utc
+        assert d.deleted_at == fixed.isoformat()
 
     def test_soft_delete_with_by_param(self):
         cls = create_node("Del", soft_delete=True)

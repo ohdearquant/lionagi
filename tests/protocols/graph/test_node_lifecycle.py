@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import pytest
 
 from lionagi.ln import compute_hash
+from lionagi.protocols.graph import node as node_mod
 from lionagi.protocols.graph.node import Node
 from lionagi.protocols.graph.node_factory import NodeConfig, create_node
 
@@ -19,6 +20,17 @@ from lionagi.protocols.graph.node_factory import NodeConfig, create_node
 def _content_hash(content):
     """Wrapper for compute_hash matching the old rehash() calling convention."""
     return compute_hash(content, none_as_valid=True)
+
+
+def _frozen_datetime(fixed):
+    """A datetime subclass whose now() always returns `fixed`."""
+
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed
+
+    return _Frozen
 
 
 class TestNodeConfigDefaults:
@@ -357,12 +369,13 @@ class TestNodeTouch:
         b.touch()
         assert "version" not in b.metadata
 
-    def test_touch_track_updated_at(self):
+    def test_touch_track_updated_at(self, monkeypatch):
+        fixed = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr(node_mod, "datetime", _frozen_datetime(fixed))
         cls = create_node("Tracked", track_updated_at=True)
         t = cls(content="x")
         t.touch()
-        ts = t.updated_at
-        assert datetime.fromisoformat(ts).tzinfo == timezone.utc
+        assert t.updated_at == fixed.isoformat()
 
     def test_touch_versioning_starts_at_one(self):
         cls = create_node("V", versioning=True)

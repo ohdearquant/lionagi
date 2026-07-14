@@ -1,6 +1,9 @@
+from datetime import datetime, timezone
+
 import pytest
 
 from lionagi.ln.types import Unset
+from lionagi.protocols.generic import element as element_mod
 from lionagi.protocols.generic.event import Event, EventStatus, Execution
 
 
@@ -79,8 +82,11 @@ def test_event_with_error():
     assert event.execution.error == "Test error"
 
 
-def test_event_duration():
+def test_event_duration(monkeypatch):
+    fixed = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(element_mod, "now_utc", lambda: fixed)
     execution = Execution(duration=1.5)
     event = Event(execution=execution)
 
     assert event.execution.duration == 1.5
+    assert event.created_at == fixed.timestamp()
