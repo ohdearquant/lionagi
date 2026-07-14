@@ -7,7 +7,7 @@ import pytest
 
 from lionagi.agent.factory import create_agent
 from lionagi.agent.spec import AgentSpec
-from lionagi.tools.khive_injection import KhiveInjectionPolicy
+from lionagi.tools.khive_injection import KhiveInjectionPolicy, WritebackPolicy
 
 
 def _registered_provider(branch):
@@ -27,6 +27,37 @@ async def test_coding_spec_registers_default_khive_injection_provider():
     provider = _registered_provider(branch)
     assert provider.name.startswith("khive_injection:")
     assert provider.policy.profile_id == "implementer-recall-v1"
+    assert provider.policy.writeback.enabled is True
+    assert provider.policy.compose.enabled is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["0", "false", "no", "off", " OFF "])
+async def test_khive_injection_env_kill_switch_disables_registration(monkeypatch, value):
+    monkeypatch.setenv("LIONAGI_KHIVE_INJECTION", value)
+
+    branch = await create_agent(
+        AgentSpec.coding(khive_injection=True),
+        load_settings=False,
+    )
+
+    assert branch._context_providers is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [None, "", "1", "on"])
+async def test_khive_injection_env_allows_normal_registration(monkeypatch, value):
+    if value is None:
+        monkeypatch.delenv("LIONAGI_KHIVE_INJECTION", raising=False)
+    else:
+        monkeypatch.setenv("LIONAGI_KHIVE_INJECTION", value)
+
+    branch = await create_agent(
+        AgentSpec.coding(khive_injection=True),
+        load_settings=False,
+    )
+
+    assert _registered_provider(branch).policy.writeback.enabled is True
 
 
 @pytest.mark.asyncio
@@ -51,18 +82,36 @@ async def test_policy_mapping_registers_configured_provider():
     provider = _registered_provider(branch)
     assert provider.policy.profile_id == "researcher-recall-v1"
     assert provider.policy.compose.enabled is True
+    assert provider.policy.writeback.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_policy_mapping_respects_explicit_writeback_disable():
+    branch = await create_agent(
+        AgentSpec.coding(khive_injection={"writeback": {"enabled": False}}),
+        load_settings=False,
+    )
+
+    provider = _registered_provider(branch)
+    assert provider.policy.writeback.enabled is False
+    assert provider.policy.compose.enabled is False
 
 
 @pytest.mark.asyncio
 async def test_policy_instance_is_registered_unchanged():
-    policy = KhiveInjectionPolicy(profile_id="reviewer-recall-v1")
+    policy = KhiveInjectionPolicy(
+        profile_id="reviewer-recall-v1",
+        writeback=WritebackPolicy(enabled=False),
+    )
 
     branch = await create_agent(
         AgentSpec.coding(khive_injection=policy),
         load_settings=False,
     )
 
-    assert _registered_provider(branch).policy is policy
+    registered_policy = _registered_provider(branch).policy
+    assert registered_policy is policy
+    assert registered_policy.writeback.enabled is False
 
 
 @pytest.mark.asyncio

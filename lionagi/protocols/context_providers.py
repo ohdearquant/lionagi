@@ -58,6 +58,13 @@ class ContextProviderRegistry:
     def __init__(self, budget: int = _DEFAULT_BUDGET):
         self.budget = budget
         self._entries: list[_Entry] = []
+        self.stats: dict[str, int] = {
+            "recall_turns": 0,
+            "blocks_injected": 0,
+            "failed": 0,
+            "writeback_records": 0,
+            "writeback_failed": 0,
+        }
 
     def register(
         self,
@@ -124,18 +131,24 @@ class ContextProviderRegistry:
                 report.blocks.append(text)
                 report.fired.append({"provider_name": entry.name, "tokens": tokens})
 
+        if report.fired:
+            self.stats["recall_turns"] += 1
+        self.stats["blocks_injected"] += len(report.fired)
+        self.stats["failed"] += len(report.failed)
         return report
 
     async def gather_writeback(self, branch: Branch, action_responses: list) -> None:
         """POST-turn hook: providers with an optional `writeback` method persist
-        from the turn's action responses; errors are warned + skipped, never block."""
+        from the turn's action responses and may return a record count; errors are
+        warned + skipped, never block."""
         for entry in self._entries:
             hook = getattr(entry.provider, "writeback", None)
             if hook is None:
                 continue
             try:
-                await hook(branch, action_responses)
+                self.stats["writeback_records"] += int(await hook(branch, action_responses) or 0)
             except Exception:
+                self.stats["writeback_failed"] += 1
                 logger.warning(
                     "context provider %r writeback raised; skipping", entry.name, exc_info=True
                 )

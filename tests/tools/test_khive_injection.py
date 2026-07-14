@@ -485,9 +485,10 @@ async def test_writeback_off_by_default_never_calls_transport(patched_transport)
     branch = _FakeBranch()
     responses = [_resp("bash", {"error": "boom"}), _resp("bash", {"stdout": "fixed"})]
 
-    await provider.writeback(branch, responses)
+    records_written = await provider.writeback(branch, responses)
 
     assert not patched_transport.called
+    assert records_written == 0
 
 
 @pytest.mark.asyncio
@@ -501,9 +502,10 @@ async def test_writeback_writes_capped_salience_and_tags(patched_transport):
     branch = _FakeBranch(name="implementer")
     responses = [_resp("bash", {"error": "boom"}), _resp("bash", {"stdout": "fixed"})]
 
-    await provider.writeback(branch, responses)
+    records_written = await provider.writeback(branch, responses)
 
     assert patched_transport.called
+    assert records_written == 1
     ops = patched_transport.call_args_list[0].args[1]["ops"]
     assert ops.startswith("memory.remember(")
     assert "salience=0.3" in ops
@@ -519,9 +521,10 @@ async def test_writeback_no_pairs_skips_transport(patched_transport):
     branch = _FakeBranch()
     responses = [_resp("bash", {"stdout": "fine"})]
 
-    await provider.writeback(branch, responses)
+    records_written = await provider.writeback(branch, responses)
 
     assert not patched_transport.called
+    assert records_written == 0
 
 
 @pytest.mark.asyncio
@@ -534,7 +537,9 @@ async def test_writeback_transport_failure_contained(patched_transport):
     branch = _FakeBranch()
     responses = [_resp("bash", {"error": "boom"}), _resp("bash", {"stdout": "fixed"})]
 
-    await provider.writeback(branch, responses)  # must not raise
+    records_written = await provider.writeback(branch, responses)  # must not raise
+
+    assert records_written == 0
 
 
 # ---------------------------------------------------------------------------

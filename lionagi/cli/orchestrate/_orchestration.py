@@ -983,9 +983,24 @@ def finalize_orchestration(
     log = logging.getLogger("lionagi.cli")
 
     branch_ids: list[tuple[str, str, str]] = []
+    injection_stats = {
+        "recall_turns": 0,
+        "blocks_injected": 0,
+        "failed": 0,
+        "writeback_records": 0,
+        "writeback_failed": 0,
+    }
+    injection_activity = False
     for branch in env.session.branches:
         provider = branch.chat_model.endpoint.config.provider
         branch_ids.append((provider, str(branch.id), branch.name))
+
+        registry = getattr(branch, "_context_providers", None)
+        stats = getattr(registry, "stats", None) if registry else None
+        if stats and any(stats.values()):
+            injection_activity = True
+            for counter in injection_stats:
+                injection_stats[counter] += stats.get(counter, 0)
 
         # Snapshot failure must not abort finalize; only `li agent -r` is affected.
         try:
@@ -999,8 +1014,11 @@ def finalize_orchestration(
                 exc_info=True,
             )
 
-    if extras:
-        env._finalize_extras = extras
+    finalize_extras = dict(extras or {})
+    if injection_activity:
+        finalize_extras["khive_injection"] = injection_stats
+    if finalize_extras:
+        env._finalize_extras = finalize_extras
 
     orc_branch_id = str(env.orc_branch.id)
     save_last_branch_pointer(env.run.run_id, orc_branch_id)

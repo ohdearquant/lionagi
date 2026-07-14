@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from typing import Any
 
@@ -299,6 +300,16 @@ def _register_tools(branch: Branch, spec: AgentSpec) -> None:
 
 
 def _register_providers(branch: Branch, spec: AgentSpec) -> None:
+    # LIONAGI_KHIVE_INJECTION is the fleet-wide injection kill-switch.
+    env_setting = os.getenv("LIONAGI_KHIVE_INJECTION")
+    if env_setting is not None and env_setting.strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
+        return
+
     configured = spec.khive_injection
     if not configured:
         return
@@ -327,9 +338,14 @@ def _register_providers(branch: Branch, spec: AgentSpec) -> None:
         defaults = {}
         if "profile_id" not in policy_kwargs:
             defaults["profile_id"] = f"{spec.profile.role.name}-recall-v1"
+        if "writeback" not in policy_kwargs:
+            defaults["writeback"] = WritebackPolicy(enabled=True)
         policy = KhiveInjectionPolicy(**{**defaults, **policy_kwargs})
     elif configured is True:
-        policy = KhiveInjectionPolicy(profile_id=f"{spec.profile.role.name}-recall-v1")
+        policy = KhiveInjectionPolicy(
+            profile_id=f"{spec.profile.role.name}-recall-v1",
+            writeback=WritebackPolicy(enabled=True),
+        )
     else:
         raise TypeError(
             "khive_injection must be None, a bool, a mapping, or a KhiveInjectionPolicy"

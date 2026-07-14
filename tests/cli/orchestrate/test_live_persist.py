@@ -780,6 +780,72 @@ def test_finalize_stores_dag_extras_for_live_persist_teardown(
     assert (tmp_path / f"{orc_branch_id}.json").exists()
 
 
+def test_finalize_merges_summed_khive_injection_stats(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import lionagi.cli.orchestrate._orchestration as orch_mod
+    from lionagi.cli.orchestrate._orchestration import finalize_orchestration
+
+    monkeypatch.setattr(orch_mod, "save_last_branch_pointer", lambda *_: None)
+    monkeypatch.setattr(orch_mod, "hint", lambda *_: None)
+
+    env = _minimal_env()
+    worker = Branch(name="worker")
+    env.session.include_branches(worker)
+    for branch in (env.orc_branch, worker):
+        _mock_chat_model(branch)
+        branch.providers.register(object())
+    env.orc_branch.providers.stats.update({"recall_turns": 2, "blocks_injected": 3, "failed": 1})
+    worker.providers.stats.update(
+        {"recall_turns": 4, "writeback_records": 5, "writeback_failed": 2}
+    )
+    configure_run_for_finalize(env, tmp_path)
+
+    finalize_orchestration(
+        env,
+        kind="fanout",
+        prompt="analyze",
+        extras={"existing": "value"},
+        emit_hints=False,
+    )
+
+    assert env._finalize_extras == {
+        "existing": "value",
+        "khive_injection": {
+            "recall_turns": 6,
+            "blocks_injected": 3,
+            "failed": 1,
+            "writeback_records": 5,
+            "writeback_failed": 2,
+        },
+    }
+
+
+def test_finalize_omits_khive_injection_stats_without_registered_providers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import lionagi.cli.orchestrate._orchestration as orch_mod
+    from lionagi.cli.orchestrate._orchestration import finalize_orchestration
+
+    monkeypatch.setattr(orch_mod, "save_last_branch_pointer", lambda *_: None)
+    monkeypatch.setattr(orch_mod, "hint", lambda *_: None)
+
+    env = _minimal_env()
+    _mock_chat_model(env.orc_branch)
+    configure_run_for_finalize(env, tmp_path)
+
+    finalize_orchestration(
+        env,
+        kind="flow",
+        prompt="analyze",
+        extras={"existing": "value"},
+        emit_hints=False,
+    )
+
+    assert env._finalize_extras == {"existing": "value"}
+    assert "khive_injection" not in env._finalize_extras
+
+
 # ── Test 2.3 — finalize emits resume hints for orchestrator and workers ────────
 
 

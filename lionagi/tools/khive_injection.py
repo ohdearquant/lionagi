@@ -241,18 +241,19 @@ class KhiveInjectionProvider:
         )
         return _truncate(text, cap)
 
-    async def writeback(self, branch: Branch, action_responses: list) -> None:
+    async def writeback(self, branch: Branch, action_responses: list) -> int:
         wb = self.policy.writeback
         if not wb.enabled:
-            return
+            return 0
 
         pairs = _extract_writeback_pairs(action_responses)
         if not pairs:
-            return
+            return 0
 
         role = getattr(branch, "name", None) or "agent"
         tags = list(wb.tags) or [f"agent:{role}"]
         ns = _ns_kwarg(self.policy.namespace)
+        records_written = 0
         for pair in pairs:
             content = (
                 f"tool '{pair['function']}' failed ({pair['error']!r}); resolved by "
@@ -266,7 +267,9 @@ class KhiveInjectionProvider:
                 await _call_khive(ops, self._mcp_config)
             except Exception:
                 logger.warning("KhiveInjectionProvider writeback failed; skipping", exc_info=True)
-                return
+                return records_written
+            records_written += 1
+        return records_written
 
     def _should_fire(self, branch: Branch) -> bool:
         if self.policy.cadence == "every_turn":
