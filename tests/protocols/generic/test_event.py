@@ -93,4 +93,5 @@ def test_event_duration(monkeypatch):
     assert first.execution.duration == 1.5
     # created_at is stamped fresh at construction and advances between events.
     assert first.created_at == t0.timestamp()
+    assert second.created_at == t1.timestamp()
     assert second.created_at > first.created_at

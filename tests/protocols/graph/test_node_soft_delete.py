@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import pytest
 
 from lionagi.ln import compute_hash
+from lionagi.protocols.generic import element as element_mod
 from lionagi.protocols.graph import node as node_mod
 from lionagi.protocols.graph.node import Node
 from lionagi.protocols.graph.node_factory import create_node
@@ -54,14 +55,19 @@ class TestNodeSoftDelete:
     def test_soft_delete_sets_deleted_at(self, monkeypatch):
         t0 = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
         t1 = datetime(2024, 6, 1, 12, 0, 5, tzinfo=timezone.utc)
+        monkeypatch.setattr(element_mod, "now_utc", lambda: t0)
         monkeypatch.setattr(node_mod, "datetime", _frozen_datetime(t0))
         cls = create_node("Del", soft_delete=True)
         d = cls()
+        assert d.created_at == t0.timestamp()
         monkeypatch.setattr(node_mod, "datetime", _frozen_datetime(t1))
         d.soft_delete()
-        # deleted_at reflects the soft_delete() time, not construction, and orders after it.
+        # deleted_at reflects the soft_delete() clock (t1) and orders strictly after
+        # the node's actual construction time (created_at), not an arbitrary constant.
         assert d.deleted_at == t1.isoformat()
-        assert datetime.fromisoformat(d.deleted_at) > t0
+        deleted_at = datetime.fromisoformat(d.deleted_at)
+        assert deleted_at == t1
+        assert deleted_at > datetime.fromtimestamp(d.created_at, tz=timezone.utc)
 
     def test_soft_delete_with_by_param(self):
         cls = create_node("Del", soft_delete=True)
