@@ -506,11 +506,9 @@ async def _run_agent(
         project=project,
     )
 
-    # `--notify` compatibility sugar: register a scoped override on this run's
-    # own terminal entity, unregistered in `finally`. Fires from the guarded
-    # lifecycle transition that persists the terminal status (mirrors _run_flow).
-    # An about-to-auto-resume leg defers its terminal status, so this leg's
-    # scope never fires; the recursed leg re-registers and fires on its own.
+    # Session-scoped: teardown_agent_persist terminalizes only the session;
+    # invocation records are finalized externally and would never fire. Deferred
+    # auto-resume legs unregister without firing; the recursed leg registers anew.
     _notify_scope_name: str | None = None
     if notify:
         from lionagi.cli.orchestrate._notify import (
@@ -519,12 +517,11 @@ async def _run_agent(
         )
 
         _notify_session_id = live.get("session_id") if live else None
-        _notify_entity_id = invocation_id or _notify_session_id
-        if _notify_entity_id is not None:
+        if _notify_session_id is not None:
             _notify_scope_name = register_flow_notify_scope(
                 override=notify,
-                entity_kind="invocation" if invocation_id else "session",
-                entity_id=_notify_entity_id,
+                entity_kind="session",
+                entity_id=_notify_session_id,
                 invocation_id=invocation_id,
                 flow_kind="agent",
                 playbook=None,
@@ -620,9 +617,7 @@ async def _run_agent(
                 run_manifest["ended_at"] = time.time()
             if _write_run_manifest is not None:
                 _write_run_manifest(run_manifest)
-            # Unregister after teardown_agent_persist (the notify handler fired
-            # during its terminal transition; a deferred-terminal leg fired
-            # nothing and the recursed leg re-registers its own scope).
+            # Unregister after teardown fires the terminal transition.
             if _notify_scope_name is not None:
                 unregister_flow_notify_scope(_notify_scope_name)
             await branch.mdls.shutdown()

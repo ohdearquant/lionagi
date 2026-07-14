@@ -10,6 +10,10 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
+from tests.cli.test_agent_resume_on_timeout import _wire_agent_stubs
+
 _CAPTURED: dict[str, Any] = {}
 
 
@@ -41,3 +45,38 @@ def test_agent_notify_flag_defaults_to_none_when_absent():
     rc = _run(["agent", "claude", "do the thing"])
     assert rc == 0
     assert _CAPTURED["agent"]["notify"] is None
+
+
+@pytest.mark.asyncio
+async def test_notify_scope_is_session_even_with_invocation_id(monkeypatch, tmp_path):
+    """Notification remains session-scoped when `--invocation` is set."""
+    _wire_agent_stubs(
+        monkeypatch,
+        tmp_path,
+        operate_side_effect=lambda i: "done",
+        session_ids=["sess-notify-1"],
+    )
+
+    from lionagi.cli.orchestrate import _notify as notify_mod
+
+    captured: dict[str, Any] = {}
+
+    def fake_register(**kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "scope-name"
+
+    monkeypatch.setattr(notify_mod, "register_flow_notify_scope", fake_register)
+    monkeypatch.setattr(notify_mod, "unregister_flow_notify_scope", lambda *a, **kw: None)
+
+    from lionagi.cli.agent import _run_agent
+
+    await _run_agent(
+        "claude_code/sonnet",
+        "hello",
+        invocation_id="parent-inv-123",
+        notify="my-hook {status}",
+    )
+
+    assert captured["entity_kind"] == "session"
+    assert captured["entity_id"] == "sess-notify-1"
+    assert captured["invocation_id"] == "parent-inv-123"

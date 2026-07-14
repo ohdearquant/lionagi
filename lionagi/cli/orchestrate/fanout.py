@@ -109,17 +109,14 @@ async def _run_fanout(
         project=project,
     )
 
-    # `--notify` compatibility sugar: register a scoped override on this run's
-    # own terminal entity, unregistered in `finally`. Fires from the guarded
-    # lifecycle transition that persists the terminal status (mirrors _run_flow).
+    # Session-scoped: stop_live_persist terminalizes only the session; invocation
+    # records are finalized externally and would never fire.
     _notify_scope_name: str | None = None
     if notify:
-        _notify_entity_kind = "invocation" if invocation_id else "session"
-        _notify_entity_id = invocation_id if invocation_id else str(env.session.id)
         _notify_scope_name = register_flow_notify_scope(
             override=notify,
-            entity_kind=_notify_entity_kind,
-            entity_id=_notify_entity_id,
+            entity_kind="session",
+            entity_id=str(env.session.id),
             invocation_id=invocation_id,
             flow_kind="fanout",
             playbook=playbook_name,
@@ -168,8 +165,7 @@ async def _run_fanout(
             effective_status = await stop_live_persist(env, status=_terminal_status)
             if effective_status != _terminal_status:
                 _terminal_status = effective_status
-            # Unregister after the terminal status is persisted (the notify
-            # handler fired during stop_live_persist's terminal transition).
+            # Unregister after stop_live_persist fires the terminal transition.
             unregister_flow_notify_scope(_notify_scope_name)
             for _br in env.session.branches:
                 await _br.mdls.shutdown()
