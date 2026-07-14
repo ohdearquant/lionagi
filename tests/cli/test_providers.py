@@ -18,6 +18,13 @@ def test_parse_model_spec_folds_effort_suffix_for_gemini_code():
     assert ms.effort == "high"
 
 
+def test_parse_model_spec_normalizes_mixed_case_effort_suffix():
+    ms = parse_model_spec("codex/gpt-5.4-Max")
+
+    assert ms.model == "codex/gpt-5.4"
+    assert ms.effort == "max"
+
+
 def test_parse_model_spec_rejects_effort_for_bare_gemini_provider():
     """The bare 'gemini' provider (direct Google API, not the agy CLI) still
     does not support effort levels — ValueError is raised."""
@@ -435,3 +442,44 @@ def test_gemini_ultra_folds_to_high():
     )
     assert isinstance(chat_model, str)
     assert "High" in chat_model
+
+
+def test_find_lionagi_dirs_memoizes_git_probe_per_location(monkeypatch, tmp_path):
+    import lionagi._paths as paths
+
+    calls: list = []
+    paths.clear_lionagi_dirs_cache()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(paths, "_find_git_root", lambda cwd: calls.append(cwd) or None)
+
+    try:
+        first = paths.find_lionagi_dirs()
+        second = paths.find_lionagi_dirs()
+    finally:
+        paths.clear_lionagi_dirs_cache()
+
+    assert first == second
+    assert calls == [tmp_path]
+
+
+def test_slash_profile_miss_skips_available_profile_listing(monkeypatch, tmp_path):
+    import lionagi.cli._providers as providers
+
+    find_calls: list = []
+    monkeypatch.setattr(
+        providers,
+        "_find_lionagi_dirs",
+        lambda: find_calls.append(True) or [tmp_path / ".lionagi"],
+    )
+    monkeypatch.setattr(providers, "_resolve_plugin_profile_path", lambda _name: None)
+    monkeypatch.setattr(
+        providers,
+        "list_agents",
+        lambda: pytest.fail("slash-token misses must not scan profiles for an Available listing"),
+    )
+
+    with pytest.raises(FileNotFoundError, match="Agent profile 'openai/gpt-4o' not found"):
+        providers.load_agent_profile("openai/gpt-4o")
+
+    assert find_calls == [True]

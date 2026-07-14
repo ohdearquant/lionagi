@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import Any
 
 from lionagi._errors import ConfigurationError
+from lionagi.ln.concurrency import is_coro_func
 from lionagi.session.branch import Branch
 
 from .spec import AgentSpec
@@ -219,6 +220,39 @@ def _chain_post_hooks(tool_name: str, hooks: list[Callable]) -> Callable | None:
     return chained
 
 
+def _compose_preprocessor(original: Callable | None, new: Callable) -> Callable:
+    """Compose a spec-derived preprocessor in front of a tool's existing one.
+
+    Ordering keeps the security recheck closest to the actual invocation:
+    the tool's own preprocessor (if any) runs first, then the spec chain.
+    """
+    if original is None:
+        return new
+
+    async def composed(args: dict, **kw) -> Any:
+        args = await original(args, **kw) if is_coro_func(original) else original(args, **kw)
+        return await new(args, **kw) if is_coro_func(new) else new(args, **kw)
+
+    return composed
+
+
+def _compose_postprocessor(original: Callable | None, new: Callable) -> Callable:
+    """Compose a spec-derived postprocessor around a tool's existing one.
+
+    Ordering mirrors `_compose_preprocessor`: the spec chain runs immediately
+    after the tool call (closest to invocation), then the tool's own
+    postprocessor (if any) runs last.
+    """
+    if original is None:
+        return new
+
+    async def composed(result: Any, **kw) -> Any:
+        result = await new(result, **kw) if is_coro_func(new) else new(result, **kw)
+        return await original(result, **kw) if is_coro_func(original) else original(result, **kw)
+
+    return composed
+
+
 def _attach_hooks(tool: Any, spec: AgentSpec, canonical_name: str) -> Any:
     security_hooks = _tool_hooks(spec, "security_pre", canonical_name)
     user_pre_hooks = _tool_hooks(spec, "pre", canonical_name)
@@ -226,9 +260,9 @@ def _attach_hooks(tool: Any, spec: AgentSpec, canonical_name: str) -> Any:
     pre = _chain_pre_hooks(canonical_name, security_hooks, user_pre_hooks)
     post = _chain_post_hooks(canonical_name, post_hooks)
     if pre is not None:
-        tool.preprocessor = pre
+        tool.preprocessor = _compose_preprocessor(tool.preprocessor, pre)
     if post is not None:
-        tool.postprocessor = post
+        tool.postprocessor = _compose_postprocessor(tool.postprocessor, post)
     return tool
 
 
@@ -344,10 +378,38 @@ async def _load_mcp(
     if mcp_path is None:
         return
 
-    await branch.acts.load_mcp_config(
+    from lionagi.service.connections.mcp_wrapper import MCPSecurityConfig
+
+    # ActionManager.load_mcp_config() no longer implies trust when its
+    # `mcp_security` argument is omitted (ADR-0011 delta row 3) -- an
+    # omitted policy now falls through to the wrapper's fail-closed
+    # default instead. Reaching this point already required an explicit
+    # trust act: either `spec.mcp_config_path` was set directly, or
+    # `mcp_path` resolved from the operator's own home-level `.mcp.json`
+    # (the same "global config is inherently trusted" precedent as
+    # settings.yaml's always-loaded global file), or the caller opted into
+    # `trust_project_settings=True` for a project-level file. This is the
+    # one, explicit, documented compatibility decision for lionagi's own
+    # MCP auto-load consumer -- not a silent default buried in the generic
+    # library call.
+    loaded = await branch.acts.load_mcp_config(
         mcp_path,
         server_names=spec.mcp_servers,
+        mcp_security=MCPSecurityConfig.trusted(),
     )
+
+    # Apply the same hook chain static tools get (security_pre/pre/post from
+    # spec.hook_handlers, wired via _attach_hooks in _register_tools) to
+    # MCP-discovered tools too -- they are registered after built-in tool
+    # interception and would otherwise keep their bare default preprocessor
+    # (ADR-0041 delta row 2). Reuses _attach_hooks, the same function static
+    # registration uses, so both paths stay on one shared chain-application
+    # path rather than a copied block.
+    for tool_names in loaded.values():
+        for tool_name in tool_names:
+            tool = branch.acts.registry.get(tool_name)
+            if tool is not None:
+                _attach_hooks(tool, spec, tool_name)
 
 
 def _forward_mcp_to_cli_request(

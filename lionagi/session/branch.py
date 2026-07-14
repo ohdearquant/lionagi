@@ -3,7 +3,7 @@
 
 from collections.abc import AsyncGenerator, Callable
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from pydantic import BaseModel, JsonValue, PrivateAttr, field_serializer
 
@@ -659,6 +659,72 @@ class Branch(Element, Relational):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self._log_manager.adump(clear=True)
 
+    @overload
+    async def chat(
+        self,
+        instruction: Instruction | JsonValue = None,
+        guidance: JsonValue = None,
+        context: JsonValue = None,
+        sender: ID.Ref = None,
+        recipient: ID.Ref = None,
+        request_fields: list[str] | dict[str, JsonValue] = None,
+        response_format: type[BaseModel] | BaseModel = None,
+        progression: Progression | list[ID[RoledMessage].ID] = None,
+        imodel: iModel = None,
+        tool_schemas: list[dict] = None,
+        images: list = None,
+        image_detail: Literal["low", "high", "auto"] = None,
+        plain_content: str = None,
+        return_ins_res_message: Literal[False] = False,
+        include_token_usage_to_model: bool = False,
+        _turn_origin: Any = None,
+        **kwargs,
+    ) -> str: ...
+
+    @overload
+    async def chat(
+        self,
+        instruction: Instruction | JsonValue = None,
+        guidance: JsonValue = None,
+        context: JsonValue = None,
+        sender: ID.Ref = None,
+        recipient: ID.Ref = None,
+        request_fields: list[str] | dict[str, JsonValue] = None,
+        response_format: type[BaseModel] | BaseModel = None,
+        progression: Progression | list[ID[RoledMessage].ID] = None,
+        imodel: iModel = None,
+        tool_schemas: list[dict] = None,
+        images: list = None,
+        image_detail: Literal["low", "high", "auto"] = None,
+        plain_content: str = None,
+        return_ins_res_message: Literal[True] = ...,
+        include_token_usage_to_model: bool = False,
+        _turn_origin: Any = None,
+        **kwargs,
+    ) -> tuple[Instruction, AssistantResponse]: ...
+
+    @overload
+    async def chat(
+        self,
+        instruction: Instruction | JsonValue = None,
+        guidance: JsonValue = None,
+        context: JsonValue = None,
+        sender: ID.Ref = None,
+        recipient: ID.Ref = None,
+        request_fields: list[str] | dict[str, JsonValue] = None,
+        response_format: type[BaseModel] | BaseModel = None,
+        progression: Progression | list[ID[RoledMessage].ID] = None,
+        imodel: iModel = None,
+        tool_schemas: list[dict] = None,
+        images: list = None,
+        image_detail: Literal["low", "high", "auto"] = None,
+        plain_content: str = None,
+        return_ins_res_message: bool = ...,
+        include_token_usage_to_model: bool = False,
+        _turn_origin: Any = None,
+        **kwargs,
+    ) -> str | tuple[Instruction, AssistantResponse]: ...
+
     async def chat(
         self,
         instruction: Instruction | JsonValue = None,
@@ -678,7 +744,7 @@ class Branch(Element, Relational):
         include_token_usage_to_model: bool = False,
         _turn_origin: Any = None,
         **kwargs,
-    ) -> tuple[Instruction, AssistantResponse]:
+    ) -> str | tuple[Instruction, AssistantResponse]:
         """Invoke the chat model. Does not auto-add messages to the branch."""
         from lionagi.operations.chat.chat import ChatParam, chat
 

@@ -143,6 +143,31 @@ HandleValidation = Literal["raise", "return_value", "return_none"]
 | `"return_value"` | Return the raw string |
 | `"return_none"` | Return `None` |
 
+## Manual custom rendering and parsing
+
+`CustomRenderer` and `CustomParser` are opt-in protocols for integrations that
+own their provider call. `Branch.chat()`, `Branch.operate()`, and
+`Branch.parse()` do not accept these objects and do not discover them
+implicitly. Use `prepare_messages_for_chat()` directly when building a custom
+request pipeline:
+
+```python
+from lionagi.protocols.messages import prepare_messages_for_chat
+
+chat_messages = prepare_messages_for_chat(branch.messages, to_chat=True)
+schema_instruction = renderer(TargetModel)
+chat_messages.append({"role": "user", "content": schema_instruction})
+
+# Submit chat_messages through the provider integration you control.
+response_text = await invoke_provider(chat_messages)
+result = parser(response_text, list(TargetModel.model_fields))
+```
+
+Use `to_chat=False` when the integration needs the prepared message-content
+models instead of provider-shaped `{"role", "content"}` dictionaries. The
+preparation helper only compiles history; the caller remains responsible for
+invoking the renderer, sending the request, and parsing the response.
+
 ## Custom middle example
 
 ```python

@@ -234,6 +234,29 @@ async def _stream_with_liveness(
                 max_attempts,
             )
             continue
+        except BaseException:
+            # Cancellation or GeneratorExit can land while the first chunk is
+            # still pending, before control reaches the post-yield finally
+            # below. Close the owned stream explicitly so subprocess cleanup
+            # runs synchronously, then preserve the original unwind reason.
+            _unwinding = sys.exc_info()[1] is not None
+            try:
+                await agen.aclose()
+            except Exception as close_exc:
+                logger.debug(
+                    "run: liveness watchdog agen.aclose() raised during first-chunk cleanup: %r",
+                    close_exc,
+                )
+            except BaseException as close_exc:
+                if not _unwinding:
+                    raise
+                logger.debug(
+                    "run: liveness watchdog agen.aclose() raised %r while "
+                    "another exception was already propagating; suppressing "
+                    "the secondary cleanup failure",
+                    close_exc,
+                )
+            raise
         else:
             try:
                 yield first_chunk

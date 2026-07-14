@@ -25,7 +25,6 @@ __all__ = (
 DEFAULT_HOOKS: dict[HookPoint, list[HookHandler]] = {
     HookPoint.SESSION_START: [_builtins.persist_session_start],
     HookPoint.SESSION_END: [_builtins.persist_session_end],
-    HookPoint.MESSAGE_ADD: [_builtins.persist_message],
     HookPoint.BRANCH_CREATE: [_builtins.persist_branch_provenance],
     HookPoint.BRANCH_END: [_builtins.persist_branch_end],
 }

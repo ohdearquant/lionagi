@@ -221,7 +221,8 @@ BACKENDS: dict[str, str] = {
 # ── Parsing ───────────────────────────────────────────────────────────────
 
 _EFFORT_SUFFIX_RE = re.compile(
-    r"^(.+?)-(" + "|".join(sorted(EFFORT_LEVELS, key=len, reverse=True)) + r")$"
+    r"^(.+?)-(" + "|".join(sorted(EFFORT_LEVELS, key=len, reverse=True)) + r")$",
+    re.IGNORECASE,
 )
 
 
@@ -278,7 +279,7 @@ def parse_model_spec(spec: str) -> ModelSpec:
     m = _EFFORT_SUFFIX_RE.match(spec)
     if m:
         model_clean = m.group(1)
-        effort = m.group(2)
+        effort = normalize_effort(m.group(2))
 
         if provider_raw in PROVIDERS_NO_EFFORT:
             raise ValueError(

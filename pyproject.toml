@@ -261,9 +261,8 @@ exclude = [
 ]
 
 [tool.pyright]
-include = ["lionagi"]
+include = ["lionagi", "tests/typing/branch_chat.py"]
 exclude = [
-    "tests",
     "apps/studio/frontend",
     "**/__pycache__",
     "**/node_modules",

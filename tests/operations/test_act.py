@@ -282,6 +282,40 @@ async def test_act_pre_hook_denial_fires_tool_error_not_tool_post():
 
 
 @pytest.mark.asyncio
+async def test_act_nonraising_failed_call_emits_error_and_persists_error_response():
+    """A FunctionCalling captured as FAILED is an error even when invoke() is total."""
+    from lionagi.hooks.bus import HookBus, HookPoint
+    from lionagi.protocols.messages import ActionResponse
+
+    def fail_tool() -> None:
+        raise RuntimeError("tool failed without raising from invoke")
+
+    branch = _make_branch_with_tool(fail_tool)
+    bus = HookBus()
+    tool_post_calls: list = []
+    tool_error_calls: list = []
+    bus.on(HookPoint.TOOL_POST, lambda **kw: tool_post_calls.append(kw))
+    bus.on(HookPoint.TOOL_ERROR, lambda **kw: tool_error_calls.append(kw))
+    branch._hooks = bus
+
+    result = await _act(
+        branch,
+        {"function": "fail_tool", "arguments": {}},
+        suppress_errors=True,
+    )
+
+    assert result.output is None  # preserve suppress_errors degrade-to-None
+    assert tool_post_calls == []
+    assert len(tool_error_calls) == 1
+    assert "tool failed without raising" in str(tool_error_calls[0]["error"])
+
+    responses = [message for message in branch.messages if isinstance(message, ActionResponse)]
+    assert len(responses) == 1
+    assert responses[0].output["function"] == "fail_tool"
+    assert "tool failed without raising" in responses[0].output["error"]
+
+
+@pytest.mark.asyncio
 async def test_act_verbose_logging(caplog):
     """verbose_action=True emits debug log lines (lines 52-54, 57-60)."""
     import logging

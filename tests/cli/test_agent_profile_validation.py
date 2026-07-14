@@ -90,3 +90,21 @@ class TestLoadAgentProfileValidation:
             load_agent_profile("valid-name")
         # Must NOT be the validation error.
         assert not isinstance(exc_info.value, ValueError)
+
+    def test_broken_profile_symlink_reports_unreadable_target(self, monkeypatch, tmp_path):
+        import lionagi.cli._providers as providers
+
+        lionagi_dir = tmp_path / ".lionagi"
+        agents_dir = lionagi_dir / "agents"
+        agents_dir.mkdir(parents=True)
+        (agents_dir / "broken.md").symlink_to("missing-profile.md")
+
+        monkeypatch.setattr(providers, "_find_lionagi_dirs", lambda: [lionagi_dir])
+        monkeypatch.setattr(providers, "_plugin_agent_profiles", lambda: {})
+
+        with pytest.raises(FileNotFoundError) as exc_info:
+            providers.load_agent_profile("broken")
+
+        message = str(exc_info.value)
+        assert "exists but its symlink target is unreadable: missing-profile.md" in message
+        assert "broken" not in providers.list_agents()

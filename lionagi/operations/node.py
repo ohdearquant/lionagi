@@ -13,10 +13,11 @@ BranchOperations = Literal[
     "communicate",
     "parse",
     "ReAct",
-    "select",
     "interpret",
     "act",
     "ReActStream",
+    "run",
+    "chat_and_record",
 ]
 
 logger = logging.getLogger("operation")

@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from typing_extensions import TypedDict
 
@@ -36,7 +36,7 @@ class HookDict(TypedDict):
     post_invocation: Callable | None
 
 
-StreamHandlers = dict[str, Callable[[SC], Awaitable[None]]]
+StreamHandlers = dict[str, Callable[[Any, str | type, SC], Awaitable[None]]]
 """Mapping of chunk type names to their respective asynchronous handler functions."""
 
 
