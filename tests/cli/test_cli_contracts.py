@@ -102,6 +102,7 @@ AGENT_HELP_FLAGS = [
     "--help",
     "--invocation",
     "--list-profiles",
+    "--notify",
     "--preset",
     "--project",
     "--prompt",

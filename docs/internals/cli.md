@@ -51,10 +51,14 @@ instead. Which variant applies is decided by `messenger_bound` in
 `team_worker_system()` in `_orchestration.py`.
 
 `_notify.py`: `--notify` is scoped compatibility sugar over the terminal-
-callback registry. After the flow/play run's own entity id is known, it
-registers the legacy payload shape (kind/playbook/save_dir/cwd/exit_class/
-started_at/ended_at/status/invocation_id) as an exec adapter filtered to
-that one entity, and unregisters it once the run's teardown fires. This is
+callback registry. The flag is defined once in `add_common_cli_args`, so
+every spawn-forwarding surface carries it — `li agent`, `li o fanout`, and
+`li o flow` / `li play` — and each wires it identically. After the run's own
+entity id is known (a `li agent` session, an `li o fanout` session, or an
+`li o flow` / `li play` session or invocation), it registers the legacy
+payload shape (kind/playbook/save_dir/cwd/exit_class/started_at/ended_at/
+status/invocation_id) as an exec adapter filtered to that one entity, and
+unregisters it once the run's teardown fires. This is
 deliberately different from the settings-level `notify.on_terminal` handler
 (bootstrapped once per process, unscoped, delivering the new minimal
 envelope) — `--notify` is a per-run override carrying the old payload shape

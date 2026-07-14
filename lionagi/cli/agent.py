@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -207,6 +208,7 @@ async def _run_agent(
     resume_on_timeout: bool = False,
     context_from: list[str] | None = None,
     context_budget: int | None = None,
+    notify: str | None = None,
     _auto_resumed: bool = False,
 ) -> tuple[str, str, str, str, str | None]:
     """Execute one agent turn; returns (result, provider, branch_id, terminal_status, session_id).
@@ -504,6 +506,33 @@ async def _run_agent(
         project=project,
     )
 
+    # `--notify` compatibility sugar: register a scoped override on this run's
+    # own terminal entity, unregistered in `finally`. Fires from the guarded
+    # lifecycle transition that persists the terminal status (mirrors _run_flow).
+    # An about-to-auto-resume leg defers its terminal status, so this leg's
+    # scope never fires; the recursed leg re-registers and fires on its own.
+    _notify_scope_name: str | None = None
+    if notify:
+        from lionagi.cli.orchestrate._notify import (
+            register_flow_notify_scope,
+            unregister_flow_notify_scope,
+        )
+
+        _notify_session_id = live.get("session_id") if live else None
+        _notify_entity_id = invocation_id or _notify_session_id
+        if _notify_entity_id is not None:
+            _notify_scope_name = register_flow_notify_scope(
+                override=notify,
+                entity_kind="invocation" if invocation_id else "session",
+                entity_id=_notify_entity_id,
+                invocation_id=invocation_id,
+                flow_kind="agent",
+                playbook=None,
+                save_dir=str(run.artifact_root),
+                cwd=cwd or os.getcwd(),
+                started_at=run_manifest["started_at"],
+            )
+
     _terminal_status = "completed"
     _terminal_exc: BaseException | None = None
 
@@ -591,6 +620,11 @@ async def _run_agent(
                 run_manifest["ended_at"] = time.time()
             if _write_run_manifest is not None:
                 _write_run_manifest(run_manifest)
+            # Unregister after teardown_agent_persist (the notify handler fired
+            # during its terminal transition; a deferred-terminal leg fired
+            # nothing and the recursed leg re-registers its own scope).
+            if _notify_scope_name is not None:
+                unregister_flow_notify_scope(_notify_scope_name)
             await branch.mdls.shutdown()
 
     is_resume = bool(resume or continue_last)
@@ -636,6 +670,7 @@ async def _run_agent(
             project=project,
             bypass=bypass,
             resume_on_timeout=resume_on_timeout,
+            notify=notify,
             _auto_resumed=True,
         )
 
@@ -876,6 +911,7 @@ def run_agent(args: argparse.Namespace) -> int:
                 resume_on_timeout=getattr(args, "resume_on_timeout", False),
                 context_from=getattr(args, "context_from", None),
                 context_budget=getattr(args, "context_budget", None),
+                notify=getattr(args, "notify", None),
             )
         )
     except ContextFromError as exc:

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 
 from lionagi._errors import TimeoutError as LionTimeoutError
@@ -23,6 +24,7 @@ from ._common import (
     _format_result_text,
     _post_results_to_team,
 )
+from ._notify import register_flow_notify_scope, unregister_flow_notify_scope
 from ._orchestration import (
     OrchestrationEnv,
     available_roles,
@@ -64,6 +66,7 @@ async def _run_fanout(
     invocation_id: str | None = None,
     project: str | None = None,
     pack: str | None = None,
+    notify: str | None = None,
 ) -> tuple[str, str]:
     """Three-phase fan-out: decompose → fan out → synthesize.
 
@@ -72,6 +75,7 @@ async def _run_fanout(
     teardown path settles on) reaches the caller's exit code instead of being
     silently dropped in favour of a hardcoded success.
     """
+    _started_at = time.time()
     env = await setup_orchestration(
         pattern_name="Fanout",
         model_spec=model_spec,
@@ -104,6 +108,25 @@ async def _run_fanout(
         effort=env.effort,
         project=project,
     )
+
+    # `--notify` compatibility sugar: register a scoped override on this run's
+    # own terminal entity, unregistered in `finally`. Fires from the guarded
+    # lifecycle transition that persists the terminal status (mirrors _run_flow).
+    _notify_scope_name: str | None = None
+    if notify:
+        _notify_entity_kind = "invocation" if invocation_id else "session"
+        _notify_entity_id = invocation_id if invocation_id else str(env.session.id)
+        _notify_scope_name = register_flow_notify_scope(
+            override=notify,
+            entity_kind=_notify_entity_kind,
+            entity_id=_notify_entity_id,
+            invocation_id=invocation_id,
+            flow_kind="fanout",
+            playbook=playbook_name,
+            save_dir=save_dir,
+            cwd=cwd or os.getcwd(),
+            started_at=_started_at,
+        )
 
     inner_kw = dict(
         env=env,
@@ -145,6 +168,9 @@ async def _run_fanout(
             effective_status = await stop_live_persist(env, status=_terminal_status)
             if effective_status != _terminal_status:
                 _terminal_status = effective_status
+            # Unregister after the terminal status is persisted (the notify
+            # handler fired during stop_live_persist's terminal transition).
+            unregister_flow_notify_scope(_notify_scope_name)
             for _br in env.session.branches:
                 await _br.mdls.shutdown()
 
