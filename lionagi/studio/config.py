@@ -29,7 +29,6 @@ def _system_local_tz_name() -> str:
 
 STUDIO_PORT: int = int(os.environ.get("LIONAGI_STUDIO_PORT", "8765"))
 HOST: str = os.environ.get("LIONAGI_STUDIO_HOST", "127.0.0.1")
-DATA_ROOT: Path = Path(os.environ.get("LIONAGI_DATA_ROOT", "~/.lionagi")).expanduser()
 SHOWS_ROOT: Path = Path(os.environ.get("LIONAGI_SHOWS_ROOT", "~/khive-work/shows")).expanduser()
 
 _raw_origins = os.environ.get("CORS_ORIGINS", "")
