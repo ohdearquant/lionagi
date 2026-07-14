@@ -1210,12 +1210,13 @@ async def _execute_dag(
             await _exchange.collect_all()
         # Completion observers schedule persistence writes synchronously but the
         # writes themselves are async. Drain them while the live DB is still open.
-        if _branch_status_tasks:
-            with contextlib.suppress(Exception):
-                await _asyncio.gather(*_branch_status_tasks, return_exceptions=True)
-        if _checkpoint_tasks:
-            with contextlib.suppress(Exception):
-                await _asyncio.gather(*_checkpoint_tasks, return_exceptions=True)
+        with CancelScope(shield=True):
+            if _branch_status_tasks:
+                with contextlib.suppress(Exception):
+                    await _asyncio.gather(*_branch_status_tasks, return_exceptions=True)
+            if _checkpoint_tasks:
+                with contextlib.suppress(Exception):
+                    await _asyncio.gather(*_checkpoint_tasks, return_exceptions=True)
     t_exec_elapsed = time.monotonic() - t_exec
 
     op_results = dag_result.get("operation_results", {})

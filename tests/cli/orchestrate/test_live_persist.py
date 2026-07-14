@@ -2010,6 +2010,107 @@ async def test_execute_dag_drains_inflight_branch_status_before_teardown(
     assert env._live_persist is None
 
 
+async def test_flow_timeout_shields_completed_branch_status_until_commit(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from lionagi._errors import TimeoutError as LionTimeoutError
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate import flow as flow_module
+    from lionagi.cli.orchestrate._orchestration import register_branch_hook
+    from lionagi.engines import PlanningEngine
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.session.signal import NodeCompleted
+
+    env = _minimal_env()
+    env.run.run_id = "timeout-status-drain"
+    env.builder = OperationGraphBuilder()
+
+    release_write = asyncio.Event()
+    execution_cancelled = asyncio.Event()
+    status_write_cancelled = asyncio.Event()
+    write_committed = asyncio.Event()
+    worker_id = ""
+
+    async def plan_once(*args, **kwargs):
+        return [TaskAssignment(task="finish one operation", assignee="worker")]
+
+    async def build_worker(*args, **kwargs):
+        nonlocal worker_id
+        worker = Branch(name=kwargs["agent_id"])
+        worker_id = str(worker.id)
+        env.session.include_branches(worker)
+        ctx = env._live_persist
+        assert ctx is not None
+        register_branch_hook(ctx, worker)
+        await worker.msgs.a_add_message(assistant_response="durable result")
+
+        real_update_branch = ctx["db"].update_branch
+
+        async def delayed_update_branch(branch_id, **fields):
+            if fields.get("status") != "completed":
+                return await real_update_branch(branch_id, **fields)
+            try:
+                await release_write.wait()
+            except asyncio.CancelledError:
+                status_write_cancelled.set()
+                raise
+            await real_update_branch(branch_id, **fields)
+            write_committed.set()
+
+        real_close = ctx["db"].close
+
+        async def tracked_close():
+            assert write_committed.is_set()
+            await real_close()
+
+        monkeypatch.setattr(ctx["db"], "update_branch", delayed_update_branch)
+        monkeypatch.setattr(ctx["db"], "close", tracked_close)
+        return worker, "test/model", None, False
+
+    class BlockingEngineRun:
+        async def run_dag(self, graph, **kwargs):
+            node_id = str(next(iter(graph.internal_nodes)))
+            await env.session.emit(NodeCompleted(op_id=node_id, name="worker"))
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                execution_cancelled.set()
+                raise
+
+    async def release_after_timeout():
+        await execution_cancelled.wait()
+        await asyncio.sleep(0.05)
+        release_write.set()
+
+    async def setup_env(**kwargs):
+        return env
+
+    monkeypatch.setattr(flow_module, "setup_orchestration", setup_env)
+    monkeypatch.setattr(flow_module, "available_roles", lambda: ["worker"])
+    monkeypatch.setattr(flow_module, "plan", plan_once)
+    monkeypatch.setattr(flow_module, "build_worker_branch", build_worker)
+    monkeypatch.setattr(PlanningEngine, "new_run", lambda self, *, session: BlockingEngineRun())
+
+    release_task = asyncio.create_task(release_after_timeout())
+    try:
+        with pytest.raises(LionTimeoutError):
+            await flow_module._run_flow("test/model", "run once", timeout=2)
+    finally:
+        release_write.set()
+        release_task.cancel()
+        await asyncio.gather(release_task, return_exceptions=True)
+
+    assert execution_cancelled.is_set()
+    assert not status_write_cancelled.is_set()
+    assert write_committed.is_set()
+    async with StateDB() as db:
+        branch = await db.get_branch(worker_id)
+    assert branch is not None
+    assert branch["status"] == "completed"
+    assert env._live_persist is None
+
+
 async def test_execute_dag_escalation_backstop_catches_reactively_spawned_node(
     temp_db_path: Path,
     tmp_path: Path,
