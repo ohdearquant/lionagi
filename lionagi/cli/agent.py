@@ -661,6 +661,11 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         ),
     )
     agent.add_argument(
+        "--list-profiles",
+        action="store_true",
+        help="Print the resolved agent-profile catalog as JSON and exit.",
+    )
+    agent.add_argument(
         "-r",
         "--resume",
         metavar="BRANCH_ID",
@@ -769,6 +774,11 @@ def _resolve_model_and_prompt(args: argparse.Namespace) -> tuple[str | None, str
 
 def run_agent(args: argparse.Namespace) -> int:
     """Dispatch agent command."""
+    if args.list_profiles:
+        from lionagi.cli._providers import build_agent_profile_catalog
+
+        print(json.dumps(build_agent_profile_catalog(), indent=2, sort_keys=True))
+        return 0
     resolved = _resolve_model_and_prompt(args)
     if resolved is None:
         return 1

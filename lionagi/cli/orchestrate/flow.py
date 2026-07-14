@@ -18,7 +18,7 @@ from lionagi._errors import LionError
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.casts.emission import SpawnRequest, TaskAssignment
 from lionagi.ln.concurrency import CancelScope, move_on_after
-from lionagi.orchestration import plan, role_node_builder
+from lionagi.orchestration import normalize_dep_indices, plan, role_node_builder
 from lionagi.session.exchange import Exchange
 from lionagi.tools.communication.messenger import LionMessenger
 
@@ -348,20 +348,6 @@ def _fallback_notify_reason(status: str) -> str:
     }.get(status, RunReasons.FAILED_EXCEPTION)
 
 
-def _earlier_dep_indices(depends_on: list[str] | None, position: int) -> list[int]:
-    out: list[int] = []
-    for ref in depends_on or []:
-        try:
-            j = int(str(ref).strip()) - 1
-        except (TypeError, ValueError):
-            continue
-        if 0 <= j < position:
-            out.append(j)
-        elif j >= position:
-            logger.warning("Dropped forward dep ref %s (index %d >= position %d)", ref, j, position)
-    return out
-
-
 def _parse_reactive(spec: str | None) -> tuple[bool, set[str] | None]:
     """Parse --reactive into (reactive, spawn_roles)."""
     s = (spec or "all").strip().lower()
@@ -458,6 +444,7 @@ async def _build_dag(
     role_artifact_defaults: dict[str, dict | None] = {}
     worker_branches: dict[str, object] = {}
     worker_messenger_bound: dict[str, bool] = {}
+    spawn_assignees = sorted({ta.assignee for ta in assignments})
 
     for i, ta in enumerate(assignments):
         w_branch, w_model, w_profile, messenger_bound = await build_worker_branch(
@@ -467,6 +454,7 @@ async def _build_dag(
             model_override=pool[i % len(pool)] if pool else None,
             explicit_name=agent_ids[i],
             grant_spawn=_may_spawn(ta.assignee),
+            spawn_assignees=spawn_assignees,
             modes=ta.modes or None,
         )
         worker_branches[agent_ids[i]] = w_branch
@@ -1840,7 +1828,7 @@ async def _run_flow_inner(
     if resume_checkpoint is not None:
         # Resume: replay the persisted plan verbatim — no planner LLM call.
         # dep_indices are already 0-based positions (persisted, not the raw
-        # depends_on ordinal refs), so _earlier_dep_indices is skipped
+        # depends_on ordinal refs), so normalization is skipped
         # entirely, not just its LLM-facing caller.
         plan_entries = resume_checkpoint.get("plan") or []
         if not plan_entries:
@@ -1917,7 +1905,10 @@ async def _run_flow_inner(
 
         agent_ids = [env.assign_name(ta.assignee) for ta in assignments]
 
-        dep_indices = [_earlier_dep_indices(ta.depends_on, i) for i, ta in enumerate(assignments)]
+        try:
+            dep_indices = normalize_dep_indices(assignments)
+        except ValueError as exc:
+            raise FlowPlanError(str(exc)) from exc
 
     # --workers overrides model only; --bare also drops profiles (distinct behaviors).
     pool = [s.strip() for s in workers_str.split(",")] if workers_str else []

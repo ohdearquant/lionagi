@@ -730,10 +730,13 @@ def _cmd_create(args: argparse.Namespace) -> int:
     # recognize the canonical 'github_poll' token.
     trigger_type = "github_poll" if args.trigger_type == "github" else args.trigger_type
 
+    from lionagi.studio.scheduler.subprocess import _ALIAS_ACTION_KINDS
+
+    action_kind = _ALIAS_ACTION_KINDS.get(args.action_kind, args.action_kind)
     body: dict[str, Any] = {
         "name": args.name,
         "trigger_type": trigger_type,
-        "action_kind": args.action_kind,
+        "action_kind": action_kind,
     }
     if args.cron:
         body["cron_expr"] = args.cron
@@ -939,6 +942,11 @@ def suggest_schedule_flag(token: str) -> str | None:
 
 def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register `li schedule` sub-command. Returns the `schedule` parser."""
+    from lionagi.studio.scheduler.subprocess import (
+        _ALIAS_ACTION_KINDS,
+        _VALID_ACTION_KINDS,
+    )
+
     sched = subparsers.add_parser(
         "schedule",
         help="Manage lionagi Studio schedules.",
@@ -1047,13 +1055,13 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         "--action-kind",
         dest="action_kind",
         default="agent",
-        choices=("agent", "playbook", "flow_yaml", "command"),
-        help="Action kind (default: agent).",
+        choices=tuple(sorted(_VALID_ACTION_KINDS | set(_ALIAS_ACTION_KINDS))),
+        help="Stored action kind or accepted alias (default: agent).",
     )
     create_p.add_argument("--prompt", help="Prompt for agent action.")
     create_p.add_argument("--model", help="Model spec for agent action.")
     create_p.add_argument("--agent", help="Agent profile name.")
-    create_p.add_argument("--playbook", help="Playbook name (for action-kind=playbook).")
+    create_p.add_argument("--playbook", help="Playbook name (for action-kind=play/playbook).")
     create_p.add_argument(
         "--flow-yaml",
         dest="flow_yaml",

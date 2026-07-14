@@ -52,6 +52,7 @@ __all__ = (
     "resolve_model_spec",
     "resolve_persisted_effort",
     "AgentProfile",
+    "build_agent_profile_catalog",
     "build_deadline_preamble",
     "list_agents",
     "load_agent_profile",
@@ -371,6 +372,30 @@ def list_agents() -> list[str]:
                 seen.add(p.stem)
     seen.update(_plugin_agent_profiles().keys())
     return sorted(seen)
+
+
+def build_agent_profile_catalog() -> dict[str, dict[str, Any]]:
+    """Index discoverable profiles by name and resolved runtime configuration.
+
+    Prompt bodies are deliberately omitted: the catalog is a discovery surface,
+    not a second path for exposing or copying profile instructions.
+    """
+    catalog: dict[str, dict[str, Any]] = {}
+    for name in list_agents():
+        profile = load_agent_profile(name)
+        catalog[name] = {
+            "model": profile.model,
+            "effort": profile.effort,
+            "role": profile.extra.get("role"),
+            "pack": profile.extra.get("pack"),
+            "yolo": profile.yolo,
+            "bypass": profile.bypass,
+            "fast_mode": profile.fast_mode,
+            "lion_system": profile.lion_system,
+            "timeout": profile.timeout,
+            "resume_on_timeout": profile.resume_on_timeout,
+        }
+    return catalog
 
 
 def _resolve_plugin_profile_path(name: str) -> Path | None:

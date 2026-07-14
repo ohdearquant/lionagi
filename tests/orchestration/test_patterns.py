@@ -22,6 +22,7 @@ from lionagi.orchestration import (
     role_node_builder,
     spawn_roles,
 )
+from lionagi.orchestration.patterns import normalize_dep_indices
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
 
@@ -249,6 +250,24 @@ class TestBuildDagGraph:
         graph, ids = build_dag_graph(session, assignments, roles)
         assert len(graph.internal_edges) == 0  # all dropped, no crash
 
+    def test_forward_dependencies_are_dropped(self):
+        session, roles = _roles("researcher")
+        assignments = [
+            TaskAssignment(task="a", assignee="researcher", depends_on=["2"]),
+            TaskAssignment(task="b", assignee="researcher"),
+        ]
+        graph, _ = build_dag_graph(session, assignments, roles)
+        assert len(graph.internal_edges) == 0
+
+    def test_dependency_cycle_is_rejected_during_construction(self):
+        session, roles = _roles("researcher")
+        assignments = [
+            TaskAssignment(task="a", assignee="researcher", depends_on=["2"]),
+            TaskAssignment(task="b", assignee="researcher", depends_on=["1"]),
+        ]
+        with pytest.raises(ValueError, match="cycle"):
+            build_dag_graph(session, assignments, roles)
+
     def test_unknown_assignee_becomes_none_and_skips_edges(self):
         session, roles = _roles("researcher")
         assignments = [
@@ -311,6 +330,22 @@ class _FakeOrc:
     async def operate(self, **kw):
         self.calls.append(kw)
         return SimpleNamespace(assignments=self._assignments)
+
+
+class TestNormalizeDepIndices:
+    def test_self_non_integer_and_out_of_range_refs_are_dropped(self):
+        assignments = [
+            TaskAssignment(task="a", assignee="researcher", depends_on=["1"]),
+            TaskAssignment(task="b", assignee="researcher", depends_on=["x", "9"]),
+        ]
+        assert normalize_dep_indices(assignments) == [[], []]
+
+    def test_valid_earlier_refs_are_retained(self):
+        assignments = [
+            TaskAssignment(task="a", assignee="researcher"),
+            TaskAssignment(task="b", assignee="researcher", depends_on=["1"]),
+        ]
+        assert normalize_dep_indices(assignments) == [[], [0]]
 
 
 class TestPlan:
