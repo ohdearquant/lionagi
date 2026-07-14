@@ -35,7 +35,7 @@ class ContextProvider(Protocol):
 @dataclass(frozen=True)
 class ProviderReport:
     """Per-turn observability: rendered blocks plus which providers fired,
-    were skipped (budget) or failed (exception)."""
+    were skipped (budget) or failed (exception or invalid output)."""
 
     blocks: list[str] = field(default_factory=list)
     fired: list[dict] = field(default_factory=list)
@@ -93,6 +93,8 @@ class ContextProviderRegistry:
         for entry in self._entries:
             try:
                 text = await entry.provider.provide(branch, instruction)
+                if text is not None and not isinstance(text, str):
+                    raise TypeError("context provider output must be a string or None")
                 if not text:
                     continue
                 tokens = TokenCalculator.tokenize(text)

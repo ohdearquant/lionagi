@@ -246,12 +246,14 @@ async def _apply_context_providers(
     if not branch.msgs.system:
         report = ProviderReport(skipped=list(branch._context_providers.names))
         branch._last_context_report.set(report)
+        branch._last_context_report_fallback = report
         return None, report
 
     if ins is None:
         ins = _build_instruction(branch, instruction, param)
     report = await branch._context_providers.gather(branch, ins)
     branch._last_context_report.set(report)
+    branch._last_context_report_fallback = report
     return ins, report
 
 

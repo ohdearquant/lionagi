@@ -308,6 +308,24 @@ async def test_raising_provider_skipped_others_still_render(make_mocked_branch):
 
 
 @pytest.mark.asyncio
+async def test_non_string_provider_output_fails_open_end_to_end(make_mocked_branch):
+    branch = make_mocked_branch(system="You are helpful", response="ok")
+    invalid_output = object()
+    branch.providers.register(_StubProvider(invalid_output, name="invalid"))
+    branch.providers.register(_StubProvider("valid context", name="valid"))
+
+    result = await branch.communicate(instruction="hello", skip_validation=True)
+
+    sent_messages = branch.chat_model.invoke.call_args.kwargs["messages"]
+    first_content = sent_messages[0]["content"]
+    assert result == "ok"
+    assert "valid context" in first_content
+    assert str(invalid_output) not in first_content
+    assert branch.last_context_report.blocks == ["valid context"]
+    assert branch.last_context_report.failed == ["invalid"]
+
+
+@pytest.mark.asyncio
 async def test_chat_only_branch_no_tools_works_with_providers(make_mocked_branch):
     """Knowledge injection must work for chat-only branches with zero tools (gate Q1)."""
     branch = make_mocked_branch(system="You are helpful", response="ok")
@@ -369,6 +387,22 @@ async def test_last_context_report_populated_on_systemful_turn(make_mocked_branc
     assert isinstance(report, ProviderReport)
     assert [f["provider_name"] for f in report.fired] == ["kp"]
     assert report.fired[0]["tokens"] > 0
+
+
+@pytest.mark.asyncio
+async def test_last_context_report_visible_after_child_task_turn(make_mocked_branch):
+    branch = make_mocked_branch(system="You are helpful", response="ok")
+    branch.providers.register(_StubProvider("child context"), name="child")
+    assert branch.last_context_report is None
+
+    turn = asyncio.create_task(branch.communicate(instruction="hello", skip_validation=True))
+    result = await turn
+
+    report = branch.last_context_report
+    assert result == "ok"
+    assert isinstance(report, ProviderReport)
+    assert report.blocks == ["child context"]
+    assert [entry["provider_name"] for entry in report.fired] == ["child"]
 
 
 @pytest.mark.asyncio

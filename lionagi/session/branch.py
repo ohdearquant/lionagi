@@ -113,6 +113,7 @@ class Branch(Element, Relational):
     _last_context_report: ContextVar[Any] = PrivateAttr(
         default_factory=lambda: ContextVar("last_context_report", default=None)
     )
+    _last_context_report_fallback: Any = PrivateAttr(None)
 
     def __init__(
         self,
@@ -285,13 +286,20 @@ class Branch(Element, Relational):
 
     @property
     def last_context_report(self):
-        """ProviderReport from this task's most recent provider pass, or None.
+        """ProviderReport from this task's latest provider pass, when present.
+
+        Otherwise returns the branch's most recently completed provider pass
+        for backward compatibility. Concurrent passes use last-writer semantics
+        for that branch-level fallback.
 
         When the branch has no system message there is no render target, so
         providers are not invoked and the report lists every registered
         provider under ``skipped``.
         """
-        return self._last_context_report.get()
+        task_report = self._last_context_report.get()
+        if task_report is not None:
+            return task_report
+        return self._last_context_report_fallback
 
     @property
     def chat_model(self) -> iModel:
