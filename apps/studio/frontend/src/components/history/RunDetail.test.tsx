@@ -311,6 +311,162 @@ describe("history/RunDetail.tsx — persisted branch totals survive message pagi
   });
 });
 
+describe("history/RunDetail.tsx — live branch aggregates", () => {
+  it("advances duration through a streamed message and terminal refetch without dropping loaded history", async () => {
+    const { appendStreamedMessage, branchToRunStep, mergeCompletedSession } =
+      await import("./RunDetail");
+    const initial = {
+      id: "run-1",
+      name: "run",
+      created_at: 10,
+      updated_at: 20,
+      status: "running",
+      branches: [
+        {
+          id: "branch-1",
+          name: "worker",
+          created_at: 10,
+          first_message_at: 10,
+          last_message_at: 20,
+          message_total: 2,
+          messages: [
+            {
+              id: "older-1",
+              role: "assistant",
+              content: { assistant_response: "oldest loaded" },
+              sender: "worker",
+              timestamp: 10,
+              lion_class: "AssistantResponse",
+            },
+            {
+              id: "initial-tail",
+              role: "assistant",
+              content: { assistant_response: "initial tail" },
+              sender: "worker",
+              timestamp: 20,
+              lion_class: "AssistantResponse",
+            },
+          ],
+        },
+      ],
+    };
+    const streamedMessage = {
+      id: "streamed-later",
+      role: "assistant",
+      branch_id: "branch-1",
+      content: { assistant_response: "live" },
+      sender: "worker",
+      timestamp: 50,
+      lion_class: "AssistantResponse",
+    };
+
+    const streamed = appendStreamedMessage(initial, "branch-1", streamedMessage);
+    expect(branchToRunStep(streamed.branches[0], "running").result?.duration_sec).toBe(40);
+    expect(streamed.branches[0].message_total).toBe(3);
+
+    const completed = mergeCompletedSession(streamed, {
+      ...initial,
+      status: "completed",
+      updated_at: 60,
+      ended_at: 60,
+      branches: [
+        {
+          ...initial.branches[0],
+          last_message_at: 60,
+          message_total: 4,
+          messages: [
+            {
+              id: "terminal-tail",
+              role: "assistant",
+              content: { assistant_response: "done" },
+              sender: "worker",
+              timestamp: 60,
+              lion_class: "AssistantResponse",
+            },
+          ],
+        },
+      ],
+    });
+    const completedStep = branchToRunStep(completed.branches[0], "completed");
+
+    expect(completedStep.result?.duration_sec).toBe(50);
+    expect(completedStep.result?.message_count).toBe(4);
+    expect(completed.branches[0].messages.map((message) => message.id)).toEqual([
+      "older-1",
+      "initial-tail",
+      "streamed-later",
+      "terminal-tail",
+    ]);
+  });
+});
+
+describe("history/RunDetail.tsx — segmented branch totals", () => {
+  it("omits intermediate window counts and shows the persisted branch total only on the final segment", async () => {
+    const { buildRunSteps } = await import("./RunDetail");
+    const steps = buildRunSteps(
+      {
+        id: "run-1",
+        name: "run",
+        created_at: 0,
+        updated_at: 200,
+        branches: [
+          {
+            id: "branch-1",
+            name: "worker",
+            created_at: 0,
+            first_message_at: 10,
+            last_message_at: 190,
+            message_total: 6,
+            messages: [
+              {
+                id: "loaded-from-first-segment",
+                role: "assistant",
+                content: { assistant_response: "first segment tail" },
+                sender: "worker",
+                timestamp: 90,
+                lion_class: "AssistantResponse",
+              },
+              {
+                id: "loaded-from-final-segment",
+                role: "assistant",
+                content: { assistant_response: "final segment tail" },
+                sender: "worker",
+                timestamp: 190,
+                lion_class: "AssistantResponse",
+              },
+            ],
+          },
+        ],
+      },
+      "completed",
+      [
+        {
+          op_id: "op-1",
+          branch_id: "branch-1",
+          branch_name: "worker",
+          status: "completed",
+          started_at: 0,
+          ended_at: 99,
+        },
+        {
+          op_id: "op-2",
+          branch_id: "branch-1",
+          branch_name: "worker",
+          status: "completed",
+          started_at: 100,
+          ended_at: 200,
+        },
+      ],
+    );
+
+    expect(steps).toHaveLength(2);
+    expect(steps[0].messages).toHaveLength(1);
+    expect(steps[0].result?.message_count).toBeNull();
+    expect(steps[1].messages).toHaveLength(1);
+    expect(steps[1].result?.message_count).toBe(6);
+  });
+});
+
 describe("history/RunDetail.tsx — overview aggregates are lifetime totals", () => {
   it("prefers full-session aggregate counts to the loaded message window", async () => {
     const { resolveOverviewCounts } = await import("./RunDetail");

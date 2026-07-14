@@ -33,7 +33,7 @@ interface RolesBreakdown {
 interface StepResult {
   agent?: string;
   model?: string;
-  message_count?: number;
+  message_count?: number | null;
   duration_sec?: number;
   roles?: RolesBreakdown;
   [key: string]: unknown;
@@ -166,28 +166,71 @@ const SHELL_FILE_NAMES = new Set([
   "Procfile",
   "Rakefile",
 ]);
-const SHELL_NON_FILE_SEGMENTS = new Set(["bin", "sbin", ".venv", "venv", "node_modules"]);
+const SHELL_INTERPRETER_NAMES = new Set([
+  "bash",
+  "bun",
+  "deno",
+  "li",
+  "node",
+  "perl",
+  "php",
+  "python",
+  "python2",
+  "python3",
+  "ruby",
+  "sh",
+  "zsh",
+]);
+
+function normalizeShellPath(path: string): string {
+  const absolute = path.startsWith("/");
+  const normalized: string[] = [];
+  for (const segment of path.split("/")) {
+    if (!segment || segment === ".") continue;
+    if (segment === "..") {
+      const previous = normalized.at(-1);
+      if (previous && previous !== "..") normalized.pop();
+      else if (!absolute) normalized.push(segment);
+      continue;
+    }
+    normalized.push(segment);
+  }
+  return `${absolute ? "/" : ""}${normalized.join("/")}`;
+}
 
 function shellFilePath(token: string): string | null {
   const path = token.replace(/[,:]+$/, "");
-  if (!path || path === "/" || path.replace(/\//g, "") === "") return null;
-  if (path.endsWith("/")) return null;
-  const segments = path.split("/").filter(Boolean);
-  if (segments.some((segment) => SHELL_NON_FILE_SEGMENTS.has(segment))) return null;
+  if (!path || path.startsWith("-") || path.endsWith("/")) return null;
+  const normalized = normalizeShellPath(path);
+  if (!normalized || normalized === "/") return null;
+  const segments = normalized.split("/").filter(Boolean);
   const basename = segments.at(-1);
   if (!basename || basename === "." || basename === "..") return null;
+  if (SHELL_INTERPRETER_NAMES.has(basename.toLowerCase())) return null;
+  if (/(?:^|\/)\.?venv\/bin\/[^/]+$/.test(normalized)) return null;
   const looksLikeFile =
     SHELL_FILE_NAMES.has(basename) ||
-    (basename.includes(".") && !basename.endsWith(".") && !basename.startsWith("."));
-  return looksLikeFile ? path : null;
+    path.includes("/") ||
+    (basename.includes(".") && !basename.endsWith("."));
+  return looksLikeFile ? normalized : null;
 }
 
 function shellFilePaths(command: string): string[] {
   const paths = new Set<string>();
-  const pattern = /(?:^|[\s"'`])((?:\/|\.{1,2}\/)[^\s"'`|&;<>()[\]{}]+)/g;
-  for (const match of command.matchAll(pattern)) {
-    const path = shellFilePath(match[1]);
-    if (path) paths.add(path);
+  for (const segment of command.split(/(?:&&|\|\||[;|<>\n])/)) {
+    const words = Array.from(segment.matchAll(/"([^"]*)"|'([^']*)'|`([^`]*)`|([^\s]+)/g)).map(
+      (match) => match[1] ?? match[2] ?? match[3] ?? match[4] ?? "",
+    );
+    let commandIndex = 0;
+    while (commandIndex < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[commandIndex])) {
+      commandIndex += 1;
+    }
+    const commandName = words[commandIndex]?.split("/").at(-1)?.toLowerCase();
+    if (commandName === "cd" || commandName === "pushd" || commandName === "popd") continue;
+    for (const word of words.slice(commandIndex + 1)) {
+      const path = shellFilePath(word);
+      if (path) paths.add(path);
+    }
   }
   return Array.from(paths);
 }
@@ -376,7 +419,7 @@ function RunStepCard({
       firstTs,
       lastTs,
     };
-  }, [messages]);
+  }, [messages, result.duration_sec]);
 
   // File-link resolution context (shared by the overview + conversation
   // Markdown renderers): agent dir first, then the run-wide file surface.
@@ -538,7 +581,11 @@ function RunStepCard({
               active={tab}
               onSelect={setTab}
               label={t("tabConversation")}
-              count={Math.max(result.message_count ?? 0, messages.length)}
+              count={
+                result.message_count === null
+                  ? undefined
+                  : Math.max(result.message_count ?? 0, messages.length)
+              }
               panelId={`step-${step.step}-panel-conversation`}
               buttonId={`step-${step.step}-tab-conversation`}
               tabIndex={tab === "conversation" ? 0 : -1}

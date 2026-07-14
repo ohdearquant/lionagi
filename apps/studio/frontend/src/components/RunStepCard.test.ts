@@ -226,4 +226,19 @@ describe("pathFromArgs — shell-derived file paths", () => {
   it("does not treat a directory-valued path from a search tool as a file", () => {
     expect(pathFromArgs({ path: "/repo/src" }, "", "Glob")).toEqual([]);
   });
+
+  it.each([
+    ["cat src/worker.py", ["src/worker.py"]],
+    ["cat ./README", ["README"]],
+    ["cat ./.env", [".env"]],
+    ["cat bin/config.json", ["bin/config.json"]],
+  ])("retains ordinary Bash file operand from %s", (command, expected) => {
+    expect(pathFromArgs({ command }, "", "Bash")).toEqual(expected);
+  });
+
+  it("normalizes lexical aliases before deduplication", () => {
+    expect(
+      pathFromArgs({ command: "cat /repo/src/a.py /repo/src/../src/a.py" }, "", "Bash"),
+    ).toEqual(["/repo/src/a.py"]);
+  });
 });
