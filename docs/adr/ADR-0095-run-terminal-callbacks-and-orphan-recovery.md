@@ -338,7 +338,7 @@ wrapper makes the resume decision against the recovery projection.
 | Durable callback fact | Status audit exists, no terminal-event reader | Anti-join reconciliation over `status_transitions` plus `terminal_deliveries` ack table | M |
 | Settings-level handler | Flow-only `notify.on_terminal` string command | Same key, generic: exec/python adapter shapes, precedence, snapshot resolution, explicit disabled state | S |
 | Payload | Flow-specific environment payload | Versioned minimal terminal envelope; legacy adapter preserves old payload | S |
-| Delivery | Flow shell hook, 10 s, swallowed failures | Direct bounded registry; shell/executable only as adapter; external retry | M |
+| Delivery | Flow shell hook, 10 s, swallowed failures | Direct bounded registry; executable/python adapter only, no shell; external retry | M |
 | Flow `--notify` | Direct teardown call | Scoped sugar over the registry, same legacy payload/timeout | S |
 | Session liveness | PID/create-time on CLI sessions, several predicates | Shared conservative identity classifier used by all reaper/read paths | M |
 | Studio/scheduler child identity | Child PID not persisted on invocation/schedule run | `spawn_and_wait(on_spawn=...)` persists identity on the linked invocation | M |
@@ -371,6 +371,10 @@ wrapper makes the resume decision against the recovery projection.
    run reconciliation for that consumer, and assert zero redelivered events — pruning
    eligibility must have excluded every ack whose transition row remains in the
    reconciliation-queryable set.
+1b-iv. Consumer retirement atomicity: retire a registered consumer holding a nonempty
+   unacknowledged set; assert registration removal and unacknowledged-set disposition occur
+   in one transaction, with neither intermediate state observable (registration absent while
+   the set remains owed, or registration present after the set is released).
 1c. Settings contract: string form, mapping form, invalid value (warns, disabled, run
    unaffected), per-run override replacing the settings handler for its scope only, and the
    explicit `enabled: false` state. No-shell path: assert no executable adapter invocation
