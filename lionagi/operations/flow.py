@@ -672,11 +672,12 @@ class ReactiveExecutor(DependencyAwareExecutor):
         spawn_type: type | None = None,
         node_builder: Any = None,
         max_spawn: int = 50,
+        on_branch_created: Callable[[Any], None] | None = None,
         spawn_branch_setup: Callable[[Operation, Any], None] | None = None,
         on_op_complete: Callable[[Operation], None] | None = None,
         **kwargs: Any,
     ):
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, on_branch_created=on_branch_created, **kwargs)
         if spawn_type is None:
             from lionagi.casts.emission import SpawnRequest
 
@@ -1076,11 +1077,8 @@ class ReactiveExecutor(DependencyAwareExecutor):
 
         clone = base.clone(sender=self.session.id)
         self.session.include_branches(clone)
-        # NOTE: reactive self-expansion clones branches here too; a persisted
-        # reactive run would need the same self._on_branch_created(clone) call
-        # as _preallocate_all_branches to pick up mid-run spawned branches.
-        # Not wired: workflow_run (the only caller threading on_branch_created
-        # today) never runs with reactive=True.
+        if self._on_branch_created is not None:
+            self._on_branch_created(clone)
         if self.spawn_branch_setup is not None:
             self.spawn_branch_setup(child, clone)
         self.operation_branches[child.id] = clone
@@ -1136,6 +1134,7 @@ async def flow(
             node_builder=node_builder,
             max_spawn=max_spawn,
             executor_ref=executor_ref,
+            on_branch_created=on_branch_created,
             spawn_branch_setup=spawn_branch_setup,
             on_op_complete=on_op_complete,
         )

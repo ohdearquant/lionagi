@@ -192,16 +192,9 @@ async def test_spawn_branch_setup_fires_with_operation_and_cloned_branch():
     assert isinstance(branch, Branch)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="Reactive flows do not yet notify branch-created persistence callbacks "
-    "for a preallocated (dependency-created) branch clone (the reactive kernel "
-    "path never forwards on_branch_created to the executor for it).",
-)
 @pytest.mark.asyncio
 async def test_reactive_flow_notifies_for_preallocated_clone():
-    """A dependency-created (preallocated) branch clone must fire on_branch_created exactly once, like non-reactive flow already does; it currently fires zero times, reproducing the confirmed gap so a future fix turns this into a loud XPASS rather than silently leaving the hook unfired. Pinned to AssertionError, and split from the injected-clone leg below, so a partial repair surfaces as an XPASS on exactly one test."""
+    """A preallocated branch clone fires on_branch_created exactly once."""
 
     # A dependent two-node graph — the second node has no explicit branch, so
     # the executor preallocates a clone of the default branch.
@@ -220,16 +213,9 @@ async def test_reactive_flow_notifies_for_preallocated_clone():
     assert len(preallocated_created) == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="Reactive flows do not yet notify branch-created persistence callbacks "
-    "for a reactively injected (SpawnRequest) branch clone (injected clones "
-    "never invoke on_branch_created either).",
-)
 @pytest.mark.asyncio
 async def test_reactive_flow_notifies_for_injected_clone():
-    """A reactively injected (SpawnRequest) branch clone must fire on_branch_created exactly once, like non-reactive flow already does; it currently fires zero times, reproducing the confirmed gap so a future fix turns this into a loud XPASS rather than silently leaving the hook unfired. Pinned to AssertionError, and split from the preallocated-clone leg above, so a partial repair surfaces as an XPASS on exactly one test."""
+    """A reactively injected branch clone fires on_branch_created exactly once."""
 
     # A spawner node injects a follow-up node via SpawnRequest — the injected
     # node's branch is cloned by _assign_injected_branch.

@@ -220,6 +220,82 @@ async def test_register_branch_hook_creates_row_on_first_message(
     await stop_live_persist(env, status="completed")
 
 
+async def test_reactive_spawn_persists_spawned_branch(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A spawned branch is wired before its first message reaches persistence."""
+    from lionagi.casts.emission import SpawnRequest, TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    env = _minimal_env()
+    worker = Branch(name="worker")
+    env.session.include_branches(worker)
+    env.builder = OperationGraphBuilder()
+    node_id = env.builder.add_operation(
+        "operate",
+        node_id="initial",
+        branch=worker,
+        instruction="spawn follow-up work",
+    )
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    spawned_branch_ids: list[str] = []
+
+    async def operate(self, instruction=None, **kwargs):
+        if self.id == worker.id:
+            return SpawnRequest(
+                instruction="persist the spawned result",
+                assignee="worker",
+                independent=True,
+            )
+        spawned_branch_ids.append(str(self.id))
+        await self.msgs.a_add_message(assistant_response="durable spawned result")
+        return "durable spawned result"
+
+    monkeypatch.setattr(Branch, "operate", operate)
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="spawn follow-up work", assignee="worker")],
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[node_id],
+        known_nodes={node_id},
+        deps_by_node={node_id: []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"worker": worker},
+        worker_models=["test/model"],
+    )
+
+    try:
+        exec_result = await _execute_dag(
+            env,
+            plan_result,
+            dag_state,
+            max_concurrent=1,
+            max_ops=0,
+        )
+
+        assert exec_result.n_spawned == 1
+        assert len(spawned_branch_ids) == 1
+        spawned_branch_id = spawned_branch_ids[0]
+        assert spawned_branch_id in ctx["branch_prog_ids"]
+        spawned_row = await ctx["db"].get_branch(spawned_branch_id)
+        assert spawned_row is not None
+        assert spawned_row["session_id"] == ctx["session_id"]
+        progression = await ctx["db"].get_progression(ctx["branch_prog_ids"][spawned_branch_id])
+        assert len(progression) == 1
+    finally:
+        await stop_live_persist(env, status="completed")
+
+
 async def test_register_branch_hook_ensure_branch_row_idempotent(
     temp_db_path: Path,
 ):
