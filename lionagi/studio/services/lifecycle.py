@@ -7,12 +7,15 @@ from __future__ import annotations
 import logging
 import os
 import time
+from pathlib import Path
 
 from lionagi.state.db import DEFAULT_DB_PATH, StateDB
-from lionagi.state.reasons import RunReasons, SessionReasons
+from lionagi.state.reasons import RunReasons, SessionReasons, ShowReasons
 
 from . import admin as admin_svc
 from .admin import _artifacts_path, _ps_snapshot, process_liveness
+from .shows import _SHOW_TERMINAL_STATUSES, _play_dirs
+from .shows import _read_json as _read_show_json
 
 _log = logging.getLogger(__name__)
 
@@ -555,6 +558,188 @@ async def reap_stale_schedule_runs(*, stale_hours: float | None = None) -> int:
     return reaped
 
 
+# ── show-level staleness reaper ──────────────────────────────────────────────
+
+# Non-terminal show statuses (the complement of `_SHOW_TERMINAL_STATUSES`).
+# Kept as its own curated set — like `_REAPABLE_PLAY_STATUSES` — so the CAS
+# `expected_statuses` guard below only matches the exact statuses this
+# reaper is willing to move out of, rather than importing the full status
+# vocabulary just to subtract the terminal set at call time.
+_REAPABLE_SHOW_STATUSES = frozenset({"active", "imported"})
+
+
+def _recompute_show_status_from_disk(show_dir: Path) -> tuple[str, str, str] | None:
+    """Re-derive a show's terminal status from on-disk play/verdict evidence.
+
+    Mirrors the rules ``shows.import_shows()`` applies once, at mirror-row
+    creation time: an ``_ABORT`` marker means aborted; a passing
+    ``_final_verdict.json`` means completed; every child play reaching
+    ``merged`` (with at least one play) also means completed. Any other
+    on-disk state is still genuinely in flight, so this returns ``None`` and
+    the caller skips the show.
+
+    Returns ``(new_status, reason_code, reason_summary)`` or ``None``.
+    """
+    if (show_dir / "_ABORT").exists():
+        return (
+            "aborted",
+            ShowReasons.ABORTED_OPERATOR,
+            "Show directory carries an operator abort marker.",
+        )
+
+    final_verdict = _read_show_json(show_dir / "_final_verdict.json")
+    if final_verdict and final_verdict.get("show_passed"):
+        return (
+            "completed",
+            ShowReasons.COMPLETED_FINAL_GATE,
+            "Show has a passing final gate verdict.",
+        )
+
+    metas = [_read_show_json(p / "_meta.json") or {} for p in _play_dirs(show_dir)]
+    statuses = [m.get("status", "pending") for m in metas]
+    if statuses and all(s == "merged" for s in statuses):
+        return (
+            "completed",
+            ShowReasons.COMPLETED_ALL_PLAYS_MERGED,
+            "All child plays reached merged status.",
+        )
+
+    return None
+
+
+async def reap_stale_shows(*, stale_hours: float | None = None) -> int:
+    """Recompute a stale non-terminal show's status from its plays' state.
+
+    ``shows.py`` computes ``show_status`` only once, at mirror-row creation
+    time (``import_shows()``): a show mirrored while its plays are still
+    in flight gets ``status="active"`` and the row is never re-evaluated
+    once those plays later merge or abort on disk — there is no periodic
+    re-derivation, unlike sessions/plays/invocations/schedule_runs, which
+    all have their own reapers. This fills that gap using the exact same
+    on-disk rules ``import_shows()`` already applies (see
+    ``_recompute_show_status_from_disk``).
+
+    Liveness-first, like ``reap_stale_plays``: a show with any child play
+    whose session process is still observably alive is never reaped,
+    regardless of the on-disk snapshot or how stale the row looks.
+    """
+    from lionagi.studio.config import SHOW_STALE_HOURS
+
+    if stale_hours is None:
+        stale_hours = SHOW_STALE_HOURS
+    stale_seconds = stale_hours * 3600
+
+    if not DEFAULT_DB_PATH.exists():
+        return 0
+
+    now = time.time()
+    reaped = 0
+
+    try:
+        async with StateDB() as db:
+            placeholders = ",".join("?" * len(_SHOW_TERMINAL_STATUSES))
+            candidates = await db.fetch_all(
+                f"SELECT id FROM shows WHERE status NOT IN ({placeholders})",  # noqa: S608
+                tuple(sorted(_SHOW_TERMINAL_STATUSES)),
+            )
+
+        ps_snapshot: str | None = None
+        for cand in candidates:
+            show_id = cand["id"]
+            try:
+                async with StateDB() as db:
+                    # Re-read fresh immediately before deciding — a show can
+                    # be legitimately re-touched between the scan and here.
+                    row = await db.fetch_one(
+                        "SELECT id, status, show_dir, updated_at FROM shows WHERE id = ?",
+                        (show_id,),
+                    )
+                    if row is None or row["status"] not in _REAPABLE_SHOW_STATUSES:
+                        continue
+
+                    updated_at_raw = row.get("updated_at")
+                    updated_at = updated_at_raw or 0.0
+                    if now - updated_at < stale_seconds:
+                        # Not confirmed alive, but too fresh to reap.
+                        continue
+
+                    play_rows = await db.fetch_all(
+                        "SELECT id, session_id FROM plays WHERE show_id = ?",
+                        (show_id,),
+                    )
+                    live = False
+                    for prow in play_rows:
+                        session_id = prow.get("session_id")
+                        if not session_id:
+                            continue
+                        srow = await db.fetch_one(
+                            "SELECT id, artifacts_path, node_metadata FROM sessions WHERE id = ?",
+                            (session_id,),
+                        )
+                        if srow is None:
+                            continue
+                        if ps_snapshot is None:
+                            ps_snapshot = _ps_snapshot()
+                        session = {"id": srow["id"], "node_metadata": srow.get("node_metadata")}
+                        if process_liveness(session, _artifacts_path(srow), ps_snapshot) is True:
+                            live = True
+                            break
+                    if live:
+                        # A live child play process is never reaped on
+                        # staleness alone.
+                        continue
+
+                    show_dir_raw = row.get("show_dir")
+                    if not show_dir_raw:
+                        continue
+                    recomputed = _recompute_show_status_from_disk(Path(show_dir_raw))
+                    if recomputed is None:
+                        # Still genuinely in flight on disk — nothing to reap.
+                        continue
+                    new_status, reason_code, reason_summary = recomputed
+
+                    _log.info(
+                        "Reaping stale show %s: status=%s -> %s",
+                        show_id,
+                        row["status"],
+                        new_status,
+                    )
+                    # expected_updated_at pins the transition to the exact row
+                    # version validated above: a claim/re-touch landing
+                    # between this read and the write bumps updated_at, so
+                    # the guarded write loses the race and we skip rather
+                    # than clobber a show that moved.
+                    transitioned = await db.update_status(
+                        "show",
+                        show_id,
+                        new_status=new_status,
+                        reason_code=reason_code,
+                        reason_summary=reason_summary,
+                        evidence_refs=[{"kind": "show", "id": show_id}],
+                        source="system",
+                        actor="studio_lifecycle_reaper",
+                        metadata={
+                            "detector": "stale_show_reaper",
+                            "prior_status": row["status"],
+                            "updated_at": updated_at,
+                        },
+                        expected_statuses=_REAPABLE_SHOW_STATUSES,
+                        expected_updated_at=updated_at_raw,
+                    )
+                    if transitioned:
+                        reaped += 1
+                    else:
+                        _log.debug("Show %s skipped (status changed before CAS lock)", show_id)
+            except LookupError:
+                pass
+            except Exception:
+                _log.exception("Failed to reap stale show %s", show_id)
+    except Exception:
+        _log.exception("reap_stale_shows error")
+
+    return reaped
+
+
 # ── Startup + periodic entry points ──────────────────────────────────────────
 
 
@@ -585,6 +770,11 @@ async def run_startup_reconciliation() -> dict[str, int]:
     except Exception:
         _log.exception("Startup play reaper failed")
         results["stale_plays"] = 0
+    try:
+        results["stale_shows"] = await reap_stale_shows()
+    except Exception:
+        _log.exception("Startup show reaper failed")
+        results["stale_shows"] = 0
     try:
         results["stale_schedule_runs"] = await reap_stale_schedule_runs()
     except Exception:
@@ -623,6 +813,11 @@ async def run_periodic_reapers(now: float | None = None) -> dict[str, int]:
     except Exception:
         _log.exception("Periodic play reaper failed")
         results["stale_plays"] = 0
+    try:
+        results["stale_shows"] = await reap_stale_shows()
+    except Exception:
+        _log.exception("Periodic show reaper failed")
+        results["stale_shows"] = 0
     try:
         results["stale_schedule_runs"] = await reap_stale_schedule_runs()
     except Exception:
