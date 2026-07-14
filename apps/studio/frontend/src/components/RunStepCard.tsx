@@ -158,24 +158,77 @@ function isEditTool(fn: string): boolean {
   return /Edit|patch/i.test(fn);
 }
 
-export function pathFromArgs(args: Record<string, unknown>, summary: string): string[] {
+const SHELL_FILE_NAMES = new Set([
+  "Dockerfile",
+  "Gemfile",
+  "Justfile",
+  "Makefile",
+  "Procfile",
+  "Rakefile",
+]);
+const SHELL_NON_FILE_SEGMENTS = new Set(["bin", "sbin", ".venv", "venv", "node_modules"]);
+
+function shellFilePath(token: string): string | null {
+  const path = token.replace(/[,:]+$/, "");
+  if (!path || path === "/" || path.replace(/\//g, "") === "") return null;
+  if (path.endsWith("/")) return null;
+  const segments = path.split("/").filter(Boolean);
+  if (segments.some((segment) => SHELL_NON_FILE_SEGMENTS.has(segment))) return null;
+  const basename = segments.at(-1);
+  if (!basename || basename === "." || basename === "..") return null;
+  const looksLikeFile =
+    SHELL_FILE_NAMES.has(basename) ||
+    (basename.includes(".") && !basename.endsWith(".") && !basename.startsWith("."));
+  return looksLikeFile ? path : null;
+}
+
+function shellFilePaths(command: string): string[] {
+  const paths = new Set<string>();
+  const pattern = /(?:^|[\s"'`])((?:\/|\.{1,2}\/)[^\s"'`|&;<>()[\]{}]+)/g;
+  for (const match of command.matchAll(pattern)) {
+    const path = shellFilePath(match[1]);
+    if (path) paths.add(path);
+  }
+  return Array.from(paths);
+}
+
+function isStructuredFileTool(fn: string): boolean {
+  if (!fn) return true;
+  const name = fn.toLowerCase().replaceAll("-", "_").split("__").at(-1)?.split(".").at(-1);
+  return (
+    name != null &&
+    [
+      "read",
+      "read_file",
+      "write",
+      "write_file",
+      "edit",
+      "edit_file",
+      "multiedit",
+      "notebookedit",
+    ].includes(name)
+  );
+}
+
+export function pathFromArgs(
+  args: Record<string, unknown>,
+  _summary: string,
+  functionName = "",
+): string[] {
   const out: string[] = [];
-  if (args.file_path) out.push(String(args.file_path));
-  if (args.path) out.push(String(args.path));
-  if (args.changes && Array.isArray(args.changes)) {
+  if (isStructuredFileTool(functionName)) {
+    if (args.file_path) out.push(String(args.file_path));
+    if (args.path) out.push(String(args.path));
+  }
+  if ((!functionName || /patch|edit/i.test(functionName)) && Array.isArray(args.changes)) {
     for (const c of args.changes) {
       if (c && typeof c === "object" && "path" in c) out.push(String((c as { path: string }).path));
     }
   }
-  // Try to extract paths from `cmd`/`command` like `sed -n '1,220p' /path/to/file`
-  if (out.length === 0 && (args.cmd || args.command || summary)) {
-    const text = String(args.cmd || args.command || summary);
-    const pathMatch = text.match(/(?:^|\s)(\/[^\s'"`)]+(?:\.\w+)?)/g);
-    if (pathMatch) {
-      for (const p of pathMatch) out.push(p.trim());
-    }
+  if (out.length === 0 && (args.cmd || args.command)) {
+    out.push(...shellFilePaths(String(args.cmd || args.command)));
   }
-  return out;
+  return Array.from(new Set(out));
 }
 
 /** The run's known file surface for one branch's messages — same source
@@ -186,7 +239,7 @@ export function extractFilePaths(messages: RunMessage[]): string[] {
   const paths = new Set<string>();
   for (const t of toolMessages) {
     const args = (t.arguments as Record<string, unknown>) ?? {};
-    for (const p of pathFromArgs(args, t.summary || "")) paths.add(p);
+    for (const p of pathFromArgs(args, t.summary || "", t.function || "")) paths.add(p);
   }
   return Array.from(paths);
 }
@@ -268,7 +321,7 @@ function RunStepCard({
     for (const t of toolMessages) {
       const args = (t.arguments as Record<string, unknown>) ?? {};
       const fn = t.function || "";
-      const paths = pathFromArgs(args, t.summary || "");
+      const paths = pathFromArgs(args, t.summary || "", fn);
       for (const p of paths) {
         if (!fileMap.has(p)) {
           fileMap.set(p, { path: p, ops: { read: 0, write: 0, edit: 0, other: 0 } });
@@ -847,7 +900,6 @@ function OverviewPanel({
 
 function FileRow({ file }: { file: FileChange }) {
   const ops = file.ops;
-  const total = ops.read + ops.write + ops.edit + ops.other;
   return (
     <li className="flex items-center justify-between gap-2 text-body">
       <span className="truncate font-mono text-content-secondary" title={file.path}>
@@ -858,7 +910,6 @@ function FileRow({ file }: { file: FileChange }) {
         {ops.edit > 0 && <span className="text-status-warning">e{ops.edit}</span>}
         {ops.write > 0 && <span className="text-status-success">w{ops.write}</span>}
         {ops.other > 0 && <span className="text-content-muted">·{ops.other}</span>}
-        <span className="ml-1 text-content-muted">({total})</span>
       </span>
     </li>
   );

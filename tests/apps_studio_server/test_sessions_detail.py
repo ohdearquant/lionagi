@@ -1056,6 +1056,37 @@ async def test_get_session_action_stats_match_canonical_fully_qualified_lion_cla
     assert "/tmp/canonical.txt" in stats["files"]
 
 
+def test_branch_file_stats_only_accept_structured_file_tool_paths():
+    from lionagi.studio.services.sessions import _branch_message_stats
+
+    action_messages = [
+        {
+            "id": "read",
+            "lion_class": "ActionRequest",
+            "content": {"function": "Read", "arguments": {"file_path": "/repo/src/main.py"}},
+        },
+        {
+            "id": "edit",
+            "lion_class": "ActionRequest",
+            "content": {"function": "Edit", "arguments": {"path": "/repo/Makefile"}},
+        },
+        {
+            "id": "glob",
+            "lion_class": "ActionRequest",
+            "content": {"function": "Glob", "arguments": {"path": "/repo/src"}},
+        },
+        {
+            "id": "bash",
+            "lion_class": "ActionRequest",
+            "content": {"function": "Bash", "arguments": {"path": "//"}},
+        },
+    ]
+
+    stats = _branch_message_stats(4, {"action": 4}, action_messages)
+
+    assert stats["files"] == ["/repo/Makefile", "/repo/src/main.py"]
+
+
 async def test_get_session_message_count_is_db_aggregate_not_progression_length(
     patched_sessions_db,
 ):

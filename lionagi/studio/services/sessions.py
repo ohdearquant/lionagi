@@ -431,9 +431,20 @@ def _branch_message_stats(
         function = content.get("function") or ""
         arguments = content.get("arguments")
         arguments = arguments if isinstance(arguments, dict) else {}
-        file_path = arguments.get("file_path") or arguments.get("path")
-        if isinstance(file_path, str) and file_path:
-            files.add(file_path)
+        tool_name = str(function).lower().replace("-", "_").rsplit("__", 1)[-1].rsplit(".", 1)[-1]
+        if tool_name in {
+            "read",
+            "read_file",
+            "write",
+            "write_file",
+            "edit",
+            "edit_file",
+            "multiedit",
+            "notebookedit",
+        }:
+            file_path = arguments.get("file_path") or arguments.get("path")
+            if isinstance(file_path, str) and file_path:
+                files.add(file_path)
 
         response_id = content.get("action_response_id")
         response_msg = response_by_id.get(response_id) if response_id else None
