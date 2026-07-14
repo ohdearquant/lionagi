@@ -273,6 +273,70 @@ describe("runFiles union logic (mirrors the useMemo body) — file outside the l
   });
 });
 
+describe("history/RunDetail.tsx — persisted branch totals survive message pagination", () => {
+  it("uses full-progression timestamps and message totals instead of the loaded tail", async () => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const runStep = branchToRunStep(
+      {
+        id: "branch-1",
+        name: "worker",
+        created_at: 10,
+        first_message_at: 10,
+        last_message_at: 610,
+        message_total: 30_525,
+        messages: [
+          {
+            id: "recent-1",
+            role: "assistant",
+            content: { assistant_response: "tail" },
+            sender: "worker",
+            timestamp: 600,
+            lion_class: "AssistantResponse",
+          },
+          {
+            id: "recent-2",
+            role: "assistant",
+            content: { assistant_response: "tail end" },
+            sender: "worker",
+            timestamp: 610,
+            lion_class: "AssistantResponse",
+          },
+        ],
+      },
+      "completed",
+    );
+
+    expect(runStep.result?.duration_sec).toBe(600);
+    expect(runStep.result?.message_count).toBe(30_525);
+  });
+});
+
+describe("history/RunDetail.tsx — overview aggregates are lifetime totals", () => {
+  it("prefers full-session aggregate counts to the loaded message window", async () => {
+    const { resolveOverviewCounts } = await import("./RunDetail");
+    expect(
+      resolveOverviewCounts(
+        {
+          message_count: 30_525,
+          roles: {},
+          tool_call_count: 21_741,
+          error_count: 42,
+          files: [],
+        },
+        { toolCallCount: 2, errorCount: 1 },
+      ),
+    ).toEqual({ toolCallCount: 21_741, errorCount: 42 });
+  });
+
+  it("does not select recent-qualified labels for partial message windows", () => {
+    const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
+    const start = src.indexOf("function OverviewSection");
+    const end = src.indexOf("// ── Branches section", start);
+    const overview = src.slice(start, end);
+    expect(overview).not.toMatch(/statToolCallsRecent|statErrorsRecent/);
+  });
+});
+
 // ─── NodeEscalated route=notify badge ──────────────────────────────────────────
 // A soft ("fyi" urgency) EscalationRequest resolves to route="notify" and
 // fires NodeEscalated purely for observability — the node itself keeps

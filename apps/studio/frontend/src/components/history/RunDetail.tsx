@@ -184,7 +184,7 @@ export function branchToRunStep(branch: SessionBranch, status: string): RunStep 
     result: {
       agent: branch.agent_name ?? branch.name ?? branch.id.slice(0, 8),
       model: branch.model ?? branch.provider ?? null,
-      message_count: runMessages.length,
+      message_count: Math.max(branch.message_total ?? 0, runMessages.length),
       roles: rolesCounts,
       duration_sec: durationSec,
     },
@@ -231,7 +231,6 @@ interface OverviewData {
   messageCount: number;
   toolCallCount: number;
   errorCount: number;
-  partialWindow: boolean;
   showTopic?: string | null;
   showPlayName?: string | null;
   playbookName?: string | null;
@@ -247,11 +246,11 @@ function OverviewSection({ data }: { data: OverviewData }) {
     { label: t("statBranches"), value: String(data.branchCount) },
     { label: t("statMessages"), value: String(data.messageCount) },
     {
-      label: data.partialWindow ? t("statToolCallsRecent") : t("statToolCalls"),
+      label: t("statToolCalls"),
       value: String(data.toolCallCount),
     },
     {
-      label: data.partialWindow ? t("statErrorsRecent") : t("statErrors"),
+      label: t("statErrors"),
       value: String(data.errorCount),
       tone: data.errorCount > 0 ? ("error" as const) : ("ok" as const),
     },
@@ -302,6 +301,16 @@ function OverviewSection({ data }: { data: OverviewData }) {
       </div>
     </div>
   );
+}
+
+export function resolveOverviewCounts(
+  messageStats: SessionDetail["message_stats"],
+  loaded: { toolCallCount: number; errorCount: number },
+): { toolCallCount: number; errorCount: number } {
+  return {
+    toolCallCount: messageStats?.tool_call_count ?? loaded.toolCallCount,
+    errorCount: messageStats?.error_count ?? loaded.errorCount,
+  };
 }
 
 // ── Branches section ──────────────────────────────────────────────────────────
@@ -1079,9 +1088,13 @@ export default function RunDetail({ id }: RunDetailProps) {
   const partialWindow = session.branches.some((b) => (b.message_total ?? 0) > b.messages.length);
   const durationSec =
     startRef != null && endRef != null ? Math.max(0, Math.round(endRef - startRef)) : null;
-  const toolCallCount = steps.reduce((n, s) => {
+  const loadedToolCallCount = steps.reduce((n, s) => {
     return n + (s.messages ?? []).filter((m) => m.role === "tool_call").length;
   }, 0);
+  const { toolCallCount, errorCount } = resolveOverviewCounts(session.message_stats, {
+    toolCallCount: loadedToolCallCount,
+    errorCount: errors.length,
+  });
 
   // DESIGN-BRIEF §0: derive from the real status_reason fields, not the
   // done/live booleans — those conflate every terminal status (including
@@ -1099,8 +1112,7 @@ export default function RunDetail({ id }: RunDetailProps) {
     branchCount: session.branches.length,
     messageCount: totalMessages,
     toolCallCount,
-    errorCount: errors.length,
-    partialWindow,
+    errorCount,
     showTopic: (session as unknown as Record<string, unknown>).show_topic as
       | string
       | null

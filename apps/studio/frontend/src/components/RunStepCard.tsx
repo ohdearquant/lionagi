@@ -538,7 +538,7 @@ function RunStepCard({
               active={tab}
               onSelect={setTab}
               label={t("tabConversation")}
-              count={messages.length}
+              count={Math.max(result.message_count ?? 0, messages.length)}
               panelId={`step-${step.step}-panel-conversation`}
               buttonId={`step-${step.step}-tab-conversation`}
               tabIndex={tab === "conversation" ? 0 : -1}
