@@ -606,13 +606,17 @@ class CodingEngine(Engine):
                 model=self.model_for("plan"),
                 emits=emits,
             )
-            await run.operate_with_repair(
+            stage_coro = run.operate_with_repair(
                 agent,
                 _plan_instruction(run.task_text, run.workspace),
                 arrived=lambda: bool(run.events_of(WorkPlanned)),
                 emits=emits,
                 retries=self.repair_retries,
             )
+            # Soft watchdog: a hung planner is bounded but not fatal — the
+            # missing-plan branch below degrades to the raw task, so plan
+            # timeout must not poison run._aborted (which would fail the run).
+            await self._run_stage_with_watchdog(run, stage_coro, "plan", hard=False)
         plan = run.last(WorkPlanned)
         if plan is None:
             # Degrade rather than crash: implement against the raw task.
@@ -818,13 +822,17 @@ class CodingEngine(Engine):
                 emits=emits,
                 exempt=True,
             )
-            await run.operate_with_repair(
+            stage_coro = run.operate_with_repair(
                 agent,
                 _verify_instruction(plan, change, tests, run.diff),
                 arrived=lambda: bool(run.events_of(VerifyResult)),
                 emits=emits,
                 retries=self.repair_retries,
             )
+            # Soft watchdog: verify is advisory (the pass/fail verdict is the
+            # test result, not this note) and runs after the abort gate, so a
+            # hung verifier is bounded but must not set run._aborted.
+            await self._run_stage_with_watchdog(run, stage_coro, "verify", hard=False)
         return run.last(VerifyResult)
 
     async def _conclude(
@@ -944,20 +952,33 @@ class CodingEngine(Engine):
         return asyncio.ensure_future(_loop())
 
     async def _run_stage_with_watchdog(
-        self, run: CodingRun, stage_coro: Any, stage_name: str
-    ) -> None:
-        """Run *stage_coro* bounded by stage_timeout_s; on timeout emit WorkAborted and set run._aborted."""
+        self, run: CodingRun, stage_coro: Any, stage_name: str, *, hard: bool = True
+    ) -> bool:
+        """Run *stage_coro* bounded by stage_timeout_s.
+
+        On timeout, emit a WorkAborted notification and return True. When
+        *hard* (the default, for implement/fix rounds) the timeout also sets
+        run._aborted, which concludes the run as failed. A *soft* stage
+        (hard=False, for plan/verify) is bounded but recoverable: the caller
+        degrades gracefully (raw-task plan, or a missing advisory verdict)
+        rather than failing the whole run.
+        """
         if self.stage_timeout_s is None:
             await stage_coro
-            return
+            return False
         t0 = monotonic()
         try:
             await asyncio.wait_for(stage_coro, timeout=self.stage_timeout_s)
+            return False
         except asyncio.TimeoutError:
             elapsed = round(monotonic() - t0, 1)
             reason = f"stage '{stage_name}' exceeded {self.stage_timeout_s}s wall-clock limit"
-            run.notify("WorkAborted", stage=stage_name, reason=reason, elapsed_s=elapsed)
-            run._aborted = True
+            run.notify(
+                "WorkAborted", stage=stage_name, reason=reason, elapsed_s=elapsed, hard=hard
+            )
+            if hard:
+                run._aborted = True
+            return True
 
     async def _partial_export(
         self, run: CodingRun, *args: Any, **kwargs: Any
