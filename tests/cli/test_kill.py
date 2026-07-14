@@ -583,7 +583,11 @@ async def test_persist_cancel_inserts_status_transition(temp_db_path: Path):
             evidence={"signal": "sigterm", "pid": 99},
         )
 
-        row = await db.fetch_one("SELECT * FROM status_transitions WHERE entity_id = ?", (sid,))
+        row = await db.fetch_one(
+            "SELECT * FROM status_transitions "
+            "WHERE entity_id = ? AND previous_status = 'running' AND status = 'cancelled'",
+            (sid,),
+        )
         assert row is not None
         assert row["reason_code"] == RunReasons.CANCELLED_MANUAL_KILL
         assert row["source"] == "admin"  # CLI kill is an admin action (ADR-0028)
@@ -681,7 +685,9 @@ async def test_kill_one_force_kill_uses_force_kill_reason(
         await _kill_one(db, "session", sid, row, user_reason="")
 
         tr = await db.fetch_one(
-            "SELECT reason_code FROM status_transitions WHERE entity_id = ?", (sid,)
+            "SELECT reason_code FROM status_transitions "
+            "WHERE entity_id = ? AND previous_status = 'running' AND status = 'cancelled'",
+            (sid,),
         )
         assert tr["reason_code"] == RunReasons.CANCELLED_FORCE_KILL
 
@@ -821,7 +827,9 @@ async def test_do_kill_all_stale_uses_stale_auto_reason(
 
     async with StateDB() as db:
         row = await db.fetch_one(
-            "SELECT reason_code FROM status_transitions WHERE entity_id = ?", (sid,)
+            "SELECT reason_code FROM status_transitions "
+            "WHERE entity_id = ? AND previous_status = 'running' AND status = 'cancelled'",
+            (sid,),
         )
         assert row is not None
         assert row["reason_code"] == RunReasons.CANCELLED_STALE_AUTO
