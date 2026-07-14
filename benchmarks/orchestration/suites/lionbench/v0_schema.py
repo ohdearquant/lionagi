@@ -161,6 +161,7 @@ class Campaign:
             "cli_version": self.cli_version,
             "seed": self.seed,
             "dataset_hashes": self.dataset_hashes,
+            "parameters": self.parameters,
         }
         return hash_json(payload)
 
@@ -293,11 +294,27 @@ class Cell:
         )
 
 
+def _reject_unredacted(field_name: str, value: str | None) -> None:
+    """Redaction tripwire for ``InjectionTrace``: hashes and IDs never contain
+    whitespace, so a value carrying spaces or newlines is almost certainly
+    un-redacted memory content or a credential leaking into the trace store —
+    fail closed rather than persist it."""
+    if value is not None and any(ch.isspace() for ch in value):
+        raise ValueError(
+            f"InjectionTrace.{field_name} contains whitespace; it must be a "
+            "redacted hash or id (the injection collector redacts before this "
+            "record is built), never raw content or credentials"
+        )
+
+
 @dataclass(slots=True)
 class InjectionTrace:
     """One redacted ``injection.jsonl`` row: a recall, compose, auto-feedback,
-    writeback, or failure event (DESIGN.md §2.2 table). Never carries memory
-    content or credentials — only hashes and IDs."""
+    writeback, or failure event (DESIGN.md §2.2 table). Carries only redacted
+    hashes and IDs, never memory content or credentials — construction fails
+    closed (see ``_reject_unredacted``) when a hash/id field holds whitespace,
+    a tripwire for un-redacted content. The injection collector is responsible
+    for redacting before this row is built."""
 
     keys: JoinKeys
     event_type: str  # "recall" | "compose" | "auto_feedback" | "writeback" | "failure"
@@ -308,6 +325,15 @@ class InjectionTrace:
     token_count: int = 0
     error_class: str | None = None
     timestamp: str = ""
+
+    def __post_init__(self) -> None:
+        _reject_unredacted("policy_hash", self.policy_hash)
+        _reject_unredacted("query_hash", self.query_hash)
+        _reject_unredacted("error_class", self.error_class)
+        for _id in self.returned_ids:
+            _reject_unredacted("returned_ids", _id)
+        for _id in self.written_ids:
+            _reject_unredacted("written_ids", _id)
 
     def to_dict(self) -> dict:
         return {

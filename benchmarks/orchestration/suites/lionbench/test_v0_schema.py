@@ -127,6 +127,25 @@ def test_injection_trace_round_trip():
     assert restored == trace
 
 
+def test_injection_trace_rejects_unredacted_content():
+    """A hash/id field carrying whitespace is treated as un-redacted content and
+    rejected at construction (the redaction tripwire)."""
+    with pytest.raises(ValueError):
+        InjectionTrace(
+            keys=_keys(),
+            event_type="recall",
+            policy_hash="policy-hash",
+            query_hash="the user asked about their password reset",
+        )
+    with pytest.raises(ValueError):
+        InjectionTrace(
+            keys=_keys(),
+            event_type="writeback",
+            policy_hash="policy-hash",
+            written_ids=["mem-1", "leaked secret value with spaces"],
+        )
+
+
 def test_usage_row_round_trip():
     row = UsageRow(
         keys=_keys(execution_scope="host"),
@@ -209,6 +228,19 @@ def test_duplicate_key_ignores_non_key_fields():
         registry.add(Cell(keys=_keys(run_id="run-b"), manifest_path="/runs/run-b/run.json"))
 
 
+def test_duplicate_key_ignores_both_run_id_and_branch_id():
+    """Same {campaign, episode, treatment, iteration} is a duplicate even when
+    BOTH run_id and branch_id differ — neither is part of the cell key."""
+    registry = CellRegistry()
+    registry.add(
+        Cell(keys=_keys(run_id="run-a", branch_id="br-a"), manifest_path="/runs/run-a/run.json")
+    )
+    with pytest.raises(DuplicateCellKeyError):
+        registry.add(
+            Cell(keys=_keys(run_id="run-b", branch_id="br-b"), manifest_path="/runs/run-b/run.json")
+        )
+
+
 # --- Campaign fingerprint stability + change detection (acceptance #3) ---
 
 
@@ -240,6 +272,7 @@ def test_fingerprint_stable_across_non_config_fields():
         ("image_digest", "sha256:bbb"),
         ("isolation_effective", "unheld"),
         ("isolation_requested", "unheld"),
+        ("parameters", {"max_turns": 80}),
     ],
 )
 def test_fingerprint_changes_when_config_factor_changes(field_name, new_value):
