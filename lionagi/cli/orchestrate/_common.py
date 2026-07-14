@@ -58,10 +58,22 @@ def _format_result_json(
 # ── Default worker system prompt (shared by flow + fanout) ────────────────
 
 
-def _bare_worker_system() -> str:
+def bare_worker_system(*, grant_spawn: bool = False) -> str:
     from lionagi.session.prompts import LION_SYSTEM_MESSAGE
 
-    return LION_SYSTEM_MESSAGE.strip() + "\n\n" + _BARE_WORKER_BODY
+    body = _BARE_WORKER_BODY
+    if grant_spawn:
+        body = body.replace(_LEAF_EXECUTOR_LINE, _SPAWN_AFFORDANCE)
+    return LION_SYSTEM_MESSAGE.strip() + "\n\n" + body
+
+
+_LEAF_EXECUTOR_LINE = "Do NOT spawn sub-agents or delegate further — you are a leaf executor."
+_SPAWN_AFFORDANCE = """\
+## Workflow expansion
+
+You may emit a structured `spawn_request` when necessary adjacent work falls \
+outside this assignment. The request is a signal to the workflow orchestrator, \
+not provider-native delegation; use only the granted capability described below."""
 
 
 _BARE_WORKER_BODY = """\
@@ -81,7 +93,7 @@ BASH QUOTING: Use variable assignment for multi-word CLI args: \
 Q="your query" && command "$Q" (NOT command "your query").\
 """
 
-BARE_WORKER_SYSTEM = _bare_worker_system()
+BARE_WORKER_SYSTEM = bare_worker_system()
 
 
 # ── Team-mode coordination section ────────────────────────────────────────

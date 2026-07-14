@@ -103,6 +103,17 @@ async def _cmd_purge(dispatch_id: str, *, dry_run: bool = False) -> int:
             if row is None:
                 print(f"dispatch not found: {dispatch_id}")
                 return 1
+            await db.insert_admin_event(
+                action="dispatch_purge",
+                target_id=dispatch_id,
+                details={
+                    "dispatch_id": dispatch_id,
+                    "dry_run": True,
+                    "status": row["status"],
+                    "total": 1,
+                },
+                actor="li_dispatch_purge",
+            )
             print(f"would purge {dispatch_id} (status={row['status']})")
             return 0
         deleted = await purge_dispatch(db, dispatch_id, actor="li_dispatch_purge")

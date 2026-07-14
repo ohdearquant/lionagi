@@ -413,7 +413,8 @@ class OrchestrationEnv:
     # mixed-provider teams). None when team messaging isn't active.
     messenger_names: frozenset[str] | None = None
 
-    # None falls through to the default pack for role_config / resolve_modes.
+    # The selected pack is resolved once and retained by identity through
+    # role configuration and AgentSpec prompt construction.
     pack: Pack | None = None
 
     # None = no budget configured; workers skip the BUDGET preamble.
@@ -480,6 +481,13 @@ async def setup_orchestration(
             "Provide a model spec or use -a/--agent to load a profile with a model."
         )
 
+    from lionagi.casts.catalog import _load_packaged_pack
+    from lionagi.casts.pack import Pack as _Pack
+
+    loaded_pack = _Pack.from_file(pack) if pack else _load_packaged_pack(raise_on_error=True)
+    if loaded_pack is None:
+        raise ConfigurationError("The packaged default casts pack could not be loaded.")
+
     orc_imodel = build_imodel_from_spec(
         model_spec,
         yolo=yolo,
@@ -507,7 +515,7 @@ async def setup_orchestration(
         )
     else:
         # Built-in "orchestrator" casts role via AgentSpec.compose + factory.
-        orc_spec = AgentSpec.compose("orchestrator", grant_emissions=False)
+        orc_spec = AgentSpec.compose("orchestrator", pack=loaded_pack, grant_emissions=False)
         orc_branch = await create_agent(
             orc_spec,
             load_settings=False,
@@ -522,12 +530,6 @@ async def setup_orchestration(
         else Session(default_branch=orc_branch)
     )
     builder = OperationGraphBuilder(pattern_name)
-
-    loaded_pack: Pack | None = None
-    if pack:
-        from lionagi.casts.pack import Pack as _Pack
-
-        loaded_pack = _Pack.from_file(pack)
 
     return OrchestrationEnv(
         run=run,
@@ -600,12 +602,13 @@ async def build_worker_branch(
     explicit_name: str | None = None,
     system_prompt_override: str | None = None,
     grant_spawn: bool = False,
+    spawn_assignees: list[str] | tuple[str, ...] | set[str] | None = None,
     modes: list[str] | None = None,
 ) -> tuple[Branch, str, AgentProfile | None, bool]:
     """Resolve model/profile/system and build a worker Branch. The fourth
     return value, ``messenger_bound``, is True when this worker got the
     in-process messenger tool registered — see docs/internals/cli.md."""
-    from ._common import BARE_WORKER_SYSTEM
+    from ._common import bare_worker_system
 
     w_model, w_profile, w_cfg = _resolve_worker_model_spec(env, role, model_override)
 
@@ -670,7 +673,7 @@ async def build_worker_branch(
     elif not env.bare and w_profile and w_profile.system_prompt:
         verbatim_system = w_profile.system_prompt
     elif env.bare or not _is_casts_role(role):
-        verbatim_system = BARE_WORKER_SYSTEM
+        verbatim_system = bare_worker_system(grant_spawn=grant_spawn)
 
     log_config = DataLoggerConfig(auto_save_on_exit=False)
     if verbatim_system is None:
@@ -679,6 +682,7 @@ async def build_worker_branch(
         spec = AgentSpec.compose(
             role,
             modes=resolved_modes,
+            pack=env.pack if env.pack is not None else "default",
             grant_emissions=False,
             system_prompt=team_section,
         )
@@ -703,7 +707,7 @@ async def build_worker_branch(
     if grant_spawn:
         from lionagi.orchestration import grant_spawn as _grant_spawn
 
-        _grant_spawn(wb)
+        _grant_spawn(wb, assignees=spawn_assignees or [role])
 
     if env._live_persist:
         register_branch_hook(env._live_persist, wb)

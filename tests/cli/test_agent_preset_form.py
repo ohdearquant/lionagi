@@ -231,6 +231,21 @@ class TestFormToContextBlock:
 class TestFormValidationGate:
     """The validation gate must fire before any LLM call is attempted."""
 
+    def test_legacy_namespace_without_list_profiles_reaches_validation(self, tmp_path, monkeypatch):
+        """Namespaces created before newer flags still reach form validation."""
+        spec = tmp_path / "spec.yaml"
+        spec.write_text("fields:\n  repo:\n    type: str\n    required: true\nvalues: {}\n")
+
+        import lionagi.cli.agent as agent_mod
+
+        errors: list[str] = []
+        monkeypatch.setattr(agent_mod, "log_error", lambda msg: errors.append(msg))
+        args = _agent_args(form=str(spec))
+
+        assert not hasattr(args, "list_profiles")
+        assert run_agent(args) == 1
+        assert any("repo" in error for error in errors)
+
     def test_missing_form_file_returns_rc1_without_llm_call(self, tmp_path, monkeypatch):
         """--form pointing to a nonexistent file must exit rc=1 immediately."""
         llm_called = []

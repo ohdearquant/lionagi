@@ -75,6 +75,20 @@ class TestSinglePositional:
         assert rc == 1  # model or --agent required
 
 
+def test_list_profiles_prints_catalog_without_requiring_prompt(monkeypatch, capsys):
+    from lionagi.cli import _providers
+    from lionagi.cli.main import main
+
+    monkeypatch.setattr(
+        _providers,
+        "build_agent_profile_catalog",
+        lambda: {"reviewer": {"model": "codex/gpt-5.5", "pack": "review"}},
+    )
+
+    assert main(["agent", "--list-profiles"]) == 0
+    assert '"reviewer"' in capsys.readouterr().out
+
+
 class TestPromptFlagAndFile:
     def test_prompt_flag(self):
         rc = _run(["agent", "codex", "--prompt", "from flag"])
