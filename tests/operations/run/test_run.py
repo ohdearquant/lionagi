@@ -118,6 +118,21 @@ async def test_run_passes_resume_from_provider_session_id_and_updates_endpoint_s
     assert text_msgs[0].response == "ok"
 
 
+async def test_run_threads_context_provider_blocks_into_first_prompt():
+    class _Provider:
+        async def provide(self, branch, instruction):
+            return "stream-context"
+
+    model, captured = _make_fake_cli_model([StreamChunk(type="text", content="ok")])
+    branch = Branch(system="You are helpful")
+    branch.chat_model = model
+    branch.providers.register(_Provider())
+
+    await _collect(run(branch, "hi", RunParam()))
+
+    assert "stream-context" in captured["messages"][0]["content"]
+
+
 async def test_run_flushes_text_before_tool_use_and_links_tool_result():
     """Text is flushed before tool_use; tool_result is linked to the request."""
     model, _ = _make_fake_cli_model(
