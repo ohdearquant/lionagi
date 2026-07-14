@@ -266,7 +266,7 @@ async def test_schedule_runs_upgrade_path_gains_resume_packet(old_schema_db):
 
 
 async def test_schedules_upgrade_path_gains_budget_columns(old_schema_db):
-    """After upgrade, an existing schedules table gains budget_usd/budget_tokens."""
+    """After upgrade, an existing schedules table gains its optional budget columns."""
     db = old_schema_db
 
     for table, columns in MIGRATION_COLUMNS.items():
@@ -281,7 +281,7 @@ async def test_schedules_upgrade_path_gains_budget_columns(old_schema_db):
     await db.commit()
 
     actual = await _column_names(db, "schedules")
-    assert {"budget_usd", "budget_tokens"} <= actual
+    assert {"budget_usd", "budget_tokens", "rate_limit"} <= actual
 
 
 async def test_drop_legacy_invocations_status_check_with_fk_referencing_rows(tmp_path):

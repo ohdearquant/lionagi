@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+from typing import get_args
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
@@ -9,7 +10,7 @@ import pytest
 from anyio import get_cancelled_exc_class
 from pydantic import BaseModel
 
-from lionagi.operations.node import Operation
+from lionagi.operations.node import BranchOperations, Operation
 from lionagi.protocols.generic.event import EventStatus
 from lionagi.session.branch import Branch
 
@@ -26,6 +27,16 @@ class OpParams(BaseModel):
 def _set_branch(op: Operation, branch) -> None:
     """Helper to set branch on operation (new invoke pattern)."""
     op._branch = branch
+
+
+def test_branch_operations_vocabulary_resolves_on_fresh_branch():
+    """Every advertised operation must be dispatchable by a plain Branch."""
+    operations = set(get_args(BranchOperations))
+    branch = Branch()
+
+    assert {"run", "chat_and_record"} <= operations
+    assert "select" not in operations
+    assert [name for name in operations if branch.get_operation(name) is None] == []
 
 
 # Test Operation creation and properties

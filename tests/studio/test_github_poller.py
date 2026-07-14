@@ -984,6 +984,51 @@ def test_github_poll_auth_error_clears_cached_token(monkeypatch):
     assert gh_mod._cached_token is None
 
 
+def test_github_poll_forbidden_response_is_not_cached(monkeypatch):
+    """A forbidden response does not prove that a credential is reusable.
+
+    Repeated polls must re-resolve credentials instead of pinning the poller
+    to the token that received the forbidden response.
+    """
+    client = _install_status(monkeypatch, [(403, []), (403, [])])
+    token_calls: list[bool] = []
+    fake = gh_mod._get_gh_token
+
+    async def _wrapped(prefer_cli: bool = False):
+        token_calls.append(prefer_cli)
+        return await fake(prefer_cli)
+
+    monkeypatch.setattr(gh_mod, "_get_gh_token", _wrapped)
+
+    first = _poll_result({"id": "s1", "github_repo": "owner/name"})
+    second = _poll_result({"id": "s1", "github_repo": "owner/name"})
+
+    assert first.poll_status == "error"
+    assert second.poll_status == "error"
+    assert token_calls == [False, False]
+    assert [request["auth"] for request in client.requests] == [
+        "Bearer envtoken",
+        "Bearer envtoken",
+    ]
+    assert gh_mod._cached_token is None
+
+
+def test_github_poll_cached_token_forbidden_then_reresolves(monkeypatch):
+    """A cached token that becomes forbidden is evicted before the next poll."""
+    pr = _pr(1, "2026-07-07T10:00:00Z")
+    gh_mod._cached_token = "stale-cached-token"
+    client = _install_status(monkeypatch, [(403, []), (200, [pr])])
+
+    first = _poll_result({"id": "s1", "github_repo": "owner/name"})
+    second = _poll_result({"id": "s1", "github_repo": "owner/name"})
+
+    assert first.poll_status == "error"
+    assert [item.event["pr_number"] for item in second.items] == [1]
+    assert client.requests[0]["auth"] == "Bearer stale-cached-token"
+    assert client.requests[1]["auth"] == "Bearer envtoken"
+    assert gh_mod._cached_token == "envtoken"
+
+
 class _FakePagination401Client:
     """Serves a full first page with a next link, then a 401 on the pagination
     fetch -- the token authenticated page 1 but is rejected mid-scan."""

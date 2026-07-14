@@ -10,6 +10,7 @@ from .patterns import (
     build_fanout_graph,
     fanout,
     grant_spawn,
+    normalize_dep_indices,
     plan,
     role_node_builder,
     spawn_roles,
@@ -23,4 +24,5 @@ __all__ = (
     "build_dag_graph",
     "role_node_builder",
     "grant_spawn",
+    "normalize_dep_indices",
 )

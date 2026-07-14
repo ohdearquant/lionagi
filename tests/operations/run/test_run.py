@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from lionagi.operations.run.run import (
     RunParam,
     _stream_with_deadline,
+    _stream_with_liveness,
     _write_branch_snapshot,
     run,
     run_and_collect,
@@ -115,6 +116,21 @@ async def test_run_passes_resume_from_provider_session_id_and_updates_endpoint_s
     text_msgs = [r for r in results if isinstance(r, AssistantResponse)]
     assert len(text_msgs) == 1
     assert text_msgs[0].response == "ok"
+
+
+async def test_run_threads_context_provider_blocks_into_first_prompt():
+    class _Provider:
+        async def provide(self, branch, instruction):
+            return "stream-context"
+
+    model, captured = _make_fake_cli_model([StreamChunk(type="text", content="ok")])
+    branch = Branch(system="You are helpful")
+    branch.chat_model = model
+    branch.providers.register(_Provider())
+
+    await _collect(run(branch, "hi", RunParam()))
+
+    assert "stream-context" in captured["messages"][0]["content"]
 
 
 async def test_run_flushes_text_before_tool_use_and_links_tool_result():
@@ -950,6 +966,50 @@ async def test_run_liveness_watchdog_raises_after_exhausting_retries():
     assert len(create_event_calls) == 2, (
         f"expected exactly 2 create_event calls (1 initial + 1 retry), got {len(create_event_calls)}"
     )
+
+
+async def test_liveness_cancel_during_first_chunk_wait_closes_inner_stream(monkeypatch):
+    """Cancelling and closing before chunk one must close the owned inner stream."""
+
+    class BlockingFirstChunkStream:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.closed = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            self.started.set()
+            await asyncio.Event().wait()
+            raise StopAsyncIteration  # pragma: no cover
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    inner = BlockingFirstChunkStream()
+    model, _ = _make_fake_cli_model([])
+    monkeypatch.setattr(
+        "lionagi.operations.run.run._stream_with_deadline",
+        lambda model, api_call, deadline: inner,
+    )
+
+    stream = _stream_with_liveness(
+        model,
+        {},
+        stream_deadline=None,
+        liveness_timeout=30,
+        api_call_holder=[],
+    )
+    first_chunk = asyncio.create_task(anext(stream))
+    await asyncio.wait_for(inner.started.wait(), timeout=1)
+
+    first_chunk.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first_chunk
+    await stream.aclose()
+
+    assert inner.closed
 
 
 async def test_run_liveness_watchdog_recovers_on_retry():

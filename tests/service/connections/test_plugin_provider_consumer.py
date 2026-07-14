@@ -15,11 +15,16 @@ from __future__ import annotations
 import os
 import pathlib
 import sys
+import threading
 from types import SimpleNamespace
 
 import pytest
 
-from lionagi.plugins._user_settings import read_user_settings, write_user_settings
+from lionagi.plugins._user_settings import (
+    read_user_settings,
+    user_settings_path,
+    write_user_settings,
+)
 from lionagi.plugins.discovery import discover_plugins
 from lionagi.plugins.registry import PluginActivationError, PluginRegistry, PluginState
 from lionagi.plugins.trust import trust_plugin
@@ -372,6 +377,275 @@ class TestPluginProviderRevalidationCaching:
         assert type(second).__name__ == "Endpoint", (
             "the stale, edited-but-signature-preserved plugin entry must not be served after the edit"
         )
+
+    def test_edited_sibling_declared_file_forces_a_fresh_rescan(self, write_plugin, monkeypatch):
+        bundle = write_plugin(
+            "wr",
+            (
+                "name: web-research\n"
+                'version: "0.1.0"\n'
+                'lionagi: ">=0.0,<100.0"\n\n'
+                "capabilities:\n"
+                "  providers:\n"
+                "    - module: providers/endpoint.py\n"
+                "    - module: providers/sibling.py\n"
+            ),
+            files={
+                "providers/endpoint.py": PROVIDER_MODULE.format(provider="acme-llm"),
+                "providers/sibling.py": PROVIDER_MODULE.format(provider="acme-sibling"),
+            },
+        )
+        _trust("wr")
+
+        call_count = 0
+        original_activate_target = PluginRegistry.activate_target.__func__
+
+        def counting_activate_target(cls, plugin_name, target):
+            nonlocal call_count
+            call_count += 1
+            return original_activate_target(cls, plugin_name, target)
+
+        monkeypatch.setattr(
+            PluginRegistry, "activate_target", classmethod(counting_activate_target)
+        )
+
+        first = match_endpoint(provider="acme-llm", endpoint="chat")
+        cached_hit = match_endpoint(provider="acme-llm", endpoint="chat")
+        assert type(first).__name__ == type(cached_hit).__name__ == "PluginProviderEndpoint"
+        calls_before_edit = call_count
+
+        (bundle / "providers" / "sibling.py").write_text(
+            PROVIDER_MODULE.format(provider="acme-sibling") + "\n# changed after activation\n"
+        )
+
+        second = match_endpoint(provider="acme-llm", endpoint="chat")
+
+        assert call_count > calls_before_edit
+        assert type(second).__name__ == "Endpoint"
+
+    def test_spoofed_metadata_on_inactive_declared_sibling_forces_rescan(
+        self, write_plugin, monkeypatch
+    ):
+        bundle = write_plugin(
+            "wr",
+            (
+                "name: web-research\n"
+                'version: "0.1.0"\n'
+                'lionagi: ">=0.0,<100.0"\n\n'
+                "capabilities:\n"
+                "  agents: [agents/research.md]\n"
+                "  providers:\n"
+                "    - module: providers/endpoint.py\n"
+            ),
+            files={
+                "agents/research.md": "trusted profile\n",
+                "providers/endpoint.py": PROVIDER_MODULE.format(provider="acme-llm"),
+            },
+        )
+        _trust("wr")
+        sibling_path = bundle / "agents" / "research.md"
+        original_stat = sibling_path.stat()
+
+        call_count = 0
+        original_activate_target = PluginRegistry.activate_target.__func__
+
+        def counting_activate_target(cls, plugin_name, target):
+            nonlocal call_count
+            call_count += 1
+            return original_activate_target(cls, plugin_name, target)
+
+        monkeypatch.setattr(
+            PluginRegistry, "activate_target", classmethod(counting_activate_target)
+        )
+
+        first = match_endpoint(provider="acme-llm", endpoint="chat")
+        cached_hit = match_endpoint(provider="acme-llm", endpoint="chat")
+        assert type(first).__name__ == type(cached_hit).__name__ == "PluginProviderEndpoint"
+        calls_before_attack = call_count
+
+        sibling_path.write_text("changed profile\n")
+        os.utime(sibling_path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+        edited_stat = sibling_path.stat()
+        assert edited_stat.st_size == original_stat.st_size
+        assert edited_stat.st_mtime_ns == original_stat.st_mtime_ns
+        assert edited_stat.st_ino == original_stat.st_ino
+
+        real_stat = pathlib.Path.stat
+        frozen_ctime_ns = original_stat.st_ctime_ns
+
+        def frozen_ctime_stat(self, *args, **kwargs):
+            result = real_stat(self, *args, **kwargs)
+            if self == sibling_path:
+                return SimpleNamespace(
+                    st_mtime_ns=result.st_mtime_ns,
+                    st_ctime_ns=frozen_ctime_ns,
+                    st_size=result.st_size,
+                    st_ino=result.st_ino,
+                )
+            return result
+
+        monkeypatch.setattr(pathlib.Path, "stat", frozen_ctime_stat)
+
+        second = match_endpoint(provider="acme-llm", endpoint="chat")
+
+        assert call_count > calls_before_attack, (
+            "an equal-length edit to any declared sibling must force a fresh "
+            "activate_target() revalidation even when its stat signature is unchanged"
+        )
+        assert type(second).__name__ == "Endpoint"
+
+    def test_edited_settings_forces_a_fresh_rescan(self, write_plugin, monkeypatch):
+        _write_provider_plugin(write_plugin, "wr", name="web-research", provider="acme-llm")
+
+        call_count = 0
+        original_activate_target = PluginRegistry.activate_target.__func__
+
+        def counting_activate_target(cls, plugin_name, target):
+            nonlocal call_count
+            call_count += 1
+            return original_activate_target(cls, plugin_name, target)
+
+        monkeypatch.setattr(
+            PluginRegistry, "activate_target", classmethod(counting_activate_target)
+        )
+
+        first = match_endpoint(provider="acme-llm", endpoint="chat")
+        cached_hit = match_endpoint(provider="acme-llm", endpoint="chat")
+        assert type(first).__name__ == type(cached_hit).__name__ == "PluginProviderEndpoint"
+        calls_before_edit = call_count
+
+        settings_path = user_settings_path()
+        previous_stat = settings_path.stat()
+        settings = read_user_settings()
+        settings.setdefault("plugins", {})["web-research"] = {"enabled": False}
+        write_user_settings(settings)
+        if settings_path.stat().st_mtime_ns == previous_stat.st_mtime_ns:
+            os.utime(
+                settings_path,
+                ns=(previous_stat.st_atime_ns, previous_stat.st_mtime_ns + 1_000_000_000),
+            )
+
+        second = match_endpoint(provider="acme-llm", endpoint="chat")
+
+        assert call_count > calls_before_edit
+        assert type(second).__name__ == "Endpoint"
+
+
+class TestPluginProviderConsultConcurrency:
+    def test_activation_can_issue_nested_unmatched_lookup(self, monkeypatch):
+        nested_results = []
+        thread_results = []
+        errors: list[BaseException] = []
+        activation_calls = 0
+
+        monkeypatch.setattr(
+            PluginRegistry,
+            "active_provider_targets",
+            classmethod(lambda cls: [("plugin-outer", "providers/outer.py")]),
+        )
+
+        def activate_target(cls, plugin_name, module):
+            nonlocal activation_calls
+            activation_calls += 1
+            module_name = "_registry_nested_plugin"
+            if activation_calls == 1:
+                nested_results.append(match_endpoint(provider="nested-missing", endpoint="chat"))
+                endpoint_cls = type("PluginProviderEndpoint", (), {"__module__": module_name})
+                EndpointRegistry.register(provider="outer-provider", endpoint="chat")(endpoint_cls)
+            return SimpleNamespace(__name__=module_name)
+
+        monkeypatch.setattr(PluginRegistry, "activate_target", classmethod(activate_target))
+
+        def consult():
+            try:
+                thread_results.append(EndpointRegistry._consult_plugin_providers())
+            except BaseException as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=consult, daemon=True)
+        thread.start()
+        thread.join(timeout=0.75)
+
+        assert not thread.is_alive(), (
+            "provider activation deadlocked while a nested unmatched lookup "
+            "re-entered plugin consultation"
+        )
+        assert errors == []
+        assert thread_results == [True]
+        assert activation_calls == 2
+        assert len(nested_results) == 1
+        assert nested_results[0].config.provider == "nested-missing"
+
+    def test_activation_and_collision_filtering_are_serialized(self, monkeypatch):
+        first_inside_activation = threading.Event()
+        release_first = threading.Event()
+        second_attempting_consult = threading.Event()
+        second_inside_activation = threading.Event()
+        errors: list[BaseException] = []
+        targets = {
+            "registry-first": ("plugin-first", "providers/first.py", "thread-first-provider"),
+            "registry-second": (
+                "plugin-second",
+                "providers/second.py",
+                "thread-second-provider",
+            ),
+        }
+
+        def active_provider_targets(cls):
+            plugin_name, module, _ = targets[threading.current_thread().name]
+            return [(plugin_name, module)]
+
+        def activate_target(cls, plugin_name, module):
+            _, _, provider = targets[threading.current_thread().name]
+            module_name = f"_registry_concurrency_{plugin_name}"
+            endpoint_cls = type("PluginProviderEndpoint", (), {"__module__": module_name})
+            EndpointRegistry.register(provider=provider, endpoint="chat")(endpoint_cls)
+            if threading.current_thread().name == "registry-first":
+                first_inside_activation.set()
+                if not release_first.wait(timeout=5):
+                    raise TimeoutError("timed out waiting to finish the first activation")
+            else:
+                second_inside_activation.set()
+            return SimpleNamespace(__name__=module_name)
+
+        monkeypatch.setattr(
+            PluginRegistry, "active_provider_targets", classmethod(active_provider_targets)
+        )
+        monkeypatch.setattr(PluginRegistry, "activate_target", classmethod(activate_target))
+
+        def consult(*, mark_attempt: bool = False):
+            try:
+                if mark_attempt:
+                    second_attempting_consult.set()
+                EndpointRegistry._consult_plugin_providers()
+            except BaseException as exc:
+                errors.append(exc)
+
+        first = threading.Thread(target=consult, name="registry-first", daemon=True)
+        second = threading.Thread(
+            target=consult,
+            kwargs={"mark_attempt": True},
+            name="registry-second",
+            daemon=True,
+        )
+        first.start()
+        assert first_inside_activation.wait(timeout=5)
+        second.start()
+        assert second_attempting_consult.wait(timeout=5)
+        try:
+            assert not second_inside_activation.wait(timeout=0.5), (
+                "a second consultation entered activation before the first mutation completed"
+            )
+        finally:
+            release_first.set()
+            first.join(timeout=5)
+            second.join(timeout=5)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert errors == []
+        registered = {entry.meta.provider for entry in EndpointRegistry._entries}
+        assert {"thread-first-provider", "thread-second-provider"} <= registered
 
 
 class TestPluginProviderMiss:

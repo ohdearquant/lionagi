@@ -19,7 +19,9 @@ from lionagi.ln.concurrency import ExceptionGroup
 from lionagi.state.reasons import RunReasons, ScheduleReasons
 from lionagi.studio.scheduler import subprocess as _subprocess
 from lionagi.studio.scheduler import threshold as _threshold
+from lionagi.studio.scheduler.admit import validate_rate_limit
 from lionagi.studio.scheduler.signals import (
+    SchedulerHandlerCancelled,
     SchedulerSignalBus,
     build_schedule_run_signal,
     record_handler_failure,
@@ -92,6 +94,24 @@ class _GlobalSlotClaim:
             return
         self._released = True
         self._engine._release_global_slot()
+
+
+class _RateLimitClaim:
+    """One-shot reservation against a schedule's rolling-window fire cap."""
+
+    __slots__ = ("_engine", "_schedule_id", "_token", "_released")
+
+    def __init__(self, engine: SchedulerEngine, schedule_id: str, token: str) -> None:
+        self._engine = engine
+        self._schedule_id = schedule_id
+        self._token = token
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._engine._release_rate_limit_claim(self._schedule_id, self._token)
 
 
 class _ThresholdCooldownClaim:
@@ -256,6 +276,11 @@ class SchedulerEngine:
         self._max_runs_inflight: dict[
             str, int
         ] = {}  # schedule_id -> claimed-not-yet-terminal count
+        # Rolling-window reservations bridge the admission-read -> terminal-row
+        # window so concurrent tick/manual/github paths cannot all observe the
+        # same persisted count and overshoot max_fires.
+        self._rate_limit_lock = asyncio.Lock()
+        self._rate_limit_inflight: dict[str, dict[str, float]] = {}
         # global concurrent-fire cap (single-process; see _reserve_global_slot).
         self._global_slot_lock = asyncio.Lock()
         self._global_inflight = 0
@@ -441,33 +466,53 @@ class SchedulerEngine:
             raise ValueError(
                 f"Schedule {schedule_id!r} has exhausted its budget; manual trigger refused."
             )
-        allowed, claim = await self._reserve_max_runs_budget(schedule)
-        if not allowed:
-            raise ValueError(
-                f"Schedule {schedule_id!r} has already reached its max_runs="
-                f"{schedule.get('max_runs')} limit; manual trigger refused."
-            )
-        # A human is waiting on a manual trigger, so at-capacity is refused
-        # outright rather than deferred like the automatic fire paths below.
-        slot_allowed, slot_claim = await self._reserve_global_slot()
-        if not slot_allowed:
-            if claim is not None:
-                claim.release()
-            from lionagi.studio.config import MAX_SCHEDULED_CONCURRENT
+        rate_claim: _RateLimitClaim | None = None
+        claim: _MaxRunsClaim | None = None
+        slot_claim: _GlobalSlotClaim | None = None
+        handed_off = False
+        now = time.time()
+        try:
+            rate_allowed, rate_claim = await self._reserve_rate_limit(schedule, now=now)
+            if not rate_allowed:
+                raise ValueError(
+                    f"Schedule {schedule_id!r} has reached its rolling rate limit; "
+                    "manual trigger refused. Retry after the configured window advances."
+                )
+            allowed, claim = await self._reserve_max_runs_budget(schedule)
+            if not allowed:
+                raise ValueError(
+                    f"Schedule {schedule_id!r} has already reached its max_runs="
+                    f"{schedule.get('max_runs')} limit; manual trigger refused."
+                )
+            # A human is waiting on a manual trigger, so at-capacity is refused
+            # outright rather than deferred like the automatic fire paths below.
+            slot_allowed, slot_claim = await self._reserve_global_slot()
+            if not slot_allowed:
+                from lionagi.studio.config import MAX_SCHEDULED_CONCURRENT
 
-            raise ValueError(
-                f"Scheduler at capacity ({MAX_SCHEDULED_CONCURRENT} concurrent "
-                "fires); manual trigger refused. Retry shortly."
+                raise ValueError(
+                    f"Scheduler at capacity ({MAX_SCHEDULED_CONCURRENT} concurrent "
+                    "fires); manual trigger refused. Retry shortly."
+                )
+            run_id = uuid.uuid4().hex[:12]
+            self._tracked_fire(
+                schedule,
+                run_id,
+                trigger_context={"manual": True, "fired_at": now},
+                rate_limit_claim=rate_claim,
+                max_runs_claim=claim,
+                global_slot_claim=slot_claim,
             )
-        run_id = uuid.uuid4().hex[:12]
-        self._tracked_fire(
-            schedule,
-            run_id,
-            trigger_context={"manual": True, "fired_at": time.time()},
-            max_runs_claim=claim,
-            global_slot_claim=slot_claim,
-        )
-        return run_id
+            handed_off = True
+            return run_id
+        finally:
+            if not handed_off:
+                if rate_claim is not None:
+                    rate_claim.release()
+                if claim is not None:
+                    claim.release()
+                if slot_claim is not None:
+                    slot_claim.release()
 
     async def _tick_loop(self) -> None:
         await self._recover_undispatched_fires()
@@ -782,12 +827,25 @@ class SchedulerEngine:
             await self._disable_for_budget_exhausted(schedule, now)
             return
 
+        rate_allowed, pre_rate_claim = await self._reserve_rate_limit(schedule, now=now)
+        if not rate_allowed:
+            _log.info(
+                "Schedule %s (%s) reached rolling rate limit %s; "
+                "github events deferred without polling or disabling",
+                schedule.get("name"),
+                schedule["id"],
+                schedule.get("rate_limit"),
+            )
+            return
+
         # Reserve one global slot before polling: a filtered/no-slot poll
         # must not fetch-and-advance-cursor-then-discard. This first slot is
         # handed to whichever event ends up firing first below; any further
         # dispatched events in the same poll reserve their own slot.
         slot_allowed, pre_slot_claim = await self._reserve_global_slot()
         if not slot_allowed:
+            if pre_rate_claim is not None:
+                pre_rate_claim.release()
             await self._maybe_record_deferred(schedule, now)
             return
 
@@ -848,23 +906,33 @@ class SchedulerEngine:
                     cursor = item.updated_at
                     continue
 
-                if pre_slot_claim is not None:
-                    slot_claim, pre_slot_claim = pre_slot_claim, None
-                else:
-                    slot_allowed, slot_claim = await self._reserve_global_slot()
-                    if not slot_allowed:
-                        drop_reason = "global concurrent-fire cap reached"
-                        dropped_prs = [
-                            e.event.get("pr_number") for e in polled[idx:] if e.dispatchable
-                        ]
-                        break
-
-                # slot_claim is now reserved for this event specifically. A
-                # failure (refusal *or* a raised exception) anywhere before
-                # it is handed off to _fire() must still release it, or a
-                # transient error here leaks the slot permanently.
-                slot_handed_off = False
+                rate_claim: _RateLimitClaim | None = None
+                max_runs_claim: _MaxRunsClaim | None = None
+                slot_claim: _GlobalSlotClaim | None = None
+                admission_handed_off = False
                 try:
+                    if pre_rate_claim is not None:
+                        rate_claim, pre_rate_claim = pre_rate_claim, None
+                    else:
+                        rate_allowed, rate_claim = await self._reserve_rate_limit(schedule, now=now)
+                        if not rate_allowed:
+                            drop_reason = f"rolling rate limit {schedule.get('rate_limit')} reached"
+                            dropped_prs = [
+                                e.event.get("pr_number") for e in polled[idx:] if e.dispatchable
+                            ]
+                            break
+
+                    if pre_slot_claim is not None:
+                        slot_claim, pre_slot_claim = pre_slot_claim, None
+                    else:
+                        slot_allowed, slot_claim = await self._reserve_global_slot()
+                        if not slot_allowed:
+                            drop_reason = "global concurrent-fire cap reached"
+                            dropped_prs = [
+                                e.event.get("pr_number") for e in polled[idx:] if e.dispatchable
+                            ]
+                            break
+
                     allowed, max_runs_claim = await self._reserve_max_runs_budget(schedule)
                     if not allowed:
                         drop_reason = f"max_runs={schedule.get('max_runs')} exhausted"
@@ -879,11 +947,12 @@ class SchedulerEngine:
                         "fired_at": now,
                     }
                     run_id = uuid.uuid4().hex[:12]
-                    slot_handed_off = True
+                    admission_handed_off = True
                     await self._fire(
                         schedule,
                         run_id,
                         trigger_context=ctx,
+                        rate_limit_claim=rate_claim,
                         max_runs_claim=max_runs_claim,
                         global_slot_claim=slot_claim,
                         # Advances github_cursor to this event's own
@@ -909,12 +978,13 @@ class SchedulerEngine:
                     # persisted).
                     cursor = item.updated_at
                 finally:
-                    # slot_claim is None when MAX_SCHEDULED_CONCURRENT is
-                    # unlimited (0) -- _reserve_global_slot() returns an
-                    # allowed no-op claim in that case, same as every other
-                    # call site in this module.
-                    if not slot_handed_off and slot_claim is not None:
-                        slot_claim.release()
+                    if not admission_handed_off:
+                        if rate_claim is not None:
+                            rate_claim.release()
+                        if max_runs_claim is not None:
+                            max_runs_claim.release()
+                        if slot_claim is not None:
+                            slot_claim.release()
 
             if drop_reason and dropped_prs:
                 _log.info(
@@ -938,6 +1008,8 @@ class SchedulerEngine:
             if cursor != schedule.get("github_cursor"):
                 await self._svc.update_schedule(sid, github_cursor=cursor)
         finally:
+            if pre_rate_claim is not None:
+                pre_rate_claim.release()
             if pre_slot_claim is not None:
                 pre_slot_claim.release()
 
@@ -1006,6 +1078,57 @@ class SchedulerEngine:
             self._max_runs_inflight[schedule_id] = remaining
         else:
             self._max_runs_inflight.pop(schedule_id, None)
+
+    async def _reserve_rate_limit(
+        self, schedule: dict, *, now: float
+    ) -> tuple[bool, _RateLimitClaim | None]:
+        """Reserve one fire inside the schedule's rolling time window.
+
+        Persisted top-level rows that reached ``running`` or a terminal state
+        provide the durable count. In-process claims cover admitted fires until
+        their occurrence row commits, closing the concurrent-admission and
+        process-restart gaps. Exhaustion is a temporary refusal: automatic
+        callers leave the schedule enabled and its due cursor untouched so a
+        later tick retries after the window rolls forward.
+        """
+        config = validate_rate_limit(schedule.get("rate_limit"))
+        if config is None:
+            return True, None
+        max_fires, window_sec = config
+        sid = schedule["id"]
+        cutoff = now - window_sec
+        async with self._rate_limit_lock:
+            reservations = self._rate_limit_inflight.get(sid, {})
+            active = {
+                token: reserved_at
+                for token, reserved_at in reservations.items()
+                if reserved_at >= cutoff
+            }
+            if active:
+                self._rate_limit_inflight[sid] = active
+            else:
+                self._rate_limit_inflight.pop(sid, None)
+            inflight = len(active)
+            used = await self._svc.count_schedule_runs(
+                sid,
+                chain_depth=0,
+                statuses=("running", "completed", "failed", "timed_out", "cancelled"),
+                fired_after=cutoff,
+            )
+            if used + inflight >= max_fires:
+                return False, None
+            token = uuid.uuid4().hex
+            active[token] = now
+            self._rate_limit_inflight[sid] = active
+            return True, _RateLimitClaim(self, sid, token)
+
+    def _release_rate_limit_claim(self, schedule_id: str, token: str) -> None:
+        reservations = self._rate_limit_inflight.get(schedule_id)
+        if reservations is None:
+            return
+        reservations.pop(token, None)
+        if not reservations:
+            self._rate_limit_inflight.pop(schedule_id, None)
 
     async def _reserve_global_slot(self) -> tuple[bool, _GlobalSlotClaim | None]:
         """Atomically claim one global concurrent-fire slot.
@@ -1197,6 +1320,7 @@ class SchedulerEngine:
         # _tracked_fire() has actually launched and taken ownership of the
         # claims, mirroring _tick_github's use of the same pattern for its
         # own claims below.
+        rate_claim: _RateLimitClaim | None = None
         claim: _MaxRunsClaim | None = None
         slot_claim: _GlobalSlotClaim | None = None
         handed_off = False
@@ -1221,6 +1345,17 @@ class SchedulerEngine:
 
             if await self._check_budget(schedule):
                 await self._disable_for_budget_exhausted(schedule, now)
+                return
+
+            rate_allowed, rate_claim = await self._reserve_rate_limit(schedule, now=now)
+            if not rate_allowed:
+                _log.info(
+                    "Schedule %s (%s) reached rolling rate limit %s; "
+                    "deferring without disabling or advancing next_fire_at",
+                    schedule.get("name"),
+                    schedule["id"],
+                    schedule.get("rate_limit"),
+                )
                 return
 
             allowed, claim = await self._reserve_max_runs_budget(schedule)
@@ -1269,6 +1404,7 @@ class SchedulerEngine:
                 schedule,
                 run_id,
                 trigger_context=ctx,
+                rate_limit_claim=rate_claim,
                 max_runs_claim=claim,
                 global_slot_claim=slot_claim,
                 threshold_cooldown_claim=threshold_claim,
@@ -1280,6 +1416,8 @@ class SchedulerEngine:
             handed_off = True
         finally:
             if not handed_off:
+                if rate_claim is not None:
+                    rate_claim.release()
                 if claim is not None:
                     claim.release()
                 if slot_claim is not None:
@@ -1335,14 +1473,21 @@ class SchedulerEngine:
         exception here must never be allowed to look like it undid that
         write or to stop the tick loop from continuing on to the next
         schedule. ``SchedulerSignalBus.emit`` fails loud (raises an
-        ``ExceptionGroup``, never swallows); this call site is where that
-        group gets caught, logged, and turned into a durable admin event.
+        ``ExceptionGroup`` or ``SchedulerHandlerCancelled``, never swallows);
+        this call site records handler failures while preserving a genuine
+        cancellation request against the scheduler task.
         """
         try:
             await self._signal_bus.emit(signal)
         except ExceptionGroup as eg:
             _log.error("Scheduler signal handler(s) failed for %s: %s", type(signal).__name__, eg)
             await record_handler_failure(eg, signal)
+        except SchedulerHandlerCancelled as exc:
+            _log.error(
+                "Scheduler signal handler raised CancelledError for %s",
+                type(signal).__name__,
+            )
+            await record_handler_failure(exc, signal)
 
     async def _check_max_runs(self, schedule: dict, chain_depth: int) -> None:
         """Auto-disable a schedule once its fired top-level runs hit max_runs.
@@ -1383,24 +1528,21 @@ class SchedulerEngine:
         trigger_context: dict,
         chain_parent_id: str | None = None,
         chain_depth: int = 0,
+        rate_limit_claim: _RateLimitClaim | None = None,
         max_runs_claim: _MaxRunsClaim | None = None,
         global_slot_claim: _GlobalSlotClaim | None = None,
         threshold_cooldown_claim: _ThresholdCooldownClaim | None = None,
         extra_schedule_fields: dict[str, Any] | None = None,
         supersedes_run_id: str | None = None,
     ) -> None:
-        """Thin wrapper around _fire_inner() that guarantees max_runs_claim,
-        global_slot_claim, and threshold_cooldown_claim are each released
-        exactly once on every exit path.
+        """Thin wrapper that releases every admission claim on all exit paths.
 
         Only top-level callers (_maybe_fire, fire_now, _tick_github) that
-        got an allowed reservation from _reserve_max_runs_budget() /
-        _reserve_global_slot() / the synchronous threshold-cooldown gate
-        pass a non-None claim; chain children never do. The release lives
-        here — not inside _check_max_runs() — precisely so it still fires
-        even when _fire_inner() blows up before ever reaching
-        _check_max_runs() (e.g. create_invocation() raising), which is the
-        leak this wrapper exists to close.
+        got an allowed admission reservation pass a non-None claim; chain
+        children never do. Rate-limit ownership transfers to the durable
+        occurrence row as soon as it commits. The idempotent releases here
+        remain the all-exit-path safety net, including failures before an
+        occurrence can be written.
 
         *extra_schedule_fields* and *supersedes_run_id* pass straight
         through to _fire_inner() (github cursor fold-in and recovery
@@ -1413,10 +1555,13 @@ class SchedulerEngine:
                 trigger_context=trigger_context,
                 chain_parent_id=chain_parent_id,
                 chain_depth=chain_depth,
+                rate_limit_claim=rate_limit_claim,
                 extra_schedule_fields=extra_schedule_fields,
                 supersedes_run_id=supersedes_run_id,
             )
         finally:
+            if rate_limit_claim is not None:
+                rate_limit_claim.release()
             if max_runs_claim is not None:
                 max_runs_claim.release()
             if global_slot_claim is not None:
@@ -1534,6 +1679,7 @@ class SchedulerEngine:
         trigger_context: dict,
         chain_parent_id: str | None = None,
         chain_depth: int = 0,
+        rate_limit_claim: _RateLimitClaim | None = None,
         extra_schedule_fields: dict[str, Any] | None = None,
         supersedes_run_id: str | None = None,
     ) -> None:
@@ -1640,6 +1786,10 @@ class SchedulerEngine:
             if not written_occurrence:
                 await self._abandon_superseded_recovery_fire(inv_id, orphan_id=supersedes_run_id)
                 return
+            if rate_limit_claim is not None:
+                # The durable row now accounts for this fire across process
+                # restarts; keeping the in-memory reservation would count it twice.
+                rate_limit_claim.release()
             written = await self._svc.update_status(
                 "schedule_run",
                 run_id,
@@ -1742,6 +1892,9 @@ class SchedulerEngine:
             if not written_occurrence:
                 await self._abandon_superseded_recovery_fire(inv_id, orphan_id=supersedes_run_id)
                 return
+            if rate_limit_claim is not None:
+                # The durable running row now owns the rolling-window slot.
+                rate_limit_claim.release()
             await self._svc.update_status(
                 "schedule_run",
                 run_id,

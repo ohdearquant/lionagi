@@ -7,6 +7,7 @@ import pytest
 
 from lionagi.operations.flow import flow
 from lionagi.operations.node import Operation
+from lionagi.protocols._concepts import Condition
 from lionagi.protocols.generic.event import EventStatus
 from lionagi.protocols.graph.edge import Edge, EdgeCondition
 from lionagi.protocols.graph.graph import Graph
@@ -25,6 +26,51 @@ class CustomCondition(EdgeCondition):
         """Check if context matches expected value."""
         exec_context = context.get("context", {})
         return exec_context.get("test_value") == self.expected_value
+
+
+class CustomProtocolCondition(Condition):
+    """Condition implementation that deliberately does not inherit EdgeCondition."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def apply(self, context: dict) -> bool:
+        self.calls += 1
+        return context["result"] == "source-complete"
+
+
+@pytest.mark.asyncio
+async def test_custom_condition_protocol_executes_end_to_end():
+    """Edge's documented custom Condition contract survives flow validation."""
+
+    async def source(**kwargs):
+        return "source-complete"
+
+    async def target(**kwargs):
+        return "target-complete"
+
+    session = Session()
+    branch = Branch(user="test", name="test")
+    session.include_branches(branch)
+    session.default_branch = branch
+    session.register_operation("source", source)
+    session.register_operation("target", target)
+
+    source_op = Operation(operation="source", parameters={})
+    target_op = Operation(operation="target", parameters={})
+    source_op.branch_id = branch.id
+    target_op.branch_id = branch.id
+    condition = CustomProtocolCondition()
+
+    graph = Graph()
+    graph.add_node(source_op)
+    graph.add_node(target_op)
+    graph.add_edge(Edge(head=source_op.id, tail=target_op.id, condition=condition))
+
+    result = await flow(session, graph, parallel=False)
+
+    assert condition.calls == 1
+    assert result["operation_results"][target_op.id] == "target-complete"
 
 
 @pytest.mark.asyncio

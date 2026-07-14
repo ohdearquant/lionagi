@@ -16,7 +16,12 @@ from lionagi.lndl.assembler import (
     collect_actions,
     replace_actions,
 )
-from lionagi.lndl.errors import InvalidConstructorError, MissingFieldError, MissingLvarError
+from lionagi.lndl.errors import (
+    InvalidConstructorError,
+    MissingFieldError,
+    MissingLvarError,
+    TypeMismatchError,
+)
 from lionagi.lndl.lexer import Lexer
 from lionagi.lndl.parser import Parser
 from lionagi.lndl.types import ActionCall
@@ -230,6 +235,20 @@ class TestOptionalFieldUnwrap:
         )
         result = assemble(prog, Wrapper, action_results={"s": "done"})
         assert result["report"] == {"title": "Analysis", "summary": "done"}
+
+
+class TestTypeMismatchError:
+    def test_namespaced_alias_model_must_match_target_model(self):
+        class Report(BaseModel):
+            title: str
+
+        class Wrapper(BaseModel):
+            report: Report
+
+        prog = _parse("<lvar Summary.title t>Analysis</lvar>\nOUT{report: [t]}")
+
+        with pytest.raises(TypeMismatchError, match="Summary.*Report"):
+            assemble(prog, Wrapper)
 
 
 class TestMissingFieldError:

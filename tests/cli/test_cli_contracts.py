@@ -101,6 +101,7 @@ AGENT_HELP_FLAGS = [
     "--form",
     "--help",
     "--invocation",
+    "--list-profiles",
     "--preset",
     "--project",
     "--prompt",

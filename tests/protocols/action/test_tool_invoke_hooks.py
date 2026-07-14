@@ -349,6 +349,36 @@ async def test_preprocessor_added_known_field_via_alias_cannot_bypass_validation
     assert fc.arguments.get("c") != "not-an-int"
 
 
+class AddArgsWithPlainAlias(BaseModel):
+    a: int
+    b: int
+    c: int = Field(default=0, alias="c_alias")
+
+
+async def test_preprocessor_added_plain_alias_field_cannot_bypass_validation():
+    calls: list[dict] = []
+
+    async def add(a: int, b: int, c: int = 0) -> int:
+        calls.append({"a": a, "b": b, "c": c})
+        return a + b
+
+    async def preprocessor(args: dict) -> dict:
+        return {**args, "c": "not-an-int"}
+
+    tool = Tool(
+        func_callable=add,
+        request_options=AddArgsWithPlainAlias,
+        preprocessor=preprocessor,
+    )
+    manager = ActionManager(tool)
+
+    fc = await manager.invoke({"function": "add", "arguments": {"a": 1, "b": 2}})
+
+    assert fc.status == EventStatus.COMPLETED
+    assert calls == [{"a": 1, "b": 2, "c": 0}]
+    assert fc.arguments.get("c") != "not-an-int"
+
+
 class AddArgsWithAliasPath(BaseModel):
     a: int
     b: int

@@ -1,6 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -20,6 +21,7 @@ from lionagi.protocols.messages.message import Message, MessageContent
 from ..types import ChatParam, RunParam
 
 if TYPE_CHECKING:
+    from lionagi.protocols.context_providers import ProviderReport
     from lionagi.session.branch import Branch
 
 
@@ -92,6 +94,7 @@ def _prepare_run_kwargs(
     param: ChatParam,
     *,
     ins: Instruction | None = None,
+    context_blocks: Sequence[str] | None = None,
     _use_render_cache: bool = True,
 ) -> tuple[Instruction, dict]:
     if ins is None:
@@ -168,8 +171,7 @@ def _prepare_run_kwargs(
                 from lionagi.libs.schema.minimal_yaml import minimal_yaml
 
                 g = minimal_yaml(g).strip()
-            turn_injections = branch._context_injection_slot
-            injected = "\n".join(turn_injections) if turn_injections else ""
+            injected = "\n".join(context_blocks) if context_blocks else ""
             return branch.msgs.system.rendered + injected + g
 
         if len(_contents) == 0:
@@ -224,31 +226,35 @@ async def _apply_context_providers(
     param: ChatParam,
     *,
     ins: Instruction | None = None,
-) -> Instruction | None:
-    """Gather registered ContextProviders into the branch's per-turn injection
-    slot; returns the (pre-)built Instruction, or None when no providers are
-    registered (zero-overhead path). A branch with no system message has no
-    render target — providers are skipped, not invoked; see `branch.last_context_report`.
+) -> tuple[Instruction | None, "ProviderReport | None"]:
+    """Gather registered ContextProviders for call-local prompt rendering.
+
+    Returns the (pre-)built Instruction and its report, or ``(None, None)``
+    when no providers are registered (zero-overhead path). A branch with no
+    system message has no render target — providers are skipped, not invoked;
+    see ``branch.last_context_report``.
 
     ``ins``, when given, is reused as-is instead of building a second
     Instruction — for callers that already constructed one before this
     async, potentially side-effecting gather runs.
     """
     if not branch._context_providers:
-        return None
+        return None, None
 
     from lionagi.protocols.context_providers import ProviderReport
 
     if not branch.msgs.system:
-        branch._last_context_report = ProviderReport(skipped=list(branch._context_providers.names))
-        return None
+        report = ProviderReport(skipped=list(branch._context_providers.names))
+        branch._last_context_report.set(report)
+        branch._last_context_report_fallback = report
+        return None, report
 
     if ins is None:
         ins = _build_instruction(branch, instruction, param)
     report = await branch._context_providers.gather(branch, ins)
-    branch._last_context_report = report
-    branch._context_injection_slot = report.blocks
-    return ins
+    branch._last_context_report.set(report)
+    branch._last_context_report_fallback = report
+    return ins, report
 
 
 def _collect_action_dicts(act_res_msgs):

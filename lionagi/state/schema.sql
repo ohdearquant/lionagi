@@ -452,6 +452,10 @@ CREATE TABLE IF NOT EXISTS schedules (
   -- schedule the same way max_runs does.
   budget_usd          REAL,
   budget_tokens       INTEGER,
+  -- Rolling-window fire cap. NULL means unlimited; otherwise the JSON shape
+  -- is {max_fires, window_sec}. Exhaustion defers a due fire without
+  -- disabling or advancing the schedule.
+  rate_limit          JSON,
   project             TEXT,
   -- Metric threshold alerts: when set, this schedule's own cron/interval
   -- cadence only evaluates a metric (does not unconditionally fire); the

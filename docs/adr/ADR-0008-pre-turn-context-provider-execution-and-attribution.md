@@ -35,13 +35,14 @@ low-priority block jump ahead merely because it was evaluated later.
 
 **P5 — Injection must be ephemeral.** The active compiler needs the selected text for one call, but
 `Branch.messages` must not acquire retrieved context as a fake user or system turn. The
-implementation uses a private per-turn slot, consumes it during request preparation, and clears it
-in a `finally` block in both chat and run.
+implementation threads selected blocks directly from chat or run into request preparation through
+the keyword-only `context_blocks` argument. No injection block is stored on `Branch`.
 
-**P6 — Attribution exists, but only as last-turn diagnostics.** `ProviderReport` captures retained
-raw blocks, provider names and token counts, skipped names, and failed names. It is overwritten on
-the next provider pass, carries no turn identifier, conflates skip reasons, and is not persisted or
-emitted to run metadata.
+**P6 — Attribution exists, but only as in-memory diagnostics.** `ProviderReport` captures retained
+raw blocks, provider names and token counts, skipped names, and failed names. The calling task keeps
+its most recent report, while the branch also retains the most recently completed provider pass as
+a compatibility fallback with last-writer semantics. Reports carry no turn identifier, conflate
+skip reasons, and are not persisted or emitted to run metadata.
 
 **P7 — The current render target requires a system message.** Provider blocks are inserted into the
 system-guidance fold. A branch without `branch.msgs.system` skips every registered provider without
@@ -63,8 +64,8 @@ or another source, but provider selection and memory lifecycle are not the same 
 | Ownership and registration | D1: Store one lazily-created ordered registry on each Branch. |
 | Retrieval and failure behavior | D2: Invoke providers sequentially, contain provider exceptions, and ignore empty results. |
 | Caps and priority | D3: Apply per-provider and total rendered-token limits after retrieval, select by descending priority, and render retained blocks in registration order. |
-| Turn integration | D4: Gather before chat/run compilation, inject through a private per-turn slot only when a system render target exists, and always clear the slot after preparation. |
-| Attribution | D5: Retain one in-memory `ProviderReport` describing selected, skipped, and failed providers. |
+| Turn integration | D4: Gather before chat/run compilation and pass retained blocks call-locally into request preparation only when a system render target exists. |
+| Attribution | D5: Retain a task-local `ProviderReport` plus a branch-level latest-completed compatibility fallback. |
 | Source independence | D6: Keep the provider protocol independent of `MemoryStore` and concrete adapters. |
 | Post-action writeback | D7: Invoke optional async writeback hooks from the operate action-result path and contain their failures. |
 
@@ -143,8 +144,10 @@ Branch ownership is:
 # lionagi/session/branch.py
 class Branch(...):
     _context_providers: ContextProviderRegistry | None = PrivateAttr(None)
-    _context_injection_slot: list[str] | None = PrivateAttr(None)
-    _last_context_report: Any = PrivateAttr(None)
+    _last_context_report: ContextVar[Any] = PrivateAttr(
+        default_factory=lambda: ContextVar("last_context_report", default=None)
+    )
+    _last_context_report_fallback: Any = PrivateAttr(None)
 
     @property
     def providers(self) -> ContextProviderRegistry:
@@ -154,12 +157,16 @@ class Branch(...):
 
     @property
     def last_context_report(self):
-        return self._last_context_report
+        task_report = self._last_context_report.get()
+        if task_report is not None:
+            return task_report
+        return self._last_context_report_fallback
 ```
 
 Exact ownership and registration semantics:
 
-- a newly constructed branch has no registry, no injection slot, and no report;
+- a newly constructed branch has no registry, its task-local report is `None`, and its branch-level
+  fallback is `None`;
 - the first access to `branch.providers` constructs `ContextProviderRegistry(budget=2000)` and all
   later accesses return the same object;
 - operation code checks `branch._context_providers` directly. It does not touch the property and
@@ -185,15 +192,15 @@ Exact retrieval cases:
 
 - **Empty registry:** returns a new report with four empty lists and imports no tokenizer.
 - **Successful non-empty string:** tokenizes the string and enters it into budget selection.
-- **`None` or any other falsy result:** contributes no block and no fired, skipped, or failed
-  outcome. Empty results are therefore invisible in the report.
-- **Provider raises `Exception`:** logs a warning with traceback, appends the provider name to
-  `report.failed`, and continues to the next entry.
+- **`None` or an empty string:** contributes no block and no fired, skipped, or failed outcome.
+  Empty results are therefore invisible in the report.
+- **Truthy or falsy non-string result:** violates the `str | None` protocol, is rejected before
+  tokenization, appends the provider name to `report.failed`, and does not prevent later providers
+  from contributing blocks.
+- **Provider raises `Exception`, or per-entry validation or token processing raises:** logs a
+  warning with traceback, appends the provider name to `report.failed`, and continues to the next
+  entry.
 - **Provider raises `BaseException` outside `Exception`:** is not contained and propagates.
-- **Protocol violation:** tokenization and later processing occur outside the `provide` try/except.
-  The protocol requires `str | None`; the registry does not promise containment for arbitrary
-  truthy non-string return values, though the current tokenizer returns zero on many encoding
-  errors.
 - **No timeout or retry:** a provider that waits indefinitely delays the turn indefinitely; a
   transient failure is attempted once.
 
@@ -213,10 +220,11 @@ The token measurement is:
 tokens = TokenCalculator.tokenize(text)
 ```
 
-With no explicit encoding or tokenizer, `TokenCalculator` resolves the default through
-`get_encoding_name(None)`, which falls back to `o200k_base`. Tokenization exceptions are contained
-inside `TokenCalculator.tokenize()` and return a count of zero. The budget is therefore a local
-rendered-text estimate, not the exact token count for every eventual model.
+Only a validated string reaches this measurement. With no explicit encoding or tokenizer,
+`TokenCalculator` resolves the default through `get_encoding_name(None)`, which falls back to
+`o200k_base`. Tokenization exceptions are contained inside `TokenCalculator.tokenize()` and return
+a count of zero. The budget is therefore a local rendered-text estimate, not the exact token count
+for every eventual model.
 
 Admission has two stages.
 
@@ -266,7 +274,7 @@ setting.
 Priority is not a relevance score and is not normalized. It is a caller-assigned admission order
 used only under budget pressure.
 
-### D4 — Gather before compilation, inject ephemerally, and clear after preparation
+### D4 — Gather before compilation and thread blocks call-locally
 
 The shared chat/run helper is:
 
@@ -276,7 +284,9 @@ async def _apply_context_providers(
     branch: Branch,
     instruction: JsonValue | Instruction,
     param: ChatParam,
-) -> Instruction | None: ...
+    *,
+    ins: Instruction | None = None,
+) -> tuple[Instruction | None, ProviderReport | None]: ...
 ```
 
 The active call sequence is:
@@ -289,53 +299,54 @@ sequenceDiagram
     participant C as _prepare_run_kwargs
     O->>B: inspect private registry
     alt no registered providers
-        B-->>O: no pre-built instruction
+        B-->>O: (None, None)
     else no system message
-        O->>B: last report = all names skipped
-        B-->>O: no pre-built instruction
+        O->>B: publish skipped report task-locally and branch-wide
+        B-->>O: (None, report)
     else system message present
         O->>R: gather(branch, pre-built instruction)
         R-->>O: ProviderReport
-        O->>B: save report and blocks in per-turn slot
+        O->>B: publish report task-locally and branch-wide
+        B-->>O: (instruction, report)
     end
-    O->>C: prepare request
+    O->>C: prepare request with context_blocks=report.blocks
     C-->>O: instruction and model kwargs
-    O->>B: clear slot in finally
 ```
 
 Exact turn semantics:
 
-- **No registry or empty registry:** `_apply_context_providers()` returns `None` and does not modify
-  `_last_context_report` or `_context_injection_slot`. The ordinary preparation path builds the
-  instruction once.
+- **No registry or empty registry:** `_apply_context_providers()` returns `(None, None)` and does not
+  modify either report view. The ordinary preparation path uses the instruction built by the
+  caller.
 - **Systemless branch:** the helper does not build an instruction and does not call any provider.
-  It overwrites `_last_context_report` with `ProviderReport(skipped=registry.names)` and returns
-  `None`.
-- **Systemful branch:** the helper builds the current `Instruction` once, passes that exact object
-  to every provider, saves the returned report, and assigns `report.blocks` to the private slot.
-  `_prepare_run_kwargs()` reuses the pre-built instruction instead of constructing another.
-- **Rendering:** `_prepare_run_kwargs()` joins blocks with exactly one newline, then computes
-  `branch.msgs.system.rendered + injected + guidance`. It adds no guaranteed delimiter between the
-  system string and first block or between the last block and guidance. Non-string guidance first
-  renders through minimal YAML.
+  It publishes `ProviderReport(skipped=registry.names)` to both report views and returns
+  `(None, report)`.
+- **Systemful branch:** chat and run build the current `Instruction` once before gathering and pass
+  that exact object to every provider. The helper publishes the returned report and returns
+  `(instruction, report)`.
+- **Call-local threading:** chat (`lionagi/operations/chat/chat.py`) and run
+  (`lionagi/operations/run/run.py`) pass `report.blocks` directly to the keyword-only
+  `context_blocks` parameter of `_prepare_run_kwargs()`. Concurrent calls therefore do not share,
+  overwrite, or clear an injection slot on the branch.
+- **Rendering:** `_prepare_run_kwargs()` joins `context_blocks` with exactly one newline, then
+  computes `branch.msgs.system.rendered + injected + guidance`. It adds no guaranteed delimiter
+  between the system string and first block or between the last block and guidance. Non-string
+  guidance first renders through minimal YAML.
 - **History placement:** with retained history, that system/injection/guidance value becomes the
   guidance of the first historical instruction; with no retained history, it becomes guidance on
   the current instruction.
-- **Clear on preparation success or failure:** chat and run wrap `_prepare_run_kwargs()` in
-  `try/finally` and set `_context_injection_slot = None`. The slot is cleared before provider
-  invocation/streaming begins.
 - **Gather failure outside normal containment:** `_apply_context_providers()` is awaited before the
-  `try/finally` in both callers. An unexpected error escaping `gather()` prevents compilation; the
-  helper assigns the slot only after gather succeeds.
+  request is prepared in both callers. An unexpected error escaping `gather()` prevents compilation
+  and does not publish a report for that pass.
 - **Durability:** direct `chat()` does not auto-record any messages; `communicate()` records its
   instruction and assistant response after invocation; `run()` records the instruction before
-  streaming. None receives the private block list in its durable content. The injected text exists
-  only in the ephemeral content copy rendered into model kwargs.
+  streaming. None receives the call-local block list in its durable content. The injected text
+  exists only in the ephemeral content copy rendered into model kwargs.
 
 The budget therefore limits injected text sent to the model, not the stored history and not the
 cost of calling providers.
 
-### D5 — `ProviderReport` is a mutable-list, last-turn diagnostic
+### D5 — `ProviderReport` is a mutable-list, task-local diagnostic with a compatibility fallback
 
 The shipped report contract is:
 
@@ -359,18 +370,25 @@ Exact attribution semantics:
 - each fired entry has only `provider_name` and integer `tokens` keys;
 - `skipped` combines per-provider overflow and total-budget exclusion without a reason code or
   token count;
-- `failed` contains names whose `provide()` raised `Exception`, without the exception value in the
-  report; the warning log carries traceback details;
-- empty/falsy provider results have no outcome row;
+- `failed` contains names whose `provide()` raised `Exception` or returned a non-string, without the
+  exception value in the report; the warning log carries traceback details;
+- `None` and empty-string provider results have no outcome row;
 - duplicate provider names make correlation ambiguous because entries have no stable entry ID;
 - a systemless turn lists every registered name in `skipped`, also without a distinct reason;
-- `branch.last_context_report` stores one reference, overwritten by the next provider-bearing or
-  systemless provider pass; turns with no registry leave the previous value unchanged; and
+- every completed provider-bearing or systemless provider pass publishes the same report to a
+  `ContextVar` for its calling task and to a branch-level compatibility fallback;
+- `branch.last_context_report` returns the current task's report when present, preserving attribution
+  for overlapping callers. If the current task has no report, it returns the branch-level fallback,
+  which makes a child-task pass visible to its awaiting parent;
+- overlapping passes update the branch-level fallback with explicit last-writer semantics. A pass
+  publishes only after provider gathering completes, and turns with no registry leave both views
+  unchanged; and
 - the report has no timestamp, turn/message ID, duration, budget total, redaction marker, or durable
   sink.
 
-Raw selected blocks remain in memory through the report even after the private injection slot is
-cleared. Clearing the slot is therefore not a privacy or erasure guarantee.
+Raw selected blocks remain in memory through the task-local and branch-level report references even
+after the call-local `context_blocks` argument falls out of scope. Call-local threading is therefore
+not a privacy or erasure guarantee.
 
 ### D6 — Provider selection is independent of memory storage
 
@@ -439,7 +457,8 @@ non-empty action responses and a registry are present.
 - Priority-based selection bounds retained rendered text while preserving deterministic display
   order.
 - Retrieved blocks reach chat and run without becoming durable messages.
-- Immediate source names and token counts are inspectable without requiring a persistence backend.
+- Immediate source names and token counts are inspectable by the calling task and, through the
+  compatibility fallback, by a parent after an awaited child-task turn.
 - Providers can use memory, search, composition, or external sources behind one structural
   protocol.
 - Post-action writeback failures cannot replace an otherwise successful operate result.
@@ -455,7 +474,8 @@ non-empty action responses and a registry are present.
   called.
 - Direct concatenation provides neither guaranteed section separators nor source names in the
   model-visible text.
-- Last-turn reports lose history, conflate outcomes, and retain raw selected text in mutable lists.
+- Task-local and latest-pass reports lose history, conflate outcomes, and retain raw selected text
+  in mutable lists.
 - Writeback has a narrower lifecycle than its “post-turn” label suggests and no idempotency or
   outcome record.
 
@@ -534,7 +554,7 @@ This would make providers work uniformly and avoid system presence as an eligibi
 was not taken because the current injection point is specifically the system-guidance fold; adding
 another provider-visible role or guidance shape changes prompt semantics. The choice remains
 explicitly open in delta 5 and ADR-0007 provides a target compiler capable of carrying blocks
-without relying on the private slot.
+without relying on that fold.
 
 ### Invoke writeback after every chat and run turn
 

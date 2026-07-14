@@ -337,6 +337,17 @@ class TestGetClassDottedPathFallback:
         result = get_class(target)
         assert result is System
 
+    def test_dotted_path_import_failure_is_normalized_to_value_error(self, monkeypatch):
+        import lionagi._class_registry as class_registry
+
+        def fail_import(*args, **kwargs):
+            raise RuntimeError("module initialization failed")
+
+        monkeypatch.setattr(class_registry, "import_module", fail_import)
+
+        with pytest.raises(ValueError, match="Unable to find class"):
+            class_registry.get_class("broken.module.UniqueRegistryClass")
+
 
 # ---------------------------------------------------------------------------
 # 6. Duplicate-name handling: last writer wins (overwrite semantics — pinned)

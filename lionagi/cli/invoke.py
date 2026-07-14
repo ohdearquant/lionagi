@@ -43,12 +43,30 @@ async def _start_invocation(
 
 async def _end_invocation(invocation_id: str, *, status: str, metadata: dict | None) -> dict | None:
     from lionagi.state.db import StateDB
+    from lionagi.state.reasons import RunReasons
+
+    reason_by_status = {
+        "completed": RunReasons.COMPLETED_OK,
+        "failed": RunReasons.FAILED_EXCEPTION,
+        "timed_out": RunReasons.TIMED_OUT_DEADLINE,
+        "aborted": RunReasons.ABORTED_USER,
+        "cancelled": RunReasons.CANCELLED_SYSTEM,
+    }
 
     async with StateDB() as db:
         existing = await db.get_invocation(invocation_id)
         if existing is None:
             return None
-        fields: dict = {"status": status, "ended_at": time.time()}
+        await db.update_status(
+            "invocation",
+            invocation_id,
+            new_status=status,
+            reason_code=reason_by_status[status],
+            reason_summary=f"Invocation {status}.",
+            source="executor",
+            actor=invocation_id,
+            extra_fields={"ended_at": time.time()},
+        )
         if metadata is not None:
             # Merge: preserve any metadata the skill wrote during the
             # run, overwrite per-key with the closer's payload.
@@ -58,8 +76,10 @@ async def _end_invocation(invocation_id: str, *, status: str, metadata: dict | N
                     current = json.loads(current)
                 except json.JSONDecodeError:
                     current = {}
-            fields["node_metadata"] = {**current, **metadata}
-        await db.update_invocation(invocation_id, **fields)
+            await db.update_invocation(
+                invocation_id,
+                node_metadata={**current, **metadata},
+            )
         return await db.get_invocation(invocation_id)
 
 

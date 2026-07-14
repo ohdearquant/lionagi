@@ -41,6 +41,11 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
 | orchestration | 0033-0040 | agent-roles | 0041-0046 |
 | hooks | 0047-0049 | utilities | 0050-0054 |
 
+ADR-0094 and ADR-0095 are documented numbering exceptions: both retain numbers from the
+substrates block (0090-0095) despite declaring `scheduling-control-plane` as their area.
+They landed in that range before the area mismatch was identified; retaining the numbers
+avoids collisions with other ADR work and preserves existing inbound references.
+
 ## Index
 
 ### core-data-model (0001-0005)
@@ -220,9 +225,10 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
 - [ADR-0093](ADR-0093-external-memory-adapter-fidelity-contract.md) — External memory adapter
   fidelity contract
 - [ADR-0094](ADR-0094-automated-pr-review-pipeline.md) — Automated PR-review pipeline over
-  github-poll schedules
+  github-poll schedules (area: scheduling-control-plane; numbering exception)
 - [ADR-0095](ADR-0095-run-terminal-callbacks-and-orphan-recovery.md) — Run-terminal
-  callbacks and orphan recovery (supersedes ADR-0060)
+  callbacks and orphan recovery (area: scheduling-control-plane; numbering exception;
+  supersedes ADR-0060)
 - [ADR-0088](ADR-0088-plugin-system.md) — Plugin system (directory-bundle manifest with
   lazy activation; number from the adjacent free gap — the substrates block is exhausted)
 
