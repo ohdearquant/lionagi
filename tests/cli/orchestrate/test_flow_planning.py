@@ -102,6 +102,32 @@ async def test_over_max_tasks_plan_raises_flow_plan_error(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_over_max_tasks_on_retry_raises_flow_plan_error(tmp_path):
+    """Empty first plan triggers the reinforced retry; the retry result itself
+    overshoots max_tasks. plan() raises ValueError from that *second* call site,
+    which must also be translated into FlowPlanError — not just the first call
+    site (test_over_max_tasks_plan_raises_flow_plan_error above). A regression
+    at this second try/except would let a bare ValueError escape uncaught on
+    the retry path specifically."""
+    orc = _FakeOrcBranch(
+        [
+            SimpleNamespace(assignments=[]),  # triggers the reinforced retry
+            SimpleNamespace(
+                assignments=[
+                    TaskAssignment(task="a", assignee="researcher"),
+                    TaskAssignment(task="b", assignee="architect"),
+                ]
+            ),  # retry result exceeds max_tasks=1
+        ]
+    )
+    with pytest.raises(FlowPlanError, match="exceeding max_tasks"):
+        await _run_flow_inner(
+            "codex/gpt-5.5", "task", env=_env(tmp_path, orc), dry_run=True, max_ops=1
+        )
+    assert len(orc.operate_calls) == 2
+
+
+@pytest.mark.asyncio
 async def test_unknown_assignees_dropped_then_loud_fail(tmp_path):
     """plan() drops assignees outside the roster; an all-unknown plan is empty."""
     bad = SimpleNamespace(assignments=[TaskAssignment(task="x", assignee="not_a_role")])
