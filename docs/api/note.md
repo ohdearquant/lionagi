@@ -76,7 +76,7 @@ flat = n.flatten(sep="|")
 # {"a|b": 1, "a|c|0": 2, "a|c|1": 3}
 
 restored = Note.unflatten(flat, sep="|")
-# Note(a={"b": 1, "c": {0: 2, 1: 3}})
+# Note(a={"b": 1, "c": [2, 3]})
 ```
 
 `flatten` accepts `max_depth: int | None` to limit recursion depth.

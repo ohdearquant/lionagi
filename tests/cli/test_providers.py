@@ -341,6 +341,8 @@ def test_build_imodel_from_spec_mixed_case_xhigh_clamps_claude_to_high(monkeypat
         ("gpt-5.4", "ultra", "xhigh"),
         ("gpt-5.4-mini", "max", "xhigh"),
         ("gpt-5.4-mini", "ultra", "xhigh"),
+        ("gpt-5.3-codex", "max", "xhigh"),
+        ("gpt-5.3-codex", "ultra", "xhigh"),
         ("gpt-5.3-codex-spark", "max", "xhigh"),
         ("gpt-5.3-codex-spark", "ultra", "xhigh"),
         ("codex-auto-review", "max", "xhigh"),
@@ -355,6 +357,25 @@ def test_clamp_codex_effort_is_model_aware(model, effort, expected):
     from lionagi.service.providers import _clamp_codex_effort
 
     assert _clamp_codex_effort(effort, model) == expected
+
+
+def test_codex_code_request_clamps_effort_when_model_kwarg_omitted():
+    """CodexCodeRequest(reasoning_effort="max") with no explicit model= kwarg
+    must clamp against the field's own default model, matching the result of
+    passing that same default explicitly. Pydantic v2 `mode="before"`
+    validators only see keys the caller actually supplied — omitting `model`
+    must not silently skip the clamp for the request that will actually be
+    sent against the default model."""
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    omitted = CodexCodeRequest(prompt="hello", reasoning_effort="max")
+    explicit_default = CodexCodeRequest(
+        prompt="hello", reasoning_effort="max", model="gpt-5.3-codex"
+    )
+
+    assert omitted.model == "gpt-5.3-codex"
+    assert omitted.reasoning_effort == explicit_default.reasoning_effort
+    assert omitted.reasoning_effort == "xhigh"
 
 
 def test_build_imodel_from_spec_codex_sol_keeps_max(monkeypatch):

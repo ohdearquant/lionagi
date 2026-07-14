@@ -608,3 +608,46 @@ class TestMultiColonTargetBypass:
 
         fn = PluginRegistry.activate_target("p1", "tools/t.py:t")
         assert fn() == 7
+
+
+class TestSnapshotGenerationMonotonicity:
+    """``snapshot_generation()`` is a trust token: a consumer that already
+    fully revalidated a plugin entry treats an unchanged token as ``nothing
+    was reset since`` and skips the expensive full recheck. An ``id()``-based
+    token is unsound for this: ``id()`` is a memory address, reusable once
+    the prior snapshot list is garbage-collected, so a rebuilt snapshot can
+    land at the SAME address as an earlier one a caller cached -- making a
+    stale, no-longer-eligible entry look current. A monotonic counter that
+    only ever increases cannot repeat.
+    """
+
+    def test_generation_strictly_increases_across_many_resets(self, write_plugin):
+        _write_tool_plugin(write_plugin, "p1")
+        _trust_by_dir_name("p1")
+
+        seen: list[int] = []
+        for _ in range(40):
+            PluginRegistry.reset()
+            seen.append(PluginRegistry.snapshot_generation())
+
+        assert seen == sorted(seen), "generation must never decrease across resets"
+        assert len(set(seen)) == len(seen), (
+            "generation token repeated across resets -- a rebuilt snapshot "
+            "must never be able to masquerade as an earlier one"
+        )
+        assert all(b > a for a, b in zip(seen, seen[1:])), (
+            "generation must strictly increase on every rebuild, not merely stay non-decreasing"
+        )
+
+    def test_generation_is_stable_between_resets(self, write_plugin):
+        _write_tool_plugin(write_plugin, "p1")
+        _trust_by_dir_name("p1")
+        PluginRegistry.reset()
+
+        first = PluginRegistry.snapshot_generation()
+        # Repeat reads (and touching the cached snapshot via list_plugins())
+        # without an intervening reset() must not bump the token.
+        PluginRegistry.list_plugins()
+        second = PluginRegistry.snapshot_generation()
+
+        assert first == second

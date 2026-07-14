@@ -99,6 +99,42 @@ describe("laneFor — status projection", () => {
   });
 });
 
+// A soft ("fyi" urgency) EscalationRequest resolves to route="notify"
+// (lionagi/operations/flow.py::_schedule_escalation) and fires NodeEscalated
+// purely for observability — the node keeps working toward its own terminal
+// state. laneFor must not map every "NodeEscalated" kind straight to the
+// terminal "escalated" lane regardless of route — that pins the op into
+// "escalated" forever even after a later NodeCompleted.
+describe("laneFor — NodeEscalated route handling", () => {
+  it("route=notify (soft help signal) does not move the lane off running", () => {
+    expect(
+      laneFor(["NodeStarted", { kind: "NodeEscalated", route: "notify" }]),
+    ).toBe("running");
+  });
+
+  it("route=notify does not block a later NodeCompleted from landing", () => {
+    expect(
+      laneFor(["NodeStarted", { kind: "NodeEscalated", route: "notify" }, "NodeCompleted"]),
+    ).toBe("succeeded");
+  });
+
+  it("route=higher_tier (blocked urgency) still escalates", () => {
+    expect(
+      laneFor(["NodeStarted", { kind: "NodeEscalated", route: "higher_tier" }]),
+    ).toBe("escalated");
+  });
+
+  it("route=give_up (blocked urgency) still escalates", () => {
+    expect(laneFor(["NodeStarted", { kind: "NodeEscalated", route: "give_up" }])).toBe(
+      "escalated",
+    );
+  });
+
+  it("a bare NodeEscalated string (no route) still escalates — back-compat", () => {
+    expect(laneFor(["NodeStarted", "NodeEscalated"])).toBe("escalated");
+  });
+});
+
 // ── buildOperationGraph — core fold ──────────────────────────────────────────
 
 describe("buildOperationGraph — empty-op_id exclusion", () => {
@@ -154,6 +190,27 @@ describe("buildOperationGraph — status fold", () => {
     const events = [ev("1", "NodeStarted", "op-a", {}, 1), ev("2", "NodePaused", "op-a", {}, 2)];
     const g = buildOperationGraph(events);
     expect(g.nodes[0]!.status).toBe("paused");
+  });
+});
+
+describe("buildOperationGraph — NodeEscalated route handling", () => {
+  it("a route=notify NodeEscalated does not pin the op into the escalated status", () => {
+    const events = [
+      ev("1", "NodeStarted", "op-a", {}, 1),
+      ev("2", "NodeEscalated", "op-a", { route: "notify" }, 2),
+      ev("3", "NodeCompleted", "op-a", {}, 3),
+    ];
+    const g = buildOperationGraph(events);
+    expect(g.nodes[0]!.status).toBe("succeeded");
+  });
+
+  it("a route=higher_tier NodeEscalated still reports escalated", () => {
+    const events = [
+      ev("1", "NodeStarted", "op-a", {}, 1),
+      ev("2", "NodeEscalated", "op-a", { route: "higher_tier" }, 2),
+    ];
+    const g = buildOperationGraph(events);
+    expect(g.nodes[0]!.status).toBe("escalated");
   });
 });
 

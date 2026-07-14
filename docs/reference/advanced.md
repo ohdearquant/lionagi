@@ -51,7 +51,9 @@ model = li.iModel(
 ```
 
 When the queue fills, new requests block until capacity frees.
-`capacity_refresh_time` sets the sliding window for RPM/TPM limits.
+`capacity_refresh_time` sets the periodic reset interval for the request and token
+counters. At each interval, available capacity is restored to the configured limits;
+this is a fixed reset schedule, not a rolling or sliding window.
 
 **Independent buckets for parallel workflows** — use `model.copy()` for separate counters:
 

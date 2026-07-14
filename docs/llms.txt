@@ -1,46 +1,69 @@
-# LionAGI
+# LionAGI 0.28 documentation map
 
-> LionAGI is an Intelligence Operating System for orchestrating multi-agent AI workflows from the command line or Python. It wraps any LLM provider behind a uniform Branch and Session API, with structured output, tool calling, ReAct loops, and DAG-based multi-agent flows.
+> LionAGI is a governed multi-agent orchestration framework. It runs CLI-backed
+> coding agents and API models through the same orchestration system, with typed
+> Python state, dependency-aware flows, durable run records, permissions, and
+> operational control through the CLI or Lion Studio.
 
-When generating code that uses LionAGI, prefer these current APIs:
+## Choose the right surface
 
-- `branch.operate(instruction=..., response_format=..., tools=...)` is the universal Python LLM turn: it handles tool calls, structured output, and streaming, and routes automatically to API or CLI backends. Use `branch.chat()` for raw message objects and `branch.run()` for live stream chunks. `branch.instruct()` was removed in 0.22.6.
-- `Session` orchestrates multiple branches and executes DAGs via `Session.flow()`.
-- The command-line entrypoint is `li`, with subcommands `agent` (one-shot subagent), `team` (inter-agent messaging), and `orchestrate` / `o` (multi-agent patterns).
-- Install with `pip install lionagi` or `uv add lionagi`. Requires Python 3.10+.
+- One task or one continuing conversation: `li agent`
+- Independent parallel workers: `li o fanout`
+- Dependent or reactive work planned as a DAG: `li o flow`
+- A repeatable, version-controlled workflow: `li play`
+- A typed application or custom DAG: `Branch`, `Builder`, and `Session` in Python
+- Durable inspection, control, schedules, and UI: `li monitor`, `li wait`,
+  `li o ctl`, `li schedule`, and `li studio`
 
-## Docs
-- [Install](https://ohdearquant.github.io/lionagi/getting-started/install/): install LionAGI and the `li` CLI
-- [First Flow](https://ohdearquant.github.io/lionagi/getting-started/first-flow/): a minimal end-to-end example
-- [Concepts](https://ohdearquant.github.io/lionagi/concepts/): Branch, Session, operate, providers, and the mental model
-- [CLI Reference](https://ohdearquant.github.io/lionagi/cli-reference/): full `li agent`, `li team`, and `li orchestrate` reference
+## Python contract
 
-## API
-- [Branch](https://ohdearquant.github.io/lionagi/api/branch/): the primary conversation and agent surface
-- [Session](https://ohdearquant.github.io/lionagi/api/session/): multi-branch orchestration and `flow()`
-- [Operations](https://ohdearquant.github.io/lionagi/api/operations/): operate, chat, parse, ReAct, select, communicate
-- [iModel](https://ohdearquant.github.io/lionagi/api/imodel/): provider wrapper and endpoint routing
-- [Flow](https://ohdearquant.github.io/lionagi/api/flow/): DAG and multi-agent execution
-- [Team](https://ohdearquant.github.io/lionagi/api/team/): inter-agent messaging
+- `Branch.communicate(...)` records a normal conversation turn. It does not
+  execute tools.
+- `Branch.operate(instruction=..., response_format=..., tools=...,
+  actions=True)` is the primary structured, tool-aware operation.
+- `Branch.chat(...)` is a lower-level model call and returns text by default;
+  pass `return_ins_res_message=True` only when instruction/response messages are
+  needed.
+- `Branch.ReAct(...)` runs iterative reasoning and action loops.
+- `Branch.run(...)` streams a CLI-backed agent endpoint.
+- `Builder` is the public alias for `OperationGraphBuilder`; `Session.flow(...)`
+  executes its dependency graph and returns a wrapper dictionary containing
+  operation results and final context.
+- The curated top-level exports live in `lionagi/__init__.py`. Agent
+  configuration (`AgentSpec`, `PermissionPolicy`, `create_agent`) lives under
+  `lionagi.agent`.
 
-## Cookbook
-- [Codebase Audit](https://ohdearquant.github.io/lionagi/cookbook/codebase-audit/)
-- [Research Synthesis](https://ohdearquant.github.io/lionagi/cookbook/research-synthesis/)
-- [Multi-Model Pipeline](https://ohdearquant.github.io/lionagi/cookbook/multi-model-pipeline/)
-- [Team Coordination](https://ohdearquant.github.io/lionagi/cookbook/team-coordination/)
-- [Resumable Background](https://ohdearquant.github.io/lionagi/cookbook/resumable-background/)
+## Start
 
-## Optional
-- [Providers](https://ohdearquant.github.io/lionagi/reference/providers/): supported LLM providers and configuration
-- [Protocols (core)](https://ohdearquant.github.io/lionagi/reference/protocols-core/): Element, Pile, Progression, and Graph primitives
-- [Agent & Hooks](https://ohdearquant.github.io/lionagi/reference/agent-hooks/): agent specs, factory, and lifecycle hooks
-- [Operations & Service](https://ohdearquant.github.io/lionagi/reference/operations-service/)
-- [Engines](https://ohdearquant.github.io/lionagi/reference/engines/)
-- [Casts](https://ohdearquant.github.io/lionagi/reference/casts/)
-- [Outcomes & Work](https://ohdearquant.github.io/lionagi/reference/outcomes-work/)
-- [Testing, State & Session](https://ohdearquant.github.io/lionagi/reference/testing-state-session/)
-- [Advanced](https://ohdearquant.github.io/lionagi/reference/advanced/)
+- [Overview](https://ohdearquant.github.io/lionagi/)
+- [Install and authenticate](https://ohdearquant.github.io/lionagi/getting-started/install/)
+- [First agent and flow](https://ohdearquant.github.io/lionagi/getting-started/first-flow/)
+- [Python quickstart](https://ohdearquant.github.io/lionagi/getting-started/python/)
+- [Choose a surface](https://ohdearquant.github.io/lionagi/choosing-a-surface/)
+
+## Build and orchestrate
+
+- [Orchestration guide](https://ohdearquant.github.io/lionagi/guides/orchestration/)
+- [Core concepts](https://ohdearquant.github.io/lionagi/concepts/)
+- [Branch](https://ohdearquant.github.io/lionagi/api/branch/)
+- [Session](https://ohdearquant.github.io/lionagi/api/session/)
+- [DAG workflows](https://ohdearquant.github.io/lionagi/api/flow/)
+- [Agent configuration and permissions](https://ohdearquant.github.io/lionagi/api/agent-config/)
+- [Models and providers](https://ohdearquant.github.io/lionagi/reference/providers/)
+
+## Operate
+
+- [Durable operations](https://ohdearquant.github.io/lionagi/guides/durable-operations/)
+- [Studio and schedules](https://ohdearquant.github.io/lionagi/guides/studio/)
+- [CLI reference](https://ohdearquant.github.io/lionagi/cli-reference/)
 - [Troubleshooting](https://ohdearquant.github.io/lionagi/reference/troubleshooting/)
-- [Migration: 0.22.5 to 0.22.6](https://ohdearquant.github.io/lionagi/migration/0.22.5-to-0.22.6/)
-- [Contributing](https://ohdearquant.github.io/lionagi/contributing/): development setup and guidelines
-- [Source on GitHub](https://github.com/ohdearquant/lionagi): code, issues, and releases
+
+## Architecture and source
+
+- [Reference map](https://ohdearquant.github.io/lionagi/reference/)
+- [ADR index](https://ohdearquant.github.io/lionagi/adr/)
+- [Contributing](https://ohdearquant.github.io/lionagi/contributing/)
+- [GitHub repository](https://github.com/ohdearquant/lionagi)
+
+Treat live code, tests, `li ... --help`, and accepted ADRs as authoritative.
+Proposed ADRs describe direction and must not be used as shipped CLI syntax.

@@ -131,6 +131,10 @@ class ShowReasons:
     BLOCKED_NO_READY_PLAYS = "show.blocked.no_ready_plays"
     COMPLETED_FINAL_GATE = "show.completed.final_gate"
     ABORTED_OPERATOR = "show.aborted.operator"
+    # A show reached completion without ever landing a `_final_verdict.json`
+    # (e.g. the last play merged and nothing else ran a final gate); derived
+    # by the lifecycle reaper from every child play's on-disk status.
+    COMPLETED_ALL_PLAYS_MERGED = "show.completed.all_plays_merged"
 
 
 class ScheduleReasons:
