@@ -36,7 +36,6 @@ class ActionManager(Manager):
         self._tool_pre_hooks: list[ToolPreHook] = []
         self._tool_post_hooks: list[ToolPostHook] = []
         self._plugin_shadow_warned: set[tuple[str, str]] = set()
-        self._plugin_shadow_resolution_cache: dict[tuple[str, int], Any] = {}
 
         tools = []
         if args:
@@ -177,12 +176,7 @@ class ActionManager(Manager):
 
         if not PluginRegistry.list_plugins():
             return
-        cache_key = (name, PluginRegistry.snapshot_generation())
-        if cache_key in self._plugin_shadow_resolution_cache:
-            resolved = self._plugin_shadow_resolution_cache[cache_key]
-        else:
-            resolved = PluginRegistry.resolve_tool_target(name)
-            self._plugin_shadow_resolution_cache[cache_key] = resolved
+        resolved = PluginRegistry.resolve_tool_target(name)
         if resolved is None:
             return
         warn_key = (resolved.plugin_name, name)
