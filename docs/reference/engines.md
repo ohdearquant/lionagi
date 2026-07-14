@@ -42,7 +42,7 @@ Extends `Engine` with:
 | `turn_timeout_s` | `600.0` | Wall-clock cap for each implementer model turn, including fix turns. A timeout records `turn_timeout` and drives the emission-repair path; `None` disables the cap. |
 | `strict_spec` | `False` | Raise `ValueError` on the first spec-lint warning before creating an agent. When `False`, warnings are emitted and execution continues. |
 | `heartbeat_interval_s` | `30.0` | Seconds between implement-stage `WorkerHeartbeat` checks; file mtime changes also emit `WorkerActivity`. `None` disables heartbeats. |
-| `stage_timeout_s` | `None` | Optional wall-clock cap for implement and fix stages. A timeout emits `WorkAborted` and aborts the run. |
+| `stage_timeout_s` | `None` | Optional wall-clock cap applied to every model stage. A timeout always emits `WorkAborted` (with a `hard` flag). Implement and fix timeouts are hard: the run aborts and concludes failed. Plan and verify timeouts are soft: the stage is bounded but the run recovers — a timed-out planner degrades to the raw task text, and a timed-out verifier omits its advisory verdict while the test result still decides pass/fail. |
 | `worker_extra_tools` | `()` | Additional tool names granted only to the implementer, appended to `coding_tools`. |
 | `worker_mcp_servers` | `None` | Optional MCP server names granted only to the implementer. |
 | `worker_extra_prompt` | `None` | Optional extra prompt text passed only to the implementer. |
