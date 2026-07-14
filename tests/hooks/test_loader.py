@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import ast
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -18,6 +20,14 @@ from lionagi.hooks import (
     register_handler,
     resolve_handler,
 )
+
+ROOT = Path(__file__).resolve().parents[2]
+AGENT_HOOKS_REFERENCE = ROOT / "docs" / "reference" / "agent-hooks.md"
+
+
+def _agent_hooks_contract() -> str:
+    return " ".join(AGENT_HOOKS_REFERENCE.read_text().replace("`", "").split())
+
 
 # ── Registry ──────────────────────────────────────────────────────────────────
 
@@ -157,24 +167,50 @@ async def test_direct_session_message_emission_has_no_context_incompatible_defau
     assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
 
 
-async def test_low_level_bus_builder_applies_declarative_overrides():
-    """Explicit bus construction is the supported declarative override path."""
-    calls = []
+def test_agent_hooks_contract_is_documentation_only_and_caller_owned():
+    # The selected contract is intentionally documentation-only: production Session and
+    # AgentSpec construction do not consume declarative hook mappings automatically.
+    reference = _agent_hooks_contract()
 
-    async def capture(**kwargs):
-        calls.append(kwargs)
+    assert "build_session_bus(agent_hooks=...) is a low-level construction utility" in reference
+    assert "callers that explicitly own a Session bus" in reference
+    assert (
+        "It is not consumed automatically by Session or AgentSpec/profile construction" in reference
+    )
 
-    name = "capture_low_level_override_for_test"
-    register_handler(name, capture)
-    try:
-        bus = build_session_bus({"api.post_call": [name]})
-        await bus.emit(HookPoint.API_POST_CALL, model="test-model")
-    finally:
-        from lionagi.hooks.loader import _REGISTRY
 
-        _REGISTRY.pop(name, None)
+def test_artifact_created_is_deprecated_and_has_no_production_emit_site():
+    reference = _agent_hooks_contract()
+    assert "ARTIFACT_CREATED is retained only for enum compatibility" in reference
+    assert "no emit site or payload contract exists" in reference
 
-    assert calls == [{"model": "test-model"}]
+    emit_sites = []
+    for path in (ROOT / "lionagi").rglob("*.py"):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Attribute) or node.func.attr not in {
+                "emit",
+                "blocking_emit",
+            }:
+                continue
+            point_args = list(node.args[:1])
+            point_args.extend(kw.value for kw in node.keywords if kw.arg == "point")
+            for point_arg in point_args:
+                is_enum_member = (
+                    isinstance(point_arg, ast.Attribute)
+                    and point_arg.attr == "ARTIFACT_CREATED"
+                    and isinstance(point_arg.value, ast.Name)
+                    and point_arg.value.id == "HookPoint"
+                )
+                is_value = (
+                    isinstance(point_arg, ast.Constant) and point_arg.value == "artifact.created"
+                )
+                if is_enum_member or is_value:
+                    emit_sites.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+
+    assert emit_sites == []
 
 
 # ── Deprecation alias ─────────────────────────────────────────────────────────
