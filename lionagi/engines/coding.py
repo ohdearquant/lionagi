@@ -973,9 +973,7 @@ class CodingEngine(Engine):
         except asyncio.TimeoutError:
             elapsed = round(monotonic() - t0, 1)
             reason = f"stage '{stage_name}' exceeded {self.stage_timeout_s}s wall-clock limit"
-            run.notify(
-                "WorkAborted", stage=stage_name, reason=reason, elapsed_s=elapsed, hard=hard
-            )
+            run.notify("WorkAborted", stage=stage_name, reason=reason, elapsed_s=elapsed, hard=hard)
             if hard:
                 run._aborted = True
             return True
