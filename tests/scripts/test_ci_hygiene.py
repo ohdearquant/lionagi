@@ -173,6 +173,27 @@ def test_internal_identifier_in_python_source_is_rejected(public_repo: Path, sou
     assert "internal namespace identifiers" in result.stdout
 
 
+def test_python_lambda_in_fstring_replacement_field_is_accepted(public_repo: Path) -> None:
+    (public_repo / "cookbooks" / "example.py").write_text('value = f"{(lambda:x + 1)()}"\n')
+
+    result = _run_hygiene(public_repo)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_internal_identifier_in_fstring_literal_segment_is_rejected(
+    public_repo: Path,
+) -> None:
+    (public_repo / "cookbooks" / "example.py").write_text(
+        'value = f"assigned to lambda:sample-unit: {1}"\n'
+    )
+
+    result = _run_hygiene(public_repo)
+
+    assert result.returncode != 0
+    assert "internal namespace identifiers" in result.stdout
+
+
 @pytest.mark.parametrize(
     "content",
     [
@@ -200,6 +221,27 @@ def test_possessive_founder_name_mention_is_still_rejected(public_repo: Path) ->
 
     assert result.returncode != 0
     assert "founder-name process narration" in result.stdout
+
+
+def test_founder_actor_narration_with_public_name_on_same_line_is_rejected(
+    public_repo: Path,
+) -> None:
+    (public_repo / "docs" / "example.md").write_text(
+        "Ocean approved the plan after Haiyang reviewed it.\n"
+    )
+
+    result = _run_hygiene(public_repo)
+
+    assert result.returncode != 0
+    assert "founder-name process narration" in result.stdout
+
+
+def test_geographic_ocean_prose_is_accepted(public_repo: Path) -> None:
+    (public_repo / "docs" / "example.md").write_text("Pacific Ocean currents are studied here.\n")
+
+    result = _run_hygiene(public_repo)
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize(

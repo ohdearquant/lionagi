@@ -237,13 +237,11 @@ _hygiene_rg_scan() {
   return 2
 }
 
-# Same contract as _hygiene_rg_scan (0=pass, 1=match found, 2=scanner error),
-# plus one allowlist step: lines carrying the founder's public byline/credit
-# ("Haiyang (Ocean) Li", "Haiyang Li - Ocean", the mkdocs.yml copyright line
-# "Copyright ... Ocean Li ...") are intentionally public, not internal
-# process narration -- exclude those before deciding pass/fail. Public credit
-# always pairs "Ocean" with the surname ("Li") or the legal first name
-# ("Haiyang"); leaked internal narration uses the bare informal name alone.
+# Same contract as _hygiene_rg_scan (0=pass, 1=match found, 2=scanner error).
+# Public credits are allowlisted only as complete, known lines; sharing a line
+# with a public name must not hide separate process narration. Of the remaining
+# mentions, retain only actor/action, possessive-directive, role-level, and
+# passive-attribution forms so geographic or common-noun uses do not fire.
 _hygiene_founder_name_scan() {
   local rg_bin="$1"
   local label="$2"
@@ -259,8 +257,13 @@ _hygiene_founder_name_scan() {
     return 2
   fi
 
+  local public_credit_re
+  public_credit_re='^[^:]+:[0-9]+:(lionagi: author Haiyang \(Ocean\) Li|Author: Haiyang Li - Ocean|copyright: Copyright &copy; 2024-2026 Ocean Li and LionAGI Contributors)$'
+  local process_re
+  process_re="(^|[^[:alnum:]_])Ocean('s[[:space:]]+(directive|direction|decision|request|approval|instruction|guidance|review|feedback|plan|preference|mandate)|[[:space:]]+(approved|confirmed|said|says|wants|wanted|decided|directed|reviewed|requested|instructed|asked|agreed|rejected|preferred|mandated)|-level)([^[:alnum:]_]|$)|(^|[^[:alnum:]_])(approved|confirmed|directed|reviewed|requested|instructed)([[:space:]]+[[:alnum:]_-]+){0,3}[[:space:]]+by[[:space:]]+Ocean([^[:alnum:]_]|$)"
+
   local leaked
-  leaked="$(printf '%s\n' "$output" | grep -vE 'Haiyang|Ocean Li' || true)"
+  leaked="$(printf '%s\n' "$output" | grep -vE "$public_credit_re" | grep -E "$process_re" || true)"
   if [ -n "$leaked" ]; then
     printf '%s\n' "$leaked"
     echo "  FAIL: $label found"

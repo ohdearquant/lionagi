@@ -12,6 +12,7 @@ as the bare ``lambda:`` keyword itself.
 
 from __future__ import annotations
 
+import ast
 import re
 import sys
 import tokenize
@@ -29,12 +30,35 @@ if _FSTRING_MIDDLE is not None:
     _TEXT_TOKEN_TYPES.add(_FSTRING_MIDDLE)
 
 
+def _pre312_fstring_literal_segments(token_text: str) -> list[str] | None:
+    """Return literal segments when *token_text* is a pre-3.12 f-string token."""
+    if _FSTRING_MIDDLE is not None:
+        return None
+
+    prefix = re.match(r"(?i:[rubf]*)", token_text)
+    if prefix is None or "f" not in prefix.group().lower():
+        return None
+
+    expression = ast.parse(token_text, mode="eval")
+    if not isinstance(expression.body, ast.JoinedStr):
+        return None
+    return [
+        value.value
+        for value in expression.body.values
+        if isinstance(value, ast.Constant) and isinstance(value.value, str)
+    ]
+
+
 def _leaked_identifiers(source: str) -> list[str]:
     lines = iter(source.splitlines(keepends=True))
     found: list[str] = []
     for tok in tokenize.generate_tokens(lambda: next(lines, "")):
         if tok.type in _TEXT_TOKEN_TYPES:
-            found.extend(RESERVED_IDENTIFIER.findall(tok.string))
+            literal_segments = _pre312_fstring_literal_segments(tok.string)
+            if literal_segments is None:
+                literal_segments = [tok.string]
+            for text in literal_segments:
+                found.extend(RESERVED_IDENTIFIER.findall(text))
     return found
 
 
