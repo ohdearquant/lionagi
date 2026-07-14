@@ -85,8 +85,9 @@ describe("WorkerCanvas.tsx — source contract for the compact MiniMap fix", () 
     expect(src).toMatch(/shouldShowMiniMap\(compact, nodes\.length\)/);
   });
 
-  it("docks the minimap bottom-right and sizes it down", () => {
+  it("docks the non-compact minimap bottom-right and keeps React Flow's default size", () => {
+    expect(shouldShowMiniMap(false, 11)).toBe(true);
     expect(src).toMatch(/position="bottom-right"/);
-    expect(src).toMatch(/style=\{\{ width: \d+, height: \d+ \}\}/);
+    expect(src).not.toMatch(/style=\{\{ width: \d+, height: \d+ \}\}/);
   });
 });

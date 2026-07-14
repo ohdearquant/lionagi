@@ -1,5 +1,22 @@
-import { describe, it, expect } from "vitest";
+import { act } from "react";
+import * as React from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { IntlProvider } from "use-intl";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import enMessages from "@/messages/en.json";
+
+vi.mock("@/components/ui/Markdown", async () => {
+  const ReactModule = await import("react");
+  return {
+    default: ({ children }: { children?: React.ReactNode }) =>
+      ReactModule.createElement("div", null, children),
+  };
+});
+
 import {
+  default as RunStepCard,
   runMessageMemoKey,
   runMessagesEqualForMemo,
   stepPropsEqual,
@@ -7,6 +24,8 @@ import {
   extractFilePaths,
 } from "./RunStepCard";
 import type { RunMessage, RunStep } from "@/lib/types";
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 function toolMessage(overrides: Partial<RunMessage> = {}): RunMessage {
   return {
@@ -196,5 +215,108 @@ describe("extractFilePaths — the known file surface behind file links", () => 
 
   it("returns an empty list when there is no file activity", () => {
     expect(extractFilePaths([])).toEqual([]);
+  });
+});
+
+describe("RunStepCard overview message browser", () => {
+  let container: HTMLDivElement | null = null;
+  let root: Root | null = null;
+
+  afterEach(() => {
+    if (root) {
+      act(() => root?.unmount());
+    }
+    container?.remove();
+    container = null;
+    root = null;
+  });
+
+  async function mount(messages: RunMessage[], extraProps: Record<string, unknown> = {}) {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(
+        React.createElement(
+          IntlProvider,
+          { locale: "en", messages: enMessages } as unknown as React.ComponentProps<
+            typeof IntlProvider
+          >,
+          React.createElement(RunStepCard, {
+            step: step({}, messages),
+            defaultExpanded: true,
+            ...extraProps,
+          }),
+        ),
+      );
+      await Promise.resolve();
+    });
+  }
+
+  async function click(button: HTMLButtonElement) {
+    await act(async () => {
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+  }
+
+  it("shows the complete latest message in a bounded scroll container", async () => {
+    const longContent = `${"a".repeat(1300)}-complete-tail`;
+    await mount([{ role: "assistant", content: longContent }]);
+
+    const body = container?.querySelector<HTMLElement>("[data-overview-message-body]");
+    expect(body).not.toBeNull();
+    expect(body?.className).toContain("max-h-");
+    expect(body?.className).toContain("overflow-y-auto");
+    expect(body?.textContent).toContain("-complete-tail");
+  });
+
+  it("moves backward and forward over every step message", async () => {
+    await mount([
+      { role: "user", content: "first prompt" },
+      { role: "assistant", content: "middle response" },
+      { role: "assistant", content: "latest response" },
+    ]);
+
+    expect(container?.textContent).toContain("latest response");
+    const previous = container?.querySelector<HTMLButtonElement>(
+      'button[aria-label="Previous message"]',
+    );
+    expect(previous).not.toBeNull();
+    await click(previous!);
+    expect(container?.textContent).toContain("middle response");
+
+    const next = container?.querySelector<HTMLButtonElement>('button[aria-label="Next message"]');
+    expect(next).not.toBeNull();
+    await click(next!);
+    expect(container?.textContent).toContain("latest response");
+  });
+
+  it("requests an older page when previous is used at the first loaded message", async () => {
+    const onLoadOlder = vi.fn();
+    await mount(
+      [
+        { role: "user", content: "oldest loaded" },
+        { role: "assistant", content: "latest loaded" },
+      ],
+      { olderMessagesRemaining: 4, onLoadOlder },
+    );
+
+    const previous = container?.querySelector<HTMLButtonElement>(
+      'button[aria-label="Previous message"]',
+    );
+    await click(previous!);
+    await click(previous!);
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("RunDetail older-message wiring", () => {
+  const src = fs.readFileSync(path.resolve(__dirname, "history/RunDetail.tsx"), "utf-8");
+
+  it("passes its existing older-page handler and state into branch cards", () => {
+    expect(src).toMatch(/onLoadOlder=\{handleLoadOlder\}/);
+    expect(src).toMatch(/olderMessagesRemaining=\{hiddenOlderCount\}/);
+    expect(src).toMatch(/loadingOlder=\{loadingOlder\}/);
   });
 });
