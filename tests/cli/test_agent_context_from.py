@@ -523,6 +523,40 @@ async def test_manifest_records_context_from(monkeypatch, tmp_path):
     manifest = json.loads(run.manifest_path.read_text())
     assert manifest["context_from"] == ["some.md"]
     assert manifest["branch_id"] == branch_id
+    assert manifest["agent_name"] is None
+    assert manifest["provider"] == provider
+    assert manifest["status"] == "completed"
+    assert manifest["ended_at"] >= manifest["started_at"]
+
+
+@pytest.mark.asyncio
+async def test_manifest_is_completed_without_context_from(monkeypatch, tmp_path):
+    import lionagi.cli.agent as agent_mod
+
+    _wire_agent_stubs(monkeypatch, tmp_path, operate_return="the result")
+    run = RunDir(
+        run_id="run-no-context",
+        state_root=tmp_path / "state",
+        artifact_root=tmp_path / "artifacts",
+    )
+    run.ensure_state_dirs()
+    monkeypatch.setattr(agent_mod, "allocate_run", lambda: run)
+
+    from lionagi.cli.agent import _run_agent
+
+    _result, provider, branch_id, terminal_status, _sid = await _run_agent(
+        "claude/sonnet",
+        "the actual prompt",
+    )
+
+    assert terminal_status == "completed"
+    manifest = json.loads(run.manifest_path.read_text())
+    assert manifest["branch_id"] == branch_id
+    assert manifest["agent_name"] is None
+    assert manifest["provider"] == provider
+    assert manifest["status"] == "completed"
+    assert manifest["ended_at"] >= manifest["started_at"]
+    assert "context_from" not in manifest
 
 
 @pytest.mark.asyncio

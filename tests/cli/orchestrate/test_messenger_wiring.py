@@ -29,12 +29,31 @@ from lionagi.session.exchange import Exchange
 from lionagi.tools.communication.messenger import LionMessenger
 
 
+class _FakeObserver:
+    def __init__(self):
+        self.registered: list = []
+
+    def observe(self, *keys, handler=None, role=None):
+        self.registered.append((keys, handler, role))
+        return handler
+
+    def unobserve(self, handler):
+        self.registered = [r for r in self.registered if r[1] is not handler]
+
+
 class _FakeSession:
     def __init__(self):
         self.branches: list = []
+        self.observer = _FakeObserver()
 
     def include_branches(self, branch):
         self.branches.append(branch)
+
+    def observe(self, *keys, handler=None, role=None):
+        # Mirror Session.observe -> self.observer.observe so the fanout
+        # node-completion subscription (and its later unobserve cleanup) run
+        # under the fake.
+        return self.observer.observe(*keys, handler=handler, role=role)
 
 
 def _make_env(

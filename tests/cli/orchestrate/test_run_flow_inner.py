@@ -29,6 +29,7 @@ _RUN_DAG_KEYWORDS = {
     "verbose",
     "executor_ref",
     "context",
+    "on_branch_created",
     "spawn_branch_setup",
     "on_op_complete",
 }
@@ -158,6 +159,8 @@ def _assert_run_dag_contract(env, *, expected_max_concurrent: int = 2) -> None:
     assert len(env.session.run_dag_calls) == 1
     graph, kwargs = env.session.run_dag_calls[0]
     assert graph is env.builder.get_graph()
+    on_branch_created = kwargs.pop("on_branch_created")
+    assert callable(on_branch_created)
     assert kwargs == {
         "reactive": False,
         "spawn_type": None,

@@ -57,6 +57,15 @@ async def test_ctl_task_applies_a_queued_control_during_a_live_run(tmp_path, mon
     async with StateDB(tmp_path / "state.db") as db:
         sid = await _make_session(db)
         control = await _queue_control(db, sid, "pause")
+        control_finalized = asyncio.Event()
+        finalize_session_control = StateDB.finalize_session_control
+
+        async def finalize_and_signal(self, control_id, *, result):
+            await finalize_session_control(self, control_id, result=result)
+            if control_id == control["id"]:
+                control_finalized.set()
+
+        monkeypatch.setattr(StateDB, "finalize_session_control", finalize_and_signal)
 
         env = _make_env(tmp_path, live_persist={"db": db, "session_id": sid})
         env.session.include_branches(_FakeBranch("researcher"))
@@ -66,7 +75,7 @@ async def test_ctl_task_applies_a_queued_control_during_a_live_run(tmp_path, mon
 
         async def _fake_run_dag(graph, *, executor_ref, **_kw):
             executor_ref["executor"] = fake_executor
-            await asyncio.sleep(0.1)  # several poll ticks at the patched interval
+            await asyncio.wait_for(control_finalized.wait(), timeout=5)
             return {"operation_results": {"node-0": "ok"}, "spawned_operations": 0}
 
         fake_engine_run = MagicMock()
