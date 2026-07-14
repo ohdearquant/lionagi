@@ -37,10 +37,10 @@ block by raising but cannot transform the Tool's argument mapping. An observatio
 manufacture the stronger mutation contract.
 
 **P5 — the public Session vocabulary is wider than the wired implementation.** `HookPoint` has
-eleven values. Seven have production emit sites: session start/end, branch creation, tool
-pre/post/error, and message addition. `API_PRE_CALL`, `API_POST_CALL`, `API_STREAM_CHUNK`, and
-`ARTIFACT_CREATED` have no production `HookBus` emit site. A declared enum member is not evidence
-that its integration exists.
+thirteen values. Nine have production emit sites: session start/end, branch creation/end, tool
+pre/post/error, message addition, and user prompt submission. `API_PRE_CALL`, `API_POST_CALL`,
+`API_STREAM_CHUNK`, and `ARTIFACT_CREATED` have no production `HookBus` emit site. A declared enum
+member is not evidence that its integration exists.
 
 **P6 — lazy ownership and compatibility surfaces expose real maintenance traps.** Creating
 `Session.hooks` after branches were included does not backfill the bus onto those branches.
@@ -164,6 +164,7 @@ class HookPoint(str, Enum):
     SESSION_START = "session.start"
     SESSION_END = "session.end"
     BRANCH_CREATE = "branch.create"
+    BRANCH_END = "branch.end"
     API_PRE_CALL = "api.pre_call"
     API_POST_CALL = "api.post_call"
     API_STREAM_CHUNK = "api.stream_chunk"
@@ -172,6 +173,7 @@ class HookPoint(str, Enum):
     TOOL_ERROR = "tool.error"
     MESSAGE_ADD = "message.add"
     ARTIFACT_CREATED = "artifact.created"
+    USER_PROMPT_SUBMIT = "prompt.submit"
 
 HookHandler = Callable[..., Awaitable[Any] | Any]
 
@@ -223,14 +225,15 @@ def hook(point: HookPoint | str) -> Callable[[HookHandler], HookHandler]: ...
   `operations/act/act.py`.
 - A `StopHook` at `TOOL_PRE` only stops sibling handlers; the Tool invocation continues.
 - After a successful or `StopHook`-short-circuited chain, the bus records a `HookSignal` through its
-  bound observer. A raised blocking exception exits before recording, so denied `TOOL_PRE`
-  attempts currently have no `HookSignal` audit record.
+  bound observer. When a blocking handler raises, the bus first records a denial signal containing
+  the original payload, `denied: true`, and an exception summary, then re-raises the original
+  exception without running later handlers.
 - Observer recording is best effort. Observer exceptions are logged and swallowed after the
   ordered handler chain has completed.
 - `MESSAGE_ADD` deliberately skips `HookSignal` recording because the Branch separately emits a
   typed `MessageAdded` signal. Its `HookBus` handlers still run.
 
-The eleven-point vocabulary is closed by the enum and pinned by tests. It is not a promise that all
+The thirteen-point vocabulary is closed by the enum and pinned by tests. It is not a promise that all
 points emit. The shipped production matrix is:
 
 | Point | Production source | Payload supplied at that source | State |
@@ -238,23 +241,25 @@ points emit. The shipped production matrix is:
 | `SESSION_START` | CLI persistence setup | `session_id`, `model`, `provider`, `effort`, `agent_name`, `agent_hash`, `invocation_id` | wired |
 | `SESSION_END` | CLI persistence teardown | `session_id`, `status`, `error`, plus available usage fields | wired |
 | `BRANCH_CREATE` | CLI persistence setup | `branch_id`, `model`, `provider`, `agent_name` | wired |
+| `BRANCH_END` | CLI persistence teardown | `branch_id`, `session_id`, `status`, `error` | wired |
 | `TOOL_PRE` | `_act()` before `ActionManager.invoke()` | `tool_name`, `call_id`, `args_summary` | wired, blocking |
 | `TOOL_POST` | `_act()` after successful invoke | `call_id`, `tool_name`, `result_summary`, `duration` | wired |
 | `TOOL_ERROR` | `_act()` when invoke raises | `call_id`, `tool_name`, `error`, `duration=None` | wired |
 | `MESSAGE_ADD` | routed Branch message callback | `branch_id`, `message` | conditionally wired by persistence routing |
+| `USER_PROMPT_SUBMIT` | `chat()`/`run()` before provider invocation when a turn-origin token is present | operation-specific prompt context | wired, blocking, at most once per user-originated turn |
 | `API_PRE_CALL` | none | none | dormant |
 | `API_POST_CALL` | none | none | dormant |
 | `API_STREAM_CHUNK` | none | none | dormant |
-| `ARTIFACT_CREATED` | none | none | dormant |
+| `ARTIFACT_CREATED` | none | none | deprecated compatibility vocabulary; no emit site or payload contract |
 
 `call_id` is a fresh UUID4 string shared by a Tool's pre and post/error emissions. Argument and
 result summaries are truncated to 200 characters. The truncation bounds incidental telemetry size;
 no recorded rationale explains why exactly 200 was selected.
 
 **Why this way.** Sequential execution makes persistence and guard ordering inspectable. A special
-blocking path is necessary because ordinary hooks are intentionally failure-isolated. Recording
-after dispatch preserves the handler discipline while exposing successful hook activity to the
-typed Session transport.
+blocking path is necessary because ordinary hooks are intentionally failure-isolated. Successful
+chains record after dispatch; denied blocking chains record immediately before re-raising so the
+audit trail does not weaken the guard contract.
 
 ### D3 — Session owns bus attachment; `SessionObserver` owns recording and fan-out
 
@@ -324,8 +329,8 @@ the whole stream frame because row metadata adds overhead.
 DEFAULT_HOOKS: dict[HookPoint, list[HookHandler]] = {
     HookPoint.SESSION_START: [persist_session_start],
     HookPoint.SESSION_END: [persist_session_end],
-    HookPoint.MESSAGE_ADD: [persist_message],
     HookPoint.BRANCH_CREATE: [persist_branch_provenance],
+    HookPoint.BRANCH_END: [persist_branch_end],
 }
 
 def register_handler(
@@ -380,17 +385,17 @@ def unroute_message_persistence(
 ) -> None: ...
 ```
 
-Routing creates/accesses the Session bus, removes the default `persist_message` handler from the
-shared bus, assigns the bus to that Branch, registers `branch._persist_via_bus` once on the Branch's
-message callbacks, and adds a Branch-id-filtered async handler. Teardown removes both registrations.
-The adapter is why the CLI persistence path supplies its own callback rather than using two
-competing persistence writes.
+Routing creates/accesses the Session bus, removes any explicitly registered `persist_message`
+compatibility handler, assigns the bus to that Branch, registers `branch._persist_via_bus` once on
+the Branch's message callbacks, and adds a Branch-id-filtered async handler. Teardown removes both
+registrations. The adapter is why the CLI persistence path supplies its own callback rather than
+using two competing persistence writes.
 
-The default `persist_message` signature requires `session_id` and accepts Branch/session
+The name-addressable `persist_message` signature requires `session_id` and accepts Branch/session
 progression ids, but the Branch's routed `MESSAGE_ADD` emission supplies only `branch_id` and
-`message`. Standard CLI routing removes that default before live messages flow. Directly attaching
-the default bus without the routing adapter does not create the missing persistence identifiers;
-its handler error is isolated by non-blocking `HookBus.emit()`.
+`message`. It is therefore deliberately absent from `DEFAULT_HOOKS`; standard CLI routing supplies
+the required persistence context explicitly. Direct Session/Branch use can emit `MESSAGE_ADD`
+without invoking a context-incompatible default handler.
 
 **Why this way.** Session signals need one queryable Flow, while persistence and guards need a
 different dispatch discipline over that transport. Lazy objects avoid Session hook allocation when
@@ -686,7 +691,7 @@ validate action-request envelope
 → SessionObserver.authorize(ToolInvocation)
    └── deny: record GateDenied and return a Tool-shaped denial; no HookBus point fires
 → HookBus TOOL_PRE(summary)
-   └── raised guard: propagate; no TOOL_ERROR and no HookSignal record
+   └── raised guard: record denial HookSignal, then propagate; no TOOL_ERROR
 → ActionManager.invoke()
    └── FunctionCalling Tool.preprocessor(arguments)
        └── callable
@@ -723,9 +728,10 @@ An adapter is valid only when it preserves all of these properties:
 
 The three dormant API HookPoints may acquire meaning only through a typed optional
 service-to-session adapter that states when it emits, what it redacts, and whether it observes a
-stream chunk before or after the service handler. `ARTIFACT_CREATED` remains dormant until the
-artifact owner supplies a payload and emit site. Merely calling `bus.emit()` in tests is not a
-production integration.
+stream chunk before or after the service handler. `ARTIFACT_CREATED` is retained only as deprecated
+compatibility vocabulary until the artifact owner supplies a payload and emit site. A contract test
+pins both the public deprecation notice and the absence of a production emitter; merely calling
+`bus.emit()` in a test would not be production integration.
 
 **Why this way.** Adapters can unify telemetry without erasing control boundaries. That is the
 maximum safe consolidation supported by the shipped code. A stronger universal hook API would
@@ -738,10 +744,11 @@ unlike callables.
   behavior, and Tool guards retain argument transformation.
 - Maintainers must identify the operation and owner before registering a “hook.” Import path alone
   is not cosmetic: it determines lifetime, handler signature, and failure semantics.
-- `HookPoint` catalog consumers must distinguish enum availability from production wiring. Four
-  values currently describe reserved vocabulary only.
-- A `TOOL_PRE` denial is effective but not recorded as a HookSignal because recording follows the
-  successful chain. Audit consumers cannot infer denied attempts from HookSignal history.
+- `HookPoint` catalog consumers must distinguish enum availability from production wiring. Three
+  values currently describe reserved vocabulary only, while `ARTIFACT_CREATED` is deprecated
+  compatibility vocabulary.
+- A `TOOL_PRE` denial records a denial `HookSignal` before the original exception propagates. Audit
+  consumers can identify the denied attempt without changing the blocking result.
 - Session bus attachment currently depends on access order. A Branch can have an observer and no
   HookBus even while its Session later has a bus.
 - Declarative Session hook override utilities exist, but the default Session construction path does
@@ -768,11 +775,11 @@ unlike callables.
 |---|---|---|---|
 | 1 | Make Session hook attachment independent of lazy access order; accept when branches included before or after `Session.hooks` creation receive the same bus and emit the same tool signals. | S | #1964 |
 | 2 | Give the three dormant API `HookPoint` values production semantics through a typed, optional service-to-session observation adapter; accept when a session-bound iModel records API observations without changing service pre-invocation control or standalone iModel behavior. | M | (filled at issue-open time) |
-| 3 | Deprecate the unwired `ARTIFACT_CREATED` point until the artifact owner supplies a typed production emit site; accept when no public HookPoint is advertised without a payload contract and an integration test. | S | (filled at issue-open time) |
-| 4 | Record blocked `TOOL_PRE` attempts without swallowing the blocking exception; accept when denied calls produce an audit signal and the underlying tool is never invoked. | S | #1967 |
+| 3 | `ARTIFACT_CREATED` is deprecated compatibility vocabulary with no production emit site; contract coverage pins both the no-emitter scan and the public warning until an artifact owner supplies a typed payload. | S | — |
+| 4 | Blocked `TOOL_PRE` attempts record a denial signal before the original exception propagates; tests pin both the audit record and the blocked invocation. | S | — |
 | 5 | Align service hook annotations with runtime behavior; accept when `StreamHandlers` describes the actual stream callback arguments and `iModel.create_event()` has one truthful return type covered by static and runtime tests. | S | (filled at issue-open time) |
-| 6 | Either wire declarative Session hook overrides into a production construction boundary or document `build_session_bus(agent_hooks=...)` as an explicit low-level utility; accept when one public construction path and its tests demonstrate the chosen ownership. | M | (filled at issue-open time) |
-| 7 | Make the default `MESSAGE_ADD` handler compatible with the Branch emission payload or remove it from the default bus; accept when direct Session/Branch use cannot invoke `persist_message` without its required session and progression context. | S | (filled at issue-open time) |
+| 6 | Declarative Session hook overrides remain a caller-owned, documentation-only construction contract through `build_session_bus(agent_hooks=...)`; Session and AgentSpec/profile construction do not consume them automatically. | M | — |
+| 7 | `persist_message` remains name-addressable but is absent from `DEFAULT_HOOKS`; direct Session/Branch use cannot invoke it without the explicit routing context it requires. | S | — |
 
 ## Alternatives considered
 
@@ -837,7 +844,7 @@ teardown ownership would be ambiguous, and tests would inherit process-order sta
 process-global structure that remains is only the loader's name-to-callable registry; actual buses
 are per Session.
 
-### Treat all eleven HookPoints as already supported
+### Treat all thirteen HookPoints as already supported
 
 Keeping the broader catalog in documentation would reserve convenient names and avoid deprecation.
 It lost because callers would register handlers that never run and mistake a test-only `emit()` for
