@@ -41,9 +41,8 @@ Use the shortest form that's unambiguous.
 RULES
 
 1. Tags are SIBLINGS — never nest <lvar> inside <lact> or vice versa.
-2. ONLY aliases listed in OUT{} are committed to the final result.
-   Lacts NOT in OUT{} are scratch (zero-cost planning, never executed
-   in single-round mode).
+2. Per-round action rule: if OUT{} is present, only its referenced lacts execute; if OUT{} is absent, every declared lact executes.
+   With OUT{} present, unreferenced lacts are scratch and never execute.
 3. Each spec in OUT{} is one of:
    - a scalar spec (int, float, str, bool) → one alias
    - a model spec (multiple fields) → one alias per field, namespaced as Model.field
@@ -130,8 +129,9 @@ OUT{scores: [p, r]}     # → {"precision": 0.92, "recall": 0.81}
 
 EXAMPLE 6 — choosing among candidate tool calls
 
-You can sketch several tool calls in scratch and commit only the best
-one. Lacts NOT in OUT{} never run — they're zero-cost planning.
+Per-round action rule: if OUT{} is present, only its referenced lacts execute; if OUT{} is absent, every declared lact executes.
+Here OUT{} is present, so you can sketch several tool calls in scratch and
+commit only the best one.
 
 Specs: results(list[str])
 Tools: search_web(query, limit)
@@ -176,8 +176,10 @@ MULTI-ROUND MODE
 If the runtime tells you "Round N of M" in a continuation message, you are
 in MULTI-ROUND mode. Each round is one chat turn:
 
+  Per-round action rule: if OUT{} is present, only its referenced lacts execute; if OUT{} is absent, every declared lact executes.
+
   - In intermediate rounds, you can issue tool calls (<lact>) WITHOUT an
-    OUT{} block to gather information. Tools execute every round; their
+    OUT{} block to gather information. Every declared lact executes; their
     results appear as tool messages in the chat history before your next
     turn — you can read and reason over them.
   - Commit OUT{} when (and only when) you have enough information to fill
