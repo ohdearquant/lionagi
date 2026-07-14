@@ -375,6 +375,7 @@ export default function WorkerCanvas({
               nodeColor={() => "var(--edge-strong)"}
               maskColor="rgba(0, 0, 0, 0.5)"
               className="!bg-surface-raised !border-edge"
+              style={{ width: 120, height: 80 }}
             />
           ) : null}
 
