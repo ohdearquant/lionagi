@@ -6,11 +6,55 @@
  * - It does not import Drawer (master-detail doctrine)
  */
 
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as React from "react";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { IntlProvider } from "use-intl";
+import RunStepCard from "@/components/RunStepCard";
+import enMessages from "@/messages/en.json";
+import type { RunStep } from "@/lib/types";
+
+vi.mock("@/components/ui/Markdown", () => ({
+  default: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
 
 const HISTORY_DIR = path.resolve(__dirname);
+const mountedCards: Array<{ container: HTMLDivElement; root: Root }> = [];
+
+afterEach(() => {
+  for (const { container, root } of mountedCards) {
+    act(() => root.unmount());
+    container.remove();
+  }
+  mountedCards.length = 0;
+});
+
+function renderRunStepCards(steps: RunStep[], defaultExpanded = false) {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  mountedCards.push({ container, root });
+
+  const rerender = (nextSteps: RunStep[]) => {
+    act(() => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          {nextSteps.map((step, index) => (
+            <div key={`${step.step}-${index}`} data-segment-index={index}>
+              <RunStepCard step={step} defaultExpanded={defaultExpanded} />
+            </div>
+          ))}
+        </IntlProvider>,
+      );
+    });
+  };
+
+  rerender(steps);
+  return { container, rerender };
+}
 
 // ─── File existence ───────────────────────────────────────────────────────────
 
@@ -312,6 +356,37 @@ describe("history/RunDetail.tsx — persisted branch totals survive message pagi
 });
 
 describe("history/RunDetail.tsx — live branch aggregates", () => {
+  it("refreshes the rendered memoized card duration after a terminal refetch", () => {
+    const messages = [
+      {
+        role: "assistant",
+        content: "finished",
+        sender: "worker",
+        timestamp: 20,
+      },
+    ];
+    const runningStep: RunStep = {
+      step: "worker",
+      status: "completed",
+      timestamp: 10,
+      messages,
+      result: { agent: "worker", message_count: 1, duration_sec: 10 },
+    };
+    const terminalStep: RunStep = {
+      ...runningStep,
+      messages,
+      result: { ...runningStep.result, duration_sec: 50 },
+    };
+    const { container, rerender } = renderRunStepCards([runningStep]);
+
+    expect(container.textContent).toContain("10s");
+
+    rerender([terminalStep]);
+
+    expect(container.textContent).not.toContain("10s");
+    expect(container.textContent).toContain("50s");
+  });
+
   it("advances duration through a streamed message and terminal refetch without dropping loaded history", async () => {
     const { appendStreamedMessage, branchToRunStep, mergeCompletedSession } =
       await import("./RunDetail");
@@ -360,11 +435,24 @@ describe("history/RunDetail.tsx — live branch aggregates", () => {
       lion_class: "AssistantResponse",
     };
 
-    const streamed = appendStreamedMessage(initial, "branch-1", streamedMessage);
-    expect(branchToRunStep(streamed.branches[0], "running").result?.duration_sec).toBe(40);
-    expect(streamed.branches[0].message_total).toBe(3);
+    const afterFirstEvent = appendStreamedMessage(initial, "branch-1", streamedMessage);
+    const afterDuplicateEvent = appendStreamedMessage(afterFirstEvent, "branch-1", streamedMessage);
+    const firstDuration = branchToRunStep(afterFirstEvent.branches[0], "running").result
+      ?.duration_sec;
 
-    const completed = mergeCompletedSession(streamed, {
+    expect(afterDuplicateEvent.branches[0].messages.map((message) => message.id)).toEqual(
+      afterFirstEvent.branches[0].messages.map((message) => message.id),
+    );
+    expect(afterDuplicateEvent.branches[0].message_total).toBe(
+      afterFirstEvent.branches[0].message_total,
+    );
+    expect(branchToRunStep(afterDuplicateEvent.branches[0], "running").result?.duration_sec).toBe(
+      firstDuration,
+    );
+    expect(firstDuration).toBe(40);
+    expect(afterDuplicateEvent.branches[0].message_total).toBe(3);
+
+    const completed = mergeCompletedSession(afterDuplicateEvent, {
       ...initial,
       status: "completed",
       updated_at: 60,
@@ -464,6 +552,14 @@ describe("history/RunDetail.tsx — segmented branch totals", () => {
     expect(steps[0].result?.message_count).toBeNull();
     expect(steps[1].messages).toHaveLength(1);
     expect(steps[1].result?.message_count).toBe(6);
+
+    const { container } = renderRunStepCards(steps, true);
+    const cards = container.querySelectorAll<HTMLElement>("[data-segment-index]");
+    const intermediateBadge = cards[0]?.querySelector('[id$="-tab-conversation"] span');
+    const finalBadge = cards[1]?.querySelector('[id$="-tab-conversation"] span');
+
+    expect(intermediateBadge).toBeNull();
+    expect(finalBadge?.textContent).toBe("6");
   });
 });
 
