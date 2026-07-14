@@ -4,7 +4,7 @@
 - **Kind**: Aspirational
 - **Area**: scheduling-control-plane
 - **Date**: 2026-07-10
-- **Relations**: extends ADR-0027
+- **Relations**: extends ADR-0070
 
 ## Decisions
 
@@ -29,7 +29,7 @@ Each step is a human-latency stall and a forgettable action — stale branches s
 blocking merges and reviews firing against superseded heads are both observed failure
 modes, not hypotheticals.
 
-The scheduler (ADR-0027) already provides the heartbeat: `github_poll` maintains an
+The scheduler (ADR-0070) already provides the heartbeat: `github_poll` maintains an
 `updated_at` cursor over a repo's open PRs with state/base/draft filters and per-poll
 health columns. Because both `opened` and `synchronize` bump `updated_at`, round-chaining
 falls out of the existing trigger — a fix commit re-surfaces the PR on the next poll.
