@@ -52,12 +52,16 @@ class TestNodeSoftDelete:
         assert d.is_deleted is True
 
     def test_soft_delete_sets_deleted_at(self, monkeypatch):
-        fixed = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
-        monkeypatch.setattr(node_mod, "datetime", _frozen_datetime(fixed))
+        t0 = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+        t1 = datetime(2024, 6, 1, 12, 0, 5, tzinfo=timezone.utc)
+        monkeypatch.setattr(node_mod, "datetime", _frozen_datetime(t0))
         cls = create_node("Del", soft_delete=True)
         d = cls()
+        monkeypatch.setattr(node_mod, "datetime", _frozen_datetime(t1))
         d.soft_delete()
-        assert d.deleted_at == fixed.isoformat()
+        # deleted_at reflects the soft_delete() time, not construction, and orders after it.
+        assert d.deleted_at == t1.isoformat()
+        assert datetime.fromisoformat(d.deleted_at) > t0
 
     def test_soft_delete_with_by_param(self):
         cls = create_node("Del", soft_delete=True)

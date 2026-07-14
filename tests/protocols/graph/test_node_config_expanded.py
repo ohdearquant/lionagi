@@ -290,12 +290,16 @@ class TestTouchRealFields:
         assert v.version == 2
 
     def test_touch_sets_updated_at_field(self, monkeypatch):
-        fixed = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
-        monkeypatch.setattr(node_mod, "datetime", _frozen_datetime(fixed))
+        t0 = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+        t1 = datetime(2024, 6, 1, 12, 0, 5, tzinfo=timezone.utc)
+        monkeypatch.setattr(node_mod, "datetime", _frozen_datetime(t0))
         cls = create_node("T", track_updated_at=True)
         t = cls()
+        monkeypatch.setattr(node_mod, "datetime", _frozen_datetime(t1))
         t.touch()
-        assert t.updated_at == fixed.isoformat()
+        # updated_at reflects the touch() time, not construction, and orders after it.
+        assert t.updated_at == t1.isoformat()
+        assert datetime.fromisoformat(t.updated_at) > t0
 
     def test_touch_sets_created_by_field_first_time(self):
         cls = create_node("CB", track_created_by=True)
@@ -379,12 +383,16 @@ class TestSoftDeleteRealFields:
         assert d.is_deleted is True
 
     def test_soft_delete_sets_real_deleted_at(self, monkeypatch):
-        fixed = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
-        monkeypatch.setattr(node_mod, "datetime", _frozen_datetime(fixed))
+        t0 = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+        t1 = datetime(2024, 6, 1, 12, 0, 5, tzinfo=timezone.utc)
+        monkeypatch.setattr(node_mod, "datetime", _frozen_datetime(t0))
         cls = create_node("Del", soft_delete=True)
         d = cls()
+        monkeypatch.setattr(node_mod, "datetime", _frozen_datetime(t1))
         d.soft_delete()
-        assert d.deleted_at == fixed.isoformat()
+        # deleted_at reflects the soft_delete() time, not construction, and orders after it.
+        assert d.deleted_at == t1.isoformat()
+        assert datetime.fromisoformat(d.deleted_at) > t0
 
     def test_restore_clears_real_is_deleted(self):
         cls = create_node("Rest", soft_delete=True)

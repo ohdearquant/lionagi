@@ -370,12 +370,16 @@ class TestNodeTouch:
         assert "version" not in b.metadata
 
     def test_touch_track_updated_at(self, monkeypatch):
-        fixed = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
-        monkeypatch.setattr(node_mod, "datetime", _frozen_datetime(fixed))
+        t0 = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+        t1 = datetime(2024, 6, 1, 12, 0, 5, tzinfo=timezone.utc)
+        monkeypatch.setattr(node_mod, "datetime", _frozen_datetime(t0))
         cls = create_node("Tracked", track_updated_at=True)
         t = cls(content="x")
+        monkeypatch.setattr(node_mod, "datetime", _frozen_datetime(t1))
         t.touch()
-        assert t.updated_at == fixed.isoformat()
+        # updated_at reflects the touch() time, not construction, and orders after it.
+        assert t.updated_at == t1.isoformat()
+        assert datetime.fromisoformat(t.updated_at) > t0
 
     def test_touch_versioning_starts_at_one(self):
         cls = create_node("V", versioning=True)

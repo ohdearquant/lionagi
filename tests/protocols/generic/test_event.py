@@ -83,10 +83,14 @@ def test_event_with_error():
 
 
 def test_event_duration(monkeypatch):
-    fixed = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
-    monkeypatch.setattr(element_mod, "now_utc", lambda: fixed)
-    execution = Execution(duration=1.5)
-    event = Event(execution=execution)
+    t0 = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    t1 = datetime(2024, 6, 1, 12, 0, 5, tzinfo=timezone.utc)
+    monkeypatch.setattr(element_mod, "now_utc", lambda: t0)
+    first = Event(execution=Execution(duration=1.5))
+    monkeypatch.setattr(element_mod, "now_utc", lambda: t1)
+    second = Event(execution=Execution(duration=2.5))
 
-    assert event.execution.duration == 1.5
-    assert event.created_at == fixed.timestamp()
+    assert first.execution.duration == 1.5
+    # created_at is stamped fresh at construction and advances between events.
+    assert first.created_at == t0.timestamp()
+    assert second.created_at > first.created_at
