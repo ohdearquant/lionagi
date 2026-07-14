@@ -12,6 +12,7 @@ import pytest
 
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
+from lionagi.state.claude_mirror import session_db_id  # noqa: E402
 from lionagi.state.db import StateDB  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -285,6 +286,24 @@ async def test_get_session_returns_none_graph_for_null_node_metadata(patched_ses
     assert result["branches"] == []
     assert result["duration_ms"] is None
     assert result["source_kind"] == "live"
+
+
+# ---------------------------------------------------------------------------
+# Test 1.8a — get_session_by_cc_id: legacy rows fall back to deterministic id
+# ---------------------------------------------------------------------------
+
+
+async def test_get_session_by_cc_id_falls_back_for_legacy_row(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    cc_uid = "11111111-2222-3333-4444-555555555555"
+    legacy_session_id = session_db_id(cc_uid)
+    await seed_session(db_path, session_id=legacy_session_id)
+
+    result = await svc.get_session_by_cc_id(cc_uid)
+
+    assert result is not None
+    assert result["id"] == legacy_session_id
+    assert result["name"] == "Test Session"
 
 
 # ---------------------------------------------------------------------------

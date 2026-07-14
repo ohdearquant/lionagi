@@ -10,6 +10,7 @@ import aiosqlite
 from fastapi import HTTPException
 
 from lionagi._errors import NotFoundError
+from lionagi.state.claude_mirror import session_db_id
 from lionagi.state.db import DEFAULT_DB_PATH, SESSION_TERMINAL_STATUSES
 
 from ..registry import studio_route
@@ -643,6 +644,21 @@ async def get_session(
         # get_run()'s liveness check can find the recorded pid.
         "node_metadata": session_row["node_metadata"],
     }
+
+
+async def get_session_by_cc_id(cc_uid: str) -> dict[str, Any] | None:
+    """Return a mirrored Claude Code session, including legacy unbackfilled rows."""
+    if not DEFAULT_DB_PATH.exists():
+        return None
+
+    async with _open_db(_DB) as db:
+        cur = await db.execute(
+            "SELECT id FROM sessions WHERE cc_session_id = ? LIMIT 1",
+            (cc_uid,),
+        )
+        row = await cur.fetchone()
+
+    return await get_session(row["id"] if row else session_db_id(cc_uid))
 
 
 async def get_session_messages_after(session_id: str, after_ts: float) -> list[dict[str, Any]]:

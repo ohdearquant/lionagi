@@ -8,6 +8,7 @@ from __future__ import annotations
 MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
     "sessions": [
         ("updated_at", "REAL"),
+        ("cc_session_id", "TEXT"),
         ("playbook_name", "TEXT"),
         ("agent_name", "TEXT"),
         ("invocation_kind", "TEXT"),

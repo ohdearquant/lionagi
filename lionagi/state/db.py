@@ -92,6 +92,7 @@ _VALID_STATUS_SOURCES: frozenset[str] = frozenset({"executor", "agent", "admin",
 
 _SESSION_COLUMNS = frozenset(
     {
+        "cc_session_id",
         "name",
         "user",
         "node_metadata",
@@ -750,6 +751,7 @@ class StateDB:
                         """
                         CREATE TABLE sessions_new (
                           id              TEXT    PRIMARY KEY,
+                          cc_session_id   TEXT,
                           created_at      REAL    NOT NULL,
                           node_metadata   JSON,
                           name            TEXT,
@@ -1532,7 +1534,7 @@ class StateDB:
         async with self._tx() as conn:
             result = await conn.execute(
                 text(
-                    """INSERT INTO sessions (id, created_at, node_metadata, name, "user",
+                    """INSERT INTO sessions (id, cc_session_id, created_at, node_metadata, name, "user",
                        progression_id, first_msg_id, last_msg_id, updated_at,
                        playbook_name, agent_name, invocation_kind, show_topic,
                        show_play_name, artifacts_path, artifact_contract_json,
@@ -1540,7 +1542,7 @@ class StateDB:
                        status, started_at, ended_at, last_message_at, invocation_id,
                        model, provider, effort, agent_hash,
                        project, project_source)
-                       VALUES (:id, :created_at, :node_metadata, :name, :user,
+                       VALUES (:id, :cc_session_id, :created_at, :node_metadata, :name, :user,
                                :progression_id, :first_msg_id, :last_msg_id, :updated_at,
                                :playbook_name, :agent_name, :invocation_kind, :show_topic,
                                :show_play_name, :artifacts_path, :artifact_contract_json,
@@ -1556,6 +1558,7 @@ class StateDB:
                 ),
                 {
                     "id": session["id"],
+                    "cc_session_id": session.get("cc_session_id"),
                     "created_at": session.get("created_at", now),
                     "node_metadata": session.get("node_metadata"),
                     "name": session.get("name"),
@@ -1612,6 +1615,20 @@ class StateDB:
                     await conn.execute(
                         text("SELECT * FROM sessions WHERE id = :id"),
                         {"id": session_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return self._row_to_dict(row) if row else None
+
+    async def get_session_by_cc_id(self, cc_session_id: str) -> dict[str, Any] | None:
+        async with self._read() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text("SELECT * FROM sessions WHERE cc_session_id = :cc_session_id LIMIT 1"),
+                        {"cc_session_id": cc_session_id},
                     )
                 )
                 .mappings()
