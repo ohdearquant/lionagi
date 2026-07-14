@@ -353,6 +353,7 @@ class TestNoDeadlocks:
             assert hook_event.execution.response == "simple"
 
 
+@pytest.mark.performance
 class TestPerformanceSmoke:
     @pytest.mark.anyio
     async def test_hook_invocation_overhead_minimal(self, patch_cancellation):
