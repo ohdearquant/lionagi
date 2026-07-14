@@ -74,6 +74,18 @@ async def _collect(gen) -> list:
     return results
 
 
+@contextlib.contextmanager
+def _fail_on_next_checkpoint(_delay: float):
+    """Deterministic fail_after seam whose deadline is the next checkpoint."""
+    import anyio
+
+    with anyio.CancelScope() as scope:
+        scope.cancel()
+        yield scope
+    if scope.cancelled_caught:
+        raise TimeoutError
+
+
 # ---------------------------------------------------------------------------
 # P0 tests — run()
 # ---------------------------------------------------------------------------
@@ -629,17 +641,32 @@ def _make_slow_cli_model(chunk_delay: float, n_chunks: int = 100):
     return m, captured
 
 
-async def test_run_honors_caller_timeout_on_slow_stream():
+async def test_run_honors_caller_timeout_on_slow_stream(monkeypatch):
     """When the caller passes ``timeout=N`` via imodel_kw, the stream loop
     raises TimeoutError once N seconds elapse, even if the upstream provider
     would otherwise stream forever."""
-    # chunk_delay is large so that timeout (0.15s) fires before ANY chunk
-    # arrives.
-    chunk_delay = 3.0
+    import importlib
+
+    import anyio
+
     caller_timeout = 0.15
-    model, _ = _make_slow_cli_model(chunk_delay=chunk_delay, n_chunks=20)
+    model, _ = _make_slow_cli_model(chunk_delay=0, n_chunks=20)
     branch = Branch()
     branch.chat_model = model
+    cancellation_order: list[str] = []
+
+    async def stream(api_call=None):
+        try:
+            await anyio.lowlevel.checkpoint()
+        except BaseException:
+            cancellation_order.append("cancelled_before_deadline")
+            raise
+        cancellation_order.append("stream_advanced_past_deadline")
+        yield StreamChunk(type="text", content="late")
+
+    model.stream = stream
+    run_mod = importlib.import_module("lionagi.operations.run.run")
+    monkeypatch.setattr(run_mod.anyio, "fail_after", _fail_on_next_checkpoint)
 
     stream_responses: list = []
     with pytest.raises(TimeoutError):
@@ -647,9 +674,9 @@ async def test_run_honors_caller_timeout_on_slow_stream():
             if isinstance(msg, AssistantResponse):
                 stream_responses.append(msg)
 
-    # Behavioral: timeout must fire before the stream produces any content.
-    # run() yields an Instruction first (always), then AssistantResponse per chunk.
-    # If timeout fires correctly, no AssistantResponse should be yielded.
+    # The injected deadline cancels at the provider's first checkpoint. If
+    # timeout delivery is late or absent, the stream records that it advanced.
+    assert cancellation_order == ["cancelled_before_deadline"]
     assert stream_responses == [], (
         f"timeout fired after {len(stream_responses)} stream response(s) — "
         "timeout is not enforced before first chunk"
@@ -775,11 +802,8 @@ async def test_imodel_stream_propagates_cancellation():
     from lionagi.protocols.generic.event import EventStatus
     from lionagi.service.connections.api_calling import APICalling
 
-    # chunk_delay is large so fail_after(cancel_after) fires before any chunk.
-    chunk_delay = 3.0
-    cancel_after = 0.1
-
     m = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
+    cancellation_order: list[str] = []
 
     class SlowEndpoint:
         is_cli = True
@@ -787,9 +811,7 @@ async def test_imodel_stream_propagates_cancellation():
         DEFAULT_QUEUE_CAPACITY = 10
 
         async def stream(self, request=None, extra_headers=None, **kw):
-            for _ in range(100):
-                await anyio.sleep(chunk_delay)
-                yield StreamChunk(type="text", content="x")
+            yield StreamChunk(type="text", content="unused")
 
     m.endpoint = SlowEndpoint()
 
@@ -799,9 +821,13 @@ async def test_imodel_stream_propagates_cancellation():
     api_call.execution.status = EventStatus.PENDING
 
     async def fake_core_stream():
-        for _ in range(100):
-            await anyio.sleep(chunk_delay)
-            yield StreamChunk(type="text", content="x")
+        try:
+            await anyio.lowlevel.checkpoint()
+        except BaseException:
+            cancellation_order.append("cancelled_before_deadline")
+            raise
+        cancellation_order.append("stream_advanced_past_deadline")
+        yield StreamChunk(type="text", content="late")
 
     api_call.stream = fake_core_stream
     m.executor = types.SimpleNamespace(
@@ -816,11 +842,13 @@ async def test_imodel_stream_propagates_cancellation():
 
     chunks_yielded: list = []
     with pytest.raises(TimeoutError):
-        with anyio.fail_after(cancel_after):
+        with _fail_on_next_checkpoint(0.1):
             async for chunk in m.stream(api_call=api_call):
                 chunks_yielded.append(chunk)
 
-    # Behavioral: cancellation must propagate — no chunks should have been yielded.
+    # Cancellation must reach the inner stream at its first checkpoint. A
+    # swallowed or late cancellation lets the stream advance and fails here.
+    assert cancellation_order == ["cancelled_before_deadline"]
     assert chunks_yielded == [], (
         f"stream yielded {len(chunks_yielded)} chunk(s) after cancellation — "
         "CancelledError was swallowed instead of propagated"
@@ -1020,12 +1048,30 @@ async def test_run_liveness_watchdog_strips_kwarg_from_create_event():
     )
 
 
-async def test_run_liveness_watchdog_yields_to_caller_stream_timeout():
+async def test_run_liveness_watchdog_yields_to_caller_stream_timeout(monkeypatch):
     """When the caller's own stream `timeout` is tighter than the liveness window, the caller's TimeoutError fires unmodified -- that deliberate total-stream budget must not be reinterpreted as a worker-liveness failure."""
+    import importlib
+
+    import anyio
+
     create_event_calls: list = []
     model = _make_hanging_cli_model(create_event_calls)
     branch = Branch()
     branch.chat_model = model
+    cancellation_order: list[str] = []
+
+    async def stream(api_call=None):
+        try:
+            await anyio.lowlevel.checkpoint()
+        except BaseException:
+            cancellation_order.append("cancelled_before_deadline")
+            raise
+        cancellation_order.append("stream_advanced_past_deadline")
+        yield StreamChunk(type="text", content="late")
+
+    model.stream = stream
+    run_mod = importlib.import_module("lionagi.operations.run.run")
+    monkeypatch.setattr(run_mod.anyio, "fail_after", _fail_on_next_checkpoint)
 
     with pytest.raises(TimeoutError):
         async for _ in run(
@@ -1035,7 +1081,9 @@ async def test_run_liveness_watchdog_yields_to_caller_stream_timeout():
         ):
             pass
 
-    # No retry: the caller's tighter overall deadline owns this timeout.
+    # The caller deadline cancels at the provider's first checkpoint, before
+    # the much wider liveness window can own the failure or trigger a retry.
+    assert cancellation_order == ["cancelled_before_deadline"]
     assert len(create_event_calls) == 1
 
 

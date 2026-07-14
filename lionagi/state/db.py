@@ -19,7 +19,7 @@ from lionagi._paths import LIONAGI_HOME
 from lionagi.config import settings
 from lionagi.libs.path_safety import check_path_safe as _check_path_safe
 from lionagi.ln import json_dumps as _json_dumps
-from lionagi.ln.concurrency import Lock
+from lionagi.ln.concurrency import CancelScope, Lock
 from lionagi.state.engine import (
     dialect_of,
     make_engine,
@@ -477,7 +477,8 @@ class StateDB:
             # partially opened engine here so its driver worker cannot outlive
             # a lock-contention or migration failure. Direct open() retains its
             # established inspect-and-retry behavior on schema failures.
-            await self.close()
+            with CancelScope(shield=True):
+                await self.close()
             raise
         return self
 

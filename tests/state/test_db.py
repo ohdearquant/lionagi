@@ -174,6 +174,44 @@ async def test_context_open_failure_disposes_partial_engine(monkeypatch):
     assert state._engine is None
 
 
+async def test_context_cancelled_open_shields_partial_engine_disposal(monkeypatch):
+    """Cancellation during context entry must not interrupt engine disposal."""
+    import anyio
+
+    import lionagi.state.db as db_mod
+
+    dispose_started = anyio.Event()
+    dispose_finished = anyio.Event()
+
+    class FakeEngine:
+        sync_engine = object()
+
+        async def dispose(self) -> None:
+            dispose_started.set()
+            await anyio.lowlevel.checkpoint()
+            dispose_finished.set()
+
+    engine = FakeEngine()
+    monkeypatch.setattr(db_mod, "make_engine", lambda *_args, **_kwargs: engine)
+    monkeypatch.setattr(db_mod, "_install_begin_immediate", lambda *_args: None)
+
+    state = StateDB(":memory:")
+
+    async def hang_schema() -> None:
+        await anyio.sleep_forever()
+
+    monkeypatch.setattr(state, "_apply_schema", hang_schema)
+
+    with pytest.raises(TimeoutError):
+        with anyio.fail_after(0.01):
+            async with state:
+                raise AssertionError("context body must not run")
+
+    assert dispose_started.is_set()
+    assert dispose_finished.is_set()
+    assert state._engine is None
+
+
 # ── Schema ─────────────────────────────────────────────────────────────────────
 
 

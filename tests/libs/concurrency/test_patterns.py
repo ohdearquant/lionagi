@@ -23,31 +23,32 @@ def retry_sleep_calls(monkeypatch: pytest.MonkeyPatch) -> list[float]:
 @pytest.mark.slow
 @pytest.mark.anyio
 async def test_gather_first_error_cancels_peers(anyio_backend):
-    # peer_sleep is long enough that the test would hang near-forever if
-    # cancellation did NOT propagate, yet short enough to not slow CI.
-    # The elapsed bound is expressed relative to peer_sleep so that the
-    # test still proves "cancellation arrived long before the peer could
-    # have completed naturally."
-    peer_sleep = 10.0
-    cancelled = anyio.Event()
+    peer_ready = anyio.Event()
+    failure_released = anyio.Event()
+    cancellation_order: list[str] = []
 
     async def boom():
-        await anyio.sleep(0.01)
+        await peer_ready.wait()
+        failure_released.set()
         raise RuntimeError("x")
 
     async def peer():
+        peer_ready.set()
         try:
-            await anyio.sleep(peer_sleep)
+            # Once boom releases the barrier and raises, gather has through the
+            # next scheduler checkpoint to cancel this peer. A late/absent
+            # cancellation lets the checkpoint complete and fails below.
+            await failure_released.wait()
+            await anyio.lowlevel.checkpoint()
         except BaseException:
-            cancelled.set()
+            cancellation_order.append("cancelled_before_deadline")
             raise
+        raise AssertionError("peer was not cancelled by the next checkpoint")
 
     with pytest.raises(RuntimeError):
         await gather(boom(), peer(), return_exceptions=False)
 
-    # The peer sets this only from its cancellation path, so this signal also
-    # proves gather did not wait for the peer's natural sleep to complete.
-    assert cancelled.is_set(), "peer was not cancelled after gather error"
+    assert cancellation_order == ["cancelled_before_deadline"]
 
 
 @pytest.mark.anyio
