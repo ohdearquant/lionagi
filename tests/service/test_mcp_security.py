@@ -677,13 +677,14 @@ class TestPerServerPolicyPersistence:
         finally:
             self._reset()
 
-    async def test_reload_different_command_under_same_name_denies_recovered_policy(self, tmp_path):
+    async def test_reload_different_command_under_same_name_denies_recovered_policy(
+        self, tmp_path, monkeypatch
+    ):
         """A policy trusted for one server's resolved transport must not be
         recoverable after the same server name is reloaded with a different
-        command: register/trust a config under name X, cleanup/reload a
-        different command under the same name X, then an omitted-policy
-        load must stay fail-closed end to end (no `_create_client` stub --
-        the real transport validation must raise)."""
+        command. The connected client cached for the old transport must also
+        be evicted, and an omitted-policy load must stay fail-closed end to
+        end."""
         import json
 
         self._reset()
@@ -694,16 +695,39 @@ class TestPerServerPolicyPersistence:
             )
             MCPConnectionPool.load_config(str(cfg_path))
             policy = MCPSecurityConfig(allow_commands=True)
-            MCPConnectionPool.remember_security({"server": "same-name"}, policy)
+            cached_client = type("ConnectedClient", (), {"is_connected": lambda self: True})()
+            real_create_client = MCPConnectionPool._create_client
 
-            # Cleanup/reload a DIFFERENT command under the SAME server name.
+            async def fake_create(config, security=None):
+                if config.get("command") == "trusted-server":
+                    assert security is policy
+                    return cached_client
+                return await real_create_client(config, security=security)
+
+            monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+            assert (
+                await MCPConnectionPool.get_client({"server": "same-name"}, security=policy)
+                is cached_client
+            )
+            cached_keys = [
+                key
+                for key, client in MCPConnectionPool._clients.items()
+                if key.startswith("server:same-name") and client is cached_client
+            ]
+            assert len(cached_keys) == 1
+            stale_cache_key = cached_keys[0]
+
+            # Reload a DIFFERENT command under the SAME server name.
             cfg_path.write_text(
                 json.dumps({"mcpServers": {"same-name": {"command": "untrusted-server"}}})
             )
             MCPConnectionPool.load_config(str(cfg_path))
+            assert stale_cache_key not in MCPConnectionPool._clients
+            assert cached_client not in MCPConnectionPool._clients.values()
 
             # The omitted-policy path must not recover the prior trusted()
-            # decision for the reloaded transport.
+            # decision or return the old connected client. The real validator
+            # rejects before any replacement transport is constructed.
             with pytest.raises(PermissionError, match="allow_commands=False"):
                 await MCPConnectionPool.get_client({"server": "same-name"})
         finally:
