@@ -463,7 +463,9 @@ def test_find_lionagi_dirs_memoizes_git_probe_per_location(monkeypatch, tmp_path
     assert calls == [tmp_path]
 
 
-def test_slash_profile_miss_skips_available_profile_listing(monkeypatch, tmp_path):
+def test_slash_profile_miss_skips_directory_scan(monkeypatch, tmp_path):
+    """A slash-token miss must not trigger the list_agents() directory scan (still expensive),
+    but must still populate the Available listing from the already-computed plugin profiles."""
     import lionagi.cli._providers as providers
 
     find_calls: list = []
@@ -473,6 +475,7 @@ def test_slash_profile_miss_skips_available_profile_listing(monkeypatch, tmp_pat
         lambda: find_calls.append(True) or [tmp_path / ".lionagi"],
     )
     monkeypatch.setattr(providers, "_resolve_plugin_profile_path", lambda _name: None)
+    monkeypatch.setattr(providers, "_plugin_agent_profiles", lambda: {})
     monkeypatch.setattr(
         providers,
         "list_agents",
@@ -483,3 +486,29 @@ def test_slash_profile_miss_skips_available_profile_listing(monkeypatch, tmp_pat
         providers.load_agent_profile("openai/gpt-4o")
 
     assert find_calls == [True]
+
+
+def test_slash_profile_miss_includes_available_plugin_profiles(monkeypatch, tmp_path):
+    """A typo'd '<plugin>/<name>' token still gets an 'Available:' hint listing the
+    resolvable plugin-namespaced profiles, without paying for a directory scan."""
+    import lionagi.cli._providers as providers
+
+    monkeypatch.setattr(providers, "_find_lionagi_dirs", lambda: [tmp_path / ".lionagi"])
+    monkeypatch.setattr(providers, "_resolve_plugin_profile_path", lambda _name: None)
+    monkeypatch.setattr(
+        providers,
+        "_plugin_agent_profiles",
+        lambda: {"myplugin/reviewer": ("myplugin", tmp_path / "reviewer.md")},
+    )
+    monkeypatch.setattr(
+        providers,
+        "list_agents",
+        lambda: pytest.fail("slash-token misses must not scan profiles for an Available listing"),
+    )
+
+    with pytest.raises(FileNotFoundError) as exc_info:
+        providers.load_agent_profile("myplugin/reviewr")
+
+    message = str(exc_info.value)
+    assert "Agent profile 'myplugin/reviewr' not found" in message
+    assert "Available: myplugin/reviewer" in message
