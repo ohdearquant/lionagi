@@ -25,7 +25,7 @@ worker.
 | `li monitor run ID...` | Wait for scheduled runs and their chains; optionally keep watching |
 | `li agent status [ID]` | Read stable session/invocation status, optionally as JSON |
 | `li o ctl {status,pause,resume,msg}` | Inspect or steer a live flow by ID |
-| `li kill ID` | Terminate one running entity or sweep stale processes |
+| `li kill ID` | Terminate one running entity or sweep stale processes; play kills also reap the linked worker chain |
 
 ### Reuse, coordination, and operation
 
