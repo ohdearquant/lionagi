@@ -434,6 +434,7 @@ async def test_operate_with_repair_no_chat_model_falls_back_to_api_template():
 
 
 @pytest.mark.asyncio
+@pytest.mark.slow_timing
 async def test_deadline_cancels_in_flight_operate_with_repair():
     """branch.operate() blocked past deadline_s must be cancelled by the watchdog."""
     import time

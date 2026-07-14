@@ -10,6 +10,16 @@ on:
   # that never runs.
   pull_request:
     branches: [ main, develop ]
+  workflow_dispatch:
+    inputs:
+      python-matrix:
+        description: Python versions for a manual diagnostic run
+        required: true
+        default: full
+        type: choice
+        options:
+          - full
+          - endpoints
 
 permissions:
   contents: read
@@ -29,6 +39,8 @@ jobs:
         uv sync --all-extras
     - name: Lint Python
       run: scripts/ci.sh lint-python
+    - name: Enforce pytest quarantine cap
+      run: scripts/ci.sh lint-quarantine
     - name: Install ripgrep
       run: sudo apt-get install -y ripgrep
     - name: Lint publication hygiene
@@ -92,11 +104,12 @@ jobs:
       fail-fast: false
       matrix:
         # PRs: oldest + newest only (60% faster). Full matrix on main/develop pushes.
-        python-version: ${{ fromJSON(github.event_name == 'pull_request' && '["3.10","3.14"]' || '["3.10","3.11","3.12","3.13","3.14"]') }}
+        python-version: ${{ fromJSON((github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.python-matrix == 'endpoints')) && '["3.10","3.14"]' || '["3.10","3.11","3.12","3.13","3.14"]') }}
     # Force every `uv` call (venv, sync, run) onto the matrix interpreter; the
     # repo's .python-version (3.10) otherwise pins all legs to 3.10.
     env:
       UV_PYTHON: ${{ matrix.python-version }}
+      PYTEST_JUNIT_XML: ${{ github.workspace }}/.pytest-results/junit.xml
     steps:
     - uses: actions/checkout@v7
     - name: Set up Python ${{ matrix.python-version }}
@@ -130,13 +143,34 @@ jobs:
       if: matrix.python-version == '3.10'
       run: scripts/ci.sh test-python-cov
       env:
+        MAXFAIL: 25
         PYTEST_RSS_LOG: ${{ github.workspace }}/.pytest-rss
 
     - name: Run tests
       if: matrix.python-version != '3.10'
       run: scripts/ci.sh test-python
       env:
+        MAXFAIL: 0
         PYTEST_RSS_LOG: ${{ github.workspace }}/.pytest-rss
+
+    - name: Collect flake failure telemetry
+      if: failure()
+      run: |
+        uv run python scripts/collect_flake_failures.py \
+          --junit "$PYTEST_JUNIT_XML" \
+          --output .pytest-results/failures.jsonl \
+          --matrix-leg "${{ matrix.python-version }}" \
+          --run-id "${{ github.run_id }}" \
+          --attempt "${{ github.run_attempt }}"
+
+    - name: Upload flake failure telemetry
+      if: failure()
+      uses: actions/upload-artifact@v7
+      with:
+        name: flake-failures-py${{ matrix.python-version }}-attempt-${{ github.run_attempt }}
+        path: .pytest-results/failures.jsonl
+        if-no-files-found: error
+        retention-days: 30
 
     # Names the memory hog when a worker is OOM-killed ("node down: Not
     # properly terminated" with no traceback): per-worker peak RSS plus the
@@ -157,6 +191,75 @@ jobs:
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         slug: ohdearquant/lionagi
+
+  # Wall-clock gates run serially on one primary interpreter, outside coverage
+  # and xdist. This job is intentionally advisory (absent from ci-gate) because
+  # hosted-runner load can move timing, but failures remain visible as a red job.
+  performance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      UV_PYTHON: "3.12"
+    steps:
+    - uses: actions/checkout@v7
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.12"
+    - name: Install uv
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+    - name: Install dependencies
+      run: |
+        uv venv
+        uv sync --all-extras
+    - name: Run performance tests serially
+      run: uv run pytest -m "performance" -p no:randomly -n 0 -q --timeout=300 --maxfail=0
+
+  # A visible holding lane for known flakes. It is deliberately absent from
+  # ci-gate and cannot block merges; exact tests come from tests/quarantine.txt.
+  quarantine:
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.12"
+      PYTEST_JUNIT_XML: ${{ github.workspace }}/.pytest-results/junit.xml
+    steps:
+    - uses: actions/checkout@v7
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.12"
+    - name: Install uv
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+    - name: Install dependencies
+      run: |
+        uv venv
+        uv sync --all-extras
+    - name: Run quarantined tests only
+      run: scripts/ci.sh test-python-quarantine
+      env:
+        MAXFAIL: 0
+    - name: Collect quarantine failure telemetry
+      if: failure()
+      run: |
+        uv run python scripts/collect_flake_failures.py \
+          --junit "$PYTEST_JUNIT_XML" \
+          --output .pytest-results/failures.jsonl \
+          --matrix-leg "quarantine-3.12" \
+          --run-id "${{ github.run_id }}" \
+          --attempt "${{ github.run_attempt }}"
+    - name: Upload quarantine failure telemetry
+      if: failure()
+      uses: actions/upload-artifact@v7
+      with:
+        name: flake-failures-quarantine-attempt-${{ github.run_attempt }}
+        path: .pytest-results/failures.jsonl
+        if-no-files-found: error
+        retention-days: 30
 
   frontend:
     runs-on: ubuntu-latest

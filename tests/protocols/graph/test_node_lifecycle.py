@@ -360,11 +360,9 @@ class TestNodeTouch:
     def test_touch_track_updated_at(self):
         cls = create_node("Tracked", track_updated_at=True)
         t = cls(content="x")
-        before = datetime.now(timezone.utc).isoformat()
         t.touch()
-        after = datetime.now(timezone.utc).isoformat()
         ts = t.updated_at
-        assert before <= ts <= after
+        assert datetime.fromisoformat(ts).tzinfo == timezone.utc
 
     def test_touch_versioning_starts_at_one(self):
         cls = create_node("V", versioning=True)

@@ -19,7 +19,7 @@ from lionagi._paths import LIONAGI_HOME
 from lionagi.config import settings
 from lionagi.libs.path_safety import check_path_safe as _check_path_safe
 from lionagi.ln import json_dumps as _json_dumps
-from lionagi.ln.concurrency import Lock
+from lionagi.ln.concurrency import CancelScope, Lock
 from lionagi.state.engine import (
     dialect_of,
     make_engine,
@@ -538,7 +538,16 @@ class StateDB:
             self._engine = None
 
     async def __aenter__(self) -> StateDB:
-        await self.open()
+        try:
+            await self.open()
+        except BaseException:
+            # __aexit__ is not entered when __aenter__ fails. Dispose the
+            # partially opened engine here so its driver worker cannot outlive
+            # a lock-contention or migration failure. Direct open() retains its
+            # established inspect-and-retry behavior on schema failures.
+            with CancelScope(shield=True):
+                await self.close()
+            raise
         return self
 
     async def __aexit__(self, *exc: Any) -> None:

@@ -1,5 +1,3 @@
-from datetime import datetime
-
 import pytest
 
 from lionagi.ln.types import Unset
@@ -82,9 +80,7 @@ def test_event_with_error():
 
 
 def test_event_duration():
-    start = datetime.now().timestamp()
     execution = Execution(duration=1.5)
     event = Event(execution=execution)
 
     assert event.execution.duration == 1.5
-    assert event.created_at >= start

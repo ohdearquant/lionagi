@@ -202,38 +202,39 @@ def test_run_async_sigterm_before_thread_start_still_cancels(monkeypatch):
     _term_requested and returned without cancelling anything, and the inner
     coroutine ran to full completion before SigtermInterrupt was ever raised.
 
-    Reproduced deterministically (no sleep-and-hope racing) by monkeypatching
-    threading.Thread.start to deliver SIGTERM to our own process right before
-    the worker thread is started — at that point the thread genuinely has not
-    run yet, so _loop_and_task_future cannot possibly be ready.
+    Reproduced deterministically by invoking run_async's installed SIGTERM
+    handler from threading.Thread.start, right before the worker starts. At
+    that point _loop_and_task_future cannot possibly be ready.
     """
     import threading
-    import time
 
     import anyio
     import pytest
 
+    import lionagi.ln.concurrency.utils as concurrency_utils
     from lionagi.ln.concurrency import run_async
     from lionagi.ln.concurrency.utils import SigtermInterrupt
 
+    completed = False
+
     async def long_running():
+        nonlocal completed
         await anyio.sleep(5)
+        completed = True
 
     original_start = threading.Thread.start
+    handlers = {}
+
+    def capture_handler(signum, handler):
+        handlers[signum] = handler
 
     def start_after_sigterm(self, *args, **kwargs):
-        os.kill(os.getpid(), signal.SIGTERM)
+        handlers[signal.SIGTERM](signal.SIGTERM, None)
         return original_start(self, *args, **kwargs)
 
+    monkeypatch.setattr(concurrency_utils.signal, "signal", capture_handler)
     monkeypatch.setattr(threading.Thread, "start", start_after_sigterm)
 
-    started_at = time.monotonic()
     with pytest.raises(SigtermInterrupt):
         run_async(long_running())
-    elapsed = time.monotonic() - started_at
-
-    assert elapsed < 3.0, (
-        f"run_async took {elapsed:.2f}s to raise SigtermInterrupt for a 5s "
-        "coroutine — it looks like the coroutine ran to (near) completion "
-        "instead of being cancelled promptly on the already-latched signal"
-    )
+    assert completed is False, "the latched signal must cancel rather than complete the coroutine"

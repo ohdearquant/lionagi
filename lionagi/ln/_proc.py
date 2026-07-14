@@ -14,8 +14,14 @@ def _safe_pgid(proc: Any) -> int | None:
     """Return the process-group id to signal, or None when unsafe."""
     pid = getattr(proc, "pid", None)
     # pid must be int > 1: pid==1 is init/session leader on CI (would SIGKILL
-    # the harness itself; also catches MagicMock.pid==1). killpg is POSIX-only.
-    if not (hasattr(os, "killpg") and isinstance(pid, int) and pid > 1):
+    # the harness itself; also catches MagicMock.pid==1). Never signal our own
+    # group if a bad process double or non-isolated child leaks through.
+    if not (hasattr(os, "killpg") and hasattr(os, "getpgrp") and isinstance(pid, int) and pid > 1):
+        return None
+    try:
+        if pid == os.getpgrp():
+            return None
+    except OSError:
         return None
     return pid
 

@@ -902,39 +902,37 @@ async def _make_github_schedule(state, sched_id: str, **overrides):
 
 @pytest.mark.asyncio
 async def test_metric_value_github_poll_healthy_age_minutes_small_age_after_recent_stamp():
-    import time
-
     from lionagi.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
 
-    now = time.time()
+    now = 1_000_000.0
     await _make_github_schedule(state, "sched-gh-1")
     await state.update_schedule("sched-gh-1", last_healthy_poll_at=now - 60)  # 1 minute ago
 
-    age = await state.metric_value("github_poll_healthy_age_minutes", window_start=0.0)
-    assert 0.5 <= age <= 2.0  # ~1 minute, generous bound for test wall-clock slop
+    with patch("lionagi.state.db.time.time", return_value=now):
+        age = await state.metric_value("github_poll_healthy_age_minutes", window_start=0.0)
+    assert age == 1.0
 
     await state.close()
 
 
 @pytest.mark.asyncio
 async def test_metric_value_github_poll_healthy_age_minutes_large_after_stale_stamp():
-    import time
-
     from lionagi.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
 
-    now = time.time()
+    now = 1_000_000.0
     await _make_github_schedule(state, "sched-gh-1")
     # Stamped healthy 2 hours ago -- e.g. an auth_error poll never moved it since.
     await state.update_schedule("sched-gh-1", last_healthy_poll_at=now - 7200)
 
-    age = await state.metric_value("github_poll_healthy_age_minutes", window_start=0.0)
-    assert age >= 100.0  # ~120 minutes
+    with patch("lionagi.state.db.time.time", return_value=now):
+        age = await state.metric_value("github_poll_healthy_age_minutes", window_start=0.0)
+    assert age == 120.0
 
     await state.close()
 

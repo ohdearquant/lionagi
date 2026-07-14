@@ -10,6 +10,7 @@ import logging
 import time
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -116,7 +117,7 @@ async def test_patch_unrelated_field_does_not_log_shift(temp_db_path, caplog):
 
 
 @pytest.mark.asyncio
-async def test_disable_enable_recomputes_stale_next_fire(temp_db_path, caplog):
+async def test_disable_enable_recomputes_stale_next_fire(temp_db_path, caplog, monkeypatch):
     """(c3) disable -> enable recomputes next_fire_at; a stale past value
     never fires immediately on enable unless the fresh computation says so."""
     from lionagi.state.db import StateDB
@@ -146,6 +147,10 @@ async def test_disable_enable_recomputes_stale_next_fire(temp_db_path, caplog):
     async with StateDB() as db:
         await db.update_schedule(sid, next_fire_at=stale_past)
 
+    fixed_now = 1_700_000_000.0
+    import lionagi.studio.scheduler.engine as engine_mod
+
+    monkeypatch.setattr(engine_mod, "time", SimpleNamespace(time=lambda: fixed_now))
     with caplog.at_level(logging.INFO):
         ok = await enable_schedule(sid)
     assert ok is True
@@ -154,7 +159,7 @@ async def test_disable_enable_recomputes_stale_next_fire(temp_db_path, caplog):
         row = await db.get_schedule(sid)
 
     assert row["next_fire_at"] != stale_past
-    assert row["next_fire_at"] > time.time()  # freshly computed, strictly future
+    assert row["next_fire_at"] > fixed_now
     assert any("next_fire_at shifted" in r.message for r in caplog.records)
 
 
@@ -225,6 +230,10 @@ async def test_patch_recompute_retry_recovers_transient_failure(temp_db_path, ca
     async with StateDB() as db:
         await db.update_schedule(sid, next_fire_at=100.0)
 
+    fixed_now = 1_700_000_000.0
+    import lionagi.studio.scheduler.engine as engine_mod
+
+    monkeypatch.setattr(engine_mod, "time", SimpleNamespace(time=lambda: fixed_now))
     real_recompute = scheduler.recompute_next_fire
     calls = {"n": 0}
 
@@ -244,7 +253,7 @@ async def test_patch_recompute_retry_recovers_transient_failure(temp_db_path, ca
     async with StateDB() as db:
         row = await db.get_schedule(sid)
     assert row["next_fire_at"] != 100.0
-    assert row["next_fire_at"] > time.time()
+    assert row["next_fire_at"] > fixed_now
 
 
 @pytest.mark.asyncio

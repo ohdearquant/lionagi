@@ -1,21 +1,15 @@
 """Tests for alcall and bcall functions."""
 
 import asyncio
-import sys
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
+import anyio
 import pytest
 from pydantic import BaseModel
 
 from lionagi.ln import AlcallParams, BcallParams, alcall, bcall
-
-# Import ExceptionGroup for Python 3.11+
-if sys.version_info >= (3, 11):
-    from builtins import BaseExceptionGroup
-else:
-    from exceptiongroup import BaseExceptionGroup
-
+from lionagi.ln.concurrency import BaseExceptionGroup
 
 # =============================================================================
 # Test fixtures and helper functions
@@ -23,7 +17,7 @@ else:
 
 
 async def async_func(x: int, add: int = 0) -> int:
-    await asyncio.sleep(0.01)
+    await asyncio.sleep(0)
     return x + add
 
 
@@ -32,7 +26,7 @@ def sync_func(x: int, add: int = 0) -> int:
 
 
 async def async_func_with_error(x: int) -> int:
-    await asyncio.sleep(0.01)
+    await asyncio.sleep(0)
     if x == 3:
         raise ValueError("mock error")
     return x
@@ -45,7 +39,6 @@ def sync_func_with_error(x: int) -> int:
 
 
 async def async_func_always_error(x: int) -> int:
-    await asyncio.sleep(0.01)
     raise RuntimeError(f"Error for {x}")
 
 
@@ -177,6 +170,7 @@ class TestAlcallRetryTimeout:
             inputs,
             async_func_with_error,
             retry_attempts=1,
+            retry_initial_delay=0,
             retry_default=0,
         )
         assert results == [1, 2, 0]
@@ -188,6 +182,7 @@ class TestAlcallRetryTimeout:
             inputs,
             sync_func_with_error,
             retry_attempts=1,
+            retry_initial_delay=0,
             retry_default=0,
         )
         assert results == [1, 2, 0]
@@ -196,39 +191,39 @@ class TestAlcallRetryTimeout:
     async def test_alcall_timeout_async_function(self):
 
         async def slow_async_func(x: int) -> int:
-            await asyncio.sleep(1.0)
+            await anyio.sleep_forever()
             return x
 
         inputs = [1, 2, 3]
         results = await alcall(
             inputs,
             slow_async_func,
-            retry_timeout=0.05,
+            retry_timeout=0,
             retry_default="timeout",
             retry_attempts=0,
         )
         assert results == ["timeout", "timeout", "timeout"]
 
     @pytest.mark.anyio
-    async def test_alcall_timeout_sync_function(self):
+    async def test_alcall_timeout_sync_function(self, monkeypatch):
 
-        def slow_sync_func(x: int) -> int:
-            import time
-
-            time.sleep(0.5)  # Sleep longer than timeout
+        def slow_sync_func(x: int) -> int:  # pragma: no cover - replaced at thread seam
             return x
+
+        async def blocked_run_sync(*args, **kwargs):
+            await anyio.sleep_forever()
+
+        monkeypatch.setattr("lionagi.ln._async_call.run_sync", blocked_run_sync)
 
         inputs = [1]  # Single input for faster test
         results = await alcall(
             inputs,
             slow_sync_func,
-            retry_timeout=0.1,
+            retry_timeout=0,
             retry_default="timeout",
             retry_attempts=0,
         )
-        # Note: timeout might not work reliably with sync functions in threads
-        # This test primarily covers the code path
-        assert len(results) == 1
+        assert results == ["timeout"]
 
     @pytest.mark.anyio
     async def test_alcall_retry_backoff(self):
@@ -242,8 +237,7 @@ class TestAlcallRetryTimeout:
                 retry_backoff=2,
                 retry_default=0,
             )
-            # Should call sleep with 0.1, then 0.2
-            assert mock_sleep.call_count >= 2
+            assert mock_sleep.await_args_list == [call(0.1), call(0.2)]
 
 
 # =============================================================================
@@ -254,20 +248,45 @@ class TestAlcallRetryTimeout:
 class TestAlcallExceptionHandling:
     @pytest.mark.anyio
     async def test_alcall_exception_reraises_after_retry_exhaustion(self):
-        inputs = [1, 2, 3]
-        # Exceptions in task groups are wrapped in ExceptionGroup
-        try:
+        attempts = []
+
+        async def always_error(x: int) -> int:
+            attempts.append(x)
+            raise RuntimeError(f"Error for {x}")
+
+        with pytest.raises(RuntimeError, match="Error for 1"):
             await alcall(
-                inputs,
+                [1],
+                always_error,
+                retry_attempts=2,
+                retry_initial_delay=0,
+            )
+
+        assert attempts == [1, 1, 1]
+
+    @pytest.mark.anyio
+    async def test_alcall_concurrent_failures_only_propagate_worker_errors(self):
+        with pytest.raises(BaseException) as exc_info:
+            await alcall(
+                [1, 2, 3],
                 async_func_always_error,
                 retry_attempts=2,
-                # No retry_default, should re-raise
+                retry_initial_delay=0,
             )
-            assert False, "Should have raised exception"
-        except BaseExceptionGroup as eg:
-            # Verify all sub-exceptions are RuntimeError
-            for exc in eg.exceptions:
-                assert isinstance(exc, RuntimeError)
+
+        def leaves(exc: BaseException) -> list[BaseException]:
+            if isinstance(exc, BaseExceptionGroup):
+                return [leaf for child in exc.exceptions for leaf in leaves(child)]
+            return [exc]
+
+        propagated = leaves(exc_info.value)
+        assert propagated
+        assert all(isinstance(exc, RuntimeError) for exc in propagated)
+        assert {str(exc) for exc in propagated} <= {
+            "Error for 1",
+            "Error for 2",
+            "Error for 3",
+        }
 
     @pytest.mark.anyio
     async def test_alcall_exception_with_retry_default_no_reraise(self):
@@ -276,6 +295,7 @@ class TestAlcallExceptionHandling:
             inputs,
             async_func_always_error,
             retry_attempts=2,
+            retry_initial_delay=0,
             retry_default="failed",
         )
         assert results == ["failed", "failed", "failed"]
@@ -372,6 +392,7 @@ class TestBcall:
             async_func_with_error,
             batch_size=2,
             retry_attempts=1,
+            retry_initial_delay=0,
             retry_default=0,
         ):
             batches.append(batch)
@@ -589,8 +610,14 @@ class TestReturnExceptions:
         import asyncio
 
         child_cancelled = asyncio.Event()
+        all_children_started = asyncio.Event()
+        started = 0
 
         async def work(x: int) -> int:
+            nonlocal started
+            started += 1
+            if started == 2:
+                all_children_started.set()
             try:
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
@@ -599,7 +626,7 @@ class TestReturnExceptions:
             return x
 
         task = asyncio.ensure_future(alcall([1, 2], work))
-        await asyncio.sleep(0.05)
+        await all_children_started.wait()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task

@@ -5,8 +5,8 @@
 pure state machine, already covered by `test_control_poller.py`.
 
 These drive `_execute_dag` itself (same fakes as `test_flow_phases.py`) with a
-`run_dag` stand-in that holds the run open long enough for `_control_poll_loop`
-to tick against a real `StateDB`, so the actual `_ctl_task` wiring —
+`run_dag` stand-in that waits for observable `_control_poll_loop` outcomes
+against a real `StateDB`, so the actual `_ctl_task` wiring —
 creation, polling on `_CONTROL_POLL_INTERVAL`, clean cancellation at run end,
 and crash-isolation from the run it rides alongside — gets exercised end to
 end instead of assumed.
@@ -26,6 +26,27 @@ from lionagi.state.db import StateDB
 
 from .test_control_poller import _FakeExecutor, _make_session, _queue_control
 from .test_flow_phases import _FakeBranch, _make_env
+
+_SYNC_TIMEOUT = 5.0
+
+
+def _observe_applied_control(monkeypatch, control_id: str | None = None) -> asyncio.Event:
+    """Signal only after the real apply path has durably finalized a row."""
+    applied = asyncio.Event()
+    original_apply = _flow._apply_session_control
+
+    async def _observed_apply(db, executor, row):
+        result = await original_apply(db, executor, row)
+        if result == "applied" and (control_id is None or row["id"] == control_id):
+            applied.set()
+        return result
+
+    monkeypatch.setattr(_flow, "_apply_session_control", _observed_apply)
+    return applied
+
+
+async def _wait_for(signal: asyncio.Event) -> None:
+    await asyncio.wait_for(signal.wait(), timeout=_SYNC_TIMEOUT)
 
 
 def _plan_and_dag(node_id: str = "node-0"):
@@ -107,12 +128,23 @@ async def test_ctl_task_polls_repeatedly_not_once(tmp_path, monkeypatch):
 
         fake_executor = _FakeExecutor()
         late_control: dict = {}
+        empty_poll_seen = asyncio.Event()
+        control_applied = _observe_applied_control(monkeypatch)
+        original_list = db.list_pending_session_controls
+
+        async def _observed_list(*args, **kwargs):
+            pending = await original_list(*args, **kwargs)
+            if not pending:
+                empty_poll_seen.set()
+            return pending
+
+        monkeypatch.setattr(db, "list_pending_session_controls", _observed_list)
 
         async def _fake_run_dag(graph, *, executor_ref, **_kw):
             executor_ref["executor"] = fake_executor
-            await asyncio.sleep(0.05)  # let a tick or two pass with nothing queued
+            await _wait_for(empty_poll_seen)
             late_control.update(await _queue_control(db, sid, "resume"))
-            await asyncio.sleep(0.1)  # give the poller another tick to see it
+            await _wait_for(control_applied)
             return {"operation_results": {"node-0": "ok"}, "spawned_operations": 0}
 
         fake_engine_run = MagicMock()
@@ -144,7 +176,7 @@ async def test_ctl_task_and_hb_task_are_cancelled_cleanly_at_run_end(tmp_path, m
 
         async def _fake_run_dag(graph, *, executor_ref, **_kw):
             executor_ref["executor"] = fake_executor
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0)
             return {"operation_results": {"node-0": "ok"}, "spawned_operations": 0}
 
         fake_engine_run = MagicMock()
@@ -168,18 +200,21 @@ async def test_ctl_task_crash_does_not_kill_the_run(tmp_path, monkeypatch):
     monkeypatch.setattr(_flow, "_CONTROL_POLL_INTERVAL", 0.02)
 
     class _AlwaysFailsListingDB:
-        def __init__(self, real_db: StateDB):
+        def __init__(self, real_db: StateDB, failure_seen: asyncio.Event):
             self._real = real_db
+            self._failure_seen = failure_seen
 
         def __getattr__(self, name):
             return getattr(self._real, name)
 
         async def list_pending_session_controls(self, *_a, **_kw):
+            self._failure_seen.set()
             raise RuntimeError("database is locked")
 
     async with StateDB(tmp_path / "state.db") as db:
         sid = await _make_session(db)
-        flaky_db = _AlwaysFailsListingDB(db)
+        failure_seen = asyncio.Event()
+        flaky_db = _AlwaysFailsListingDB(db, failure_seen)
 
         env = _make_env(tmp_path, live_persist={"db": flaky_db, "session_id": sid})
         env.session.include_branches(_FakeBranch("researcher"))
@@ -189,7 +224,7 @@ async def test_ctl_task_crash_does_not_kill_the_run(tmp_path, monkeypatch):
 
         async def _fake_run_dag(graph, *, executor_ref, **_kw):
             executor_ref["executor"] = fake_executor
-            await asyncio.sleep(0.1)  # several ticks, every one raises inside the poller
+            await _wait_for(failure_seen)
             return {"operation_results": {"node-0": "ok"}, "spawned_operations": 0}
 
         fake_engine_run = MagicMock()
@@ -209,6 +244,21 @@ async def test_ctl_task_not_yet_available_window_is_skipped_not_fatal(tmp_path, 
     """Before `run_dag` populates `executor_ref`, the poller must find no
     executor and skip the tick — not raise — for as many ticks as it takes."""
     monkeypatch.setattr(_flow, "_CONTROL_POLL_INTERVAL", 0.02)
+    original_sleep = asyncio.sleep
+    completed_empty_ticks = asyncio.Event()
+    poll_sleeps = 0
+
+    async def _observed_sleep(delay):
+        nonlocal poll_sleeps
+        if delay != _flow._CONTROL_POLL_INTERVAL:
+            await original_sleep(delay)
+            return
+        poll_sleeps += 1
+        if poll_sleeps >= 2:
+            completed_empty_ticks.set()
+        await original_sleep(0)
+
+    monkeypatch.setattr(_flow._asyncio, "sleep", _observed_sleep)
 
     async with StateDB(tmp_path / "state.db") as db:
         sid = await _make_session(db)
@@ -219,9 +269,9 @@ async def test_ctl_task_not_yet_available_window_is_skipped_not_fatal(tmp_path, 
         plan_result, dag_state = _plan_and_dag()
 
         async def _fake_run_dag(graph, *, executor_ref, **_kw):
-            # Simulate a slow-to-construct executor: several poll ticks pass
-            # with executor_ref empty before it becomes available.
-            await asyncio.sleep(0.06)
+            # Reaching the second sleep proves one full poll iteration already
+            # observed the empty executor_ref and safely continued.
+            await _wait_for(completed_empty_ticks)
             assert "executor" not in executor_ref
             return {"operation_results": {"node-0": "ok"}, "spawned_operations": 0}
 
@@ -239,3 +289,4 @@ async def test_ctl_task_not_yet_available_window_is_skipped_not_fatal(tmp_path, 
         # The row is untouched — no executor ever became available to apply it.
         pending = await db.list_pending_session_controls(sid)
         assert len(pending) == 1
+        assert poll_sleeps >= 2
