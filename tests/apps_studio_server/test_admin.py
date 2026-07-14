@@ -535,7 +535,8 @@ def test_admin_transition_with_reason_code_succeeds(tmp_path, monkeypatch):
             assert row["status_reason_summary"] == "Operator forced failure after alert."
             rows = await db.fetch_all(
                 "SELECT reason_code, previous_status, status, evidence_refs "
-                "FROM status_transitions WHERE entity_id = ?",
+                "FROM status_transitions "
+                "WHERE entity_id = ? AND previous_status = 'running' AND status = 'failed'",
                 (sid,),
             )
             assert len(rows) == 1
@@ -601,7 +602,8 @@ def test_admin_transition_phantom_classifier_override(
             import json as _json
 
             row_t = await db.fetch_one(
-                "SELECT evidence_refs FROM status_transitions WHERE entity_id = ?",
+                "SELECT evidence_refs FROM status_transitions "
+                "WHERE entity_id = ? AND previous_status = 'running' AND status = 'failed'",
                 (sid,),
             )
             refs = _json.loads(row_t["evidence_refs"] or "[]")

@@ -103,11 +103,11 @@ def report(scored: list[ScoredResult], kinds: dict[str, str]) -> None:
 
     # ---- Compute / cost table (the matched-compute view) --------------------
     print("\nCOMPUTE & COST  (lift is meaningless unless it holds per-dollar)")
-    print("-" * 118)
+    print("-" * 125)
     print(
-        f"{'config':<26}{'in tok':<10}{'out tok':<10}{'$/run':<11}{'$/defect-found':<16}{'wall':<8}{'usage':<10}{'reasoning':<10}"
+        f"{'config':<26}{'in tok':<10}{'cached read':<12}{'cache write':<12}{'out tok':<10}{'$/run':<11}{'$/defect-found':<16}{'wall':<8}{'usage':<10}{'reasoning':<10}"
     )
-    print("-" * 118)
+    print("-" * 125)
     costs = {}
     for cfg in sorted(by_cfg):
         runs = _valid(by_cfg[cfg]["defect"]) + _valid(by_cfg[cfg]["intended"])
@@ -115,6 +115,8 @@ def report(scored: list[ScoredResult], kinds: dict[str, str]) -> None:
             print(f"{cfg:<26}{'— no valid runs —'}")
             continue
         mean_in = statistics.mean([s.input_tokens for s in runs])
+        mean_cached = statistics.mean([s.cached_tokens for s in runs])
+        mean_cache_write = statistics.mean([s.cache_write_tokens for s in runs])
         mean_out = statistics.mean([s.output_tokens for s in runs])
         mean_cost = statistics.mean([s.est_cost_usd for s in runs])
         tp = sum(s.found_defect for s in _valid(by_cfg[cfg]["defect"]))
@@ -125,9 +127,9 @@ def report(scored: list[ScoredResult], kinds: dict[str, str]) -> None:
         reasoning = "full" if all(s.reasoning_disclosed for s in runs) else "FLOOR*"
         costs[cfg] = mean_cost
         print(
-            f"{cfg:<26}{mean_in:<10.0f}{mean_out:<10.0f}{f'${mean_cost:.4f}':<11}{per_found:<16}{f'{mean_wall:.0f}s':<8}{src:<10}{reasoning:<10}"
+            f"{cfg:<26}{mean_in:<10.0f}{mean_cached:<12.0f}{mean_cache_write:<12.0f}{mean_out:<10.0f}{f'${mean_cost:.4f}':<11}{per_found:<16}{f'{mean_wall:.0f}s':<8}{src:<10}{reasoning:<10}"
         )
-    print("=" * 118)
+    print("=" * 125)
     print("recall = P(flag planted defect | mutant)   FP-avoid = P(not flag intended | clean)")
     print(
         "engaged = P(examined the baited path | clean)  — low engaged ⇒ FP-avoid is laziness, not skill"

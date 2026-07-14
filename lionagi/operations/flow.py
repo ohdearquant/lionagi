@@ -12,7 +12,7 @@ import logging
 import math
 import os
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -388,7 +388,27 @@ class DependencyAwareExecutor:
                     if isinstance(operation.response, dict) and "context" in operation.response:
                         from lionagi.libs.nested import deep_update
 
-                        deep_update(self.context.content, operation.response["context"])
+                        response_context = operation.response["context"]
+                        if not isinstance(response_context, Mapping):
+                            error = TypeError(
+                                f"Operation {ref_id} response['context'] must be a Mapping, "
+                                f"got {type(response_context).__name__}."
+                            )
+                            operation.execution.status = EventStatus.FAILED
+                            operation.execution.error = error
+                            self.results[operation.id] = {"error": str(error)}
+                            if self.on_progress:
+                                self.on_progress(str(operation.id), branch_name, "failed", elapsed)
+                            if self.verbose:
+                                logger.error(
+                                    "Operation %s failed (%.1fs): %s",
+                                    ref_id,
+                                    elapsed,
+                                    error,
+                                )
+                            return
+
+                        deep_update(self.context.content, dict(response_context))
 
                     if self.on_progress:
                         self.on_progress(str(operation.id), branch_name, "completed", elapsed)
@@ -601,12 +621,12 @@ class DependencyAwareExecutor:
         """Validate that all edge conditions are properly configured."""
         for edge in self.graph.internal_edges.values():
             if edge.condition is not None:
-                from lionagi.protocols.graph.edge import EdgeCondition
+                from lionagi.protocols._concepts import Condition
 
-                if not isinstance(edge.condition, EdgeCondition):
+                if not isinstance(edge.condition, Condition):
                     raise TypeError(
                         f"Edge {edge.id} has invalid condition type: {type(edge.condition)}. "
-                        "Must be EdgeCondition or None."
+                        "Must be a Condition subclass or None."
                     )
 
                 if not hasattr(edge.condition, "apply"):

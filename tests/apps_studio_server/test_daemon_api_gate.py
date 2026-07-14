@@ -650,6 +650,7 @@ _SCHEDULE_DETAIL_KEYS = sorted(
         "poll_interval_sec",
         "poller_consecutive_401",
         "project",
+        "rate_limit",
         "recent_runs",
         "threshold_config",
         "trigger_type",

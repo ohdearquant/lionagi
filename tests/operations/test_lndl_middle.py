@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from pydantic import BaseModel
 
+import lionagi.lndl as lndl
 from lionagi.hooks.bus import HookBus, HookPoint
 from lionagi.lndl import Continue, LNDLError, Retry, Success, get_lndl_system_prompt
 from lionagi.operations.lndl_middle import (
@@ -133,6 +134,29 @@ class TestClassifyRound:
         )
         assert isinstance(outcome, Success)
         assert assembled == {"answer": "from an earlier round"}
+
+    def test_prompt_action_rule_matches_both_round_shapes(self):
+        rule = (
+            "Per-round action rule: if OUT{} is present, only its referenced lacts "
+            "execute; if OUT{} is absent, every declared lact executes."
+        )
+        assert get_lndl_system_prompt().count(rule) == 3
+
+        with_out = (
+            "```lndl\n"
+            '<lact a>lookup(query="broad")</lact>\n'
+            '<lact b>lookup(query="narrow")</lact>\n'
+            "OUT{answer: [b]}\n"
+            "```"
+        )
+        outcome, pending, _assembled = _classify_round(with_out, AnswerModel, {})
+        assert isinstance(outcome, Success)
+        assert [call.name for call in pending] == ["b"]
+
+        without_out = with_out.replace("OUT{answer: [b]}\n", "")
+        outcome, pending, _assembled = _classify_round(without_out, AnswerModel, {})
+        assert isinstance(outcome, Continue)
+        assert [call.name for call in pending] == ["a", "b"]
 
 
 # ---------------------------------------------------------------------------
@@ -314,10 +338,9 @@ class TestRetryAndRepair:
         assert result.answer == "fixed"
 
 
-class TestExhausted:
-    """Exhaustion is a terminal RoundOutcome with no value to return — the
-    Middle raises LNDLError rather than leaking a raw last_error str (or
-    None, for an all-Continue run) through operate()'s return type."""
+class TestRoundBudgetExhaustion:
+    """The Middle raises LNDLError rather than leaking a raw last_error str
+    (or None, for an all-Continue run) through operate()'s return type."""
 
     @pytest.mark.asyncio
     async def test_exhausted_raises_with_last_error(self):
@@ -348,6 +371,8 @@ class TestExhausted:
     async def test_operate_integration_exhaustion_raises(self):
         """branch.operate(..., response_format=...) must not silently hand a
         structured caller a bare string or None on exhaustion."""
+        assert not hasattr(lndl, "Exhausted")
+        assert not hasattr(lndl, "Failed")
         custom_middle = build_lndl_middle(round_budget=1)
         branch = TestBranch.from_text("```lndl\nOUT{answer: [missing]}\n```")
         with pytest.raises(LNDLError):

@@ -197,13 +197,23 @@ class TestLoadFlowSpec:
 
 
 class TestResolvePlaybookPath:
-    def test_rejects_path_separator(self):
+    def test_rejects_path_separator_with_no_such_plugin(self, plugin_home):
+        """`subdir/evil` is now a syntactically well-formed `<plugin>/<name>`
+        token (ADR-0088 D6); since no plugin named `subdir` exists, this is a
+        named "plugin not active" miss, not a bare-identifier validation
+        error — the token shape itself is no longer rejected outright."""
         p, err = _resolve_playbook_path("subdir/evil")
         assert p is None
-        assert "bare identifier" in err
+        assert "subdir" in err
+        assert "not active" in err
 
     def test_rejects_hidden_name(self):
         p, err = _resolve_playbook_path(".hidden")
+        assert p is None
+        assert "bare identifier" in err
+
+    def test_rejects_hidden_name_in_plugin_token(self):
+        p, err = _resolve_playbook_path("plugin/.hidden")
         assert p is None
         assert "bare identifier" in err
 
@@ -213,6 +223,10 @@ class TestResolvePlaybookPath:
         (playbooks_dir / "empaco.playbook.yaml").write_text("prompt: ok\n")
         (playbooks_dir / "chatgpt.playbook.yaml").write_text("prompt: ok\n")
         monkeypatch.setenv("HOME", str(tmp_path))
+        # Isolate cwd too — find_lionagi_dirs() also walks up from cwd, which
+        # would otherwise pull in whatever real .lionagi/ the invocation
+        # directory happens to sit under.
+        monkeypatch.chdir(tmp_path)
         p, err = _resolve_playbook_path("nonexistent")
         assert p is None
         assert "not found" in err
@@ -224,9 +238,66 @@ class TestResolvePlaybookPath:
         target = playbooks_dir / "rewrite.playbook.yaml"
         target.write_text("prompt: test\n")
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.chdir(tmp_path)
         p, err = _resolve_playbook_path("rewrite")
         assert err is None
         assert str(p) == str(target)
+
+    def test_project_local_playbook_takes_precedence_over_global(self, monkeypatch, tmp_path):
+        """Unified discovery via find_lionagi_dirs(): project `.lionagi/playbooks/`
+        wins over global `~/.lionagi/playbooks/` for the same bare name — the
+        exact project-then-global precedence agent profiles already use."""
+        home = tmp_path / "home"
+        project = tmp_path / "project"
+        (home / ".lionagi" / "playbooks").mkdir(parents=True)
+        (home / ".lionagi" / "playbooks" / "shared.playbook.yaml").write_text("prompt: global\n")
+        (project / ".lionagi" / "playbooks").mkdir(parents=True)
+        (project / ".lionagi" / "playbooks" / "shared.playbook.yaml").write_text(
+            "prompt: project\n"
+        )
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.chdir(project)
+
+        p, err = _resolve_playbook_path("shared")
+        assert err is None
+        assert p.read_text() == "prompt: project\n"
+
+    # ── Adversarial traversal shapes — the path validator must still hold ──
+
+    def test_rejects_dotdot_component(self):
+        p, err = _resolve_playbook_path("../x")
+        assert p is None
+        assert "bare identifier" in err
+
+    def test_rejects_dotdot_in_second_segment(self):
+        p, err = _resolve_playbook_path("a/../b")
+        assert p is None
+        assert "bare identifier" in err
+
+    def test_rejects_absolute_path(self):
+        p, err = _resolve_playbook_path("/etc/passwd")
+        assert p is None
+        assert "bare identifier" in err
+
+    def test_rejects_multi_segment_traversal(self):
+        p, err = _resolve_playbook_path("plugin/../../etc")
+        assert p is None
+        assert "bare identifier" in err
+
+    def test_rejects_more_than_two_segments(self):
+        p, err = _resolve_playbook_path("a/b/c")
+        assert p is None
+        assert "bare identifier" in err
+
+    def test_rejects_backslash(self):
+        p, err = _resolve_playbook_path("a\\b")
+        assert p is None
+        assert "bare identifier" in err
+
+    def test_rejects_nul_byte(self):
+        p, err = _resolve_playbook_path("a\x00b")
+        assert p is None
+        assert "bare identifier" in err
 
 
 # ── argument-hint parser ─────────────────────────────────────────────
@@ -344,6 +415,11 @@ class TestPlaybookEndToEnd:
             )
         )
         monkeypatch.setenv("HOME", str(tmp_path))
+        # Unified discovery (find_lionagi_dirs()) also walks up from cwd looking
+        # for a project-local `.lionagi/`; chdir into the scratch dir so this
+        # test's own playbook isn't shadowed by an unrelated real one reachable
+        # from the actual invocation directory.
+        monkeypatch.chdir(tmp_path)
         args = _parse_flow_args(["-p", "audit", "--tabs", "7", "--poll", "audit the auth service"])
 
         with patch(
@@ -716,6 +792,10 @@ class TestPlaybookArtifactsPassThrough:
             )
         )
         monkeypatch.setenv("HOME", str(tmp_path))
+        # See test_playbook_resolves_and_interpolates: isolate cwd too, so
+        # find_lionagi_dirs()'s project-dir walk-up can't shadow this test's
+        # playbook with an unrelated real one of the same name.
+        monkeypatch.chdir(tmp_path)
         args = _parse_flow_args(["-p", "research", "do it"])
 
         with patch(

@@ -275,7 +275,10 @@ class SQLAlchemyLifecycleService:
                 )
             previous_status = row["status"]
 
-            # expected_statuses / expected_version guards.
+            # expected_statuses is a caller precondition. Version conflicts,
+            # by contrast, apply only to writes: policy rejections must retain
+            # their rejection audit even when the caller holds a stale row
+            # version.
             if (
                 command.expected_statuses is not None
                 and previous_status not in command.expected_statuses
@@ -286,17 +289,6 @@ class SQLAlchemyLifecycleService:
                     current_status=previous_status,
                     transition_id=None,
                 )
-            if (
-                command.expected_version is not None
-                and row["updated_at"] != command.expected_version
-            ):
-                return TransitionOutcome(
-                    result="conflict",
-                    previous_status=previous_status,
-                    current_status=previous_status,
-                    transition_id=None,
-                )
-
             same_status = previous_status == command.to_status
             declared_edges = policy.edges.get(previous_status, ()) if enforce_edges else ()
             self_edge = next((e for e in declared_edges if e.to_status == command.to_status), None)
@@ -402,6 +394,17 @@ class SQLAlchemyLifecycleService:
                 )
                 return TransitionOutcome(
                     result="rejected",
+                    previous_status=previous_status,
+                    current_status=previous_status,
+                    transition_id=None,
+                )
+
+            if (
+                command.expected_version is not None
+                and row["updated_at"] != command.expected_version
+            ):
+                return TransitionOutcome(
+                    result="conflict",
                     previous_status=previous_status,
                     current_status=previous_status,
                     transition_id=None,

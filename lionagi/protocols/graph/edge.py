@@ -52,6 +52,15 @@ class Edge(Element):
         **kwargs,
     ):
         """Link head to tail with optional condition and labels; extra kwargs go into properties."""
+        element_kwargs = {
+            key: kwargs.pop(key) for key in ("id", "created_at", "metadata") if key in kwargs
+        }
+        properties = kwargs.pop("properties", None)
+        if properties is not None:
+            if not isinstance(properties, dict):
+                raise ValueError("Properties must be a dictionary.")
+            kwargs = {**properties, **kwargs}
+
         head = ID.get_id(head)
         tail = ID.get_id(tail)
         if condition:
@@ -69,7 +78,7 @@ class Edge(Element):
             else:
                 raise ValueError("Label must be a string or a list of strings.")
 
-        super().__init__(head=head, tail=tail, properties=kwargs)
+        super().__init__(head=head, tail=tail, properties=kwargs, **element_kwargs)
 
     @field_serializer("head", "tail")
     def _serialize_id(self, value: UUID) -> str:

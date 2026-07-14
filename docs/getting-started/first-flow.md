@@ -1,88 +1,99 @@
-# Your First Flow
+# CLI Quickstart
 
-Run a single agent, then a parallel fanout, then a DAG flow — five commands total.
+Get one agent to a verified result before adding orchestration. This guide uses
+the `codex` alias; substitute `claude` if that is the CLI you authenticated.
 
-## Single agent turn
+## 1. Run one agent
 
-```bash
-li agent claude "What are the three laws of thermodynamics?"
-```
-
-The model's response prints to stdout. Continue the same conversation:
+From a directory you want the agent to inspect:
 
 ```bash
-li agent -c "And what is the zeroth law?"
+li agent codex "Describe this directory in one concise paragraph." --cwd .
 ```
 
-## Parallel fanout
+Success has two observable signals: a non-empty response prints to stdout, and
+LionAGI prints a `[to resume]` command containing the saved branch ID. `--cwd`
+sets the working directory for the CLI-backed provider.
+
+If the provider fails before responding, run `codex --version` and
+`codex login` directly, then rerun `li doctor`.
+
+## 2. Continue the conversation
+
+Continue the most recently used branch:
 
 ```bash
-li o fanout claude "audit the file structure in this directory" -n 3 --save ./results
+li agent -c "Turn that into three bullets."
 ```
 
-3 workers run in parallel. Artifacts land in `./results/` — one file per worker.
-
-## DAG flow
-
-Preview the plan before executing:
+Or use the explicit branch ID from the resume hint:
 
 ```bash
-li o flow claude "research Python async best practices and write a summary" --dry-run
+li agent -r <branch-id> "Name one file I should read first and explain why."
 ```
 
-```text
-# output:
-Planning DAG...
-FlowPlan (2 agents, 3 ops, synthesis=True)
-
-Agents:
-  r1: researcher
-  c1: critic
-
-Operations:
-  o1 → r1
-  o2 → r1    depends_on: o1
-  o3 → c1    depends_on: o2  [CONTROL]
-
-Model resolution:
-  r1: codex/gpt-5.4 (profile)
-  c1: claude_code/opus-4-7 (profile)
-```
-
-Execute:
+For bounded work, set a hard wall-clock deadline:
 
 ```bash
-li o flow claude "research Python async best practices and write a summary" --save ./results
+li agent -c "Finish with the most important caveat." --timeout 120
 ```
 
-## Run directory
+LionAGI adds the deadline to the agent's prompt and terminates the run when the
+limit is reached. Add `--resume-on-timeout` when you want one automatic resume
+attempt after an agent timeout:
 
-Every `li` invocation writes to `~/.lionagi/runs/{run_id}/`:
-
-```text
-~/.lionagi/runs/
-└── 20260420T103404-a1b2c3/
-    ├── run.json       # manifest: command, branches, agents
-    ├── branches/      # branch snapshots
-    └── artifacts/     # agent output files
+```bash
+li agent -c "Complete the review." --timeout 120 --resume-on-timeout
 ```
 
-`run_id` format: `YYYYMMDDTHHMMSS-{uuid6}`. Resume any branch: `li agent -r <branch_id> "..."`.
+## 3. Fan out independent work
 
-## Python API
+Use fan-out when several workers can answer independently:
 
-```python
-import asyncio
-from lionagi import Branch
-
-async def main():
-    b = Branch()
-    response = await b.operate(instruction="What is the observer pattern?")
-    print(response)
-
-asyncio.run(main())
+```bash
+li o fanout codex \
+  "Review this repository from correctness and maintainability perspectives." \
+  --cwd . -n 2 --with-synthesis --save ./lion-results/fanout
 ```
 
-`Branch.operate()` returns the model response as a string. The CLI and Python share the same internals.
+The saved directory contains `worker_1.md`, `worker_2.md`, and, because
+`--with-synthesis` is set, `synthesis.md`. The command also records run state
+under `~/.lionagi/runs/`.
 
-Next: [CLI reference](../cli-reference.md) for full flag tables, or [Cookbook scenarios](../cookbook/index.md).
+## 4. Preview a dependency-aware flow
+
+A flow asks an orchestrator to plan work with dependency edges. Preview the
+plan before spending worker turns:
+
+```bash
+li o flow codex \
+  "Inspect this repository, identify one documentation gap, then propose a fix." \
+  --cwd . --max-ops 4 --dry-run
+```
+
+`--dry-run` prints the planned agents, operations, dependencies, and model
+resolution without executing the worker graph. The exact plan is model-driven,
+so its node names and count may vary within the `--max-ops` cap.
+
+Execute the same task after the preview looks appropriate:
+
+```bash
+li o flow codex \
+  "Inspect this repository, identify one documentation gap, then propose a fix." \
+  --cwd . --max-ops 4 --save ./lion-results/flow
+```
+
+Flow artifacts are written below the `--save` directory. The durable manifest,
+branch snapshots, stream buffers, and checkpoint remain under the run's
+`~/.lionagi/runs/<run-id>/` directory.
+
+## What you have now
+
+- A resumable single-agent branch.
+- Parallel worker artifacts from fan-out.
+- A previewed and executed dependency-aware flow.
+- Durable local run state for inspection and recovery.
+
+Next, learn the full
+[agent → fan-out → flow → playbook progression](../guides/orchestration.md),
+or see how to [monitor and recover durable work](../guides/durable-operations.md).

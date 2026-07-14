@@ -29,12 +29,15 @@ from ._context_from import (
 )
 from ._logging import hint, log_error
 from ._providers import (
+    _CLAUDE_PROVIDER_NAMES,
     BACKENDS,
     PROVIDER_BYPASS_KWARGS,
     PROVIDER_EFFORT_KWARG,
     PROVIDER_FAST_KWARGS,
     PROVIDER_YOLO_KWARGS,
     PROVIDERS_EFFORT_VIA_MODEL_NAME,
+    _clamp_claude_effort,
+    _clamp_codex_effort,
     add_common_cli_args,
     build_chat_model,
     build_deadline_preamble,
@@ -294,6 +297,11 @@ async def _run_agent(
             hint(f"[resume] prefix-matched {resume} → {resolved_branch_id}")
         branch = Branch.from_dict(json.loads(branch_path.read_text()))
 
+    # Captured before the `branch is None` new-branch block below reassigns
+    # `branch` — the only reliable way to tell "this leg reopened an existing
+    # branch" from "this leg is minting a brand-new one" once that block runs.
+    is_resumed_branch = branch is not None
+
     if model_str is not None:
         ms = parse_model_spec(model_str)
         if branch is not None and "/" not in ms.model and ms.model not in BACKENDS:
@@ -324,9 +332,9 @@ async def _run_agent(
         )
 
     if branch is None:
-        # codex sandbox blocks tool calls without bypass — surface only in
-        # verbose runs now that profiles can carry bypass/yolo themselves.
-        if verbose and provider == "codex" and not yolo and not bypass:
+        # Codex sandbox blocks tool calls without bypass. Surface this even
+        # without verbose output; CLI or profile approval flags suppress it.
+        if provider == "codex" and not yolo and not bypass:
             from lionagi.cli._logging import warn
 
             warn(
@@ -405,6 +413,10 @@ async def _run_agent(
         if effort is not None:
             kwarg = PROVIDER_EFFORT_KWARG.get(provider)
             if kwarg:
+                if provider == "codex":
+                    effort = _clamp_codex_effort(effort, cfg.get("model"))
+                elif provider in _CLAUDE_PROVIDER_NAMES:
+                    effort = _clamp_claude_effort(effort, cfg.get("model") or "")
                 cfg[kwarg] = effort
             elif provider in PROVIDERS_EFFORT_VIA_MODEL_NAME:
                 # agy (Antigravity CLI) has no effort kwarg — fold effort into
@@ -423,14 +435,39 @@ async def _run_agent(
         if fast:
             cfg.update(PROVIDER_FAST_KWARGS.get(provider, {}))
 
-    # Profile system prompt for a brand-new, non-preset branch only — see
-    # docs/internals/cli.md for why the preset/resume paths must skip this.
-    if (
-        profile
-        and profile.system_prompt
-        and not took_create_agent_path
-        and not (resume or continue_last)
-    ):
+    # Profile system prompt for every leg EXCEPT one whose branch carries (or
+    # would carry, on a brand-new leg) a create_agent-composed system message
+    # (role header + policy block) — see docs/internals/cli.md. `preset` can
+    # never be set together with resume/continue_last (validated above), so
+    # `took_create_agent_path` alone is authoritative for a brand-new branch.
+    #
+    # A RESUMED branch is different: the profile loaded for *this*
+    # invocation (and therefore `has_role_key`) describes only what was
+    # passed to *this* leg, not how the persisted branch was originally
+    # built — it may have been created via create_agent under a role profile
+    # and now be resumed with a different, plain `-a` profile (or the same
+    # profile with `role:` since removed). Re-deriving the guard from the
+    # current profile would then clobber that branch's composed role/policy
+    # system message. The persisted branch itself carries the answer: every
+    # branch create_agent builds is stamped with an immutable origin marker
+    # in `branch.metadata` (see CREATE_AGENT_BRANCH_ORIGIN_KEY) that
+    # round-trips through save/resume — consult THAT instead.
+    if is_resumed_branch:
+        from lionagi.agent.factory import CREATE_AGENT_BRANCH_ORIGIN_KEY
+
+        composed_via_create_agent = bool(branch.metadata.get(CREATE_AGENT_BRANCH_ORIGIN_KEY))
+        if CREATE_AGENT_BRANCH_ORIGIN_KEY not in branch.metadata and has_role_key:
+            from lionagi.protocols.messages.system import System
+
+            has_persisted_system = branch.msgs.system is not None or any(
+                isinstance(message, System) for message in branch.msgs.messages
+            )
+            if has_persisted_system:
+                branch.metadata[CREATE_AGENT_BRANCH_ORIGIN_KEY] = True
+                composed_via_create_agent = True
+    else:
+        composed_via_create_agent = took_create_agent_path
+    if profile and profile.system_prompt and not composed_via_create_agent:
         branch.msgs.add_message(system=profile.system_prompt)
 
     if timeout is not None:
@@ -640,6 +677,11 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         ),
     )
     agent.add_argument(
+        "--list-profiles",
+        action="store_true",
+        help="Print the resolved agent-profile catalog as JSON and exit.",
+    )
+    agent.add_argument(
         "-r",
         "--resume",
         metavar="BRANCH_ID",
@@ -748,6 +790,11 @@ def _resolve_model_and_prompt(args: argparse.Namespace) -> tuple[str | None, str
 
 def run_agent(args: argparse.Namespace) -> int:
     """Dispatch agent command."""
+    if getattr(args, "list_profiles", False):
+        from lionagi.cli._providers import build_agent_profile_catalog
+
+        print(json.dumps(build_agent_profile_catalog(), indent=2, sort_keys=True))
+        return 0
     resolved = _resolve_model_and_prompt(args)
     if resolved is None:
         return 1

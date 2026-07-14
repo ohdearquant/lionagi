@@ -23,8 +23,13 @@ def staleness_check(session: dict[str, Any], *, now: float | None = None) -> str
     """Return "stale" if the running session exceeds its kind-aware threshold; None for terminal sessions."""
     if session.get("status") != "running":
         return None
-    threshold = STALE_THRESHOLDS.get(session.get("invocation_kind"), DEFAULT_STALE_THRESHOLD)
-    last_activity = session.get("last_message_at") or session.get("updated_at") or 0
+    threshold = threshold_for_kind(session.get("invocation_kind"))
+    last_activity = (
+        session.get("last_message_at")
+        or session.get("updated_at")
+        or session.get("started_at")
+        or 0
+    )
     ts = now if now is not None else time.time()
     if ts - last_activity > threshold:
         return "stale"

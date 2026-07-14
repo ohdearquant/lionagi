@@ -27,7 +27,7 @@ from .registry import (
     PluginToolCollisionError,
     ToolTarget,
 )
-from .trust import TrustState, build_trust_disclosure, trust_plugin, trust_state
+from .trust import TrustState, build_trust_disclosure, gc_trust_records, trust_plugin, trust_state
 
 __all__ = (
     "Capabilities",
@@ -43,6 +43,7 @@ __all__ = (
     "TrustState",
     "build_trust_disclosure",
     "discover_plugins",
+    "gc_trust_records",
     "parse_manifest",
     "trust_plugin",
     "trust_state",

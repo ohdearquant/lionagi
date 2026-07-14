@@ -32,7 +32,11 @@ lifecycle hook points — and the built-in handlers registered via
 | `TOOL_PRE` | `tool.pre` | Before tool invocation (blocking via `blocking_emit`) |
 | `TOOL_POST` | `tool.post` | After successful tool invocation |
 | `TOOL_ERROR` | `tool.error` | On tool invocation failure |
-| `ARTIFACT_CREATED` | `artifact.created` | When an artifact is persisted to disk |
+| `ARTIFACT_CREATED` | `artifact.created` | Deprecated/not yet wired: no emit site or payload contract exists |
+
+`ARTIFACT_CREATED` is retained only for enum compatibility. Do not register new
+handlers against it until an artifact owner defines a typed payload and a
+production emit site.
 
 ## Bus dispatch semantics
 
@@ -40,7 +44,9 @@ lifecycle hook points — and the built-in handlers registered via
 propagating them (isolation invariant). Exceptions: `TOOL_PRE` and
 `USER_PROMPT_SUBMIT` route through `blocking_emit`, which propagates
 exceptions so guards can raise `PermissionError` to abort the tool call or
-prompt submission.
+prompt submission. Before a blocking exception is re-raised, the bus records a
+denial `HookSignal` whose payload includes `denied: true` and an exception
+summary.
 
 `USER_PROMPT_SUBMIT` fires at most once per genuine user-originated turn,
 regardless of how many internal calls that turn drives underneath it — see
@@ -54,10 +60,22 @@ point without propagating as an error.
 
 ## Override semantics (build_session_bus)
 
-When an agent profile's `hooks` section mentions a point, the profile list
-**replaces** the default for that point. An empty list disables the default
-(e.g. `message.add: []` turns off built-in persistence). Points not mentioned
-keep their defaults.
+`build_session_bus(agent_hooks=...)` is a low-level construction utility for
+callers that explicitly own a Session bus. It is not consumed automatically by
+`Session` or `AgentSpec`/profile construction. A point present in the mapping
+**replaces** its default handler list; an empty list disables a default. Points
+not mentioned keep their defaults.
+
+```python
+bus = build_session_bus(
+    agent_hooks={"api.post_call": ["log_api_metrics"]},
+    observer=session.observer,
+)
+```
+
+Assigning a separately built bus to Session internals is unsupported. Callers
+that need the standard Session-owned bus should use `session.hooks` and register
+runtime handlers with `on()`.
 
 ## Tool-event hooks at the invoke chokepoint
 
@@ -114,13 +132,13 @@ completed outcome.
 | `persist_session_end` | `SESSION_END` |
 | `persist_branch_provenance` | `BRANCH_CREATE` |
 | `persist_branch_end` | `BRANCH_END` |
-| `persist_message` | `MESSAGE_ADD` |
+| `persist_message` | name-addressable; routed explicitly by `hooks/persist.py`, not in `DEFAULT_HOOKS` |
 | `log_api_metrics` | (name-addressable; not in DEFAULT_HOOKS) |
 | `log_tool_call` | (name-addressable; not in DEFAULT_HOOKS) |
 | `log_tool_use` | (name-addressable; not in DEFAULT_HOOKS; deprecated — use `log_tool_call`) |
 
 All handlers are name-addressable via the loader registry and can be referenced
-as strings in agent YAML profiles.
+as strings in the explicit `agent_hooks` mapping passed to `build_session_bus`.
 
 ## AgentSpec coding() guards
 

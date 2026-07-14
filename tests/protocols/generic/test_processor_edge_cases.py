@@ -49,6 +49,15 @@ class TestProcessorInit:
         p = _proc(max_queue_size=5)
         assert p.max_queue_size == 5
 
+    @pytest.mark.parametrize("max_queue_size", [0, 3])
+    def test_nonnegative_max_queue_size(self, max_queue_size):
+        p = _proc(max_queue_size=max_queue_size)
+        assert p.queue.maxsize == max_queue_size
+
+    def test_negative_max_queue_size_raises(self):
+        with pytest.raises(ValueError, match="Queue size"):
+            _proc(max_queue_size=-1)
+
     def test_zero_concurrency_limit_no_semaphore(self):
         p = _proc(concurrency_limit=0)
         assert p._concurrency_sem is None
@@ -349,6 +358,30 @@ class TestProcessorJoin:
         await asyncio.wait_for(p.join(), timeout=1.0)
         assert p.queue.empty()
         assert all(e.status == EventStatus.SKIPPED for e in events)
+
+    @pytest.mark.parametrize("operation", ["join", "execute"])
+    async def test_terminal_denials_beyond_capacity_drain(self, operation):
+        p = _RejectProc(queue_capacity=2, capacity_refresh_time=0.001, concurrency_limit=2)
+        events = [_OkEvent() for _ in range(5)]
+        for event in events:
+            await p.enqueue(event)
+
+        if operation == "join":
+            await asyncio.wait_for(p.join(), timeout=1.0)
+        else:
+
+            async def stop_when_drained():
+                while not p.queue.empty():
+                    await asyncio.sleep(0)
+                await p.stop()
+
+            await asyncio.wait_for(
+                asyncio.gather(p.execute(), stop_when_drained()),
+                timeout=1.0,
+            )
+
+        assert p.queue.empty()
+        assert all(event.status == EventStatus.SKIPPED for event in events)
 
     async def test_join_completes_deferred_then_granted(self):
         # Event is deferred on the first lap, then granted: join() loops past

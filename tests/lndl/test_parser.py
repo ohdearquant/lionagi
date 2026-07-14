@@ -176,6 +176,16 @@ class TestOutBlockForms:
         assert prog.out_block.fields["a"] == 3.5
         assert isinstance(prog.out_block.fields["a"], float)
 
+    def test_list_number_literals_preserve_numeric_types(self):
+        prog = _parse("OUT{a: [5, -2, 3.5, 1e10]}")
+        values = prog.out_block.fields["a"]
+        assert values == [5, -2, 3.5, 1e10]
+        assert [type(value) for value in values] == [int, int, float, float]
+
+    def test_nested_list_number_literals_preserve_numeric_types(self):
+        prog = _parse("OUT{a: [[1, 2.5], [3e2]]}")
+        assert prog.out_block.fields["a"] == [[1, 2.5], [300.0]]
+
     def test_bool_true(self):
         prog = _parse("OUT{a: true}")
         assert prog.out_block.fields["a"] is True

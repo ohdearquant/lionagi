@@ -219,13 +219,22 @@ class CodexCodeRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _clamp_effort(cls, values):
-        """Clamp max/ultra down to the target model's supported ceiling (model-dependent: the gpt-5.6 family accepts max, sol/terra also ultra; earlier models top out at xhigh)."""
+        """Clamp max/ultra down to the target model's supported ceiling (model-dependent: the gpt-5.6 family accepts max, sol/terra also ultra; earlier models top out at xhigh).
+
+        `values` is the raw constructor input — a caller who omits `model=`
+        (relying on the field default) leaves the key absent here, since
+        Pydantic v2 applies field defaults after `mode="before"` validators
+        run. Falling back to the field's own default keeps the clamp
+        consistent between an omitted `model` and that same default passed
+        explicitly.
+        """
         from lionagi.service.providers import _clamp_codex_effort
 
+        model = values.get("model", cls.model_fields["model"].default)
         for key in ("reasoning_effort", "plan_mode_reasoning_effort"):
             effort = values.get(key)
             if isinstance(effort, str):
-                values[key] = _clamp_codex_effort(effort, values.get("model"))
+                values[key] = _clamp_codex_effort(effort, model)
         return values
 
     # ── images & config (special-cased) ───────────────────────────

@@ -27,7 +27,9 @@ def add_plugin_subparser(subparsers: argparse._SubParsersAction) -> None:
         help="List discovered plugins and their state.",
         description=(
             "State is one of: active, disabled, untrusted, changed, "
-            "incompatible, collision, invalid."
+            "incompatible, collision, invalid. Also garbage-collects trust "
+            "records whose bundle directory no longer exists, printing which "
+            "ones were pruned and why."
         ),
     )
 
@@ -76,6 +78,12 @@ def _state_row(record) -> str:  # noqa: ANN001 — PluginRecord, imported lazily
 
 def _run_list() -> int:
     from lionagi.plugins import PluginRegistry
+    from lionagi.plugins.discovery import discover_plugins
+    from lionagi.plugins.trust import gc_trust_records
+
+    pruned = gc_trust_records(discover_plugins())
+    for name in pruned:
+        print(f"pruned stale trust record for {name!r}: plugin directory no longer found")
 
     PluginRegistry.reset()
     records = PluginRegistry.list_plugins()
@@ -193,7 +201,7 @@ def _run_trust(name: str, *, assume_yes: bool) -> int:
 
 def _run_set_enabled(name: str, *, enabled: bool) -> int:
     from lionagi.plugins import PluginRegistry
-    from lionagi.plugins._user_settings import read_user_settings, write_user_settings
+    from lionagi.plugins._user_settings import locked_user_settings
 
     PluginRegistry.reset()
     record = PluginRegistry.get(name)
@@ -201,17 +209,16 @@ def _run_set_enabled(name: str, *, enabled: bool) -> int:
         log_error(f"unknown plugin: {name!r}")
         return 1
 
-    settings = read_user_settings()
-    plugins_block = settings.setdefault("plugins", {})
-    if not isinstance(plugins_block, dict):
-        plugins_block = {}
-        settings["plugins"] = plugins_block
-    entry = plugins_block.setdefault(name, {})
-    if not isinstance(entry, dict):
-        entry = {}
-        plugins_block[name] = entry
-    entry["enabled"] = enabled
-    write_user_settings(settings)
+    with locked_user_settings() as settings:
+        plugins_block = settings.setdefault("plugins", {})
+        if not isinstance(plugins_block, dict):
+            plugins_block = {}
+            settings["plugins"] = plugins_block
+        entry = plugins_block.setdefault(name, {})
+        if not isinstance(entry, dict):
+            entry = {}
+            plugins_block[name] = entry
+        entry["enabled"] = enabled
     PluginRegistry.reset()
     print(f"{'enabled' if enabled else 'disabled'} {name!r}.")
     return 0

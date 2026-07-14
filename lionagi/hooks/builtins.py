@@ -54,21 +54,25 @@ async def persist_session_start(
     current_status = row.get("status")
     if current_status in SESSION_TERMINAL_STATUSES:
         return
+    fields = {
+        "model": model,
+        "provider": provider,
+        "effort": effort,
+        "agent_name": agent_name,
+        "agent_hash": agent_hash,
+        "invocation_id": invocation_id,
+        "started_at": time.time(),
+    }
     if row.get("status_reason_code") == RunReasons.STARTED_OK:
+        await db.update_session(session_id, **fields)
         return
     await db.update_session(
         session_id,
         # Explicit reason_code avoids tripping the deprecation shim, which
         # would swallow the transition and silently drop provenance fields.
         reason_code=RunReasons.STARTED_OK,
-        model=model,
-        provider=provider,
-        effort=effort,
-        agent_name=agent_name,
-        agent_hash=agent_hash,
-        invocation_id=invocation_id,
         status="running",
-        started_at=time.time(),
+        **fields,
     )
 
 
