@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from lionagi.hooks import (
@@ -105,11 +107,10 @@ def test_build_session_bus_profile_overrides_defaults():
     assert len(handlers) == 1
     # Other defaults are untouched.
     assert bus.handlers_for(HookPoint.SESSION_END) == DEFAULT_HOOKS[HookPoint.SESSION_END]
-    assert bus.handlers_for(HookPoint.MESSAGE_ADD) == DEFAULT_HOOKS[HookPoint.MESSAGE_ADD]
+    assert bus.handlers_for(HookPoint.BRANCH_END) == DEFAULT_HOOKS[HookPoint.BRANCH_END]
 
 
-def test_build_session_bus_empty_list_disables_default():
-    """``message.add: []`` is the documented way to turn off persistence."""
+def test_build_session_bus_empty_list_leaves_point_unregistered():
     bus = build_session_bus({"message.add": []})
     assert bus.handlers_for(HookPoint.MESSAGE_ADD) == []
     # Defaults at other points still present.
@@ -128,7 +129,6 @@ def test_default_hooks_only_cover_session_lifecycle_and_persistence():
     assert set(DEFAULT_HOOKS) == {
         HookPoint.SESSION_START,
         HookPoint.SESSION_END,
-        HookPoint.MESSAGE_ADD,
         HookPoint.BRANCH_CREATE,
         HookPoint.BRANCH_END,
     }
@@ -141,6 +141,40 @@ def test_build_session_bus_returns_fresh_instance_each_call():
     assert a is not b
     assert isinstance(a, HookBus)
     assert isinstance(b, HookBus)
+
+
+async def test_direct_session_message_emission_has_no_context_incompatible_default(caplog):
+    """A Session-owned bus does not assume persistence context its Branch lacks."""
+    from lionagi.hooks.builtins import persist_message
+    from lionagi.session.session import Session
+
+    session = Session()
+    bus = session.hooks
+
+    assert persist_message not in bus.handlers_for(HookPoint.MESSAGE_ADD)
+    with caplog.at_level(logging.ERROR, logger="lionagi.hooks"):
+        await session.default_branch._persist_via_bus({"role": "user", "content": "hello"})
+    assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
+
+
+async def test_low_level_bus_builder_applies_declarative_overrides():
+    """Explicit bus construction is the supported declarative override path."""
+    calls = []
+
+    async def capture(**kwargs):
+        calls.append(kwargs)
+
+    name = "capture_low_level_override_for_test"
+    register_handler(name, capture)
+    try:
+        bus = build_session_bus({"api.post_call": [name]})
+        await bus.emit(HookPoint.API_POST_CALL, model="test-model")
+    finally:
+        from lionagi.hooks.loader import _REGISTRY
+
+        _REGISTRY.pop(name, None)
+
+    assert calls == [{"model": "test-model"}]
 
 
 # ── Deprecation alias ─────────────────────────────────────────────────────────

@@ -129,6 +129,16 @@ class HookBus:
                 await maybe_await(handler(**kwargs))
             except StopHook:
                 break
+            except Exception as exc:
+                await self._record(
+                    point,
+                    {
+                        **kwargs,
+                        "denied": True,
+                        "exception": f"{type(exc).__name__}: {exc}",
+                    },
+                )
+                raise
         await self._record(point, kwargs)
 
     async def emit(self, point: HookPoint | str, /, **kwargs: Any) -> None:
