@@ -574,14 +574,33 @@ def _blocked_transport():
         sys.modules.update(saved)
 
 
+@contextlib.contextmanager
+def _preserve_module(module):
+    """Snapshot a module's namespace and restore it on exit.
+
+    ``importlib.reload`` re-executes a module and rebinds its classes to fresh
+    objects. Without restoring the originals, a later test that built an
+    instance from the pre-reload class fails ``isinstance`` against the reloaded
+    class (their identities differ) — which surfaces intermittently under xdist
+    when tests share a worker. Restoring the snapshot keeps class identity
+    stable for the rest of the suite.
+    """
+    snapshot = dict(module.__dict__)
+    try:
+        yield
+    finally:
+        module.__dict__.clear()
+        module.__dict__.update(snapshot)
+
+
 def test_module_import_does_not_pull_in_mcp_transport():
     import importlib
 
-    with _blocked_transport():
+    import lionagi.tools.khive_injection as mod_
+
+    with _blocked_transport(), _preserve_module(mod_):
         with pytest.raises(ImportError):
             importlib.import_module("fastmcp")  # the blocker actually blocks
-
-        import lionagi.tools.khive_injection as mod_
 
         # reload under the active blocker: any transport import would raise
         importlib.reload(mod_)
@@ -593,9 +612,9 @@ def test_core_lionagi_import_is_clean():
     """Importing lionagi itself must never require fastmcp/mcp to be installed."""
     import importlib
 
-    with _blocked_transport():
-        import lionagi
+    import lionagi
 
+    with _blocked_transport(), _preserve_module(lionagi):
         # reload under the active blocker: any transport import would raise
         importlib.reload(lionagi)
         assert "fastmcp" not in sys.modules
