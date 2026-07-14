@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 import pytest
 
 from lionagi.ln import compute_hash
+from lionagi.protocols.generic import element as element_mod
+from lionagi.protocols.graph import node as node_mod
 from lionagi.protocols.graph.node import Node
 from lionagi.protocols.graph.node_factory import create_node
 
@@ -17,6 +19,17 @@ from lionagi.protocols.graph.node_factory import create_node
 def _content_hash(content):
     """Wrapper for compute_hash matching the old rehash() calling convention."""
     return compute_hash(content, none_as_valid=True)
+
+
+def _frozen_datetime(fixed):
+    """A datetime subclass whose now() always returns `fixed`."""
+
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed
+
+    return _Frozen
 
 
 class TestNodeSoftDelete:
@@ -39,12 +52,22 @@ class TestNodeSoftDelete:
         d.soft_delete()
         assert d.is_deleted is True
 
-    def test_soft_delete_sets_deleted_at(self):
+    def test_soft_delete_sets_deleted_at(self, monkeypatch):
+        t0 = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+        t1 = datetime(2024, 6, 1, 12, 0, 5, tzinfo=timezone.utc)
+        monkeypatch.setattr(element_mod, "now_utc", lambda: t0)
+        monkeypatch.setattr(node_mod, "datetime", _frozen_datetime(t0))
         cls = create_node("Del", soft_delete=True)
         d = cls()
+        assert d.created_at == t0.timestamp()
+        monkeypatch.setattr(node_mod, "datetime", _frozen_datetime(t1))
         d.soft_delete()
-        ts = d.deleted_at
-        assert datetime.fromisoformat(ts).tzinfo == timezone.utc
+        # deleted_at reflects the soft_delete() clock (t1) and orders strictly after
+        # the node's actual construction time (created_at), not an arbitrary constant.
+        assert d.deleted_at == t1.isoformat()
+        deleted_at = datetime.fromisoformat(d.deleted_at)
+        assert deleted_at == t1
+        assert deleted_at > datetime.fromtimestamp(d.created_at, tz=timezone.utc)
 
     def test_soft_delete_with_by_param(self):
         cls = create_node("Del", soft_delete=True)
