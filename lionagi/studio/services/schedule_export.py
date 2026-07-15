@@ -60,6 +60,11 @@ _MANAGED_MANAGED_BY = ("cli", "declaration")
 # flow-YAML-snapshot path, never the positional one.
 _CONVERTIBLE_ACTION_KINDS = frozenset({"agent", "play", "flow_yaml", "command"})
 
+# Mirrors the `schedule.get("poll_interval_sec") or schedule.get("interval_sec")
+# or 300` fallback in scheduler/engine.py -- a github_poll row at this value
+# is indistinguishable from one with no override, so it stays exportable.
+_GITHUB_POLL_DEFAULT_SEC = 300
+
 
 def is_legacy_row(row: dict[str, Any]) -> bool:
     return row.get("managed_by") in _LEGACY_MANAGED_BY
@@ -153,6 +158,13 @@ def _convert_legacy_trigger(row: dict[str, Any]) -> Trigger:
         repo = row.get("github_repo")
         if not repo:
             raise ValueError("trigger_type='github_poll' row has no github_repo")
+        poll_interval = row.get("poll_interval_sec")
+        if poll_interval is not None and poll_interval != _GITHUB_POLL_DEFAULT_SEC:
+            raise ValueError(
+                f"trigger_type='github_poll' row has poll_interval_sec={poll_interval!r} "
+                f"(default {_GITHUB_POLL_DEFAULT_SEC}) but GithubTriggerSpec has no "
+                "poll-interval field to carry a non-default value"
+            )
         return Trigger(github=GithubTriggerSpec(repo=repo, filter=row.get("github_filter")))
     raise ValueError(f"unsupported trigger_type: {kind!r}")
 
@@ -166,6 +178,13 @@ def _convert_legacy_target(row: dict[str, Any], *, flows_dir: Path) -> Target:
     kind = row.get("action_kind")
     if kind not in _CONVERTIBLE_ACTION_KINDS:
         raise ValueError(f"action_kind {kind!r} has no v1 target equivalent -- not exportable")
+    extra_args = row.get("action_extra_args")
+    if extra_args:
+        raise ValueError(
+            f"action_kind={kind!r} row has action_extra_args={extra_args!r} but no v1 "
+            "target field can carry launch-time extra args -- dropping them would "
+            "silently change fire behavior"
+        )
     if kind == "agent":
         profile = row.get("action_agent")
         prompt = row.get("action_prompt")
@@ -188,6 +207,12 @@ def _convert_legacy_target(row: dict[str, Any], *, flows_dir: Path) -> Target:
         content = row.get("action_flow_yaml")
         if not content:
             raise ValueError("action_kind='flow_yaml' row has no action_flow_yaml content")
+        if row.get("action_model"):
+            raise ValueError(
+                f"action_kind='flow_yaml' row has action_model={row['action_model']!r} set "
+                f"but FlowTarget has no model field to carry it; reusable fields: "
+                f"{_reusable_target_fields(row)}"
+            )
         flows_dir.mkdir(parents=True, exist_ok=True)
         path = _flow_snapshot_path(flows_dir, row["name"])
         path.write_text(content)
@@ -230,20 +255,87 @@ def _build_legacy_member(row: dict[str, Any], *, flows_dir: Path) -> ScheduleMem
     )
 
 
+def _flow_portability_note(member: ScheduleMember) -> str | None:
+    """Every exported ``flow`` target names an absolute host path (the
+    snapshot file, whether freshly written by legacy conversion or simply
+    re-validated from an already-typed authored_spec) -- disclose that the
+    resulting document only re-applies on this host, or after the sidecar
+    file is moved alongside it and the path rewritten."""
+    if member.target.kind != "flow":
+        return None
+    return (
+        f"flow snapshot is an absolute host path ({member.target.file}); this "
+        "document is host-bound until the sidecar file moves with it"
+    )
+
+
+def _group_into_documents(
+    ready: list[tuple[dict[str, Any], ScheduleMember]],
+    all_rows: list[dict[str, Any]],
+    *,
+    base_name: str,
+) -> list[ScheduleSetDocument]:
+    """Split *ready* rows into one ``ScheduleSet`` document per distinct
+    ``action_project`` (rows with no project share a single *base_name*-keyed
+    group). Grouping *before* computing member keys guarantees a row's own
+    project always matches its document's project, so ``_member_key`` never
+    has to fall back for a project mismatch -- this is what fixes
+    mixed-project double-qualification: a single document spanning multiple
+    projects used to key a mismatched row by its already-qualified name, and
+    re-applying then prepended the document's project a second time,
+    producing e.g. ``alpha/beta/task`` instead of ``beta/task``."""
+    grouped: dict[str, list[tuple[dict[str, Any], ScheduleMember]]] = {}
+    for row, member in ready:
+        proj = row.get("action_project") or base_name
+        grouped.setdefault(proj, []).append((row, member))
+
+    if not grouped:
+        return [
+            ScheduleSetDocument(
+                apiVersion=SPEC_VERSION,
+                kind=SPEC_KIND,
+                metadata=ScheduleSetMetadata(
+                    name=base_name, project=_pick_project(all_rows, base_name)
+                ),
+                schedules={},
+            )
+        ]
+
+    multi = len(grouped) > 1
+    docs: list[ScheduleSetDocument] = []
+    for proj in sorted(grouped):
+        used_keys: set[str] = set()
+        schedules: dict[str, ScheduleMember] = {}
+        for row, member in grouped[proj]:
+            schedules[_member_key(row, proj, used_keys)] = member
+        doc_name = f"{base_name}-{proj}" if multi else base_name
+        docs.append(
+            ScheduleSetDocument(
+                apiVersion=SPEC_VERSION,
+                kind=SPEC_KIND,
+                metadata=ScheduleSetMetadata(name=doc_name, project=proj),
+                schedules=schedules,
+            )
+        )
+    return docs
+
+
 def convert_legacy_rows(
     rows: list[dict[str, Any]], *, flows_dir: Path, manifest_dir: Path
-) -> tuple[ScheduleSetDocument, list[ExportReportLine]]:
-    """Convert every chain-free, expressible legacy row into a member of one
-    ``ScheduleSet`` document. Rows with ``on_success``/``on_fail``, an
-    unsupported action_kind, or a malformed trigger are reported ``BLOCKED``
-    and omitted -- never half-emitted. A row whose own project matches the
-    document's chosen project is keyed by its local (prefix-stripped) name,
-    so re-applying reconstructs its original qualified name exactly; others
-    fall back to the full original name (see ``_member_key``)."""
-    project = _pick_project(rows, "legacy-export")
-    schedules: dict[str, ScheduleMember] = {}
+) -> tuple[list[ScheduleSetDocument], list[ExportReportLine]]:
+    """Convert every chain-free, expressible legacy row into a member of a
+    ``ScheduleSet`` document -- one document per distinct project among the
+    rows (see ``_group_into_documents``), so a mixed-project export still
+    round-trips every row's original qualified name exactly. Rows with
+    ``on_success``/``on_fail``, an unsupported action_kind, a legacy-only
+    field with no v1 equivalent (a flow_yaml row's action_model, non-empty
+    action_extra_args, a non-default github poll_interval_sec), or a
+    malformed trigger are reported ``BLOCKED`` and omitted -- never
+    half-emitted. Within each document, a row whose own project matches is
+    keyed by its local (prefix-stripped) name, so re-applying reconstructs
+    its original qualified name exactly (see ``_member_key``)."""
     lines: list[ExportReportLine] = []
-    used_keys: set[str] = set()
+    ready: list[tuple[dict[str, Any], ScheduleMember]] = []
     for row in sorted(rows, key=lambda r: r["name"]):
         name = row["name"]
         if row.get("on_success") or row.get("on_fail"):
@@ -266,31 +358,25 @@ def convert_legacy_rows(
         except ValueError as exc:
             lines.append(ExportReportLine(name, "BLOCKED", f"static resolution failed: {exc}"))
             continue
-        schedules[_member_key(row, project, used_keys)] = member
-        lines.append(ExportReportLine(name, "READY"))
+        ready.append((row, member))
+        lines.append(ExportReportLine(name, "READY", _flow_portability_note(member)))
 
-    doc = ScheduleSetDocument(
-        apiVersion=SPEC_VERSION,
-        kind=SPEC_KIND,
-        metadata=ScheduleSetMetadata(name="legacy-export", project=project),
-        schedules=schedules,
-    )
-    return doc, lines
+    docs = _group_into_documents(ready, rows, base_name="legacy-export")
+    return docs, lines
 
 
 def build_managed_export_document(
     rows: list[dict[str, Any]],
-) -> tuple[ScheduleSetDocument, list[ExportReportLine]]:
+) -> tuple[list[ScheduleSetDocument], list[ExportReportLine]]:
     """Re-serialize every declaration/cli-managed row's persisted
-    ``authored_spec`` back into a single ``ScheduleSet`` document. A row
-    whose own project matches the document's chosen project is keyed by its
-    local (prefix-stripped) name so re-applying reconstructs its original
-    qualified name; others fall back to the full original name (see
-    ``_member_key``)."""
-    project = _pick_project(rows, "export")
-    schedules: dict[str, ScheduleMember] = {}
+    ``authored_spec`` back into ``ScheduleSet`` documents -- one per distinct
+    project among the rows (see ``_group_into_documents``), so a
+    mixed-project export still round-trips every row's original qualified
+    name exactly. Within each document, a row whose own project matches is
+    keyed by its local (prefix-stripped) name so re-applying reconstructs
+    its original qualified name (see ``_member_key``)."""
     lines: list[ExportReportLine] = []
-    used_keys: set[str] = set()
+    ready: list[tuple[dict[str, Any], ScheduleMember]] = []
     for row in sorted(rows, key=lambda r: r["name"]):
         name = row["name"]
         authored = row.get("authored_spec")
@@ -309,16 +395,11 @@ def build_managed_export_document(
                 ExportReportLine(name, "BLOCKED", f"authored_spec failed validation: {exc}")
             )
             continue
-        schedules[_member_key(row, project, used_keys)] = member
-        lines.append(ExportReportLine(name, "READY"))
+        ready.append((row, member))
+        lines.append(ExportReportLine(name, "READY", _flow_portability_note(member)))
 
-    doc = ScheduleSetDocument(
-        apiVersion=SPEC_VERSION,
-        kind=SPEC_KIND,
-        metadata=ScheduleSetMetadata(name="export", project=project),
-        schedules=schedules,
-    )
-    return doc, lines
+    docs = _group_into_documents(ready, rows, base_name="export")
+    return docs, lines
 
 
 class _QuotedStr(str):

@@ -85,9 +85,10 @@ async def test_legacy_agent_row_converts_ready(temp_db_path, agent_profile):
     async with StateDB() as db:
         await db.create_schedule(_legacy_row("a1", "demo/nightly", cwd=agent_profile))
         rows = await db.list_schedules()
-    doc, lines = convert_legacy_rows(
+    docs, lines = convert_legacy_rows(
         rows, flows_dir=agent_profile / "flows", manifest_dir=agent_profile
     )
+    doc = docs[0]
     assert [line.status for line in lines] == ["READY"]
     assert "demo/nightly" in doc.schedules
     member = doc.schedules["demo/nightly"]
@@ -116,9 +117,10 @@ async def test_legacy_command_row_converts_ready(temp_db_path, agent_profile, mo
             )
         )
         rows = await db.list_schedules()
-    doc, lines = convert_legacy_rows(
+    docs, lines = convert_legacy_rows(
         rows, flows_dir=agent_profile / "flows", manifest_dir=agent_profile
     )
+    doc = docs[0]
     assert [line.status for line in lines] == ["READY"]
     member = doc.schedules["demo/refresh"]
     assert member.target.kind == "command"
@@ -142,9 +144,10 @@ async def test_legacy_playbook_row_converts_ready(temp_db_path, agent_profile):
             )
         )
         rows = await db.list_schedules()
-    doc, lines = convert_legacy_rows(
+    docs, lines = convert_legacy_rows(
         rows, flows_dir=agent_profile / "flows", manifest_dir=agent_profile
     )
+    doc = docs[0]
     assert [line.status for line in lines] == ["READY"]
     member = doc.schedules["demo/audit"]
     assert member.target.kind == "playbook"
@@ -170,7 +173,8 @@ async def test_legacy_flow_yaml_row_converts_ready(temp_db_path, agent_profile):
         )
         rows = await db.list_schedules()
     flows_dir = agent_profile / "flows"
-    doc, lines = convert_legacy_rows(rows, flows_dir=flows_dir, manifest_dir=agent_profile)
+    docs, lines = convert_legacy_rows(rows, flows_dir=flows_dir, manifest_dir=agent_profile)
+    doc = docs[0]
     assert [line.status for line in lines] == ["READY"]
     member = doc.schedules["demo/nightly-flow"]
     assert member.target.kind == "flow"
@@ -196,9 +200,10 @@ async def test_legacy_row_with_on_success_is_blocked_and_omitted(temp_db_path, a
             )
         )
         rows = await db.list_schedules()
-    doc, lines = convert_legacy_rows(
+    docs, lines = convert_legacy_rows(
         rows, flows_dir=agent_profile / "flows", manifest_dir=agent_profile
     )
+    doc = docs[0]
     assert len(lines) == 1
     assert lines[0].status == "BLOCKED"
     assert "dependency conversion required" in lines[0].message
@@ -212,9 +217,10 @@ async def test_legacy_row_with_on_fail_is_blocked_and_omitted(temp_db_path, agen
             _legacy_row("b2", "demo/chained-fail", cwd=agent_profile, on_fail={"prompt": "alert"})
         )
         rows = await db.list_schedules()
-    doc, lines = convert_legacy_rows(
+    docs, lines = convert_legacy_rows(
         rows, flows_dir=agent_profile / "flows", manifest_dir=agent_profile
     )
+    doc = docs[0]
     assert lines[0].status == "BLOCKED"
     assert "demo/chained-fail" not in doc.schedules
 
@@ -233,9 +239,10 @@ async def test_legacy_unsupported_action_kind_is_blocked_and_omitted(temp_db_pat
             )
         )
         rows = await db.list_schedules()
-    doc, lines = convert_legacy_rows(
+    docs, lines = convert_legacy_rows(
         rows, flows_dir=agent_profile / "flows", manifest_dir=agent_profile
     )
+    doc = docs[0]
     assert lines[0].status == "BLOCKED"
     assert "no v1 target equivalent" in lines[0].message
     assert doc.schedules == {}
@@ -248,9 +255,10 @@ async def test_legacy_malformed_trigger_is_blocked_and_omitted(temp_db_path, age
             _legacy_row("m1", "demo/badcron", cwd=agent_profile, cron_expr="not a cron expr")
         )
         rows = await db.list_schedules()
-    doc, lines = convert_legacy_rows(
+    docs, lines = convert_legacy_rows(
         rows, flows_dir=agent_profile / "flows", manifest_dir=agent_profile
     )
+    doc = docs[0]
     assert lines[0].status == "BLOCKED"
     assert "demo/badcron" not in doc.schedules
 
@@ -271,7 +279,8 @@ async def test_legacy_export_round_trips_to_a_fresh_db(tmp_path, monkeypatch, ag
         rows = await db.list_schedules()
 
     flows_dir = tmp_path / "export.flows"
-    doc, lines = convert_legacy_rows(rows, flows_dir=flows_dir, manifest_dir=agent_profile)
+    docs, lines = convert_legacy_rows(rows, flows_dir=flows_dir, manifest_dir=agent_profile)
+    doc = docs[0]
     assert [line.status for line in lines] == ["READY"]
 
     output_path = tmp_path / "schedules.yaml"
@@ -340,7 +349,8 @@ async def test_default_export_round_trips_notify_with_quoted_on_key(temp_db_path
         )
         rows = await db.list_schedules()
 
-    doc, lines = build_managed_export_document(rows)
+    docs, lines = build_managed_export_document(rows)
+    doc = docs[0]
     assert [line.status for line in lines] == ["READY"]
     # The row's own project ("demo") matches the document's chosen project,
     # so it is keyed by its local name -- re-applying reconstructs
@@ -392,7 +402,8 @@ async def test_default_export_is_deterministically_name_sorted(temp_db_path, age
             )
         rows = await db.list_schedules()
 
-    doc, lines = build_managed_export_document(rows)
+    docs, lines = build_managed_export_document(rows)
+    doc = docs[0]
     assert list(doc.schedules.keys()) == ["demo/aaa-first", "demo/zzz-last"]
     report_lines = [line.qualified_name for line in lines]
     assert report_lines == ["demo/aaa-first", "demo/zzz-last"]
@@ -470,3 +481,298 @@ def test_export_never_writes_the_database(temp_db_path, agent_profile, tmp_path)
     assert len(before) == len(after) == 1
     assert before[0]["updated_at"] == after[0]["updated_at"]
     assert before[0]["enabled"] == after[0]["enabled"]
+
+
+# ---------------------------------------------------------------------------
+# Mixed-project export -- one document per project, exact qualified-name
+# round-trip (no double-qualification)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_legacy_mixed_project_export_round_trips_exact_qualified_names(
+    tmp_path, monkeypatch, agent_profile
+):
+    source_db = tmp_path / "source.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", source_db)
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_row("orig-a", "alpha/nightly", cwd=agent_profile, action_project="alpha")
+        )
+        await db.create_schedule(
+            _legacy_row("orig-b", "beta/nightly", cwd=agent_profile, action_project="beta")
+        )
+        rows = await db.list_schedules()
+
+    flows_dir = tmp_path / "export.flows"
+    docs, lines = convert_legacy_rows(rows, flows_dir=flows_dir, manifest_dir=agent_profile)
+    assert [line.status for line in lines] == ["READY", "READY"]
+
+    # One document per project -- neither keys the other project's row under
+    # its own project, which is what used to double-qualify on apply.
+    assert len(docs) == 2
+    docs_by_project = {doc.metadata.project: doc for doc in docs}
+    assert set(docs_by_project) == {"alpha", "beta"}
+    assert docs_by_project["alpha"].schedules.keys() == {"nightly"}
+    assert docs_by_project["beta"].schedules.keys() == {"nightly"}
+
+    fresh_db = tmp_path / "fresh.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", fresh_db)
+    async with StateDB() as db:
+        for doc in docs:
+            output_path = tmp_path / f"schedules.{doc.metadata.project}.yaml"
+            output_path.write_text(dump_schedule_set_yaml(doc))
+            reparsed = parse_schedule_set(output_path.read_text(), source=str(output_path))
+            result = await apply_schedule_set(db, reparsed, output_path.parent)
+            assert result.created == 1
+
+        alpha = await db.get_schedule_by_name("alpha/nightly")
+        beta = await db.get_schedule_by_name("beta/nightly")
+        # The double-qualification bug would have produced
+        # "alpha/beta/nightly" (doc project "alpha" prepended a second
+        # time onto the already-qualified "beta/nightly" member key).
+        doubled = await db.get_schedule_by_name("alpha/beta/nightly")
+    assert alpha is not None
+    assert beta is not None
+    assert doubled is None
+
+
+@pytest.mark.asyncio
+async def test_managed_mixed_project_export_round_trips_exact_qualified_names(
+    tmp_path, monkeypatch, agent_profile
+):
+    def _managed_row(schedule_id: str, name: str, project: str) -> dict:
+        return {
+            "id": schedule_id,
+            "name": name,
+            "trigger_type": "cron",
+            "cron_expr": "0 2 * * *",
+            "action_kind": "agent",
+            "action_agent": "reviewer",
+            "action_prompt": "check things",
+            "action_project": project,
+            "managed_by": "cli",
+            "authored_spec": {
+                "description": None,
+                "enabled": True,
+                "trigger": {"cron": {"expression": "0 2 * * *", "timezone": "UTC"}},
+                "target": {"kind": "agent", "profile": "reviewer", "prompt": "check things"},
+            },
+        }
+
+    source_db = tmp_path / "source.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", source_db)
+    async with StateDB() as db:
+        await db.create_schedule(_managed_row("m-a", "alpha/svc", "alpha"))
+        await db.create_schedule(_managed_row("m-b", "beta/svc", "beta"))
+        rows = await db.list_schedules()
+
+    docs, lines = build_managed_export_document(rows)
+    assert [line.status for line in lines] == ["READY", "READY"]
+    assert len(docs) == 2
+    docs_by_project = {doc.metadata.project: doc for doc in docs}
+    assert docs_by_project["alpha"].schedules.keys() == {"svc"}
+    assert docs_by_project["beta"].schedules.keys() == {"svc"}
+
+    fresh_db = tmp_path / "fresh.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", fresh_db)
+    async with StateDB() as db:
+        for doc in docs:
+            output_path = tmp_path / f"schedules.{doc.metadata.project}.yaml"
+            output_path.write_text(dump_schedule_set_yaml(doc))
+            reparsed = parse_schedule_set(output_path.read_text(), source=str(output_path))
+            result = await apply_schedule_set(db, reparsed, output_path.parent)
+            assert result.created == 1
+
+        alpha = await db.get_schedule_by_name("alpha/svc")
+        beta = await db.get_schedule_by_name("beta/svc")
+        doubled = await db.get_schedule_by_name("alpha/beta/svc")
+    assert alpha is not None
+    assert beta is not None
+    assert doubled is None
+
+
+# ---------------------------------------------------------------------------
+# flow_yaml action_model override -- BLOCKED, not silently dropped
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_legacy_flow_yaml_with_action_model_is_blocked(temp_db_path, agent_profile):
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_row(
+                "fm1",
+                "demo/model-flow",
+                cwd=agent_profile,
+                trigger_type="interval",
+                cron_expr=None,
+                interval_sec=3600,
+                action_kind="flow_yaml",
+                action_agent=None,
+                action_prompt=None,
+                action_flow_yaml="workers: 2\n",
+                action_model="anthropic/claude-sonnet-5",
+            )
+        )
+        rows = await db.list_schedules()
+    docs, lines = convert_legacy_rows(
+        rows, flows_dir=agent_profile / "flows", manifest_dir=agent_profile
+    )
+    doc = docs[0]
+    assert lines[0].status == "BLOCKED"
+    assert "action_model" in lines[0].message
+    assert "demo/model-flow" not in doc.schedules
+
+
+# ---------------------------------------------------------------------------
+# action_extra_args -- BLOCKED, not silently dropped
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_legacy_row_with_action_extra_args_is_blocked(temp_db_path, agent_profile):
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_row(
+                "ea1",
+                "demo/extra-args",
+                cwd=agent_profile,
+                action_extra_args=["incremental"],
+            )
+        )
+        rows = await db.list_schedules()
+    docs, lines = convert_legacy_rows(
+        rows, flows_dir=agent_profile / "flows", manifest_dir=agent_profile
+    )
+    doc = docs[0]
+    assert lines[0].status == "BLOCKED"
+    assert "action_extra_args" in lines[0].message
+    assert "demo/extra-args" not in doc.schedules
+
+
+# ---------------------------------------------------------------------------
+# github_poll poll_interval_sec -- BLOCKED only when set and non-default
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_legacy_github_poll_with_nondefault_interval_is_blocked(temp_db_path, agent_profile):
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_row(
+                "gp1",
+                "demo/poll-custom",
+                cwd=agent_profile,
+                trigger_type="github_poll",
+                cron_expr=None,
+                github_repo="octo/repo",
+                poll_interval_sec=900,
+            )
+        )
+        rows = await db.list_schedules()
+    docs, lines = convert_legacy_rows(
+        rows, flows_dir=agent_profile / "flows", manifest_dir=agent_profile
+    )
+    doc = docs[0]
+    assert lines[0].status == "BLOCKED"
+    assert "poll_interval_sec" in lines[0].message
+    assert "demo/poll-custom" not in doc.schedules
+
+
+@pytest.mark.asyncio
+async def test_legacy_github_poll_at_default_interval_stays_ready(temp_db_path, agent_profile):
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_row(
+                "gp2",
+                "demo/poll-default",
+                cwd=agent_profile,
+                trigger_type="github_poll",
+                cron_expr=None,
+                github_repo="octo/repo",
+                poll_interval_sec=300,
+            )
+        )
+        rows = await db.list_schedules()
+    docs, lines = convert_legacy_rows(
+        rows, flows_dir=agent_profile / "flows", manifest_dir=agent_profile
+    )
+    doc = docs[0]
+    assert [line.status for line in lines] == ["READY"]
+    assert doc.schedules["demo/poll-default"].trigger.github.repo == "octo/repo"
+
+
+# ---------------------------------------------------------------------------
+# CLI exit code -- 2 when any row is BLOCKED, document + report still emitted
+# ---------------------------------------------------------------------------
+
+
+def test_cli_export_returns_partial_exit_code_when_a_row_is_blocked(
+    temp_db_path, agent_profile, tmp_path
+):
+    import asyncio
+
+    from lionagi.studio.cli import EXIT_EXPORT_PARTIAL, _cmd_export
+
+    asyncio.run(_create_legacy_row(_legacy_row("cli-ready", "demo/nightly", cwd=agent_profile)))
+    asyncio.run(
+        _create_legacy_row(
+            _legacy_row(
+                "cli-blocked",
+                "demo/chained",
+                cwd=agent_profile,
+                on_success={"prompt": "notify done"},
+            )
+        )
+    )
+
+    output_path = tmp_path / "out" / "schedules.yaml"
+    report_path = tmp_path / "out" / "report.txt"
+    rc = _cmd_export(_export_args(legacy=True, output=str(output_path), report=str(report_path)))
+    assert rc == EXIT_EXPORT_PARTIAL
+    assert rc != 0
+    # The document and report are still emitted exactly as on a clean export.
+    assert output_path.is_file()
+    doc = yaml.safe_load(output_path.read_text())
+    assert "demo/nightly" in doc["schedules"]
+    report_text = report_path.read_text()
+    assert "READY" in report_text
+    assert "BLOCKED" in report_text
+    assert "1 ready, 1 blocked" in report_text
+
+
+# ---------------------------------------------------------------------------
+# Flow snapshot portability disclosure -- absolute host path is stated
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_legacy_flow_yaml_report_line_discloses_absolute_host_path(
+    temp_db_path, agent_profile
+):
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_row(
+                "fp1",
+                "demo/flow-port",
+                cwd=agent_profile,
+                trigger_type="interval",
+                cron_expr=None,
+                interval_sec=3600,
+                action_kind="flow_yaml",
+                action_agent=None,
+                action_prompt=None,
+                action_flow_yaml="workers: 2\n",
+            )
+        )
+        rows = await db.list_schedules()
+    flows_dir = agent_profile / "flows"
+    docs, lines = convert_legacy_rows(rows, flows_dir=flows_dir, manifest_dir=agent_profile)
+    doc = docs[0]
+    member = doc.schedules["demo/flow-port"]
+    assert lines[0].status == "READY"
+    assert lines[0].message is not None
+    assert "absolute" in lines[0].message
+    assert member.target.file in lines[0].message
+    assert Path(member.target.file).is_absolute()
