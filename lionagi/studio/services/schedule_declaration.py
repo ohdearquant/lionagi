@@ -572,7 +572,7 @@ def resolve_member(
     member: ScheduleMember,
     *,
     manifest_dir: Path,
-    project: str,
+    project: str | None,
     is_global: bool,
 ) -> ResolvedMember:
     qualified_name = f"{'global' if is_global else project}/{name}"
@@ -603,6 +603,62 @@ def resolve_member(
         timezone=resolved_trigger.get("timezone"),
         db_fields=db_fields,
     )
+
+
+async def create_quick_schedule(
+    db: StateDB,
+    name: str,
+    member: ScheduleMember,
+    *,
+    cwd: Path,
+    project: str | None,
+) -> tuple[str, ResolvedMember]:
+    """Compile + persist one `li schedule create <kind>` quick-create row
+    through the exact same static-resolution path (``resolve_member``) a
+    ``ScheduleSet`` member uses -- there is no second, forked validator.
+
+    Persisted with ``managed_by='cli'`` and no ``owner_key``, so a later
+    ``ScheduleSet apply`` targeting the same qualified name still hits the
+    ownership-collision guard in ``build_plan()``. Raises ``ScheduleSetError``
+    (zero writes) on a resolution failure or a name collision.
+    """
+    qualified_name = f"{project}/{name}" if project else name
+    try:
+        resolved = resolve_member(name, member, manifest_dir=cwd, project=project, is_global=False)
+    except ValueError as exc:
+        raise ScheduleSetError([(qualified_name, str(exc))]) from exc
+
+    existing = await db.get_schedule_by_name(qualified_name)
+    if existing is not None:
+        raise ScheduleSetError(
+            [
+                (
+                    qualified_name,
+                    f"a schedule named {qualified_name!r} already exists "
+                    f"(id={existing['id']}, managed_by={existing.get('managed_by')!r})",
+                )
+            ]
+        )
+
+    schedule_id = uuid.uuid4().hex[:12]
+    now = time.time()
+    row = {
+        "id": schedule_id,
+        "name": qualified_name,
+        "spec_version": SPEC_VERSION,
+        "managed_by": "cli",
+        "owner_key": None,
+        "authored_spec": resolved.authored,
+        "resolved_target": resolved.resolved,
+        "resolved_digest": resolved.digest,
+        "resolved_timezone": resolved.timezone,
+        "created_at": now,
+        "updated_at": now,
+        **resolved.db_fields,
+    }
+    await db.create_schedule(row)
+    resolved.qualified_name = qualified_name
+    return schedule_id, resolved
 
 
 def resolve_schedule_set(doc: ScheduleSetDocument, manifest_dir: Path) -> dict[str, ResolvedMember]:
