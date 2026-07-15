@@ -204,6 +204,7 @@ nav:
   - Operate:
       - Durable operations: guides/durable-operations.md
       - Studio & schedules: guides/studio.md
+      - Scheduling workflows: guides/scheduling-workflows.md
       - Providers: reference/providers.md
       - State & testing: reference/testing-state-session.md
       - Troubleshooting: reference/troubleshooting.md
