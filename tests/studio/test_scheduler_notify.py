@@ -285,6 +285,36 @@ async def test_occurrence_write_failure_on_invalid_argv_still_unregisters():
 
 
 @pytest.mark.asyncio
+async def test_cancellation_during_action_setup_still_unregisters():
+    """CancelledError from action setup is not an Exception: it must
+    propagate untouched (not be recorded as an invalid action) and still
+    drop the registration."""
+    import asyncio
+
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_engine_svc()
+    engine = SchedulerEngine(svc=svc)
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            side_effect=asyncio.CancelledError(),
+        ),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await engine._fire_inner(
+            _notify_schedule(),
+            "run-notify-6",
+            trigger_context={"scheduled": True},
+        )
+
+    assert _notify_registration_names() == []
+    # Propagated as cancellation, not converted into a failed-run write.
+    assert not svc.update_status.await_args_list
+
+
+@pytest.mark.asyncio
 async def test_create_invocation_failure_does_not_leak_registration():
     """An exception before the invocation row exists must drop the notify
     registration on the way out instead of leaving it in the process-wide

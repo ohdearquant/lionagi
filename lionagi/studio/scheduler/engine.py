@@ -1956,6 +1956,14 @@ class SchedulerEngine:
                 return
             finally:
                 _unregister_schedule_notify(notify_scope)
+        except BaseException:
+            # Cancellation (or any other non-Exception) during action setup
+            # is not an invalid action: propagate it untouched. This window
+            # sits before the main try/finally below, so the registration
+            # must be dropped here; no invocation terminal write has
+            # happened yet on this path.
+            _unregister_schedule_notify(notify_scope)
+            raise
 
         # Ensure the flow_yaml tmp file is removed on any exception or
         # cancellation in the DB ops below, before spawn_and_wait() runs.
