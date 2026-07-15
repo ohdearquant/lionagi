@@ -1,7 +1,7 @@
 # ADR-0104: `li kill` reaping of detached-play workers and terminal-notify on kill
 
-- **Status**: Proposed
-- **Kind**: Aspirational (records the target state — the current code does not reap detached-play workers; this ADR specifies the fix)
+- **Status**: Accepted (2026-07-15; implementation merged)
+- **Kind**: Implemented (the reaping and terminal-notify behavior specified here is on main)
 - **Area**: cli-surface
 - **Date**: 2026-07-13
 - **Relations**: extends ADR-0058 (unified lifecycle transition service, whose terminal-callback emit this ADR relies on); none superseded
