@@ -632,9 +632,10 @@ class SchedulerEngine:
                 # queuing a second fire.
                 if await self._svc.schedule_run_exists_since(s["id"], next_fire_at):
                     next_at = self._compute_next_fire(s, now)
-                    if next_at:
+                    fields = self._next_fire_field(s, next_at)
+                    if fields:
                         try:
-                            await self._svc.update_schedule(s["id"], next_fire_at=next_at)
+                            await self._svc.update_schedule(s["id"], **fields)
                         except Exception:
                             _log.exception(
                                 "Failed to advance next_fire_at past an already-recorded "
@@ -652,7 +653,7 @@ class SchedulerEngine:
 
     async def _recover_missed_fire_run_once(self, schedule: dict, now: float) -> None:
         """Queue exactly one recovery fire for a past-due run_once schedule,
-        reserving its next_fire_at synchronously first.
+        reserving its admission claims and next_fire_at synchronously first.
 
         _tick_loop() calls _check_missed_fires() and then _tick() back to
         back with nothing awaited in between (the tick loop only sleeps
@@ -674,37 +675,83 @@ class SchedulerEngine:
         landing, the recovery run is lost for this cycle, but the schedule
         is not stuck: it already holds a legitimate future next_fire_at and
         resumes firing normally next time, equivalent to one skipped run
-        rather than indefinite starvation.
+        rather than indefinite starvation. For an 'at' trigger the reserve
+        clears next_fire_at, so that same crash window loses its single run
+        permanently -- accepted for now over the alternative (fire before
+        reserve), which reopens the duplicate-fire window; the max-runs
+        claim gate remains the second defense against duplicates.
         """
-        next_at = self._compute_next_fire(schedule, now)
-        if next_at is not None:
-            try:
-                await self._svc.update_schedule(schedule["id"], next_fire_at=next_at)
-            except Exception:
-                # The reserve did not land, so storage still holds the
-                # past-due next_fire_at and the immediately-following
-                # _tick() will queue its own normal fire for it. Queuing a
-                # recovery fire on top of that would run the external
-                # action twice, so skip recovery entirely and let the
-                # normal tick own this cycle's single fire (or, if storage
-                # stays unavailable, a later missed-fire check retries).
-                _log.exception(
-                    "Failed to reserve next_fire_at ahead of missed-fire recovery for schedule %s"
-                    "; skipping recovery this cycle",
-                    schedule.get("id"),
-                )
+        # Admission claims FIRST (same sequence as a normal tick fire --
+        # without the max_runs reservation, a concurrent fire_now() or
+        # re-apply racing this queued recovery could observe zero durable
+        # runs, take the sole claim, and admit a second execution), and only
+        # THEN the next_fire_at reserve: a rate/slot refusal must leave the
+        # row untouched and still due for a later cycle -- clearing an 'at'
+        # trigger's next_fire_at before a refusal would strand its single
+        # run permanently.
+        rate_claim: _RateLimitClaim | None = None
+        claim: _MaxRunsClaim | None = None
+        slot_claim: _GlobalSlotClaim | None = None
+        handed_off = False
+        try:
+            rate_allowed, rate_claim = await self._reserve_rate_limit(schedule, now=now)
+            if not rate_allowed:
                 return
-        run_id = uuid.uuid4().hex[:12]
-        _log.info(
-            "Missed fire recovery for schedule %s (%s)",
-            schedule["name"],
-            schedule["id"],
-        )
-        self._tracked_fire(
-            schedule,
-            run_id,
-            trigger_context={"missed_recovery": True, "fired_at": now},
-        )
+            allowed, claim = await self._reserve_max_runs_budget(schedule)
+            if not allowed:
+                await self._svc.update_schedule(schedule["id"], enabled=0)
+                return
+            slot_allowed, slot_claim = await self._reserve_global_slot()
+            if not slot_allowed:
+                return
+
+            next_at = self._compute_next_fire(schedule, now)
+            # _next_fire_field, not a bare not-None check: an 'at' trigger's
+            # terminal None must be reserved too (persisted as a cleared
+            # next_fire_at), or the immediately-following _tick() still sees
+            # the past-due instant and queues a duplicate fire.
+            fields = self._next_fire_field(schedule, next_at)
+            if fields:
+                try:
+                    await self._svc.update_schedule(schedule["id"], **fields)
+                except Exception:
+                    # The reserve did not land, so storage still holds the
+                    # past-due next_fire_at and the immediately-following
+                    # _tick() will queue its own normal fire for it. Queuing
+                    # a recovery fire on top of that would run the external
+                    # action twice, so skip recovery entirely (releasing the
+                    # claims below) and let the normal tick own this cycle's
+                    # single fire (or, if storage stays unavailable, a later
+                    # missed-fire check retries).
+                    _log.exception(
+                        "Failed to reserve next_fire_at ahead of missed-fire recovery for "
+                        "schedule %s; skipping recovery this cycle",
+                        schedule.get("id"),
+                    )
+                    return
+            run_id = uuid.uuid4().hex[:12]
+            _log.info(
+                "Missed fire recovery for schedule %s (%s)",
+                schedule["name"],
+                schedule["id"],
+            )
+            self._tracked_fire(
+                schedule,
+                run_id,
+                trigger_context={"missed_recovery": True, "fired_at": now},
+                rate_limit_claim=rate_claim,
+                max_runs_claim=claim,
+                global_slot_claim=slot_claim,
+            )
+            handed_off = True
+        finally:
+            if not handed_off:
+                if rate_claim is not None:
+                    rate_claim.release()
+                if claim is not None:
+                    claim.release()
+                if slot_claim is not None:
+                    slot_claim.release()
 
     async def _record_missed_fire_skip(self, schedule: dict, now: float) -> None:
         """Record missed-fire skip and advance next_fire_at."""
@@ -732,8 +779,9 @@ class SchedulerEngine:
                 },
             )
             next_at = self._compute_next_fire(schedule, now)
-            if next_at:
-                await self._svc.update_schedule(schedule["id"], next_fire_at=next_at)
+            fields = self._next_fire_field(schedule, next_at)
+            if fields:
+                await self._svc.update_schedule(schedule["id"], **fields)
         except Exception:
             _log.exception(
                 "Failed to record missed-fire skip for schedule %s",
@@ -1339,8 +1387,9 @@ class SchedulerEngine:
                     metadata={"overlap_policy": schedule.get("overlap_policy")},
                 )
                 next_at = self._compute_next_fire(schedule, now)
-                if next_at:
-                    await self._svc.update_schedule(schedule["id"], next_fire_at=next_at)
+                fields = self._next_fire_field(schedule, next_at)
+                if fields:
+                    await self._svc.update_schedule(schedule["id"], **fields)
                 return
 
             if await self._check_budget(schedule):
@@ -1750,8 +1799,7 @@ class SchedulerEngine:
             _end_time = time.time()
             next_at = self._compute_next_fire(schedule, now)
             failed_schedule_fields: dict[str, Any] = {"last_fired_at": now}
-            if next_at:
-                failed_schedule_fields["next_fire_at"] = next_at
+            failed_schedule_fields.update(self._next_fire_field(schedule, next_at))
             failed_schedule_fields.update(
                 self._threshold_alert_update_fields(schedule, chain_depth, now)
             )
@@ -1852,8 +1900,7 @@ class SchedulerEngine:
         try:
             next_at = self._compute_next_fire(schedule, now)
             update_fields: dict[str, Any] = {"last_fired_at": now}
-            if next_at:
-                update_fields["next_fire_at"] = next_at
+            update_fields.update(self._next_fire_field(schedule, next_at))
             update_fields.update(self._threshold_alert_update_fields(schedule, chain_depth, now))
             if extra_schedule_fields:
                 update_fields.update(extra_schedule_fields)
@@ -2172,6 +2219,23 @@ class SchedulerEngine:
                 with contextlib.suppress(OSError):
                     os.unlink(_tmp_path)
 
+    def _next_fire_field(self, schedule: dict, next_at: float | None) -> dict[str, float | None]:
+        """Field(s) to merge into an ``update_schedule()`` call for *next_at*.
+
+        ``None`` normally means "leave next_fire_at untouched" -- interval/
+        cron/github_poll rows always compute their own future fire, so a
+        ``None`` there would only ever come from a malformed row and must
+        not blank out a value some other write already set. An ``at``
+        trigger is the one case where ``None`` is the terminal, correct
+        answer: it must be persisted (not merely omitted) so a schedule that
+        already fired its single instant is never read back as still due.
+        """
+        if next_at is not None:
+            return {"next_fire_at": next_at}
+        if schedule.get("trigger_type") == "at":
+            return {"next_fire_at": None}
+        return {}
+
     def _compute_next_fire(self, schedule: dict, ref_time: float) -> float | None:
         if schedule["trigger_type"] == "cron":
             expr = schedule.get("cron_expr")
@@ -2183,11 +2247,14 @@ class SchedulerEngine:
                 from lionagi.studio.config import SCHEDULER_TZ
 
                 # Resolve the cron expression's wall-clock fields in the
-                # configured timezone (default: system local), not UTC.
-                # croniter honors DST transitions when given a tz-aware
-                # start_time; get_next(float) still returns an absolute UTC
-                # epoch, which is what next_fire_at stores.
-                tz = _resolve_scheduler_tzinfo(SCHEDULER_TZ)
+                # schedule's own declared timezone when it has one (set by
+                # the declarative apply path); legacy rows with no
+                # resolved_timezone keep resolving against the process-wide
+                # default. croniter honors DST transitions when given a
+                # tz-aware start_time; get_next(float) still returns an
+                # absolute UTC epoch, which is what next_fire_at stores.
+                tz_name = schedule.get("resolved_timezone") or SCHEDULER_TZ
+                tz = _resolve_scheduler_tzinfo(tz_name)
                 start = datetime.fromtimestamp(ref_time, tz=tz)
                 return croniter(expr, start_time=start).get_next(float)
             except Exception:
@@ -2201,6 +2268,12 @@ class SchedulerEngine:
         elif schedule["trigger_type"] == "github_poll":
             poll = schedule.get("poll_interval_sec") or schedule.get("interval_sec") or 300
             return ref_time + poll
+        elif schedule["trigger_type"] == "at":
+            # A point-in-time trigger fires exactly once -- there is no next
+            # occurrence to compute. Callers use _next_fire_field() to turn
+            # this None into an explicit persisted None, rather than leaving
+            # a past next_fire_at in place.
+            return None
         return None
 
 

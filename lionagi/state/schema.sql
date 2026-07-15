@@ -411,7 +411,7 @@ CREATE TABLE IF NOT EXISTS schedules (
   enabled             INTEGER NOT NULL DEFAULT 1
                       CHECK(enabled IN (0, 1)),
   trigger_type        TEXT    NOT NULL
-                      CHECK(trigger_type IN ('cron', 'interval', 'github_poll')),
+                      CHECK(trigger_type IN ('cron', 'interval', 'github_poll', 'at')),
   cron_expr           TEXT,
   interval_sec        INTEGER,
   github_repo         TEXT,
@@ -476,6 +476,17 @@ CREATE TABLE IF NOT EXISTS schedules (
   -- github_poll_consecutive_401 threshold metrics.
   last_healthy_poll_at    REAL,
   poller_consecutive_401  INTEGER NOT NULL DEFAULT 0,
+  -- Declarative ScheduleSet layer: versioned document identity, resolved
+  -- target/trigger snapshot + digest, and set ownership. NULL on every row
+  -- created before this layer (legacy) or by an unmanaged quick-create.
+  spec_version        TEXT,
+  managed_by          TEXT
+                      CHECK(managed_by IS NULL OR managed_by IN ('cli', 'declaration')),
+  owner_key           TEXT,
+  authored_spec       JSON,
+  resolved_target     JSON,
+  resolved_digest     TEXT,
+  resolved_timezone   TEXT,
   created_at          REAL    NOT NULL,
   updated_at          REAL    NOT NULL
 );
@@ -486,6 +497,8 @@ CREATE INDEX IF NOT EXISTS idx_schedules_name
   ON schedules(name);
 CREATE INDEX IF NOT EXISTS idx_schedules_project
   ON schedules(project) WHERE project IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_schedules_owner_key
+  ON schedules(owner_key) WHERE owner_key IS NOT NULL;
 
 -- ── Schedule Runs (ADR-0027) ─────────────────────────────────────────────────
 -- ADR-0071 D2: generalized into the durable task-application entity. schedule_id
