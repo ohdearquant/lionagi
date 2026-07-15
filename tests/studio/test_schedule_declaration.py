@@ -217,8 +217,8 @@ def test_member_level_chain_fields_rejected(chain_field):
         ScheduleSetDocument.model_validate(base)
 
 
-def test_notify_unknown_status_rejected():
-    base = {
+def _notify_manifest(notify: dict) -> dict:
+    return {
         "apiVersion": "lionagi.io/v1alpha1",
         "kind": "ScheduleSet",
         "metadata": {"name": "a", "project": "demo"},
@@ -226,12 +226,48 @@ def test_notify_unknown_status_rejected():
             "m": {
                 "trigger": {"every": "1h"},
                 "target": {"kind": "command", "executable": "x"},
-                "notify": {"on": ["not_a_real_status"], "command": "notify-run"},
+                "notify": notify,
             }
         },
     }
+
+
+def test_notify_unknown_status_rejected():
+    base = _notify_manifest({"on": ["not_a_real_status"], "command": "notify-run"})
     with pytest.raises(ValidationError):
         ScheduleSetDocument.model_validate(base)
+
+
+def test_notify_empty_on_rejected():
+    base = _notify_manifest({"on": [], "command": "notify-run"})
+    with pytest.raises(ValidationError, match="notify.on"):
+        ScheduleSetDocument.model_validate(base)
+
+
+def test_notify_empty_command_rejected():
+    base = _notify_manifest({"on": ["failed"], "command": "   "})
+    with pytest.raises(ValidationError, match="notify.command"):
+        ScheduleSetDocument.model_validate(base)
+
+
+def test_notify_duplicate_status_rejected():
+    base = _notify_manifest({"on": ["failed", "failed"], "command": "notify-run"})
+    with pytest.raises(ValidationError, match="duplicate"):
+        ScheduleSetDocument.model_validate(base)
+
+
+def test_notify_extra_key_rejected():
+    base = _notify_manifest({"on": ["failed"], "command": "notify-run", "bogus": 1})
+    with pytest.raises(ValidationError):
+        ScheduleSetDocument.model_validate(base)
+
+
+def test_notify_valid_accepted():
+    base = _notify_manifest(
+        {"on": ["failed", "timed_out"], "command": "notify-run --payload {payload}"}
+    )
+    doc = ScheduleSetDocument.model_validate(base)
+    assert doc.schedules["m"].notify.on == ["failed", "timed_out"]
 
 
 def _policies_manifest(policies_yaml: str, cwd: Path) -> str:
@@ -858,6 +894,34 @@ async def test_apply_updates_in_place_preserving_id(temp_db_path, agent_profile)
         row2 = await db.get_schedule_by_name("demo/nightly")
         assert row2["id"] == row1["id"]
         assert row2["action_prompt"] == "check other things"
+
+
+@pytest.mark.asyncio
+async def test_apply_persists_notify_and_digest_reacts_to_it(temp_db_path, agent_profile):
+    no_notify = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    async with StateDB() as db:
+        await apply_schedule_set(db, no_notify, agent_profile)
+        row1 = await db.get_schedule_by_name("demo/nightly")
+        assert row1["notify_on"] is None
+        assert row1["notify_command"] is None
+
+        with_notify = parse_schedule_set(
+            _agent_manifest(
+                "nightly",
+                cwd=agent_profile,
+                extra_member='    notify:\n      "on": [failed, timed_out]\n      command: notify-run --payload {payload}\n',
+            )
+        )
+        result2 = await apply_schedule_set(db, with_notify, agent_profile)
+        assert (result2.created, result2.updated, result2.unchanged) == (0, 1, 0)
+        row2 = await db.get_schedule_by_name("demo/nightly")
+        assert row2["id"] == row1["id"]
+        assert row2["notify_on"] == ["failed", "timed_out"]
+        assert row2["notify_command"] == "notify-run --payload {payload}"
+
+        # Re-applying the identical notify-bearing doc is UNCHANGED.
+        result3 = await apply_schedule_set(db, with_notify, agent_profile)
+        assert (result3.created, result3.updated, result3.unchanged) == (0, 0, 1)
 
 
 @pytest.mark.asyncio

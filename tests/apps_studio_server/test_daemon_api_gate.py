@@ -647,6 +647,8 @@ _SCHEDULE_DETAIL_KEYS = sorted(
         "missed_fire_policy",
         "name",
         "next_fire_at",
+        "notify_command",
+        "notify_on",
         "on_fail",
         "on_success",
         "overlap_policy",

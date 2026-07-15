@@ -552,6 +552,11 @@ schedules = Table(
     Column("resolved_target", JSON),
     Column("resolved_digest", Text),
     Column("resolved_timezone", Text),
+    # Terminal notification: registers the existing run terminal-callback
+    # machinery on the spawned invocation, filtered to notify_on. NULL means
+    # no callback.
+    Column("notify_on", JSON),
+    Column("notify_command", Text),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
 )
