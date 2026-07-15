@@ -1229,6 +1229,352 @@ def _cmd_apply_set(args: argparse.Namespace) -> int:
     return 1 if has_errors else 0
 
 
+# ---------------------------------------------------------------------------
+# Typed quick-create — `li schedule create <kind> <name> ...`
+#
+# Dispatched from cli/main.py *before* the legacy `sched_sub` argparse tree
+# (a reserved kind token right after "create", mirroring how `agent status` /
+# `monitor run` / `wait` are special-cased there) so the existing flat
+# `li schedule create NAME --cron ... --prompt ...` form is untouched.
+# Compiles straight into a ScheduleMember and runs it through the identical
+# resolve_member()/create_quick_schedule() path a ScheduleSet member uses —
+# no forked validation, per the schedule-declaration design.
+# ---------------------------------------------------------------------------
+
+QUICK_CREATE_KINDS = ("agent", "flow", "playbook", "command")
+
+
+def _quick_create_add_trigger_flags(parser: argparse.ArgumentParser) -> None:
+    trigger = parser.add_mutually_exclusive_group(required=True)
+    trigger.add_argument(
+        "--at",
+        metavar="RFC3339",
+        help=(
+            "Fire once at this absolute instant. RFC 3339 with a mandatory "
+            "UTC offset and 'T' date/time separator, e.g. "
+            "2026-07-15T09:00:00-04:00. Implies max-runs=1."
+        ),
+    )
+    trigger.add_argument(
+        "--cron",
+        metavar="EXPR",
+        help='Cron expression, e.g. "0 2 * * *". Requires --timezone.',
+    )
+    trigger.add_argument(
+        "--every",
+        metavar="DURATION",
+        help="Strict positive duration, e.g. 30s / 15m / 6h / 2d.",
+    )
+    trigger.add_argument(
+        "--github",
+        metavar="OWNER/NAME",
+        help="Poll this GitHub repository. Optional --github-filter narrows which PRs fire.",
+    )
+    parser.add_argument(
+        "--timezone",
+        metavar="IANA_TZ",
+        help="IANA timezone for --cron, e.g. America/New_York. Required with --cron.",
+    )
+    parser.add_argument(
+        "--github-filter",
+        dest="github_filter",
+        metavar="JSON",
+        help='JSON object filtering which PRs fire --github, e.g. \'{"state": "open"}\'.',
+    )
+
+
+def _quick_create_add_policy_flags(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--cwd",
+        metavar="PATH",
+        help="Execution root for the spawned process (default: this CLI's invocation directory).",
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Sugar for --max-runs 1 — fire once, then auto-disable.",
+    )
+    parser.add_argument(
+        "--max-runs",
+        dest="max_runs",
+        type=int,
+        metavar="N",
+        help="Auto-disable once N total runs have fired (default: unlimited). "
+        "Mutually exclusive with --once.",
+    )
+    parser.add_argument(
+        "--overlap",
+        choices=("skip", "allow"),
+        default="skip",
+        help="Overlap policy when a prior run is still in-flight (default: skip).",
+    )
+    parser.add_argument(
+        "--missed-fire",
+        dest="missed_fire",
+        choices=("skip", "run_once"),
+        default="skip",
+        help="Missed-fire policy (default: skip).",
+    )
+    parser.add_argument("--budget-usd", dest="budget_usd", type=float, metavar="USD")
+    parser.add_argument("--budget-tokens", dest="budget_tokens", type=int, metavar="N")
+    parser.add_argument(
+        "--rate-limit",
+        dest="rate_limit",
+        metavar="JSON",
+        help='Rolling-window fire cap, e.g. \'{"max_fires": 3, "window_sec": 3600}\'.',
+    )
+    parser.add_argument("--description", help="Human-readable description.")
+    parser.add_argument("--disabled", action="store_true", help="Create the schedule disabled.")
+
+
+def build_quick_create_parser(kind: str) -> argparse.ArgumentParser:
+    """Build the standalone parser for `li schedule create <kind>`."""
+    parser = argparse.ArgumentParser(
+        prog=f"li schedule create {kind}",
+        description=f"Create a typed {kind!r} schedule.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("name", help="Schedule name.")
+    if kind == "agent":
+        parser.add_argument("--profile", required=True, help="Agent profile name.")
+        parser.add_argument("--prompt", help="Prompt text (alternative to --prompt-file).")
+        parser.add_argument(
+            "--prompt-file",
+            dest="prompt_file",
+            metavar="PATH",
+            help="Read the prompt from a file; '-' reads stdin.",
+        )
+        parser.add_argument("--model", help="Explicit model override (default: profile's model).")
+    elif kind == "flow":
+        parser.add_argument("--file", required=True, help="Path to an `li o flow` YAML spec file.")
+    elif kind == "playbook":
+        parser.add_argument("--playbook", required=True, help="Playbook name.")
+        parser.add_argument(
+            "--arg",
+            dest="args",
+            action="append",
+            metavar="KEY=VALUE",
+            help="Typed playbook argument, repeatable.",
+        )
+    elif kind == "command":
+        # The executable + its argv are captured separately, by splitting the
+        # raw argv on a literal '--' *before* this parser ever runs (see
+        # run_schedule_quick_create) — nargs=REMAINDER can't be used here
+        # since it would greedily swallow the trigger/policy flags that
+        # follow `name` too, not just the tokens after '--'.
+        pass
+    else:  # pragma: no cover — gated by QUICK_CREATE_KINDS at the dispatch site
+        raise ValueError(f"unknown quick-create kind: {kind!r}")
+    _quick_create_add_trigger_flags(parser)
+    _quick_create_add_policy_flags(parser)
+    return parser
+
+
+def _quick_create_trigger(args: argparse.Namespace) -> Any:
+    from lionagi.studio.services.schedule_declaration import CronTrigger, GithubTriggerSpec, Trigger
+
+    if args.at:
+        return Trigger(at=args.at)
+    if args.cron:
+        if not args.timezone:
+            print("Error: --cron requires --timezone.", file=sys.stderr)
+            return None
+        return Trigger(cron=CronTrigger(expression=args.cron, timezone=args.timezone))
+    if args.every:
+        return Trigger(every=args.every)
+    # args.github — the only remaining branch, guaranteed by the required
+    # mutually-exclusive trigger group.
+    github_filter = None
+    if getattr(args, "github_filter", None):
+        try:
+            github_filter = json.loads(args.github_filter)
+        except (ValueError, TypeError) as exc:
+            print(f"Error: --github-filter must be valid JSON: {exc}", file=sys.stderr)
+            return None
+        if not isinstance(github_filter, dict):
+            print("Error: --github-filter must be a JSON object.", file=sys.stderr)
+            return None
+    return Trigger(github=GithubTriggerSpec(repo=args.github, filter=github_filter))
+
+
+def _quick_create_policies(args: argparse.Namespace) -> Any:
+    from pydantic import ValidationError
+
+    from lionagi.studio.services.schedule_declaration import Budget, Policies
+
+    if args.once and args.max_runs is not None:
+        print("Error: --once and --max-runs are mutually exclusive.", file=sys.stderr)
+        return None
+    max_runs = 1 if args.once else args.max_runs
+
+    budget = None
+    if args.budget_usd is not None or args.budget_tokens is not None:
+        try:
+            budget = Budget(usd=args.budget_usd, tokens=args.budget_tokens)
+        except ValidationError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return None
+
+    rate_limit = None
+    if getattr(args, "rate_limit", None):
+        try:
+            rate_limit = json.loads(args.rate_limit)
+        except (ValueError, TypeError) as exc:
+            print(f"Error: --rate-limit must be valid JSON: {exc}", file=sys.stderr)
+            return None
+
+    try:
+        return Policies(
+            missedFire=args.missed_fire,
+            overlap=args.overlap,
+            maxRuns=max_runs,
+            budget=budget,
+            rateLimit=rate_limit,
+        )
+    except ValidationError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return None
+
+
+def _quick_create_target(kind: str, args: argparse.Namespace) -> Any:
+    from lionagi.studio.services.schedule_declaration import (
+        AgentTarget,
+        CommandTarget,
+        FlowTarget,
+        PlaybookTarget,
+    )
+
+    if kind == "agent":
+        prompt = args.prompt
+        if args.prompt_file:
+            if prompt is not None:
+                print("Error: --prompt and --prompt-file are mutually exclusive.", file=sys.stderr)
+                return None
+            if args.prompt_file == "-":
+                prompt = sys.stdin.read()
+            else:
+                try:
+                    prompt = Path(args.prompt_file).read_text()
+                except OSError as exc:
+                    print(f"Error: could not read --prompt-file: {exc}", file=sys.stderr)
+                    return None
+        if not prompt or not prompt.strip():
+            print("Error: agent target requires --prompt or --prompt-file.", file=sys.stderr)
+            return None
+        return AgentTarget(kind="agent", profile=args.profile, prompt=prompt, model=args.model)
+
+    if kind == "flow":
+        return FlowTarget(kind="flow", file=args.file)
+
+    if kind == "playbook":
+        arg_dict: dict[str, str] = {}
+        for item in args.args or []:
+            if "=" not in item:
+                print(f"Error: --arg must be key=value, got {item!r}.", file=sys.stderr)
+                return None
+            key, _, value = item.partition("=")
+            arg_dict[key] = value
+        return PlaybookTarget(kind="playbook", name=args.playbook, args=arg_dict)
+
+    # kind == "command": trailing `-- argv...`, never a shell string. The
+    # executable/args tokens were already split off before argparse ran (see
+    # run_schedule_quick_create) and attached as args.command_argv.
+    rest = getattr(args, "command_argv", None)
+    if not rest:
+        print(
+            "Error: command target requires a trailing '--' before the "
+            "executable, e.g. `li schedule create command NAME --every 15m "
+            "-- refresh-index --incremental`.",
+            file=sys.stderr,
+        )
+        return None
+    return CommandTarget(kind="command", executable=rest[0], args=rest[1:])
+
+
+def run_schedule_quick_create(kind: str, argv: list[str]) -> int:
+    """`li schedule create <kind> <name> ...` entry point."""
+    from pydantic import ValidationError
+
+    from lionagi.state.db import StateDB
+    from lionagi.studio.services.schedule_declaration import (
+        Execution,
+        ScheduleMember,
+        ScheduleSetError,
+        create_quick_schedule,
+    )
+
+    parser = build_quick_create_parser(kind)
+    command_argv: list[str] = []
+    if kind == "command":
+        # Split off the executable/argv at a literal '--' *before* argparse
+        # runs: nargs=REMAINDER on a positional would otherwise greedily
+        # swallow the trigger/policy flags that come after `name` too.
+        if "--" not in argv:
+            print(
+                "Error: command target requires a trailing '--' before the "
+                "executable, e.g. `li schedule create command NAME --every 15m "
+                "-- refresh-index --incremental`.",
+                file=sys.stderr,
+            )
+            return 1
+        i = argv.index("--")
+        argv, command_argv = argv[:i], argv[i + 1 :]
+    args = parser.parse_args(argv)
+    if kind == "command":
+        args.command_argv = command_argv
+
+    target = _quick_create_target(kind, args)
+    if target is None:
+        return 1
+    trigger = _quick_create_trigger(args)
+    if trigger is None:
+        return 1
+    policies = _quick_create_policies(args)
+    if policies is None:
+        return 1
+
+    cwd = Path(args.cwd).expanduser().resolve() if args.cwd else Path.cwd()
+
+    # Best-effort project auto-detection, same cascade as the legacy create
+    # path; any failure here must never block schedule creation.
+    project: str | None = None
+    with contextlib.suppress(Exception):
+        from lionagi.cli._project import detect_project
+        from lionagi.studio.scheduler.subprocess import _validate_identifier
+
+        detected, _source = detect_project(cwd)
+        if detected:
+            _validate_identifier(detected, "action_project")
+            project = detected
+
+    try:
+        member = ScheduleMember(
+            description=args.description,
+            enabled=not args.disabled,
+            trigger=trigger,
+            target=target,
+            execution=Execution(cwd=str(cwd)),
+            policies=policies,
+        )
+    except ValidationError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    async def _run():
+        async with StateDB() as db:
+            return await create_quick_schedule(db, args.name, member, cwd=cwd, project=project)
+
+    try:
+        schedule_id, resolved = asyncio.run(_run())
+    except ScheduleSetError as exc:
+        for _name, message in exc.errors:
+            print(f"Error: {message}", file=sys.stderr)
+        return 1
+
+    print(f"Created: {schedule_id}  {resolved.qualified_name}")
+    return 0
+
+
 # Common wrong spellings mapped to the real flag, checked before the fuzzy
 # match below since some (e.g. --every) aren't close enough for difflib.
 _SCHEDULE_FLAG_SYNONYMS: dict[str, str] = {
