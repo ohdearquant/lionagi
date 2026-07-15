@@ -24,8 +24,12 @@ li schedule create agent nightly-review \
   --profile reviewer --prompt-file review-prompt.txt \
   --cron "0 6 * * *" --timezone America/New_York
 
-# A shell command every 15 minutes (the executable goes after a trailing --)
-li schedule create command disk-check --every 15m -- df -h
+# A command every 15 minutes (the executable goes after a trailing --).
+# Command actions are security-gated: the executable name must appear in
+# LIONAGI_SCHEDULER_COMMAND_ALLOWLIST (comma-separated) in the daemon's
+# environment, must be a bare PATH-resolvable name (no path separators),
+# and arguments must be positional — tokens starting with '-' are rejected.
+li schedule create command refresh-index --every 15m -- refresh-index nightly
 
 # A flow document fired once at an absolute instant
 li schedule create flow release-pipeline \
@@ -52,7 +56,7 @@ Notes that save debugging time:
 
 For anything beyond a couple of ad-hoc entries, declare all schedules in one YAML
 document and reconcile it. The file is the source of truth; applying it creates,
-updates, and (for rows the file owns) removes schedules atomically.
+updates, and (for rows the file owns) disables schedules atomically.
 
 ```yaml
 apiVersion: lionagi.io/v1alpha1
@@ -74,16 +78,16 @@ schedules:
       overlap: skip
       budget:
         usd: 2.0
-  disk-check:
+  refresh-index:
     trigger:
       every: 15m
     target:
       kind: command
-      executable: df
-      args: ["-h"]
+      executable: refresh-index   # must be in LIONAGI_SCHEDULER_COMMAND_ALLOWLIST
+      args: ["nightly"]           # positional tokens only; '-' prefixes rejected
     notify:
       "on": [failed]
-      command: "notify-send 'disk-check failed'"
+      command: "notify-send 'refresh-index failed'"
 ```
 
 Validate without touching the database, preview the reconciliation, then apply:
