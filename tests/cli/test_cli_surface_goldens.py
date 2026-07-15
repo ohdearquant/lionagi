@@ -162,6 +162,7 @@ ORCHESTRATE_FANOUT_FLAGS = [
     "--help",
     "--invocation",
     "--max-concurrent",
+    "--notify",
     "--num-workers",
     "--output",
     "--pack",

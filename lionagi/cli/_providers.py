@@ -278,6 +278,16 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
             "Same effect as an agent profile's 'resume_on_timeout: once'."
         ),
     )
+    parser.add_argument(
+        "--notify",
+        metavar="CMD",
+        default=None,
+        help=(
+            "Shell command template run once this run reaches its terminal "
+            "status. Overrides .lionagi/settings.yaml notify.on_terminal. "
+            "Substitutes {payload} (full JSON), {status}, {invocation_id}."
+        ),
+    )
 
 
 # ── Agent profile loading (absorbed from _agents.py) ─────────────────────────
