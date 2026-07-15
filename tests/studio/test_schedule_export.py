@@ -677,7 +677,7 @@ async def test_legacy_github_poll_with_nondefault_interval_is_blocked(temp_db_pa
     )
     doc = docs[0]
     assert lines[0].status == "BLOCKED"
-    assert "poll_interval_sec" in lines[0].message
+    assert "poll" in lines[0].message
     assert "demo/poll-custom" not in doc.schedules
 
 
@@ -822,3 +822,105 @@ async def test_legacy_bare_name_without_project_disclosed_in_report(temp_db_path
     assert [line.status for line in lines] == ["READY"]
     assert lines[0].message is not None
     assert "legacy-export/nightly" in lines[0].message
+
+
+# ---------------------------------------------------------------------------
+# GitHub cadence fallback and sibling-file collisions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_legacy_github_poll_interval_sec_fallback_is_blocked(temp_db_path, agent_profile):
+    """With poll_interval_sec NULL the engine polls at interval_sec; exporting
+    such a row must BLOCK, not silently re-apply at the 300s default."""
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_row(
+                "gf1",
+                "demo/poll-fallback",
+                cwd=agent_profile,
+                trigger_type="github_poll",
+                cron_expr=None,
+                interval_sec=900,
+                poll_interval_sec=None,
+                github_repo="octo/repo",
+                action_kind="agent",
+            )
+        )
+        rows = await db.list_schedules()
+    docs, lines = convert_legacy_rows(
+        rows, flows_dir=agent_profile / "flows", manifest_dir=agent_profile
+    )
+    assert [line.status for line in lines] == ["BLOCKED"]
+    assert "900" in lines[0].message
+    assert not docs[0].schedules
+
+
+@pytest.mark.asyncio
+async def test_legacy_github_poll_explicit_default_with_interval_sec_stays_ready(
+    temp_db_path, agent_profile
+):
+    """An explicit poll_interval_sec at the default wins over interval_sec in
+    the engine's fallback chain, so the row is exportable."""
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_row(
+                "gf2",
+                "demo/poll-explicit",
+                cwd=agent_profile,
+                trigger_type="github_poll",
+                cron_expr=None,
+                interval_sec=900,
+                poll_interval_sec=300,
+                github_repo="octo/repo",
+                action_kind="agent",
+            )
+        )
+        rows = await db.list_schedules()
+    docs, lines = convert_legacy_rows(
+        rows, flows_dir=agent_profile / "flows", manifest_dir=agent_profile
+    )
+    assert [line.status for line in lines] == ["READY"]
+
+
+def test_cli_export_rejects_sibling_filename_collisions(temp_db_path, agent_profile, tmp_path):
+    """Two projects whose sanitized filename tokens collide must fail loudly
+    before any sibling file is written, never silently overwrite one."""
+    import asyncio
+
+    from lionagi.studio.cli import _cmd_export
+
+    asyncio.run(
+        _create_legacy_row(
+            _legacy_row("sc1", "foo/bar/a", cwd=agent_profile, action_project="foo/bar")
+        )
+    )
+    asyncio.run(
+        _create_legacy_row(
+            _legacy_row("sc2", "foo:bar/b", cwd=agent_profile, action_project="foo:bar")
+        )
+    )
+
+    output_path = tmp_path / "out" / "schedules.yaml"
+    rc = _cmd_export(_export_args(legacy=True, output=str(output_path)))
+    assert rc == 1
+    assert not any((tmp_path / "out").glob("*.yaml")) if (tmp_path / "out").exists() else True
+
+
+def test_cli_export_distinct_sibling_tokens_write_all_files(temp_db_path, agent_profile, tmp_path):
+    import asyncio
+
+    from lionagi.studio.cli import _cmd_export
+
+    asyncio.run(
+        _create_legacy_row(_legacy_row("sd1", "alpha/a", cwd=agent_profile, action_project="alpha"))
+    )
+    asyncio.run(
+        _create_legacy_row(_legacy_row("sd2", "beta/b", cwd=agent_profile, action_project="beta"))
+    )
+
+    output_path = tmp_path / "out" / "schedules.yaml"
+    rc = _cmd_export(_export_args(legacy=True, output=str(output_path)))
+    assert rc == 0
+    names = sorted(p.name for p in (tmp_path / "out").glob("*.yaml"))
+    assert names == ["schedules.alpha.yaml", "schedules.beta.yaml"]

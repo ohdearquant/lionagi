@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from lionagi.cli._logging import warn
+from lionagi.cli._logging import log_error, warn
 from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES
 
 _STUDIO_IMAGE = "ghcr.io/ohdearquant/lion-studio:latest"
@@ -1279,9 +1279,22 @@ def _cmd_export(args: argparse.Namespace) -> int:
             output_path.write_text(dump_schedule_set_yaml(docs[0]))
         else:
             # Mixed-project export: one file per project, suffixed with its
-            # project so none collide and none silently overwrite `--output`.
+            # project so none silently overwrite `--output`. The sanitizer is
+            # not injective (foo/bar and foo:bar both become foo_bar), so
+            # collisions are rejected before ANY sibling is written rather
+            # than letting the last document win.
+            tokens: dict[str, str] = {}
             for doc in docs:
                 token = re.sub(r"[^a-zA-Z0-9_.-]", "_", doc.metadata.project)
+                if token in tokens:
+                    log_error(
+                        f"cannot export: projects {tokens[token]!r} and "
+                        f"{doc.metadata.project!r} both sanitize to sibling file "
+                        f"token {token!r}; export to stdout or rename a project"
+                    )
+                    return 1
+                tokens[token] = doc.metadata.project
+            for doc, token in zip(docs, tokens, strict=True):
                 sibling = output_path.with_name(f"{output_path.stem}.{token}{output_path.suffix}")
                 sibling.write_text(dump_schedule_set_yaml(doc))
     else:

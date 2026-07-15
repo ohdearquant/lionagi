@@ -182,12 +182,17 @@ def _convert_legacy_trigger(row: dict[str, Any]) -> Trigger:
         repo = row.get("github_repo")
         if not repo:
             raise ValueError("trigger_type='github_poll' row has no github_repo")
-        poll_interval = row.get("poll_interval_sec")
-        if poll_interval is not None and poll_interval != _GITHUB_POLL_DEFAULT_SEC:
+        # Mirror the engine's full cadence fallback chain: a NULL
+        # poll_interval_sec row with interval_sec set polls at interval_sec
+        # today, so it drifts just as much on re-apply as an explicit value.
+        effective = (
+            row.get("poll_interval_sec") or row.get("interval_sec") or _GITHUB_POLL_DEFAULT_SEC
+        )
+        if effective != _GITHUB_POLL_DEFAULT_SEC:
             raise ValueError(
-                f"trigger_type='github_poll' row has poll_interval_sec={poll_interval!r} "
-                f"(default {_GITHUB_POLL_DEFAULT_SEC}) but GithubTriggerSpec has no "
-                "poll-interval field to carry a non-default value"
+                f"trigger_type='github_poll' row polls every {effective}s "
+                f"(default {_GITHUB_POLL_DEFAULT_SEC}s) but GithubTriggerSpec has no "
+                "poll-interval field to carry a non-default cadence"
             )
         return Trigger(github=GithubTriggerSpec(repo=repo, filter=row.get("github_filter")))
     raise ValueError(f"unsupported trigger_type: {kind!r}")
