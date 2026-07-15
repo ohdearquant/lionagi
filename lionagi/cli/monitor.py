@@ -902,7 +902,6 @@ def _watch_loop(
 # ── Wait-for-terminal primitive (li monitor run / li monitor --run) ───────────
 # Scripting primitive; see docs/internals/cli.md for the full contract.
 
-_TERMINAL_SCHEDULE_RUN_STATUSES = frozenset({"completed", "failed", "cancelled", "skipped"})
 # Default wait bound so a stuck run can't hang forever; pass max_wait=0 to opt
 # into unbounded waiting explicitly.
 _DEFAULT_MAX_WAIT_SECONDS = 900.0
@@ -1096,6 +1095,10 @@ async def _poll_pending_once(
 ) -> None:
     """Check every still-pending run once; print, record, and drop terminal
     ones. See docs/internals/cli.md for the cancellation-atomicity contract."""
+    # Shared schema vocabulary — a hand-listed subset here once omitted
+    # timed_out, leaving timed-out occurrences waiting forever.
+    from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES
+
     from ._logging import log_error
 
     for run_id in list(pending):
@@ -1105,7 +1108,7 @@ async def _poll_pending_once(
             # resolve as failure so the wait can't hang on state that never returns.
             row = {**pending[run_id], "status": "failed", "exit_code": None}
             log_error(f"schedule_run {run_id!r} disappeared from state.db while waiting")
-        elif row["status"] not in _TERMINAL_SCHEDULE_RUN_STATUSES:
+        elif row["status"] not in SCHEDULE_RUN_TERMINAL_STATUSES:
             continue
         name = await _schedule_name(db, row["schedule_id"], cache=schedule_names)
         # Resolved before the print/append/delete trio below (not between

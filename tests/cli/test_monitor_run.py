@@ -32,7 +32,7 @@ from lionagi.cli.monitor import (
     run_monitor_wait,
 )
 from lionagi.cli.status import EXIT_RUNNING, EXIT_UNKNOWN
-from lionagi.state.db import StateDB
+from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES, StateDB
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -270,6 +270,26 @@ async def test_poll_pending_once_reports_immediately_terminal_run(
     assert run_id in out
     assert "nightly-build" in out
     assert "status=completed" in out
+
+
+@pytest.mark.parametrize("status", sorted(SCHEDULE_RUN_TERMINAL_STATUSES))
+@pytest.mark.asyncio
+async def test_poll_pending_once_treats_every_terminal_status_as_done(
+    temp_db_path: Path, capsys: pytest.CaptureFixture, status: str
+) -> None:
+    """Every shared-vocabulary terminal status ends the wait on the first
+    tick — a hand-listed subset here once omitted timed_out, leaving
+    timed-out occurrences pending forever."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db, name=f"term-{status}")
+        run_id = await _make_schedule_run(db, sched_id, status=status)
+        pending = {run_id: await db.get_schedule_run(run_id)}
+        done: list[dict[str, Any]] = []
+        await _poll_pending_once(db, pending, {}, done)
+
+    assert [r["id"] for r in done] == [run_id]
+    assert run_id not in pending
+    assert f"status={status}" in capsys.readouterr().out
 
 
 @pytest.mark.asyncio
