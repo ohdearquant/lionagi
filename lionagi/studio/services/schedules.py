@@ -18,6 +18,7 @@ from lionagi.service.providers import EFFORT_LEVELS as _VALID_EFFORT_LEVELS
 from lionagi.state.db import DEFAULT_DB_PATH, StateDB
 
 from ..registry import studio_route
+from . import run_view
 
 _log = logging.getLogger(__name__)
 
@@ -631,7 +632,7 @@ async def disable_schedule(schedule_id: str) -> bool:
 async def list_schedule_runs(
     schedule_id: str,
     *,
-    status: str | None = None,
+    status: str | list[str] | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
@@ -639,6 +640,22 @@ async def list_schedule_runs(
         return []
     async with StateDB() as db:
         return await db.list_schedule_runs(schedule_id, status=status, limit=limit, offset=offset)
+
+
+async def list_schedule_run_views(
+    schedule_id: str,
+    *,
+    status: str | list[str] | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """RunView list — each row additionally carries a reconciled ``outcome``."""
+    if not DEFAULT_DB_PATH.exists():
+        return []
+    async with StateDB() as db:
+        return await run_view.list_run_views(
+            db, schedule_id, status=status, limit=limit, offset=offset
+        )
 
 
 async def get_schedule_run(run_id: str) -> dict[str, Any] | None:
@@ -655,7 +672,20 @@ async def get_schedule_run(run_id: str) -> dict[str, Any] | None:
                 (run_id,),
             )
             run["chain_children"] = rows
+        # Layer the RunView-reconciled fields on top, additively —
+        # chain_children (legacy) and outcome/duration_ms/... coexist.
+        view = await run_view.get_run_view(db, run_id)
+        if view is not None:
+            run = {**run, **view}
     return run
+
+
+async def get_schedule_status(schedule_id: str) -> dict[str, Any] | None:
+    """'Did it work?' view: schedule header + latest RunView + shared exit code."""
+    if not DEFAULT_DB_PATH.exists():
+        return None
+    async with StateDB() as db:
+        return await run_view.get_schedule_status_view(db, schedule_id)
 
 
 # ---------------------------------------------------------------------------
@@ -866,11 +896,13 @@ async def trigger_schedule_route(schedule_id: str) -> dict[str, Any]:
 )
 async def list_schedule_runs_route(
     schedule_id: str,
-    status: str | None = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=200),
+    status: list[str] | None = Query(default=None),  # noqa: B008
+    limit: int = Query(default=20, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
-    rows = await list_schedule_runs(schedule_id, status=status, limit=limit, offset=offset)
+    # RunView-enriched rows (adds outcome/duration_ms/session_ids/artifacts
+    # additively) — status is repeatable (?status=failed&status=timed_out).
+    rows = await list_schedule_run_views(schedule_id, status=status, limit=limit, offset=offset)
     return {"runs": rows, "limit": limit, "offset": offset, "has_next": len(rows) == limit}
 
 
@@ -886,4 +918,17 @@ async def get_schedule_run_route(run_id: str) -> dict[str, Any]:
     data = await get_schedule_run(run_id)
     if data is None:
         raise HTTPException(status_code=404, detail=f"Schedule run '{run_id}' not found")
+    return data
+
+
+@studio_route(
+    "/schedules/{schedule_id}/status",
+    method="GET",
+    area="schedules",
+    name="get_schedule_status",
+)
+async def get_schedule_status_route(schedule_id: str) -> dict[str, Any]:
+    data = await get_schedule_status(schedule_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' not found")
     return data

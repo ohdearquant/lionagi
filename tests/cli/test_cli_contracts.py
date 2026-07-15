@@ -132,6 +132,8 @@ SCHEDULE_SUBCOMMANDS = [
     "trigger",
     "delete",
     "runs",
+    "run",
+    "status",
 ]
 
 SCHEDULE_CREATE_HELP_FLAGS = [

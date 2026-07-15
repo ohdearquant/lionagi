@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from lionagi.cli._logging import warn
+from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES
 
 _STUDIO_IMAGE = "ghcr.io/ohdearquant/lion-studio:latest"
 _HOSTED_URL = "https://lion-studio.khive.ai"
@@ -883,14 +884,100 @@ def _cmd_disable(args: argparse.Namespace) -> int:
     return 0
 
 
+# fire_now() hands the run_id back to the HTTP caller before its occurrence
+# row is durably written (the fire runs as a background task) -- a lookup
+# immediately after trigger can race that insert. Retry within this bounded
+# grace period instead of a single up-front lookup.
+_TRIGGER_WAIT_GRACE_SECONDS = 5.0
+_TRIGGER_WAIT_GRACE_POLL_SECONDS = 0.2
+_TRIGGER_WAIT_POLL_SECONDS = 2.0
+_TRIGGER_WAIT_MAX_SECONDS = 600.0
+
+
+def _fmt_rfc3339(ts: float | None) -> str:
+    if ts is None:
+        return "-"
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def _fmt_duration_ms(ms: int | None) -> str:
+    if ms is None:
+        return "-"
+    secs = ms // 1000
+    if secs < 60:
+        return f"{secs}s"
+    mins, secs = divmod(secs, 60)
+    if mins < 60:
+        return f"{mins}m{secs:02d}s"
+    hrs, mins = divmod(mins, 60)
+    return f"{hrs}h{mins:02d}m"
+
+
+def _fmt_outcome(outcome: dict[str, Any] | None) -> str:
+    if not outcome:
+        return "-"
+    code, summary = outcome.get("code", "?"), outcome.get("summary")
+    return f"{code}: {summary}" if summary and summary != code else code
+
+
+def _fmt_artifacts(artifacts: list[str] | None) -> str:
+    if not artifacts:
+        return "-"
+    return artifacts[0] if len(artifacts) == 1 else f"{artifacts[0]} (+{len(artifacts) - 1} more)"
+
+
+def _print_run_table(runs: list[dict[str, Any]]) -> None:
+    header = f"{'RUN':<14}{'STATUS':<11}{'FIRED':<26}{'DURATION':<10}{'OUTCOME':<32}{'INVOCATION':<14}ARTIFACTS"
+    print(header)
+    for r in runs:
+        outcome = _fmt_outcome(r.get("outcome"))
+        print(
+            f"{r.get('id', '?'):<14}{r.get('status', '?'):<11}{_fmt_rfc3339(r.get('fired_at')):<26}"
+            f"{_fmt_duration_ms(r.get('duration_ms')):<10}{outcome[:30]:<32}"
+            f"{r.get('invocation_id') or '-':<14}{_fmt_artifacts(r.get('artifacts'))}"
+        )
+
+
 def _cmd_trigger(args: argparse.Namespace) -> int:
     result = _api(f"/{args.id}/trigger", method="POST")
     if result is None:
         return 1
     print(f"Triggered: {args.id}")
-    if isinstance(result, dict) and result.get("run_id"):
-        print(f"Run: {result['run_id']}")
-    return 0
+    run_id = result.get("run_id") if isinstance(result, dict) else None
+    if not run_id:
+        return 0
+    print(f"Run: {run_id}")
+    if not getattr(args, "wait", False):
+        return 0
+    return _wait_for_run(run_id)
+
+
+def _wait_for_run(run_id: str) -> int:
+    """Poll `/schedules/runs/{run_id}` for the occurrence, tolerating the
+    grace-period race, then for a terminal status."""
+    import time as _time
+
+    deadline_grace = _time.monotonic() + _TRIGGER_WAIT_GRACE_SECONDS
+    run = _api(f"/runs/{run_id}")
+    while run is None and _time.monotonic() < deadline_grace:
+        _time.sleep(_TRIGGER_WAIT_GRACE_POLL_SECONDS)
+        run = _api(f"/runs/{run_id}")
+    if run is None:
+        print(f"Error: run {run_id!r} never appeared", file=sys.stderr)
+        return 1
+
+    deadline = _time.monotonic() + _TRIGGER_WAIT_MAX_SECONDS
+    while run.get("status") not in SCHEDULE_RUN_TERMINAL_STATUSES and _time.monotonic() < deadline:
+        _time.sleep(_TRIGGER_WAIT_POLL_SECONDS)
+        run = _api(f"/runs/{run_id}")
+        if run is None:
+            print(f"Error: run {run_id!r} disappeared while waiting", file=sys.stderr)
+            return 1
+
+    print(f"status: {run.get('status', '?')}  outcome: {_fmt_outcome(run.get('outcome'))}")
+    return 0 if run.get("status") == "completed" else 1
 
 
 def _cmd_delete(args: argparse.Namespace) -> int:
@@ -902,16 +989,89 @@ def _cmd_delete(args: argparse.Namespace) -> int:
 
 
 def _cmd_runs(args: argparse.Namespace) -> int:
-    result = _api(f"/{args.id}/runs")
+    path = f"/{args.id}/runs?limit={args.limit}"
+    for status in getattr(args, "status", None) or ():
+        path += f"&status={status}"
+    result = _api(path)
     if result is None:
         return 1
     runs = result.get("runs", [])
+    if getattr(args, "as_json", False):
+        print(json.dumps(result))
+        return 0
     if not runs:
         print("(no runs)")
         return 0
-    for r in runs:
-        print(f"  {r['id']}  [{r.get('status', '?')}]  {r.get('started_at', '?')}")
+    _print_run_table(runs)
     return 0
+
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    result = _api(f"/runs/{args.id}")
+    if result is None:
+        return 1
+    if getattr(args, "as_json", False):
+        print(json.dumps(result))
+    else:
+        _print_run_table([result])
+    return 0
+
+
+def _status_still_running(result: dict[str, Any] | None) -> bool:
+    latest = (result or {}).get("latest_run") or {}
+    status = latest.get("status")
+    return status is not None and status not in SCHEDULE_RUN_TERMINAL_STATUSES
+
+
+def _cmd_status(args: argparse.Namespace) -> int:
+    import time as _time
+
+    result = _api(f"/{args.id}/status")
+    if getattr(args, "wait", False):
+        deadline = _time.monotonic() + _TRIGGER_WAIT_MAX_SECONDS
+        while result is not None and _status_still_running(result) and _time.monotonic() < deadline:
+            _time.sleep(_TRIGGER_WAIT_POLL_SECONDS)
+            result = _api(f"/{args.id}/status")
+    if result is None:
+        return 1
+
+    if getattr(args, "as_json", False):
+        print(json.dumps(result))
+        return int(result.get("exit_code", 2))
+
+    schedule = result.get("schedule") or {}
+    latest = result.get("latest_run")
+    trigger = (
+        f'cron "{schedule["cron_expr"]}"'
+        if schedule.get("cron_expr")
+        else (f"every {schedule['interval_sec']}s" if schedule.get("interval_sec") else "-")
+    )
+    print(
+        f"{schedule.get('id', args.id)}  {'enabled' if schedule.get('enabled') else 'disabled'}  {trigger}"
+    )
+    print(f"next:        {_fmt_rfc3339(schedule.get('next_fire_at'))}")
+    if latest is None:
+        print("last run:    (none)")
+        return int(result.get("exit_code", 2))
+    print(f"last run:    {latest.get('id')}")
+    exit_code_str = f" (exit {latest['exit_code']})" if latest.get("exit_code") is not None else ""
+    print(f"status:      {latest.get('status', '?')}{exit_code_str}")
+    print(f"fired:       {_fmt_rfc3339(latest.get('fired_at'))}")
+    if latest.get("ended_at") is not None:
+        print(
+            f"ended:       {_fmt_rfc3339(latest.get('ended_at'))}  ({_fmt_duration_ms(latest.get('duration_ms'))})"
+        )
+    outcome = latest.get("outcome") or {}
+    print(f"outcome:     {outcome.get('code', '-')} — {outcome.get('summary', '-')}")
+    if latest.get("invocation_id"):
+        print(f"invocation:  {latest['invocation_id']}")
+    for sid in latest.get("session_ids") or ():
+        print(f"session:     {sid}")
+    for path in latest.get("artifacts") or ():
+        print(f"artifacts:   {path}")
+    if latest.get("invocation_id"):
+        print(f"inspect:     li monitor {latest['invocation_id']}")
+    return int(result.get("exit_code", 2))
 
 
 # Common wrong spellings mapped to the real flag, checked before the fuzzy
@@ -1170,11 +1330,10 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         ),
     )
 
-    # enable / disable / trigger / delete
+    # enable / disable / delete
     for sub_name, sub_help, example in (
         ("enable", "Enable a schedule.", "li schedule enable sched-abc123"),
         ("disable", "Disable a schedule.", "li schedule disable sched-abc123"),
-        ("trigger", "Fire a schedule immediately.", "li schedule trigger sched-abc123"),
         ("delete", "Delete a schedule.", "li schedule delete sched-abc123"),
     ):
         p = sched_sub.add_parser(
@@ -1185,14 +1344,70 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         )
         p.add_argument("id", help="Schedule ID.")
 
+    # trigger
+    trigger_p = sched_sub.add_parser(
+        "trigger",
+        help="Fire a schedule immediately.",
+        epilog="Example: li schedule trigger sched-abc123 --wait",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    trigger_p.add_argument("id", help="Schedule ID.")
+    trigger_p.add_argument(
+        "--wait",
+        action="store_true",
+        help=(
+            "Block until the fired occurrence reaches a terminal status "
+            "(retries a short grace period first, since the occurrence row "
+            "isn't durably written until just after this returns a run id), "
+            "then print its outcome and exit non-zero on failure."
+        ),
+    )
+
     # runs
     runs_p = sched_sub.add_parser(
         "runs",
         help="List runs for a schedule.",
-        epilog="Example: li schedule runs sched-abc123",
+        epilog="Example: li schedule runs sched-abc123 --status failed --limit 5",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     runs_p.add_argument("id", help="Schedule ID.")
+    runs_p.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        metavar="N",
+        help="Max runs to return, 1-200 (default: 20).",
+    )
+    runs_p.add_argument(
+        "--status",
+        action="append",
+        metavar="STATUS",
+        help="Filter by run status; repeatable (e.g. --status failed --status timed_out).",
+    )
+    runs_p.add_argument("--json", dest="as_json", action="store_true", help="Emit JSON.")
+
+    # run (singular)
+    run_p = sched_sub.add_parser(
+        "run",
+        help="Show one schedule run.",
+        epilog="Example: li schedule run 9c8f4d5a2b10 --json",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    run_p.add_argument("id", help="Schedule run ID.")
+    run_p.add_argument("--json", dest="as_json", action="store_true", help="Emit JSON.")
+
+    # status
+    status_p = sched_sub.add_parser(
+        "status",
+        help='"Did it work?" summary for a schedule.',
+        epilog="Example: li schedule status sched-abc123 --wait",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    status_p.add_argument("id", help="Schedule ID.")
+    status_p.add_argument(
+        "--wait", action="store_true", help="Wait for the latest in-flight run to finish first."
+    )
+    status_p.add_argument("--json", dest="as_json", action="store_true", help="Emit JSON.")
 
     _ALL_SCHEDULE_FLAGS.clear()
     for action_parser in sched_sub.choices.values():
@@ -1215,6 +1430,8 @@ _ACTION_MAP = {
     "trigger": _cmd_trigger,
     "delete": _cmd_delete,
     "runs": _cmd_runs,
+    "run": _cmd_run,
+    "status": _cmd_status,
 }
 
 
@@ -1223,8 +1440,11 @@ def run_schedule(args: argparse.Namespace) -> int:
     fn = _ACTION_MAP.get(action)
     if fn is None:
         print(
-            "Usage: li schedule <subcommand>  "
-            "(list|get|limits|create|enable|disable|trigger|delete|runs)"
+            "Usage: li schedule <subcommand>  (list|get|limits|create|enable|disable|"
+            "trigger|delete|runs|run|status)"
         )
+        return 1
+    if action == "runs" and not (1 <= args.limit <= 200):
+        print(f"Error: --limit must be between 1 and 200, got {args.limit}.", file=sys.stderr)
         return 1
     return fn(args)

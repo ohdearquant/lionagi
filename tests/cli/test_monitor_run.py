@@ -6,6 +6,7 @@ dashboard, not a replacement)."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -25,12 +26,13 @@ from lionagi.cli.monitor import (
     _query_schedule_runs_since,
     _resolve_schedule_run,
     _resolve_session_run,
+    _resolve_watched_runs,
     _split_watched_ids,
     add_monitor_subparser,
     run_monitor_wait,
 )
 from lionagi.cli.status import EXIT_RUNNING, EXIT_UNKNOWN
-from lionagi.state.db import StateDB
+from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES, StateDB
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -188,6 +190,66 @@ async def test_resolve_schedule_run_not_found_returns_none(temp_db_path: Path) -
         assert row is None
 
 
+# ── _resolve_watched_runs: bounded creation-grace retry ─────────────────────
+#
+# fire_now() hands a run_id to its caller before the fired occurrence row is
+# durably written (the fire itself runs as a background task) — resolving
+# that id immediately can race the insert. _resolve_watched_runs must retry
+# within a bounded grace period instead of giving up on one lookup.
+
+
+@pytest.mark.asyncio
+async def test_resolve_watched_runs_retries_until_row_appears(temp_db_path: Path) -> None:
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        run_id = uuid.uuid4().hex[:12]
+
+        # Insert with the pre-chosen id after a short delay, simulating the
+        # background _fire task's race window against the caller's lookup.
+        async def _insert_directly() -> None:
+            await asyncio.sleep(0.05)
+            async with StateDB() as inner_db:
+                await inner_db.create_schedule_run(
+                    {
+                        "id": run_id,
+                        "schedule_id": sched_id,
+                        "invocation_id": None,
+                        "trigger_context": {},
+                        "action_kind": "agent",
+                        "action_args": [],
+                        "status": "running",
+                        "exit_code": None,
+                        "chain_depth": 0,
+                        "chain_parent_id": None,
+                        "fired_at": time.time(),
+                    }
+                )
+
+        task = asyncio.ensure_future(_insert_directly())
+        try:
+            pending, session_pending, unresolved = await _resolve_watched_runs(
+                db, [run_id], grace_seconds=2.0
+            )
+        finally:
+            await task
+
+    assert unresolved == []
+    assert run_id in pending
+    assert session_pending == {}
+
+
+@pytest.mark.asyncio
+async def test_resolve_watched_runs_gives_up_after_grace_period(temp_db_path: Path) -> None:
+    async with StateDB() as db:
+        pending, session_pending, unresolved = await _resolve_watched_runs(
+            db, ["never-created"], grace_seconds=0.1
+        )
+
+    assert pending == {}
+    assert session_pending == {}
+    assert unresolved == ["never-created"]
+
+
 # ── _poll_pending_once (the testable inner tick — no real sleeps needed) ────
 
 
@@ -208,6 +270,26 @@ async def test_poll_pending_once_reports_immediately_terminal_run(
     assert run_id in out
     assert "nightly-build" in out
     assert "status=completed" in out
+
+
+@pytest.mark.parametrize("status", sorted(SCHEDULE_RUN_TERMINAL_STATUSES))
+@pytest.mark.asyncio
+async def test_poll_pending_once_treats_every_terminal_status_as_done(
+    temp_db_path: Path, capsys: pytest.CaptureFixture, status: str
+) -> None:
+    """Every shared-vocabulary terminal status ends the wait on the first
+    tick — a hand-listed subset here once omitted timed_out, leaving
+    timed-out occurrences pending forever."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db, name=f"term-{status}")
+        run_id = await _make_schedule_run(db, sched_id, status=status)
+        pending = {run_id: await db.get_schedule_run(run_id)}
+        done: list[dict[str, Any]] = []
+        await _poll_pending_once(db, pending, {}, done)
+
+    assert [r["id"] for r in done] == [run_id]
+    assert run_id not in pending
+    assert f"status={status}" in capsys.readouterr().out
 
 
 @pytest.mark.asyncio
@@ -649,13 +731,18 @@ async def test_dispatch_wait_multi_id_one_nonzero_exit_fails_aggregate(temp_db_p
 
 @pytest.mark.asyncio
 async def test_dispatch_wait_unknown_id_returns_exit_unknown_without_blocking(
-    temp_db_path: Path, caplog: pytest.LogCaptureFixture, sleep_probe: list[float]
+    temp_db_path: Path, caplog: pytest.LogCaptureFixture, sleep_probe: list[float], monkeypatch
 ) -> None:
     # Open+close once so state.db actually exists on disk — this test is
     # about an id that isn't among the (existing) schedule_runs, not about
     # a missing state.db file entirely (see test_dispatch_wait_no_db_file).
     async with StateDB():
         pass
+
+    # A genuinely unknown id still exhausts the bounded resolution grace
+    # period (see _resolve_watched_runs) before giving up — zero it out so
+    # this test stays fast without asserting away that retry.
+    monkeypatch.setattr("lionagi.cli.monitor._RESOLVE_GRACE_SECONDS", 0.0)
 
     with caplog.at_level(logging.ERROR, logger="lionagi.cli.error"):
         exit_code = _dispatch_wait(["nonexistent-id"], interval=5.0, follow=False)
