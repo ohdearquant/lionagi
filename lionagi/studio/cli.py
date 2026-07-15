@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import contextlib
 import json
 import math
@@ -1074,6 +1075,160 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return int(result.get("exit_code", 2))
 
 
+def _load_schedule_set_doc(path_str: str):
+    """Read + parse a ScheduleSet file. Prints an error and returns
+    ``(None, None)`` on any failure -- callers just check for None."""
+    from lionagi.studio.services.schedule_declaration import parse_schedule_set
+
+    path = Path(path_str)
+    if not path.is_file():
+        print(f"Error: file not found: {path}", file=sys.stderr)
+        return None, None
+    try:
+        doc = parse_schedule_set(path.read_text(), source=str(path))
+    except Exception as exc:  # noqa: BLE001 - surfaced verbatim to the user
+        print(f"Error: {exc}", file=sys.stderr)
+        return None, None
+    return doc, path.resolve().parent
+
+
+def _cmd_validate_set(args: argparse.Namespace) -> int:
+    from lionagi.studio.services.schedule_declaration import ScheduleSetError, resolve_schedule_set
+
+    doc, manifest_dir = _load_schedule_set_doc(args.file)
+    if doc is None:
+        return 1
+    owner_key = f"{doc.metadata.project}/{doc.metadata.name}"
+    try:
+        resolved = resolve_schedule_set(doc, manifest_dir)
+    except ScheduleSetError as exc:
+        if args.as_json:
+            print(
+                json.dumps(
+                    {
+                        "valid": False,
+                        "owner_key": owner_key,
+                        "errors": [{"name": n, "message": m} for n, m in exc.errors],
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            for name, message in exc.errors:
+                print(f"INVALID  {doc.metadata.project}/{name}  {message}", file=sys.stderr)
+        return 1
+
+    if args.as_json:
+        print(
+            json.dumps(
+                {
+                    "valid": True,
+                    "owner_key": owner_key,
+                    "schedules": {name: r.resolved for name, r in resolved.items()},
+                },
+                indent=2,
+                sort_keys=True,
+                default=str,
+            )
+        )
+    else:
+        print(f"VALID  {owner_key}  {len(resolved)} schedule(s)")
+    return 0
+
+
+def _fmt_plan_line(entry, set_ref: str) -> str:
+    from lionagi.studio.services.schedule_declaration import PlanEntry
+
+    e: PlanEntry = entry
+    if e.action == "CREATE":
+        target = e.resolved.resolved["target"]
+        model = target.get("model")
+        cwd = e.resolved.resolved["execution"]["cwd"]
+        extra = f"  model={model}" if model else ""
+        return f"CREATE     {e.qualified_name}{extra}  cwd={cwd}"
+    if e.action == "UPDATE":
+        return f"UPDATE     {e.qualified_name}"
+    if e.action == "UNCHANGED":
+        return f"UNCHANGED  {e.qualified_name}"
+    if e.action == "DISABLE":
+        return f"DISABLE    {e.qualified_name}     omitted from set {set_ref}"
+    return f"ERROR      {e.qualified_name}  {e.detail}"
+
+
+def _cmd_apply_set(args: argparse.Namespace) -> int:
+    from lionagi.state.db import StateDB
+    from lionagi.studio.services.schedule_declaration import (
+        ScheduleSetError,
+        apply_schedule_set,
+        build_plan,
+    )
+
+    doc, manifest_dir = _load_schedule_set_doc(args.file)
+    if doc is None:
+        return 1
+    set_ref = f"{doc.metadata.project}/{doc.metadata.name}"
+
+    async def _run():
+        async with StateDB() as db:
+            if args.dry_run:
+                plan, _resolved = await build_plan(db, doc, manifest_dir, adopt=args.adopt)
+                return plan
+            result = await apply_schedule_set(db, doc, manifest_dir, adopt=args.adopt)
+            return result.plan
+
+    try:
+        plan = asyncio.run(_run())
+    except ScheduleSetError as exc:
+        if args.as_json:
+            print(
+                json.dumps(
+                    {"valid": False, "errors": [{"name": n, "message": m} for n, m in exc.errors]},
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            for name, message in exc.errors:
+                print(f"INVALID  {doc.metadata.project}/{name}  {message}", file=sys.stderr)
+        return 1
+
+    has_errors = any(e.action == "ERROR" for e in plan)
+    if args.as_json:
+        print(
+            json.dumps(
+                {
+                    "dry_run": bool(args.dry_run),
+                    "set": set_ref,
+                    "plan": [
+                        {"name": e.qualified_name, "action": e.action, "detail": e.detail}
+                        for e in plan
+                    ],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+    else:
+        for entry in plan:
+            stream = sys.stderr if entry.action == "ERROR" else sys.stdout
+            print(_fmt_plan_line(entry, set_ref), file=stream)
+        created = sum(1 for e in plan if e.action == "CREATE")
+        updated = sum(1 for e in plan if e.action == "UPDATE")
+        unchanged = sum(1 for e in plan if e.action == "UNCHANGED")
+        disabled = sum(1 for e in plan if e.action == "DISABLE")
+        if args.dry_run:
+            print(
+                f"Plan: {created} create, {updated} update, {unchanged} unchanged, {disabled} disable"
+            )
+        elif not has_errors:
+            print(
+                f"Applied atomically: {created} created, {updated} updated, "
+                f"{unchanged} unchanged, {disabled} disabled"
+            )
+    return 1 if has_errors else 0
+
+
 # Common wrong spellings mapped to the real flag, checked before the fuzzy
 # match below since some (e.g. --every) aren't close enough for difflib.
 _SCHEDULE_FLAG_SYNONYMS: dict[str, str] = {
@@ -1330,6 +1485,41 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         ),
     )
 
+    # validate
+    validate_p = sched_sub.add_parser(
+        "validate",
+        help="Validate + statically resolve a ScheduleSet file (no database writes).",
+        epilog="Example: li schedule validate .lionagi/schedules.yaml",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    validate_p.add_argument("file", help="Path to a ScheduleSet YAML file.")
+    validate_p.add_argument("--json", dest="as_json", action="store_true", help="Emit JSON.")
+
+    # apply
+    apply_p = sched_sub.add_parser(
+        "apply",
+        help="Reconcile a ScheduleSet file into the database, atomically.",
+        epilog=(
+            "Examples:\n"
+            "  li schedule apply .lionagi/schedules.yaml --dry-run\n"
+            "  li schedule apply .lionagi/schedules.yaml"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    apply_p.add_argument("file", help="Path to a ScheduleSet YAML file.")
+    apply_p.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="Show the reconciliation plan with resolved values; no database writes.",
+    )
+    apply_p.add_argument(
+        "--adopt",
+        action="store_true",
+        help="Migrate a same-named row owned by another set/quick-create into this set. Not yet supported.",
+    )
+    apply_p.add_argument("--json", dest="as_json", action="store_true", help="Emit JSON.")
+
     # enable / disable / delete
     for sub_name, sub_help, example in (
         ("enable", "Enable a schedule.", "li schedule enable sched-abc123"),
@@ -1432,6 +1622,8 @@ _ACTION_MAP = {
     "runs": _cmd_runs,
     "run": _cmd_run,
     "status": _cmd_status,
+    "validate": _cmd_validate_set,
+    "apply": _cmd_apply_set,
 }
 
 
@@ -1441,7 +1633,7 @@ def run_schedule(args: argparse.Namespace) -> int:
     if fn is None:
         print(
             "Usage: li schedule <subcommand>  (list|get|limits|create|enable|disable|"
-            "trigger|delete|runs|run|status)"
+            "trigger|delete|runs|run|status|validate|apply)"
         )
         return 1
     if action == "runs" and not (1 <= args.limit <= 200):

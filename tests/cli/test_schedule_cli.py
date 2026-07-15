@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -1963,3 +1964,154 @@ def test_schedule_create_zero_max_tokens_errors(monkeypatch, capsys):
     assert outcome["result"] == 1
     assert outcome["called"] is False
     assert "must be a positive integer" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# `li schedule validate` / `li schedule apply` — declarative ScheduleSet CLI
+# ---------------------------------------------------------------------------
+
+
+def _parse_schedule_args(argv_tail: list[str]):
+    from lionagi.studio.cli import add_schedule_subparser
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    return parser.parse_args(["schedule", *argv_tail])
+
+
+def test_schedule_validate_and_apply_registered():
+    args = _parse_schedule_args(["validate", "schedules.yaml"])
+    assert args.schedule_action == "validate"
+    assert args.file == "schedules.yaml"
+
+    args = _parse_schedule_args(["apply", "schedules.yaml", "--dry-run", "--adopt", "--json"])
+    assert args.schedule_action == "apply"
+    assert args.dry_run is True
+    assert args.adopt is True
+    assert args.as_json is True
+
+
+@pytest.fixture
+def agent_profile_cwd(tmp_path, monkeypatch):
+    import lionagi.cli._providers as providers_mod
+
+    agents_dir = tmp_path / ".lionagi" / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "reviewer.md").write_text("---\nmodel: anthropic/claude-sonnet-5\n---\nBody.\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(providers_mod, "_find_lionagi_dirs", lambda: [agents_dir.parent])
+    return tmp_path
+
+
+@pytest.fixture
+def temp_state_db(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    return db_path
+
+
+def _write_manifest(cwd) -> Path:
+    manifest = Path(cwd) / "schedules.yaml"
+    manifest.write_text(
+        f"""
+apiVersion: lionagi.io/v1alpha1
+kind: ScheduleSet
+metadata:
+  name: automation
+  project: demo
+schedules:
+  nightly-review:
+    trigger:
+      cron:
+        expression: "0 2 * * *"
+        timezone: America/New_York
+    target:
+      kind: agent
+      profile: reviewer
+      prompt: "check things"
+    execution:
+      cwd: {cwd}
+"""
+    )
+    return manifest
+
+
+def test_schedule_validate_valid_file_exits_zero(agent_profile_cwd, capsys):
+    from lionagi.studio.cli import run_schedule
+
+    manifest = _write_manifest(agent_profile_cwd)
+    args = _parse_schedule_args(["validate", str(manifest)])
+    result = run_schedule(args)
+    assert result == 0
+    assert "VALID" in capsys.readouterr().out
+
+
+def test_schedule_validate_invalid_file_exits_nonzero(agent_profile_cwd, capsys):
+    from lionagi.studio.cli import run_schedule
+
+    manifest = _write_manifest(agent_profile_cwd)
+    manifest.write_text(manifest.read_text().replace("reviewer", "ghost-profile"))
+    args = _parse_schedule_args(["validate", str(manifest)])
+    result = run_schedule(args)
+    assert result == 1
+    assert "does not exist" in capsys.readouterr().err
+
+
+def test_schedule_validate_missing_file_exits_nonzero(capsys):
+    from lionagi.studio.cli import run_schedule
+
+    args = _parse_schedule_args(["validate", "/no/such/schedules.yaml"])
+    result = run_schedule(args)
+    assert result == 1
+    assert "not found" in capsys.readouterr().err
+
+
+def test_schedule_apply_dry_run_never_writes(agent_profile_cwd, temp_state_db, capsys):
+    import asyncio
+
+    from lionagi.state.db import StateDB
+    from lionagi.studio.cli import run_schedule
+
+    manifest = _write_manifest(agent_profile_cwd)
+    args = _parse_schedule_args(["apply", str(manifest), "--dry-run"])
+    result = run_schedule(args)
+    out = capsys.readouterr().out
+    assert result == 0
+    assert "CREATE" in out
+    assert "Plan: 1 create" in out
+
+    async def _rows():
+        async with StateDB() as db:
+            return await db.list_schedules()
+
+    assert asyncio.run(_rows()) == []
+
+
+def test_schedule_apply_then_idempotent_reapply(agent_profile_cwd, temp_state_db, capsys):
+    from lionagi.studio.cli import run_schedule
+
+    manifest = _write_manifest(agent_profile_cwd)
+    args = _parse_schedule_args(["apply", str(manifest)])
+    result = run_schedule(args)
+    out = capsys.readouterr().out
+    assert result == 0
+    assert "Applied atomically: 1 created" in out
+
+    args2 = _parse_schedule_args(["apply", str(manifest)])
+    result2 = run_schedule(args2)
+    out2 = capsys.readouterr().out
+    assert result2 == 0
+    assert "Applied atomically: 0 created, 0 updated, 1 unchanged" in out2
+
+
+def test_schedule_apply_json_output_shape(agent_profile_cwd, temp_state_db, capsys):
+    from lionagi.studio.cli import run_schedule
+
+    manifest = _write_manifest(agent_profile_cwd)
+    args = _parse_schedule_args(["apply", str(manifest), "--dry-run", "--json"])
+    result = run_schedule(args)
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert payload["dry_run"] is True
+    assert payload["plan"] == [{"name": "demo/nightly-review", "action": "CREATE", "detail": None}]

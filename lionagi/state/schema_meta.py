@@ -462,7 +462,7 @@ schedules = Table(
         "trigger_type",
         Text,
         CheckConstraint(
-            "trigger_type IN ('cron','interval','github_poll')",
+            "trigger_type IN ('cron','interval','github_poll','at')",
             name="ck_schedules_trigger_type",
         ),
         nullable=False,
@@ -535,6 +535,23 @@ schedules = Table(
     # Observer self-health (github_poll poller); see schema.sql.
     Column("last_healthy_poll_at", Float),
     Column("poller_consecutive_401", Integer, nullable=False, server_default="0"),
+    # Declarative ScheduleSet layer: versioned document identity, resolved
+    # target/trigger snapshot + digest, and set ownership. NULL on every row
+    # created before this layer (legacy) or by an unmanaged quick-create.
+    Column("spec_version", Text),
+    Column(
+        "managed_by",
+        Text,
+        CheckConstraint(
+            "managed_by IS NULL OR managed_by IN ('cli','declaration')",
+            name="ck_schedules_managed_by",
+        ),
+    ),
+    Column("owner_key", Text),
+    Column("authored_spec", JSON),
+    Column("resolved_target", JSON),
+    Column("resolved_digest", Text),
+    Column("resolved_timezone", Text),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
 )
@@ -552,6 +569,12 @@ Index(
     schedules.c.project,
     sqlite_where=text("project IS NOT NULL"),
     postgresql_where=text("project IS NOT NULL"),
+)
+Index(
+    "idx_schedules_owner_key",
+    schedules.c.owner_key,
+    sqlite_where=text("owner_key IS NOT NULL"),
+    postgresql_where=text("owner_key IS NOT NULL"),
 )
 
 # ── schedule_runs ─────────────────────────────────────────────────────────────

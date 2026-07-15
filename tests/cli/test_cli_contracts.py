@@ -127,6 +127,8 @@ SCHEDULE_SUBCOMMANDS = [
     "get",
     "limits",
     "create",
+    "validate",
+    "apply",
     "enable",
     "disable",
     "trigger",

@@ -679,6 +679,9 @@ class StateDB:
             # admit 'flow_yaml') carry a CHECK on schedules.action_kind that
             # omits 'command'.
             await self._drop_legacy_schedules_command_check()
+            # Existing DBs carry a CHECK on schedules.trigger_type that
+            # omits 'at' (the declarative ScheduleSet absolute-time trigger).
+            await self._drop_legacy_schedules_trigger_type_check()
             # existing DBs created before the completion-trust gate carry a
             # 6-value CHECK on invocations.status that omits 'completed_empty'.
             await self._drop_legacy_invocations_status_check()
@@ -1125,6 +1128,83 @@ class StateDB:
             # ANY failure path restores enforcement in the finally block; a
             # flush failure must not leave the pooled connection with
             # foreign keys silently disabled.
+            try:
+                await driver.commit()
+                await driver.execute("BEGIN IMMEDIATE")
+                try:
+                    await driver.execute(create_stmt)
+                    insert_sql = (
+                        f"INSERT INTO schedules_new ({col_list}) SELECT {col_list} FROM schedules"  # noqa: S608
+                    )
+                    await driver.execute(insert_sql)
+                    await driver.execute("DROP TABLE schedules")
+                    await driver.execute("ALTER TABLE schedules_new RENAME TO schedules")
+                    for idx_sql in index_sqls:
+                        await driver.execute(idx_sql)
+                    await driver.commit()
+                except BaseException:
+                    await driver.rollback()
+                    raise
+            finally:
+                await driver.execute("PRAGMA foreign_keys = ON")
+                await driver.commit()
+
+    # Substring present only in the widened schedules CREATE SQL; its
+    # absence indicates a legacy DB whose trigger_type CHECK still omits
+    # 'at' (the declarative ScheduleSet layer's absolute-time trigger).
+    _LEGACY_SCHEDULES_TRIGGER_TYPE_MARKER = "'at'"
+
+    async def _drop_legacy_schedules_trigger_type_check(self) -> None:
+        """Rebuild ``schedules`` if its trigger_type CHECK still omits 'at'.
+
+        Same rename -> CREATE new -> INSERT SELECT -> DROP old pattern as
+        ``_drop_legacy_schedules_command_check``.
+        """
+        if self.dialect != "sqlite":
+            return
+        async with self._engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT sql FROM sqlite_master WHERE type='table' AND name='schedules'"
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if row is None or row["sql"] is None:
+            return
+        create_sql: str = row["sql"]
+        if self._LEGACY_SCHEDULES_TRIGGER_TYPE_MARKER in create_sql:
+            return
+
+        async with self._engine.connect() as conn:
+            index_rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT sql FROM sqlite_master "
+                            "WHERE type='index' AND tbl_name='schedules' AND sql IS NOT NULL"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            index_sqls = [r["sql"] for r in index_rows]
+
+            cols_rows = (await conn.execute(text("PRAGMA table_info(schedules)"))).mappings().all()
+            cols = [r["name"] for r in cols_rows]
+        col_list = ", ".join(cols)
+
+        rebuild_table = _schedules_table.to_metadata(MetaData(), name="schedules_new")
+        create_stmt = str(CreateTable(rebuild_table).compile(dialect=self._engine.dialect))
+
+        async with self._engine.connect() as conn:
+            driver = (await conn.get_raw_connection()).driver_connection
+            await driver.execute("PRAGMA foreign_keys = OFF")
             try:
                 await driver.commit()
                 await driver.execute("BEGIN IMMEDIATE")
@@ -2342,80 +2422,103 @@ class StateDB:
     # ── Schedules (ADR-0070) ──────────────────────────────────────────
 
     async def create_schedule(self, schedule: dict[str, Any]) -> None:
-        now = time.time()
+        stmt, params = self._build_schedule_insert_stmt(schedule)
         async with self._tx() as conn:
-            await conn.execute(
-                text(
-                    """INSERT INTO schedules
-                       (id, name, description, enabled, trigger_type,
-                        cron_expr, interval_sec, github_repo, github_filter,
-                        github_cursor, poll_interval_sec,
-                        action_kind, action_model, action_prompt, action_agent,
-                        action_playbook, action_flow_yaml, action_project, action_cwd,
-                        action_extra_args, action_command, action_command_args,
-                        on_success, on_fail, last_fired_at, next_fire_at,
-                        missed_fire_policy, overlap_policy, max_runs, budget_usd, budget_tokens,
-                        rate_limit,
-                        project, threshold_config, last_alert_at, created_at, updated_at)
-                       VALUES (:id, :name, :description, :enabled, :trigger_type,
-                               :cron_expr, :interval_sec, :github_repo, :github_filter,
-                               :github_cursor, :poll_interval_sec,
-                               :action_kind, :action_model, :action_prompt, :action_agent,
-                               :action_playbook, :action_flow_yaml, :action_project, :action_cwd,
-                               :action_extra_args, :action_command, :action_command_args,
-                               :on_success, :on_fail, :last_fired_at, :next_fire_at,
-                               :missed_fire_policy, :overlap_policy, :max_runs, :budget_usd, :budget_tokens,
-                               :rate_limit,
-                               :project, :threshold_config, :last_alert_at, :created_at, :updated_at)"""
-                ).bindparams(
-                    bindparam("github_filter", type_=JSON),
-                    bindparam("action_extra_args", type_=JSON),
-                    bindparam("action_command_args", type_=JSON),
-                    bindparam("on_success", type_=JSON),
-                    bindparam("on_fail", type_=JSON),
-                    bindparam("rate_limit", type_=JSON),
-                    bindparam("threshold_config", type_=JSON),
-                ),
-                {
-                    "id": schedule["id"],
-                    "name": schedule["name"],
-                    "description": schedule.get("description"),
-                    "enabled": schedule.get("enabled", 1),
-                    "trigger_type": schedule["trigger_type"],
-                    "cron_expr": schedule.get("cron_expr"),
-                    "interval_sec": schedule.get("interval_sec"),
-                    "github_repo": schedule.get("github_repo"),
-                    "github_filter": schedule.get("github_filter"),
-                    "github_cursor": schedule.get("github_cursor"),
-                    "poll_interval_sec": schedule.get("poll_interval_sec"),
-                    "action_kind": schedule["action_kind"],
-                    "action_model": schedule.get("action_model"),
-                    "action_prompt": schedule.get("action_prompt"),
-                    "action_agent": schedule.get("action_agent"),
-                    "action_playbook": schedule.get("action_playbook"),
-                    "action_flow_yaml": schedule.get("action_flow_yaml"),
-                    "action_project": schedule.get("action_project"),
-                    "action_cwd": schedule.get("action_cwd"),
-                    "action_extra_args": schedule.get("action_extra_args", []),
-                    "action_command": schedule.get("action_command"),
-                    "action_command_args": schedule.get("action_command_args", []),
-                    "on_success": schedule.get("on_success"),
-                    "on_fail": schedule.get("on_fail"),
-                    "last_fired_at": schedule.get("last_fired_at"),
-                    "next_fire_at": schedule.get("next_fire_at"),
-                    "missed_fire_policy": schedule.get("missed_fire_policy", "skip"),
-                    "overlap_policy": schedule.get("overlap_policy", "skip"),
-                    "max_runs": schedule.get("max_runs"),
-                    "budget_usd": schedule.get("budget_usd"),
-                    "budget_tokens": schedule.get("budget_tokens"),
-                    "rate_limit": schedule.get("rate_limit"),
-                    "project": schedule.get("project"),
-                    "threshold_config": schedule.get("threshold_config"),
-                    "last_alert_at": schedule.get("last_alert_at"),
-                    "created_at": schedule.get("created_at", now),
-                    "updated_at": schedule.get("updated_at", now),
-                },
-            )
+            await conn.execute(stmt, params)
+
+    @staticmethod
+    def _build_schedule_insert_stmt(schedule: dict[str, Any]):
+        """Build the ``INSERT INTO schedules`` statement + bound params for
+        *schedule* without opening a transaction -- shared by
+        ``create_schedule`` and ``apply_schedule_set`` (atomic multi-row
+        ScheduleSet apply)."""
+        now = time.time()
+        stmt = text(
+            """INSERT INTO schedules
+               (id, name, description, enabled, trigger_type,
+                cron_expr, interval_sec, github_repo, github_filter,
+                github_cursor, poll_interval_sec,
+                action_kind, action_model, action_prompt, action_agent,
+                action_playbook, action_flow_yaml, action_project, action_cwd,
+                action_extra_args, action_command, action_command_args,
+                on_success, on_fail, last_fired_at, next_fire_at,
+                missed_fire_policy, overlap_policy, max_runs, budget_usd, budget_tokens,
+                rate_limit,
+                project, threshold_config, last_alert_at,
+                spec_version, managed_by, owner_key, authored_spec,
+                resolved_target, resolved_digest, resolved_timezone,
+                created_at, updated_at)
+               VALUES (:id, :name, :description, :enabled, :trigger_type,
+                       :cron_expr, :interval_sec, :github_repo, :github_filter,
+                       :github_cursor, :poll_interval_sec,
+                       :action_kind, :action_model, :action_prompt, :action_agent,
+                       :action_playbook, :action_flow_yaml, :action_project, :action_cwd,
+                       :action_extra_args, :action_command, :action_command_args,
+                       :on_success, :on_fail, :last_fired_at, :next_fire_at,
+                       :missed_fire_policy, :overlap_policy, :max_runs, :budget_usd, :budget_tokens,
+                       :rate_limit,
+                       :project, :threshold_config, :last_alert_at,
+                       :spec_version, :managed_by, :owner_key, :authored_spec,
+                       :resolved_target, :resolved_digest, :resolved_timezone,
+                       :created_at, :updated_at)"""
+        ).bindparams(
+            bindparam("github_filter", type_=JSON),
+            bindparam("action_extra_args", type_=JSON),
+            bindparam("action_command_args", type_=JSON),
+            bindparam("on_success", type_=JSON),
+            bindparam("on_fail", type_=JSON),
+            bindparam("rate_limit", type_=JSON),
+            bindparam("threshold_config", type_=JSON),
+            bindparam("authored_spec", type_=JSON),
+            bindparam("resolved_target", type_=JSON),
+        )
+        params = {
+            "id": schedule["id"],
+            "name": schedule["name"],
+            "description": schedule.get("description"),
+            "enabled": schedule.get("enabled", 1),
+            "trigger_type": schedule["trigger_type"],
+            "cron_expr": schedule.get("cron_expr"),
+            "interval_sec": schedule.get("interval_sec"),
+            "github_repo": schedule.get("github_repo"),
+            "github_filter": schedule.get("github_filter"),
+            "github_cursor": schedule.get("github_cursor"),
+            "poll_interval_sec": schedule.get("poll_interval_sec"),
+            "action_kind": schedule["action_kind"],
+            "action_model": schedule.get("action_model"),
+            "action_prompt": schedule.get("action_prompt"),
+            "action_agent": schedule.get("action_agent"),
+            "action_playbook": schedule.get("action_playbook"),
+            "action_flow_yaml": schedule.get("action_flow_yaml"),
+            "action_project": schedule.get("action_project"),
+            "action_cwd": schedule.get("action_cwd"),
+            "action_extra_args": schedule.get("action_extra_args", []),
+            "action_command": schedule.get("action_command"),
+            "action_command_args": schedule.get("action_command_args", []),
+            "on_success": schedule.get("on_success"),
+            "on_fail": schedule.get("on_fail"),
+            "last_fired_at": schedule.get("last_fired_at"),
+            "next_fire_at": schedule.get("next_fire_at"),
+            "missed_fire_policy": schedule.get("missed_fire_policy", "skip"),
+            "overlap_policy": schedule.get("overlap_policy", "skip"),
+            "max_runs": schedule.get("max_runs"),
+            "budget_usd": schedule.get("budget_usd"),
+            "budget_tokens": schedule.get("budget_tokens"),
+            "rate_limit": schedule.get("rate_limit"),
+            "project": schedule.get("project"),
+            "threshold_config": schedule.get("threshold_config"),
+            "last_alert_at": schedule.get("last_alert_at"),
+            "spec_version": schedule.get("spec_version"),
+            "managed_by": schedule.get("managed_by"),
+            "owner_key": schedule.get("owner_key"),
+            "authored_spec": schedule.get("authored_spec"),
+            "resolved_target": schedule.get("resolved_target"),
+            "resolved_digest": schedule.get("resolved_digest"),
+            "resolved_timezone": schedule.get("resolved_timezone"),
+            "created_at": schedule.get("created_at", now),
+            "updated_at": schedule.get("updated_at", now),
+        }
+        return stmt, params
 
     async def get_schedule(self, schedule_id: str) -> dict[str, Any] | None:
         async with self._read() as conn:
@@ -2444,6 +2547,42 @@ class StateDB:
                 .first()
             )
         return self._row_to_dict(row) if row else None
+
+    async def list_schedules_by_owner_key(self, owner_key: str) -> list[dict[str, Any]]:
+        async with self._read() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text("SELECT * FROM schedules WHERE owner_key = :owner_key"),
+                        {"owner_key": owner_key},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [self._row_to_dict(r) for r in rows]
+
+    async def apply_schedule_set(
+        self,
+        *,
+        creates: list[dict[str, Any]],
+        updates: list[tuple[str, dict[str, Any]]],
+        disables: list[str],
+    ) -> None:
+        """Atomically commit a ScheduleSet reconciliation plan: every CREATE,
+        UPDATE, and DISABLE lands in one transaction -- callers must have
+        already validated every member (a partially-invalid set must never
+        reach this method, since every write here commits together)."""
+        async with self._tx() as conn:
+            for schedule in creates:
+                stmt, params = self._build_schedule_insert_stmt(schedule)
+                await conn.execute(stmt, params)
+            for schedule_id, fields in updates:
+                stmt, params = self._build_update_schedule_stmt(schedule_id, fields)
+                await conn.execute(stmt, params)
+            for schedule_id in disables:
+                stmt, params = self._build_update_schedule_stmt(schedule_id, {"enabled": 0})
+                await conn.execute(stmt, params)
 
     async def list_schedules(
         self,
@@ -2516,6 +2655,13 @@ class StateDB:
             "last_alert_at",
             "last_healthy_poll_at",
             "poller_consecutive_401",
+            "spec_version",
+            "managed_by",
+            "owner_key",
+            "authored_spec",
+            "resolved_target",
+            "resolved_digest",
+            "resolved_timezone",
         }
     )
 
@@ -2546,6 +2692,8 @@ class StateDB:
             "on_fail",
             "rate_limit",
             "threshold_config",
+            "authored_spec",
+            "resolved_target",
         }
         fields = dict(fields)
         fields["updated_at"] = time.time()
