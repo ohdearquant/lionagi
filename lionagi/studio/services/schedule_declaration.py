@@ -620,7 +620,10 @@ async def build_plan(
                     )
                 )
             continue
-        if existing_row.get("resolved_digest") == resolved.digest:
+        # Digest alone is not enough: a member disabled by omission keeps its
+        # old digest, so re-adding identical content must UPDATE to re-enable.
+        enabled_matches = existing_row.get("enabled") == resolved.db_fields.get("enabled")
+        if existing_row.get("resolved_digest") == resolved.digest and enabled_matches:
             plan.append(
                 PlanEntry(qualified, "UNCHANGED", resolved=resolved, existing_id=existing_row["id"])
             )

@@ -789,6 +789,16 @@ async def test_apply_omitted_member_disables_only_that_member(
         # DISABLE, never a delete: the row and its history survive.
         assert hourly is not None
 
+        # Re-adding the identical member must re-enable it — the digest still
+        # matches the disabled row, so digest equality alone must not read
+        # as UNCHANGED.
+        result3 = await apply_schedule_set(db, doc, agent_profile)
+        assert result3.updated == 1
+        assert result3.unchanged == 1
+        hourly = await db.get_schedule_by_name("demo/hourly")
+        assert hourly["enabled"] == 1
+        assert hourly["id"] == (await db.get_schedule_by_name("demo/hourly"))["id"]
+
 
 @pytest.mark.asyncio
 async def test_apply_cross_owner_collision_is_an_error(temp_db_path, agent_profile):
