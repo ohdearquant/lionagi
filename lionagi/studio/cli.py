@@ -10,13 +10,14 @@ import contextlib
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-from lionagi.cli._logging import warn
+from lionagi.cli._logging import log_error, warn
 from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES
 
 _STUDIO_IMAGE = "ghcr.io/ohdearquant/lion-studio:latest"
@@ -1229,6 +1230,88 @@ def _cmd_apply_set(args: argparse.Namespace) -> int:
     return 1 if has_errors else 0
 
 
+# Distinct from 0 (clean success) and 1 (hard failure, e.g. an unreadable
+# input file elsewhere in this CLI); mirrors the EXIT_UNKNOWN=2 "ambiguous,
+# needs attention" convention used by `li status`/`li monitor`/`li wait` --
+# the document and report are still emitted exactly as on a clean export.
+EXIT_EXPORT_PARTIAL = 2
+
+
+def _cmd_export(args: argparse.Namespace) -> int:
+    """`li schedule export` — convert rows into ScheduleSet document(s), one
+    per distinct project when the export spans more than one. Read-only:
+    never opens a write transaction against the database. Exit code 2 (not
+    0/1) when any row was BLOCKED -- see EXIT_EXPORT_PARTIAL."""
+    from lionagi.state.db import StateDB
+    from lionagi.studio.services.schedule_export import (
+        build_managed_export_document,
+        convert_legacy_rows,
+        dump_schedule_set_yaml,
+        format_report,
+        is_legacy_row,
+        is_managed_row,
+    )
+
+    output_path = Path(args.output).resolve() if args.output else None
+    manifest_dir = output_path.parent if output_path else Path.cwd()
+    flows_dir = (
+        manifest_dir / f"{output_path.stem}.flows"
+        if output_path
+        else manifest_dir / "exported-flows"
+    )
+
+    async def _run():
+        async with StateDB() as db:
+            rows = await db.list_schedules(limit=1_000_000)
+            if args.legacy:
+                return convert_legacy_rows(
+                    [r for r in rows if is_legacy_row(r)],
+                    flows_dir=flows_dir,
+                    manifest_dir=manifest_dir,
+                )
+            return build_managed_export_document([r for r in rows if is_managed_row(r)])
+
+    docs, lines = asyncio.run(_run())
+
+    if output_path:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if len(docs) == 1:
+            output_path.write_text(dump_schedule_set_yaml(docs[0]))
+        else:
+            # Mixed-project export: one file per project, suffixed with its
+            # project so none silently overwrite `--output`. The sanitizer is
+            # not injective (foo/bar and foo:bar both become foo_bar), so
+            # collisions are rejected before ANY sibling is written rather
+            # than letting the last document win.
+            tokens: dict[str, str] = {}
+            for doc in docs:
+                token = re.sub(r"[^a-zA-Z0-9_.-]", "_", doc.metadata.project)
+                if token in tokens:
+                    log_error(
+                        f"cannot export: projects {tokens[token]!r} and "
+                        f"{doc.metadata.project!r} both sanitize to sibling file "
+                        f"token {token!r}; export to stdout or rename a project"
+                    )
+                    return 1
+                tokens[token] = doc.metadata.project
+            for doc, token in zip(docs, tokens, strict=True):
+                sibling = output_path.with_name(f"{output_path.stem}.{token}{output_path.suffix}")
+                sibling.write_text(dump_schedule_set_yaml(doc))
+    else:
+        print("\n---\n".join(dump_schedule_set_yaml(doc) for doc in docs), end="")
+
+    report_text = format_report(lines)
+    if args.report:
+        report_path = Path(args.report)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(report_text)
+    else:
+        print(report_text, file=sys.stderr, end="")
+
+    has_blocked = any(line.status == "BLOCKED" for line in lines)
+    return EXIT_EXPORT_PARTIAL if has_blocked else 0
+
+
 # ---------------------------------------------------------------------------
 # Typed quick-create — `li schedule create <kind> <name> ...`
 #
@@ -1866,6 +1949,48 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
     )
     apply_p.add_argument("--json", dest="as_json", action="store_true", help="Emit JSON.")
 
+    # export
+    export_p = sched_sub.add_parser(
+        "export",
+        help="Convert schedules into a ScheduleSet document (never writes the database).",
+        epilog=(
+            "Examples:\n"
+            "  li schedule export --legacy --output schedules.yaml\n"
+            "  li schedule export --output schedules.yaml\n"
+            "\n"
+            "Exit codes: 0 all rows READY, 2 some rows BLOCKED (document and "
+            "report are still emitted -- see stderr/--report), 1 hard failure.\n"
+            "A row spanning multiple projects is split into one document per "
+            "project so every original qualified name round-trips exactly; "
+            "with --output, extra projects are written to sibling "
+            "<name>.<project>.yaml files.\n"
+            "An exported flow target's snapshot file is an absolute host "
+            "path -- the document only re-applies on this host, or after "
+            "the sidecar file moves with it."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    export_p.add_argument(
+        "--legacy",
+        action="store_true",
+        help=(
+            "Convert chain-free legacy rows (managed_by is null, i.e. rows "
+            "predating the declaration layer) instead of declaration/cli-"
+            "managed rows. A row with on_success/on_fail is reported BLOCKED "
+            "and omitted."
+        ),
+    )
+    export_p.add_argument(
+        "--output",
+        metavar="PATH",
+        help="Write the ScheduleSet YAML here (default: stdout).",
+    )
+    export_p.add_argument(
+        "--report",
+        metavar="PATH",
+        help="Write the human-readable conversion report here (default: stderr).",
+    )
+
     # enable / disable / delete
     for sub_name, sub_help, example in (
         ("enable", "Enable a schedule.", "li schedule enable sched-abc123"),
@@ -1970,6 +2095,7 @@ _ACTION_MAP = {
     "status": _cmd_status,
     "validate": _cmd_validate_set,
     "apply": _cmd_apply_set,
+    "export": _cmd_export,
 }
 
 
@@ -1979,7 +2105,7 @@ def run_schedule(args: argparse.Namespace) -> int:
     if fn is None:
         print(
             "Usage: li schedule <subcommand>  (list|get|limits|create|enable|disable|"
-            "trigger|delete|runs|run|status|validate|apply)"
+            "trigger|delete|runs|run|status|validate|apply|export)"
         )
         return 1
     if action == "runs" and not (1 <= args.limit <= 200):

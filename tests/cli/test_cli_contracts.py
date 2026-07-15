@@ -136,6 +136,7 @@ SCHEDULE_SUBCOMMANDS = [
     "runs",
     "run",
     "status",
+    "export",
 ]
 
 SCHEDULE_CREATE_HELP_FLAGS = [

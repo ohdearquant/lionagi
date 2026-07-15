@@ -248,6 +248,7 @@ SCHEDULE_OBSERVABILITY_SUBCOMMAND_SHAPES = {
     "status": (["--help", "--json", "--wait", "-h"], ["id"]),
     "validate": (["--help", "--json", "-h"], ["file"]),
     "apply": (["--adopt", "--dry-run", "--help", "--json", "-h"], ["file"]),
+    "export": (["--help", "--legacy", "--output", "--report", "-h"], []),
 }
 
 
