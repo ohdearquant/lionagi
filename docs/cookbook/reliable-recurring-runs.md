@@ -1,31 +1,34 @@
 # Reliable Recurring Runs
 
 `li schedule` fires agents, playbooks, and flows on cron, interval, or repository-event
-triggers. Two execution-context rules are non-negotiable and must be stated in every recurring
-harness, verbatim, because violating either fails silently or off-by-hours.
+triggers. For creating schedules, start with [Scheduling workflows](../guides/scheduling-workflows.md);
+this page covers the reliability rules for runs nobody watches.
 
-## Rule 1: the daemon's working directory is the run's working directory
+## Rule 1: know your schedule's working directory
 
-The scheduler engine spawns each action inheriting the daemon's cwd. Start the Studio daemon
-from the directory your scheduled actions expect to run in, or every agent action fails at
-spawn. Verify before trusting a new schedule:
+Each schedule persists its own execution root, captured at creation time (`--cwd`, or the
+directory you created it from). The daemon's own cwd only matters for rows created before
+execution roots existed, and those log a loud deprecation warning at fire time. Verify the
+daemon is up before trusting a new schedule:
 
 ```bash
 curl -s 127.0.0.1:8765/api/admin/health
+li schedule get <id>    # shows the resolved cwd and next fire time
 ```
 
-## Rule 2: cron expressions resolve in UTC
+## Rule 2: cron expressions resolve in the timezone you name
 
-`0 18 * * *` fires at 18:00 UTC, not local time. Write cron in UTC and always check
+The typed create commands require `--timezone` with `--cron`; ScheduleSet documents carry
+`timezone` next to the expression. Resolution is DST-aware in that zone. Still check
 `next_fire_at` immediately after creating a schedule:
 
 ```bash
-li schedule create --trigger-type cron --cron "0 18 * * *" \
-  --action-kind playbook --action-target kg-polish
-li schedule runs <id>   # sanity-check next_fire_at before walking away
+li schedule create playbook kg-polish --playbook kg-polish \
+  --cron "0 18 * * *" --timezone America/New_York
+li schedule get <id>    # sanity-check next_fire_at before walking away
 ```
 
-A date-pinned one-shot created after its UTC moment has already passed silently skips to the
+A date-pinned one-shot created after its moment has already passed silently skips to the
 next occurrence — for a daily cron, a full day out.
 
 ## Rule 3: agent-kind schedules set the model explicitly
