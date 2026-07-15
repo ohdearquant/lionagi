@@ -90,8 +90,9 @@ async def test_legacy_agent_row_converts_ready(temp_db_path, agent_profile):
     )
     doc = docs[0]
     assert [line.status for line in lines] == ["READY"]
-    assert "demo/nightly" in doc.schedules
-    member = doc.schedules["demo/nightly"]
+    assert doc.metadata.project == "demo"
+    assert "nightly" in doc.schedules
+    member = doc.schedules["nightly"]
     assert member.target.kind == "agent"
     assert member.target.profile == "reviewer"
     assert member.target.prompt == "check things"
@@ -122,7 +123,7 @@ async def test_legacy_command_row_converts_ready(temp_db_path, agent_profile, mo
     )
     doc = docs[0]
     assert [line.status for line in lines] == ["READY"]
-    member = doc.schedules["demo/refresh"]
+    member = doc.schedules["refresh"]
     assert member.target.kind == "command"
     assert member.target.executable == "refresh-index"
     assert member.target.args == ["incremental"]
@@ -149,7 +150,7 @@ async def test_legacy_playbook_row_converts_ready(temp_db_path, agent_profile):
     )
     doc = docs[0]
     assert [line.status for line in lines] == ["READY"]
-    member = doc.schedules["demo/audit"]
+    member = doc.schedules["audit"]
     assert member.target.kind == "playbook"
     assert member.target.name == "health-audit"
 
@@ -176,7 +177,7 @@ async def test_legacy_flow_yaml_row_converts_ready(temp_db_path, agent_profile):
     docs, lines = convert_legacy_rows(rows, flows_dir=flows_dir, manifest_dir=agent_profile)
     doc = docs[0]
     assert [line.status for line in lines] == ["READY"]
-    member = doc.schedules["demo/nightly-flow"]
+    member = doc.schedules["nightly-flow"]
     assert member.target.kind == "flow"
     written = Path(member.target.file)
     assert written.is_file()
@@ -404,7 +405,7 @@ async def test_default_export_is_deterministically_name_sorted(temp_db_path, age
 
     docs, lines = build_managed_export_document(rows)
     doc = docs[0]
-    assert list(doc.schedules.keys()) == ["demo/aaa-first", "demo/zzz-last"]
+    assert list(doc.schedules.keys()) == ["aaa-first", "zzz-last"]
     report_lines = [line.qualified_name for line in lines]
     assert report_lines == ["demo/aaa-first", "demo/zzz-last"]
 
@@ -436,7 +437,7 @@ def test_cli_export_writes_output_file_and_report_file(temp_db_path, agent_profi
     assert output_path.is_file()
     doc = yaml.safe_load(output_path.read_text())
     assert doc["kind"] == "ScheduleSet"
-    assert "demo/nightly" in doc["schedules"]
+    assert "nightly" in doc["schedules"]
     report_text = report_path.read_text()
     assert "READY" in report_text
     assert "1 ready, 0 blocked" in report_text
@@ -700,7 +701,7 @@ async def test_legacy_github_poll_at_default_interval_stays_ready(temp_db_path, 
     )
     doc = docs[0]
     assert [line.status for line in lines] == ["READY"]
-    assert doc.schedules["demo/poll-default"].trigger.github.repo == "octo/repo"
+    assert doc.schedules["poll-default"].trigger.github.repo == "octo/repo"
 
 
 # ---------------------------------------------------------------------------
@@ -735,7 +736,7 @@ def test_cli_export_returns_partial_exit_code_when_a_row_is_blocked(
     # The document and report are still emitted exactly as on a clean export.
     assert output_path.is_file()
     doc = yaml.safe_load(output_path.read_text())
-    assert "demo/nightly" in doc["schedules"]
+    assert "nightly" in doc["schedules"]
     report_text = report_path.read_text()
     assert "READY" in report_text
     assert "BLOCKED" in report_text
@@ -770,9 +771,54 @@ async def test_legacy_flow_yaml_report_line_discloses_absolute_host_path(
     flows_dir = agent_profile / "flows"
     docs, lines = convert_legacy_rows(rows, flows_dir=flows_dir, manifest_dir=agent_profile)
     doc = docs[0]
-    member = doc.schedules["demo/flow-port"]
+    member = doc.schedules["flow-port"]
     assert lines[0].status == "READY"
     assert lines[0].message is not None
     assert "absolute" in lines[0].message
     assert member.target.file in lines[0].message
     assert Path(member.target.file).is_absolute()
+
+
+# ---------------------------------------------------------------------------
+# Rows with no stored project — name identity across re-apply
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_legacy_row_without_project_but_qualified_name_round_trips_exactly(
+    temp_db_path, agent_profile
+):
+    """A row whose project column is empty but whose name is qualified must
+    group under its name's prefix, so re-applying reproduces the name."""
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_row("np1", "demo/nightly", cwd=agent_profile, action_project=None)
+        )
+        rows = await db.list_schedules()
+    docs, lines = convert_legacy_rows(
+        rows, flows_dir=agent_profile / "flows", manifest_dir=agent_profile
+    )
+    assert [line.status for line in lines] == ["READY"]
+    assert len(docs) == 1
+    doc = docs[0]
+    assert doc.metadata.project == "demo"
+    assert "nightly" in doc.schedules
+    # doc project + local key reconstructs the original qualified name
+    assert f"{doc.metadata.project}/nightly" == "demo/nightly"
+
+
+@pytest.mark.asyncio
+async def test_legacy_bare_name_without_project_disclosed_in_report(temp_db_path, agent_profile):
+    """A bare, unqualified name cannot round-trip untouched (a document always
+    carries a project); the READY line must disclose the re-applied name."""
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_row("np2", "nightly", cwd=agent_profile, action_project=None)
+        )
+        rows = await db.list_schedules()
+    docs, lines = convert_legacy_rows(
+        rows, flows_dir=agent_profile / "flows", manifest_dir=agent_profile
+    )
+    assert [line.status for line in lines] == ["READY"]
+    assert lines[0].message is not None
+    assert "legacy-export/nightly" in lines[0].message

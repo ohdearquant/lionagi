@@ -95,26 +95,50 @@ def _pick_project(rows: list[dict[str, Any]], fallback: str) -> str:
 def _member_key(row: dict[str, Any], doc_project: str, used: set[str]) -> str:
     """The document's schedule-map key for *row*.
 
-    Strips a leading ``"{action_project}/"`` from the row's (globally
-    unique) ``name`` when that prefix matches *doc_project* -- reapplying
-    then reconstructs the identical qualified name
-    (``doc_project/local_name``), which is what lets a single-project export
-    round-trip a row's original identity. Rows whose own project differs
-    from *doc_project*, or whose stripped local name collides with one
-    already used, fall back to the full original name (still unique) so no
-    two members are ever silently merged.
+    Strips a leading ``"{doc_project}/"`` from the row's (globally unique)
+    ``name`` -- reapplying then reconstructs the identical qualified name
+    (``doc_project/local_name``), which is what lets an export round-trip a
+    row's original identity. Grouping (``_group_into_documents``) guarantees
+    a row lands in the document matching its effective project, so the
+    prefix either matches or the name is bare. A stripped local name that
+    collides with one already used falls back to the full original name
+    (still unique) so no two members are ever silently merged.
     """
     name = row["name"]
-    project = row.get("action_project")
-    local = (
-        name[len(project) + 1 :]
-        if project == doc_project and name.startswith(f"{project}/")
-        else name
-    )
+    local = name[len(doc_project) + 1 :] if name.startswith(f"{doc_project}/") else name
     if local in used:
         local = name
     used.add(local)
     return local
+
+
+def _effective_project(row: dict[str, Any]) -> str | None:
+    """The project namespace a row's name lives under: the stored project
+    column when set, else the qualified name's own prefix. Rows created
+    before the project column existed carry qualified names but a NULL
+    column; grouping them by name prefix is what lets their identity
+    round-trip instead of being re-qualified under a fallback project.
+    ``None`` means the name is bare and cannot round-trip untouched (every
+    document carries a project) -- callers disclose the resulting rename."""
+    project = row.get("action_project")
+    if project:
+        return project
+    name = row["name"]
+    return name.split("/", 1)[0] if "/" in name else None
+
+
+def _rename_note(row: dict[str, Any], base_name: str) -> str | None:
+    if _effective_project(row) is not None:
+        return None
+    return (
+        f"row has no project and a bare name; re-applies as "
+        f"{base_name}/{row['name']} (the document's project supplies the namespace)"
+    )
+
+
+def _ready_note(row: dict[str, Any], member: ScheduleMember, base_name: str) -> str | None:
+    notes = [n for n in (_rename_note(row, base_name), _flow_portability_note(member)) if n]
+    return "; ".join(notes) or None
 
 
 def _reusable_target_fields(row: dict[str, Any]) -> dict[str, Any]:
@@ -276,17 +300,19 @@ def _group_into_documents(
     base_name: str,
 ) -> list[ScheduleSetDocument]:
     """Split *ready* rows into one ``ScheduleSet`` document per distinct
-    ``action_project`` (rows with no project share a single *base_name*-keyed
-    group). Grouping *before* computing member keys guarantees a row's own
-    project always matches its document's project, so ``_member_key`` never
-    has to fall back for a project mismatch -- this is what fixes
+    effective project (``_effective_project``: stored column, else the
+    qualified name's prefix; bare-named rows share a single
+    *base_name*-keyed group). Grouping *before* computing member keys
+    guarantees a row's effective project always matches its document's
+    project, so ``_member_key`` never has to fall back for a mismatch --
+    this is what fixes
     mixed-project double-qualification: a single document spanning multiple
     projects used to key a mismatched row by its already-qualified name, and
     re-applying then prepended the document's project a second time,
     producing e.g. ``alpha/beta/task`` instead of ``beta/task``."""
     grouped: dict[str, list[tuple[dict[str, Any], ScheduleMember]]] = {}
     for row, member in ready:
-        proj = row.get("action_project") or base_name
+        proj = _effective_project(row) or base_name
         grouped.setdefault(proj, []).append((row, member))
 
     if not grouped:
@@ -359,7 +385,7 @@ def convert_legacy_rows(
             lines.append(ExportReportLine(name, "BLOCKED", f"static resolution failed: {exc}"))
             continue
         ready.append((row, member))
-        lines.append(ExportReportLine(name, "READY", _flow_portability_note(member)))
+        lines.append(ExportReportLine(name, "READY", _ready_note(row, member, "legacy-export")))
 
     docs = _group_into_documents(ready, rows, base_name="legacy-export")
     return docs, lines
@@ -396,7 +422,7 @@ def build_managed_export_document(
             )
             continue
         ready.append((row, member))
-        lines.append(ExportReportLine(name, "READY", _flow_portability_note(member)))
+        lines.append(ExportReportLine(name, "READY", _ready_note(row, member, "export")))
 
     docs = _group_into_documents(ready, rows, base_name="export")
     return docs, lines
