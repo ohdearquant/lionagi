@@ -8,7 +8,6 @@ surfaces, and additive compatibility with the legacy flat create form."""
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 
 import pytest
@@ -94,10 +93,7 @@ def test_quick_create_agent_at_trigger(temp_db_path, agent_profile, capsys):
     assert row["next_fire_at"] is not None
     assert row["action_cwd"] == str(agent_profile)
     assert row["resolved_digest"]
-    # resolved_target/authored_spec are stored as JSON text and are not in
-    # StateDB._row_to_dict's decode allowlist (a pre-existing gap shared by
-    # the ScheduleSet apply path, out of scope here) -- decode explicitly.
-    assert json.loads(row["resolved_target"])["target"]["kind"] == "agent"
+    assert row["resolved_target"]["target"]["kind"] == "agent"
 
 
 def test_quick_create_agent_prompt_file(temp_db_path, agent_profile):
@@ -165,7 +161,7 @@ def test_quick_create_playbook_every_trigger(temp_db_path, agent_profile):
     assert row["action_playbook"] == "health-audit"
     assert row["trigger_type"] == "interval"
     assert row["interval_sec"] == 6 * 3600
-    assert json.loads(row["resolved_target"])["target"]["args"] == {"project": "lionagi"}
+    assert row["resolved_target"]["target"]["args"] == {"project": "lionagi"}
 
 
 def test_quick_create_command_argv_form(temp_db_path, agent_profile, monkeypatch):
