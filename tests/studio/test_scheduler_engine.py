@@ -1281,6 +1281,32 @@ async def test_fire_at_trigger_persists_explicit_none_next_fire_at():
 
 
 @pytest.mark.asyncio
+async def test_recover_missed_fire_run_once_reserves_cleared_next_fire_for_at_trigger():
+    """Missed-fire recovery must reserve the 'at' trigger's terminal None
+    synchronously (persist a cleared next_fire_at) before queueing the
+    recovery fire -- otherwise the immediately-following tick still sees the
+    past-due instant and queues a duplicate fire."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(
+        trigger_type="at",
+        cron_expr=None,
+        max_runs=1,
+        next_fire_at=time.time() - 60,
+    )
+
+    fired: list[str] = []
+    engine._tracked_fire = lambda sched, run_id, **kw: fired.append(run_id)
+
+    await engine._recover_missed_fire_run_once(schedule, time.time())
+
+    svc.update_schedule.assert_awaited_once_with("sched-001", next_fire_at=None)
+    assert len(fired) == 1
+
+
+@pytest.mark.asyncio
 async def test_maybe_fire_at_trigger_already_fired_refused_by_max_runs_gate():
     """Re-applying an unchanged/edited 'at' member resets next_fire_at to
     the past due instant again, but must not actually re-fire: the same

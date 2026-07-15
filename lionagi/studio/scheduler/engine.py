@@ -675,12 +675,21 @@ class SchedulerEngine:
         landing, the recovery run is lost for this cycle, but the schedule
         is not stuck: it already holds a legitimate future next_fire_at and
         resumes firing normally next time, equivalent to one skipped run
-        rather than indefinite starvation.
+        rather than indefinite starvation. For an 'at' trigger the reserve
+        clears next_fire_at, so that same crash window loses its single run
+        permanently -- accepted for now over the alternative (fire before
+        reserve), which reopens the duplicate-fire window; the max-runs
+        claim gate remains the second defense against duplicates.
         """
         next_at = self._compute_next_fire(schedule, now)
-        if next_at is not None:
+        # _next_fire_field, not a bare not-None check: an 'at' trigger's
+        # terminal None must be reserved too (persisted as a cleared
+        # next_fire_at), or the immediately-following _tick() still sees the
+        # past-due instant and queues a duplicate fire.
+        fields = self._next_fire_field(schedule, next_at)
+        if fields:
             try:
-                await self._svc.update_schedule(schedule["id"], next_fire_at=next_at)
+                await self._svc.update_schedule(schedule["id"], **fields)
             except Exception:
                 # The reserve did not land, so storage still holds the
                 # past-due next_fire_at and the immediately-following

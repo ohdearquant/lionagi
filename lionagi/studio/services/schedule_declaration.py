@@ -124,23 +124,24 @@ class Budget(BaseModel):
     usd: float | None = None
     tokens: int | None = None
 
-    @model_validator(mode="after")
-    def _valid(self) -> Budget:
-        # Reuse the service-boundary checks rather than forking them: they
-        # already reject non-finite (inf/nan) usd and non-int/bool tokens,
-        # the same rules the classic (non-declarative) schedule service
-        # enforces.
+    @model_validator(mode="before")
+    @classmethod
+    def _valid(cls, data: Any) -> Any:
+        # Reuse the service-boundary checks rather than forking them, and run
+        # them on the RAW values: pydantic coercion would otherwise admit
+        # bool/whole-float/numeric-string tokens the shared validator rejects.
         from lionagi.studio.services.schedules import (
             _svc_validate_budget_tokens,
             _svc_validate_budget_usd,
         )
 
-        try:
-            _svc_validate_budget_usd(self.usd)
-            _svc_validate_budget_tokens(self.tokens)
-        except ValueError as exc:
-            raise ValueError(f"policies.budget: {exc}") from exc
-        return self
+        if isinstance(data, dict):
+            try:
+                _svc_validate_budget_usd(data.get("usd"))
+                _svc_validate_budget_tokens(data.get("tokens"))
+            except ValueError as exc:
+                raise ValueError(f"policies.budget: {exc}") from exc
+        return data
 
 
 class Policies(BaseModel):

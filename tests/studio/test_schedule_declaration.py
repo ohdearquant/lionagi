@@ -589,7 +589,7 @@ schedules:
     target = member.resolved["target"]
     assert target["file"] == str((flows_dir / "nightly.yaml").resolve())
     assert "content_digest" in target
-    # F2: the flow launch path must route through flow_yaml with the
+    # The flow launch path must route through flow_yaml with the
     # validated snapshot captured at resolution time, never bare 'flow'
     # (which would build `li o flow -- <model> <prompt>` positionals that
     # have nothing to do with a target.flow file).
