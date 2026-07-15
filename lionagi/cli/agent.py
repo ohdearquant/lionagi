@@ -24,6 +24,7 @@ from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.state import provenance as _provenance
 from lionagi.state.artifact_verifier import resolve_artifact_contract
 
+from ._agent_depth import stamp_agent_depth
 from ._context_from import (
     DEFAULT_CONTEXT_BUDGET_TOKENS,
     ContextFromError,
@@ -282,6 +283,8 @@ async def _run_agent(
             "string; set it to a valid role name, or remove the key to keep "
             "the plain profile path (no role/policy composition)."
         )
+
+    stamp_agent_depth(agent_name)
 
     # True only when a NEW branch took the create_agent path (--preset coding
     # or an opted-in profile `role:` key) — see the add_message guard below.
