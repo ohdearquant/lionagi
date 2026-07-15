@@ -1885,9 +1885,14 @@ class SchedulerEngine:
             if not written_occurrence:
                 # Abandon writes the invocation's cancelled terminal status;
                 # unregister only afterwards so a declared notify on that
-                # status still fires.
-                await self._abandon_superseded_recovery_fire(inv_id, orphan_id=supersedes_run_id)
-                _unregister_schedule_notify(notify_scope)
+                # status still fires -- but always unregister, even when the
+                # abandon write itself fails.
+                try:
+                    await self._abandon_superseded_recovery_fire(
+                        inv_id, orphan_id=supersedes_run_id
+                    )
+                finally:
+                    _unregister_schedule_notify(notify_scope)
                 return
             if rate_limit_claim is not None:
                 # The durable row now accounts for this fire across process

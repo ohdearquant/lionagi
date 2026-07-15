@@ -206,6 +206,33 @@ async def test_abandoned_recovery_unregisters_only_after_terminal_write():
 
 
 @pytest.mark.asyncio
+async def test_abandonment_failure_still_unregisters():
+    """If the abandon write itself fails, the registration must not leak."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_engine_svc()
+    svc.tombstone_and_replace_schedule_run = AsyncMock(return_value=False)
+    svc.update_invocation = AsyncMock(side_effect=RuntimeError("db down"))
+    engine = SchedulerEngine(svc=svc)
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            side_effect=RuntimeError("bad argv"),
+        ),
+        pytest.raises(RuntimeError, match="db down"),
+    ):
+        await engine._fire_inner(
+            _notify_schedule(),
+            "run-notify-3",
+            trigger_context={"scheduled": True},
+            supersedes_run_id="orphan-3",
+        )
+
+    assert _notify_registration_names() == []
+
+
+@pytest.mark.asyncio
 async def test_create_invocation_failure_does_not_leak_registration():
     """An exception before the invocation row exists must drop the notify
     registration on the way out instead of leaving it in the process-wide
