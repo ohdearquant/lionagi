@@ -878,6 +878,21 @@ async def test_apply_is_idempotent_on_double_apply(temp_db_path, agent_profile):
 
 
 @pytest.mark.asyncio
+async def test_get_schedule_decodes_authored_spec_and_resolved_target(temp_db_path, agent_profile):
+    """The JSON columns written by apply must come back as decoded objects
+    from every schedule getter, consistent with the rest of the row shape."""
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    async with StateDB() as db:
+        await apply_schedule_set(db, doc, agent_profile)
+        by_name = await db.get_schedule_by_name("demo/nightly")
+        assert isinstance(by_name["authored_spec"], dict)
+        assert isinstance(by_name["resolved_target"], dict)
+        by_id = await db.get_schedule(by_name["id"])
+        assert isinstance(by_id["authored_spec"], dict)
+        assert isinstance(by_id["resolved_target"], dict)
+
+
+@pytest.mark.asyncio
 async def test_apply_updates_in_place_preserving_id(temp_db_path, agent_profile):
     doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
     async with StateDB() as db:
