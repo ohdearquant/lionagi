@@ -4854,6 +4854,8 @@ class StateDB:
             "threshold_config",
             "rate_limit",
             "notify_on",
+            "authored_spec",
+            "resolved_target",
             "artifact_contract_json",
             "artifact_verification_json",
             "status_evidence_refs",
