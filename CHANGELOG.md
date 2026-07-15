@@ -6,6 +6,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.29.1] - 2026-07-15
+
+### Added
+
+- Typed schedule quick-create commands: `li schedule create <agent|flow|playbook|command> <name> ...` compile straight into a `ScheduleMember` and run through the identical `resolve_member`/`create_quick_schedule` path a ScheduleSet member uses — no forked validation. Command-kind actions are gated by a `LIONAGI_SCHEDULER_COMMAND_ALLOWLIST` env allowlist (empty means refuse all), accept bare PATH-resolvable executable names only, and reject leading-dash argument tokens.
+- Versioned ScheduleSet declaration layer: `li schedule apply/plan` reconcile a committed `ScheduleSet` YAML document against owned rows (omitted owned rows are disabled, never deleted), and `li schedule export` converts existing rows back into documents — legacy rows via typed reconstruction through the same static resolution an apply uses, declaration/cli rows via authored-spec re-export. Conversion blocks (never half-emits) rows it cannot represent faithfully: chained follow-up actions, unsupported action kinds, flow-YAML rows carrying a model, launch-time extra args, and github triggers whose effective poll cadence differs from the default. Mixed-project exports write one document per effective project with collision-checked sibling filenames. Exported flow snapshots are referenced relative to the output directory so document and sidecar commit and move together; absolute working directories are kept verbatim but flagged on the export report.
+- Schedule observability: run rows join schedule metadata in a `RunView`, `li schedule runs/status` output is enriched, and `li schedule trigger --wait` follows the fired run to its terminal state.
+- Terminal notify forwarding for declared schedules, and a per-invocation `--notify` on `li agent` and `li o fanout`, both riding the generic on-terminal callback layer (ADR-0095).
+- `li kill` reaps detached-play workers transitively (ADR-0104, now marked Accepted/Implemented).
+- khive context injection active on the agent spawn path and the bare `li agent` path (ADR-0008).
+- Mirrored sessions stored and resolvable by `cc_session_id`; inherited agent-depth env marker `LIONAGI_AGENT_DEPTH`.
+- lionbench v0 record schemas and campaign config.
+
+### Fixed
+
+- Schedule row reads decode `authored_spec`/`resolved_target`; schedule rolling-window cap, github 403 no-poison-cache, outbox durability contract, and scheduler cancel routing.
+- Live-persist teardown drain, terminal-notify `previous_status`, run manifest lifecycle, and fanout partial durability; state lifecycle batch covering transition rejection precedence, initial-state history, and the terminal-write chokepoint; `cc_session_id` backfill preserves reconcile CAS.
+- Hooks: permanently-invalid messages are dropped instead of blocking the retry queue; gate action re-derivation and denial-signal audit.
+- MCP: explicit transport-trust decision at load time; the permission chain now applies to MCP-discovered tools.
+- Provider batch: replayable no-buffer fast path, bounded MCP arrays, OpenAI Batch endpoint routing, gemini teardown retry, and case-fold provider routing.
+- Operations: FAILED action error path, first-chunk cancel cleanup, the `suppress_errors=False` captured-failure path, and context-provider registry coverage.
+- Plugins: restored cross-plugin tool-name collision check, targeted single-plugin rescan, and a win32 platform guard.
+- CLI: restored the available-profiles hint on a plugin-scoped profile miss, unconditional bypass warning, settings ancestor-walk, and resume system-prompt backfill.
+- Protocols: Node admission, Graph/Edge round-trip, processor capacity and queue bounds, and `gather_writeback` treating a non-int writeback return as success.
+- LNDL batch: round-outcome policy, per-round-shape rule, numeric coercion, and multi-block extraction.
+- Studio: honest fleet stats totals, minimap sizing, a show-level lifecycle reaper for phantom active shows, and a soft watchdog bounding coding-engine plan/verify stages.
+
+### Docs
+
+- Practical operator guide for scheduling workflows (typed quick-create per kind, ScheduleSet declarations, triage, stopping and misbehaving-schedule playbooks); stale recurring-runs cookbook rules rewritten.
+- Benchmark-gate contributing docs aligned with the same-machine A/B contract; ADR cross-reference and numbering fixes.
+
 ## [0.29.0] - 2026-07-13
 
 ### Added
