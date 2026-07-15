@@ -744,12 +744,13 @@ def test_cli_export_returns_partial_exit_code_when_a_row_is_blocked(
 
 
 # ---------------------------------------------------------------------------
-# Flow snapshot portability disclosure -- absolute host path is stated
+# Flow snapshot portability -- sidecar path is relative, YAML carries no
+# host prefix, absolute cwd is flagged on the report line
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_legacy_flow_yaml_report_line_discloses_absolute_host_path(
+async def test_legacy_flow_sidecar_is_relative_and_yaml_has_no_host_prefix(
     temp_db_path, agent_profile
 ):
     async with StateDB() as db:
@@ -765,6 +766,7 @@ async def test_legacy_flow_yaml_report_line_discloses_absolute_host_path(
                 action_agent=None,
                 action_prompt=None,
                 action_flow_yaml="workers: 2\n",
+                action_cwd=None,
             )
         )
         rows = await db.list_schedules()
@@ -773,10 +775,36 @@ async def test_legacy_flow_yaml_report_line_discloses_absolute_host_path(
     doc = docs[0]
     member = doc.schedules["flow-port"]
     assert lines[0].status == "READY"
+    # the sidecar reference must survive committing the document to a repo:
+    # relative to the manifest dir, resolvable the same way a later apply
+    # resolves it, and never leaking the exporting host's filesystem layout
+    assert not Path(member.target.file).is_absolute()
+    assert (agent_profile / member.target.file).is_file()
+    yaml_text = dump_schedule_set_yaml(doc)
+    assert str(agent_profile) not in yaml_text
+    # the sidecar relationship is still disclosed on the report line
     assert lines[0].message is not None
-    assert "absolute" in lines[0].message
     assert member.target.file in lines[0].message
-    assert Path(member.target.file).is_absolute()
+
+
+@pytest.mark.asyncio
+async def test_legacy_absolute_cwd_kept_verbatim_but_flagged_on_report_line(
+    temp_db_path, agent_profile
+):
+    async with StateDB() as db:
+        await db.create_schedule(_legacy_row("a1", "demo/nightly", cwd=agent_profile))
+        rows = await db.list_schedules()
+    docs, lines = convert_legacy_rows(
+        rows, flows_dir=agent_profile / "flows", manifest_dir=agent_profile
+    )
+    member = docs[0].schedules["nightly"]
+    # cwd stays verbatim (a schedule's cwd is machine-local by design) ...
+    assert member.execution.cwd == str(agent_profile)
+    # ... but the export report must surface the absolute path it wrote
+    assert lines[0].status == "READY"
+    assert lines[0].message is not None
+    assert "cwd" in lines[0].message
+    assert str(agent_profile) in lines[0].message
 
 
 # ---------------------------------------------------------------------------

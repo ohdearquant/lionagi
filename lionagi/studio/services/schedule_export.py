@@ -18,6 +18,7 @@ Two modes, both never touching the database:
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -137,7 +138,15 @@ def _rename_note(row: dict[str, Any], base_name: str) -> str | None:
 
 
 def _ready_note(row: dict[str, Any], member: ScheduleMember, base_name: str) -> str | None:
-    notes = [n for n in (_rename_note(row, base_name), _flow_portability_note(member)) if n]
+    notes = [
+        n
+        for n in (
+            _rename_note(row, base_name),
+            _flow_portability_note(member),
+            _absolute_cwd_note(member),
+        )
+        if n
+    ]
     return "; ".join(notes) or None
 
 
@@ -203,7 +212,7 @@ def _flow_snapshot_path(flows_dir: Path, qualified_name: str) -> Path:
     return flows_dir / f"{safe}.flow.yaml"
 
 
-def _convert_legacy_target(row: dict[str, Any], *, flows_dir: Path) -> Target:
+def _convert_legacy_target(row: dict[str, Any], *, flows_dir: Path, manifest_dir: Path) -> Target:
     kind = row.get("action_kind")
     if kind not in _CONVERTIBLE_ACTION_KINDS:
         raise ValueError(f"action_kind {kind!r} has no v1 target equivalent -- not exportable")
@@ -245,7 +254,18 @@ def _convert_legacy_target(row: dict[str, Any], *, flows_dir: Path) -> Target:
         flows_dir.mkdir(parents=True, exist_ok=True)
         path = _flow_snapshot_path(flows_dir, row["name"])
         path.write_text(content)
-        return FlowTarget(kind="flow", file=str(path.resolve()), inputs={})
+        # The document is designed to be committed to a repo, so the sidecar
+        # reference must not embed this host's filesystem layout. A relative
+        # path re-resolves against the manifest dir on apply, exactly like a
+        # hand-authored declaration.
+        try:
+            rel = os.path.relpath(path.resolve(), manifest_dir.resolve())
+        except ValueError as exc:
+            raise ValueError(
+                f"flow snapshot at {path} cannot be expressed relative to the "
+                f"output directory {manifest_dir}: {exc}"
+            ) from exc
+        return FlowTarget(kind="flow", file=rel, inputs={})
     # kind == "command"
     executable = row.get("action_command")
     if not executable:
@@ -254,9 +274,11 @@ def _convert_legacy_target(row: dict[str, Any], *, flows_dir: Path) -> Target:
     return CommandTarget(kind="command", executable=executable, args=args)
 
 
-def _build_legacy_member(row: dict[str, Any], *, flows_dir: Path) -> ScheduleMember:
+def _build_legacy_member(
+    row: dict[str, Any], *, flows_dir: Path, manifest_dir: Path
+) -> ScheduleMember:
     trigger = _convert_legacy_trigger(row)
-    target = _convert_legacy_target(row, flows_dir=flows_dir)
+    target = _convert_legacy_target(row, flows_dir=flows_dir, manifest_dir=manifest_dir)
     execution = Execution(
         cwd=row.get("action_cwd") or None, project=row.get("action_project") or None
     )
@@ -285,17 +307,37 @@ def _build_legacy_member(row: dict[str, Any], *, flows_dir: Path) -> ScheduleMem
 
 
 def _flow_portability_note(member: ScheduleMember) -> str | None:
-    """Every exported ``flow`` target names an absolute host path (the
-    snapshot file, whether freshly written by legacy conversion or simply
-    re-validated from an already-typed authored_spec) -- disclose that the
-    resulting document only re-applies on this host, or after the sidecar
-    file is moved alongside it and the path rewritten."""
+    """Disclose how an exported ``flow`` target's snapshot file travels.
+    Legacy conversion writes the sidecar itself and references it relative to
+    the manifest dir, so the pair commits and moves together; a re-exported
+    authored_spec may still carry an absolute path the author wrote, which
+    makes the document host-bound and is called out loudly."""
     if member.target.kind != "flow":
         return None
+    file = member.target.file
+    if Path(file).is_absolute():
+        return (
+            f"flow snapshot is an absolute host path ({file}); this "
+            "document is host-bound until the sidecar file moves with it"
+        )
     return (
-        f"flow snapshot is an absolute host path ({member.target.file}); this "
-        "document is host-bound until the sidecar file moves with it"
+        f"flow snapshot sidecar at {file} (relative to this document); "
+        "commit and move the sidecar together with the document"
     )
+
+
+def _absolute_cwd_note(member: ScheduleMember) -> str | None:
+    """An absolute ``execution.cwd`` is kept verbatim -- a schedule's working
+    directory is machine-local by design, like a cron entry -- but a document
+    meant to be committed must not carry host paths silently, so the report
+    line flags every one written."""
+    cwd = member.execution.cwd if member.execution else None
+    if cwd and Path(cwd).is_absolute():
+        return (
+            f"execution.cwd is an absolute host path ({cwd}); kept verbatim, "
+            "review before committing this document"
+        )
+    return None
 
 
 def _group_into_documents(
@@ -380,7 +422,7 @@ def convert_legacy_rows(
             )
             continue
         try:
-            member = _build_legacy_member(row, flows_dir=flows_dir)
+            member = _build_legacy_member(row, flows_dir=flows_dir, manifest_dir=manifest_dir)
         except ValueError as exc:
             lines.append(ExportReportLine(name, "BLOCKED", str(exc)))
             continue
