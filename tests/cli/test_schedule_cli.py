@@ -656,6 +656,64 @@ def test_schedule_trigger_wait_never_appears_errors(monkeypatch, capsys):
     assert "never appeared" in capsys.readouterr().err
 
 
+def test_schedule_trigger_wait_treats_timed_out_as_terminal(monkeypatch, capsys):
+    """A timed-out occurrence must stop the poll loop like any other terminal
+    status, not spin until the wait deadline."""
+    import lionagi.studio.cli as sched_mod
+
+    calls = []
+
+    def _fake_api(path, method="GET", body=None):
+        calls.append(path)
+        if path == "/sched-abc/trigger":
+            return {"ok": True, "run_id": "run1"}
+        return {"status": "timed_out", "outcome": {"code": "timed_out", "summary": "timed out"}}
+
+    monkeypatch.setattr(sched_mod, "_api", _fake_api)
+    monkeypatch.setattr("time.sleep", lambda secs: None)
+    monkeypatch.setattr(sched_mod, "_TRIGGER_WAIT_MAX_SECONDS", 0.05)
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "trigger", "sched-abc", "--wait"])
+    result = run_schedule(args)
+
+    out = capsys.readouterr().out
+    assert result == 1
+    assert "status: timed_out" in out
+    assert calls.count("/runs/run1") == 1
+
+
+def test_schedule_status_wait_treats_timed_out_as_terminal(monkeypatch):
+    """--wait must stop polling once the latest run reaches 'timed_out', not
+    just the completed/failed/cancelled/skipped subset it used to check."""
+    import lionagi.studio.cli as sched_mod
+
+    calls = []
+
+    def _fake_api(path, **kw):
+        calls.append(path)
+        return _status_response(latest_run={"status": "timed_out"}, exit_code=124)
+
+    monkeypatch.setattr(sched_mod, "_api", _fake_api)
+    monkeypatch.setattr("time.sleep", lambda secs: None)
+    monkeypatch.setattr(sched_mod, "_TRIGGER_WAIT_MAX_SECONDS", 0.05)
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "status", "sched-abc", "--wait"])
+    result = run_schedule(args)
+
+    assert result == 124
+    assert len(calls) == 1
+
+
 def test_schedule_trigger_no_run_id_skips_wait(monkeypatch, capsys):
     """A trigger response without a run_id (shouldn't normally happen) must not
     crash --wait — it just returns after printing 'Triggered'."""

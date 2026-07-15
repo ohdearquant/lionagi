@@ -163,3 +163,35 @@ async def test_list_schedule_run_views_repeatable_status_filter(temp_db_path: Pa
     assert {v["id"] for v in views} == {failed_run_id, skipped_run_id}
     assert {v["outcome"]["source"] for v in views} == {"occurrence"}
     assert completed_run_id not in {v["id"] for v in views}
+
+
+@pytest.mark.asyncio
+async def test_list_schedule_run_views_keeps_full_row_fields(temp_db_path: Path) -> None:
+    """RunView fields layer on top additively — pre-existing schedule_runs
+    columns (error_detail, trigger_context, action_args, ...) must survive."""
+    async with StateDB() as db:
+        sched_id, _completed_run_id, _inv_id, _sess_id = await _seed(db)
+        failed_run_id = uuid.uuid4().hex[:12]
+        await db.create_schedule_run(
+            {
+                "id": failed_run_id,
+                "schedule_id": sched_id,
+                "invocation_id": None,
+                "trigger_context": {"source": "manual"},
+                "action_kind": "agent",
+                "action_args": {"prompt": "ping"},
+                "status": "failed",
+                "exit_code": None,
+                "error_detail": "dispatch failed: missing cwd",
+                "fired_at": time.time(),
+            }
+        )
+
+    views = await list_schedule_run_views(sched_id, status=["failed"], limit=20)
+
+    view = next(v for v in views if v["id"] == failed_run_id)
+    assert view["error_detail"] == "dispatch failed: missing cwd"
+    assert view["trigger_context"] == {"source": "manual"}
+    assert view["action_args"] == {"prompt": "ping"}
+    # RunView-additive fields are still present alongside the raw row.
+    assert view["outcome"]["source"] == "occurrence"

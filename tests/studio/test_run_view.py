@@ -185,6 +185,16 @@ def test_fallback_outcome_success_by_exit_code():
     assert outcome["code"] == "completed"
 
 
+def test_fallback_outcome_status_dominates_over_exit_code_zero():
+    """A terminal non-completed status with exit_code 0 (e.g. crashed before
+    any exit code was ever meaningfully set) must never read as 'completed'."""
+    run = _run(status="failed", exit_code=0, error_detail=None)
+    outcome = build_outcome(run, None, [])
+    assert outcome["source"] == "fallback"
+    assert outcome["code"] == "failed"
+    assert outcome["code"] != "completed"
+
+
 # ── exit_code_for_view: reuses the existing shared status vocabulary ───────
 
 
@@ -229,3 +239,19 @@ def test_exit_code_skipped_is_ordinary_failure_bucket():
 def test_exit_code_pre_invocation_failure_no_session_or_invocation():
     run = _run(status="failed", exit_code=1)
     assert exit_code_for_view(run, None, []) == 1
+
+
+@pytest.mark.parametrize(
+    "occurrence_status, expected",
+    [
+        ("timed_out", 124),
+        ("cancelled", 143),
+    ],
+)
+def test_exit_code_occurrence_only_terminal_status_uses_shared_vocabulary(
+    occurrence_status, expected
+):
+    """No session or invocation reached terminal — the occurrence status
+    itself must still map through EXIT_CODE_BY_STATUS, not collapse to 1."""
+    run = _run(status=occurrence_status, exit_code=None)
+    assert exit_code_for_view(run, None, []) == expected

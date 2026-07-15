@@ -79,12 +79,14 @@ def _fallback_outcome(run: dict[str, Any]) -> dict[str, Any]:
             "summary": run.get("error_detail") or "skipped",
             "source": "occurrence",
         }
-    if exit_code == 0:
+    if status == "completed":
         code = "completed"
-    elif exit_code is not None:
-        code = "failed_exit_nonzero"
-    else:
+    elif exit_code is None:
         code = f"{status}_no_exit_code"
+    elif exit_code != 0:
+        code = f"{status}_exit_nonzero"
+    else:
+        code = status
     summary = f"{status} (exit {exit_code})" if exit_code is not None else status
     return {"code": code, "summary": summary, "source": "fallback"}
 
@@ -164,6 +166,8 @@ def exit_code_for_view(
         return EXIT_RUNNING
     if status not in SCHEDULE_RUN_TERMINAL_STATUSES:
         return EXIT_UNKNOWN
+    if status in EXIT_CODE_BY_STATUS:
+        return EXIT_CODE_BY_STATUS[status]
     return 0 if status == "completed" else 1
 
 
@@ -182,8 +186,11 @@ async def _linked(
 
 
 async def _run_view_for_run(db: Any, run: dict[str, Any]) -> dict[str, Any]:
+    """Full schedule_runs row with RunView fields layered on top, additively —
+    never a replacement projection."""
     invocation, sessions = await _linked(db, run)
-    return build_run_view(run, invocation, sessions)
+    view = build_run_view(run, invocation, sessions)
+    return {**run, **view}
 
 
 async def get_run_view(db: Any, run_id: str) -> dict[str, Any] | None:

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from lionagi.cli._logging import warn
+from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES
 
 _STUDIO_IMAGE = "ghcr.io/ohdearquant/lion-studio:latest"
 _HOSTED_URL = "https://lion-studio.khive.ai"
@@ -883,8 +884,6 @@ def _cmd_disable(args: argparse.Namespace) -> int:
     return 0
 
 
-_SCHEDULE_RUN_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "skipped"})
-
 # fire_now() hands the run_id back to the HTTP caller before its occurrence
 # row is durably written (the fire runs as a background task) -- a lookup
 # immediately after trigger can race that insert. Retry within this bounded
@@ -970,7 +969,7 @@ def _wait_for_run(run_id: str) -> int:
         return 1
 
     deadline = _time.monotonic() + _TRIGGER_WAIT_MAX_SECONDS
-    while run.get("status") not in _SCHEDULE_RUN_TERMINAL_STATUSES and _time.monotonic() < deadline:
+    while run.get("status") not in SCHEDULE_RUN_TERMINAL_STATUSES and _time.monotonic() < deadline:
         _time.sleep(_TRIGGER_WAIT_POLL_SECONDS)
         run = _api(f"/runs/{run_id}")
         if run is None:
@@ -1021,7 +1020,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
 def _status_still_running(result: dict[str, Any] | None) -> bool:
     latest = (result or {}).get("latest_run") or {}
     status = latest.get("status")
-    return status is not None and status not in _SCHEDULE_RUN_TERMINAL_STATUSES
+    return status is not None and status not in SCHEDULE_RUN_TERMINAL_STATUSES
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
