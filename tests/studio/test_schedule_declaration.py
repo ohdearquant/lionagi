@@ -198,7 +198,7 @@ def test_policies_unknown_key_rejected():
 
 @pytest.mark.parametrize("chain_field", ["on_success", "on_fail", "after", "depends_on"])
 def test_member_level_chain_fields_rejected(chain_field):
-    """F1: dependencies live in the flow layer -- a v1 member schema has no
+    """Dependencies live in the flow layer -- a v1 member schema has no
     chain/dependency fields at all, so any attempt to declare one is a
     closed-schema (unknown key) rejection."""
     base = {
