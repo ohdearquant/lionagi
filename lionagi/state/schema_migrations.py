@@ -121,6 +121,9 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("resolved_target", "JSON"),
         ("resolved_digest", "TEXT"),
         ("resolved_timezone", "TEXT"),
+        # Terminal notification: filtered callback on the spawned invocation.
+        ("notify_on", "JSON"),
+        ("notify_command", "TEXT"),
     ],
     "schedule_runs": [
         # ADR-0057: schedule_runs originally had no updated_at.

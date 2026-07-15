@@ -2447,6 +2447,7 @@ class StateDB:
                 project, threshold_config, last_alert_at,
                 spec_version, managed_by, owner_key, authored_spec,
                 resolved_target, resolved_digest, resolved_timezone,
+                notify_on, notify_command,
                 created_at, updated_at)
                VALUES (:id, :name, :description, :enabled, :trigger_type,
                        :cron_expr, :interval_sec, :github_repo, :github_filter,
@@ -2460,6 +2461,7 @@ class StateDB:
                        :project, :threshold_config, :last_alert_at,
                        :spec_version, :managed_by, :owner_key, :authored_spec,
                        :resolved_target, :resolved_digest, :resolved_timezone,
+                       :notify_on, :notify_command,
                        :created_at, :updated_at)"""
         ).bindparams(
             bindparam("github_filter", type_=JSON),
@@ -2471,6 +2473,7 @@ class StateDB:
             bindparam("threshold_config", type_=JSON),
             bindparam("authored_spec", type_=JSON),
             bindparam("resolved_target", type_=JSON),
+            bindparam("notify_on", type_=JSON),
         )
         params = {
             "id": schedule["id"],
@@ -2515,6 +2518,8 @@ class StateDB:
             "resolved_target": schedule.get("resolved_target"),
             "resolved_digest": schedule.get("resolved_digest"),
             "resolved_timezone": schedule.get("resolved_timezone"),
+            "notify_on": schedule.get("notify_on"),
+            "notify_command": schedule.get("notify_command"),
             "created_at": schedule.get("created_at", now),
             "updated_at": schedule.get("updated_at", now),
         }
@@ -2662,6 +2667,8 @@ class StateDB:
             "resolved_target",
             "resolved_digest",
             "resolved_timezone",
+            "notify_on",
+            "notify_command",
         }
     )
 
@@ -2694,6 +2701,7 @@ class StateDB:
             "threshold_config",
             "authored_spec",
             "resolved_target",
+            "notify_on",
         }
         fields = dict(fields)
         fields["updated_at"] = time.time()
@@ -4845,6 +4853,7 @@ class StateDB:
             "action_args",
             "threshold_config",
             "rate_limit",
+            "notify_on",
             "artifact_contract_json",
             "artifact_verification_json",
             "status_evidence_refs",

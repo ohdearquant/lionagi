@@ -16,6 +16,8 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from lionagi.ln.concurrency import ExceptionGroup
+from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS, RunTerminalEnvelope
+from lionagi.state.lifecycle.notify_settings import build_handler, resolve_notify_config
 from lionagi.state.reasons import RunReasons, ScheduleReasons
 from lionagi.studio.scheduler import subprocess as _subprocess
 from lionagi.studio.scheduler import threshold as _threshold
@@ -43,6 +45,42 @@ _TICK_INTERVAL = 30  # seconds
 # this many deferrals (the first deferral always emits), so sustained
 # saturation doesn't spam schedule_runs.
 _DEFERRED_RECORD_EVERY = 10
+
+
+def _register_schedule_notify(
+    inv_id: str, notify_on: list[str] | None, notify_command: str | None
+) -> str | None:
+    """Register the declared ``notify`` command on the invocation this fire
+    spawns, scoped to *inv_id* and filtered to *notify_on* -- reuses the
+    existing terminal-callback registry (the same machinery `li agent
+    --notify` registers on its own session), never a second callback path.
+    Returns the registration name to pass to ``_unregister_schedule_notify``
+    in a ``finally``, or ``None`` if this schedule has no notify declared.
+    """
+    if not notify_on or not notify_command:
+        return None
+    resolved = resolve_notify_config(override=notify_command)
+    if resolved is None:
+        return None
+    handler = build_handler(resolved)
+    if handler is None:
+        return None
+    allowed = frozenset(notify_on)
+
+    async def _filtered(envelope: RunTerminalEnvelope) -> None:
+        if envelope.terminal_status in allowed:
+            await handler(envelope)
+
+    name = f"notify.schedule.invocation.{inv_id}"
+    DEFAULT_TERMINAL_CALLBACKS.register(
+        name, _filtered, kinds=["invocation"], ids=[inv_id], override=True
+    )
+    return name
+
+
+def _unregister_schedule_notify(name: str | None) -> None:
+    if name is not None:
+        DEFAULT_TERMINAL_CALLBACKS.unregister(name)
 
 
 class _MaxRunsClaim:
@@ -1755,6 +1793,13 @@ class SchedulerEngine:
         now = time.time()
 
         inv_id = uuid.uuid4().hex[:12]
+        # Registered before the invocation can possibly reach a terminal
+        # status, unregistered on every exit path below (including the
+        # early build_argv-failure return) so a matching registration never
+        # outlives this fire.
+        notify_scope = _register_schedule_notify(
+            inv_id, schedule.get("notify_on"), schedule.get("notify_command")
+        )
         # Record what was actually sent, not the raw {{var}} template: the
         # operator-facing invocation should show the substituted prompt.
         rendered_prompt = _subprocess.render_action_prompt(schedule, trigger_context)
@@ -1832,6 +1877,7 @@ class SchedulerEngine:
                 supersedes_run_id=supersedes_run_id,
             )
             if not written_occurrence:
+                _unregister_schedule_notify(notify_scope)
                 await self._abandon_superseded_recovery_fire(inv_id, orphan_id=supersedes_run_id)
                 return
             if rate_limit_claim is not None:
@@ -1892,6 +1938,7 @@ class SchedulerEngine:
             # last_fired_at/next_fire_at (and any extra_schedule_fields)
             # already landed atomically with the occurrence insert above.
             await self._check_max_runs(schedule, chain_depth)
+            _unregister_schedule_notify(notify_scope)
             return
 
         # Ensure the flow_yaml tmp file is removed on any exception or
@@ -2213,6 +2260,7 @@ class SchedulerEngine:
                 self._signal_bus.pop_run_counters(run_id)
             await self._check_max_runs(schedule, chain_depth)
         finally:
+            _unregister_schedule_notify(notify_scope)
             if chain_depth == 0:
                 self._running.pop(sid, None)
             if _tmp_path is not None:

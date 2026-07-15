@@ -487,6 +487,12 @@ CREATE TABLE IF NOT EXISTS schedules (
   resolved_target     JSON,
   resolved_digest     TEXT,
   resolved_timezone   TEXT,
+  -- Terminal notification (declaration-layer `notify`): registers the
+  -- existing run terminal-callback machinery on the invocation this
+  -- schedule spawns, filtered to notify_on. Replaces on_fail for
+  -- declaration-managed schedules; NULL/empty means no callback.
+  notify_on           JSON,
+  notify_command      TEXT,
   created_at          REAL    NOT NULL,
   updated_at          REAL    NOT NULL
 );

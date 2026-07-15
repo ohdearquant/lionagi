@@ -26,12 +26,15 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lionagi._paths import _find_git_root
-from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES, StateDB
+from lionagi.state.db import INVOCATION_TERMINAL_STATUSES, StateDB
 
 SPEC_VERSION = "lionagi.io/v1alpha1"
 SPEC_KIND = "ScheduleSet"
 
-_NOTIFY_ALLOWED_STATUSES = frozenset(SCHEDULE_RUN_TERMINAL_STATUSES) | {"completed"}
+# notify fires on the spawned invocation's own terminal transition (see
+# _register_schedule_notify in scheduler/engine.py), so the status filter is
+# validated against the invocation vocabulary, not the schedule_run one.
+_NOTIFY_ALLOWED_STATUSES = frozenset(INVOCATION_TERMINAL_STATUSES)
 
 
 # ---------------------------------------------------------------------------
@@ -174,18 +177,32 @@ class Policies(BaseModel):
 
 
 class Notify(BaseModel):
+    """Registers the existing run terminal-callback machinery on the
+    invocation this schedule spawns, filtered to `on`. Replaces on_fail --
+    follow-up work belongs in a flow, not a notification command."""
+
     model_config = ConfigDict(extra="forbid")
-    on: list[str] = Field(default_factory=list)
+    on: list[str]
     command: str
 
     @model_validator(mode="after")
-    def _known_statuses(self) -> Notify:
+    def _valid_on(self) -> Notify:
+        if not self.on:
+            raise ValueError("notify.on must not be empty")
         unknown = sorted(set(self.on) - _NOTIFY_ALLOWED_STATUSES)
         if unknown:
             raise ValueError(
                 f"notify.on has unknown status value(s) {unknown}; allowed: "
                 f"{sorted(_NOTIFY_ALLOWED_STATUSES)}"
             )
+        if len(self.on) != len(set(self.on)):
+            raise ValueError(f"notify.on must not contain duplicate statuses, got {self.on!r}")
+        return self
+
+    @model_validator(mode="after")
+    def _valid_command(self) -> Notify:
+        if not self.command.strip():
+            raise ValueError("notify.command must not be empty")
         return self
 
 
@@ -495,6 +512,8 @@ def _to_db_fields(
         "budget_tokens": member.policies.budget.tokens if member.policies.budget else None,
         "rate_limit": member.policies.rateLimit,
         "description": member.description,
+        "notify_on": member.notify.on if member.notify else None,
+        "notify_command": member.notify.command if member.notify else None,
         # Cleared up-front so a re-apply that changes trigger/target kind
         # doesn't leave a stale value from the previous kind behind.
         "cron_expr": None,
