@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
@@ -1173,6 +1174,135 @@ def test_invalid_scheduler_tz_falls_back_to_utc(monkeypatch, caplog):
     got_utc = datetime.fromtimestamp(next_at, tz=timezone.utc)
     assert got_utc == datetime(2026, 7, 2, 18, 0, 0, tzinfo=timezone.utc)
     assert any("Invalid scheduler timezone" in r.message for r in caplog.records)
+
+
+def test_compute_next_fire_cron_prefers_resolved_timezone_over_scheduler_tz(monkeypatch):
+    """A row with a declared resolved_timezone (set by the declarative apply
+    path) must resolve cron against THAT zone, not the process-wide
+    SCHEDULER_TZ -- even when the two clearly disagree."""
+    pytest.importorskip("croniter", reason="studio extra not installed")
+    import lionagi.studio.config as studio_config
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "UTC")
+
+    engine = SchedulerEngine(svc=_make_svc())
+    schedule = _minimal_schedule(cron_expr="0 18 * * *", resolved_timezone="America/New_York")
+
+    ref_epoch = datetime(2026, 7, 2, 10, 0, 0, tzinfo=NY).timestamp()
+    next_at = engine._compute_next_fire(schedule, ref_epoch)
+    assert next_at is not None
+
+    # 18:00 EDT == 22:00 UTC. A SCHEDULER_TZ=UTC-only implementation would
+    # instead land on 18:00 UTC == 14:00 EDT the same day.
+    got_utc = datetime.fromtimestamp(next_at, tz=timezone.utc)
+    assert got_utc == datetime(2026, 7, 2, 22, 0, 0, tzinfo=timezone.utc)
+
+
+def test_compute_next_fire_cron_null_resolved_timezone_uses_scheduler_tz(monkeypatch):
+    """A legacy row with no resolved_timezone (NULL) keeps resolving cron
+    against SCHEDULER_TZ, unchanged."""
+    pytest.importorskip("croniter", reason="studio extra not installed")
+    import lionagi.studio.config as studio_config
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+
+    engine = SchedulerEngine(svc=_make_svc())
+    schedule = _minimal_schedule(cron_expr="0 18 * * *", resolved_timezone=None)
+
+    ref_epoch = datetime(2026, 7, 2, 10, 0, 0, tzinfo=NY).timestamp()
+    next_at = engine._compute_next_fire(schedule, ref_epoch)
+    assert next_at is not None
+    got_utc = datetime.fromtimestamp(next_at, tz=timezone.utc)
+    assert got_utc == datetime(2026, 7, 2, 22, 0, 0, tzinfo=timezone.utc)
+
+
+# ---------------------------------------------------------------------------
+# 'at' trigger — fire-once semantics (no next occurrence to compute; the
+# fired row's next_fire_at must be explicitly cleared, not left in place).
+# ---------------------------------------------------------------------------
+
+
+def test_compute_next_fire_at_trigger_returns_none():
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    engine = SchedulerEngine(svc=_make_svc())
+    schedule = _minimal_schedule(trigger_type="at", cron_expr=None)
+    assert engine._compute_next_fire(schedule, time.time()) is None
+
+
+def test_next_fire_field_clears_next_fire_at_for_at_trigger():
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    engine = SchedulerEngine(svc=_make_svc())
+    schedule = _minimal_schedule(trigger_type="at", cron_expr=None)
+    assert engine._next_fire_field(schedule, None) == {"next_fire_at": None}
+
+
+def test_next_fire_field_leaves_other_triggers_untouched_on_none():
+    """A None next_at for cron/interval/github_poll must never be merged in
+    -- those trigger types always compute a real next fire; a None there
+    would only ever come from a malformed row and must not blank out a
+    value some other write already set."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    engine = SchedulerEngine(svc=_make_svc())
+    schedule = _minimal_schedule(trigger_type="interval", cron_expr=None)
+    assert engine._next_fire_field(schedule, None) == {}
+
+
+@pytest.mark.asyncio
+async def test_fire_at_trigger_persists_explicit_none_next_fire_at():
+    """Firing an 'at' schedule must explicitly persist next_fire_at=None
+    (not merely omit the key) so the row is never read back as still due."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(trigger_type="at", cron_expr=None, max_runs=1)
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._fire(schedule, "run-001", trigger_context={"scheduled": True})
+
+    (_run_payload,), kwargs = svc.create_schedule_run_and_advance.await_args
+    schedule_fields = kwargs["schedule_fields"]
+    assert "next_fire_at" in schedule_fields
+    assert schedule_fields["next_fire_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_maybe_fire_at_trigger_already_fired_refused_by_max_runs_gate():
+    """Re-applying an unchanged/edited 'at' member resets next_fire_at to
+    the past due instant again, but must not actually re-fire: the same
+    max_runs=1 claim-before-fire gate every other bounded schedule uses
+    refuses admission once a run already exists, and auto-disables instead."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.count_schedule_runs = AsyncMock(return_value=1)  # already fired once
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(
+        trigger_type="at",
+        cron_expr=None,
+        max_runs=1,
+        next_fire_at=time.time() - 5,
+    )
+
+    await engine._maybe_fire(schedule, time.time())
+
+    svc.create_invocation.assert_not_awaited()
+    svc.create_schedule_run_and_advance.assert_not_awaited()
+    svc.update_schedule.assert_awaited_once_with("sched-001", enabled=0)
 
 
 # ---------------------------------------------------------------------------

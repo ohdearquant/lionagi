@@ -6,6 +6,7 @@ atomic validate/diff/apply service."""
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -233,6 +234,73 @@ def test_notify_unknown_status_rejected():
         ScheduleSetDocument.model_validate(base)
 
 
+def _policies_manifest(policies_yaml: str, cwd: Path) -> str:
+    return f"""
+apiVersion: lionagi.io/v1alpha1
+kind: ScheduleSet
+metadata:
+  name: automation
+  project: demo
+schedules:
+  m:
+    trigger:
+      every: 1h
+    target:
+      kind: command
+      executable: refresh-index
+    execution:
+      cwd: {cwd}
+    policies:
+{policies_yaml}
+"""
+
+
+def test_policies_rate_limit_malformed_rejected(tmp_path):
+    """Policies.rateLimit is validated with the same
+    lionagi.studio.scheduler.admit.validate_rate_limit the fire-time engine
+    admission path uses -- an open dict[str, Any] would otherwise let a
+    malformed rateLimit commit."""
+    manifest = _policies_manifest(
+        "      rateLimit:\n        max_fires: 3\n        # missing window_sec\n", tmp_path
+    )
+    with pytest.raises(ValidationError, match="rateLimit"):
+        parse_schedule_set(manifest)
+
+
+def test_policies_rate_limit_valid_accepted(tmp_path, monkeypatch):
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
+    manifest = _policies_manifest(
+        "      rateLimit:\n        max_fires: 3\n        window_sec: 60\n", tmp_path
+    )
+    doc = parse_schedule_set(manifest)
+    resolved = resolve_schedule_set(doc, tmp_path)
+    assert resolved["m"].db_fields["rate_limit"] == {"max_fires": 3, "window_sec": 60}
+
+
+@pytest.mark.parametrize("bad_usd", [".inf", ".nan", "-.inf"])
+def test_policies_budget_non_finite_usd_rejected(tmp_path, bad_usd):
+    manifest = _policies_manifest(f"      budget:\n        usd: {bad_usd}\n", tmp_path)
+    with pytest.raises(ValidationError, match="budget"):
+        parse_schedule_set(manifest)
+
+
+def test_policies_budget_non_int_tokens_rejected(tmp_path):
+    manifest = _policies_manifest("      budget:\n        tokens: 5.5\n", tmp_path)
+    with pytest.raises(ValidationError):
+        parse_schedule_set(manifest)
+
+
+def test_policies_budget_valid_accepted(tmp_path, monkeypatch):
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
+    manifest = _policies_manifest(
+        "      budget:\n        usd: 5.0\n        tokens: 1000\n", tmp_path
+    )
+    doc = parse_schedule_set(manifest)
+    resolved = resolve_schedule_set(doc, tmp_path)
+    assert resolved["m"].db_fields["budget_usd"] == 5.0
+    assert resolved["m"].db_fields["budget_tokens"] == 1000
+
+
 def test_wrong_api_version_rejected():
     with pytest.raises(ValidationError):
         ScheduleSetDocument.model_validate(
@@ -353,6 +421,32 @@ def test_resolve_at_trigger_accepts_z_offset(tmp_path, monkeypatch):
     doc = parse_schedule_set(_at_manifest("2026-07-15T09:00:00Z", tmp_path))
     resolved = resolve_schedule_set(doc, tmp_path)
     assert resolved["once"].resolved["trigger"]["kind"] == "at"
+
+
+def test_resolve_at_trigger_rejects_space_separated_timestamp(tmp_path, monkeypatch):
+    """RFC 3339 mandates a 'T' date/time separator; fromisoformat() alone
+    would also accept a space, a non-conformant variant."""
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
+    doc = parse_schedule_set(_at_manifest("2026-07-15 09:00:00+00:00", tmp_path))
+    with pytest.raises(ScheduleSetError, match="'T'"):
+        resolve_schedule_set(doc, tmp_path)
+
+
+def test_resolve_at_trigger_sets_next_fire_epoch_and_forces_max_runs_one(tmp_path, monkeypatch):
+    """The apply path must persist the resolved at-instant as next_fire_at
+    (so the row is due exactly once) and force max_runs=1 -- an 'at' member
+    is implicitly max one run, enforced via the existing claim-before-fire
+    gate rather than a bespoke history check."""
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
+    doc = parse_schedule_set(_at_manifest("2026-07-15T09:00:00Z", tmp_path))
+    resolved = resolve_schedule_set(doc, tmp_path)
+    member = resolved["once"]
+    assert member.db_fields["trigger_type"] == "at"
+    assert member.db_fields["max_runs"] == 1
+    from datetime import datetime, timezone
+
+    expected = datetime(2026, 7, 15, 9, 0, 0, tzinfo=timezone.utc).timestamp()
+    assert member.db_fields["next_fire_at"] == pytest.approx(expected)
 
 
 def _github_manifest(cwd: Path, *, repo: str = "acme/widgets") -> str:
@@ -491,9 +585,45 @@ schedules:
 """
     )
     resolved = resolve_schedule_set(doc, manifest_dir)
-    target = resolved["nightly"].resolved["target"]
+    member = resolved["nightly"]
+    target = member.resolved["target"]
     assert target["file"] == str((flows_dir / "nightly.yaml").resolve())
     assert "content_digest" in target
+    # F2: the flow launch path must route through flow_yaml with the
+    # validated snapshot captured at resolution time, never bare 'flow'
+    # (which would build `li o flow -- <model> <prompt>` positionals that
+    # have nothing to do with a target.flow file).
+    assert member.db_fields["action_kind"] == "flow_yaml"
+    assert member.db_fields["action_flow_yaml"] == "workers: 2\n"
+
+
+def test_flow_target_with_inputs_rejected(tmp_path):
+    """flow_yaml launches take no positionals and reject extra args -- there
+    is no field to merge a separate 'inputs' mapping into. Fail closed at
+    declaration time rather than silently dropping it at fire time."""
+    (tmp_path / "nightly.yaml").write_text("workers: 2\n")
+    doc = parse_schedule_set(
+        f"""
+apiVersion: lionagi.io/v1alpha1
+kind: ScheduleSet
+metadata:
+  name: automation
+  project: demo
+schedules:
+  nightly:
+    trigger:
+      every: 1h
+    target:
+      kind: flow
+      file: nightly.yaml
+      inputs:
+        key: value
+    execution:
+      cwd: {tmp_path}
+"""
+    )
+    with pytest.raises(ScheduleSetError, match="inputs"):
+        resolve_schedule_set(doc, tmp_path)
 
 
 def test_flow_target_missing_file_rejected(tmp_path):
@@ -798,6 +928,53 @@ async def test_apply_omitted_member_disables_only_that_member(
         hourly = await db.get_schedule_by_name("demo/hourly")
         assert hourly["enabled"] == 1
         assert hourly["id"] == (await db.get_schedule_by_name("demo/hourly"))["id"]
+
+
+@pytest.mark.asyncio
+async def test_apply_at_trigger_reapply_after_fire_resets_gate_not_the_history(
+    temp_db_path, tmp_path, monkeypatch
+):
+    """Re-applying an 'at' member after it already fired (simulated here by
+    the row reaching the auto-disabled, budget-exhausted state the engine's
+    max_runs=1 gate leaves it in) must not error and must not resurrect a
+    second run: the apply layer is free to re-arm next_fire_at/enabled --
+    the fire-time claim-before-fire gate is what actually prevents a second
+    fire (see tests/studio/test_scheduler_engine.py's max_runs gate test)."""
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
+    doc = parse_schedule_set(_at_manifest("2026-07-15T09:00:00Z", tmp_path))
+    async with StateDB() as db:
+        result1 = await apply_schedule_set(db, doc, tmp_path)
+        assert result1.created == 1
+        row1 = await db.get_schedule_by_name("demo/once")
+        assert row1["max_runs"] == 1
+        assert row1["next_fire_at"] is not None
+
+        # Simulate the engine's own post-fire bookkeeping: one run recorded,
+        # next_fire_at cleared, auto-disabled by the max_runs gate.
+        await db.create_schedule_run(
+            {
+                "id": "run1",
+                "schedule_id": row1["id"],
+                "trigger_context": {},
+                "action_kind": "command",
+                "action_args": [],
+                "status": "completed",
+                "chain_depth": 0,
+                "fired_at": time.time(),
+            }
+        )
+        await db.update_schedule(row1["id"], next_fire_at=None, enabled=0)
+
+        # Re-apply the identical (unchanged) document.
+        result2 = await apply_schedule_set(db, doc, tmp_path)
+        assert result2.updated == 1  # enabled mismatch forces UPDATE, not UNCHANGED
+        row2 = await db.get_schedule_by_name("demo/once")
+        assert row2["id"] == row1["id"]
+        assert row2["max_runs"] == 1
+        assert row2["next_fire_at"] == row1["next_fire_at"]  # same deterministic epoch
+        # The run history from the first fire is untouched -- apply never
+        # deletes or rewrites schedule_runs.
+        assert await db.count_schedule_runs(row1["id"], chain_depth=0) == 1
 
 
 @pytest.mark.asyncio

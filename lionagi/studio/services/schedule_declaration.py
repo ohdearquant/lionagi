@@ -125,11 +125,21 @@ class Budget(BaseModel):
     tokens: int | None = None
 
     @model_validator(mode="after")
-    def _positive(self) -> Budget:
-        if self.usd is not None and self.usd <= 0:
-            raise ValueError(f"policies.budget.usd must be positive, got {self.usd!r}")
-        if self.tokens is not None and self.tokens <= 0:
-            raise ValueError(f"policies.budget.tokens must be positive, got {self.tokens!r}")
+    def _valid(self) -> Budget:
+        # Reuse the service-boundary checks rather than forking them: they
+        # already reject non-finite (inf/nan) usd and non-int/bool tokens,
+        # the same rules the classic (non-declarative) schedule service
+        # enforces.
+        from lionagi.studio.services.schedules import (
+            _svc_validate_budget_tokens,
+            _svc_validate_budget_usd,
+        )
+
+        try:
+            _svc_validate_budget_usd(self.usd)
+            _svc_validate_budget_tokens(self.tokens)
+        except ValueError as exc:
+            raise ValueError(f"policies.budget: {exc}") from exc
         return self
 
 
@@ -145,6 +155,20 @@ class Policies(BaseModel):
     def _positive_max_runs(self) -> Policies:
         if self.maxRuns is not None and self.maxRuns < 1:
             raise ValueError(f"policies.maxRuns must be a positive integer, got {self.maxRuns!r}")
+        return self
+
+    @model_validator(mode="after")
+    def _valid_rate_limit(self) -> Policies:
+        # Same validator the fire-time engine admission path uses
+        # (lionagi.studio.scheduler.admit.validate_rate_limit) -- an open
+        # dict[str, Any] would otherwise let a malformed rateLimit commit
+        # and only fail (or silently no-op) at fire time.
+        from lionagi.studio.scheduler.admit import validate_rate_limit
+
+        try:
+            validate_rate_limit(self.rateLimit)
+        except ValueError as exc:
+            raise ValueError(f"policies.rateLimit: {exc}") from exc
         return self
 
 
@@ -238,6 +262,11 @@ def _parse_every(raw: str) -> int:
 
 def _parse_at(raw: str) -> datetime:
     s = raw.strip()
+    # RFC 3339 mandates 'T' (or lowercase 't') between the date and time;
+    # datetime.fromisoformat() also accepts a plain space there (a common
+    # ISO 8601 variant), which would silently admit a non-conformant value.
+    if len(s) < 11 or s[10] not in ("T", "t"):
+        raise ValueError(f"trigger.at must be RFC 3339 with a 'T' date/time separator, got {raw!r}")
     iso = s[:-1] + "+00:00" if s.endswith("Z") else s
     try:
         dt = datetime.fromisoformat(iso)
@@ -273,7 +302,7 @@ def _resolve_trigger(trigger: Trigger) -> dict[str, Any]:
         return {"kind": "every", "interval_sec": _parse_every(trigger.every), "raw": trigger.every}
     if trigger.at is not None:
         dt = _parse_at(trigger.at)
-        return {"kind": "at", "at": dt.isoformat()}
+        return {"kind": "at", "at": dt.isoformat(), "epoch": dt.timestamp()}
     if trigger.github is not None:
         from lionagi.studio.services.schedules import (
             _svc_validate_github_filter,
@@ -338,6 +367,17 @@ def _resolve_agent_target(target: AgentTarget) -> dict[str, Any]:
 def _resolve_flow_target(target: FlowTarget, manifest_dir: Path) -> dict[str, Any]:
     from lionagi.studio.services.schedules import _validate_flow_yaml_spec
 
+    if target.inputs:
+        # The flow_yaml launch path (li o flow -f <snapshot>) takes no
+        # positionals and rejects extra args -- there is no field in the
+        # flow spec format (or _run_flow's kwargs surface) for a separate
+        # "inputs" mapping to land in. Fail closed at declaration time
+        # rather than silently dropping the declared inputs at fire time.
+        raise ValueError(
+            "target.flow.inputs is not supported: the flow_yaml launch path has no "
+            "positionals or spec field to merge extra inputs into. Fold the values "
+            "directly into the flow YAML file's own top-level fields instead."
+        )
     path = _resolve_path(target.file, manifest_dir)
     if not path.is_file():
         raise ValueError(f"target.flow file not found: {path}")
@@ -349,6 +389,7 @@ def _resolve_flow_target(target: FlowTarget, manifest_dir: Path) -> dict[str, An
         "kind": "flow",
         "file": str(path),
         "inputs": target.inputs,
+        "content": content,
         "content_digest": _digest_of(content),
     }
 
@@ -424,7 +465,11 @@ class ResolvedMember:
 
 _TARGET_KIND_TO_ACTION_KIND = {
     "agent": "agent",
-    "flow": "flow",
+    # Declaration flow targets always launch via the flow_yaml path (the
+    # validated file snapshot captured at resolution time), never
+    # action_kind='flow' -- that kind builds `li o flow -- <model> <prompt>`
+    # positionals, which have nothing to do with a target.flow file.
+    "flow": "flow_yaml",
     "playbook": "play",
     "command": "command",
 }
@@ -461,6 +506,7 @@ def _to_db_fields(
         "action_playbook": None,
         "action_command": None,
         "action_command_args": [],
+        "action_flow_yaml": None,
     }
 
     trigger_kind = resolved_trigger["kind"]
@@ -473,6 +519,14 @@ def _to_db_fields(
     elif trigger_kind == "at":
         fields["trigger_type"] = "at"
         fields["cron_expr"] = None
+        # The fire-time engine has no notion of "at" beyond a single due
+        # instant: persist the resolved epoch so the row is due exactly
+        # once, and force max_runs=1 so the existing claim-before-fire gate
+        # (SchedulerEngine._reserve_max_runs_budget) refuses any further
+        # fire -- including one a later re-apply of an unchanged/edited
+        # member would otherwise resurrect by resetting next_fire_at again.
+        fields["next_fire_at"] = resolved_trigger["epoch"]
+        fields["max_runs"] = 1
     elif trigger_kind == "github":
         fields["trigger_type"] = "github_poll"
         fields["github_repo"] = resolved_trigger["repo"]
@@ -482,6 +536,8 @@ def _to_db_fields(
         fields["action_model"] = resolved_target["model"]
         fields["action_prompt"] = resolved_target["prompt"]
         fields["action_agent"] = resolved_target["profile"]
+    elif resolved_target["kind"] == "flow":
+        fields["action_flow_yaml"] = resolved_target["content"]
     elif resolved_target["kind"] == "playbook":
         fields["action_playbook"] = resolved_target["name"]
     elif resolved_target["kind"] == "command":
