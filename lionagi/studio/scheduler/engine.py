@@ -653,7 +653,7 @@ class SchedulerEngine:
 
     async def _recover_missed_fire_run_once(self, schedule: dict, now: float) -> None:
         """Queue exactly one recovery fire for a past-due run_once schedule,
-        reserving its next_fire_at synchronously first.
+        reserving its admission claims and next_fire_at synchronously first.
 
         _tick_loop() calls _check_missed_fires() and then _tick() back to
         back with nothing awaited in between (the tick loop only sleeps
@@ -681,33 +681,14 @@ class SchedulerEngine:
         reserve), which reopens the duplicate-fire window; the max-runs
         claim gate remains the second defense against duplicates.
         """
-        next_at = self._compute_next_fire(schedule, now)
-        # _next_fire_field, not a bare not-None check: an 'at' trigger's
-        # terminal None must be reserved too (persisted as a cleared
-        # next_fire_at), or the immediately-following _tick() still sees the
-        # past-due instant and queues a duplicate fire.
-        fields = self._next_fire_field(schedule, next_at)
-        if fields:
-            try:
-                await self._svc.update_schedule(schedule["id"], **fields)
-            except Exception:
-                # The reserve did not land, so storage still holds the
-                # past-due next_fire_at and the immediately-following
-                # _tick() will queue its own normal fire for it. Queuing a
-                # recovery fire on top of that would run the external
-                # action twice, so skip recovery entirely and let the
-                # normal tick own this cycle's single fire (or, if storage
-                # stays unavailable, a later missed-fire check retries).
-                _log.exception(
-                    "Failed to reserve next_fire_at ahead of missed-fire recovery for schedule %s"
-                    "; skipping recovery this cycle",
-                    schedule.get("id"),
-                )
-                return
-        # Recovery goes through the same admission claims as a normal tick
-        # fire -- without the max_runs reservation, a concurrent fire_now()
-        # (or a re-apply racing this queued recovery) could observe zero
-        # durable runs, take the sole claim, and admit a second execution.
+        # Admission claims FIRST (same sequence as a normal tick fire --
+        # without the max_runs reservation, a concurrent fire_now() or
+        # re-apply racing this queued recovery could observe zero durable
+        # runs, take the sole claim, and admit a second execution), and only
+        # THEN the next_fire_at reserve: a rate/slot refusal must leave the
+        # row untouched and still due for a later cycle -- clearing an 'at'
+        # trigger's next_fire_at before a refusal would strand its single
+        # run permanently.
         rate_claim: _RateLimitClaim | None = None
         claim: _MaxRunsClaim | None = None
         slot_claim: _GlobalSlotClaim | None = None
@@ -723,6 +704,31 @@ class SchedulerEngine:
             slot_allowed, slot_claim = await self._reserve_global_slot()
             if not slot_allowed:
                 return
+
+            next_at = self._compute_next_fire(schedule, now)
+            # _next_fire_field, not a bare not-None check: an 'at' trigger's
+            # terminal None must be reserved too (persisted as a cleared
+            # next_fire_at), or the immediately-following _tick() still sees
+            # the past-due instant and queues a duplicate fire.
+            fields = self._next_fire_field(schedule, next_at)
+            if fields:
+                try:
+                    await self._svc.update_schedule(schedule["id"], **fields)
+                except Exception:
+                    # The reserve did not land, so storage still holds the
+                    # past-due next_fire_at and the immediately-following
+                    # _tick() will queue its own normal fire for it. Queuing
+                    # a recovery fire on top of that would run the external
+                    # action twice, so skip recovery entirely (releasing the
+                    # claims below) and let the normal tick own this cycle's
+                    # single fire (or, if storage stays unavailable, a later
+                    # missed-fire check retries).
+                    _log.exception(
+                        "Failed to reserve next_fire_at ahead of missed-fire recovery for "
+                        "schedule %s; skipping recovery this cycle",
+                        schedule.get("id"),
+                    )
+                    return
             run_id = uuid.uuid4().hex[:12]
             _log.info(
                 "Missed fire recovery for schedule %s (%s)",

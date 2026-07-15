@@ -1341,6 +1341,36 @@ async def test_recovery_claim_blocks_racing_fire_now_on_max_runs_one():
 
 
 @pytest.mark.asyncio
+async def test_recovery_refusal_leaves_at_row_due_not_stranded(monkeypatch):
+    """A global-slot refusal must return BEFORE the next_fire_at reserve --
+    clearing an 'at' trigger's due instant on a refused recovery would
+    strand its single run permanently (nothing would ever re-schedule it)."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(
+        trigger_type="at",
+        cron_expr=None,
+        max_runs=1,
+        next_fire_at=time.time() - 60,
+    )
+
+    async def _no_slot():
+        return False, None
+
+    monkeypatch.setattr(engine, "_reserve_global_slot", _no_slot)
+    fired: list[str] = []
+    engine._tracked_fire = lambda sched, run_id, **kw: fired.append(run_id)
+
+    await engine._recover_missed_fire_run_once(schedule, time.time())
+
+    assert fired == []
+    # next_fire_at untouched: no update_schedule write happened at all.
+    svc.update_schedule.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_maybe_fire_at_trigger_already_fired_refused_by_max_runs_gate():
     """Re-applying an unchanged/edited 'at' member resets next_fire_at to
     the past due instant again, but must not actually re-fire: the same
