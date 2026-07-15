@@ -1847,113 +1847,115 @@ class SchedulerEngine:
             )
         except Exception as exc:
             _log.exception("Invalid schedule action for %s (run %s)", schedule.get("name"), run_id)
-            _end_time = time.time()
-            next_at = self._compute_next_fire(schedule, now)
-            failed_schedule_fields: dict[str, Any] = {"last_fired_at": now}
-            failed_schedule_fields.update(self._next_fire_field(schedule, next_at))
-            failed_schedule_fields.update(
-                self._threshold_alert_update_fields(schedule, chain_depth, now)
-            )
-            if extra_schedule_fields:
-                failed_schedule_fields.update(extra_schedule_fields)
-            # Occurrence-insert + cursor-advance atomic even on this
-            # invalid-action failure path -- otherwise a permanently
-            # misconfigured github_poll schedule would never advance its
-            # cursor past the offending event and re-fail it forever.
-            # (A recovery re-fire skips the cursor advance and is instead
-            # atomic with tombstoning the orphan it supersedes -- see
-            # _write_occurrence()'s docstring.)
-            written_occurrence = await self._write_occurrence(
-                {
-                    "id": run_id,
-                    "schedule_id": sid,
-                    "invocation_id": inv_id,
-                    "trigger_context": trigger_context,
-                    "action_kind": schedule.get("action_kind"),
-                    "action_args": [],
-                    "status": "failed",
-                    "chain_parent_id": chain_parent_id,
-                    "chain_depth": chain_depth,
-                    "fired_at": now,
-                    "ended_at": _end_time,
-                    "error_detail": str(exc),
-                },
-                schedule_id=sid,
-                schedule_fields=failed_schedule_fields,
-                supersedes_run_id=supersedes_run_id,
-            )
-            if not written_occurrence:
-                # Abandon writes the invocation's cancelled terminal status;
-                # unregister only afterwards so a declared notify on that
-                # status still fires -- but always unregister, even when the
-                # abandon write itself fails.
-                try:
+            # The notify unregister lives in this handler's own finally:
+            # every exit (including a failing terminal write below) drops
+            # the registration, and any terminal write that does land
+            # happens inside the try, before the unregister.
+            try:
+                _end_time = time.time()
+                next_at = self._compute_next_fire(schedule, now)
+                failed_schedule_fields: dict[str, Any] = {"last_fired_at": now}
+                failed_schedule_fields.update(self._next_fire_field(schedule, next_at))
+                failed_schedule_fields.update(
+                    self._threshold_alert_update_fields(schedule, chain_depth, now)
+                )
+                if extra_schedule_fields:
+                    failed_schedule_fields.update(extra_schedule_fields)
+                # Occurrence-insert + cursor-advance atomic even on this
+                # invalid-action failure path -- otherwise a permanently
+                # misconfigured github_poll schedule would never advance its
+                # cursor past the offending event and re-fail it forever.
+                # (A recovery re-fire skips the cursor advance and is instead
+                # atomic with tombstoning the orphan it supersedes -- see
+                # _write_occurrence()'s docstring.)
+                written_occurrence = await self._write_occurrence(
+                    {
+                        "id": run_id,
+                        "schedule_id": sid,
+                        "invocation_id": inv_id,
+                        "trigger_context": trigger_context,
+                        "action_kind": schedule.get("action_kind"),
+                        "action_args": [],
+                        "status": "failed",
+                        "chain_parent_id": chain_parent_id,
+                        "chain_depth": chain_depth,
+                        "fired_at": now,
+                        "ended_at": _end_time,
+                        "error_detail": str(exc),
+                    },
+                    schedule_id=sid,
+                    schedule_fields=failed_schedule_fields,
+                    supersedes_run_id=supersedes_run_id,
+                )
+                if not written_occurrence:
+                    # Abandon writes the invocation's cancelled terminal
+                    # status; the enclosing finally unregisters only after
+                    # it, so a declared notify on that status still fires.
                     await self._abandon_superseded_recovery_fire(
                         inv_id, orphan_id=supersedes_run_id
                     )
-                finally:
-                    _unregister_schedule_notify(notify_scope)
-                return
-            if rate_limit_claim is not None:
-                # The durable row now accounts for this fire across process
-                # restarts; keeping the in-memory reservation would count it twice.
-                rate_limit_claim.release()
-            written = await self._svc.update_status(
-                "schedule_run",
-                run_id,
-                new_status="failed",
-                reason_code=RunReasons.FAILED_EXCEPTION,
-                reason_summary=f"{type(exc).__name__}: {exc}",
-                evidence_refs=[{"kind": "schedule", "id": sid}],
-                source="executor",
-                actor=run_id,
-                metadata={"exception_class": type(exc).__name__},
-            )
-            if written:
-                await self._dispatch_signal(
-                    build_schedule_run_signal(
-                        entity_id=run_id,
-                        new_status="failed",
-                        reason_code=RunReasons.FAILED_EXCEPTION,
-                        schedule_id=sid,
-                        action_kind=schedule.get("action_kind", ""),
-                        chain_depth=chain_depth,
-                        trigger_context=trigger_context,
-                        error_detail=f"{type(exc).__name__}: {exc}",
+                    return
+                if rate_limit_claim is not None:
+                    # The durable row now accounts for this fire across process
+                    # restarts; keeping the in-memory reservation would count it twice.
+                    rate_limit_claim.release()
+                written = await self._svc.update_status(
+                    "schedule_run",
+                    run_id,
+                    new_status="failed",
+                    reason_code=RunReasons.FAILED_EXCEPTION,
+                    reason_summary=f"{type(exc).__name__}: {exc}",
+                    evidence_refs=[{"kind": "schedule", "id": sid}],
+                    source="executor",
+                    actor=run_id,
+                    metadata={"exception_class": type(exc).__name__},
+                )
+                if written:
+                    await self._dispatch_signal(
+                        build_schedule_run_signal(
+                            entity_id=run_id,
+                            new_status="failed",
+                            reason_code=RunReasons.FAILED_EXCEPTION,
+                            schedule_id=sid,
+                            action_kind=schedule.get("action_kind", ""),
+                            chain_depth=chain_depth,
+                            trigger_context=trigger_context,
+                            error_detail=f"{type(exc).__name__}: {exc}",
+                        )
                     )
+                inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
+                    self._svc, inv_id, fallback_status="failed", exception=exc
                 )
-            inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
-                self._svc, inv_id, fallback_status="failed", exception=exc
-            )
-            await self._svc.update_invocation(inv_id, ended_at=_end_time)
-            inv_written = await self._guarded_terminal_status(
-                "invocation",
-                inv_id,
-                new_status=inv_status,
-                reason_code=inv_rc,
-                reason_summary=inv_rs,
-                evidence_refs=inv_ev,
-                source="executor",
-                actor=inv_id,
-                metadata=inv_meta,
-            )
-            if inv_written:
-                await flush_run_telemetry(
-                    self._svc, self._signal_bus, run_id=run_id, invocation_id=inv_id
+                await self._svc.update_invocation(inv_id, ended_at=_end_time)
+                inv_written = await self._guarded_terminal_status(
+                    "invocation",
+                    inv_id,
+                    new_status=inv_status,
+                    reason_code=inv_rc,
+                    reason_summary=inv_rs,
+                    evidence_refs=inv_ev,
+                    source="executor",
+                    actor=inv_id,
+                    metadata=inv_meta,
                 )
-            else:
-                # Another finalizer already wrote this invocation's terminal
-                # status, so no flush happens here -- but a schedule_run
-                # signal was still minted onto the bus above. Drop its
-                # counters now instead of letting them sit in the bus's
-                # per-run_id map forever (it never gets a second flush call
-                # for this run_id to consume them).
-                self._signal_bus.pop_run_counters(run_id)
-            # last_fired_at/next_fire_at (and any extra_schedule_fields)
-            # already landed atomically with the occurrence insert above.
-            await self._check_max_runs(schedule, chain_depth)
-            _unregister_schedule_notify(notify_scope)
-            return
+                if inv_written:
+                    await flush_run_telemetry(
+                        self._svc, self._signal_bus, run_id=run_id, invocation_id=inv_id
+                    )
+                else:
+                    # Another finalizer already wrote this invocation's terminal
+                    # status, so no flush happens here -- but a schedule_run
+                    # signal was still minted onto the bus above. Drop its
+                    # counters now instead of letting them sit in the bus's
+                    # per-run_id map forever (it never gets a second flush call
+                    # for this run_id to consume them).
+                    self._signal_bus.pop_run_counters(run_id)
+                # last_fired_at/next_fire_at (and any extra_schedule_fields)
+                # already landed atomically with the occurrence insert above.
+                await self._check_max_runs(schedule, chain_depth)
+                return
+            finally:
+                _unregister_schedule_notify(notify_scope)
 
         # Ensure the flow_yaml tmp file is removed on any exception or
         # cancellation in the DB ops below, before spawn_and_wait() runs.

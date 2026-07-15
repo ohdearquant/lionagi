@@ -233,6 +233,58 @@ async def test_abandonment_failure_still_unregisters():
 
 
 @pytest.mark.asyncio
+async def test_invalid_argv_terminal_write_failure_still_unregisters():
+    """On the invalid-action path with an accepted occurrence write, a
+    failing schedule_run terminal write must not leak the registration."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_engine_svc()
+    svc.update_status = AsyncMock(side_effect=RuntimeError("terminal write failed"))
+    engine = SchedulerEngine(svc=svc)
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            side_effect=RuntimeError("bad argv"),
+        ),
+        pytest.raises(RuntimeError, match="terminal write failed"),
+    ):
+        await engine._fire_inner(
+            _notify_schedule(),
+            "run-notify-4",
+            trigger_context={"scheduled": True},
+        )
+
+    assert _notify_registration_names() == []
+
+
+@pytest.mark.asyncio
+async def test_occurrence_write_failure_on_invalid_argv_still_unregisters():
+    """Same path, one step earlier: the occurrence write itself failing must
+    not leak the registration either."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_engine_svc()
+    svc.create_schedule_run_and_advance = AsyncMock(side_effect=RuntimeError("occurrence failed"))
+    engine = SchedulerEngine(svc=svc)
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            side_effect=RuntimeError("bad argv"),
+        ),
+        pytest.raises(RuntimeError, match="occurrence failed"),
+    ):
+        await engine._fire_inner(
+            _notify_schedule(),
+            "run-notify-5",
+            trigger_context={"scheduled": True},
+        )
+
+    assert _notify_registration_names() == []
+
+
+@pytest.mark.asyncio
 async def test_create_invocation_failure_does_not_leak_registration():
     """An exception before the invocation row exists must drop the notify
     registration on the way out instead of leaving it in the process-wide
