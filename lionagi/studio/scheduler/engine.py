@@ -704,17 +704,48 @@ class SchedulerEngine:
                     schedule.get("id"),
                 )
                 return
-        run_id = uuid.uuid4().hex[:12]
-        _log.info(
-            "Missed fire recovery for schedule %s (%s)",
-            schedule["name"],
-            schedule["id"],
-        )
-        self._tracked_fire(
-            schedule,
-            run_id,
-            trigger_context={"missed_recovery": True, "fired_at": now},
-        )
+        # Recovery goes through the same admission claims as a normal tick
+        # fire -- without the max_runs reservation, a concurrent fire_now()
+        # (or a re-apply racing this queued recovery) could observe zero
+        # durable runs, take the sole claim, and admit a second execution.
+        rate_claim: _RateLimitClaim | None = None
+        claim: _MaxRunsClaim | None = None
+        slot_claim: _GlobalSlotClaim | None = None
+        handed_off = False
+        try:
+            rate_allowed, rate_claim = await self._reserve_rate_limit(schedule, now=now)
+            if not rate_allowed:
+                return
+            allowed, claim = await self._reserve_max_runs_budget(schedule)
+            if not allowed:
+                await self._svc.update_schedule(schedule["id"], enabled=0)
+                return
+            slot_allowed, slot_claim = await self._reserve_global_slot()
+            if not slot_allowed:
+                return
+            run_id = uuid.uuid4().hex[:12]
+            _log.info(
+                "Missed fire recovery for schedule %s (%s)",
+                schedule["name"],
+                schedule["id"],
+            )
+            self._tracked_fire(
+                schedule,
+                run_id,
+                trigger_context={"missed_recovery": True, "fired_at": now},
+                rate_limit_claim=rate_claim,
+                max_runs_claim=claim,
+                global_slot_claim=slot_claim,
+            )
+            handed_off = True
+        finally:
+            if not handed_off:
+                if rate_claim is not None:
+                    rate_claim.release()
+                if claim is not None:
+                    claim.release()
+                if slot_claim is not None:
+                    slot_claim.release()
 
     async def _record_missed_fire_skip(self, schedule: dict, now: float) -> None:
         """Record missed-fire skip and advance next_fire_at."""

@@ -1307,6 +1307,40 @@ async def test_recover_missed_fire_run_once_reserves_cleared_next_fire_for_at_tr
 
 
 @pytest.mark.asyncio
+async def test_recovery_claim_blocks_racing_fire_now_on_max_runs_one():
+    """A queued recovery holds the max_runs claim, so a fire_now() racing it
+    (before the recovery task's occurrence row lands) must be refused --
+    otherwise an 'at' schedule's forced max_runs=1 admits two executions."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(
+        trigger_type="at",
+        cron_expr=None,
+        max_runs=1,
+        next_fire_at=time.time() - 60,
+    )
+    svc.get_schedule = AsyncMock(return_value=schedule)
+
+    fired: list[str] = []
+    # Recovery hands its claims to the (stubbed) fire task without releasing
+    # them -- exactly the window fire_now can race into.
+    engine._tracked_fire = lambda sched, run_id, **kw: fired.append(run_id)
+
+    await engine._recover_missed_fire_run_once(schedule, time.time())
+    assert len(fired) == 1
+
+    with pytest.raises(ValueError, match="max_runs"):
+        await engine.fire_now(schedule["id"])
+
+    # No second execution admitted.
+    assert len(fired) == 1
+    svc.create_invocation.assert_not_awaited()
+    svc.create_schedule_run_and_advance.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_maybe_fire_at_trigger_already_fired_refused_by_max_runs_gate():
     """Re-applying an unchanged/edited 'at' member resets next_fire_at to
     the past due instant again, but must not actually re-fire: the same
