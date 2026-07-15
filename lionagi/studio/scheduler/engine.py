@@ -1800,28 +1800,34 @@ class SchedulerEngine:
         notify_scope = _register_schedule_notify(
             inv_id, schedule.get("notify_on"), schedule.get("notify_command")
         )
-        # Record what was actually sent, not the raw {{var}} template: the
-        # operator-facing invocation should show the substituted prompt.
-        rendered_prompt = _subprocess.render_action_prompt(schedule, trigger_context)
-        await self._svc.create_invocation(
-            {
-                "id": inv_id,
-                "skill": f"scheduled:{schedule['name']}",
-                "plugin": schedule["trigger_type"],
-                # An explicit None check (not `or`) matters here: a template
-                # can render to "" (e.g. an empty trigger_context value),
-                # which build_argv sends to the child as-is. Falling back to
-                # action_playbook on an empty-but-rendered prompt would
-                # persist a value that differs from what was actually sent.
-                "prompt": (
-                    rendered_prompt
-                    if rendered_prompt is not None
-                    else schedule.get("action_playbook")
-                ),
-                "started_at": now,
-                "status": "running",
-            }
-        )
+        try:
+            # Record what was actually sent, not the raw {{var}} template: the
+            # operator-facing invocation should show the substituted prompt.
+            rendered_prompt = _subprocess.render_action_prompt(schedule, trigger_context)
+            await self._svc.create_invocation(
+                {
+                    "id": inv_id,
+                    "skill": f"scheduled:{schedule['name']}",
+                    "plugin": schedule["trigger_type"],
+                    # An explicit None check (not `or`) matters here: a template
+                    # can render to "" (e.g. an empty trigger_context value),
+                    # which build_argv sends to the child as-is. Falling back to
+                    # action_playbook on an empty-but-rendered prompt would
+                    # persist a value that differs from what was actually sent.
+                    "prompt": (
+                        rendered_prompt
+                        if rendered_prompt is not None
+                        else schedule.get("action_playbook")
+                    ),
+                    "started_at": now,
+                    "status": "running",
+                }
+            )
+        except BaseException:
+            # No invocation row exists yet, so no terminal transition can
+            # ever fire for this registration; drop it before propagating.
+            _unregister_schedule_notify(notify_scope)
+            raise
 
         try:
             # kind='command' spawns an allow-listed executable directly, never
@@ -1877,8 +1883,11 @@ class SchedulerEngine:
                 supersedes_run_id=supersedes_run_id,
             )
             if not written_occurrence:
-                _unregister_schedule_notify(notify_scope)
+                # Abandon writes the invocation's cancelled terminal status;
+                # unregister only afterwards so a declared notify on that
+                # status still fires.
                 await self._abandon_superseded_recovery_fire(inv_id, orphan_id=supersedes_run_id)
+                _unregister_schedule_notify(notify_scope)
                 return
             if rate_limit_claim is not None:
                 # The durable row now accounts for this fire across process
