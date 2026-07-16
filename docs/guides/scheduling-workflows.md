@@ -13,6 +13,11 @@ li studio start          # backend on 127.0.0.1:8765
 curl -s 127.0.0.1:8765/api/admin/health   # verify it is up
 ```
 
+`li studio start` runs the server in the **foreground** — it does not daemonize.
+Run it under your init system (launchd/systemd) or detach it yourself
+(`setsid`/`start_new_session`) for anything long-lived; a terminal or task
+runner that later reaps its children takes every schedule down with it.
+
 ## One-off schedules: typed quick-create
 
 The fastest way to schedule a single thing. Each action kind is a subcommand with
