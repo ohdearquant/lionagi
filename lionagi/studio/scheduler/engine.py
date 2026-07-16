@@ -1152,8 +1152,25 @@ class SchedulerEngine:
         sid = schedule["id"]
         async with self._max_runs_lock:
             inflight = self._max_runs_inflight.get(sid, 0)
-            used = await self._svc.count_schedule_runs(sid, chain_depth=0)
-            if used + inflight >= max_runs:
+            terminal = await self._svc.count_schedule_runs(sid, chain_depth=0)
+            # A fired run consumes budget the moment it fires, not when it
+            # resolves — so in-flight 'running' rows must count too, or a
+            # bounded schedule under overlap_policy=allow admits fires past
+            # its budget while a long action is still executing. But a fire
+            # mid-execution is visible BOTH as a held claim and as a
+            # 'running' row, so summing all three (terminal + inflight +
+            # running) would count that one fire twice and starve the
+            # remaining budget. max() counts each fire exactly once
+            # whichever representation it currently has: claim-only (row not
+            # yet written), claim + running row, or running row alone (claim
+            # already released, action still executing).
+            fired = await self._svc.count_schedule_runs(
+                sid,
+                chain_depth=0,
+                statuses=("running", "completed", "failed", "timed_out", "cancelled"),
+            )
+            used = max(terminal + inflight, fired)
+            if used >= max_runs:
                 return False, None
             self._max_runs_inflight[sid] = inflight + 1
             return True, _MaxRunsClaim(self, sid)

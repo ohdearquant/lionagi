@@ -2935,7 +2935,7 @@ class StateDB:
         schedule_id: str,
         *,
         chain_depth: int = 0,
-        statuses: tuple[str, ...] = ("completed", "failed", "cancelled"),
+        statuses: tuple[str, ...] = ("completed", "failed", "cancelled", "timed_out"),
         fired_after: float | None = None,
     ) -> int:
         """Count runs that actually fired and reached a terminal status.
@@ -2943,7 +2943,10 @@ class StateDB:
         Used for max_runs bookkeeping: chain_depth=0 excludes on_success/
         on_fail chain children (they don't consume the parent's budget), and
         the default status set excludes 'skipped' (missed-fire/overlap skips
-        never ran) and 'running' (not yet terminal).
+        never ran) and 'running' (not yet terminal). 'timed_out' counts: a
+        reaped run fired and consumed real work — a bounded (max_runs) or
+        one-shot schedule must not silently re-fire because its only run
+        timed out instead of completing.
         """
         placeholders = ", ".join(f":status{i}" for i in range(len(statuses)))
         params: dict[str, Any] = {"schedule_id": schedule_id, "chain_depth": chain_depth}
@@ -2961,7 +2964,7 @@ class StateDB:
         schedule_ids: list[str],
         *,
         chain_depth: int = 0,
-        statuses: tuple[str, ...] = ("completed", "failed", "cancelled"),
+        statuses: tuple[str, ...] = ("completed", "failed", "cancelled", "timed_out"),
     ) -> dict[str, int]:
         """Batched form of count_schedule_runs — one query for many schedule_ids."""
         if not schedule_ids:
