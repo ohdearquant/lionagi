@@ -100,6 +100,7 @@ AGENT_HELP_FLAGS = [
     "--fast",
     "--form",
     "--help",
+    "--image",
     "--invocation",
     "--list-profiles",
     "--notify",
