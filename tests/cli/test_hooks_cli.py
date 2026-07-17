@@ -142,6 +142,15 @@ def test_trust_lists_and_records_pending_commands(capsys, tmp_path, monkeypatch)
     assert code == 0
     capsys.readouterr()
 
+    # Content pinning (D7) requires a real, resolvable executable at trust
+    # time -- create the relative-path hook script CLAUDE_SETTINGS
+    # references (`./hooks/hygiene`); `uv` (the other imported command) is
+    # already a real PATH-resolved binary in this environment.
+    hygiene = tmp_path / "hooks" / "hygiene"
+    hygiene.parent.mkdir(parents=True, exist_ok=True)
+    hygiene.write_text("#!/bin/sh\nexit 0\n")
+    hygiene.chmod(0o755)
+
     code = cli_main(["hooks", "trust", "--cwd", str(tmp_path), "--yes"])
     assert code == 0
     out = capsys.readouterr().out
@@ -247,3 +256,99 @@ def test_trust_rejects_various_malformed_argv_shapes(capsys, tmp_path, bad_comma
 
     trusted = read_user_settings().get("trusted_hook_commands", [])
     assert compute_command_hash(bad_command) not in trusted
+
+
+# ---------------------------------------------------------------------------
+# Content-pinned trust records (Issue 3 fix), exercised through the CLI.
+# ---------------------------------------------------------------------------
+
+
+def test_trust_rejects_unresolvable_executable_instead_of_recording_it(capsys, tmp_path):
+    """A syntactically valid command whose executable does not exist right
+    now must be rejected, not silently recorded as pending -- content
+    pinning (D7) cannot pin what it cannot resolve."""
+    settings_path = tmp_path / ".lionagi" / "settings.yaml"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(
+        yaml.safe_dump(
+            {
+                "hooks_external": {
+                    "PreToolUse": [
+                        {"hooks": [{"command": ["./does-not-exist"], "source": "imported:claude"}]}
+                    ]
+                }
+            }
+        )
+    )
+
+    code = cli_main(["hooks", "trust", "--cwd", str(tmp_path), "--yes"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "rejected" in out
+    assert "no pending" in out
+    assert read_user_settings().get("trusted_hook_commands", []) == []
+
+
+def test_trust_records_are_content_pinned_not_bare_argv_hashes(tmp_path):
+    """The record `li hooks trust` writes carries argv_hash, resolved_path,
+    AND content_digest -- not the pre-fix bare argv-hash string."""
+    script = tmp_path / "guard"
+    script.write_text("#!/bin/sh\nexit 0\n")
+    script.chmod(0o755)
+    settings_path = tmp_path / ".lionagi" / "settings.yaml"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(
+        yaml.safe_dump(
+            {
+                "hooks_external": {
+                    "PreToolUse": [
+                        {"hooks": [{"command": ["./guard"], "source": "imported:claude"}]}
+                    ]
+                }
+            }
+        )
+    )
+
+    assert cli_main(["hooks", "trust", "--cwd", str(tmp_path), "--yes"]) == 0
+
+    trusted = read_user_settings().get("trusted_hook_commands", [])
+    assert len(trusted) == 1
+    record = trusted[0]
+    assert set(record) == {"argv_hash", "resolved_path", "content_digest"}
+    assert record["resolved_path"] == str(script.resolve())
+
+
+def test_trust_re_enters_pending_after_approved_executable_content_changes(tmp_path):
+    """Matches the ADR-0048 D7 rule ('a changed argv changes the hash and
+    re-enters pending state') extended to content: an unchanged argv whose
+    resolved executable's BYTES change must also re-enter pending, not
+    silently keep running under the stale approval."""
+    script = tmp_path / "guard"
+    script.write_text("#!/bin/sh\nexit 0\n")
+    script.chmod(0o755)
+    settings_path = tmp_path / ".lionagi" / "settings.yaml"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(
+        yaml.safe_dump(
+            {
+                "hooks_external": {
+                    "PreToolUse": [
+                        {"hooks": [{"command": ["./guard"], "source": "imported:claude"}]}
+                    ]
+                }
+            }
+        )
+    )
+    assert cli_main(["hooks", "trust", "--cwd", str(tmp_path), "--yes"]) == 0
+    assert len(read_user_settings().get("trusted_hook_commands", [])) == 1
+
+    # Swap the approved script's contents without changing argv.
+    script.write_text("#!/bin/sh\necho different\nexit 0\n")
+    script.chmod(0o755)
+
+    from lionagi.cli.hooks import _iter_untrusted_commands
+    from lionagi.hooks.external import is_command_trusted
+
+    assert is_command_trusted(["./guard"], source="imported:claude", cwd=str(tmp_path)) is False
+    pending, _ = _iter_untrusted_commands(tmp_path)
+    assert len(pending) == 1

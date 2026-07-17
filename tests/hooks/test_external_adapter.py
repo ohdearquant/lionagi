@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -16,9 +18,12 @@ from lionagi.hooks.external import (
     ExternalHookConfigError,
     build_envelope,
     compute_command_hash,
+    compute_executable_digest,
+    compute_trust_record,
     external_hook_adapter,
     is_command_trusted,
     match_hook,
+    resolve_hook_executable,
     validate_argv,
 )
 from lionagi.protocols.action.tool_hooks import ToolPostDecision, ToolPreDecision
@@ -143,7 +148,7 @@ def test_match_hook_unanchored_regex_fallback():
 
 
 # ---------------------------------------------------------------------------
-# Trust gate (D7)
+# Trust gate (D7): content-pinned to the resolved executable, not argv alone
 # ---------------------------------------------------------------------------
 
 
@@ -153,20 +158,103 @@ def test_is_command_trusted_no_source_is_project_authored():
 
 def test_is_command_trusted_imported_without_record_is_untrusted(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
-    assert is_command_trusted(["guard"], source="imported:claude") is False
+    assert is_command_trusted(["guard"], source="imported:claude", cwd=str(tmp_path)) is False
 
 
-def test_is_command_trusted_imported_with_matching_hash(monkeypatch, tmp_path):
+def test_is_command_trusted_imported_with_matching_record(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     from lionagi.plugins._user_settings import write_user_settings
 
-    command = ["guard", "--check"]
-    write_user_settings({"trusted_hook_commands": [compute_command_hash(command)]})
-    assert is_command_trusted(command, source="imported:claude") is True
+    command = [sys.executable, "-c", "pass"]
+    record = compute_trust_record(command, cwd=str(tmp_path))
+    write_user_settings({"trusted_hook_commands": [record]})
+    assert is_command_trusted(command, source="imported:claude", cwd=str(tmp_path)) is True
 
 
 def test_command_hash_changes_with_argv():
     assert compute_command_hash(["a", "b"]) != compute_command_hash(["a", "c"])
+
+
+# ---------------------------------------------------------------------------
+# Content-pinned trust (Issue 3 fix): resolution, digesting, and the exact
+# attack this closes -- an argv-only-hashed approval carrying over to a
+# different resolved executable.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_hook_executable_relative_path(tmp_path):
+    script = tmp_path / "guard"
+    script.write_text("#!/bin/sh\nexit 0\n")
+    script.chmod(0o755)
+    resolved = resolve_hook_executable(["./guard"], str(tmp_path))
+    assert resolved == script.resolve()
+
+
+def test_resolve_hook_executable_relative_path_missing_raises(tmp_path):
+    with pytest.raises(ExternalHookConfigError, match="not found or not executable"):
+        resolve_hook_executable(["./guard"], str(tmp_path))
+
+
+def test_resolve_hook_executable_path_resolved_bare_name(tmp_path, monkeypatch):
+    script = tmp_path / "myguard"
+    script.write_text("#!/bin/sh\nexit 0\n")
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    resolved = resolve_hook_executable(["myguard"], str(tmp_path))
+    assert resolved == script.resolve()
+
+
+def test_resolve_hook_executable_bare_name_not_on_path_raises(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path))  # empty dir, nothing on PATH
+    with pytest.raises(ExternalHookConfigError, match="not found on PATH"):
+        resolve_hook_executable(["myguard"], str(tmp_path))
+
+
+def test_compute_trust_record_content_pinning_detects_digest_change(tmp_path):
+    script = tmp_path / "guard"
+    script.write_text("#!/bin/sh\nexit 0\n")
+    script.chmod(0o755)
+    before = compute_trust_record(["./guard"], str(tmp_path))
+
+    script.write_text("#!/bin/sh\necho attacker-controlled\nexit 0\n")
+    script.chmod(0o755)
+    after = compute_trust_record(["./guard"], str(tmp_path))
+
+    # argv identity (the old, insufficient trust key) is unchanged...
+    assert before["argv_hash"] == after["argv_hash"]
+    assert before["resolved_path"] == after["resolved_path"]
+    # ...but the content digest of the resolved executable is not -- this is
+    # the exact gap the content-pinning fix closes.
+    assert before["content_digest"] != after["content_digest"]
+    assert compute_executable_digest(script) == after["content_digest"]
+
+
+def test_trust_does_not_carry_over_when_relative_command_resolves_elsewhere(monkeypatch, tmp_path):
+    """The exact attack in the verdict: a prior approval of `["./guard"]` in
+    one directory must not authorize a DIFFERENT `./guard` that the same argv
+    resolves to in a different directory (or after the file at that path
+    changed) -- content pinning, not argv-only hashing, must gate this."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from lionagi.plugins._user_settings import write_user_settings
+
+    approved_dir = tmp_path / "approved"
+    approved_dir.mkdir()
+    approved_script = approved_dir / "guard"
+    approved_script.write_text("#!/bin/sh\nexit 0\n")
+    approved_script.chmod(0o755)
+
+    record = compute_trust_record(["./guard"], str(approved_dir))
+    write_user_settings({"trusted_hook_commands": [record]})
+    assert is_command_trusted(["./guard"], source="imported:claude", cwd=str(approved_dir)) is True
+
+    attacker_dir = tmp_path / "attacker"
+    attacker_dir.mkdir()
+    attacker_script = attacker_dir / "guard"
+    attacker_script.write_text("#!/bin/sh\necho pwned\nexit 0\n")
+    attacker_script.chmod(0o755)
+
+    # Same argv (["./guard"]), a DIFFERENT resolved+content-digested executable.
+    assert is_command_trusted(["./guard"], source="imported:claude", cwd=str(attacker_dir)) is False
 
 
 # ---------------------------------------------------------------------------
@@ -488,10 +576,13 @@ async def test_trusted_imported_pre_tool_use_executes(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     from lionagi.plugins._user_settings import write_user_settings
 
-    command = ["guard"]
-    write_user_settings({"trusted_hook_commands": [compute_command_hash(command)]})
+    command = [sys.executable, "-c", "pass"]
+    record = compute_trust_record(command, cwd=str(tmp_path))
+    write_user_settings({"trusted_hook_commands": [record]})
     monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=_mock_proc(0)))
-    hook = external_hook_adapter(event="PreToolUse", command=command, source="imported:claude")
+    hook = external_hook_adapter(
+        event="PreToolUse", command=command, source="imported:claude", cwd=str(tmp_path)
+    )
     result = await hook("bash", {"command": ["ls"]})
     assert result.decision == "allow"
 

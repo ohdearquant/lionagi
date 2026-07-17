@@ -28,7 +28,9 @@ import contextlib
 import hashlib
 import json
 import logging
+import os
 import re
+import shutil
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,9 +49,12 @@ __all__ = (
     "HookVerdict",
     "build_envelope",
     "compute_command_hash",
+    "compute_executable_digest",
+    "compute_trust_record",
     "external_hook_adapter",
     "is_command_trusted",
     "match_hook",
+    "resolve_hook_executable",
     "validate_argv",
 )
 
@@ -107,24 +112,124 @@ def validate_argv(command: Any) -> list[str]:
 
 
 def compute_command_hash(command: list[str]) -> str:
-    """``sha256(json.dumps(argv))`` -- the trust-record key for one hook command."""
+    """``sha256(json.dumps(argv))`` -- identifies the *approval request*, not
+    the executable that will run. Kept as an argv-identity key inside the
+    fuller :func:`compute_trust_record`; never sufficient on its own to admit
+    execution (see D7 note on content pinning below)."""
     return hashlib.sha256(json.dumps(command).encode()).hexdigest()
 
 
-def is_command_trusted(command: list[str], *, source: str | None) -> bool:
-    """Loader trust rule: an entry with no ``source`` is project/user-authored
-    and trusted as code; any non-empty ``source`` (``imported:claude``,
-    ``imported:codex``, ...) requires the argv hash to already be recorded in
-    ``~/.lionagi/settings.yaml``'s ``trusted_hook_commands``.
+def resolve_hook_executable(command: list[str], cwd: str) -> Path:
+    """Resolve ``command[0]`` to the absolute executable path that will
+    actually spawn, using the same lookup rule ``create_subprocess_exec``
+    delegates to ``execvp``: a name containing a path separator resolves
+    relative to *cwd* and is never PATH-searched; a bare name is searched on
+    ``PATH`` only (never implicitly relative to *cwd*).
+
+    Raises :class:`ExternalHookConfigError` when the resolved path does not
+    exist, is not a file, is not executable, or (for a bare name) is not
+    found on ``PATH`` -- an unresolvable command can never be pinned or
+    trusted.
+    """
+    name = command[0]
+    if os.sep in name or (os.altsep and os.altsep in name):
+        candidate = (Path(cwd) / name).resolve()
+        if not candidate.is_file() or not os.access(candidate, os.X_OK):
+            raise ExternalHookConfigError(
+                f"hooks_external: executable not found or not executable: {candidate}"
+            )
+        return candidate
+    found = shutil.which(name)
+    if found is None:
+        raise ExternalHookConfigError(f"hooks_external: executable {name!r} not found on PATH")
+    return Path(found).resolve()
+
+
+def compute_executable_digest(path: Path) -> str:
+    """``sha256`` over the resolved executable's file bytes -- the content
+    half of the trust pin. A same-path substitution (the file at *path* is
+    replaced after approval, e.g. a repo's ``./guard`` swapped for an
+    attacker's binary, or a PATH entry reordered onto a different same-named
+    binary) changes this digest even though ``resolve_hook_executable``
+    returns the same path string."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def compute_trust_record(command: list[str], cwd: str) -> dict[str, str]:
+    """Build the full content-pinned trust record for one approval: the argv
+    hash (identifies the approval request), plus the resolved executable's
+    absolute path and content digest (identifies what will actually run).
+    Raises :class:`ExternalHookConfigError` if *command* cannot be resolved
+    to an executable right now.
+    """
+    resolved = resolve_hook_executable(command, cwd)
+    return {
+        "argv_hash": compute_command_hash(command),
+        "resolved_path": str(resolved),
+        "content_digest": compute_executable_digest(resolved),
+    }
+
+
+def _trust_status(command: list[str], *, source: str | None, cwd: str) -> tuple[bool, str]:
+    """Loader trust rule (ADR-0048 D7, content-pinned): an entry with no
+    ``source`` is project/user-authored and trusted as code; any non-empty
+    ``source`` (``imported:claude``, ``imported:codex``, ...) requires a
+    trust record in ``~/.lionagi/settings.yaml``'s ``trusted_hook_commands``
+    whose argv hash, resolved executable path, AND content digest all match
+    *command* as it resolves right now -- a prior approval of ``["./guard"]``
+    does NOT carry over if the executable it resolves to, or that
+    executable's bytes, have changed since approval (the flaw this closes:
+    argv-only hashing let a different repository's or a later PATH-resolved
+    ``./guard`` run under a stale approval).
+
+    Returns ``(trusted, reason)``; *reason* is empty when trusted.
     """
     if not source:
-        return True
+        return True, ""
     from lionagi.plugins._user_settings import read_user_settings
 
     trusted = read_user_settings().get("trusted_hook_commands", [])
     if not isinstance(trusted, list):
-        return False
-    return compute_command_hash(command) in trusted
+        trusted = []
+    try:
+        current = compute_trust_record(command, cwd)
+    except ExternalHookConfigError as exc:
+        return False, f"untrusted hook command {command!r} (source={source!r}): {exc}"
+
+    argv_matches = [
+        record
+        for record in trusted
+        if isinstance(record, dict) and record.get("argv_hash") == current["argv_hash"]
+    ]
+    for record in argv_matches:
+        if (
+            record.get("resolved_path") == current["resolved_path"]
+            and record.get("content_digest") == current["content_digest"]
+        ):
+            return True, ""
+    if argv_matches:
+        return False, (
+            f"hook command {command!r} (source={source!r}) resolves to a different "
+            f"executable than was approved (now: {current['resolved_path']!r}); the "
+            "approved path or its contents changed since `li hooks trust` -- fails "
+            "closed, this is not the executable that was reviewed"
+        )
+    return False, f"untrusted hook command {command!r} (source={source!r})"
+
+
+def is_command_trusted(command: list[str], *, source: str | None, cwd: str | None = None) -> bool:
+    """Boolean form of :func:`_trust_status` -- see its docstring for the
+    content-pinned matching rule. *cwd* defaults to the process's current
+    working directory when omitted (only reached when *source* is falsy,
+    where no resolution happens at all)."""
+    trusted, _ = _trust_status(
+        command, source=source, cwd=cwd if cwd is not None else str(Path.cwd())
+    )
+    return trusted
 
 
 def match_hook(matcher: str | None, subject: str) -> bool:
@@ -364,11 +469,12 @@ def external_hook_adapter(
     blocking = event in BLOCKING_EVENTS
 
     async def _guarded_execute(envelope: dict[str, Any]) -> HookVerdict:
-        if not is_command_trusted(command, source=source):
-            reason = (
-                f"untrusted hook command {command!r} (source={source!r}); "
-                "run `li hooks trust` to approve it"
-            )
+        # Re-resolved every call, not cached from adapter construction: the
+        # executable a relative/PATH-searched command resolves to can change
+        # between approval and this exact invocation (D7 content pinning).
+        trusted, reason = _trust_status(command, source=source, cwd=resolved_cwd)
+        if not trusted:
+            reason = f"{reason}; run `li hooks trust` to approve it"
             return HookVerdict(outcome="deny" if blocking else "error", reason=reason)
         return await _execute_hook(
             argv=command, envelope=envelope, timeout=timeout, blocking=blocking

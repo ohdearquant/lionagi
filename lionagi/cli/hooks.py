@@ -10,10 +10,14 @@ one-shot import, not a live read: editing the foreign config afterward has no
 effect until ``li hooks import`` runs again.
 
 ``li hooks trust`` lists every imported command hook that has no matching
-hash record yet and, on confirmation, records
-``sha256(json.dumps(argv))`` for each into ``~/.lionagi/settings.yaml``'s
-``trusted_hook_commands`` list -- the same file/key the loader reads at
-execution time.
+trust record yet and, on confirmation, records a content-pinned approval for
+each into ``~/.lionagi/settings.yaml``'s ``trusted_hook_commands`` list --
+the same file/key the loader reads at execution time. Each record pins the
+argv hash, the resolved absolute executable path, AND a sha256 digest of
+that executable's bytes (``lionagi.hooks.external.compute_trust_record``):
+a prior approval does not carry over if the command later resolves to a
+different executable, or that executable's contents change, even when the
+argv is unchanged.
 """
 
 from __future__ import annotations
@@ -246,16 +250,24 @@ def _run_import(source: str, path: str | None, cwd: str | None) -> int:
 def _iter_untrusted_commands(
     project_dir: Path,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Return ``(pending, rejected)``: pending trust candidates plus a report
-    line per malformed candidate that ``validate_argv`` rejected -- a
-    malformed command (empty argv, a blank/non-string entry, ...) is never
-    added to ``pending``, so it can never be hash-recorded as trusted.
+    """Return ``(pending, rejected)``: pending trust candidates -- each
+    carrying the full content-pinned trust record (argv hash, resolved
+    executable path, content digest; see
+    ``lionagi.hooks.external.compute_trust_record``) -- plus a report line
+    per candidate that could not be validated or resolved.
+
+    A malformed command (empty argv, a blank/non-string entry, ...) is
+    rejected by ``validate_argv``. A syntactically valid command whose
+    ``argv[0]`` cannot be resolved to an executable right now (missing file,
+    not executable, not found on ``PATH``) is rejected too -- content pinning
+    means an unresolvable command can never be hash-recorded as trusted.
+    Neither ever reaches ``pending``.
     """
     import yaml
 
     from lionagi.hooks.external import (
         ExternalHookConfigError,
-        compute_command_hash,
+        compute_trust_record,
         is_command_trusted,
         validate_argv,
     )
@@ -270,7 +282,7 @@ def _iter_untrusted_commands(
 
     pending: list[dict[str, Any]] = []
     rejected: list[str] = []
-    seen_hashes: set[str] = set()
+    seen: set[tuple[str, str, str]] = set()
     for event, groups in hooks_external.items():
         if not isinstance(groups, list):
             groups = [groups]
@@ -292,15 +304,18 @@ def _iter_untrusted_commands(
                 except ExternalHookConfigError as exc:
                     rejected.append(f"[{event}] source={source!r} command={command!r}: {exc}")
                     continue
-                if is_command_trusted(command, source=source):
+                try:
+                    record = compute_trust_record(command, str(project_dir))
+                except ExternalHookConfigError as exc:
+                    rejected.append(f"[{event}] source={source!r} command={command!r}: {exc}")
                     continue
-                command_hash = compute_command_hash(command)
-                if command_hash in seen_hashes:
+                if is_command_trusted(command, source=source, cwd=str(project_dir)):
                     continue
-                seen_hashes.add(command_hash)
-                pending.append(
-                    {"event": event, "command": command, "source": source, "hash": command_hash}
-                )
+                key = (record["argv_hash"], record["resolved_path"], record["content_digest"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                pending.append({"event": event, "command": command, "source": source, **record})
     return pending, rejected
 
 
@@ -317,10 +332,14 @@ def _run_trust(cwd: str | None, *, assume_yes: bool) -> int:
 
     print("The following imported hook commands are pending trust:")
     for p in pending:
-        print(f"  [{p['event']}] source={p['source']} argv={p['command']}")
+        print(f"  [{p['event']}] source={p['source']} argv={p['command']} -> {p['resolved_path']}")
 
     if not assume_yes:
-        answer = input("\nTrust all of the above (content-hash-pinned)? [y/N] ").strip().lower()
+        answer = (
+            input("\nTrust all of the above (content-pinned to their resolved executable)? [y/N] ")
+            .strip()
+            .lower()
+        )
         if answer not in ("y", "yes"):
             print("not trusted.")
             return 1
@@ -333,11 +352,16 @@ def _run_trust(cwd: str | None, *, assume_yes: bool) -> int:
 
     added = 0
     for p in pending:
-        if p["hash"] not in trusted:
-            trusted.append(p["hash"])
+        record = {
+            "argv_hash": p["argv_hash"],
+            "resolved_path": p["resolved_path"],
+            "content_digest": p["content_digest"],
+        }
+        if record not in trusted:
+            trusted.append(record)
             added += 1
     write_user_settings(settings)
-    print(f"trusted {added} command(s).")
+    print(f"trusted {added} command(s), content-pinned to their resolved executable.")
     return 0
 
 
