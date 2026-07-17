@@ -202,11 +202,44 @@ def test_multiple_entries_wire_independently():
 # ---------------------------------------------------------------------------
 
 
+class _FakeStream:
+    """Minimal async-read stand-in for a StreamReader: returns *data* on the
+    first ``read()`` call, then EOF -- matches how ``_read_capped``'s
+    read-until-empty loop drains a real pipe (see ``lionagi.hooks.external``)."""
+
+    def __init__(self, data: bytes = b""):
+        self._data = data
+        self._sent = False
+
+    async def read(self, n: int = -1) -> bytes:
+        if self._sent:
+            return b""
+        self._sent = True
+        return self._data
+
+
+class _FakeStdin:
+    def write(self, data: bytes) -> None:
+        pass
+
+    async def drain(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    async def wait_closed(self) -> None:
+        pass
+
+
 def _mock_proc(returncode: int, stdout: bytes = b"", stderr: bytes = b""):
     proc = MagicMock()
     proc.returncode = returncode
-    proc.communicate = AsyncMock(return_value=(stdout, stderr))
     proc.pid = 4242
+    proc.stdin = _FakeStdin()
+    proc.stdout = _FakeStream(stdout)
+    proc.stderr = _FakeStream(stderr)
+    proc.wait = AsyncMock(return_value=returncode)
     return proc
 
 

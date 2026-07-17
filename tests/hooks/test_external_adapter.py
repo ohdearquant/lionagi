@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sys
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -277,11 +279,54 @@ def test_adapter_rejects_invalid_argv():
 # ---------------------------------------------------------------------------
 
 
+class _FakeStream:
+    """Minimal async-read stand-in for a StreamReader: returns *data* on the
+    first ``read()`` call, then EOF (``b""``) forever after -- matches how
+    ``_read_capped``'s read-until-empty loop drains a real pipe. Set
+    *raises* to make ``read()`` raise instead (timeout simulation)."""
+
+    def __init__(self, data: bytes = b"", *, raises: BaseException | None = None):
+        self._data = data
+        self._sent = False
+        self._raises = raises
+
+    async def read(self, n: int = -1) -> bytes:
+        if self._raises is not None:
+            raise self._raises
+        if self._sent:
+            return b""
+        self._sent = True
+        return self._data
+
+
+class _FakeStdin:
+    """Captures what ``_write_stdin`` writes so tests can assert on the
+    envelope actually sent, without going through a real pipe."""
+
+    def __init__(self):
+        self.written = b""
+
+    def write(self, data: bytes) -> None:
+        self.written += data
+
+    async def drain(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    async def wait_closed(self) -> None:
+        pass
+
+
 def _mock_proc(returncode: int, stdout: bytes = b"", stderr: bytes = b""):
     proc = MagicMock()
     proc.returncode = returncode
-    proc.communicate = AsyncMock(return_value=(stdout, stderr))
     proc.pid = 4242
+    proc.stdin = _FakeStdin()
+    proc.stdout = _FakeStream(stdout)
+    proc.stderr = _FakeStream(stderr)
+    proc.wait = AsyncMock(return_value=returncode)
     return proc
 
 
@@ -447,20 +492,14 @@ async def test_post_tool_use_exit_two_surfaces_reason_not_raise(monkeypatch):
 
 
 async def test_post_tool_use_error_result_maps_tool_response_to_error_dict(monkeypatch):
-    captured = {}
-
-    async def fake_communicate(data):
-        captured["envelope"] = json.loads(data.decode())
-        return b"", b""
-
     proc = _mock_proc(0)
-    proc.communicate = AsyncMock(side_effect=fake_communicate)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=proc))
 
     hook = external_hook_adapter(event="PostToolUse", command=["notify"])
     err = ValueError("kaboom")
     await hook("bash", {"command": ["ls"]}, None, err)
-    assert captured["envelope"]["tool_response"] == {"error": "kaboom"}
+    envelope = json.loads(proc.stdin.written.decode())
+    assert envelope["tool_response"] == {"error": "kaboom"}
 
 
 # ---------------------------------------------------------------------------
@@ -472,10 +511,12 @@ async def test_post_tool_use_error_result_maps_tool_response_to_error_dict(monke
 async def test_pre_tool_use_timeout_kills_process_group_and_denies(monkeypatch):
     proc = MagicMock()
     proc.pid = 9999
+    proc.stdin = _FakeStdin()
     # asyncio.wait_for raises asyncio.TimeoutError, which is NOT the builtin
     # TimeoutError before 3.11 -- inject the real raised type so this exercises
     # the pre-3.11 teardown path rather than passing by luck on 3.11+.
-    proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+    proc.stdout = _FakeStream(raises=asyncio.TimeoutError())
+    proc.stderr = _FakeStream()
     proc.wait = AsyncMock(return_value=None)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=proc))
 
@@ -492,7 +533,9 @@ async def test_pre_tool_use_timeout_kills_process_group_and_denies(monkeypatch):
 async def test_post_tool_use_timeout_surfaces_reason_not_raise(monkeypatch):
     proc = MagicMock()
     proc.pid = 8888
-    proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+    proc.stdin = _FakeStdin()
+    proc.stdout = _FakeStream(raises=asyncio.TimeoutError())
+    proc.stderr = _FakeStream()
     proc.wait = AsyncMock(return_value=None)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=proc))
     monkeypatch.setattr("lionagi.ln._proc.os.killpg", lambda pgid, sig: None)
@@ -538,21 +581,15 @@ async def test_session_start_deny_is_logged_not_raised(monkeypatch):
 
 
 async def test_post_tool_use_failure_stringifies_error_into_tool_response(monkeypatch):
-    captured = {}
-
-    async def fake_communicate(data):
-        captured["envelope"] = json.loads(data.decode())
-        return b"", b""
-
     proc = _mock_proc(0)
-    proc.communicate = AsyncMock(side_effect=fake_communicate)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=proc))
 
     hook = external_hook_adapter(event="PostToolUseFailure", command=["notify"])
     await hook(session_id="s-1", tool_name="bash", error=RuntimeError("disk full"))
 
-    assert captured["envelope"]["tool_response"] == {"error": "disk full"}
-    assert captured["envelope"]["tool_name"] == "bash"
+    envelope = json.loads(proc.stdin.written.decode())
+    assert envelope["tool_response"] == {"error": "disk full"}
+    assert envelope["tool_name"] == "bash"
 
 
 # ---------------------------------------------------------------------------
@@ -595,3 +632,78 @@ async def test_untrusted_imported_advisory_event_is_error_not_raise(monkeypatch,
     hook = external_hook_adapter(event="SessionStart", command=["notify"], source="imported:codex")
     await hook(session_id="s-1")  # advisory: must not raise even though untrusted
     spawn.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Bounded subprocess output (Issue 2 fix): stdout AND stderr are capped while
+# streaming, never after an unbounded `communicate()`-style full buffer.
+# ---------------------------------------------------------------------------
+
+
+async def test_read_capped_truncates_and_logs(caplog):
+    from lionagi.hooks.external import _MAX_STDOUT_BYTES, _read_capped
+
+    oversized = b"x" * (_MAX_STDOUT_BYTES + 1000)
+    with caplog.at_level(logging.WARNING, logger="lionagi.hooks.external"):
+        result = await _read_capped(_FakeStream(oversized), _MAX_STDOUT_BYTES, "stdout")
+    assert len(result) == _MAX_STDOUT_BYTES
+    assert result == oversized[:_MAX_STDOUT_BYTES]
+    assert any("exceeded" in rec.message for rec in caplog.records)
+
+
+async def test_read_capped_under_cap_returns_everything_untruncated():
+    from lionagi.hooks.external import _read_capped
+
+    data = b"hello hook output"
+    result = await _read_capped(_FakeStream(data), 1_048_576, "stdout")
+    assert result == data
+
+
+async def test_read_capped_none_stream_returns_empty():
+    from lionagi.hooks.external import _read_capped
+
+    assert await _read_capped(None, 1_048_576, "stdout") == b""
+
+
+async def test_stderr_is_capped_independently_of_stdout(monkeypatch):
+    """Before the fix, the advertised cap applied to stdout only -- stderr
+    was read via the same `communicate()` call but never capped at all."""
+    from lionagi.hooks.external import _MAX_STDERR_BYTES
+
+    oversized_stderr = b"e" * (_MAX_STDERR_BYTES + 500)
+    proc = _mock_proc(2, stdout=b"", stderr=oversized_stderr)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=proc))
+
+    hook = external_hook_adapter(event="PreToolUse", command=["guard"])
+    result = await hook("bash", {"command": ["ls"]})
+    assert result.decision == "deny"
+    # Exit-2's reason comes straight from decoded stderr -- unbounded, this
+    # would be exactly len(oversized_stderr); capped, it is bounded by
+    # _MAX_STDERR_BYTES (plus decode overhead is impossible since 'e' is 1 byte).
+    assert len(result.reason.encode()) <= _MAX_STDERR_BYTES
+
+
+async def test_real_subprocess_large_dual_pipe_output_does_not_hang():
+    """End-to-end regression against a REAL subprocess (no mocking of
+    create_subprocess_exec): a hook that writes well more than the per-pipe
+    cap to BOTH stdout and stderr before ever reading stdin -- the classic
+    write-fills-the-pipe-before-read deadlock shape -- must still complete
+    promptly, proving the stdin write and the stdout/stderr drains run
+    concurrently rather than sequentially."""
+    script = (
+        "import sys\n"
+        "sys.stdout.buffer.write(b'o' * (2 * 1024 * 1024))\n"
+        "sys.stdout.buffer.flush()\n"
+        "sys.stderr.buffer.write(b'e' * (2 * 1024 * 1024))\n"
+        "sys.stderr.buffer.flush()\n"
+        "sys.stdin.buffer.read()\n"
+        "sys.exit(0)\n"
+    )
+    hook = external_hook_adapter(
+        event="PreToolUse", command=[sys.executable, "-c", script], timeout=15
+    )
+    started = time.monotonic()
+    result = await asyncio.wait_for(hook("bash", {"command": ["ls"]}), timeout=20)
+    elapsed = time.monotonic() - started
+    assert result.decision == "allow"
+    assert elapsed < 15, "hook should complete well within its own timeout, not hang"

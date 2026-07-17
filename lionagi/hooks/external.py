@@ -81,6 +81,8 @@ SUPPORTED_EVENTS = frozenset(
 BLOCKING_EVENTS = frozenset({"UserPromptSubmit", "PreToolUse"})
 
 _MAX_STDOUT_BYTES = 1_048_576  # 1 MiB cap on hook stdout read-back
+_MAX_STDERR_BYTES = 1_048_576  # same cap on stderr -- neither pipe buffers unbounded
+_READ_CHUNK_BYTES = 65_536
 _TERMINATE_GRACE = 2.0
 
 
@@ -301,6 +303,61 @@ class HookVerdict:
     updated_input: dict[str, Any] | None = None
 
 
+async def _read_capped(stream: Any, cap: int, label: str) -> bytes:
+    """Read *stream* to EOF, keeping at most the first *cap* bytes. Bytes
+    beyond the cap are still read off the pipe (so the child never blocks
+    writing into a full, un-drained pipe) but discarded immediately rather
+    than buffered -- a verbose hook cannot force unbounded allocation on
+    either stdout or stderr. *label* names the stream in the truncation log.
+    """
+    if stream is None:
+        return b""
+    chunks: list[bytes] = []
+    total = 0
+    truncated = False
+    while True:
+        chunk = await stream.read(_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total <= cap:
+            chunks.append(chunk)
+        else:
+            if not truncated:
+                keep = cap - (total - len(chunk))
+                if keep > 0:
+                    chunks.append(chunk[:keep])
+            truncated = True
+    if truncated:
+        logger.warning("hook %s exceeded %d bytes; truncating", label, cap)
+    return b"".join(chunks)
+
+
+async def _write_stdin(proc: Any, data: bytes) -> None:
+    stdin = proc.stdin
+    if stdin is None:
+        return
+    stdin.write(data)
+    await stdin.drain()
+    stdin.close()
+    with contextlib.suppress(Exception):
+        await stdin.wait_closed()
+
+
+async def _drain(proc: Any, envelope_bytes: bytes) -> tuple[bytes, bytes]:
+    """Write the envelope and read both pipes concurrently -- never stdin
+    fully before stdout/stderr -- so a hook that writes output before
+    consuming all of stdin cannot deadlock on a full pipe in either
+    direction. Reaps the process once both streams hit EOF."""
+    _, stdout_bytes, stderr_bytes = await asyncio.gather(
+        _write_stdin(proc, envelope_bytes),
+        _read_capped(proc.stdout, _MAX_STDOUT_BYTES, "stdout"),
+        _read_capped(proc.stderr, _MAX_STDERR_BYTES, "stderr"),
+    )
+    await proc.wait()
+    return stdout_bytes, stderr_bytes
+
+
 async def _run_hook_process(
     argv: list[str], envelope: dict[str, Any], timeout: float
 ) -> tuple[int, bytes, bytes]:
@@ -313,7 +370,7 @@ async def _run_hook_process(
     )
     try:
         stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            proc.communicate(json.dumps(envelope).encode()),
+            _drain(proc, json.dumps(envelope).encode()),
             timeout=timeout,
         )
     except (TimeoutError, asyncio.TimeoutError) as err:
@@ -328,9 +385,6 @@ async def _run_hook_process(
             await asyncio.wait_for(proc.wait(), timeout=_TERMINATE_GRACE)
         raise _HookTimeoutError(f"hook timed out after {timeout}s: {argv[0]!r}") from err
 
-    if len(stdout_bytes) > _MAX_STDOUT_BYTES:
-        logger.warning("hook stdout exceeded %d bytes; truncating", _MAX_STDOUT_BYTES)
-        stdout_bytes = stdout_bytes[:_MAX_STDOUT_BYTES]
     return proc.returncode, stdout_bytes, stderr_bytes
 
 

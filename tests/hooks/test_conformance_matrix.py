@@ -32,11 +32,50 @@ def _load(name: str) -> dict:
     return json.loads((FIXTURES / name).read_text())
 
 
+class _FakeStream:
+    """Minimal async-read stand-in for a StreamReader: returns *data* on the
+    first ``read()`` call, then EOF -- matches how ``_read_capped``'s
+    read-until-empty loop drains a real pipe."""
+
+    def __init__(self, data: bytes = b""):
+        self._data = data
+        self._sent = False
+
+    async def read(self, n: int = -1) -> bytes:
+        if self._sent:
+            return b""
+        self._sent = True
+        return self._data
+
+
+class _FakeStdin:
+    """Captures what ``_write_stdin`` writes so tests can assert on the
+    envelope actually sent, without going through a real pipe."""
+
+    def __init__(self):
+        self.written = b""
+
+    def write(self, data: bytes) -> None:
+        self.written += data
+
+    async def drain(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    async def wait_closed(self) -> None:
+        pass
+
+
 def _mock_proc(returncode: int, stdout: bytes = b"", stderr: bytes = b""):
     proc = MagicMock()
     proc.returncode = returncode
-    proc.communicate = AsyncMock(return_value=(stdout, stderr))
     proc.pid = 1234
+    proc.stdin = _FakeStdin()
+    proc.stdout = _FakeStream(stdout)
+    proc.stderr = _FakeStream(stderr)
+    proc.wait = AsyncMock(return_value=returncode)
     return proc
 
 
@@ -121,14 +160,7 @@ def test_codex_fixture_marks_dv1_1_transcript_divergence_for_user_prompt_submit(
 
 
 async def test_pre_tool_use_field_guarantees_reach_the_subprocess(monkeypatch):
-    captured = {}
-
-    async def fake_communicate(data):
-        captured["envelope"] = json.loads(data.decode())
-        return b"", b""
-
     proc = _mock_proc(0)
-    proc.communicate = AsyncMock(side_effect=fake_communicate)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=proc))
 
     hook = external_hook_adapter(
@@ -136,7 +168,7 @@ async def test_pre_tool_use_field_guarantees_reach_the_subprocess(monkeypatch):
     )
     await hook("bash", {"command": ["git", "status"]})
 
-    env = captured["envelope"]
+    env = json.loads(proc.stdin.written.decode())
     assert env["session_id"] == "s-42"
     assert env["cwd"] == "/work"
     assert env["hook_event_name"] == "PreToolUse"
@@ -147,40 +179,26 @@ async def test_pre_tool_use_field_guarantees_reach_the_subprocess(monkeypatch):
 
 
 async def test_post_tool_use_field_guarantees_include_tool_response(monkeypatch):
-    captured = {}
-
-    async def fake_communicate(data):
-        captured["envelope"] = json.loads(data.decode())
-        return b"", b""
-
     proc = _mock_proc(0)
-    proc.communicate = AsyncMock(side_effect=fake_communicate)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=proc))
 
     hook = external_hook_adapter(event="PostToolUse", command=["notify"], session_id="s-1")
     await hook("bash", {"command": ["ls"]}, {"stdout": "ok"}, None)
 
-    env = captured["envelope"]
+    env = json.loads(proc.stdin.written.decode())
     assert env["tool_response"] == {"stdout": "ok"}
 
 
 async def test_user_prompt_submit_field_guarantees_include_model_and_permission_mode(
     monkeypatch,
 ):
-    captured = {}
-
-    async def fake_communicate(data):
-        captured["envelope"] = json.loads(data.decode())
-        return b"", b""
-
     proc = _mock_proc(0)
-    proc.communicate = AsyncMock(side_effect=fake_communicate)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=proc))
 
     hook = external_hook_adapter(event="UserPromptSubmit", command=["hygiene"])
     await hook(session_id="s-1", branch_id="b-1", prompt="hello", model="claude-sonnet")
 
-    env = captured["envelope"]
+    env = json.loads(proc.stdin.written.decode())
     assert env["prompt"] == "hello"
     assert env["model"] == "claude-sonnet"
     # Dv1-1 in miniature: LionAGI never fabricates transcript_path/turn_id --
@@ -235,7 +253,10 @@ async def test_exit_code_protocol_zero_two_and_other(monkeypatch):
 async def test_dv1_4_timeout_fails_closed_unlike_claude_codes_fail_open(monkeypatch):
     proc = MagicMock()
     proc.pid = 555
-    proc.communicate = AsyncMock(side_effect=TimeoutError)
+    proc.stdin = _FakeStdin()
+    proc.stdout = _FakeStream()
+    proc.stdout.read = AsyncMock(side_effect=TimeoutError)
+    proc.stderr = _FakeStream()
     proc.wait = AsyncMock(return_value=None)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=proc))
     monkeypatch.setattr("lionagi.ln._proc.os.killpg", lambda pgid, sig: None)
