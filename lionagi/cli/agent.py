@@ -62,6 +62,46 @@ from ._util import EXIT_CODE_BY_STATUS, classify_exception, validate_cwd_exists
 # Preset names supported by --preset.
 _PRESET_CHOICES = ("coding",)
 
+# --image extension -> MIME type, matching InstructionContent's data-URI allowlist
+# (lionagi/protocols/messages/instruction.py _DATA_IMAGE_RE: png/jpe?g/gif/webp).
+_IMAGE_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+
+
+def _load_image_data_uris(paths: list[str]) -> list[str]:
+    """Read each --image path and wrap it as a `data:image/...;base64,...` URI —
+    the same shape InstructionContent._format_image_item already accepts, so this
+    is a pure CLI-side reader, not a new content representation.
+
+    Raises FileNotFoundError / ValueError (with the offending path named) for a
+    missing path, a non-file path, or an unrecognized extension. Fails fast,
+    before any LLM call — same contract as --form / --prompt-file.
+    """
+    import base64
+
+    uris: list[str] = []
+    for raw_path in paths:
+        p = Path(raw_path)
+        if not p.exists():
+            raise FileNotFoundError(f"--image path not found: {raw_path!r}")
+        if not p.is_file():
+            raise ValueError(f"--image path is not a regular file: {raw_path!r}")
+        media_type = _IMAGE_MEDIA_TYPES.get(p.suffix.lower())
+        if media_type is None:
+            allowed = ", ".join(sorted(_IMAGE_MEDIA_TYPES))
+            raise ValueError(
+                f"--image {raw_path!r}: unrecognized extension {p.suffix!r}; "
+                f"supported extensions: {allowed}"
+            )
+        encoded = base64.b64encode(p.read_bytes()).decode("ascii")
+        uris.append(f"data:{media_type};base64,{encoded}")
+    return uris
+
 
 def _make_coding_preset(
     cwd: str | None = None,
@@ -210,6 +250,7 @@ async def _run_agent(
     context_from: list[str] | None = None,
     context_budget: int | None = None,
     notify: str | None = None,
+    images: list[str] | None = None,
     _auto_resumed: bool = False,
 ) -> tuple[str, str, str, str, str | None]:
     """Execute one agent turn; returns (result, provider, branch_id, terminal_status, session_id).
@@ -563,6 +604,7 @@ async def _run_agent(
             persist_dir=str(run.stream_dir),
             snapshot_dir=str(run.branches_dir),
             timeout=timeout,
+            **({"images": images} if images else {}),
             **({"repo": cwd} if cwd else {}),
         )
     except (TimeoutError, LionTimeoutError) as exc:
@@ -771,6 +813,20 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
 
     agent.add_argument(
+        "--image",
+        dest="image",
+        metavar="PATH",
+        action="append",
+        default=None,
+        help=(
+            "Attach an image file to the prompt (repeatable, e.g. "
+            "--image a.png --image b.jpg). Supported extensions: "
+            f"{', '.join(sorted(_IMAGE_MEDIA_TYPES))}. Each file is read, "
+            "base64-encoded, and attached as an image content part on the "
+            "user message."
+        ),
+    )
+    agent.add_argument(
         "--context-from",
         dest="context_from",
         metavar="REF",
@@ -880,6 +936,15 @@ def run_agent(args: argparse.Namespace) -> int:
 
     prompt = form_prompt_prefix + prompt_text
 
+    # --image: load and validate BEFORE any LLM call, same contract as --form.
+    image_uris: list[str] | None = None
+    if getattr(args, "image", None):
+        try:
+            image_uris = _load_image_data_uris(args.image)
+        except (FileNotFoundError, ValueError) as exc:
+            log_error(str(exc))
+            return 1
+
     has_model = model is not None or args.agent is not None
     if not has_model and not (args.resume or args.continue_last):
         log_error(
@@ -910,6 +975,7 @@ def run_agent(args: argparse.Namespace) -> int:
                 context_from=getattr(args, "context_from", None),
                 context_budget=getattr(args, "context_budget", None),
                 notify=getattr(args, "notify", None),
+                images=image_uris,
             )
         )
     except ContextFromError as exc:
