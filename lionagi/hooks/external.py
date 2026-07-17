@@ -94,6 +94,19 @@ class _HookTimeoutError(Exception):
     """Internal signal: the hook subprocess did not finish within its timeout."""
 
 
+def _json_safe(value: Any) -> Any:
+    """ADR-0048 D1's ``tool_response`` field guarantee: the value as-is where
+    JSON-serializable, else its ``str()`` form. Applied at envelope
+    construction (see :func:`build_envelope`) so an arbitrary, non-serializable
+    tool result becomes a string up front instead of raising out of
+    ``json.dumps`` after a hook subprocess has already been spawned."""
+    try:
+        json.dumps(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return value
+
+
 def validate_argv(command: Any) -> list[str]:
     """Enforce the argv rule: a non-empty list of non-empty, non-whitespace strings.
 
@@ -264,7 +277,12 @@ def build_envelope(
     Common fields (``session_id``, ``cwd``, ``hook_event_name``, ``harness``)
     are always present. Per-event fields follow the field-guarantee table:
     ``tool_name``/``tool_input`` always present for tool events;
-    ``tool_response`` always present for ``PostToolUse``/``PostToolUseFailure``;
+    ``tool_response`` always present for ``PostToolUse``/``PostToolUseFailure``
+    -- "the tool result as JSON where serializable, else its string form"
+    (ADR-0048 D1's field table), applied here via :func:`_json_safe` so a
+    non-JSON-serializable tool result becomes a string at envelope
+    construction time rather than surfacing later as a ``json.dumps`` failure
+    after a hook subprocess has already spawned;
     ``prompt``/``model``/``permission_mode`` always present for
     ``UserPromptSubmit`` (``permission_mode`` defaults to ``"default"`` when no
     policy is attached).
@@ -279,7 +297,7 @@ def build_envelope(
         envelope["tool_name"] = tool_name
         envelope["tool_input"] = tool_input
         if hook_event_name in ("PostToolUse", "PostToolUseFailure"):
-            envelope["tool_response"] = tool_response
+            envelope["tool_response"] = _json_safe(tool_response)
     elif hook_event_name == "UserPromptSubmit":
         envelope["prompt"] = prompt
         envelope["model"] = model
@@ -359,7 +377,7 @@ async def _drain(proc: Any, envelope_bytes: bytes) -> tuple[bytes, bytes]:
 
 
 async def _run_hook_process(
-    argv: list[str], envelope: dict[str, Any], timeout: float
+    argv: list[str], envelope_bytes: bytes, timeout: float
 ) -> tuple[int, bytes, bytes]:
     proc = await asyncio.create_subprocess_exec(
         *argv,
@@ -370,7 +388,7 @@ async def _run_hook_process(
     )
     try:
         stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            _drain(proc, json.dumps(envelope).encode()),
+            _drain(proc, envelope_bytes),
             timeout=timeout,
         )
     except (TimeoutError, asyncio.TimeoutError) as err:
@@ -448,13 +466,29 @@ async def _execute_hook(
     """Spawn *argv*, exchange *envelope*, and normalize the exit-code + stdout
     contract into a :class:`HookVerdict`.
 
+    *envelope* is serialized to JSON before any subprocess is spawned: a
+    non-JSON-serializable field (in practice unreachable for ``tool_response``,
+    which :func:`build_envelope` already string-falls-back via
+    :func:`_json_safe`, but not otherwise guaranteed for every field) fails
+    here and never spawns a process, so no path can orphan a running hook
+    subprocess whose handle was lost to a serialization error.
+
     Exit 0 -- stdout parsed as JSON if non-empty. Exit 2 -- block; stderr is
     the reason. Any other exit, or a spawn/IO error -- hook failure (deny on
     a blocking seam, error/log-and-continue on an advisory one). A timeout is
     treated the same way after the process group is torn down.
     """
     try:
-        returncode, stdout_bytes, stderr_bytes = await _run_hook_process(argv, envelope, timeout)
+        envelope_bytes = json.dumps(envelope).encode()
+    except (TypeError, ValueError) as exc:
+        return HookVerdict(
+            outcome="deny" if blocking else "error",
+            reason=f"hook envelope is not JSON-serializable: {exc}",
+        )
+    try:
+        returncode, stdout_bytes, stderr_bytes = await _run_hook_process(
+            argv, envelope_bytes, timeout
+        )
     except _HookTimeoutError as exc:
         return HookVerdict(outcome="deny" if blocking else "error", reason=str(exc))
     except Exception as exc:  # noqa: BLE001 -- subprocess spawn/IO errors

@@ -707,3 +707,100 @@ async def test_real_subprocess_large_dual_pipe_output_does_not_hang():
     elapsed = time.monotonic() - started
     assert result.decision == "allow"
     assert elapsed < 15, "hook should complete well within its own timeout, not hang"
+
+
+# ---------------------------------------------------------------------------
+# Non-serializable tool results (Issue 9 fix): serialize the envelope BEFORE
+# spawning; ADR-0048 D1's tool_response string fallback so PostToolUse hooks
+# still fire; no path leaves a spawned process handle unterminated.
+# ---------------------------------------------------------------------------
+
+
+class _Unserializable:
+    """A plain object with no __dict__ shape json.dumps can handle."""
+
+    def __repr__(self) -> str:
+        return "<Unserializable obj>"
+
+
+def test_json_safe_passes_through_serializable_values():
+    from lionagi.hooks.external import _json_safe
+
+    assert _json_safe({"a": 1}) == {"a": 1}
+    assert _json_safe([1, 2, 3]) == [1, 2, 3]
+    assert _json_safe("plain string") == "plain string"
+
+
+def test_json_safe_stringifies_non_serializable_value():
+    from lionagi.hooks.external import _json_safe
+
+    obj = _Unserializable()
+    assert _json_safe(obj) == str(obj)
+
+
+def test_build_envelope_applies_string_fallback_to_non_serializable_tool_response():
+    env = build_envelope(
+        hook_event_name="PostToolUse",
+        session_id="s",
+        cwd="/",
+        tool_name="bash",
+        tool_input={"command": ["ls"]},
+        tool_response=_Unserializable(),
+    )
+    assert env["tool_response"] == str(_Unserializable())
+    json.dumps(env)  # must not raise -- the whole envelope is JSON-safe now
+
+
+async def test_post_tool_use_with_non_serializable_result_still_spawns_and_fires(monkeypatch):
+    """The exact Issue 9 shape: a non-JSON-serializable tool result must not
+    prevent the PostToolUse hook from running -- it gets the documented
+    string fallback and the subprocess still spawns normally."""
+    proc = _mock_proc(0)
+    spawn = AsyncMock(return_value=proc)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+
+    hook = external_hook_adapter(event="PostToolUse", command=["notify"])
+    result = await hook("bash", {"command": ["ls"]}, _Unserializable(), None)
+
+    spawn.assert_called_once()  # the hook subprocess DID run -- never skipped
+    assert result is None  # exit 0, no reason -> advisory no-op, same as any allow
+    envelope = json.loads(proc.stdin.written.decode())
+    assert envelope["tool_response"] == str(_Unserializable())
+
+
+async def test_execute_hook_serializes_before_spawning_never_orphans_a_process(monkeypatch):
+    """If the envelope is somehow still not JSON-serializable by the time it
+    reaches `_execute_hook` (defense in depth beyond build_envelope's own
+    tool_response fallback), the subprocess must never be spawned at all.
+    The old bug spawned first and lost the process handle when json.dumps
+    raised afterward, orphaning it."""
+    from lionagi.hooks.external import _execute_hook
+
+    spawn = AsyncMock()
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+
+    verdict = await _execute_hook(
+        argv=["guard"],
+        envelope={"session_id": "s", "cwd": "/", "bad": _Unserializable()},
+        timeout=5.0,
+        blocking=False,
+    )
+    assert verdict.outcome == "error"
+    assert "not JSON-serializable" in verdict.reason
+    spawn.assert_not_called()  # no process was ever spawned to orphan
+
+
+async def test_execute_hook_serialization_failure_fails_closed_on_blocking_seam(monkeypatch):
+    from lionagi.hooks.external import _execute_hook
+
+    spawn = AsyncMock()
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+
+    verdict = await _execute_hook(
+        argv=["guard"],
+        envelope={"bad": _Unserializable()},
+        timeout=5.0,
+        blocking=True,
+    )
+    assert verdict.outcome == "deny"
+    spawn.assert_not_called()
