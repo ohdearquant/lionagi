@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic import Field
@@ -66,6 +67,20 @@ _DIM_MODE: dict[str, str] = {
     "performance": "evidential",
     "maintainability": "metacognitive",
 }
+
+
+_LOC_PAT = re.compile(r"^(?P<file>[\w./\\-]+?)[:@](?P<line>\d+)")
+
+
+def _verify_key(issue: IssueFound) -> str:
+    """Dedup key for adversarial verification. Two dimensions often surface the
+    same defect with different wording, so keying on the raw description spawns
+    duplicate heavyweight verifiers; when the location parses as path:line,
+    bucket nearby lines of the same file together instead."""
+    m = _LOC_PAT.match(issue.location.strip()) if issue.location else None
+    if m:
+        return f"verify:{m.group('file')}:{int(m.group('line')) // 25}"
+    return f"verify:{issue.description}"
 
 
 def _dimension_instruction(artifact: str, dimension: str) -> str:
@@ -190,7 +205,7 @@ class ReviewEngine(Engine):
     # -- reactions ------------------------------------------------------------
 
     def _on_issue(self, run: EngineRun, issue: IssueFound) -> None:
-        if issue.severity in self.verify_severities and not run.seen(f"verify:{issue.description}"):
+        if issue.severity in self.verify_severities and not run.seen(_verify_key(issue)):
             run.spawn(self._verify(run, issue))
 
     # -- stages ---------------------------------------------------------------

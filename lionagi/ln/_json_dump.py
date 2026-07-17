@@ -14,7 +14,7 @@ from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 from textwrap import shorten
-from typing import Any
+from typing import Any, Literal, overload
 from uuid import UUID
 
 import orjson
@@ -247,6 +247,39 @@ def json_dumpb(
         )
     )
     return orjson.dumps(obj, default=default, option=opt)
+
+
+@overload
+def json_dumps(
+    obj: Any,
+    /,
+    *,
+    decode: Literal[True] = True,
+    as_loaded: Literal[False] = False,
+    **kwargs: Any,
+) -> str: ...
+
+
+@overload
+def json_dumps(
+    obj: Any,
+    /,
+    *,
+    decode: Literal[False],
+    as_loaded: Literal[False] = False,
+    **kwargs: Any,
+) -> bytes: ...
+
+
+@overload
+def json_dumps(
+    obj: Any,
+    /,
+    *,
+    decode: Literal[True] = True,
+    as_loaded: Literal[True],
+    **kwargs: Any,
+) -> Any: ...
 
 
 def json_dumps(

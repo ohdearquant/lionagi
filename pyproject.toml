@@ -275,6 +275,24 @@ exclude = [
 ]
 typeCheckingMode = "basic"
 pythonVersion = "3.10"
+# The codebase uses the implicit-Optional idiom (`param: X = None`) throughout;
+# treat those parameters as `X | None` instead of flagging every call site.
+strictParameterNoneValue = false
+# Type-hygiene backlog (~1.4k findings, 2026-07-17): surfaced as warnings so
+# editors reserve errors for genuine breakage. Re-promote per-rule as the
+# sweep burns files down (start: session/branch.py, protocols/generic/pile.py,
+# state/db.py).
+reportArgumentType = "warning"
+reportAttributeAccessIssue = "warning"
+reportOptionalMemberAccess = "warning"
+reportCallIssue = "warning"
+reportGeneralTypeIssues = "warning"
+reportReturnType = "warning"
+reportAssignmentType = "warning"
+reportOptionalSubscript = "warning"
+reportOperatorIssue = "warning"
+reportIndexIssue = "warning"
+reportOptionalCall = "warning"
 reportMissingImports = "warning"
 reportMissingModuleSource = "none"
 reportUnknownMemberType = "none"

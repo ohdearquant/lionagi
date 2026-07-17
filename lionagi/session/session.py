@@ -177,6 +177,10 @@ class Session(Node, Relational):
         """Set the governance gate consulted before events are dispatched."""
         return self.observer.gate(check)
 
+    def clear_gate(self) -> "SessionObserver":
+        """Remove the governance gate; dispatch and authorize() allow everything again."""
+        return self.observer.clear_gate()
+
     async def emit(self, event: Any) -> list[Any]:
         return await self.observer.emit(event)
 

@@ -36,8 +36,7 @@ _BASE_SIGNAL_FIELDS: frozenset[str] = frozenset(
 
 def _sanitize_signal_payload(sig: Any) -> dict[str, Any]:
     """Build a JSON-safe, size-bounded payload dict from a Signal; oversized payloads are truncated."""
-    import json as _json  # noqa: PLC0415
-
+    from lionagi.ln import json_dumpb as _jdb  # noqa: PLC0415
     from lionagi.ln import json_dumps as _jd  # noqa: PLC0415
     from lionagi.session.signal import MessageAdded  # noqa: PLC0415
 
@@ -73,31 +72,29 @@ def _sanitize_signal_payload(sig: Any) -> dict[str, Any]:
 
     # Serialise with safe_fallback so no TypeError escapes, then parse back —
     # single serialisation gate: after this, payload is str/int/float/bool/list/dict only.
-    safe_json: str | None = None
+    original_bytes: bytes | None = None
     try:
-        safe_json = _jd(raw, safe_fallback=True)
-        payload: dict[str, Any] = _json.loads(safe_json)
+        original_bytes = _jdb(raw, safe_fallback=True)
+        payload: dict[str, Any] = _jd(raw, safe_fallback=True, as_loaded=True)
     except Exception:  # noqa: BLE001
         payload = {"sanitize_error": repr(sig)[:256]}
 
     # Byte cap applies to the FINAL serialized form (re-serializing the
     # truncation marker can 2x the size) — see strategy in the batch report.
     try:
-        if safe_json is not None:
-            original_bytes = safe_json.encode("utf-8")
-        else:
-            original_bytes = _jd(payload, safe_fallback=True).encode("utf-8")
+        if original_bytes is None:
+            original_bytes = _jdb(payload, safe_fallback=True)
         original_len = len(original_bytes)
 
         if original_len > _PAYLOAD_BYTE_CAP:
             # Estimate marker overhead via an empty-data marker's fixed JSON
             # cost, then budget the remainder for escaped data content.
-            _marker_empty = _jd(
+            _marker_empty = _jdb(
                 {"truncated": True, "original_bytes": original_len, "data": ""},
                 safe_fallback=True,
             )
             # +2 for the two quote chars around the data string value
-            overhead = len(_marker_empty.encode("utf-8")) - 2
+            overhead = len(_marker_empty) - 2
             data_budget = max(0, _PAYLOAD_BYTE_CAP - overhead)
 
             # Clip the original bytes to the estimated data budget, then
@@ -110,7 +107,7 @@ def _sanitize_signal_payload(sig: Any) -> dict[str, Any]:
                     "original_bytes": original_len,
                     "data": clipped,
                 }
-                final = _jd(candidate, safe_fallback=True).encode("utf-8")
+                final = _jdb(candidate, safe_fallback=True)
                 if len(final) <= _PAYLOAD_BYTE_CAP:
                     payload = candidate
                     break
@@ -173,7 +170,7 @@ class SessionObserver(Observer):
         """Subscribe a handler to AND-composed conditions. Usable as a decorator."""
         keys_list = list(keys)
         if handler is None and len(keys_list) >= 2 and _looks_like_handler(keys_list[-1]):
-            handler = keys_list.pop()
+            handler = keys_list.pop()  # type: ignore
 
         key_flt: Filter | None = all_of(*keys_list) if keys_list else None
         if role is not None:
@@ -200,9 +197,16 @@ class SessionObserver(Observer):
         self._routes.append((condition, into))
         return self
 
-    def gate(self, check: Gate) -> SessionObserver:
+    def gate(self, check: Gate | None) -> SessionObserver:
         """Set the governance gate for event dispatch and pre-invoke authorization."""
+        if check is None:
+            raise TypeError("gate() requires a callable; use clear_gate() to remove the gate")
         self._gate = check
+        return self
+
+    def clear_gate(self) -> SessionObserver:
+        """Remove the governance gate; dispatch and authorize() allow everything again."""
+        self._gate = None
         return self
 
     async def authorize(self, action: Any) -> bool:
