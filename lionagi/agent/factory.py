@@ -94,6 +94,13 @@ async def create_agent(
         if provider in CLI_PROVIDERS:
             extra["api_key"] = "dummy"
 
+        # Codex executes `-C <repo>`; the request model's repo defaults to the
+        # calling process cwd, so an agent assigned a workspace via spec.cwd
+        # would otherwise run against whatever directory the host process
+        # happens to be in.
+        if provider == "codex" and spec.cwd:
+            extra["repo"] = spec.cwd
+
         chat_model = iModel(
             provider=provider,
             model=model_name,
