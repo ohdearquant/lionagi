@@ -521,7 +521,7 @@ def _forward_mcp_to_cli_request(
 
     provider = getattr(branch.chat_model.endpoint.config, "provider", None)
 
-    if provider != "claude_code":
+    if provider not in ("claude_code", "codex"):
         if mcp_path is not None:
             import logging
 
@@ -575,4 +575,21 @@ def _forward_mcp_to_cli_request(
     # caller-supplied chat_model by reference, so mutating in place would
     # cross-contaminate other branches sharing the same iModel.
     branch.chat_model = branch.chat_model.copy(share_session=True, share_executor=True)
-    branch.chat_model.endpoint.config.kwargs["mcp_servers"] = servers
+    if provider == "claude_code":
+        branch.chat_model.endpoint.config.kwargs["mcp_servers"] = servers
+        return
+
+    # codex: the CLI takes no JSON MCP-config input; each server is forwarded
+    # as `-c mcp_servers.<name>.<field>=<value>` config overrides, which the
+    # request model already serializes onto the command line. Only the fields
+    # the codex CLI understands are forwarded; unknown server shapes are
+    # skipped rather than emitted as unparseable overrides.
+    overrides = dict(branch.chat_model.endpoint.config.kwargs.get("config_overrides") or {})
+    for server_name, server_cfg in servers.items():
+        if not isinstance(server_cfg, dict) or not ("command" in server_cfg or "url" in server_cfg):
+            continue
+        for field_key in ("command", "args", "env", "url"):
+            if server_cfg.get(field_key) is not None:
+                overrides[f"mcp_servers.{server_name}.{field_key}"] = server_cfg[field_key]
+    if overrides:
+        branch.chat_model.endpoint.config.kwargs["config_overrides"] = overrides

@@ -755,14 +755,14 @@ async def test_forward_mcp_populates_claude_code_request_mcp_servers(tmp_path):
     carries the same servers, and --mcp-config shows up in as_cmd_args()."""
     from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
-    mcp_path = _write_mcp_config(tmp_path, {"khive": {"command": "khive-mcp"}})
+    mcp_path = _write_mcp_config(tmp_path, {"khive": {"command": "kkernel"}})
 
     config = AgentSpec.compose("reviewer", model="claude_code/sonnet")
     config.mcp_config_path = mcp_path
     branch = await create_agent(config, load_settings=False)
 
     kwargs = branch.chat_model.endpoint.config.kwargs
-    assert kwargs.get("mcp_servers") == {"khive": {"command": "khive-mcp"}}
+    assert kwargs.get("mcp_servers") == {"khive": {"command": "kkernel"}}
 
     payload, _ = branch.chat_model.endpoint.create_payload({"prompt": "hi"})
     request = payload["request"]
@@ -770,7 +770,7 @@ async def test_forward_mcp_populates_claude_code_request_mcp_servers(tmp_path):
     args = request.as_cmd_args()
     assert "--mcp-config" in args
     assert json.loads(args[args.index("--mcp-config") + 1]) == {
-        "mcpServers": {"khive": {"command": "khive-mcp"}}
+        "mcpServers": {"khive": {"command": "kkernel"}}
     }
 
 
@@ -778,7 +778,7 @@ async def test_forward_mcp_filters_by_spec_mcp_servers(tmp_path):
     """spec.mcp_servers is a name filter, consistent with island 1's server_names."""
     mcp_path = _write_mcp_config(
         tmp_path,
-        {"khive": {"command": "khive-mcp"}, "other": {"command": "other-mcp"}},
+        {"khive": {"command": "kkernel"}, "other": {"command": "other-mcp"}},
     )
 
     config = AgentSpec.compose("reviewer", model="claude_code/sonnet")
@@ -787,7 +787,7 @@ async def test_forward_mcp_filters_by_spec_mcp_servers(tmp_path):
     branch = await create_agent(config, load_settings=False)
 
     kwargs = branch.chat_model.endpoint.config.kwargs
-    assert kwargs.get("mcp_servers") == {"khive": {"command": "khive-mcp"}}
+    assert kwargs.get("mcp_servers") == {"khive": {"command": "kkernel"}}
 
 
 async def test_forward_mcp_noop_when_spec_has_no_mcp_fields(tmp_path, monkeypatch):
@@ -810,29 +810,52 @@ async def test_forward_mcp_noop_for_non_claude_code_when_no_mcp_fields(tmp_path,
     assert "mcp_servers" not in branch.chat_model.endpoint.config.kwargs
 
 
-async def test_forward_mcp_codex_provider_warns_and_noops(tmp_path, caplog):
-    """Test plan item 6: codex/gemini provider + MCP fields set -> logged
-    warning, no passthrough field populated (no MCP field exists to set)."""
-    import logging
-
-    mcp_path = _write_mcp_config(tmp_path, {"khive": {"command": "khive-mcp"}})
+async def test_forward_mcp_codex_provider_flattens_to_config_overrides(tmp_path):
+    """codex provider + MCP fields set -> each server forwarded as
+    `mcp_servers.<name>.<field>` config overrides (the codex CLI's `-c` form);
+    server shapes the CLI cannot express are skipped, not emitted broken."""
+    mcp_path = _write_mcp_config(
+        tmp_path,
+        {
+            "khive": {"command": "kkernel", "args": ["mcp"]},
+            "shapeless": {"transport": "mystery"},
+        },
+    )
 
     config = AgentSpec.compose("reviewer", model="codex/gpt-5.5")
     config.mcp_config_path = mcp_path
 
-    with caplog.at_level(logging.WARNING, logger="lionagi.agent.factory"):
-        branch = await create_agent(config, load_settings=False)
+    branch = await create_agent(config, load_settings=False)
 
-    assert "mcp_servers" not in branch.chat_model.endpoint.config.kwargs
-    assert any(
-        "no MCP passthrough" in rec.message and "codex" in rec.message for rec in caplog.records
+    kwargs = branch.chat_model.endpoint.config.kwargs
+    assert "mcp_servers" not in kwargs
+    assert kwargs.get("config_overrides") == {
+        "mcp_servers.khive.command": "kkernel",
+        "mcp_servers.khive.args": ["mcp"],
+    }
+
+
+def test_codex_request_serializes_mcp_server_overrides():
+    """The flattened override keys survive into `-c key=value` CLI args with
+    JSON-serialized non-string values."""
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    req = CodexCodeRequest(
+        prompt="hi",
+        config_overrides={
+            "mcp_servers.khive.command": "kkernel",
+            "mcp_servers.khive.args": ["mcp"],
+        },
     )
+    args = req.as_cmd_args()
+    assert "mcp_servers.khive.command=kkernel" in args
+    assert 'mcp_servers.khive.args=["mcp"]' in args
 
 
 async def test_forward_mcp_gemini_provider_warns_and_noops(tmp_path, caplog):
     import logging
 
-    mcp_path = _write_mcp_config(tmp_path, {"khive": {"command": "khive-mcp"}})
+    mcp_path = _write_mcp_config(tmp_path, {"khive": {"command": "kkernel"}})
 
     config = AgentSpec.compose("reviewer", model="gemini_code/gemini-3.5-flash")
     config.mcp_config_path = mcp_path
@@ -889,7 +912,7 @@ async def test_forward_mcp_explicit_empty_allowlist_forces_zero_servers(tmp_path
 
     mcp_path = _write_mcp_config(
         tmp_path,
-        {"khive": {"command": "khive-mcp"}, "other": {"command": "other-mcp"}},
+        {"khive": {"command": "kkernel"}, "other": {"command": "other-mcp"}},
     )
 
     config = AgentSpec.compose("reviewer", model="claude_code/sonnet")
@@ -950,7 +973,7 @@ async def test_forward_mcp_does_not_mutate_shared_chat_model_across_branches(tmp
 
     mcp_path = _write_mcp_config(
         tmp_path,
-        {"khive": {"command": "khive-mcp"}, "other": {"command": "other-mcp"}},
+        {"khive": {"command": "kkernel"}, "other": {"command": "other-mcp"}},
     )
 
     shared_chat_model = iModel(provider="claude_code", model="sonnet", api_key="dummy")
@@ -966,7 +989,7 @@ async def test_forward_mcp_does_not_mutate_shared_chat_model_across_branches(tmp
     branch_b = await create_agent(config_b, load_settings=False, chat_model=shared_chat_model)
 
     assert branch_a.chat_model.endpoint.config.kwargs.get("mcp_servers") == {
-        "khive": {"command": "khive-mcp"}
+        "khive": {"command": "kkernel"}
     }, "branch_a's filter must not have been overwritten by branch_b's create_agent call"
     assert branch_b.chat_model.endpoint.config.kwargs.get("mcp_servers") == {
         "other": {"command": "other-mcp"}
@@ -982,7 +1005,7 @@ async def test_forward_mcp_preserves_shared_executor_and_session(tmp_path):
 
     mcp_path = _write_mcp_config(
         tmp_path,
-        {"khive": {"command": "khive-mcp"}, "other": {"command": "other-mcp"}},
+        {"khive": {"command": "kkernel"}, "other": {"command": "other-mcp"}},
     )
 
     shared_chat_model = iModel(provider="claude_code", model="sonnet", api_key="dummy")
@@ -1001,7 +1024,7 @@ async def test_forward_mcp_preserves_shared_executor_and_session(tmp_path):
 
     # (a) independent mcp_servers kwargs per branch, sharing one caller iModel.
     assert branch_a.chat_model.endpoint.config.kwargs.get("mcp_servers") == {
-        "khive": {"command": "khive-mcp"}
+        "khive": {"command": "kkernel"}
     }
     assert branch_b.chat_model.endpoint.config.kwargs.get("mcp_servers") == {
         "other": {"command": "other-mcp"}

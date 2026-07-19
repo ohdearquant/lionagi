@@ -97,6 +97,28 @@ def role_profile_route(role: str) -> tuple[str | None, str | None]:
     return route
 
 
+_ROLE_INJECTION_CACHE: dict[str, Any] = {}
+
+
+def role_profile_injection(role: str) -> Any:
+    """The role's agent-profile ``khive_injection`` opt-in, or None when the
+    profile is absent or silent. Kept separate from :func:`role_profile_route`
+    so model/effort routing and context-injection policy stay independently
+    overridable."""
+    if not isinstance(role, str) or not role:
+        return None
+    if role in _ROLE_INJECTION_CACHE:
+        return _ROLE_INJECTION_CACHE[role]
+    try:
+        from lionagi.cli._providers import load_agent_profile  # noqa: PLC0415
+
+        value = getattr(load_agent_profile(role), "khive_injection", None)
+    except Exception:
+        value = None
+    _ROLE_INJECTION_CACHE[role] = value
+    return value
+
+
 def _event_dict(event: Any) -> dict[str, Any]:
     if hasattr(event, "model_dump"):
         try:
@@ -316,6 +338,7 @@ class EngineRun:
         exempt: bool = False,
         mcp_servers: list[str] | None = None,
         extra_prompt: str | None = None,
+        khive_injection: Any = None,
     ) -> Branch:
         # exempt = terminal stages (synthesis/verdict) that must run even when
         # the expansion budget is gone — degrade, don't lose the run.
@@ -333,6 +356,13 @@ class EngineRun:
         # profile. An effort baked into the model spec's suffix survives an
         # unset effort here (the factory falls back to it).
         prof_model, prof_effort = role_profile_route(role)
+        # Same precedence for khive injection; an explicit False at any level
+        # disables and stops the profile fallback.
+        injection = khive_injection
+        if injection is None:
+            injection = self.engine.khive_injection
+        if injection is None:
+            injection = role_profile_injection(role)
         spec = AgentSpec.compose(
             role,
             modes=modes,
@@ -343,6 +373,7 @@ class EngineRun:
             emits=tuple(emits) if emits else None,
             cwd=cwd,
             system_prompt=extra_prompt,
+            khive_injection=injection,
         )
         if mcp_servers is not None:
             spec.mcp_servers = mcp_servers
@@ -649,12 +680,17 @@ class Engine:
         cancel_timeout_s: float = 30.0,
         agent_cwd: str | None = None,
         agent_extra_prompt: str | None = None,
+        khive_injection: Any = None,
     ) -> None:
         # Run-wide agent defaults: pin every agent to a working directory (e.g. a
         # provisioned worktree) and/or a shared standards prompt; per-call
         # make_agent(cwd=..., extra_prompt=...) still wins.
         self.agent_cwd = agent_cwd
         self.agent_extra_prompt = agent_extra_prompt
+        # Run-wide khive context-injection default for every stage agent
+        # (True/mapping/policy enable, False disables even a profile opt-in,
+        # None defers to each stage role's agent profile).
+        self.khive_injection = khive_injection
         self.model = model
         self.models = dict(models) if models else {}
         self.effort = effort
@@ -684,6 +720,9 @@ class Engine:
                     name=f"judge-{eid}",
                     model=self.judge_model,
                     emits=(JudgeVerdict,),
+                    # Judge legs are cheap yes/no gates that fire per item;
+                    # a recall round-trip per verdict is pure overhead.
+                    khive_injection=False,
                 )
                 res = await agent.operate(instruction=_judge_instruction(eid, subject, run.root))
             for v in run.by_type(JudgeVerdict):
