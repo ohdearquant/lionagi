@@ -100,8 +100,8 @@ li schedule apply schedules.yaml
 
 Notes:
 
-- Quote the notify `"on"` key. Unquoted `on:` is YAML 1.1 boolean `true` and the
-  parser will reject the document with a pointed error.
+- Quoting the notify `"on"` key is recommended for YAML portability. The ScheduleSet
+  parser also accepts bare `on:`, which YAML 1.1 otherwise resolves as boolean `true`.
 - `notify.on` takes terminal statuses (`completed`, `failed`, ...); the command
   runs once per matching terminal event, and a notify failure never affects the
   run's own outcome.

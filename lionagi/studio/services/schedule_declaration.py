@@ -185,6 +185,15 @@ class Notify(BaseModel):
     on: list[str]
     command: str
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_yaml_on_key(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or not any(key is True for key in data):
+            return data
+        if "on" in data:
+            raise ValueError('notify.on is declared twice; quote the key as "on" in YAML')
+        return {"on" if key is True else key: value for key, value in data.items()}
+
     @model_validator(mode="after")
     def _valid_on(self) -> Notify:
         if not self.on:

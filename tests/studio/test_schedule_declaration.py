@@ -270,6 +270,28 @@ def test_notify_valid_accepted():
     assert doc.schedules["m"].notify.on == ["failed", "timed_out"]
 
 
+def test_notify_bare_on_yaml_key_accepted():
+    manifest = """
+apiVersion: lionagi.io/v1alpha1
+kind: ScheduleSet
+metadata:
+  name: automation
+  project: demo
+schedules:
+  m:
+    trigger:
+      every: 1h
+    target:
+      kind: command
+      executable: refresh-index
+    notify:
+      on: [failed]
+      command: notify-run
+"""
+    doc = parse_schedule_set(manifest)
+    assert doc.schedules["m"].notify.on == ["failed"]
+
+
 def _policies_manifest(policies_yaml: str, cwd: Path) -> str:
     return f"""
 apiVersion: lionagi.io/v1alpha1
