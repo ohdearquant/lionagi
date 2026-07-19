@@ -120,12 +120,48 @@ def add_engine_subparser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
 
+    # ── Hypothesis-specific flags ──────────────────────────────────────
+    run_parser.add_argument(
+        "--dedup-repo",
+        default=None,
+        metavar="OWNER/REPO",
+        help=(
+            "GitHub repo to check findings against before extraction "
+            "('hypothesis' kind only). Findings whose mechanism an existing "
+            "open or closed issue already covers are recorded and not expanded; "
+            "certified-new findings land in the export's filing queue. "
+            "The engine never files issues itself."
+        ),
+    )
+    run_parser.add_argument(
+        "--dedup-cwd",
+        default=None,
+        metavar="DIR",
+        help=(
+            "Checkout of the dedup repo so the novelty check can source-confirm "
+            "a finding's cite ('hypothesis' kind only; optional)."
+        ),
+    )
+
     # ── Engine constructor overrides ───────────────────────────────────
     run_parser.add_argument(
         "--model",
         default=None,
         metavar="MODEL",
-        help="Model to use (provider/name, e.g. claude/sonnet). Uses default if omitted.",
+        help=(
+            "Model to use (provider/name, e.g. claude/sonnet; an effort suffix "
+            "like codex/gpt-5.6-luna-high is honored). Overrides per-stage "
+            "defaults. Uses engine defaults if omitted."
+        ),
+    )
+    run_parser.add_argument(
+        "--effort",
+        default=None,
+        metavar="LEVEL",
+        help=(
+            "Reasoning effort for all stages (e.g. low, medium, high, xhigh). "
+            "Overrides per-stage defaults; a per-stage default applies otherwise."
+        ),
     )
     run_parser.add_argument(
         "--max-depth",
@@ -187,10 +223,19 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
     engine_kwargs: dict[str, Any] = {}
     if args.model:
         engine_kwargs["model"] = args.model
+    if getattr(args, "effort", None):
+        engine_kwargs["effort"] = args.effort
     if args.max_depth is not None:
         engine_kwargs["max_depth"] = args.max_depth
     if args.max_agents is not None:
         engine_kwargs["max_agents"] = args.max_agents
+    if kind == "hypothesis":
+        if getattr(args, "dedup_repo", None):
+            engine_kwargs["dedup_repo"] = args.dedup_repo
+        if getattr(args, "dedup_cwd", None):
+            engine_kwargs["dedup_cwd"] = args.dedup_cwd
+    elif getattr(args, "dedup_repo", None) or getattr(args, "dedup_cwd", None):
+        warn("--dedup-repo/--dedup-cwd only apply to the 'hypothesis' kind; ignored")
 
     run_kwargs: dict[str, Any] = {}
     if kind == "coding":

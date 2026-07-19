@@ -75,6 +75,28 @@ def _is_all_budget_error(exc: BaseException) -> bool:
     return False
 
 
+_ROLE_PROFILE_CACHE: dict[str, tuple[str | None, str | None]] = {}
+
+
+def role_profile_route(role: str) -> tuple[str | None, str | None]:
+    """(model, effort) from the role's agent profile (``.lionagi/agents/<role>.md``),
+    (None, None) when no profile exists. Configuring a role's profile routes every
+    engine stage that uses the role; explicit engine/stage settings still win."""
+    if not isinstance(role, str) or not role:
+        return (None, None)
+    if role in _ROLE_PROFILE_CACHE:
+        return _ROLE_PROFILE_CACHE[role]
+    try:
+        from lionagi.cli._providers import load_agent_profile  # noqa: PLC0415
+
+        prof = load_agent_profile(role)
+        route = (prof.model, prof.effort)
+    except Exception:
+        route = (None, None)
+    _ROLE_PROFILE_CACHE[role] = route
+    return route
+
+
 def _event_dict(event: Any) -> dict[str, Any]:
     if hasattr(event, "model_dump"):
         try:
@@ -285,6 +307,7 @@ class EngineRun:
         name: str | None = None,
         modes: list[str] | None = None,
         model: str | None = None,
+        effort: str | None = None,
         tools: tuple[str, ...] = (),
         emits: tuple[type, ...] = (),
         permissions: Any = None,
@@ -306,10 +329,15 @@ class EngineRun:
             cwd = self.engine.agent_cwd
         if extra_prompt is None:
             extra_prompt = self.engine.agent_extra_prompt
+        # Resolution order: explicit call > engine-wide > the role's agent
+        # profile. An effort baked into the model spec's suffix survives an
+        # unset effort here (the factory falls back to it).
+        prof_model, prof_effort = role_profile_route(role)
         spec = AgentSpec.compose(
             role,
             modes=modes,
-            model=model or self.engine.model,
+            model=model or self.engine.model or prof_model,
+            effort=effort or self.engine.effort or prof_effort,
             tools=tuple(tools),
             permissions=permissions,
             emits=tuple(emits) if emits else None,
@@ -610,6 +638,8 @@ class Engine:
         *,
         model: str | None = None,
         models: dict[str, str] | None = None,
+        effort: str | None = None,
+        efforts: dict[str, str] | None = None,
         max_depth: int = 3,
         max_concurrent: int = 5,
         max_agents: int = 50,
@@ -627,6 +657,8 @@ class Engine:
         self.agent_extra_prompt = agent_extra_prompt
         self.model = model
         self.models = dict(models) if models else {}
+        self.effort = effort
+        self.efforts = dict(efforts) if efforts else {}
         self.max_depth = max_depth
         self.max_concurrent = max_concurrent
         self.max_agents = max_agents
@@ -637,6 +669,9 @@ class Engine:
 
     def model_for(self, stage: str) -> str | None:
         return self.models.get(stage) or self.model
+
+    def effort_for(self, stage: str) -> str | None:
+        return self.efforts.get(stage) or self.effort
 
     async def judge(self, run: EngineRun, eid: str, subject: str) -> bool:
         """Quality gate before an expansion point; returns True to expand, False to stop. No-op when judge_model is unset. Errors fail open."""
