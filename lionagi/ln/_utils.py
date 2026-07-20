@@ -59,10 +59,16 @@ def _build_safe_path(
     filesystem. Both the sync and async constructors call this so they share
     identical traversal/containment semantics (ADR-0050 D5) — fix the check
     once, here, rather than per-variant.
+
+    Containment is always checked against the resolved (symlink-safe)
+    candidate, but the returned path preserves the caller's own
+    representation: a relative ``directory`` yields a relative return value,
+    an absolute one yields an absolute return value.
     """
     from lionagi.libs.path_safety import contain_and_resolve
 
     directory = StdPath(directory)
+    is_absolute = directory.is_absolute()
 
     # Resolve BEFORE filename can redirect directory into a subdirectory;
     # all containment checks validate against this fixed root.
@@ -121,8 +127,15 @@ def _build_safe_path(
         random_suffix = uuid.uuid4().hex[:random_hash_digits]
         name = f"{name}-{random_suffix}"
 
-    full_path = dir_resolved / f"{name}{ext}"
-    return _contained(full_path.resolve())
+    full_name = f"{name}{ext}"
+    full_path = dir_resolved / full_name
+    resolved_full_path = _contained(full_path.resolve())
+
+    if is_absolute:
+        return resolved_full_path
+    # directory (possibly extended with a slash-separated filename's subdir
+    # component above) still carries the caller's relative representation.
+    return directory / full_name
 
 
 async def acreate_path(
@@ -139,8 +152,9 @@ async def acreate_path(
 ) -> AsyncPath:
     """Async create_path: same validation, same return contract.
 
-    Returns a fully resolved absolute path even when *directory* is relative;
-    callers that need a cwd-relative representation must derive it themselves.
+    Returns a path in the caller's own representation: relative in, relative
+    out; absolute in, absolute out. Containment/traversal checks always run
+    against the fully resolved (symlink-safe) candidate regardless.
     """
     from .concurrency import move_on_after
 
@@ -480,8 +494,9 @@ def create_path(
     directory reached only through a symlink escape, is rejected here just as
     it is in the async constructor.
 
-    Returns a fully resolved absolute path even when *directory* is relative;
-    callers that need a cwd-relative representation must derive it themselves.
+    Returns a path in the caller's own representation: relative in, relative
+    out; absolute in, absolute out. Containment/traversal checks always run
+    against the fully resolved (symlink-safe) candidate regardless.
     """
     full_path = _build_safe_path(
         StdPath(directory),

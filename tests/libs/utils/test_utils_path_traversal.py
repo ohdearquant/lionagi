@@ -254,22 +254,56 @@ class TestCreatePathTraversalContainment:
 
 
 class TestReturnRepresentation:
-    """The shared builder returns a fully resolved absolute path from both
-    constructors, even for a relative directory argument. Previously each
-    constructor returned ``directory / filename`` in the caller's own
-    representation; this pins the new contract as intentional."""
+    """The shared builder preserves the caller's own path representation:
+    a relative ``directory`` argument yields a relative return value (the
+    original create_path/acreate_path contract), while an absolute
+    ``directory`` still yields an absolute return value. Containment and
+    traversal checks always run against the fully resolved candidate
+    regardless of which representation is returned."""
 
-    def test_create_path_relative_directory_returns_resolved_absolute(self, tmp_path, monkeypatch):
+    def test_create_path_relative_directory_returns_relative(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         result = create_path(directory="relbase", filename="file.txt")
+        assert not result.is_absolute()
+        assert result == Path("relbase") / "file.txt"
+        assert result.resolve() == (tmp_path / "relbase" / "file.txt").resolve()
+        # the caller-relative return value must write to the same location
+        # the resolved/contained candidate designates
+        result.write_text("hello")
+        assert (tmp_path / "relbase" / "file.txt").read_text() == "hello"
+
+    def test_create_path_absolute_directory_returns_absolute(self, tmp_path):
+        result = create_path(directory=tmp_path, filename="file.txt")
         assert result.is_absolute()
-        assert result == (tmp_path / "relbase" / "file.txt").resolve()
+        assert result == (tmp_path / "file.txt").resolve()
 
     @pytest.mark.anyio
-    async def test_acreate_path_relative_directory_returns_resolved_absolute(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_acreate_path_relative_directory_returns_relative(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         result = await acreate_path(directory="relbase", filename="file.txt")
-        assert Path(str(result)).is_absolute()
-        assert Path(str(result)) == (tmp_path / "relbase" / "file.txt").resolve()
+        result = Path(str(result))
+        assert not result.is_absolute()
+        assert result == Path("relbase") / "file.txt"
+        assert result.resolve() == (tmp_path / "relbase" / "file.txt").resolve()
+        result.write_text("hello")
+        assert (tmp_path / "relbase" / "file.txt").read_text() == "hello"
+
+    @pytest.mark.anyio
+    async def test_acreate_path_absolute_directory_returns_absolute(self, tmp_path):
+        result = await acreate_path(directory=tmp_path, filename="file.txt")
+        result = Path(str(result))
+        assert result.is_absolute()
+        assert result == (tmp_path / "file.txt").resolve()
+
+    def test_create_path_relative_traversal_still_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "relbase").mkdir()
+        with pytest.raises(ValueError):
+            create_path(directory="relbase", filename="../escape.txt")
+
+    @pytest.mark.anyio
+    async def test_acreate_path_relative_traversal_still_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "relbase").mkdir()
+        with pytest.raises(ValueError):
+            await acreate_path(directory="relbase", filename="../escape.txt")
