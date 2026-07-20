@@ -76,8 +76,13 @@ def test_prepare_run_kwargs_raises_when_real_instruction_renders_empty(monkeypat
 
     monkeypatch.setattr(InstructionContent, "rendered", property(lambda self: ""))
 
-    with pytest.raises(EmptyOutgoingContentError, match="a real, non-empty prompt"):
+    with pytest.raises(EmptyOutgoingContentError, match="instruction_len=") as excinfo:
         _prepare_run_kwargs(branch, "a real, non-empty prompt", param)
+
+    # The prompt text itself must never appear in the exception message -
+    # it gets serialized into persisted failure signals (RunFailed) and
+    # must not carry caller-supplied content.
+    assert "a real, non-empty prompt" not in str(excinfo.value)
 
 
 def test_prepare_run_kwargs_allows_empty_render_when_no_instruction_text(monkeypatch):

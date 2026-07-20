@@ -227,13 +227,18 @@ def _prepare_run_kwargs(
     # with a useless reply. `rendered` here still holds the last loop
     # iteration's value even when that iteration hit `continue`.
     if _contents and _has_real_instruction_text(ins.content) and not rendered:
+        _instruction_text = getattr(ins.content, "instruction", None)
+        _plain_content = getattr(ins.content, "plain_content", None)
+        _instruction_len = len(_instruction_text) if _instruction_text else 0
+        _plain_content_len = len(_plain_content) if _plain_content else 0
+        _has_images = bool(getattr(ins.content, "images", None))
         raise EmptyOutgoingContentError(
             "Refusing to call the model: the assembled outgoing message list "
             "is empty for the current turn despite a non-empty instruction "
-            f"being supplied (instruction={ins.content.instruction!r}, "
-            f"plain_content={ins.content.plain_content!r}). The instruction "
-            "content was lost or filtered during message assembly — this is "
-            "a bug, not a valid empty-prompt call."
+            f"being supplied (instruction_len={_instruction_len}, "
+            f"plain_content_len={_plain_content_len}, has_images={_has_images}). "
+            "The instruction content was lost or filtered during message "
+            "assembly — this is a bug, not a valid empty-prompt call."
         )
 
     kw["messages"] = chat_msgs
