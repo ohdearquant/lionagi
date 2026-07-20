@@ -202,3 +202,122 @@ def test_iteration_is_snapshot_during_mutation():
         seen += 1
     assert seen == 50
     assert len(pile) == 0
+
+
+async def test_async_with_block_excludes_sync_thread():
+    # `async with pile:` must hold the full both-lock boundary: a sync-thread
+    # reader blocks until the block exits.
+    pile = Pile()
+    item = _Item()
+    pile.include(item)
+
+    got: list = []
+    reader = threading.Thread(target=lambda: got.append(pile.get(item.id, None)))
+
+    async with pile:
+        reader.start()
+        await asyncio.sleep(0.15)
+        assert not got, "sync get() must wait while `async with pile:` is held"
+
+    reader.join(5)
+    assert got == [item]
+
+
+async def test_adump_snapshot_excludes_sync_thread_mutation(tmp_path):
+    # While adump holds its snapshot region, a sync-thread include() must not
+    # interleave; it lands only after the region releases.
+    pile = Pile()
+    pile.include([_Item() for _ in range(3)])
+
+    in_snapshot = threading.Event()
+    real_to_df = pile.to_df
+
+    def slow_to_df(*a, **kw):
+        in_snapshot.set()
+        time.sleep(0.3)
+        return real_to_df(*a, **kw)
+
+    object.__setattr__(pile, "to_df", slow_to_df)
+
+    included: list = []
+
+    def includer():
+        in_snapshot.wait(5)
+        pile.include(_Item())
+        included.append(True)
+
+    t = threading.Thread(target=includer)
+    t.start()
+    await pile.adump(tmp_path / "dump.json", obj_key="json")
+    t.join(5)
+
+    assert included, "sync include must eventually complete after adump releases"
+    assert len(pile) == 4
+
+
+async def test_same_loop_sync_call_reenters_documented_boundary():
+    # Documented boundary: exclusion is cross-thread. A sync call made by a
+    # DIFFERENT task on the same event-loop thread re-enters the RLock while
+    # an async operation is mid-await, and proceeds. This pins the contract
+    # so any future change to it is deliberate.
+    from lionagi.ln import async_synchronized
+
+    pile = Pile()
+    pile.include(_Item())
+
+    holding = asyncio.Event()
+    proceed = asyncio.Event()
+
+    @async_synchronized
+    async def slow_op(self):
+        holding.set()
+        await proceed.wait()
+
+    task = asyncio.ensure_future(slow_op(pile))
+    await asyncio.wait_for(holding.wait(), 5)
+
+    # Same loop thread owns the RLock: this re-enters and completes.
+    pile.clear()
+    assert len(pile) == 0
+
+    proceed.set()
+    await task
+
+
+async def test_async_pile_iterator_does_not_block_event_loop():
+    # The legacy AsyncPileIterator must share the spin path: with a sync
+    # thread holding _lock, the event loop keeps ticking while it waits.
+    pile = Pile()
+    items = [_Item() for _ in range(3)]
+    pile.include(items)
+
+    acquired = threading.Event()
+    release = threading.Event()
+    holder = threading.Thread(target=_hold_lock, args=(pile, acquired, release))
+    holder.start()
+    assert acquired.wait(5)
+
+    ticks = 0
+
+    async def ticker():
+        nonlocal ticks
+        for _ in range(50):
+            ticks += 1
+            await asyncio.sleep(0.005)
+
+    async def iterate():
+        it = pile.AsyncPileIterator(pile)
+        first = await it.__anext__()
+        return first
+
+    ticker_task = asyncio.ensure_future(ticker())
+    iter_task = asyncio.ensure_future(iterate())
+    await asyncio.sleep(0.2)
+    assert not iter_task.done(), "iterator must be waiting on the held sync lock"
+    assert ticks >= 10, "event loop must keep running while the iterator spins"
+
+    release.set()
+    first = await asyncio.wait_for(iter_task, 5)
+    assert first is items[0]
+    ticker_task.cancel()
+    holder.join(5)
