@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import time
 
+from lionagi._errors import LionError
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.ln.concurrency import CancelScope, create_task_group, move_on_after
 from lionagi.orchestration import plan
@@ -39,6 +40,10 @@ from ._orchestration import (
     team_history_context,
     worker_is_cli,
 )
+
+
+class FanoutPlanError(LionError):
+    """Orchestrator failed to produce a usable plan."""
 
 
 async def _run_fanout(
@@ -195,14 +200,21 @@ async def _run_fanout_inner(
 
     roster = available_roles()
     progress(f"Phase 1: Orchestrator decomposing task into ≤{num_workers} assignments...")
-    assignments = await plan(
-        env.orc_branch,
-        prompt,
-        roles=roster,
-        dag=False,
-        guidance=role_roster(env.default_model_spec),
-        max_tasks=num_workers,
-    )
+    try:
+        assignments = await plan(
+            env.orc_branch,
+            prompt,
+            roles=roster,
+            dag=False,
+            guidance=role_roster(env.default_model_spec),
+            max_tasks=num_workers,
+        )
+    except ValueError as exc:
+        # plan() raises a bare ValueError when the orchestrator still
+        # overshoots max_tasks after the cap was stated in guidance — mirror
+        # `li o flow`'s FlowPlanError translation so this reaches the CLI's
+        # clean-failure exit path instead of escaping as a raw traceback.
+        raise FanoutPlanError(str(exc)) from exc
     t_decompose = time.monotonic() - t0
     if not assignments:
         return "Orchestrator produced no assignments."

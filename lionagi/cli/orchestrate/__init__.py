@@ -16,7 +16,7 @@ from .._logging import hint, log_error
 from .._providers import add_common_cli_args
 from .._util import EXIT_CODE_BY_STATUS
 from ._checkpoint import FlowResumeError
-from .fanout import _run_fanout
+from .fanout import FanoutPlanError, _run_fanout
 from .flow import FlowPlanError, _resume_flow, _run_flow
 
 # ── flow-spec helpers ────────────────────────────────────────────────────────
@@ -952,6 +952,8 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 notify=getattr(args, "notify", None),
             ),
             verbose=args.verbose,
+            # planning produced no usable assignments — fail loud with actionable message
+            extra_handlers=((FanoutPlanError, EXIT_CODE_BY_STATUS["failed"]),),
         )
         if rc != 0:
             return rc
