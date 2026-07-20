@@ -212,6 +212,22 @@ def test_required_ci_wrapper_excludes_only_performance_and_quarantine() -> None:
     assert "pytest-rerunfailures" not in script
 
 
+def test_docs_job_always_guard_survives_upstream_changes_failure() -> None:
+    # Regression: `docs` gained `needs: changes` (so its two new
+    # ADR-check steps can read `needs.changes.outputs.adr`) with no job-level
+    # `if:`. Under GitHub Actions default semantics, a job with `needs:` and
+    # no `if:` implicitly runs only when the needed job succeeds -- so a
+    # transient failure/timeout of `changes` would silently skip `docs`,
+    # including its two pre-existing, unconditional markdownlint/lychee
+    # steps that don't depend on `changes` output at all. `docs` must use the
+    # same always()-guard pattern as `studio-docker`.
+    workflow = CI_WORKFLOW.read_text()
+    docs_job = workflow.split("  docs:", 1)[1].split("  test:", 1)[0]
+
+    assert "needs: changes" in docs_job
+    assert "if: ${{ always() && needs.changes.result == 'success' }}" in docs_job
+
+
 def test_every_required_ci_exclusion_has_a_workflow_lane() -> None:
     workflow = CI_WORKFLOW.read_text()
     performance_job = workflow.split("  performance:", 1)[1].split("  quarantine:", 1)[0]

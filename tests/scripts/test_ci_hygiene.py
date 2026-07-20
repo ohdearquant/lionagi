@@ -71,7 +71,7 @@ def test_ci_lint_job_runs_publication_hygiene() -> None:
 
 
 def test_push_trigger_has_no_notebook_paths_ignore() -> None:
-    # Regression for #2313: GitHub Actions skips an entire workflow run when
+    # Regression: GitHub Actions skips an entire workflow run when
     # every changed path matches paths-ignore. A push trigger that ignores
     # notebooks would bypass the lint job (and its publication-hygiene scan)
     # for a notebook-only push to main/develop.
@@ -247,7 +247,7 @@ def test_possessive_founder_name_mention_is_still_rejected(public_repo: Path) ->
 def test_possessive_founder_name_mention_with_non_whitelisted_noun_is_rejected(
     public_repo: Path, content: str
 ) -> None:
-    # Regression for #2268: #2185 narrowed the possessive branch to a 12-word
+    # Regression: an earlier change narrowed the possessive branch to a 12-word
     # noun whitelist (directive/direction/decision/.../mandate), so leaks like
     # "Ocean's notes"/"Ocean's opinion" silently passed. The possessive form
     # must stay a catch-all regardless of the noun that follows.
