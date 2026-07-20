@@ -40,9 +40,10 @@ and constructs the invocation event without making tools process-global
 **P4 — Remote MCP tools must look ordinary after discovery, but their transport is
 not ordinary.** The registry currently accepts a one-entry MCP configuration, discovers
 remote schemas, builds a local async proxy, remembers transport policy, and reaches a
-process-global client pool. Direct pool use is fail-closed for command and URL
-transports. The two explicit config-loading helpers instead install a per-load policy
-with both transport classes allowed when the caller omits a policy. Discovered tools
+process-global client pool. Command and URL transports are fail-closed, and that now
+holds through the two explicit config-loading helpers as well: an omitted policy stays
+unset and reaches the pool's own fail-closed default, so loading a config file is no
+longer an implicit trust act. Discovered tools
 use the remote tool's unqualified name in the branch registry, so remote servers can
 collide with each other or with local tools (`lionagi/protocols/action/manager.py`;
 `lionagi/service/connections/mcp_wrapper.py`).
@@ -469,11 +470,13 @@ tool:
   require `allow_commands=True`; an allowlist, when present, accepts bare command names
   only. URLs require `allow_urls=True`, an `https` or `wss` scheme, and an optional host
   allowlist.
-- **Loader trust:** `load_mcp_config()` and top-level `load_mcp_tools()` replace an
-  omitted policy with `MCPSecurityConfig(allow_commands=True, allow_urls=True)`. That
-  per-load policy is threaded to registration without mutating the process-global
-  default. A transport `PermissionError` is logged and re-raised; other server failures
-  become an empty registered-name list or a warning.
+- **Loader trust:** `load_mcp_config()` and top-level `load_mcp_tools()` leave an
+  omitted policy unset and thread it through to registration unchanged, so it reaches
+  the pool's own fail-closed default and a command or URL transport is denied exactly as
+  it is under direct pool use. A caller that wants both transport classes allowed passes
+  `MCPSecurityConfig.trusted()` explicitly, and that choice is threaded per load without
+  mutating the process-global default. A transport `PermissionError` is logged and
+  re-raised; other server failures become an empty registered-name list or a warning.
 - **Loader input failure:** config-file existence, JSON shape, and parsing errors occur
   before the per-server recovery loop and propagate. Top-level `load_mcp_tools()` also
   raises `ValueError` when neither `server_names` nor a config path supplies a server
@@ -540,7 +543,7 @@ unqualified names make collision handling a branch-registration concern.
 |---|-------|------|-------|
 | 1 | Version and narrow raw-callable schema derivation so Python defaults remain optional, positional-only and `*args` signatures require an explicit adapter, open `**kwargs` callables require an explicit schema, schemas without `required` are accepted, and tests prove provider schema and runtime validation agree. | M | (filled at issue-open time) |
 | 2 | Move MCP configuration, discovery, namespacing, and pool lifecycle into a service-owned factory that returns ready `Tool` descriptors; acceptance requires `protocols.action` to have no service-layer import, remote identities to be collision-free, and per-tool request models to resolve by that canonical identity without key mutation or silent fallback. | M | (filled at issue-open time) |
-| 3 | Require the MCP-loading caller to make an explicit transport-trust decision; acceptance requires omitted policy to preserve the wrapper's fail-closed command and URL defaults and an explicit trusted-config mode to be observable. | S | (filled at issue-open time) |
+| 3 | Require the MCP-loading caller to make an explicit transport-trust decision; acceptance requires omitted policy to preserve the wrapper's fail-closed command and URL defaults and an explicit trusted-config mode to be observable. | S | delivered — see Loader trust above |
 
 ## Alternatives considered
 
@@ -596,12 +599,15 @@ shape: MCP support was added at the registry's existing normalization point, usi
 imports to soften the dependency. Delta 2 retains the service-factory design for a
 future correction.
 
-### H. Preserve fail-closed defaults in explicit config loaders
+### H. Treat loading a config file as an implicit trust act
 
-This would make an omitted policy deny every command and URL just as direct pool use
-does. It lost because selecting and loading a config file was treated as an implicit
-trust act. That convenience creates an important semantic split, so Delta 3 requires a
-named and observable trust choice rather than leaving the implication unstated.
+The original decision let the explicit config loaders replace an omitted policy with one
+allowing both transport classes, on the reasoning that selecting and loading a config
+file was itself a trust decision. That convenience created a semantic split: the same
+omitted policy meant "deny" through the pool and "allow" through a loader, and nothing
+in the calling code made the difference visible. Delta 3 replaced it with the behavior
+now described under Loader trust, where an omitted policy denies in both paths and
+trust is a named, observable choice.
 
 ## Notes
 
