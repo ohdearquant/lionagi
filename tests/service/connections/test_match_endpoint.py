@@ -6,14 +6,18 @@ import pytest
 
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.match_endpoint import match_endpoint
+from lionagi.service.connections.registry import ProviderNotFoundError
 
 
 class TestMatchEndpoint:
     """Test the match_endpoint function for provider matching logic.
 
-    ``EndpointRegistry.match`` always returns either a registered endpoint
-    instance or the generic fallback ``Endpoint`` — it never returns
-    ``None``. Guards like ``if endpoint is None: pytest.skip(...)`` are
+    ``EndpointRegistry.match`` returns a registered endpoint instance, or
+    the generic fallback ``Endpoint`` when the caller explicitly opts in
+    (``openai_compatible=True``, or ``base_url=`` on the deprecated
+    migration path) -- it never returns ``None``. An unrecognized provider
+    with no opt-in raises ``ProviderNotFoundError`` instead of silently
+    mis-routing. Guards like ``if endpoint is None: pytest.skip(...)`` are
     therefore unreachable dead code that can silently mask a routing
     regression as a skip. These tests assert the concrete registered
     endpoint class rather than only ``isinstance(endpoint, Endpoint)``, so a
@@ -91,13 +95,40 @@ class TestMatchEndpoint:
 
         assert endpoint.config.endpoint_params == ["custom", "path"]
 
-    def test_unknown_provider_fallback(self):
-        endpoint = match_endpoint(provider="unknown_provider", endpoint="chat", model="some-model")
+    def test_unknown_provider_raises_by_default(self):
+        # An unregistered provider with no opt-in and no base_url must raise
+        # a clear error rather than silently mis-routing to the generic
+        # OpenAI-compatible fallback.
+        with pytest.raises(ProviderNotFoundError, match="unknown_provider"):
+            match_endpoint(provider="unknown_provider", endpoint="chat", model="some-model")
 
-        # An unregistered provider must route to the generic openai-compatible
-        # fallback endpoint, not raise and not return None.
+    def test_unknown_provider_error_names_registered_providers(self):
+        with pytest.raises(ProviderNotFoundError, match="openai"):
+            match_endpoint(provider="unknown_provider", endpoint="chat")
+
+    def test_unknown_provider_with_explicit_opt_in_falls_back(self):
+        endpoint = match_endpoint(
+            provider="unknown_provider",
+            endpoint="chat",
+            model="some-model",
+            openai_compatible=True,
+        )
+
         assert type(endpoint).__name__ == "Endpoint"
         assert endpoint.config.provider == "unknown_provider"
+        assert endpoint.config.openai_compatible is True
+
+    def test_unknown_provider_with_base_url_falls_back_with_deprecation_warning(self):
+        with pytest.warns(DeprecationWarning, match="unknown_provider"):
+            endpoint = match_endpoint(
+                provider="unknown_provider",
+                endpoint="chat",
+                base_url="https://my-api.example.com/v1",
+            )
+
+        assert type(endpoint).__name__ == "Endpoint"
+        assert endpoint.config.provider == "unknown_provider"
+        assert endpoint.config.base_url == "https://my-api.example.com/v1"
 
     def test_model_parameter_filtering(self):
         # Test with reasoning model
@@ -220,10 +251,11 @@ class TestMatchEndpoint:
             )
 
     def test_match_endpoint_fallback_builds_openai_compatible_endpoint_config(self):
-        result = match_endpoint(provider="custom_provider", endpoint="")
+        result = match_endpoint(provider="custom_provider", endpoint="", openai_compatible=True)
 
         assert type(result).__name__ == "Endpoint"
         assert result.config.provider == "custom_provider"
         assert result.config.endpoint == "chat/completions"
         assert result.config.auth_type == "bearer"
         assert result.config.content_type == "application/json"
+        assert result.config.openai_compatible is True

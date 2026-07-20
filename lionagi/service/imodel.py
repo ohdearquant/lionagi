@@ -102,10 +102,17 @@ class iModel:  # noqa: N801
         if isinstance(endpoint, Endpoint):
             self.endpoint = endpoint
         else:
+            match_kwargs = dict(kwargs)
+            if base_url:
+                # A caller-supplied base_url is the same explicit signal that
+                # already means "route this custom host through the generic
+                # OpenAI-compatible endpoint" -- surface it to match_endpoint
+                # so an unregistered provider name doesn't raise here.
+                match_kwargs.setdefault("base_url", base_url)
             self.endpoint = match_endpoint(
                 provider=provider,
                 endpoint=endpoint,
-                **kwargs,
+                **match_kwargs,
             )
         if provider:
             self.endpoint.config.provider = provider
@@ -409,9 +416,16 @@ class iModel:  # noqa: N801
     def from_dict(cls, data: dict):
         endpoint = Endpoint.from_dict(data.get("endpoint", {}))
 
+        # openai_compatible=True: rehydrating a persisted iModel must never
+        # raise just because its provider isn't (or is no longer) registered
+        # -- the deserialized `endpoint` below is already a complete,
+        # authoritative config either way, this lookup only exists to recover
+        # a registered subclass and a freshly env-sourced API key when one
+        # applies.
         if e1 := match_endpoint(
             provider=endpoint.config.provider,
             endpoint=endpoint.config.endpoint,
+            openai_compatible=True,
         ):
             # Preserve the freshly resolved (env-sourced) API key before overwriting config
             fresh_api_key = e1.config._api_key
