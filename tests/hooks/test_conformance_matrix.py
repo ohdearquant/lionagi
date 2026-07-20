@@ -245,6 +245,43 @@ async def test_exit_code_protocol_zero_two_and_other(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Malformed/partial exit-0 responses (D1/D4 acceptance, Issue 7): only a
+# genuinely empty stdout means "no opinion" (allow). Every other shape that
+# fails to yield a recognized decision must fail closed on a blocking seam.
+# ---------------------------------------------------------------------------
+
+
+async def test_malformed_exit_zero_responses_fail_closed_not_allow(monkeypatch):
+    hook = external_hook_adapter(event="PreToolUse", command=["guard"])
+
+    for stdout in (
+        b"not valid json",
+        b"42",
+        b'"a plain string"',
+        b"[1, 2, 3]",
+        b"{}",
+        json.dumps({"hookSpecificOutput": {}}).encode(),
+        json.dumps({"hookSpecificOutput": {"permissionDecision": None}}).encode(),
+    ):
+        monkeypatch.setattr(
+            asyncio, "create_subprocess_exec", AsyncMock(return_value=_mock_proc(0, stdout=stdout))
+        )
+        result = await hook("bash", {})
+        assert result.decision == "deny", f"stdout={stdout!r} must fail closed, not allow"
+
+
+async def test_empty_stdout_is_the_only_legitimate_no_opinion_allow(monkeypatch):
+    """Contrast case for the matrix above: truly empty stdout is the one
+    shape that stays "allow" -- proving the malformed cases above are
+    denied because they are malformed, not because any non-default stdout
+    fails closed."""
+    hook = external_hook_adapter(event="PreToolUse", command=["guard"])
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=_mock_proc(0)))
+    result = await hook("bash", {})
+    assert result.decision == "allow"
+
+
+# ---------------------------------------------------------------------------
 # Named divergence Dv1-4: LionAGI fails closed on a blocking-event timeout,
 # where Claude Code cancels the hook and lets the prompt proceed (fail open).
 # ---------------------------------------------------------------------------

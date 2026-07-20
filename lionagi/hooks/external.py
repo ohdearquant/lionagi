@@ -601,52 +601,81 @@ async def _run_hook_process(
 
 def _parse_stdout_decision(
     stdout_bytes: bytes,
-) -> tuple[str | None, str, dict[str, Any] | None]:
-    """Parse exit-0 stdout into ``(permission_decision, reason, updated_input)``.
+) -> tuple[str | None, str, dict[str, Any] | None, bool]:
+    """Parse exit-0 stdout into ``(permission_decision, reason,
+    updated_input, malformed)``.
 
-    Empty stdout, non-empty stdout that fails to parse as JSON, or a JSON
-    body with no recognized decision field all return ``(None, "", None)``
-    -- "no structured output," never a block. A top-level ``decision`` of
-    ``"block"`` normalizes to ``"deny"``; ``"allow"``/``"approve"`` (or an
-    explicit ``null``) normalize to ``None`` (allow); any other explicit
-    value -- including ``"ask"`` or an unrecognized string -- passes through
-    unchanged so the caller's decision switch fails it closed, matching the
-    nested ``hookSpecificOutput.permissionDecision`` shape's handling of
-    unrecognized values.
+    Empty stdout is the ONLY case that legitimately means "no structured
+    output" (the documented no-opinion convention -- allow). Every other
+    case that fails to yield a recognized decision form sets
+    ``malformed=True`` instead of silently reusing the empty-stdout
+    convention: non-empty stdout that fails to parse as JSON, a JSON value
+    that isn't an object, an object with neither a ``hookSpecificOutput.
+    permissionDecision`` nor a top-level ``decision`` field (including
+    ``{}`` and ``{"hookSpecificOutput": {}}``), and an explicit
+    ``hookSpecificOutput.permissionDecision: null`` (present but null,
+    unlike the key being absent) -- the caller must deny these on a
+    blocking seam rather than treat them the same as a genuinely empty
+    response.
+
+    A top-level ``decision`` of ``"block"`` normalizes to ``"deny"``;
+    ``"allow"``/``"approve"`` (or an explicit top-level ``null``) normalize
+    to ``None`` (allow) -- this is the one place an explicit null is a
+    documented convention rather than a malformed response, since the
+    top-level shape's null means "no decision" the same way an absent
+    field would. Any other explicit value -- including ``"ask"`` or an
+    unrecognized string -- passes through unchanged so the caller's
+    decision switch fails it closed, matching the nested shape's handling
+    of unrecognized values.
     """
     text = stdout_bytes.decode(errors="replace").strip()
     if not text:
-        return None, "", None
+        return None, "", None, False
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
-        logger.warning("hook stdout was non-empty but not valid JSON; treating as no decision")
-        return None, "", None
+        logger.warning("hook stdout was non-empty but not valid JSON; failing closed")
+        return None, "hook stdout was non-empty but not valid JSON", None, True
     if not isinstance(data, dict):
-        return None, "", None
+        return (
+            None,
+            f"hook stdout parsed to a non-object JSON value ({type(data).__name__})",
+            None,
+            True,
+        )
 
     hook_specific = data.get("hookSpecificOutput")
     if isinstance(hook_specific, dict) and "permissionDecision" in hook_specific:
+        decision = hook_specific.get("permissionDecision")
+        reason = hook_specific.get("permissionDecisionReason") or ""
+        if decision is None:
+            return (
+                None,
+                reason or "hookSpecificOutput.permissionDecision was explicitly null",
+                None,
+                True,
+            )
         updated_input = hook_specific.get("updatedInput")
         return (
-            hook_specific.get("permissionDecision"),
-            hook_specific.get("permissionDecisionReason") or "",
+            decision,
+            reason,
             updated_input if isinstance(updated_input, dict) else None,
+            False,
         )
     if "decision" in data:
         decision = data.get("decision")
         reason = data.get("reason") or ""
         if decision is None or decision in ("allow", "approve"):
-            return None, reason, None
+            return None, reason, None, False
         if decision == "block":
-            return "deny", reason, None
+            return "deny", reason, None, False
         # Any other explicit value (e.g. "ask", or an unrecognized string) is
         # handed through as-is so `_execute_hook`'s decision switch applies
         # the same fail-closed handling it uses for the nested
         # `hookSpecificOutput.permissionDecision` shape -- an explicit but
         # unrecognized top-level decision must never fall through to allow.
-        return decision, reason, None
-    return None, "", None
+        return decision, reason, None, False
+    return None, "hook stdout was valid JSON but had no recognized decision field", None, True
 
 
 async def _execute_hook(
@@ -724,7 +753,17 @@ async def _execute_hook(
             ),
         )
 
-    decision, reason, updated_input = _parse_stdout_decision(stdout.data)
+    decision, reason, updated_input, malformed = _parse_stdout_decision(stdout.data)
+    if malformed:
+        # A response that couldn't be understood as a decision at all is a
+        # hook-response failure, not a policy choice -- treat it like the
+        # other failure-shaped outcomes above (nonzero exit, timeout):
+        # deny on a blocking seam, error/log-and-continue on an advisory
+        # one. Never the same as a genuinely empty stdout's "no opinion".
+        return HookVerdict(
+            outcome="deny" if blocking else "error",
+            reason=reason or "hook stdout did not contain a recognized decision; failing closed",
+        )
     if decision is None or decision == "allow":
         return HookVerdict(outcome="allow", reason=reason, updated_input=updated_input)
     if decision == "deny":

@@ -446,7 +446,10 @@ async def test_pre_tool_use_top_level_allow_synonyms_allow(monkeypatch, value):
     assert result.decision == "allow"
 
 
-async def test_pre_tool_use_nonjson_stdout_is_treated_as_no_decision(monkeypatch):
+async def test_pre_tool_use_nonjson_stdout_fails_closed_on_blocking_seam(monkeypatch):
+    """Non-empty stdout that isn't valid JSON is a malformed response, not
+    "no opinion" -- it must never be treated the same as a genuinely empty
+    stdout (see the malformed-response tests below)."""
     monkeypatch.setattr(
         asyncio,
         "create_subprocess_exec",
@@ -454,7 +457,71 @@ async def test_pre_tool_use_nonjson_stdout_is_treated_as_no_decision(monkeypatch
     )
     hook = external_hook_adapter(event="PreToolUse", command=["guard"])
     result = await hook("bash", {"command": ["ls"]})
-    assert result.decision == "allow"
+    assert result.decision == "deny"
+
+
+# ---------------------------------------------------------------------------
+# Malformed/partial exit-0 responses on a blocking seam (Issue 7): only a
+# genuinely empty stdout means "no opinion" (allow). Every other case that
+# fails to yield a recognized decision -- a scalar JSON value, an empty
+# object, a hookSpecificOutput with no permissionDecision key, and an
+# EXPLICIT null permissionDecision -- must fail closed, never fall through
+# to the empty-stdout allow convention.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        b"42",
+        b'"just a string"',
+        b"true",
+        b"[1, 2, 3]",
+        b"{}",
+        json.dumps({"hookSpecificOutput": {}}).encode(),
+        json.dumps({"hookSpecificOutput": {"permissionDecision": None}}).encode(),
+    ],
+    ids=[
+        "scalar-int",
+        "scalar-string",
+        "scalar-bool",
+        "json-array",
+        "empty-object",
+        "empty-hook-specific-output",
+        "explicit-null-nested-permission-decision",
+    ],
+)
+async def test_pre_tool_use_malformed_exit_zero_response_fails_closed(monkeypatch, stdout):
+    monkeypatch.setattr(
+        asyncio, "create_subprocess_exec", AsyncMock(return_value=_mock_proc(0, stdout=stdout))
+    )
+    hook = external_hook_adapter(event="PreToolUse", command=["guard"])
+    result = await hook("bash", {"command": ["ls"]})
+    assert result.decision == "deny"
+
+
+async def test_user_prompt_submit_malformed_exit_zero_response_raises(monkeypatch):
+    """Same malformed-response cases, exercised on the other blocking seam
+    (HookBus's UserPromptSubmit rather than ActionManager's PreToolUse)."""
+    stdout = json.dumps({"hookSpecificOutput": {"permissionDecision": None}}).encode()
+    monkeypatch.setattr(
+        asyncio, "create_subprocess_exec", AsyncMock(return_value=_mock_proc(0, stdout=stdout))
+    )
+    hook = external_hook_adapter(event="UserPromptSubmit", command=["hygiene"])
+    with pytest.raises(PermissionError):
+        await hook(session_id="s-1", branch_id="b-1", prompt="do a thing")
+
+
+async def test_post_tool_use_malformed_exit_zero_response_is_error_not_raise(monkeypatch):
+    """Same malformed shape on an advisory seam: surfaced as a note, never
+    a raised exception (PostToolUse cannot un-run the tool call)."""
+    stdout = b"not json at all"
+    monkeypatch.setattr(
+        asyncio, "create_subprocess_exec", AsyncMock(return_value=_mock_proc(0, stdout=stdout))
+    )
+    hook = external_hook_adapter(event="PostToolUse", command=["notify"])
+    result = await hook("bash", {"command": ["ls"]}, {"stdout": "ok"}, None)
+    assert isinstance(result, ToolPostDecision)
 
 
 async def test_pre_tool_use_matcher_skips_non_matching_tool(monkeypatch):
@@ -657,13 +724,16 @@ async def test_approved_relative_command_runs_from_approval_cwd_not_process_cwd(
     approved_dir = tmp_path / "approved"
     approved_dir.mkdir()
     approved_script = approved_dir / "guard"
-    approved_script.write_text("#!/bin/sh\nexit 0\n")
+    # Drains stdin before exiting (matches the envelope-write/exec ordering
+    # other real-subprocess tests in this module use) so the parent's
+    # envelope write can never race a child that already exited.
+    approved_script.write_text("#!/bin/sh\ncat >/dev/null\nexit 0\n")
     approved_script.chmod(0o755)
 
     attacker_dir = tmp_path / "attacker"
     attacker_dir.mkdir()
     attacker_script = attacker_dir / "guard"
-    attacker_script.write_text("#!/bin/sh\necho ATTACKER-RAN 1>&2\nexit 2\n")
+    attacker_script.write_text("#!/bin/sh\ncat >/dev/null\necho ATTACKER-RAN 1>&2\nexit 2\n")
     attacker_script.chmod(0o755)
 
     record = compute_trust_record(["./guard"], str(approved_dir))
@@ -704,7 +774,7 @@ async def test_content_pinned_trust_survives_same_path_replacement_after_digest_
     approved_dir = tmp_path / "approved"
     approved_dir.mkdir()
     script = approved_dir / "guard"
-    script.write_text("#!/bin/sh\nexit 0\n")
+    script.write_text("#!/bin/sh\ncat >/dev/null\nexit 0\n")
     script.chmod(0o755)
 
     record = compute_trust_record(["./guard"], str(approved_dir))
@@ -716,7 +786,7 @@ async def test_content_pinned_trust_survives_same_path_replacement_after_digest_
         digest = original_hash_fd(fd)
         # Attacker wins the race right after the digest was read but before
         # the process is spawned.
-        script.write_text("#!/bin/sh\necho ATTACKER-RAN 1>&2\nexit 2\n")
+        script.write_text("#!/bin/sh\ncat >/dev/null\necho ATTACKER-RAN 1>&2\nexit 2\n")
         script.chmod(0o755)
         return digest
 
@@ -745,11 +815,11 @@ async def test_content_pinned_trust_survives_symlink_swap_after_digest_read(monk
     approved_dir = tmp_path / "approved"
     approved_dir.mkdir()
     script = approved_dir / "guard"
-    script.write_text("#!/bin/sh\nexit 0\n")
+    script.write_text("#!/bin/sh\ncat >/dev/null\nexit 0\n")
     script.chmod(0o755)
 
     attacker_script = tmp_path / "attacker_guard"
-    attacker_script.write_text("#!/bin/sh\necho ATTACKER-RAN 1>&2\nexit 2\n")
+    attacker_script.write_text("#!/bin/sh\ncat >/dev/null\necho ATTACKER-RAN 1>&2\nexit 2\n")
     attacker_script.chmod(0o755)
 
     record = compute_trust_record(["./guard"], str(approved_dir))
