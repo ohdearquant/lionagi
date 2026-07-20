@@ -675,10 +675,56 @@ def register_endpoint(
     )
 
 
+# Declared, not inferred: the optional third-party dependency each fixed
+# provider module needs, keyed by dotted module path. A module with no entry
+# here has none. Verified against each module's own top-level imports -- keep
+# an entry's dependency tuple in sync if that module's imports change.
+# Every module currently in _import_all_providers' fixed list defers its
+# optional third-party imports past module scope (see e.g. ollama/chat.py,
+# ag2/agent.py, ag2/groupchat.py, ag2/nlip.py), so none need an entry yet;
+# add one here the day a provider module imports its optional dependency at
+# module scope again.
+_PROVIDER_OPTIONAL_DEPENDENCIES: dict[str, tuple[str, ...]] = {}
+
+
+def _import_provider_module(mod: str) -> None:
+    """Preflight-check ``mod``'s declared optional dependencies, then import.
+
+    A declared dependency that fails to resolve skips the import entirely
+    (debug log, module body never runs) -- so a buggy module never gets the
+    chance to raise a misleading exception. Once every declared dependency
+    resolves (or none are declared), any ``ImportError`` raised while
+    importing ``mod`` is unconditionally a provider-load failure (warning) --
+    no exception-metadata inspection at all, since that metadata is fully
+    controlled by whatever code raised it.
+    """
+    import importlib
+    import importlib.util
+
+    missing = [
+        dep
+        for dep in _PROVIDER_OPTIONAL_DEPENDENCIES.get(mod, ())
+        if importlib.util.find_spec(dep) is None
+    ]
+    if missing:
+        logger.debug(
+            "provider module %r not registered: optional dependency %r is not installed",
+            mod,
+            missing[0],
+        )
+        return
+    try:
+        importlib.import_module(mod)
+    except ImportError as e:
+        logger.warning(
+            "provider module %r failed to import and was not registered: %s",
+            mod,
+            e,
+        )
+
+
 def _import_all_providers():
     """Import all provider modules to trigger registration decorators."""
-    import importlib
-
     _modules = [
         # OpenAI family
         "lionagi.providers.openai.chat",
@@ -723,47 +769,4 @@ def _import_all_providers():
         "lionagi.testing._endpoint",
     ]
     for mod in _modules:
-        try:
-            importlib.import_module(mod)
-        except ImportError as e:
-            if _is_missing_optional_dependency(e):
-                logger.debug(
-                    "provider module %r not registered: optional dependency "
-                    "%r is not installed (%s)",
-                    mod,
-                    e.name,
-                    e,
-                )
-            else:
-                logger.warning(
-                    "provider module %r failed to import and was not registered: %s",
-                    mod,
-                    e,
-                )
-
-
-def _is_missing_optional_dependency(exc: ImportError) -> bool:
-    """Tell a genuinely-absent optional third-party dependency apart from a
-    broken bundled module.
-
-    Every bundled provider module defers its heavy optional dependencies
-    (``autogen``, ``ollama``, ``nlip_sdk``, ...) to call time, guarded by
-    ``is_import_installed`` or a local ``try/except ImportError`` -- none of
-    them import a third-party package at module scope. So a module-scope
-    ``ImportError`` here is expected only when the failing name (reported by
-    Python as ``ImportError.name``) resolves to a third-party package that is
-    actually not installed. Anything else -- ``.name`` unset (the
-    "cannot import name X from Y" shape a broken re-export raises), a
-    ``lionagi.*`` name (a bug in our own import graph), or a name that *is*
-    installed (so importing it failed for some other reason) -- is a broken
-    bundled module and must be logged loudly instead of vanishing silently.
-    """
-    from lionagi.utils import is_import_installed
-
-    missing = getattr(exc, "name", None)
-    if not missing:
-        return False
-    top_level = missing.split(".", 1)[0]
-    if top_level == "lionagi":
-        return False
-    return not is_import_installed(top_level)
+        _import_provider_module(mod)

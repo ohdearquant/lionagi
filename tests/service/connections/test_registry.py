@@ -1,20 +1,23 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for ``EndpointRegistry`` registration-time diagnostics:
-provider/alias canonicalization + collision rejection, and the
-optional-dependency-vs-broken-module classification used while importing
-bundled provider modules.
+provider/alias canonicalization + collision rejection, and the declared-
+dependency preflight used while importing bundled provider modules.
 """
 
 from __future__ import annotations
 
+import logging
+import sys
+
 import pytest
 
+from lionagi.service.connections import registry as _registry_mod
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.registry import (
     EndpointRegistry,
     ProviderAliasCollisionError,
-    _is_missing_optional_dependency,
+    _import_provider_module,
 )
 
 
@@ -210,34 +213,37 @@ class TestConcurrentRegistrationAndRemoval:
         assert EndpointRegistry._alias_owners["old-plugin-provider"] == "old-plugin-provider"
 
 
-class TestOptionalDependencyClassification:
-    """``_is_missing_optional_dependency`` distinguishes a genuinely-absent
-    third-party dependency (quiet) from a broken bundled module (loud)."""
+class TestOptionalDependencyPreflight:
+    """``_import_provider_module`` classifies by a declared dependency table
+    checked via ``find_spec`` *before* import, never by inspecting the
+    metadata of an ``ImportError`` raised during import."""
 
-    def test_missing_third_party_package_is_optional(self):
-        exc = ModuleNotFoundError("No module named 'this_package_definitely_does_not_exist_xyz'")
-        exc.name = "this_package_definitely_does_not_exist_xyz"
-        assert _is_missing_optional_dependency(exc) is True
-
-    def test_missing_third_party_submodule_is_optional(self):
-        exc = ModuleNotFoundError(
-            "No module named 'this_package_definitely_does_not_exist_xyz.submodule'"
+    def test_module_skipped_when_declared_dependency_is_absent(self, monkeypatch, caplog):
+        mod = "tests.service.connections._fixture_absent_dep_provider"
+        monkeypatch.setitem(
+            _registry_mod._PROVIDER_OPTIONAL_DEPENDENCIES,
+            mod,
+            ("this_pkg_definitely_does_not_exist_xyz",),
         )
-        exc.name = "this_package_definitely_does_not_exist_xyz.submodule"
-        assert _is_missing_optional_dependency(exc) is True
+        with caplog.at_level(logging.DEBUG, logger=_registry_mod.logger.name):
+            _import_provider_module(mod)  # would raise RuntimeError if executed
 
-    def test_missing_internal_lionagi_name_is_not_optional(self):
-        exc = ModuleNotFoundError("No module named 'lionagi.providers.nonexistent'")
-        exc.name = "lionagi.providers.nonexistent"
-        assert _is_missing_optional_dependency(exc) is False
+        assert mod not in sys.modules
+        debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("not installed" in r.getMessage() for r in debug_records)
+        assert not warning_records
 
-    def test_installed_package_failing_for_other_reasons_is_not_optional(self):
-        exc = ModuleNotFoundError("No module named 'os.nonexistent_submodule'")
-        exc.name = "os"
-        assert _is_missing_optional_dependency(exc) is False
+    def test_forged_import_error_with_resolved_deps_is_a_load_failure(self, monkeypatch, caplog):
+        # Nothing declared for this module -- the preflight has nothing to
+        # check and passes trivially, so the import is attempted.
+        mod = "tests.service.connections._fixture_forged_import_provider"
+        monkeypatch.delitem(_registry_mod._PROVIDER_OPTIONAL_DEPENDENCIES, mod, raising=False)
+        with caplog.at_level(logging.DEBUG, logger=_registry_mod.logger.name):
+            _import_provider_module(mod)
 
-    def test_import_error_without_a_name_is_not_optional(self):
-        # The "cannot import name X from Y" shape a broken re-export raises;
-        # CPython does not set .name for this ImportError shape.
-        exc = ImportError("cannot import name 'Foo' from 'lionagi.bar'")
-        assert _is_missing_optional_dependency(exc) is False
+        assert mod not in sys.modules
+        debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert warning_records, "a forged/buggy ImportError must be a loud load failure"
+        assert not debug_records, "no metadata-based quiet classification should ever occur"
