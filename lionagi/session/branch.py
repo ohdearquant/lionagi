@@ -107,6 +107,7 @@ class Branch(Element, Relational):
     _pending_hook_bus_entries: list = PrivateAttr(default_factory=list)
     _hook_bus_synced_to: Any = PrivateAttr(None)
     _hook_bus_synced_count: int = PrivateAttr(0)
+    _hook_bus_registered: list = PrivateAttr(default_factory=list)
     _memory: MemoryStore | None = PrivateAttr(None)
     _owning_session_id: Any = PrivateAttr(None)
     _capabilities: Any = PrivateAttr(None)
@@ -354,6 +355,28 @@ class Branch(Element, Relational):
             return True
         return await self._observer.authorize(action)
 
+    def _origin_filtered_handler(self, handler: Any) -> Any:
+        """Wrap a branch-owned bus handler so a shared session bus only
+        invokes it for events that originate from this branch.
+
+        Emissions that carry a ``branch_id`` kwarg (e.g. ``UserPromptSubmit``)
+        are matched against this branch's id; emissions that don't (e.g.
+        ``SessionStart``/``SessionEnd``, which are genuinely session-wide)
+        pass through unfiltered. Without this, every branch sharing a
+        session's bus would see every other branch's events.
+        """
+        from lionagi.ln.concurrency import maybe_await
+
+        origin_id = str(self.id)
+
+        async def _filtered(**kwargs: Any) -> Any:
+            branch_id = kwargs.get("branch_id")
+            if branch_id is not None and branch_id != origin_id:
+                return None
+            return await maybe_await(handler(**kwargs))
+
+        return _filtered
+
     def attach_hook_bus(self, bus: Any) -> None:
         """Set this branch's :class:`HookBus` and (re)register any external
         handlers queued for bus attachment.
@@ -374,16 +397,34 @@ class Branch(Element, Relational):
         and the lazy ``Session.hooks`` property -- must route the assignment
         through this method so those queued handlers actually attach, rather
         than a configured guard silently never firing.
+
+        Each registered handler is wrapped with an origin-branch filter (see
+        ``_origin_filtered_handler``) so a bus shared by multiple branches
+        never cross-fires one branch's hook for another branch's event.
+        Switching to a genuinely different bus -- or detaching entirely via
+        ``attach_hook_bus(None)`` -- first unregisters every wrapper this
+        branch put on the old bus, so a reparented or removed branch leaves
+        no stale handler behind.
         """
+        old_bus = self._hook_bus_synced_to
+        if old_bus is not None and old_bus is not bus:
+            for point, wrapped in self._hook_bus_registered:
+                old_bus.off(point, wrapped)
+            self._hook_bus_registered = []
+            self._hook_bus_synced_count = 0
+
         self._hooks = bus
         if bus is None:
+            self._hook_bus_synced_to = None
             return
         if bus is not self._hook_bus_synced_to:
             self._hook_bus_synced_to = bus
             self._hook_bus_synced_count = 0
         unsynced = self._pending_hook_bus_entries[self._hook_bus_synced_count :]
         for point, handler in unsynced:
-            bus.on(point, handler)
+            wrapped = self._origin_filtered_handler(handler)
+            bus.on(point, wrapped)
+            self._hook_bus_registered.append((point, wrapped))
         self._hook_bus_synced_count = len(self._pending_hook_bus_entries)
 
     async def _persist_via_bus(self, msg: Any) -> None:

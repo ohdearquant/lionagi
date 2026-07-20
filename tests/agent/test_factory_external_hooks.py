@@ -326,3 +326,100 @@ async def test_user_prompt_submit_hook_survives_reparent_to_another_session(monk
         await branch._hooks.blocking_emit(
             HookPoint.USER_PROMPT_SUBMIT, session_id=str(session_b.id), prompt="do a thing"
         )
+
+
+# ---------------------------------------------------------------------------
+# Cross-branch isolation: a session's HookBus is shared by every branch it
+# owns, so a branch-owned external handler must not fire for another
+# branch's event, and a reparented/removed branch must not leave a stale
+# registration behind on its old session's bus.
+# ---------------------------------------------------------------------------
+
+
+async def test_two_branches_with_different_hooks_do_not_observe_each_others_prompts(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    calls: list[str] = []
+
+    async def fake_exec(*argv, **kwargs):
+        calls.append(argv[0] if argv else kwargs.get("executable"))
+        return _mock_proc(0, stdout=b"")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    def _spec_for(command: str) -> AgentSpec:
+        return _spec_with(
+            [
+                {
+                    "event": "UserPromptSubmit",
+                    "matcher": None,
+                    "command": [command],
+                    "timeout": 30.0,
+                    "source": None,
+                }
+            ]
+        )
+
+    branch1 = await create_agent(_spec_for("hygiene-1"), load_settings=False)
+    branch2 = await create_agent(_spec_for("hygiene-2"), load_settings=False)
+
+    session = Session()
+    session.include_branches(branch1)
+    session.include_branches(branch2)
+    assert len(session.hooks.handlers_for(HookPoint.USER_PROMPT_SUBMIT)) == 2
+
+    await branch1._hooks.blocking_emit(
+        HookPoint.USER_PROMPT_SUBMIT,
+        session_id=str(session.id),
+        branch_id=str(branch1.id),
+        prompt="from branch1",
+    )
+    assert calls == ["hygiene-1"], "branch2's handler must not fire for branch1's prompt"
+
+    calls.clear()
+    await branch2._hooks.blocking_emit(
+        HookPoint.USER_PROMPT_SUBMIT,
+        session_id=str(session.id),
+        branch_id=str(branch2.id),
+        prompt="from branch2",
+    )
+    assert calls == ["hygiene-2"], "branch1's handler must not fire for branch2's prompt"
+
+
+async def test_reparented_branch_leaves_no_handler_on_the_old_sessions_bus(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    stdout = json.dumps({"decision": "block", "reason": "hygiene check failed"}).encode()
+    monkeypatch.setattr(
+        asyncio, "create_subprocess_exec", AsyncMock(return_value=_mock_proc(0, stdout=stdout))
+    )
+
+    spec = _spec_with(
+        [
+            {
+                "event": "UserPromptSubmit",
+                "matcher": None,
+                "command": ["hygiene"],
+                "timeout": 30.0,
+                "source": None,
+            }
+        ]
+    )
+    branch = await create_agent(spec, load_settings=False)
+
+    session_a = Session()
+    _ = session_a.hooks
+    session_a.include_branches(branch)
+    assert len(session_a.hooks.handlers_for(HookPoint.USER_PROMPT_SUBMIT)) == 1
+
+    session_a.remove_branch(branch)
+    assert len(session_a.hooks.handlers_for(HookPoint.USER_PROMPT_SUBMIT)) == 0, (
+        "removing a branch must unregister its handlers from the old bus, "
+        "not just clear the branch's own reference to it"
+    )
+
+    session_b = Session()
+    _ = session_b.hooks
+    session_b.include_branches(branch)
+    assert len(session_b.hooks.handlers_for(HookPoint.USER_PROMPT_SUBMIT)) == 1
+    assert len(session_a.hooks.handlers_for(HookPoint.USER_PROMPT_SUBMIT)) == 0
