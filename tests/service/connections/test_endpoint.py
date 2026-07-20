@@ -1238,6 +1238,34 @@ class TestRetryConfigDefaultRetriesRealErrors:
         assert call_count == 1
 
     @pytest.mark.asyncio
+    async def test_asyncio_timeout_is_retried_with_default_retry_config(self):
+        # asyncio.TimeoutError != builtin TimeoutError before Python 3.11;
+        # the defaults must retry the asyncio class the same as the native
+        # endpoint fallback does.
+        import asyncio as _asyncio
+
+        endpoint = self._make_endpoint(max_retries=2)
+
+        call_count = 0
+
+        async def _raise_timeout(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise _asyncio.TimeoutError()
+
+        mock_session = AsyncMock(spec=aiohttp.ClientSession)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_session.request = _raise_timeout
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch.object(endpoint, "_create_http_session", return_value=mock_session):
+                with patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock()):
+                    with pytest.raises(_asyncio.TimeoutError):
+                        await endpoint.call({}, skip_payload_creation=True)
+        assert call_count == 3
+
+    @pytest.mark.asyncio
     async def test_connection_error_is_retried_with_default_retry_config(self):
         endpoint = self._make_endpoint(max_retries=2)
 

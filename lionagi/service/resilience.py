@@ -26,13 +26,20 @@ def _default_retry_exceptions() -> tuple[type[Exception], ...]:
     # production code actually raises.
     global _default_retry_exceptions_cache
     if _default_retry_exceptions_cache is None:
+        import asyncio
+
         import aiohttp
 
+        # asyncio.TimeoutError is a distinct class from the builtin
+        # TimeoutError before Python 3.11, and it is what timed-out awaits
+        # actually raise there — both are needed to match the native
+        # endpoint fallback's retry set on every supported runtime.
         _default_retry_exceptions_cache = (
             APIClientError,
             CircuitBreakerOpenError,
             ConnectionError,
             TimeoutError,
+            asyncio.TimeoutError,
             aiohttp.ClientError,
         )
     return _default_retry_exceptions_cache
