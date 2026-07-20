@@ -64,7 +64,17 @@ def _find_lionagi_dirs_cached(cwd: Path, home: Path) -> tuple[Path, ...]:
 
 
 def find_lionagi_dirs() -> list[Path]:
-    """Find .lionagi/ directories, project-local first then global ~/.lionagi/."""
+    """Find .lionagi/ directories, project-local first then global ~/.lionagi/.
+
+    Cached per (cwd, home) for the lifetime of the process: two calls at the
+    same location return the same result without re-probing the filesystem,
+    even if a `.lionagi/` directory is created or removed in between. A
+    caller that mutates `.lionagi/` topology at a stable (cwd, home) --
+    e.g. an embedding long-lived process, not a one-shot CLI invocation --
+    must call `clear_lionagi_dirs_cache()` afterward, or its own later
+    lookups (and any library code it calls) will keep seeing the pre-mutation
+    result until the process exits.
+    """
     return list(_find_lionagi_dirs_cached(Path.cwd(), Path.home()))
 
 
