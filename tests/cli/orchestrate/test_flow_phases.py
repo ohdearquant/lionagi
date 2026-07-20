@@ -1321,6 +1321,168 @@ def test_finalize_flow_agents_includes_spawned_node(tmp_path):
     assert spawned_agent["spawned"] is True
 
 
+# ── issue #2053: post-DAG finalize failures must not become DAG failures ──────
+
+
+def test_finalize_flow_team_post_failure_still_returns_output_and_records_error(tmp_path):
+    """A DAG that already produced its result must not lose that result because
+    a post-completion step (posting to the team inbox) raised. `_finalize_flow`
+    must still return the formatted output and stash the failure on
+    `env._finalize_error` instead of letting it propagate — a caller that let
+    this propagate used to have `_run_flow`'s `except BaseException` handler
+    reclassify a clean DAG completion as `failed` (classify_exception maps any
+    non-timeout/cancel exception to "failed")."""
+    env = _make_env(tmp_path, team_data={"id": "team-x", "name": "team-x"})
+    assignments = [TaskAssignment(task="x", assignee="researcher")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+    exec_result = _ExecResult(
+        agent_results=[
+            {
+                "id": "researcher",
+                "agent_id": "researcher",
+                "name": "researcher",
+                "model": "codex/gpt-5.5",
+                "depends_on": [],
+                "spawned": False,
+                "response": "great research",
+                "time_ms": 100,
+            }
+        ],
+        n_spawned=0,
+        t_exec_elapsed=1.0,
+    )
+
+    with (
+        patch(
+            "lionagi.cli.orchestrate.flow._post_results_to_team",
+            side_effect=RuntimeError("team inbox lock timed out"),
+        ),
+        patch("lionagi.cli.orchestrate.flow.finalize_orchestration"),
+    ):
+        output = _finalize_flow(
+            env,
+            "task",
+            plan_result,
+            dag_state,
+            exec_result,
+            None,
+            output_format="text",
+            show_graph=False,
+        )
+
+    # The DAG's own result must survive the finalize-step failure.
+    assert isinstance(output, str)
+    assert len(output) > 0
+    # The failure is recorded, not silently dropped, but on its own field.
+    assert env._finalize_error is not None
+    assert env._finalize_error["error_class"] == "RuntimeError"
+    assert "team inbox lock timed out" in env._finalize_error["error"]
+
+
+def test_finalize_flow_artifact_write_failure_is_split_from_finalize_error(tmp_path):
+    """The synthesis artifact IS the run's output, not a best-effort finalize
+    side effect — a failure writing it must land on its own field
+    (`env._artifact_write_error`), distinct from `env._finalize_error`, and
+    must not prevent the rest of teardown (team post, `finalize_orchestration`)
+    from still running. Pre-split, this write shared the same try/except as
+    the team-inbox post and would have landed on `env._finalize_error`
+    instead — which the run's teardown treats as a mere hiccup that leaves
+    status="completed", exactly the "exit 0 with no artifact" outcome this
+    fix must prevent."""
+    finalize_calls: list = []
+
+    def _fake_finalize(env, *, kind, prompt, extras=None):
+        finalize_calls.append(extras)
+
+    env = _make_env(tmp_path, team_data={"id": "team-x", "name": "team-x"})
+    bad_synthesis_path = MagicMock()
+    bad_synthesis_path.write_text.side_effect = OSError("disk full")
+    env.run.synthesis_path = bad_synthesis_path
+
+    assignments = [TaskAssignment(task="x", assignee="researcher")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+    exec_result = _ExecResult(
+        agent_results=[
+            {
+                "id": "researcher",
+                "agent_id": "researcher",
+                "name": "researcher",
+                "model": "codex/gpt-5.5",
+                "depends_on": [],
+                "spawned": False,
+                "response": "great research",
+                "time_ms": 100,
+            }
+        ],
+        n_spawned=1,
+        t_exec_elapsed=1.0,
+    )
+    synthesis_result = {
+        "model": "codex/gpt-5.5",
+        "response": "the synthesized answer",
+        "time_ms": 500,
+    }
+
+    with (
+        patch("lionagi.cli.orchestrate.flow._post_results_to_team") as fake_post,
+        patch("lionagi.cli.orchestrate.flow.finalize_orchestration", side_effect=_fake_finalize),
+    ):
+        output = _finalize_flow(
+            env,
+            "task",
+            plan_result,
+            dag_state,
+            exec_result,
+            synthesis_result,
+            output_format="text",
+            show_graph=False,
+        )
+
+    assert isinstance(output, str)
+    assert len(output) > 0
+
+    # The failure is on its own field, not folded into env._finalize_error.
+    assert env._artifact_write_error is not None
+    assert env._artifact_write_error["error_class"] == "OSError"
+    assert "disk full" in env._artifact_write_error["error"]
+    assert getattr(env, "_finalize_error", None) is None
+
+    # The guarded, non-output side effects still ran — an output failure
+    # must not block best-effort teardown.
+    fake_post.assert_called_once()
+    assert len(finalize_calls) == 1
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 

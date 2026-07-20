@@ -212,6 +212,26 @@ def test_required_ci_wrapper_excludes_only_performance_and_quarantine() -> None:
     assert "pytest-rerunfailures" not in script
 
 
+def test_docs_job_always_guard_survives_upstream_changes_failure() -> None:
+    # Regression: `docs` gained `needs: changes` (so its ADR-check steps can
+    # read `needs.changes.outputs.adr`) with no job-level `if:`. Under GitHub
+    # Actions default semantics, a job with `needs:` and no `if:` runs only
+    # when the needed job succeeds -- so a failed, skipped, or cancelled
+    # `changes` silently skipped `docs`, including its documentation contract,
+    # strict build, markdownlint and link-check steps, none of which read that
+    # output. The job-level guard must therefore NOT depend on the `changes`
+    # job's result; only the ADR steps are output-gated.
+    workflow = CI_WORKFLOW.read_text()
+    docs_job = workflow.split("  docs:", 1)[1].split("  test:", 1)[0]
+
+    assert "needs: changes" in docs_job
+    assert "if: ${{ !cancelled() }}" in docs_job
+    assert "needs.changes.result" not in docs_job
+    # The ADR steps remain gated on the output, so they skip (rather than
+    # fail) when `changes` produced no output.
+    assert docs_job.count("if: needs.changes.outputs.adr == 'true'") >= 1
+
+
 def test_every_required_ci_exclusion_has_a_workflow_lane() -> None:
     workflow = CI_WORKFLOW.read_text()
     performance_job = workflow.split("  performance:", 1)[1].split("  quarantine:", 1)[0]

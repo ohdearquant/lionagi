@@ -9,6 +9,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ### Removed
 
 - `lionagi._paths.clear_lionagi_dirs_cache` — `find_lionagi_dirs()` no longer caches the git-root lookup (it now calls `git rev-parse --show-toplevel` directly on every call), so there is no cache to clear. `_paths` is a private module (never re-exported from `lionagi/__init__.py` or any public package); this removal is internal-only, no consumer alias needed.
+- `ObservableProto` and `LegacyObservable` (`lionagi.protocols.contracts`, previously
+  re-exported from `lionagi.protocols.types`). Neither had an in-tree caller. Removed outright
+  per the own-use scope in `docs/governance/standards/deprecation-policy.md` section 0, with no
+  compatibility alias.
+- `Observable` (`lionagi.protocols._concepts`, `lionagi.protocols.types`), renamed to
+  `PileItem`. The name previously pointed at a structural protocol and now had to point at the
+  nominal admission ABC Pile actually enforces; rather than let the same name's `isinstance`
+  answers invert under existing callers, the nominal contract ships under a new name and every
+  in-tree caller (`Element`, `Pile`, `Communicatable`, `SessionObserver`,
+  `validate_sender_recipient`) was updated in this change.
+
+### Added
+
+- `PileItem` (`lionagi.protocols._concepts`, `lionagi.protocols.types`): the nominal Pile-item
+  admission contract, renamed from `Observable`.
+
+### Fixed
+
+- API hook emit sites (`API_PRE_CALL`/`API_POST_CALL`/`API_STREAM_CHUNK`, `operations/_api_hooks.py`)
+  hardened: a non-finite provider usage count (`NaN`/`inf`) is dropped from the typed usage
+  summary instead of raising on `int()` coercion and aborting an otherwise-successful call; the
+  `log_api_metrics` built-in reports the real `input_tokens`/`output_tokens` instead of an
+  always-`None` `total`; `_safe_identifier` now redacts credential-shaped model/provider values
+  that satisfy the identifier allowlist; and the stream `chunk_type` (provider-sourced, unlike
+  model/provider) is validated against the closed `StreamChunk` vocabulary so a prefixless
+  credential cannot reach telemetry.
 
 ## [0.29.1] - 2026-07-15
 

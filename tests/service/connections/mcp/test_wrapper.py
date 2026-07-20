@@ -143,7 +143,10 @@ class TestMCPConnectionPoolGetClient:
         # Pre-populate pool with connected client
         mock_client = MagicMock()
         mock_client.is_connected.return_value = True
-        cache_key = f"inline:{inline_config.get('command')}:{id(inline_config)}"
+        sec_fp = MCPConnectionPool._security_fingerprint(
+            MCPConnectionPool._effective_security(None)
+        )
+        cache_key = f"inline:{inline_config.get('command')}:{id(inline_config)}:sec:{sec_fp}"
         MCPConnectionPool._clients[cache_key] = mock_client
 
         with patch.object(MCPConnectionPool, "_create_client") as mock_create:
@@ -158,7 +161,10 @@ class TestMCPConnectionPoolGetClient:
         # Pre-populate pool with disconnected client
         stale_client = MagicMock()
         stale_client.is_connected.return_value = False
-        cache_key = f"inline:{inline_config.get('command')}:{id(inline_config)}"
+        sec_fp = MCPConnectionPool._security_fingerprint(
+            MCPConnectionPool._effective_security(None)
+        )
+        cache_key = f"inline:{inline_config.get('command')}:{id(inline_config)}:sec:{sec_fp}"
         MCPConnectionPool._clients[cache_key] = stale_client
 
         new_client = AsyncMock()
@@ -360,7 +366,7 @@ class TestCreateMCPTool:
         mock_result.content = [MagicMock(text="result text")]
         mock_client.call_tool.return_value = mock_result
 
-        with patch.object(MCPConnectionPool, "get_client", return_value=mock_client):
+        with patch.object(MCPConnectionPool, "_get_reconnect_client", return_value=mock_client):
             tool = create_mcp_tool(mcp_config, tool_name)
             result = await tool(arg1="value1")
 
@@ -379,7 +385,7 @@ class TestCreateMCPTool:
         mock_result = "result"
         mock_client.call_tool.return_value = mock_result
 
-        with patch.object(MCPConnectionPool, "get_client", return_value=mock_client):
+        with patch.object(MCPConnectionPool, "_get_reconnect_client", return_value=mock_client):
             tool = create_mcp_tool(mcp_config, tool_name)
             await tool()
 
@@ -395,7 +401,7 @@ class TestCreateMCPTool:
         mock_result = [{"type": "text", "text": "dict result"}]
         mock_client.call_tool.return_value = mock_result
 
-        with patch.object(MCPConnectionPool, "get_client", return_value=mock_client):
+        with patch.object(MCPConnectionPool, "_get_reconnect_client", return_value=mock_client):
             tool = create_mcp_tool(mcp_config, tool_name)
             result = await tool()
 
@@ -410,7 +416,7 @@ class TestCreateMCPTool:
         mock_result = {"custom": "data"}
         mock_client.call_tool.return_value = mock_result
 
-        with patch.object(MCPConnectionPool, "get_client", return_value=mock_client):
+        with patch.object(MCPConnectionPool, "_get_reconnect_client", return_value=mock_client):
             tool = create_mcp_tool(mcp_config, tool_name)
             result = await tool()
 

@@ -237,6 +237,56 @@ def test_handlers_for_invalid_string_raises_value_error():
         bus.handlers_for("session.starts")
 
 
+# ── Dormant-point registration warns (issue #1965) ───────────────────────────
+
+
+def test_registering_on_dormant_point_warns():
+    """ARTIFACT_CREATED has no production emit site — registering a handler on
+    it must not be silently accepted; the caller learns about it via warning,
+    not a hard error (see lionagi.hooks.DORMANT_POINTS)."""
+    bus = HookBus()
+
+    async def h(**kw):
+        pass
+
+    with pytest.warns(UserWarning, match="ARTIFACT_CREATED"):
+        bus.on(HookPoint.ARTIFACT_CREATED, h)
+
+    # The registration itself still succeeds — it's a warning, not a rejection.
+    assert bus.handlers_for(HookPoint.ARTIFACT_CREATED) == [h]
+
+
+def test_registering_on_dormant_point_by_string_value_warns():
+    bus = HookBus()
+
+    async def h(**kw):
+        pass
+
+    with pytest.warns(UserWarning, match="api.stream_chunk|artifact.created"):
+        bus.on("artifact.created", h)
+
+
+@pytest.mark.parametrize(
+    "point",
+    [
+        HookPoint.API_PRE_CALL,
+        HookPoint.API_POST_CALL,
+        HookPoint.API_STREAM_CHUNK,
+    ],
+)
+def test_registering_on_now_wired_api_points_does_not_warn(recwarn, point):
+    """Regression guard for issue #1965: these three used to be dormant.
+    Now that they have production emit sites (operations/_api_hooks.py),
+    registering a handler on them must NOT trigger the dormant-point warning."""
+    bus = HookBus()
+
+    async def h(**kw):
+        pass
+
+    bus.on(point, h)
+    assert not any(issubclass(w.category, UserWarning) for w in recwarn.list)
+
+
 # ── FIX 2: blocking_emit propagates exceptions for TOOL_PRE ──────────────────
 
 

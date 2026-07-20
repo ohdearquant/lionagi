@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from lionagi._errors import EmptyOutgoingContentError
 from lionagi.cli._util import EXIT_CODE_BY_STATUS
 from lionagi.cli.orchestrate import add_orchestrate_subparser, run_orchestrate
 from lionagi.cli.orchestrate import fanout as fanout_module
@@ -62,6 +63,40 @@ async def test_run_fanout_translates_over_max_tasks_value_error(
     monkeypatch.setattr(PlanningEngine, "new_run", lambda self, **kwargs: engine_run)
 
     with pytest.raises(FanoutPlanError, match="exceeding max_tasks"):
+        await fanout_module._run_fanout(
+            "codex/model",
+            "work",
+            num_workers=2,
+        )
+
+
+async def test_run_fanout_reraises_empty_outgoing_content_error_as_itself(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """EmptyOutgoingContentError subclasses ValueError, so a genuinely dropped
+    instruction must NOT be misreported as a `FanoutPlanError` (an orchestrator
+    max_tasks overshoot) — it must propagate as itself, mirroring the
+    exemption `li o flow` already carries for the same plan() call."""
+    env, run, session = _fanout_env(tmp_path)
+
+    engine_run = type("EngineRunStub", (), {})()
+    monkeypatch.setattr(fanout_module, "setup_orchestration", AsyncMock(return_value=env))
+    monkeypatch.setattr(fanout_module, "start_live_persist", AsyncMock())
+    monkeypatch.setattr(
+        fanout_module,
+        "stop_live_persist",
+        AsyncMock(side_effect=lambda env, status: status),
+    )
+    monkeypatch.setattr(
+        fanout_module,
+        "plan",
+        AsyncMock(side_effect=EmptyOutgoingContentError("instruction_len=42")),
+    )
+    monkeypatch.setattr(fanout_module, "available_roles", lambda: ["worker"])
+    monkeypatch.setattr(fanout_module, "role_roster", lambda model: "worker")
+    monkeypatch.setattr(PlanningEngine, "new_run", lambda self, **kwargs: engine_run)
+
+    with pytest.raises(EmptyOutgoingContentError, match="instruction_len=42"):
         await fanout_module._run_fanout(
             "codex/model",
             "work",

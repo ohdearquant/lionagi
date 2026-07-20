@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import threading
+import warnings
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -17,6 +18,8 @@ __all__ = (
     "EndpointType",
     "EndpointMeta",
     "EndpointRegistry",
+    "ProviderAliasCollisionError",
+    "ProviderNotFoundError",
     "register_endpoint",
 )
 
@@ -33,6 +36,14 @@ _ContentDigest = tuple[str, tuple[tuple[str, str], ...]]
 # Manifest metadata, every manifest-declared path's metadata, and the user
 # settings source mtime -- see _plugin_entry_stat.
 _PluginStatSignature = tuple[_FileStat, tuple[tuple[str, _FileStat], ...], int | None]
+
+
+class ProviderAliasCollisionError(ValueError):
+    """A provider or provider-alias string is already claimed by a different canonical provider."""
+
+
+class ProviderNotFoundError(ValueError):
+    """No registered endpoint matches the requested provider, and no fallback was authorized."""
 
 
 class EndpointType(Enum):
@@ -114,6 +125,13 @@ class EndpointRegistry:
     _lock: ClassVar[threading.RLock] = threading.RLock()
     _plugin_registration: ClassVar[threading.local] = threading.local()
 
+    # Canonical alias string (provider name or provider_alias, lowercased) ->
+    # the canonical provider name that first claimed it. Lets a provider
+    # register any number of endpoints under its own name (expected: openai
+    # alone owns half a dozen entries) while still catching a *different*
+    # provider trying to claim a name or alias someone else already owns.
+    _alias_owners: ClassVar[dict[str, str]] = {}
+
     @classmethod
     def register(
         cls,
@@ -128,13 +146,18 @@ class EndpointRegistry:
         content_type: str | None = None,
         api_key_env: str | None = None,
     ):
+        canonical_provider = provider.strip().lower()
+        canonical_provider_aliases = tuple(
+            dict.fromkeys(a.strip().lower() for a in (provider_aliases or ()))
+        )
+
         def decorator(endpoint_cls: type) -> type:
             meta = EndpointMeta(
-                provider=provider,
+                provider=canonical_provider,
                 endpoint=endpoint,
                 endpoint_type=endpoint_type,
                 aliases=tuple(aliases or ()),
-                provider_aliases=tuple(provider_aliases or ()),
+                provider_aliases=canonical_provider_aliases,
                 options=options,
                 base_url=base_url,
                 auth_type=auth_type,
@@ -146,16 +169,103 @@ class EndpointRegistry:
             provenance = getattr(cls._plugin_registration, "provenance", None)
             if provenance is not None:
                 entry.plugin_name, entry.plugin_target = provenance
-            cls._entries.append(entry)
+            # Validation (does anyone else already own this alias?) and the
+            # claim itself must be one atomic transaction: check-then-claim
+            # split across the lock lets two concurrent registrations both
+            # pass the check before either publishes. Entry publication is
+            # folded into the same critical section, since an alias claimed
+            # with no corresponding entry (or vice versa) is its own
+            # inconsistency.
+            with cls._lock:
+                cls._claim_provider_identity(canonical_provider, canonical_provider_aliases)
+                cls._entries.append(entry)
             return endpoint_cls
 
         return decorator
 
     @classmethod
-    def match(cls, provider: str, endpoint: str = "", **kwargs) -> Any:
+    def _claim_provider_identity(cls, provider: str, provider_aliases: tuple[str, ...]) -> None:
+        """Reject a provider/alias string already owned by a *different* canonical provider.
+
+        Re-registering the same canonical provider (e.g. openai's chat, embed,
+        batch, ... endpoints) is expected and always allowed. A collision is
+        two different canonical providers claiming the same string, either as
+        one's canonical name or as either one's alias.
+
+        Callers must hold ``cls._lock`` -- this is check-then-claim and is
+        only atomic across concurrent registrations when the lock spans both
+        the check and the claim (and, in ``register()``, entry publication).
+        """
+        for key in (provider, *provider_aliases):
+            owner = cls._alias_owners.get(key)
+            if owner is not None and owner != provider:
+                raise ProviderAliasCollisionError(
+                    f"provider alias {key!r} is already registered to provider "
+                    f"{owner!r}; cannot also register it for provider {provider!r}"
+                )
+        for key in (provider, *provider_aliases):
+            cls._alias_owners.setdefault(key, provider)
+
+    @classmethod
+    def _remove_entries(cls, entries: list[_RegistryEntry]) -> None:
+        """Drop ``entries`` from ``_entries`` and rebuild ``_alias_owners``.
+
+        Must run under ``cls._lock``. Every entry-removal caller (plugin
+        revalidation failure, built-in-collision rejection) goes through
+        this one path, so the alias ledger can never drift from ``_entries``.
+        """
+        if not entries:
+            return
+        drop = {id(e) for e in entries}
+        cls._entries[:] = [e for e in cls._entries if id(e) not in drop]
+        cls._rebuild_alias_owners()
+
+    @classmethod
+    def _rebuild_alias_owners(cls) -> None:
+        """Recompute ``_alias_owners`` from the surviving ``_entries``.
+
+        Must run under ``cls._lock``, after any entry removal (e.g. a plugin
+        entry failing revalidation). ``_alias_owners`` is otherwise tracked
+        independently of ``_entries``, so a removed entry's alias would keep
+        naming an owner with no remaining registration -- rejecting a
+        legitimate replacement registration for an alias nothing owns
+        anymore. First-registration-wins, same as ``_claim_provider_identity``.
+        """
+        owners: dict[str, str] = {}
+        for entry in cls._entries:
+            for key in (entry.meta.provider, *entry.meta.provider_aliases):
+                owners.setdefault(key, entry.meta.provider)
+        cls._alias_owners = owners
+
+    @classmethod
+    def match(
+        cls,
+        provider: str,
+        endpoint: str = "",
+        *,
+        openai_compatible: bool = False,
+        **kwargs,
+    ) -> Any:
         """Find and instantiate the best matching endpoint. On a registry
         miss, consults the plugin registry (ADR-0088 D3) before falling back
         to the generic OpenAI-compatible endpoint; see docs/internals/runtime.md.
+
+        A *registered* provider is never rejected: if ``provider`` names a
+        canonical provider or provider-alias that some entry already claimed
+        (via ``register()``/``_claim_provider_identity``), a request for an
+        endpoint that provider doesn't happen to expose falls through to the
+        generic construction below same as an explicit opt-in would -- the
+        provider identity is not in question, only the specific endpoint
+        name, so there is nothing to reject. ``ProviderNotFoundError`` is
+        reserved for a ``provider`` string matching no registered provider or
+        alias at all: the generic OpenAI-compatible fallback then only builds
+        when ``openai_compatible=True`` is passed explicitly, or (deprecated
+        migration path, warns) when a ``base_url`` kwarg is given -- the same
+        signal a caller already needs to point the fallback at a real custom
+        host. Anything else raises ``ProviderNotFoundError`` naming the
+        requested provider and every provider currently registered -- a
+        provider that error names as unregistered is, by construction, never
+        also in the registered list it prints.
         """
         cls._ensure_loaded()
 
@@ -168,6 +278,21 @@ class EndpointRegistry:
             if matched is not None:
                 return matched
 
+        if not openai_compatible and not cls._is_known_provider(provider):
+            if kwargs.get("base_url"):
+                warnings.warn(
+                    f"provider {provider!r} is not registered; routing to the "
+                    "generic OpenAI-compatible endpoint because base_url= was "
+                    "given. This implicit fallback is deprecated -- pass "
+                    "openai_compatible=True explicitly (e.g. "
+                    "match_endpoint(..., openai_compatible=True)) to silence "
+                    "this warning.",
+                    DeprecationWarning,
+                    stacklevel=3,
+                )
+            else:
+                raise cls._provider_not_found_error(provider)
+
         from .endpoint import Endpoint, EndpointConfig
 
         config = EndpointConfig(
@@ -178,8 +303,30 @@ class EndpointRegistry:
             content_type="application/json",
             method="POST",
             requires_tokens=True,
+            openai_compatible=True,
         )
         return Endpoint(config, **kwargs)
+
+    @classmethod
+    def _is_known_provider(cls, provider: str) -> bool:
+        """Whether ``provider`` (case-insensitive) is a canonical provider
+        name or provider-alias that some registered entry already claimed --
+        i.e. whether rejecting it as unrecognized would be wrong regardless
+        of which specific endpoint was requested for it."""
+        return provider.strip().lower() in cls._alias_owners
+
+    @classmethod
+    def _provider_not_found_error(cls, provider: str) -> ProviderNotFoundError:
+        known: set[str] = set()
+        for entry in cls._entries:
+            known.add(entry.meta.provider)
+            known.update(entry.meta.provider_aliases)
+        return ProviderNotFoundError(
+            f"no endpoint registered for provider {provider!r}; registered "
+            f"providers: {', '.join(sorted(known)) or '(none)'}. Pass "
+            "openai_compatible=True to route unrecognized providers to the "
+            "generic OpenAI-compatible endpoint explicitly."
+        )
 
     @classmethod
     def _match_registered(cls, provider: str, endpoint: str, kwargs: dict[str, Any]) -> Any | None:
@@ -257,10 +404,8 @@ class EndpointRegistry:
         try:
             PluginRegistry.activate_target(entry.plugin_name, entry.plugin_target)
         except PluginActivationError:
-            try:
-                cls._entries.remove(entry)
-            except ValueError:
-                pass
+            with cls._lock:
+                cls._remove_entries([entry])
             return False
 
         entry._validated_generation = generation
@@ -423,6 +568,18 @@ class EndpointRegistry:
                     imported = True
                 except PluginActivationError:
                     continue
+                except ProviderAliasCollisionError as exc:
+                    # A plugin claiming a provider/alias another provider already
+                    # owns must not crash resolution -- reject just this plugin's
+                    # contribution, the same fail-soft posture as a built-in
+                    # collision (_reject_builtin_collisions) or a broken import.
+                    logger.warning(
+                        "plugin %r provider module %r rejected: %s",
+                        plugin_name,
+                        module,
+                        exc,
+                    )
+                    continue
                 finally:
                     if previous is None:
                         del cls._plugin_registration.provenance
@@ -451,7 +608,7 @@ class EndpointRegistry:
         if not builtin_names:
             return
 
-        kept: list[_RegistryEntry] = []
+        rejected: list[_RegistryEntry] = []
         for entry in cls._entries:
             is_this_activation = (
                 entry.plugin_name == plugin_name
@@ -470,9 +627,8 @@ class EndpointRegistry:
                     module,
                     entry.meta.provider,
                 )
-                continue
-            kept.append(entry)
-        cls._entries[:] = kept
+                rejected.append(entry)
+        cls._remove_entries(rejected)
 
     @classmethod
     def _ensure_loaded(cls):
@@ -527,10 +683,56 @@ def register_endpoint(
     )
 
 
+# Declared, not inferred: the optional third-party dependency each fixed
+# provider module needs, keyed by dotted module path. A module with no entry
+# here has none. Verified against each module's own top-level imports -- keep
+# an entry's dependency tuple in sync if that module's imports change.
+# Every module currently in _import_all_providers' fixed list defers its
+# optional third-party imports past module scope (see e.g. ollama/chat.py,
+# ag2/agent.py, ag2/groupchat.py, ag2/nlip.py), so none need an entry yet;
+# add one here the day a provider module imports its optional dependency at
+# module scope again.
+_PROVIDER_OPTIONAL_DEPENDENCIES: dict[str, tuple[str, ...]] = {}
+
+
+def _import_provider_module(mod: str) -> None:
+    """Preflight-check ``mod``'s declared optional dependencies, then import.
+
+    A declared dependency that fails to resolve skips the import entirely
+    (debug log, module body never runs) -- so a buggy module never gets the
+    chance to raise a misleading exception. Once every declared dependency
+    resolves (or none are declared), any ``ImportError`` raised while
+    importing ``mod`` is unconditionally a provider-load failure (warning) --
+    no exception-metadata inspection at all, since that metadata is fully
+    controlled by whatever code raised it.
+    """
+    import importlib
+    import importlib.util
+
+    missing = [
+        dep
+        for dep in _PROVIDER_OPTIONAL_DEPENDENCIES.get(mod, ())
+        if importlib.util.find_spec(dep) is None
+    ]
+    if missing:
+        logger.debug(
+            "provider module %r not registered: optional dependency %r is not installed",
+            mod,
+            missing[0],
+        )
+        return
+    try:
+        importlib.import_module(mod)
+    except ImportError as e:
+        logger.warning(
+            "provider module %r failed to import and was not registered: %s",
+            mod,
+            e,
+        )
+
+
 def _import_all_providers():
     """Import all provider modules to trigger registration decorators."""
-    import importlib
-
     _modules = [
         # OpenAI family
         "lionagi.providers.openai.chat",
@@ -575,7 +777,4 @@ def _import_all_providers():
         "lionagi.testing._endpoint",
     ]
     for mod in _modules:
-        try:
-            importlib.import_module(mod)
-        except ImportError:
-            pass
+        _import_provider_module(mod)

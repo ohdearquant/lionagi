@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any, TypeAlias
 from uuid import UUID
 
-from ..generic.element import ID, Element, Observable
+from ..generic.element import ID, Element, PileItem
 
 __all__ = (
     "MessageRole",
@@ -53,7 +53,7 @@ def validate_sender_recipient(value: Any, /) -> SenderRecipient:
     if isinstance(value, UUID):
         return value
 
-    if isinstance(value, Observable):
+    if isinstance(value, PileItem):
         return value.id
 
     if value is None:

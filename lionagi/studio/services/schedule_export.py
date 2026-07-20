@@ -114,13 +114,16 @@ def _member_key(row: dict[str, Any], doc_project: str, used: set[str]) -> str:
 
 
 def _effective_project(row: dict[str, Any]) -> str | None:
-    """The project namespace a row's name lives under: the stored project
-    column when set, else the qualified name's own prefix. Rows created
-    before the project column existed carry qualified names but a NULL
-    column; grouping them by name prefix is what lets their identity
-    round-trip instead of being re-qualified under a fallback project.
-    ``None`` means the name is bare and cannot round-trip untouched (every
-    document carries a project) -- callers disclose the resulting rename."""
+    """The project namespace a row is grouped under for document assignment:
+    the stored project column when set, else the qualified name's own
+    prefix. This is a grouping heuristic only -- it does not by itself
+    guarantee round-trip identity (a stored ``action_project`` that doesn't
+    match the name's own prefix, or doesn't match at all, still gets grouped
+    here). The actual round-trip check happens afterwards in
+    ``_group_into_documents``, which compares the name reconstructed from
+    the assigned document project + local key against the row's stored
+    name and discloses any mismatch -- so a wrong grouping decision here can
+    at worst produce an over-eager disclosure, never a silent miss."""
     project = row.get("action_project")
     if project:
         return project
@@ -128,20 +131,26 @@ def _effective_project(row: dict[str, Any]) -> str | None:
     return name.split("/", 1)[0] if "/" in name else None
 
 
-def _rename_note(row: dict[str, Any], base_name: str) -> str | None:
-    if _effective_project(row) is not None:
+def _rename_note(original_name: str, reconstructed_name: str) -> str | None:
+    """Disclose whenever the name a re-apply would produce differs from the
+    row's stored name, regardless of *why* they differ (bare name, stored
+    project not matching the name's prefix, double-qualification, ...). This
+    is checked against the actual document project + local key chosen by
+    ``_group_into_documents`` rather than re-derived from row fields, so it
+    can never silently miss a rename the way a field-level check could."""
+    if reconstructed_name == original_name:
         return None
     return (
-        f"row has no project and a bare name; re-applies as "
-        f"{base_name}/{row['name']} (the document's project supplies the namespace)"
+        f"row re-applies as {reconstructed_name!r}, not the original "
+        f"{original_name!r} (the document's project supplies the namespace)"
     )
 
 
-def _ready_note(row: dict[str, Any], member: ScheduleMember, base_name: str) -> str | None:
+def _ready_note(row: dict[str, Any], member: ScheduleMember, reconstructed_name: str) -> str | None:
     notes = [
         n
         for n in (
-            _rename_note(row, base_name),
+            _rename_note(row["name"], reconstructed_name),
             _flow_portability_note(member),
             _absolute_cwd_note(member),
         )
@@ -345,7 +354,7 @@ def _group_into_documents(
     all_rows: list[dict[str, Any]],
     *,
     base_name: str,
-) -> list[ScheduleSetDocument]:
+) -> tuple[list[ScheduleSetDocument], dict[str, str]]:
     """Split *ready* rows into one ``ScheduleSet`` document per distinct
     effective project (``_effective_project``: stored column, else the
     qualified name's prefix; bare-named rows share a single
@@ -356,11 +365,21 @@ def _group_into_documents(
     mixed-project double-qualification: a single document spanning multiple
     projects used to key a mismatched row by its already-qualified name, and
     re-applying then prepended the document's project a second time,
-    producing e.g. ``alpha/beta/task`` instead of ``beta/task``."""
+    producing e.g. ``alpha/beta/task`` instead of ``beta/task``.
+
+    Also returns a ``{row_name: reconstructed_qualified_name}`` map -- the
+    name a later apply actually produces (``f"{doc_project}/{local_key}"``)
+    for every ready row, computed from the same project + key this function
+    assigns. Callers compare this against the row's stored name to decide
+    whether a rename needs disclosing; checking the *actual* assignment this
+    way (rather than re-deriving intent from row fields, which is what a
+    prior version of this code did) means a mismatch can never be missed."""
     grouped: dict[str, list[tuple[dict[str, Any], ScheduleMember]]] = {}
     for row, member in ready:
         proj = _effective_project(row) or base_name
         grouped.setdefault(proj, []).append((row, member))
+
+    reconstructed: dict[str, str] = {}
 
     if not grouped:
         return [
@@ -372,7 +391,7 @@ def _group_into_documents(
                 ),
                 schedules={},
             )
-        ]
+        ], reconstructed
 
     multi = len(grouped) > 1
     docs: list[ScheduleSetDocument] = []
@@ -380,7 +399,9 @@ def _group_into_documents(
         used_keys: set[str] = set()
         schedules: dict[str, ScheduleMember] = {}
         for row, member in grouped[proj]:
-            schedules[_member_key(row, proj, used_keys)] = member
+            key = _member_key(row, proj, used_keys)
+            schedules[key] = member
+            reconstructed[row["name"]] = f"{proj}/{key}"
         doc_name = f"{base_name}-{proj}" if multi else base_name
         docs.append(
             ScheduleSetDocument(
@@ -390,7 +411,7 @@ def _group_into_documents(
                 schedules=schedules,
             )
         )
-    return docs
+    return docs, reconstructed
 
 
 def convert_legacy_rows(
@@ -409,6 +430,10 @@ def convert_legacy_rows(
     its original qualified name exactly (see ``_member_key``)."""
     lines: list[ExportReportLine] = []
     ready: list[tuple[dict[str, Any], ScheduleMember]] = []
+    # (index into `lines`, row, member) for every provisional READY line, so
+    # the rename disclosure can be patched in once grouping has decided each
+    # row's actual document project + local key -- see _group_into_documents.
+    pending_ready: list[tuple[int, dict[str, Any], ScheduleMember]] = []
     for row in sorted(rows, key=lambda r: r["name"]):
         name = row["name"]
         if row.get("on_success") or row.get("on_fail"):
@@ -432,9 +457,13 @@ def convert_legacy_rows(
             lines.append(ExportReportLine(name, "BLOCKED", f"static resolution failed: {exc}"))
             continue
         ready.append((row, member))
-        lines.append(ExportReportLine(name, "READY", _ready_note(row, member, "legacy-export")))
+        pending_ready.append((len(lines), row, member))
+        lines.append(ExportReportLine(name, "READY", None))
 
-    docs = _group_into_documents(ready, rows, base_name="legacy-export")
+    docs, reconstructed = _group_into_documents(ready, rows, base_name="legacy-export")
+    for index, row, member in pending_ready:
+        note = _ready_note(row, member, reconstructed[row["name"]])
+        lines[index] = ExportReportLine(row["name"], "READY", note)
     return docs, lines
 
 
@@ -450,6 +479,10 @@ def build_managed_export_document(
     its original qualified name (see ``_member_key``)."""
     lines: list[ExportReportLine] = []
     ready: list[tuple[dict[str, Any], ScheduleMember]] = []
+    # (index into `lines`, row, member) for every provisional READY line, so
+    # the rename disclosure can be patched in once grouping has decided each
+    # row's actual document project + local key -- see _group_into_documents.
+    pending_ready: list[tuple[int, dict[str, Any], ScheduleMember]] = []
     for row in sorted(rows, key=lambda r: r["name"]):
         name = row["name"]
         authored = row.get("authored_spec")
@@ -469,9 +502,13 @@ def build_managed_export_document(
             )
             continue
         ready.append((row, member))
-        lines.append(ExportReportLine(name, "READY", _ready_note(row, member, "export")))
+        pending_ready.append((len(lines), row, member))
+        lines.append(ExportReportLine(name, "READY", None))
 
-    docs = _group_into_documents(ready, rows, base_name="export")
+    docs, reconstructed = _group_into_documents(ready, rows, base_name="export")
+    for index, row, member in pending_ready:
+        note = _ready_note(row, member, reconstructed[row["name"]])
+        lines[index] = ExportReportLine(row["name"], "READY", note)
     return docs, lines
 
 

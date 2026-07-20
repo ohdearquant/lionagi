@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import JsonValue
 
+from lionagi._errors import EmptyOutgoingContentError
 from lionagi.ln._to_list import to_list
 from lionagi.protocols.messages import (
     ActionResponse,
@@ -193,8 +194,17 @@ def _prepare_run_kwargs(
 
     kw = (param.imodel_kw or {}).copy()
 
+    # The current turn's content is always the last entry appended to
+    # `_contents` above (guidance-merge branch, action-context branch, and
+    # plain-append branch all push it last). The guard below needs that
+    # entry's rendered output specifically, so it is captured explicitly by
+    # index rather than left to whatever value the loop happens to hold
+    # after its final iteration.
+    _last_index = len(_contents) - 1
+    _current_turn_rendered = None
+
     chat_msgs = []
-    for entry in _contents:
+    for i, entry in enumerate(_contents):
         if _use_render_cache and entry.source is not None and entry.cache_variant is not None:
             source = entry.source
             if entry.cache_variant == "prepared_instruction":
@@ -210,11 +220,34 @@ def _prepare_run_kwargs(
                 )
         else:
             rendered = entry.materialize().rendered
+        if i == _last_index:
+            _current_turn_rendered = rendered
         if not rendered:
             continue
         role = entry.role
         role_str = role.value if isinstance(role, MessageRole) else str(role)
         chat_msgs.append({"role": role_str, "content": rendered})
+
+    # If the caller supplied real instruction text/media but the current
+    # turn's entry rendered empty and got filtered out of `chat_msgs` by
+    # `if not rendered: continue` above, the model call would silently go
+    # out carrying only scaffolding (system/guidance) and no user content —
+    # worse than a loud failure, since the run "completes" with a useless
+    # reply.
+    if _contents and _has_real_instruction_text(ins.content) and not _current_turn_rendered:
+        _instruction_text = getattr(ins.content, "instruction", None)
+        _plain_content = getattr(ins.content, "plain_content", None)
+        _instruction_len = len(_instruction_text) if _instruction_text else 0
+        _plain_content_len = len(_plain_content) if _plain_content else 0
+        _has_images = bool(getattr(ins.content, "images", None))
+        raise EmptyOutgoingContentError(
+            "Refusing to call the model: the assembled outgoing message list "
+            "is empty for the current turn despite a non-empty instruction "
+            f"being supplied (instruction_len={_instruction_len}, "
+            f"plain_content_len={_plain_content_len}, has_images={_has_images}). "
+            "The instruction content was lost or filtered during message "
+            "assembly — this is a bug, not a valid empty-prompt call."
+        )
 
     kw["messages"] = chat_msgs
     return ins, kw
@@ -255,6 +288,22 @@ async def _apply_context_providers(
     branch._last_context_report.set(report)
     branch._last_context_report_fallback = report
     return ins, report
+
+
+def _has_real_instruction_text(content) -> bool:
+    """True if an InstructionContent carries caller-supplied text/media.
+
+    Deliberately ignores ``guidance``/``prompt_context`` (scaffolding this
+    module injects itself) so the check reflects only what the caller asked
+    for, not what the system/context providers added around it.
+    """
+    if content is None:
+        return False
+    return bool(
+        getattr(content, "instruction", None)
+        or getattr(content, "plain_content", None)
+        or getattr(content, "images", None)
+    )
 
 
 def _collect_action_dicts(act_res_msgs):

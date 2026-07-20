@@ -381,16 +381,28 @@ def compute_quiescence(
     rounds_run: int,
     max_rounds: int,
     coordinator_wants_round: bool = False,
+    history_boundary: int = 0,
 ) -> QuiescenceState:
     """Pure predicate: is this team-mode run done, or does it need another
     wakeup round? Reads only message ``kind``/``from``/``to``/``read_by``,
     never a file/branch/agent. See docs/internals/cli.md for the lifecycle
     model (active/idle/retired) and the quiescence condition.
+
+    ``history_boundary`` is the index (into ``messages``) at which the
+    current run generation begins — everything before it is a prior run's
+    history. ``--team-attach`` reuses one team file (and often the same
+    role-derived worker names) across runs, so a prior run's ``done``/
+    ``finished``/``wakeup`` signals must not classify this run's workers as
+    already idle/retired before they have posted anything themselves; only
+    signals at or after the boundary count toward active/idle/retired.
+    Content (``kind="message"``) mail is exempt from the boundary — prior
+    runs' unread mail must still be delivered to this run's workers, so the
+    pending-mail scan below always looks at the full ``messages`` sequence.
     """
     names = list(dict.fromkeys(worker_names))  # de-dup, preserve order
     state: dict[str, str] = dict.fromkeys(names, "active")
 
-    for msg in messages:
+    for msg in messages[history_boundary:]:
         kind = msg.get("kind", MESSAGE_KIND)
         sender = msg.get("from")
         if kind == DONE_KIND and sender in state:

@@ -6,6 +6,19 @@ for communicating changes to consumers.
 
 ---
 
+## 0. Scope while this repository is own-use
+
+Under the owner directive of 2026-07-11 declaring this repository own-use — built for our own
+consumption, not constrained by external callers, with redirect/compatibility shims named as the
+thing not to do — the alias-plus-warning-plus-release cycle in section 2 does not bind this
+repository while that directive stands. It continues to bind packages this repository ships to
+external callers. Two things do not change under this scope clause: every public removal still
+requires a `Removed` CHANGELOG entry (the audit record was never in tension with own-use), and
+reviewers reject a public removal that lacks one, regardless of whether the deprecation cycle
+applied.
+
+---
+
 ## 1. What Counts as Public Surface
 
 The following are public surface. Removing, renaming, or incompatibly changing them requires
@@ -103,8 +116,10 @@ five sections. Only include sections that have entries.
 - Short description of a bug fix.
 ```
 
-Every PR that touches public surface must update `[Unreleased]`. Code reviewers should
-reject patches that remove or rename a public name without a CHANGELOG entry.
+Every PR that touches public surface must update `[Unreleased]`. Code reviewers reject a patch
+that removes or renames a public name and has no `Removed` (or `Deprecated`, where section 2
+still applies) CHANGELOG entry for it; a removal with the required entry present does not trigger
+this instruction, deprecation-cycle scope under section 0 notwithstanding.
 
 ---
 

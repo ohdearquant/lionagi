@@ -894,3 +894,35 @@ def test_schedule_run_detail_404_shape(tmp_path, monkeypatch):
     r = client.get("/api/schedules/runs/does-not-exist")
     assert r.status_code == 404
     assert sorted(r.json().keys()) == ["detail"]
+
+
+def test_schedule_status_response_shape(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    schedule_id = _create_gate_schedule(db_path)
+    client = _make_client()
+
+    r = client.get(f"/api/schedules/{schedule_id}/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert sorted(body.keys()) == ["exit_code", "latest_run", "schedule"]
+    assert sorted(body["schedule"].keys()) == [
+        "cron_expr",
+        "enabled",
+        "id",
+        "interval_sec",
+        "name",
+        "next_fire_at",
+        "trigger_type",
+    ]
+    assert body["latest_run"] is None
+    assert body["exit_code"] == 2
+
+
+def test_schedule_status_404_shape(tmp_path, monkeypatch):
+    _patch_db(monkeypatch, tmp_path / "state.db")
+    client = _make_client()
+
+    r = client.get("/api/schedules/does-not-exist/status")
+    assert r.status_code == 404
+    assert sorted(r.json().keys()) == ["detail"]

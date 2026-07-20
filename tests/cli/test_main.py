@@ -47,6 +47,70 @@ def test_main_resolves_notify_settings_project_dir_from_cwd_equals_form(monkeypa
     assert calls == [{"project_dir": "/other/project"}]
 
 
+def test_main_resolves_notify_settings_project_dir_last_of_repeated_cwd_flags(monkeypatch):
+    """`--cwd /a --cwd /b` must resolve against /b -- argparse itself honors the
+    last occurrence of a repeated flag, so the pre-argparse notify-bootstrap scan
+    must mirror that precedence instead of taking the first match."""
+    calls: list[dict] = []
+
+    def _spy(*, project_dir=None):
+        calls.append({"project_dir": project_dir})
+        return False
+
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.register_settings_terminal_callback",
+        _spy,
+    )
+    main(
+        [
+            "skill",
+            "--cwd",
+            "/a",
+            "--cwd",
+            "/b",
+            "definitely-not-a-real-skill-xyz",
+        ]
+    )
+    assert calls == [{"project_dir": "/b"}]
+
+
+def test_main_resolves_notify_settings_project_dir_last_of_mixed_cwd_forms(monkeypatch):
+    """Mixed `--cwd DIR` / `--cwd=DIR` forms still resolve to whichever occurs
+    last in argv, regardless of which form it uses."""
+    calls: list[dict] = []
+
+    def _spy(*, project_dir=None):
+        calls.append({"project_dir": project_dir})
+        return False
+
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.register_settings_terminal_callback",
+        _spy,
+    )
+    main(
+        [
+            "skill",
+            "--cwd=/a",
+            "--cwd",
+            "/b",
+            "definitely-not-a-real-skill-xyz",
+        ]
+    )
+    assert calls == [{"project_dir": "/b"}]
+
+    calls.clear()
+    main(
+        [
+            "skill",
+            "--cwd",
+            "/a",
+            "--cwd=/b",
+            "definitely-not-a-real-skill-xyz",
+        ]
+    )
+    assert calls == [{"project_dir": "/b"}]
+
+
 def test_main_notify_settings_project_dir_none_without_cwd_flag(monkeypatch):
     calls: list[dict] = []
 

@@ -782,12 +782,9 @@ def _isolate_mcp_pool_state():
     from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
 
     saved_configs = dict(MCPConnectionPool._configs)
-    saved_security = dict(MCPConnectionPool._server_security)
     yield
     MCPConnectionPool._configs.clear()
     MCPConnectionPool._configs.update(saved_configs)
-    MCPConnectionPool._server_security.clear()
-    MCPConnectionPool._server_security.update(saved_security)
 
 
 def _write_mcp_config(tmp_path, servers: dict) -> str:

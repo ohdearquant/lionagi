@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import pytest
 
+from lionagi._errors import EmptyOutgoingContentError
 from lionagi.casts.emission import TaskAssignment
 from lionagi.cli.orchestrate.flow import FlowPlanError, _parse_reactive, _run_flow_inner
 
@@ -25,7 +26,10 @@ class _FakeOrcBranch:
     async def operate(self, **kw):
         self.operate_calls.append(kw)
         if self._results:
-            return self._results.pop(0)
+            result = self._results.pop(0)
+            if isinstance(result, BaseException):
+                raise result
+            return result
         return SimpleNamespace(assignments=[])
 
 
@@ -124,6 +128,33 @@ async def test_over_max_tasks_on_retry_raises_flow_plan_error(tmp_path):
         await _run_flow_inner(
             "codex/gpt-5.5", "task", env=_env(tmp_path, orc), dry_run=True, max_ops=1
         )
+    assert len(orc.operate_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_empty_outgoing_content_propagates_from_initial_plan(tmp_path):
+    """EmptyOutgoingContentError is a ValueError subclass, but it must escape the
+    initial plan() try/except as itself — not be recast into FlowPlanError, which
+    would hide a lost-prompt runtime defect as a planner-cap violation."""
+    orc = _FakeOrcBranch([EmptyOutgoingContentError("outgoing instruction content was empty")])
+    with pytest.raises(EmptyOutgoingContentError):
+        await _run_flow_inner("codex/gpt-5.5", "task", env=_env(tmp_path, orc), dry_run=True)
+    assert len(orc.operate_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_empty_outgoing_content_propagates_from_retry_plan(tmp_path):
+    """Same as above but for the reinforced-retry call site: an empty first plan
+    triggers the retry, and the retry's plan() call raises EmptyOutgoingContentError.
+    That must also escape as itself, not FlowPlanError."""
+    orc = _FakeOrcBranch(
+        [
+            SimpleNamespace(assignments=[]),  # triggers the reinforced retry
+            EmptyOutgoingContentError("outgoing instruction content was empty"),
+        ]
+    )
+    with pytest.raises(EmptyOutgoingContentError):
+        await _run_flow_inner("codex/gpt-5.5", "task", env=_env(tmp_path, orc), dry_run=True)
     assert len(orc.operate_calls) == 2
 
 

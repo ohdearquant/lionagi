@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 import time
 
-from lionagi._errors import LionError
+from lionagi._errors import EmptyOutgoingContentError, LionError
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.ln.concurrency import CancelScope, create_task_group, move_on_after
 from lionagi.orchestration import plan
@@ -209,6 +209,8 @@ async def _run_fanout_inner(
             guidance=role_roster(env.default_model_spec),
             max_tasks=num_workers,
         )
+    except EmptyOutgoingContentError:
+        raise
     except ValueError as exc:
         # plan() raises a bare ValueError when the orchestrator still
         # overshoots max_tasks after the cap was stated in guidance — mirror

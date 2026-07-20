@@ -36,6 +36,9 @@ class ActionManager(Manager):
         self._tool_pre_hooks: list[ToolPreHook] = []
         self._tool_post_hooks: list[ToolPostHook] = []
         self._plugin_shadow_warned: set[tuple[str, str]] = set()
+        # Keyed by (PluginRegistry.snapshot_generation(), tool name) so a
+        # reset()/rebuild invalidates it structurally, not by size or TTL.
+        self._plugin_shadow_resolution_cache: dict[tuple[int, str], Any] = {}
 
         tools = []
         if args:
@@ -169,14 +172,32 @@ class ActionManager(Manager):
         *name* -- the already-registered tool wins and the plugin declaration
         is rejected.
 
-        When more than one enabled plugin declares *name*, that is a peer
-        collision, a hard error regardless of the local registration -- it
-        is not caught here and propagates to the caller."""
-        from lionagi.plugins.registry import PluginRegistry
+        Purely diagnostic: a peer collision between two *other* plugins
+        declaring *name* is irrelevant to a tool that already resolved
+        locally, so it is swallowed here rather than raised -- a
+        locally-registered tool must never fail to resolve because of this
+        diagnostic.
+
+        `PluginRegistry.resolve_tool_target` rescans every installed
+        plugin's manifest from disk on every call; since this check is a
+        diagnostic only (never changes which tool actually runs), the
+        resolution is cached per registered-tool name for the lifetime of
+        the current plugin-registry generation, so repeated hits are free.
+        A `PluginRegistry.reset()` bumps the generation and forces exactly
+        one fresh resolution on the next call."""
+        from lionagi.plugins.registry import PluginRegistry, PluginToolCollisionError
 
         if not PluginRegistry.list_plugins():
             return
-        resolved = PluginRegistry.resolve_tool_target(name)
+        cache_key = (PluginRegistry.snapshot_generation(), name)
+        if cache_key in self._plugin_shadow_resolution_cache:
+            resolved = self._plugin_shadow_resolution_cache[cache_key]
+        else:
+            try:
+                resolved = PluginRegistry.resolve_tool_target(name)
+            except PluginToolCollisionError:
+                resolved = None
+            self._plugin_shadow_resolution_cache[cache_key] = resolved
         if resolved is None:
             return
         warn_key = (resolved.plugin_name, name)
@@ -327,10 +348,13 @@ class ActionManager(Manager):
     ) -> list[str]:
         registered_tools = []
 
-        if security is not None:
-            from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+        from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
 
-            MCPConnectionPool.remember_security(server_config, security)
+        # Mint the recovery authorization once, bound to this call's
+        # effective security, and thread it into every Tool created below.
+        # It never touches `_server_security`/config-keyed state: each Tool
+        # holds the capability only in its own excluded, non-serialized slot.
+        capability = MCPConnectionPool._mint_capability(security)
 
         server_name = None
         if isinstance(server_config, dict) and "server" in server_config:
@@ -368,12 +392,15 @@ class ActionManager(Manager):
                 if request_options and tool_name in request_options:
                     tool_request_options = request_options[tool_name]
 
-                tool = Tool(mcp_config=mcp_config, request_options=tool_request_options)
+                tool = Tool(
+                    mcp_config=mcp_config,
+                    request_options=tool_request_options,
+                    mcp_capability=capability,
+                )
                 self.register_tool(tool, update=update)
                 registered_tools.append(tool_name)
         else:
             from lionagi.service.connections.mcp_wrapper import (
-                MCPConnectionPool,
                 validate_mcp_tool_admission,
             )
 
@@ -423,6 +450,7 @@ class ActionManager(Manager):
                         mcp_config=mcp_config,
                         request_options=tool_request_options,
                         tool_schema=tool_schema,
+                        mcp_capability=capability,
                     )
                     self.register_tool(tool_obj, update=update)
                     registered_tools.append(tool_name)
@@ -442,12 +470,17 @@ class ActionManager(Manager):
     ) -> dict[str, list[str]]:
         from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
 
-        # An omitted policy is no longer implicitly trusted (ADR-0011 delta
-        # row 3): `mcp_security` stays None and flows through to
+        # An omitted policy is not upgraded to a permissive one here:
+        # `mcp_security` stays None and flows through to
         # `register_mcp_server` -> `MCPConnectionPool.get_client`, which
-        # falls back to the wrapper's own fail-closed `MCPSecurityConfig()`
-        # default. A caller that wants the previous permissive behavior must
-        # pass `mcp_security=MCPSecurityConfig.trusted()` explicitly.
+        # reaches the wrapper's fail-closed `MCPSecurityConfig()` default --
+        # unless the process owner has called `set_security_config()`, an
+        # explicit process-wide decision that then applies to every
+        # omitted-policy call. Either way, this loader path never recovers a
+        # policy some OTHER caller authorized for the same identity; only the
+        # MCP proxy's own reconnect does that. A caller wanting the permissive
+        # behavior outright passes `mcp_security=MCPSecurityConfig.trusted()`
+        # explicitly.
         loaded_names = MCPConnectionPool.load_config(config_path)
 
         if server_names is None:
@@ -484,8 +517,10 @@ async def load_mcp_tools(
     manager = ActionManager()
 
     # See load_mcp_config's matching comment: an omitted policy stays None
-    # and falls through to the wrapper's fail-closed default rather than
-    # being silently upgraded to a permissive one (ADR-0011 delta row 3).
+    # rather than being silently upgraded to a permissive one, and reaches
+    # the wrapper's fail-closed default unless a process-global policy was
+    # explicitly set. Either way, it never recovers a policy some earlier
+    # caller authorized for the same identity.
 
     if config_path:
         MCPConnectionPool.load_config(config_path)

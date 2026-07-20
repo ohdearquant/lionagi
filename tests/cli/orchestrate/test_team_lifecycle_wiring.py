@@ -113,6 +113,67 @@ class TestTeamLifecycleCoordinatorCheckRound:
         state1 = coord.check_round()
         assert state1.quiescent  # both done, no pending mail
 
+    def test_attached_team_ignores_prior_run_done_and_wakes_only_this_runs_own_idle(self):
+        """Integration reproduction of the issue: `--team-attach` reuses a
+        team file whose prior run left `researcher` and `critic` both
+        `done`, plus one still-unread message from that prior run addressed
+        to `critic`. Wired the way `_execute_dag` wires it in production
+        (`message_boundary=len(messages already on disk at attach time)`),
+        the coordinator must NOT treat this fresh run's workers as already
+        idle/pending before either has posted a signal of its own."""
+        team_id = "attach-t"
+        _make_team(team_id, ["orchestrator", "researcher", "critic"])
+        team.post_done_signal(team_id, worker="researcher", summary="prior run pass 1")
+        team.post_done_signal(team_id, worker="critic", summary="prior run pass 1")
+        with team._locked_team(team_id) as data:
+            data["messages"].append(
+                {
+                    "id": "hist1",
+                    "from": "researcher",
+                    "to": ["critic"],
+                    "content": "leftover from last run",
+                    "kind": "message",
+                    "read_by": {},
+                    "timestamp": "2026-01-01T00:00:00",
+                }
+            )
+
+        # This is what `_execute_dag` does: snapshot the message count at
+        # attach time and hand it in as the new run's history boundary.
+        attach_snapshot = team._load_team(team_id)
+        boundary = len(attach_snapshot["messages"])
+
+        coord = make_team_lifecycle_coordinator(
+            team_id,
+            ["researcher", "critic"],
+            {"researcher": _FakeBranch("researcher"), "critic": _FakeBranch("critic")},
+            message_boundary=boundary,
+        )
+
+        # Neither worker has done anything in THIS run yet — must read as
+        # still active, not quiescent, and no round pending for critic.
+        state0 = coord.check_round()
+        assert state0.active_workers == frozenset({"researcher", "critic"})
+        assert not state0.should_continue
+        assert not state0.quiescent
+
+        # researcher finishes its own first turn in this run.
+        coord.on_done(name="researcher", sender_id=uuid4(), reason="this run pass 1")
+        state1 = coord.check_round()
+        # critic hasn't posted its own signal yet in this run -> still
+        # active -> no premature round injected on its behalf.
+        assert "critic" in state1.active_workers
+        assert not state1.should_continue
+
+        # critic now finishes its own first turn in this run too.
+        coord.on_done(name="critic", sender_id=uuid4(), reason="this run pass 1")
+        state2 = coord.check_round()
+        # Both idle for real now -> the leftover historical mail to critic
+        # (never scoped out for content messages) still surfaces as a round.
+        assert state2.idle_workers == frozenset({"researcher", "critic"})
+        assert state2.pending_targets == frozenset({"critic"})
+        assert state2.should_continue
+
 
 class TestTeamLifecycleCoordinatorBuildRoundOperations:
     def test_build_round_operations_targets_the_workers_own_branch(self):

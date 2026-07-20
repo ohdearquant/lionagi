@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from enum import Enum
@@ -34,6 +35,7 @@ __all__ = (
     "HookHandler",
     "StopHook",
     "hook",
+    "DORMANT_POINTS",
 )
 
 
@@ -45,7 +47,8 @@ class HookPoint(str, Enum):
     SESSION_END = "session.end"
     BRANCH_CREATE = "branch.create"
     BRANCH_END = "branch.end"
-    # not-yet-wired: no emit() call in the codebase
+    # emitted in operations/chat/chat.py and operations/run/run.py, bracketing
+    # a session-bound iModel invocation/stream (see operations/_api_hooks.py)
     API_PRE_CALL = "api.pre_call"
     API_POST_CALL = "api.post_call"
     API_STREAM_CHUNK = "api.stream_chunk"
@@ -53,11 +56,19 @@ class HookPoint(str, Enum):
     TOOL_POST = "tool.post"  # emitted in operations/act/act.py on successful invocation
     TOOL_ERROR = "tool.error"  # emitted in operations/act/act.py on invocation error
     MESSAGE_ADD = "message.add"  # live: emitted in session/branch.py
-    ARTIFACT_CREATED = "artifact.created"  # not-yet-wired
+    # deprecated compatibility vocabulary: no owner has supplied a payload
+    # contract or production emit site (see docs/reference/agent-hooks.md)
+    ARTIFACT_CREATED = "artifact.created"
     # emitted in operations/chat/chat.py and operations/run/run.py, immediately
     # before provider invocation / streaming begins, when a turn-origin token
     # is present on the operation context (see operations/_turn_origin.py)
     USER_PROMPT_SUBMIT = "prompt.submit"
+
+
+# HookPoints with no production emit site. Registering a handler on one of
+# these is accepted (the enum member is real) but never fires — DORMANT_POINTS
+# is what turns that mismatch from silent into a warned one (see HookBus.on()).
+DORMANT_POINTS = frozenset({HookPoint.ARTIFACT_CREATED})
 
 
 # HookPoints that propagate handler exceptions (rather than logging and
@@ -108,6 +119,14 @@ class HookBus:
 
     def on(self, point: HookPoint | str, handler: HookHandler) -> None:
         point = _normalize_point(point)
+        if point in DORMANT_POINTS:
+            warnings.warn(
+                f"Registering a handler on HookPoint.{point.name} ({point.value!r}), which has "
+                "no production emit site — this handler will never fire. See "
+                "docs/reference/agent-hooks.md for the current wiring status.",
+                UserWarning,
+                stacklevel=2,
+            )
         self._handlers.setdefault(point, []).append(handler)
 
     def off(self, point: HookPoint | str, handler: HookHandler) -> None:

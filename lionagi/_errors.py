@@ -18,6 +18,7 @@ __all__ = (
     "ExecutionError",
     "ConfigurationError",
     "TimeoutError",
+    "EmptyOutgoingContentError",
     "ItemNotFoundError",
     "ItemExistsError",
 )
@@ -153,6 +154,15 @@ class TimeoutError(LionError):  # noqa: A001 — intentional shadowing of builti
 
     default_message = "Operation timed out"
     default_status_code = 408
+    __slots__ = ()
+
+
+class EmptyOutgoingContentError(LionError, ValueError):
+    """Raised when a model call is about to go out with no user content
+    despite a non-empty instruction having been supplied."""
+
+    default_message = "Assembled outgoing message content is empty"
+    default_status_code = 500
     __slots__ = ()
 
 

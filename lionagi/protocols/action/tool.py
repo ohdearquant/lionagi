@@ -31,6 +31,10 @@ class Tool(Element):
     mcp_config: dict[str, dict[str, Any]] | None = None
     """{tool_name: mcp_config dict}"""
 
+    mcp_capability: Any = Field(default=None, exclude=True)
+    """Recovery authorization for the wrapped MCP proxy (opaque, identity-checked).
+    Excluded from serialization/dict output; a rehydrated Tool never has one."""
+
     tool_schema: dict[str, Any] | None = Field(
         default=None,
         description="Schema describing the function's parameters and structure",
@@ -86,7 +90,7 @@ class Tool(Element):
 
             from lionagi.service.connections.mcp_wrapper import create_mcp_tool
 
-            func_callable = create_mcp_tool(config, tool_name)
+            func_callable = create_mcp_tool(config, tool_name, data.get("mcp_capability"))
         else:
             from lionagi.libs.validate.common_field_validators import validate_callable
 

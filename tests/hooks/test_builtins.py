@@ -495,6 +495,110 @@ class TestSessionStartEmission:
             _m._SHARED.pop(db_path, None)
             _m._SHARED.pop(normalize_state_db_url(None), None)
 
+    async def test_double_emit_does_not_clobber_started_at_or_provenance(
+        self, monkeypatch, tmp_path
+    ):
+        """A duplicate SESSION_START for an already-STARTED_OK session must be
+        a true no-op: started_at must not drift forward, and provenance
+        fields written by the first (real) emit must not be nulled out by a
+        second emit that omits them."""
+        from lionagi.hooks.builtins import persist_session_start
+        from lionagi.hooks.bus import HookBus, HookPoint
+
+        db_path = _redirect_shared_db(monkeypatch, tmp_path)
+
+        db = await _shared(db_path)
+        try:
+            sid, prog_id = "ss-idem-2", "prog-ss-3"
+            await _seed_session(db, sid, prog_id)
+
+            bus = HookBus()
+            bus.on(HookPoint.SESSION_START, persist_session_start)
+
+            await bus.emit(
+                HookPoint.SESSION_START,
+                session_id=sid,
+                model="claude",
+                provider="anthropic",
+                effort="high",
+                agent_name="implementer",
+                agent_hash="deadbeef",
+            )
+            row_after_first = await db.get_session(sid)
+            started_at_first = row_after_first["started_at"]
+            assert started_at_first is not None
+
+            # Second emit omits every optional provenance field (as a
+            # supervisor re-firing SESSION_START without the original
+            # invocation context would).
+            await bus.emit(HookPoint.SESSION_START, session_id=sid)
+
+            row_after_second = await db.get_session(sid)
+            assert row_after_second["started_at"] == started_at_first
+            assert row_after_second["model"] == "claude"
+            assert row_after_second["provider"] == "anthropic"
+            assert row_after_second["effort"] == "high"
+            assert row_after_second["agent_name"] == "implementer"
+            assert row_after_second["agent_hash"] == "deadbeef"
+        finally:
+            await db.close()
+            import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
+
+            _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
+
+    async def test_first_emission_on_prestamped_session_records_provenance(
+        self, monkeypatch, tmp_path
+    ):
+        """The CLI stamps started_at at session creation, before SESSION_START
+        ever fires. A genuine first hook emission on such a pre-stamped row
+        must still record its provenance, and must not move started_at."""
+        from lionagi.hooks.builtins import persist_session_start
+        from lionagi.hooks.bus import HookBus, HookPoint
+
+        db_path = _redirect_shared_db(monkeypatch, tmp_path)
+
+        db = await _shared(db_path)
+        try:
+            sid, prog_id = "ss-prestamped-1", "prog-ss-4"
+            await db.create_progression(prog_id)
+            await db.create_session(
+                {
+                    "id": sid,
+                    "progression_id": prog_id,
+                    "status": "running",
+                    "started_at": 1.0,
+                }
+            )
+
+            bus = HookBus()
+            bus.on(HookPoint.SESSION_START, persist_session_start)
+            await bus.emit(
+                HookPoint.SESSION_START,
+                session_id=sid,
+                model="claude",
+                provider="anthropic",
+                effort="high",
+                agent_name="implementer",
+                agent_hash="deadbeef",
+            )
+
+            row = await db.get_session(sid)
+            assert row["started_at"] == 1.0
+            assert row["model"] == "claude"
+            assert row["provider"] == "anthropic"
+            assert row["effort"] == "high"
+            assert row["agent_name"] == "implementer"
+            assert row["agent_hash"] == "deadbeef"
+        finally:
+            await db.close()
+            import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
+
+            _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
+
     async def test_uses_shared_db_singleton(self, monkeypatch, tmp_path):
         from lionagi.hooks.builtins import persist_session_start
         from lionagi.hooks.bus import HookBus, HookPoint

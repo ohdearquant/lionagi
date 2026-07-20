@@ -548,25 +548,44 @@ async def _run_agent(
     # invocation records are finalized externally and would never fire. Deferred
     # auto-resume legs unregister without firing; the recursed leg registers anew.
     _notify_scope_name: str | None = None
-    if notify:
+    _notify_session_id = live.get("session_id") if live else None
+    if notify and _notify_session_id is not None:
         from lionagi.cli.orchestrate._notify import (
             register_flow_notify_scope,
             unregister_flow_notify_scope,
         )
 
-        _notify_session_id = live.get("session_id") if live else None
-        if _notify_session_id is not None:
-            _notify_scope_name = register_flow_notify_scope(
-                override=notify,
-                entity_kind="session",
-                entity_id=_notify_session_id,
-                invocation_id=invocation_id,
-                flow_kind="agent",
-                playbook=None,
-                save_dir=str(run.artifact_root),
-                cwd=cwd or os.getcwd(),
-                started_at=run_manifest["started_at"],
-            )
+        _notify_scope_name = register_flow_notify_scope(
+            override=notify,
+            entity_kind="session",
+            entity_id=_notify_session_id,
+            invocation_id=invocation_id,
+            flow_kind="agent",
+            playbook=None,
+            save_dir=str(run.artifact_root),
+            cwd=cwd or os.getcwd(),
+            started_at=run_manifest["started_at"],
+        )
+
+    # notify.on_terminal (settings-driven, independent of --notify) outcome
+    # attribution: bind this run into the handler at registration time so a
+    # late-arriving outcome for this session lands here or nowhere -- never
+    # on a different run this process later allocates. Skipped when --notify
+    # already owns this same entity as an exclusive override (registering a
+    # second override for the same entity would fire the adapter twice).
+    _notify_outcome_scope_name: str | None = None
+    if not notify and _notify_session_id is not None:
+        from lionagi.state.lifecycle.notify_settings import (
+            register_run_notify_outcome_scope,
+            unregister_run_notify_outcome_scope,
+        )
+
+        _notify_outcome_scope_name = register_run_notify_outcome_scope(
+            run,
+            entity_kind="session",
+            entity_id=_notify_session_id,
+            project_dir=cwd,
+        )
 
     _terminal_status = "completed"
     _terminal_exc: BaseException | None = None
@@ -659,6 +678,12 @@ async def _run_agent(
             # Unregister after teardown fires the terminal transition.
             if _notify_scope_name is not None:
                 unregister_flow_notify_scope(_notify_scope_name)
+            if _notify_outcome_scope_name is not None:
+                from lionagi.state.lifecycle.notify_settings import (
+                    unregister_run_notify_outcome_scope,
+                )
+
+                unregister_run_notify_outcome_scope(_notify_outcome_scope_name)
             await branch.mdls.shutdown()
 
     is_resume = bool(resume or continue_last)

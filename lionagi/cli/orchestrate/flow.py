@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from lionagi._errors import LionError
+from lionagi._errors import EmptyOutgoingContentError, LionError
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.casts.emission import SpawnRequest, TaskAssignment
 from lionagi.ln.concurrency import CancelScope, move_on_after
@@ -290,6 +290,33 @@ async def _resolve_invocation_terminal_flow(
                     metadata,
                 )
             if all(s == "completed" for s in child_statuses):
+                # A child can be "completed" (its DAG produced its result) yet
+                # carry COMPLETED_FINALIZE_ERROR because a guarded best-effort
+                # teardown step (team post, snapshot, resume pointer, graph)
+                # failed. Collapsing that into plain COMPLETED_OK here would
+                # make the invocation report clean success while the child's
+                # own record says a finalize step failed -- surface the same
+                # degraded reason at the invocation level instead of hiding it.
+                degraded = [
+                    s
+                    for s in sessions
+                    if str(s.get("status_reason_code") or "") == RunReasons.COMPLETED_FINALIZE_ERROR
+                ]
+                if degraded:
+                    degraded_metadata = dict(metadata)
+                    degraded_metadata["finalize_error_session_ids"] = [
+                        s["id"] for s in degraded if s.get("id")
+                    ]
+                    return (
+                        "completed",
+                        RunReasons.COMPLETED_FINALIZE_ERROR,
+                        "Flow completed successfully, but at least one child "
+                        "session recorded a non-output finalize error (a "
+                        "best-effort teardown step failed after that "
+                        "child's own DAG already produced its result).",
+                        [{"kind": "session", "id": s["id"]} for s in degraded if s.get("id")],
+                        degraded_metadata,
+                    )
                 return (
                     "completed",
                     RunReasons.COMPLETED_OK,
@@ -1040,6 +1067,11 @@ async def _execute_dag(
             messenger_bound=dag_state.messenger_bound,
             max_rounds=team_max_rounds,
             exchange=getattr(env, "exchange", None),
+            # env.team_data is the snapshot `_load_team`/`_create_fanout_team`
+            # returned when this run attached/created the team, before this
+            # run posted anything — its message count is exactly this run's
+            # history boundary (0 for a freshly created team).
+            message_boundary=len(env.team_data.get("messages", [])),
         )
         env.messenger.on("done", _team_coordinator.on_done)
         env.messenger.on("finished", _team_coordinator.on_finished)
@@ -1457,7 +1489,28 @@ def _finalize_flow(
     output_format: str,
     show_graph: bool,
 ) -> str:
-    """Format output, write synthesis artifact, post team messages, and finalize run."""
+    """Format output, write the synthesis artifact, then run best-effort teardown.
+
+    The DAG already has its result by the time this runs, so ``output`` is
+    computed first and always returned. The synthesis artifact write happens
+    next, ahead of everything else and outside any guard: it IS the run's
+    output, so a failure there is a real failure of the run, not a finalize
+    hiccup — it's stashed on ``env._artifact_write_error`` for the run's
+    teardown to flip the terminal status to "failed" over, rather than being
+    swallowed alongside best-effort side effects.
+
+    Everything after that — team inbox post, branch snapshots, resume
+    pointer, the DAG graph image — is post-completion persistence/telemetry
+    whose failure should never fail the run. It's caught and stashed on
+    ``env._finalize_error`` for the run's teardown to surface via its own
+    reason code, rather than raising and letting the caller conflate it with
+    the DAG's own outcome.
+
+    Ordering matters: the output write runs first and unguarded, so a
+    telemetry failure below can never prevent the output from being written,
+    and an output failure is recorded on its own field so a later guarded
+    failure can never mask it.
+    """
     agent_results = exec_result.agent_results
     n_spawned = exec_result.n_spawned
     assignments = plan_result.assignments
@@ -1470,64 +1523,115 @@ def _finalize_flow(
         output = _format_result_text(agent_results, synthesis_result, header_fn=_flow_header_fn)
 
     if synthesis_result:
-        env.run.synthesis_path.write_text(synthesis_result["response"])
+        try:
+            env.run.synthesis_path.write_text(synthesis_result["response"])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "flow finalize: writing the synthesis artifact failed; the run "
+                "produced no output and cannot be reported as completed: %s",
+                exc,
+                exc_info=True,
+            )
+            env._artifact_write_error = {"error_class": type(exc).__name__, "error": str(exc)}
+
+    # Each best-effort side effect below is guarded independently: one
+    # raising (e.g. a stuck team-inbox file lock) must not skip the ones
+    # after it (snapshot, resume pointer, graph image).
+    finalize_errors: list[dict] = []
+
+    def _guard_finalize_step(label: str, fn) -> None:
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "flow finalize step (%s) failed after the DAG already "
+                "completed; DAG result is unaffected: %s",
+                label,
+                exc,
+                exc_info=True,
+            )
+            finalize_errors.append(
+                {"step": label, "error_class": type(exc).__name__, "error": str(exc)}
+            )
 
     if env.team_data:
-        _post_results_to_team(env.team_data, agent_results, agent_ids, synthesis_result)
+        _guard_finalize_step(
+            "team_post",
+            lambda: _post_results_to_team(
+                env.team_data, agent_results, agent_ids, synthesis_result
+            ),
+        )
 
-    # "agents" must cover every id "operations" (below) references, so it
-    # walks agent_results (which includes spawned nodes), not just the
-    # fixed-size plan-time assignments, or a spawned id resolves to nothing.
-    agents_meta = [
-        {
-            "id": agent_ids[i],
-            "name": agent_ids[i],
-            "model": worker_models[i],
-            "artifact_dir": str(env.run.agent_artifact_dir(agent_ids[i])),
-            "spawned": False,
-        }
-        for i in range(len(assignments))
-    ]
-    agents_meta.extend(
-        {
-            "id": r["agent_id"],
-            "name": r.get("assignee") or r["name"],
-            "model": r.get("model", ""),
-            "artifact_dir": str(env.run.agent_artifact_dir(r["agent_id"])),
-            "spawned": True,
-        }
-        for r in agent_results
-        if r.get("spawned")
-    )
+    def _snapshot_and_resume_pointer() -> None:
+        # "agents" must cover every id "operations" (below) references, so it
+        # walks agent_results (which includes spawned nodes), not just the
+        # fixed-size plan-time assignments, or a spawned id resolves to nothing.
+        agents_meta = [
+            {
+                "id": agent_ids[i],
+                "name": agent_ids[i],
+                "model": worker_models[i],
+                "artifact_dir": str(env.run.agent_artifact_dir(agent_ids[i])),
+                "spawned": False,
+            }
+            for i in range(len(assignments))
+        ]
+        agents_meta.extend(
+            {
+                "id": r["agent_id"],
+                "name": r.get("assignee") or r["name"],
+                "model": r.get("model", ""),
+                "artifact_dir": str(env.run.agent_artifact_dir(r["agent_id"])),
+                "spawned": True,
+            }
+            for r in agent_results
+            if r.get("spawned")
+        )
 
-    finalize_orchestration(
-        env,
-        kind="flow",
-        prompt=prompt,
-        extras={
-            "agents": agents_meta,
-            "operations": [
-                {
-                    "id": r["id"],
-                    "agent_id": r["agent_id"],
-                    "control": False,
-                    "spawned": r.get("spawned", False),
-                    "depends_on": r.get("depends_on") or [],
-                }
-                for r in agent_results
-            ],
-        },
-    )
+        finalize_orchestration(
+            env,
+            kind="flow",
+            prompt=prompt,
+            extras={
+                "agents": agents_meta,
+                "operations": [
+                    {
+                        "id": r["id"],
+                        "agent_id": r["agent_id"],
+                        "control": False,
+                        "spawned": r.get("spawned", False),
+                        "depends_on": r.get("depends_on") or [],
+                    }
+                    for r in agent_results
+                ],
+            },
+        )
+
+    _guard_finalize_step("snapshot", _snapshot_and_resume_pointer)
 
     if show_graph:
-        from lionagi.operations._visualize_graph import visualize_graph
 
-        with contextlib.suppress(Exception):
+        def _write_graph_image() -> None:
+            from lionagi.operations._visualize_graph import visualize_graph
+
             visualize_graph(
                 env.builder,
                 title=f"Flow DAG — {len(assignments)} assignments (+{n_spawned} spawned)",
                 save_path=str(env.run.dag_image_path),
             )
+
+        _guard_finalize_step("graph", _write_graph_image)
+
+    if finalize_errors:
+        if len(finalize_errors) == 1:
+            env._finalize_error = {k: v for k, v in finalize_errors[0].items() if k != "step"}
+        else:
+            env._finalize_error = {
+                "error_class": "MultipleFinalizeErrors",
+                "error": "; ".join(
+                    f"{e['step']}: {e['error_class']}: {e['error']}" for e in finalize_errors
+                ),
+            }
 
     return output
 
@@ -1640,9 +1744,9 @@ async def _run_flow(
     # below. The handler fires from the same guarded lifecycle transition
     # that persists the terminal status — no direct notify call at teardown.
     _notify_scope_name: str | None = None
+    _notify_entity_kind = "invocation" if invocation_id else "session"
+    _notify_entity_id = invocation_id if invocation_id else str(env.session.id)
     if notify:
-        _notify_entity_kind = "invocation" if invocation_id else "session"
-        _notify_entity_id = invocation_id if invocation_id else str(env.session.id)
         _notify_scope_name = register_flow_notify_scope(
             override=notify,
             entity_kind=_notify_entity_kind,
@@ -1654,6 +1758,28 @@ async def _run_flow(
             cwd=cwd or os.getcwd(),
             started_at=_started_at,
         )
+
+    # notify.on_terminal (settings-driven, independent of --notify) outcome
+    # attribution: bind this run into the handler at registration time so a
+    # late-arriving outcome for this entity lands here or nowhere -- never
+    # on a different run this process later allocates. Skipped when --notify
+    # already owns this same entity as an exclusive override (registering a
+    # second override for the same entity would fire the adapter twice).
+    from lionagi.state.lifecycle.notify_settings import (
+        register_run_notify_outcome_scope,
+        unregister_run_notify_outcome_scope,
+    )
+
+    _notify_outcome_scope_name = (
+        None
+        if notify
+        else register_run_notify_outcome_scope(
+            env.run,
+            entity_kind=_notify_entity_kind,
+            entity_id=_notify_entity_id,
+            project_dir=cwd,
+        )
+    )
 
     _orc_model, _orc_provider = parse_orchestrator_provider(env.default_model_spec)
 
@@ -1811,6 +1937,7 @@ async def _run_flow(
                         )
 
             unregister_flow_notify_scope(_notify_scope_name)
+            unregister_run_notify_outcome_scope(_notify_outcome_scope_name)
             for _br in env.session.branches:
                 await _br.mdls.shutdown()
 
@@ -1881,6 +2008,8 @@ async def _run_flow_inner(
             assignments = await plan(
                 env.orc_branch, prompt, roles=roster, dag=True, guidance=guidance, max_tasks=max_ops
             )
+        except EmptyOutgoingContentError:
+            raise
         except ValueError as exc:
             # plan() raises a bare ValueError when the orchestrator still
             # overshoots max_tasks after the cap was stated in guidance —
@@ -1900,6 +2029,8 @@ async def _run_flow_inner(
                     + " Return ONLY the assignments list — do not perform the task.",
                     max_tasks=max_ops,
                 )
+            except EmptyOutgoingContentError:
+                raise
             except ValueError as exc:
                 raise FlowPlanError(str(exc)) from exc
         if not assignments:
