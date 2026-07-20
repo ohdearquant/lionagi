@@ -169,14 +169,19 @@ class ActionManager(Manager):
         *name* -- the already-registered tool wins and the plugin declaration
         is rejected.
 
-        When more than one enabled plugin declares *name*, that is a peer
-        collision, a hard error regardless of the local registration -- it
-        is not caught here and propagates to the caller."""
-        from lionagi.plugins.registry import PluginRegistry
+        Purely diagnostic: a peer collision between two *other* plugins
+        declaring *name* is irrelevant to a tool that already resolved
+        locally, so it is swallowed here rather than raised -- a
+        locally-registered tool must never fail to resolve because of this
+        diagnostic."""
+        from lionagi.plugins.registry import PluginRegistry, PluginToolCollisionError
 
         if not PluginRegistry.list_plugins():
             return
-        resolved = PluginRegistry.resolve_tool_target(name)
+        try:
+            resolved = PluginRegistry.resolve_tool_target(name)
+        except PluginToolCollisionError:
+            return
         if resolved is None:
             return
         warn_key = (resolved.plugin_name, name)

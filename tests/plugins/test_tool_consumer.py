@@ -183,11 +183,12 @@ class TestToolConsumerCollision:
         result = manager.match_tool({"function": "greet", "arguments": {}})
         assert result.func_tool.function == "greet"
 
-    def test_registered_tool_plus_two_colliding_plugins_still_raises(self, write_plugin):
-        """A registered local tool wins over any single colliding plugin, but
-        it must not mask a *peer* collision between two plugins declaring the
-        same bare name -- that hard error (ADR-0088 D6) is independent of
-        whether the manager already has a local registration for the name."""
+    def test_registered_tool_still_resolves_despite_a_peer_plugin_collision(self, write_plugin):
+        """A registered local tool must resolve regardless of a *peer*
+        collision between two other plugins declaring the same bare name --
+        the shadow check is a diagnostic only; it must never be able to fail
+        an already-successful local resolution (a peer-vs-peer collision
+        never touches the local tool's own resolution)."""
 
         def greet():
             return "local"
@@ -201,10 +202,8 @@ class TestToolConsumerCollision:
         _trust("p2")
         PluginRegistry.reset()
 
-        with pytest.raises(PluginToolCollisionError) as excinfo:
-            manager.match_tool({"function": "greet", "arguments": {}})
-        assert "plugin-one" in str(excinfo.value)
-        assert "plugin-two" in str(excinfo.value)
+        result = manager.match_tool({"function": "greet", "arguments": {}})
+        assert result.func_tool.func_callable is greet
 
 
 class TestLiveRescanWithoutReset:
@@ -399,7 +398,11 @@ class TestBuiltinToolCollisionDiagnostic:
 
         assert caplog.text.count("greeter") == 1
 
-    def test_new_peer_collision_is_detected_without_registry_reset(self, write_plugin):
+    def test_new_peer_collision_is_swallowed_not_raised(self, write_plugin):
+        """A peer collision that appears between the manager's first and
+        second call (a plugin trusted in between, no registry reset) must
+        stay a diagnostic -- the local tool keeps winning, never a raise."""
+
         def greet():
             return "local"
 
@@ -422,7 +425,5 @@ class TestBuiltinToolCollisionDiagnostic:
 
         _trust("p2")
 
-        with pytest.raises(PluginToolCollisionError) as excinfo:
-            manager.match_tool({"function": "greet", "arguments": {}})
-        assert "greeter" in str(excinfo.value)
-        assert "plugin-two" in str(excinfo.value)
+        second = manager.match_tool({"function": "greet", "arguments": {}})
+        assert second.func_tool.func_callable is greet
