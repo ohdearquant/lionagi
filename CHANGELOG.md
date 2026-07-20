@@ -6,6 +6,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Removed
+
+- `ObservableProto` and `LegacyObservable` (`lionagi.protocols.contracts`, previously
+  re-exported from `lionagi.protocols.types`). Neither had an in-tree caller. Removed outright
+  per the own-use scope in `docs/governance/standards/deprecation-policy.md` section 0, with no
+  compatibility alias.
+
 ## [0.29.1] - 2026-07-15
 
 ### Added
