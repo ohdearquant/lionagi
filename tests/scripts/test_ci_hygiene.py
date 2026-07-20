@@ -70,6 +70,19 @@ def test_ci_lint_job_runs_publication_hygiene() -> None:
     assert "run: scripts/ci.sh lint-hygiene" in workflow
 
 
+def test_push_trigger_has_no_notebook_paths_ignore() -> None:
+    # Regression for #2313: GitHub Actions skips an entire workflow run when
+    # every changed path matches paths-ignore. A push trigger that ignores
+    # notebooks would bypass the lint job (and its publication-hygiene scan)
+    # for a notebook-only push to main/develop.
+    workflow = CI_WORKFLOW.read_text()
+    push_block = workflow.split("  push:", 1)[1].split("  pull_request:", 1)[0]
+    push_keys = {line.strip() for line in push_block.splitlines()}
+
+    assert not any(key.startswith("paths-ignore:") for key in push_keys)
+    assert "*.ipynb" not in push_block
+
+
 @pytest.mark.parametrize(
     "source",
     [
