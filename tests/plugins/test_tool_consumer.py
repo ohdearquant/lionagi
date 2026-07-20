@@ -398,10 +398,12 @@ class TestBuiltinToolCollisionDiagnostic:
 
         assert caplog.text.count("greeter") == 1
 
-    def test_new_peer_collision_is_swallowed_not_raised(self, write_plugin):
-        """A peer collision that appears between the manager's first and
-        second call (a plugin trusted in between, no registry reset) must
-        stay a diagnostic -- the local tool keeps winning, never a raise."""
+    def test_shadow_resolution_is_cached_until_reset(self, write_plugin):
+        """The shadow-diagnostic resolution is cached per plugin-registry
+        generation: a new peer plugin trusted after the cache was populated
+        is not consulted until `PluginRegistry.reset()` bumps the
+        generation -- and even after reset, the peer collision stays a
+        diagnostic only, never a raise (the local tool always wins)."""
 
         def greet():
             return "local"
@@ -425,5 +427,60 @@ class TestBuiltinToolCollisionDiagnostic:
 
         _trust("p2")
 
+        # No reset(): same generation, cached resolution reused -- the
+        # newly trusted peer plugin is not consulted yet.
         second = manager.match_tool({"function": "greet", "arguments": {}})
         assert second.func_tool.func_callable is greet
+
+        PluginRegistry.reset()
+
+        # A fresh generation forces one fresh resolution -- still resolves
+        # the local tool, and still never raises even though p1 and p2 now
+        # peer-collide on "greet".
+        third = manager.match_tool({"function": "greet", "arguments": {}})
+        assert third.func_tool.func_callable is greet
+
+
+class TestShadowResolutionCacheCost:
+    """A registered-tool hit against `match_tool` must not pay for a fresh
+    plugin-manifest rescan (`PluginRegistry.resolve_tool_target`) on every
+    call once any plugin is trusted -- only once per plugin-registry
+    generation -- repeated rescans were a real disk-I/O regression."""
+
+    def test_repeated_hits_within_a_generation_resolve_the_plugin_registry_once(
+        self, write_plugin, monkeypatch
+    ):
+        import lionagi.plugins.registry as registry_mod
+
+        def greet():
+            return "local"
+
+        manager = ActionManager()
+        manager.register_tool(greet)
+
+        _write_tool_plugin(write_plugin, "p1", name="greeter", tool_name="greet")
+        _trust("p1")
+        PluginRegistry.reset()
+
+        calls = []
+        original = registry_mod.PluginRegistry.resolve_tool_target.__func__
+
+        def counting_resolve_tool_target(cls, tool_name):
+            calls.append(tool_name)
+            return original(cls, tool_name)
+
+        monkeypatch.setattr(
+            registry_mod.PluginRegistry,
+            "resolve_tool_target",
+            classmethod(counting_resolve_tool_target),
+        )
+
+        for _ in range(5):
+            result = manager.match_tool({"function": "greet", "arguments": {}})
+            assert result.func_tool.func_callable is greet
+
+        assert len(calls) == 1
+
+        PluginRegistry.reset()
+        manager.match_tool({"function": "greet", "arguments": {}})
+        assert len(calls) == 2
