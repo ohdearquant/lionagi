@@ -852,6 +852,56 @@ async def test_legacy_bare_name_without_project_disclosed_in_report(temp_db_path
     assert "legacy-export/nightly" in lines[0].message
 
 
+@pytest.mark.asyncio
+async def test_legacy_row_with_project_not_matching_bare_name_disclosed_in_report(
+    temp_db_path, agent_profile
+):
+    """A row with a bare ``name`` but a stored ``action_project`` cannot
+    round-trip untouched either: grouping keys it under its own project, so
+    re-applying reconstructs ``"{action_project}/{name}"``, not the stored
+    bare name. `_effective_project` returning the project unconditionally
+    used to make the report claim this row was READY with no caveat."""
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_row("mp1", "nightly", cwd=agent_profile, action_project="demo")
+        )
+        rows = await db.list_schedules()
+    docs, lines = convert_legacy_rows(
+        rows, flows_dir=agent_profile / "flows", manifest_dir=agent_profile
+    )
+    assert [line.status for line in lines] == ["READY"]
+    assert lines[0].message is not None
+    assert "demo/nightly" in lines[0].message
+    doc = docs[0]
+    assert doc.metadata.project == "demo"
+    assert "nightly" in doc.schedules
+
+
+@pytest.mark.asyncio
+async def test_legacy_row_with_project_not_matching_qualified_name_disclosed_in_report(
+    temp_db_path, agent_profile
+):
+    """A row whose ``name`` already carries a *different* prefix than its
+    stored ``action_project`` must disclose the resulting double
+    qualification (``"{action_project}/{name}"``), not report READY with no
+    caveat -- the pre-fix code never checked that the name actually started
+    with ``f"{action_project}/"`` before trusting it verbatim."""
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_row("mp2", "foo/nightly", cwd=agent_profile, action_project="demo")
+        )
+        rows = await db.list_schedules()
+    docs, lines = convert_legacy_rows(
+        rows, flows_dir=agent_profile / "flows", manifest_dir=agent_profile
+    )
+    assert [line.status for line in lines] == ["READY"]
+    assert lines[0].message is not None
+    assert "demo/foo/nightly" in lines[0].message
+    doc = docs[0]
+    assert doc.metadata.project == "demo"
+    assert "foo/nightly" in doc.schedules
+
+
 # ---------------------------------------------------------------------------
 # GitHub cadence fallback and sibling-file collisions
 # ---------------------------------------------------------------------------
