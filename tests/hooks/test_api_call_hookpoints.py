@@ -16,6 +16,7 @@ import types
 import pytest
 
 from lionagi.hooks.bus import HookBus, HookPoint
+from lionagi.ln import json_dumps
 from lionagi.operations.run.run import run
 from lionagi.operations.types import RunParam
 from lionagi.protocols.generic.event import EventStatus
@@ -120,7 +121,11 @@ async def test_chat_emits_api_post_call_with_error_status_when_invoke_raises():
     assert len(calls[HookPoint.API_POST_CALL]) == 1
     post = calls[HookPoint.API_POST_CALL][0]
     assert post["status"] == "error"
-    assert "provider is down" in post["error"]
+    # Class-name-only summary -- the raised exception's message must never
+    # reach the emitted payload (it can carry request bodies, full URLs, or
+    # credential fragments from the provider).
+    assert post["error"] == "RuntimeError"
+    assert "provider is down" not in post["error"]
 
 
 async def test_chat_emits_paired_post_call_on_cancellation_during_invoke():
@@ -237,3 +242,27 @@ async def test_run_without_session_bus_does_not_crash():
     async for msg in run(branch, "hi there", RunParam()):
         results.append(msg)
     assert results  # ran to completion unaffected
+
+
+async def test_chat_api_post_call_never_leaks_secret_shaped_error_text():
+    """A provider exception's message can carry request bodies, full URLs
+    with query parameters, or credential fragments -- none of that may reach
+    the emitted API_POST_CALL payload, which is persisted verbatim to
+    observer telemetry."""
+    branch = LionAGIMockFactory.create_mocked_branch(response="hello")
+    calls = _wire(branch, HookPoint.API_PRE_CALL, HookPoint.API_POST_CALL)
+
+    secret = "sk-live-do-not-leak-4f3a9c2b"
+
+    async def _boom(**kw):
+        raise RuntimeError(
+            f"POST https://api.openai.com/v1/chat/completions?api_key={secret} failed"
+        )
+
+    branch.chat_model.invoke = _boom
+
+    with pytest.raises(RuntimeError):
+        await branch.chat("hi there")
+
+    post = calls[HookPoint.API_POST_CALL][0]
+    assert secret not in json_dumps(post)

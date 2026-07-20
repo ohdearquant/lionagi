@@ -47,6 +47,25 @@ def _extract_tokens(response: Any) -> dict | None:
     return dict(usage) if isinstance(usage, dict) else None
 
 
+def _error_summary(error: str | BaseException | None) -> str | None:
+    """Exception-class-name-only summary of a call failure.
+
+    Matches the ``TOOL_ERROR`` hook convention (``operations/act/act.py``
+    forwards the exception object itself, never a stringified message) --
+    the raw text of a provider exception routinely carries request bodies,
+    full URLs with query parameters, or header/credential fragments, and
+    this payload is persisted verbatim to observer telemetry. A
+    non-exception failure reason (``APICalling.execution.error`` can be a
+    plain ``str``) is equally capable of embedding that text, so it gets the
+    same generic, content-free label rather than a per-type name.
+    """
+    if error is None:
+        return None
+    if isinstance(error, BaseException):
+        return type(error).__name__
+    return "ProviderError"
+
+
 async def emit_api_pre_call(branch: Branch, imodel: Any) -> None:
     """Fire API_PRE_CALL immediately before a session-bound iModel is invoked."""
     hooks = branch._hooks
@@ -69,7 +88,7 @@ async def emit_api_post_call(
     imodel: Any,
     api_call: Any = None,
     *,
-    error: BaseException | None = None,
+    error: str | BaseException | None = None,
     tokens: dict | None = None,
 ) -> None:
     """Fire API_POST_CALL once the call has settled — success, provider-reported
@@ -101,7 +120,7 @@ async def emit_api_post_call(
         status=status,
         latency_ms=latency_ms,
         tokens=tokens,
-        error=str(error) if error is not None else None,
+        error=_error_summary(error),
     )
 
 
