@@ -3,7 +3,6 @@
 import pytest
 
 from lionagi.service.connections.mcp_wrapper import (
-    RECOVER_AUTHORIZED_POLICY,
     MCPConnectionPool,
     MCPSecurityConfig,
     _filter_env,
@@ -541,11 +540,11 @@ class TestPerServerPolicyPersistence:
         MCPConnectionPool._server_security.clear()
         MCPConnectionPool._clients.clear()
 
-    async def test_proxy_marker_recovers_recorded_policy(self, monkeypatch):
+    async def test_proxy_reconnect_recovers_recorded_policy(self, monkeypatch):
         """The tool proxy (`create_mcp_tool`'s stored callable) re-enters a
-        transport it already holds by passing RECOVER_AUTHORIZED_POLICY
-        explicitly -- that is the ONLY thing that recovers a remembered
-        policy (issue #2356)."""
+        transport it already holds via `_get_reconnect_client` -- that is the
+        ONLY thing that recovers a remembered policy (issue #2356), and it is
+        not reachable through the public `get_client` API."""
         self._reset()
         seen = []
 
@@ -562,23 +561,46 @@ class TestPerServerPolicyPersistence:
             policy = MCPSecurityConfig(allow_commands=True)
             # Trusted load records the policy (no client created — tool_names path).
             MCPConnectionPool.remember_security({"command": "echo", "args": ["a"]}, policy)
-            # Stored callable invokes get_client with the recovery marker, on a
+            # Stored callable invokes the proxy-only reconnect path, on a
             # fresh dict of the SAME content (the real flow strips only
             # `_`-prefixed metadata, so transport fields are identical) — the
             # recorded policy must be recovered.
-            await MCPConnectionPool.get_client(
-                {"command": "echo", "args": ["a"]}, security=RECOVER_AUTHORIZED_POLICY
-            )
+            await MCPConnectionPool._get_reconnect_client({"command": "echo", "args": ["a"]})
             assert seen[-1] is policy
+        finally:
+            self._reset()
+
+    async def test_public_get_client_cannot_select_recovery(self, monkeypatch):
+        """A normal public caller has no way to reach the recovery branch at
+        all: `get_client`'s `security` parameter accepts only an explicit
+        `MCPSecurityConfig` or `None`, and recovery only happens through the
+        private, proxy-only `_get_reconnect_client`."""
+        self._reset()
+
+        async def fake_create(config, security=None):
+            return object()
+
+        monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+        try:
+            policy = MCPSecurityConfig(allow_commands=True)
+            MCPConnectionPool.remember_security({"command": "echo", "args": ["a"]}, policy)
+
+            # Passing anything other than an MCPSecurityConfig or None is
+            # rejected outright -- there is no sentinel a public caller can
+            # construct or import to select recovery through this method.
+            with pytest.raises(TypeError):
+                await MCPConnectionPool.get_client(
+                    {"command": "echo", "args": ["a"]}, security=object()
+                )
         finally:
             self._reset()
 
     async def test_invocation_without_marker_does_not_recover_recorded_policy(self, monkeypatch):
         """The bug in issue #2356: a bare, policy-omitting get_client() call
         used to recover whatever policy an earlier caller authorized for the
-        same resolved transport. A caller that makes no trust decision (does
-        not pass RECOVER_AUTHORIZED_POLICY) must stay fail-closed, even
-        though the exact same transport was authorized moments ago."""
+        same resolved transport. A caller that makes no trust decision
+        stays fail-closed, even though the exact same transport was
+        authorized moments ago."""
         self._reset()
         seen = []
 
@@ -600,7 +622,7 @@ class TestPerServerPolicyPersistence:
         finally:
             self._reset()
 
-    async def test_reconnect_after_cleanup_recovers_policy_via_marker(self, monkeypatch):
+    async def test_reconnect_after_cleanup_recovers_policy_via_proxy_path(self, monkeypatch):
         self._reset()
         seen = []
 
@@ -621,20 +643,19 @@ class TestPerServerPolicyPersistence:
             assert seen[-1] is policy
             # Cached client cleaned up; the remembered policy survives the
             # eviction (by design). The proxy reconnecting still recovers it,
-            # but only because it asks for that explicitly via the marker.
+            # but only because it goes through the private reconnect path.
             MCPConnectionPool._clients.clear()
-            await MCPConnectionPool.get_client(
-                {"server": "srv"}, security=RECOVER_AUTHORIZED_POLICY
-            )
+            await MCPConnectionPool._get_reconnect_client({"server": "srv"})
             assert seen[-1] is policy
         finally:
             self._reset()
             MCPConnectionPool._configs.pop("srv", None)
 
     async def test_reconnect_after_cleanup_without_marker_stays_fail_closed(self, monkeypatch):
-        """Same eviction-survives-in-the-map scenario as the marker test
-        above, but from a loader's shape (no marker): the surviving map entry
-        must NOT be reachable without the marker, cache state notwithstanding."""
+        """Same eviction-survives-in-the-map scenario as the proxy-path test
+        above, but from a loader's shape (through the public `get_client`):
+        the surviving map entry must NOT be reachable through that method,
+        cache state notwithstanding."""
         self._reset()
         seen = []
 
@@ -717,12 +738,12 @@ class TestPerServerPolicyPersistence:
             MCPConnectionPool.remember_security(safe, policy)
 
             # The evil config must NOT recover the safe policy → stays fail-closed,
-            # even via the recovery marker.
-            await MCPConnectionPool.get_client(evil, security=RECOVER_AUTHORIZED_POLICY)
+            # even through the proxy-only reconnect path.
+            await MCPConnectionPool._get_reconnect_client(evil)
             assert seen[-1] is None, "different args must not inherit another config's policy"
 
-            # The safe config still recovers its own policy through the marker.
-            await MCPConnectionPool.get_client(safe, security=RECOVER_AUTHORIZED_POLICY)
+            # The safe config still recovers its own policy through that path.
+            await MCPConnectionPool._get_reconnect_client(safe)
             assert seen[-1] is policy
         finally:
             self._reset()

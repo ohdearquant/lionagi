@@ -360,7 +360,7 @@ class TestCreateMCPTool:
         mock_result.content = [MagicMock(text="result text")]
         mock_client.call_tool.return_value = mock_result
 
-        with patch.object(MCPConnectionPool, "get_client", return_value=mock_client):
+        with patch.object(MCPConnectionPool, "_get_reconnect_client", return_value=mock_client):
             tool = create_mcp_tool(mcp_config, tool_name)
             result = await tool(arg1="value1")
 
@@ -379,7 +379,7 @@ class TestCreateMCPTool:
         mock_result = "result"
         mock_client.call_tool.return_value = mock_result
 
-        with patch.object(MCPConnectionPool, "get_client", return_value=mock_client):
+        with patch.object(MCPConnectionPool, "_get_reconnect_client", return_value=mock_client):
             tool = create_mcp_tool(mcp_config, tool_name)
             await tool()
 
@@ -395,7 +395,7 @@ class TestCreateMCPTool:
         mock_result = [{"type": "text", "text": "dict result"}]
         mock_client.call_tool.return_value = mock_result
 
-        with patch.object(MCPConnectionPool, "get_client", return_value=mock_client):
+        with patch.object(MCPConnectionPool, "_get_reconnect_client", return_value=mock_client):
             tool = create_mcp_tool(mcp_config, tool_name)
             result = await tool()
 
@@ -410,7 +410,7 @@ class TestCreateMCPTool:
         mock_result = {"custom": "data"}
         mock_client.call_tool.return_value = mock_result
 
-        with patch.object(MCPConnectionPool, "get_client", return_value=mock_client):
+        with patch.object(MCPConnectionPool, "_get_reconnect_client", return_value=mock_client):
             tool = create_mcp_tool(mcp_config, tool_name)
             result = await tool()
 

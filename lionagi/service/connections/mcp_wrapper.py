@@ -51,7 +51,6 @@ _SENSITIVE_ENV_PATTERNS = frozenset(
 __all__ = (
     "MCPSecurityConfig",
     "MCPConnectionPool",
-    "RECOVER_AUTHORIZED_POLICY",
     "create_mcp_tool",
     "is_synthetic_mcp_wrapper_schema",
     "validate_mcp_tool_admission",
@@ -1503,31 +1502,6 @@ def _validate_url(url: str, config: MCPSecurityConfig) -> None:
             )
 
 
-class _RecoverAuthorizedPolicyType:
-    """Sentinel for `get_client(security=...)`: "reconnect under whatever
-    policy this resolved transport already holds."
-
-    `None` at that parameter means exactly one thing -- the caller made no
-    trust decision -- and falls through to the fail-closed default. Only the
-    tool proxy re-entering a transport it already holds means the other
-    thing ("recover"), and it must say so by passing this sentinel
-    explicitly. No other call site may synthesize it from inference.
-    """
-
-    _instance: _RecoverAuthorizedPolicyType | None = None
-
-    def __new__(cls) -> _RecoverAuthorizedPolicyType:
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
-    def __repr__(self) -> str:
-        return "RECOVER_AUTHORIZED_POLICY"
-
-
-RECOVER_AUTHORIZED_POLICY = _RecoverAuthorizedPolicyType()
-
-
 class MCPConnectionPool:
     """Connection pool for MCP clients with fail-closed security."""
 
@@ -1654,18 +1628,16 @@ class MCPConnectionPool:
         return list(servers.keys())
 
     @classmethod
-    async def get_client(
-        cls,
-        server_config: dict[str, Any],
-        security: MCPSecurityConfig | _RecoverAuthorizedPolicyType | None = None,
-    ) -> Any:
-        """Get or create a pooled MCP client."""
-        # Resolve `{"server": name}` references to their concrete transport
-        # config FIRST: policy recovery and cache identity must bind to the
-        # RESOLVED transport, not the bare logical name. Otherwise reloading
-        # a different command/URL under the same name would let an
-        # omitted-policy call recover (and reconnect using) a policy that
-        # was only ever authorized for the prior transport.
+    def _resolve_identity(cls, server_config: dict[str, Any]) -> tuple[dict[str, Any], str, str]:
+        """Resolve a server config to `(config, policy_key, cache_key)`.
+
+        Resolving `{"server": name}` references to their concrete transport
+        config happens FIRST: policy recovery and cache identity must bind
+        to the RESOLVED transport, not the bare logical name. Otherwise
+        reloading a different command/URL under the same name would let an
+        omitted-policy call recover (and reconnect using) a policy that was
+        only ever authorized for the prior transport.
+        """
         if "server" in server_config:
             server_name = server_config["server"]
             config = cls._resolve_config(server_config)
@@ -1675,19 +1647,15 @@ class MCPConnectionPool:
             config = server_config
             policy_key = cls._policy_key(config)
             cache_key = f"inline:{config.get('command')}:{id(config)}"
+        return config, policy_key, cache_key
 
-        # Explicit policy authorizes this resolved transport for future
-        # reconnects. `RECOVER_AUTHORIZED_POLICY` is the proxy re-entering a
-        # transport it already holds and asking for that same policy back --
-        # it never records anything new. Plain `None` means the caller made
-        # no trust decision at all and must NOT recover a policy some other
-        # caller authorized; it falls through to `_create_client`'s own
-        # fail-closed default.
-        if security is RECOVER_AUTHORIZED_POLICY:
-            security = cls._server_security.get(policy_key)
-        elif security is not None:
-            cls._server_security[policy_key] = security
-
+    @classmethod
+    async def _get_or_create_client(
+        cls,
+        config: dict[str, Any],
+        cache_key: str,
+        security: MCPSecurityConfig | None,
+    ) -> Any:
         async with cls._get_lock():
             if cache_key in cls._clients:
                 client = cls._clients[cache_key]
@@ -1699,6 +1667,48 @@ class MCPConnectionPool:
             client = await cls._create_client(config, security=security)
             cls._clients[cache_key] = client
             return client
+
+    @classmethod
+    async def get_client(
+        cls,
+        server_config: dict[str, Any],
+        security: MCPSecurityConfig | None = None,
+    ) -> Any:
+        """Get or create a pooled MCP client.
+
+        `security` accepts only an explicit `MCPSecurityConfig` or `None`.
+        `None` means exactly one thing -- the caller made no trust decision
+        -- and always falls through to `_create_client`'s fail-closed
+        default; it never recovers a policy some other caller authorized.
+        Recovering a remembered policy is not reachable through this public
+        method at all -- see `_get_reconnect_client`.
+        """
+        if security is not None and not isinstance(security, MCPSecurityConfig):
+            raise TypeError(
+                "MCPConnectionPool.get_client(security=...) accepts only an "
+                "MCPSecurityConfig or None; recovering a remembered policy "
+                "is not available through this parameter"
+            )
+
+        config, policy_key, cache_key = cls._resolve_identity(server_config)
+
+        if security is not None:
+            cls._server_security[policy_key] = security
+
+        return await cls._get_or_create_client(config, cache_key, security)
+
+    @classmethod
+    async def _get_reconnect_client(cls, server_config: dict[str, Any]) -> Any:
+        """Proxy-only: reconnect a transport under whatever policy it was
+        already authorized under, keyed by the same resolved identity used
+        for recording that policy. This is deliberately not part of
+        `get_client`'s public contract -- `create_mcp_tool`'s stored
+        callable is the only caller, re-entering a transport it already
+        holds. It never records a new policy of its own.
+        """
+        config, policy_key, cache_key = cls._resolve_identity(server_config)
+        security = cls._server_security.get(policy_key)
+        return await cls._get_or_create_client(config, cache_key, security)
 
     @classmethod
     async def _create_client(
@@ -1788,11 +1798,10 @@ def create_mcp_tool(mcp_config: dict[str, Any], tool_name: str) -> Any:
 
         # This is the proxy re-entering a transport it already holds (the
         # metadata stripped above is the only thing distinguishing this call
-        # from a fresh load) -- ask explicitly for whatever policy that
-        # transport was already authorized under.
-        client = await MCPConnectionPool.get_client(
-            config_for_client, security=RECOVER_AUTHORIZED_POLICY
-        )
+        # from a fresh load) -- recover whatever policy that transport was
+        # already authorized under, via the proxy-only reconnect path. This
+        # is not reachable through the public `get_client` API.
+        client = await MCPConnectionPool._get_reconnect_client(config_for_client)
 
         result = await client.call_tool(actual_tool_name, kwargs)
 
