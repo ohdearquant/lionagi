@@ -471,12 +471,22 @@ tool:
   only. URLs require `allow_urls=True`, an `https` or `wss` scheme, and an optional host
   allowlist.
 - **Loader trust:** `load_mcp_config()` and top-level `load_mcp_tools()` leave an
-  omitted policy unset and thread it through to registration unchanged, so it reaches
-  the pool's own fail-closed default and a command or URL transport is denied exactly as
-  it is under direct pool use. A caller that wants both transport classes allowed passes
+  omitted policy unset and thread it through to registration unchanged. In a process
+  where that transport has not already been authorized, it reaches the pool's own
+  fail-closed default and a command or URL transport is denied exactly as it is under
+  direct pool use. A caller that wants both transport classes allowed passes
   `MCPSecurityConfig.trusted()` explicitly, and that choice is threaded per load without
   mutating the process-global default. A transport `PermissionError` is logged and
   re-raised; other server failures become an empty registered-name list or a warning.
+- **Policy recovery is process-scoped, and it is wider than the loader contract
+  intends.** An explicit policy is remembered against the resolved transport so the
+  proxy's own later `get_client()` call, which carries no policy, recovers the same
+  authorization. That recovery is keyed only by transport identity, so a *different*
+  caller that later loads the same transport with no policy also inherits the earlier
+  authorization rather than being denied. Delta 3 is therefore delivered for a first
+  load in a process and not yet for a subsequent one; closing that gap requires
+  distinguishing the proxy's re-entry from a fresh loader call, which is tracked
+  separately.
 - **Loader input failure:** config-file existence, JSON shape, and parsing errors occur
   before the per-server recovery loop and propagate. Top-level `load_mcp_tools()` also
   raises `ValueError` when neither `server_names` nor a config path supplies a server
@@ -543,7 +553,7 @@ unqualified names make collision handling a branch-registration concern.
 |---|-------|------|-------|
 | 1 | Version and narrow raw-callable schema derivation so Python defaults remain optional, positional-only and `*args` signatures require an explicit adapter, open `**kwargs` callables require an explicit schema, schemas without `required` are accepted, and tests prove provider schema and runtime validation agree. | M | (filled at issue-open time) |
 | 2 | Move MCP configuration, discovery, namespacing, and pool lifecycle into a service-owned factory that returns ready `Tool` descriptors; acceptance requires `protocols.action` to have no service-layer import, remote identities to be collision-free, and per-tool request models to resolve by that canonical identity without key mutation or silent fallback. | M | (filled at issue-open time) |
-| 3 | Require the MCP-loading caller to make an explicit transport-trust decision; acceptance requires omitted policy to preserve the wrapper's fail-closed command and URL defaults and an explicit trusted-config mode to be observable. | S | delivered — see Loader trust above |
+| 3 | Require the MCP-loading caller to make an explicit transport-trust decision; acceptance requires omitted policy to preserve the wrapper's fail-closed command and URL defaults and an explicit trusted-config mode to be observable. | S | partly delivered — holds for a first load in a process; a later omitted-policy load still inherits a remembered authorization (see Policy recovery above) |
 
 ## Alternatives considered
 
@@ -606,8 +616,10 @@ allowing both transport classes, on the reasoning that selecting and loading a c
 file was itself a trust decision. That convenience created a semantic split: the same
 omitted policy meant "deny" through the pool and "allow" through a loader, and nothing
 in the calling code made the difference visible. Delta 3 replaced it with the behavior
-now described under Loader trust, where an omitted policy denies in both paths and
-trust is a named, observable choice.
+now described under Loader trust, where an omitted policy denies in both paths on a
+first load and trust is a named, observable choice. The remembered-policy recovery
+described above still carries an earlier authorization into a later omitted-policy load,
+so the original convenience survives in narrower form.
 
 ## Notes
 
