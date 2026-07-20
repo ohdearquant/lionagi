@@ -765,6 +765,13 @@ class TeamLifecycleCoordinator:
     # In-process Exchange (env.exchange); messenger `send` lands here, not
     # in the team file. None for CLI-only teams.
     exchange: Any = None
+    # Index into the team file's `messages` at the moment this run attached
+    # (0 for a freshly created team). `check_round` passes this to
+    # `compute_quiescence` as `history_boundary` so a prior run's done/
+    # finished/wakeup signals — left behind by `--team-attach` reusing the
+    # same team file and role-derived worker names — never mark this run's
+    # workers idle/retired before they post a signal of their own.
+    message_boundary: int = 0
     rounds_run: int = field(default=0, init=False)
 
     def on_done(self, *, name: str, sender_id: Any, reason: str) -> None:
@@ -823,6 +830,7 @@ class TeamLifecycleCoordinator:
             rounds_run=self.rounds_run,
             max_rounds=self.max_rounds,
             coordinator_wants_round=coordinator_wants_round,
+            history_boundary=self.message_boundary,
         )
         exchange_pending = self._exchange_pending(state.idle_workers)
         if not exchange_pending:
@@ -935,6 +943,7 @@ def make_team_lifecycle_coordinator(
     messenger_bound: dict[str, bool] | None = None,
     max_rounds: int = 2,
     exchange: Any = None,
+    message_boundary: int = 0,
 ) -> TeamLifecycleCoordinator:
     return TeamLifecycleCoordinator(
         team_id=team_id,
@@ -943,6 +952,7 @@ def make_team_lifecycle_coordinator(
         messenger_bound=dict(messenger_bound or {}),
         max_rounds=max_rounds,
         exchange=exchange,
+        message_boundary=message_boundary,
     )
 
 

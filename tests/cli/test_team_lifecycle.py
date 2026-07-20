@@ -195,6 +195,95 @@ class TestComputeQuiescence:
         )
         assert state.active_workers == frozenset({"alice", "bob"})
 
+    def test_history_boundary_excludes_prior_run_signals_from_state(self):
+        """Reproduction from the issue: a `--team-attach` team file carries
+        `done` for both workers from a prior run plus one still-unread
+        historical message to `critic`. Against a fresh run generation
+        (`history_boundary` at the end of that history), both workers must
+        still read as active — the prior run's `done` signals must not
+        leak into this run before either worker posts anything itself."""
+        msgs = [
+            {"from": "researcher", "to": ["*"], "kind": "done", "content": "x", "read_by": {}},
+            {"from": "critic", "to": ["*"], "kind": "done", "content": "x", "read_by": {}},
+            {
+                "from": "researcher",
+                "to": ["critic"],
+                "kind": "message",
+                "content": "fyi",
+                "read_by": {},
+            },
+        ]
+        state = team.compute_quiescence(
+            msgs,
+            worker_names=["researcher", "critic"],
+            rounds_run=0,
+            max_rounds=2,
+            history_boundary=len(msgs),
+        )
+        assert state.active_workers == frozenset({"researcher", "critic"})
+        assert state.idle_workers == frozenset()
+        assert state.pending_targets == frozenset()
+        assert not state.should_continue
+        assert not state.quiescent
+
+    def test_default_history_boundary_reproduces_the_attach_leak(self):
+        """Same message log as above with the default `history_boundary=0`
+        (i.e. no run-generation filtering) reproduces the exact bug: the
+        prior run's `done` signals and unread mail are misread as this
+        run's own state, and the coordinator wrongly wants a round before
+        either worker has done anything in this run."""
+        msgs = [
+            {"from": "researcher", "to": ["*"], "kind": "done", "content": "x", "read_by": {}},
+            {"from": "critic", "to": ["*"], "kind": "done", "content": "x", "read_by": {}},
+            {
+                "from": "researcher",
+                "to": ["critic"],
+                "kind": "message",
+                "content": "fyi",
+                "read_by": {},
+            },
+        ]
+        state = team.compute_quiescence(
+            msgs, worker_names=["researcher", "critic"], rounds_run=0, max_rounds=2
+        )
+        assert state.active_workers == frozenset()
+        assert state.pending_targets == frozenset({"critic"})
+        assert state.should_continue
+
+    def test_prior_content_message_still_pending_once_current_run_goes_idle(self):
+        """A `--team-attach` unread historical message must still surface
+        once THIS run's worker actually goes idle (posts its own `done`) —
+        only the lifecycle *signals* are scoped to the run generation, not
+        ordinary content mail (per the issue: prior CONTENT messages must
+        remain visible to the new run)."""
+        history = [
+            {
+                "from": "researcher",
+                "to": ["critic"],
+                "kind": "message",
+                "content": "fyi from last run",
+                "read_by": {},
+            },
+        ]
+        this_run_done = {
+            "from": "critic",
+            "to": ["*"],
+            "kind": "done",
+            "content": "x",
+            "read_by": {},
+        }
+        msgs = [*history, this_run_done]
+        state = team.compute_quiescence(
+            msgs,
+            worker_names=["critic"],
+            rounds_run=0,
+            max_rounds=2,
+            history_boundary=len(history),
+        )
+        assert state.idle_workers == frozenset({"critic"})
+        assert state.pending_targets == frozenset({"critic"})
+        assert state.should_continue
+
     def test_done_from_an_unknown_sender_is_ignored(self):
         """A message kind='done' from a name outside worker_names (e.g. a
         stray or future teammate) must not silently mutate unrelated state."""
