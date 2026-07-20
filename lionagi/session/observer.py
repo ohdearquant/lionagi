@@ -11,7 +11,7 @@ from typing import Any
 
 from lionagi.ln.concurrency import maybe_await
 from lionagi.ln.types import Filter, RoleFilter, TypeFilter, all_of
-from lionagi.protocols._concepts import Observable, Observer
+from lionagi.protocols._concepts import Observer, PileItem
 
 from ..protocols.generic.flow import Flow
 from ..protocols.generic.progression import Progression
@@ -224,7 +224,7 @@ class SessionObserver(Observer):
 
     async def emit(self, event: Any) -> list[Any]:
         """Gate -> store -> route -> dispatch. Returns handler results."""
-        if not isinstance(event, Observable):
+        if not isinstance(event, PileItem):
             event = Signal(data=event)
         payload = _payload(event)
 

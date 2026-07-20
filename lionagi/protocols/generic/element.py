@@ -17,7 +17,7 @@ from lionagi.ln._utils import now_utc
 from lionagi.ln.types import not_sentinel
 from lionagi.utils import import_module, to_dict
 
-from .._concepts import Collective, Observable, Ordering
+from .._concepts import Collective, Ordering, PileItem
 
 __all__ = (
     "Element",
@@ -25,7 +25,7 @@ __all__ = (
 )
 
 
-class Element(BaseModel, Observable):
+class Element(BaseModel, PileItem):
     """Pydantic base with UUID id, creation timestamp, and metadata dict."""
 
     model_config = ConfigDict(

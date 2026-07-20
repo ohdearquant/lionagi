@@ -8,11 +8,10 @@ from ._concepts import (
     Manager,
     Observer,
     Ordering,
+    PileItem,
     Relational,
     Sendable,
 )
-from ._concepts import Observable as LegacyObservable
-from .contracts import Observable, ObservableProto
 from .generic.element import ID, Element, validate_order
 from .generic.event import Event, EventStatus, Execution
 from .generic.log import DataLogger, DataLoggerConfig, Log
@@ -45,15 +44,13 @@ __all__ = (
     "Communicatable",
     "Condition",
     "Manager",
-    "Observable",  # V1 Protocol (preferred)
-    "ObservableProto",  # Explicit V1 Protocol name
-    "LegacyObservable",  # V0 ABC (deprecated)
     "Observer",
     "Ordering",
+    "PileItem",
     "Relational",
     "Sendable",
-    "canonical_id",  # V0/V1 bridge utility
-    "to_uuid",  # ID conversion utility
+    "canonical_id",
+    "to_uuid",
     "ID",
     "Element",
     "validate_order",

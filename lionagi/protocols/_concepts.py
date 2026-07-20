@@ -12,7 +12,7 @@ __all__ = (
     "Manager",
     "Relational",
     "Sendable",
-    "Observable",
+    "PileItem",
     "Communicatable",
     "Condition",
     "Collective",
@@ -46,8 +46,8 @@ class Sendable(ABC):  # noqa: B024
     pass
 
 
-class Observable(ABC):  # noqa: B024
-    """Observable entities must define 'id'."""
+class PileItem(ABC):  # noqa: B024
+    """Pile-item admission contract. Nominal: requires inheritance, not a bare ``id`` attribute."""
 
     pass
 
@@ -63,7 +63,7 @@ class Composed(ABC):
         """Compose from components."""
 
 
-class Communicatable(Observable):
+class Communicatable(PileItem):
     """Communicatable must define 'mailbox' and send/receive methods."""
 
     @abstractmethod

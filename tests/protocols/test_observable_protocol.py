@@ -1,9 +1,12 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for V1 Observable Protocol compatibility with V0 classes."""
+"""Tests for the PileItem contract: nominal admission, enforced by Pile."""
 
-from lionagi.protocols.contracts import ObservableProto as Observable
+import pytest
+
+from lionagi._errors import ValidationError
+from lionagi.protocols._concepts import PileItem
 from lionagi.protocols.generic.element import Element
 from lionagi.protocols.generic.event import Event
 from lionagi.protocols.generic.log import Log
@@ -11,81 +14,115 @@ from lionagi.protocols.generic.pile import Pile
 from lionagi.protocols.generic.progression import Progression
 
 
-class TestObservableProtocolCompliance:
-    """All V0 classes satisfy the V1 Observable Protocol."""
+class TestPileItemNominalContract:
+    """PileItem is a nominal ABC; isinstance requires inheritance, not just an 'id'."""
 
-    def test_element_satisfies_protocol(self):
+    def test_element_is_observable(self):
         element = Element()
-        assert isinstance(element, Observable)
-        assert hasattr(element, "id")
+        assert isinstance(element, PileItem)
         assert element.id is not None
 
-    def test_event_satisfies_protocol(self):
-        event = Event()
-        assert isinstance(event, Observable)
-        assert hasattr(event, "id")
-        assert event.id is not None
+    def test_event_is_observable(self):
+        assert isinstance(Event(), PileItem)
 
-    def test_log_satisfies_protocol(self):
-        log = Log(content={"message": "test"})
-        assert isinstance(log, Observable)
-        assert hasattr(log, "id")
-        assert log.id is not None
+    def test_log_is_observable(self):
+        assert isinstance(Log(content={"message": "test"}), PileItem)
 
-    def test_pile_satisfies_protocol(self):
-        pile = Pile()
-        assert isinstance(pile, Observable)
-        assert hasattr(pile, "id")
-        assert pile.id is not None
+    def test_pile_is_observable(self):
+        assert isinstance(Pile(), PileItem)
 
-    def test_progression_satisfies_protocol(self):
-        progression = Progression()
-        assert isinstance(progression, Observable)
-        assert hasattr(progression, "id")
-        assert progression.id is not None
+    def test_progression_is_observable(self):
+        assert isinstance(Progression(), PileItem)
 
-    def test_all_v0_classes_satisfy_protocol(self):
-        instances = [
-            Element(),
-            Event(),
-            Log(content={"test": "data"}),
-            Pile(),
-            Progression(),
-        ]
+    def test_duck_typed_object_is_not_observable(self):
+        """Exposing 'id' without inheriting the ABC does not satisfy nominal admission."""
 
-        for instance in instances:
-            assert isinstance(instance, Observable), (
-                f"{type(instance).__name__} should satisfy Observable Protocol"
-            )
-            assert hasattr(instance, "id"), f"{type(instance).__name__} should have id attribute"
-            assert instance.id is not None, f"{type(instance).__name__}.id should not be None"
-
-    def test_protocol_duck_typing(self):
-        class ForeignObservable:
+        class DuckTyped:
             def __init__(self):
-                self.id = "test-id"
+                self.id = "some-id"
 
-        foreign = ForeignObservable()
-        assert isinstance(foreign, Observable)
+        assert not isinstance(DuckTyped(), PileItem)
 
-        class AnotherObservable:
-            @property
-            def id(self):
-                return "another-test-id"
-
-        another = AnotherObservable()
-        assert isinstance(another, Observable)
-
-    def test_protocol_rejection(self):
+    def test_object_without_id_is_not_observable(self):
         class NotObservable:
             pass
 
-        not_obs = NotObservable()
-        assert not isinstance(not_obs, Observable)
+        assert not isinstance(NotObservable(), PileItem)
 
-        class AlmostObservable:
+
+class TestPileAdmissionIsNominal:
+    """Pile item admission enforces the nominal PileItem ABC, not structural duck-typing."""
+
+    def test_element_subclass_is_admitted(self):
+        pile = Pile()
+        item = Element()
+        pile.include(item)
+        assert item in pile
+        assert pile[item.id] is item
+
+    def test_duck_typed_item_with_id_is_rejected_with_clear_error(self):
+        """A class exposing 'id' but not inheriting PileItem fails admission."""
+
+        class DuckTypedItem:
             def __init__(self):
-                self.name = "test"  # Has attribute but not 'id'
+                self.id = "duck-id"
 
-        almost = AlmostObservable()
-        assert not isinstance(almost, Observable)
+        pile = Pile()
+        with pytest.raises(ValueError, match="Invalid pile item"):
+            pile.include(DuckTypedItem())
+        assert len(pile) == 0
+
+    def test_item_without_id_is_rejected_with_clear_error(self):
+        class Plain:
+            pass
+
+        pile = Pile()
+        with pytest.raises(ValueError, match="Invalid pile item"):
+            pile.include(Plain())
+        assert len(pile) == 0
+
+    def test_item_type_restriction_also_requires_nominal_observable(self):
+        """A restricted item_type must itself subclass PileItem — structural types are rejected."""
+
+        class NotObservableType:
+            id: str
+
+        with pytest.raises(ValidationError) as excinfo:
+            Pile(item_type={NotObservableType})
+        assert excinfo.value.details.get("expected") == "A subclass of PileItem."
+
+    def test_construction_rejects_duck_typed_collections(self):
+        class DuckTypedItem:
+            def __init__(self):
+                self.id = "duck-id"
+
+        with pytest.raises(ValueError, match="Invalid pile item"):
+            Pile(collections=[DuckTypedItem()])
+
+
+class TestPublicContractMatchesEnforcement:
+    """The public PileItem export must be the exact contract Pile enforces.
+
+    Formerly ``lionagi.protocols.types.Observable`` pointed at the structural
+    ``ObservableProto`` (any object with an 'id'), while Pile enforced the nominal
+    ABC from ``_concepts.py``. That let ``isinstance(x, types.Observable)`` report
+    True for objects Pile would still reject. The renamed ``PileItem`` closes
+    that gap by construction: there is only one contract, and it is nominal.
+    """
+
+    def test_public_pileitem_symbol_is_the_pile_admission_contract(self):
+        from lionagi.protocols.types import PileItem as PublicPileItem
+
+        class DuckTyped:
+            def __init__(self):
+                self.id = "duck-id"
+
+        duck = DuckTyped()
+        pile = Pile()
+        try:
+            pile.include(duck)
+            admitted = True
+        except (ValueError, TypeError):
+            admitted = False
+
+        assert isinstance(duck, PublicPileItem) == admitted
