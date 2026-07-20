@@ -96,7 +96,7 @@ class Session(Node, Relational):
             branch._operation_manager = self._operation_manager
             branch._observer = self.observer
             if self._hooks is not None:
-                branch._hooks = self._hooks
+                branch.attach_hook_bus(self._hooks)
             if branch._memory is None:
                 # First claim wins; reading self.memory lazily creates and
                 # shares one store instance across every branch taken in.
@@ -142,7 +142,7 @@ class Session(Node, Relational):
 
             self._hooks = build_session_bus(observer=self.observer)
             for branch in self.branches:
-                branch._hooks = self._hooks
+                branch.attach_hook_bus(self._hooks)
         return self._hooks
 
     @property
@@ -259,7 +259,11 @@ class Session(Node, Relational):
         # reparentable state. Branch data (messages/memory/logs) stays with it.
         branch._owning_session_id = None
         branch._observer = None
-        branch._hooks = None
+        # Routed through attach_hook_bus (not a direct `branch._hooks = None`)
+        # so the branch's handlers are actually unregistered from this
+        # session's bus -- otherwise they keep firing on it forever, even
+        # after the branch has moved to (or become standalone from) it.
+        branch.attach_hook_bus(None)
         branch._operation_manager = OperationManager()
         if branch.user == self.id:
             branch.user = None

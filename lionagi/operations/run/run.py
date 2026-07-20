@@ -392,6 +392,8 @@ async def run(
                     session_id=str(branch._owning_session_id or branch.id),
                     branch_id=str(branch.id),
                     prompt=_prompt,
+                    model=getattr(branch.chat_model, "model_name", None) or "",
+                    permission_mode="default",
                 )
             except GeneratorExit:
                 raise

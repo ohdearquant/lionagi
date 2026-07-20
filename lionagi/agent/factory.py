@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -34,6 +35,8 @@ __all__ = (
 # (which may differ, or may have since dropped its `role:` key) — see
 # lionagi/cli/agent.py `_run_agent`'s system-prompt reapply guard.
 CREATE_AGENT_BRANCH_ORIGIN_KEY = "create_agent_origin"
+
+logger = logging.getLogger(__name__)
 
 
 async def create_agent(
@@ -141,11 +144,74 @@ async def create_agent(
     _register_providers(branch, spec)
     await _load_mcp(branch, spec, trust_project_settings=trust_project_settings)
     _forward_mcp_to_cli_request(branch, spec, trust_project_settings=trust_project_settings)
+    _wire_external_hooks(branch, spec)
 
     if op := spec.emission_operable():
         branch.grant_capabilities(op)
 
     return branch
+
+
+def _wire_external_hooks(branch: Branch, spec: AgentSpec) -> None:
+    """Attach ``hooks_external`` entries (parsed by ``apply_hooks_from_settings``)
+    to the seam their event maps to.
+
+    ``PreToolUse``/``PostToolUse`` attach to ``branch.acts`` (always present).
+    The remaining supported events attach to ``branch._hooks`` (a ``HookBus``)
+    -- present only once the branch is owned by a ``Session``; a standalone
+    branch built via ``create_agent`` has none yet, so those entries are
+    queued on ``branch._pending_hook_bus_entries`` instead of dropped, and
+    the queue is kept for the branch's lifetime rather than cleared on
+    first use. ``Branch.attach_hook_bus`` -- the only seam that ever assigns
+    ``branch._hooks`` (``Session.include_branches`` and the lazy
+    ``Session.hooks`` property) -- syncs unattached entries onto whichever
+    bus is current, so a configured ``UserPromptSubmit``/``SessionStart``/
+    ``SessionEnd``/``PostToolUseFailure`` hook attaches once this branch
+    joins a ``Session`` and re-attaches if it is later reparented to
+    another one, rather than silently never firing.
+    """
+    if not spec.external_hooks:
+        return
+
+    from lionagi.hooks.bus import HookPoint
+    from lionagi.hooks.external import external_hook_adapter
+
+    session_id = str(branch._owning_session_id or branch.id)
+    event_to_point = {
+        "SessionStart": HookPoint.SESSION_START,
+        "SessionEnd": HookPoint.SESSION_END,
+        "UserPromptSubmit": HookPoint.USER_PROMPT_SUBMIT,
+        "PostToolUseFailure": HookPoint.TOOL_ERROR,
+    }
+
+    for entry in spec.external_hooks:
+        handler = external_hook_adapter(
+            event=entry["event"],
+            command=entry["command"],
+            timeout=entry["timeout"],
+            matcher=entry.get("matcher"),
+            source=entry.get("source"),
+            cwd=spec.cwd,
+            session_id=session_id,
+        )
+        if entry["event"] == "PreToolUse":
+            branch.acts.add_tool_pre_hook(handler)
+        elif entry["event"] == "PostToolUse":
+            branch.acts.add_tool_post_hook(handler)
+        else:
+            branch._pending_hook_bus_entries.append((event_to_point[entry["event"]], handler))
+            if branch._hooks is not None:
+                # Bus already attached (branch already owned by a Session):
+                # sync this newly queued entry onto it right away, and keep
+                # it tracked so it survives a later reparent to another bus.
+                branch.attach_hook_bus(branch._hooks)
+            else:
+                logger.debug(
+                    "hooks_external: %r configured on a branch with no HookBus "
+                    "attached yet (not part of a Session yet) -- queued for "
+                    "attachment once it joins one",
+                    entry["event"],
+                )
 
 
 def _apply_permissions(spec: AgentSpec) -> None:

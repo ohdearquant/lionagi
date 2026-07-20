@@ -35,6 +35,10 @@ def _load_engine() -> ModuleType:
     return import_module(".engine", __package__)
 
 
+def _load_hooks() -> ModuleType:
+    return import_module(".hooks", __package__)
+
+
 def _load_invoke() -> ModuleType:
     return import_module(".invoke", __package__)
 
@@ -200,6 +204,13 @@ _COMMAND_REGISTRY = (
         "add_plugin_subparser",
         "run_plugin",
     ),
+    _CommandSpec(
+        "hooks",
+        "Import Claude Code / Codex hook configs; trust imported hook commands.",
+        _load_hooks,
+        "add_hooks_subparser",
+        "run_hooks",
+    ),
 )
 _COMMAND_BY_NAME = {
     command_name: spec for spec in _COMMAND_REGISTRY for command_name in (spec.name, *spec.aliases)
@@ -269,6 +280,10 @@ def run_monitor(args: argparse.Namespace) -> int:
 
 def run_orchestrate(args: argparse.Namespace) -> int:
     return _load_orchestrate().run_orchestrate(args)
+
+
+def run_hooks(args: argparse.Namespace) -> int:
+    return _load_hooks().run_hooks(args)
 
 
 def run_plugin(args: argparse.Namespace) -> int:

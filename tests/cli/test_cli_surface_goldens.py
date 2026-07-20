@@ -138,6 +138,7 @@ TOP_LEVEL_COMMANDS = [
     "dispatch",
     "doctor",
     "engine",
+    "hooks",
     "invoke",
     "kill",
     "mirror",

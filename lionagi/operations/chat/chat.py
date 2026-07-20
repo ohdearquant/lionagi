@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import JsonValue
 
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 
 async def _emit_user_prompt_submit(
-    branch: "Branch", chat_param: ChatParam, ins: Instruction
+    branch: "Branch", chat_param: ChatParam, ins: Instruction, imodel: Any = None
 ) -> None:
     """Fire USER_PROMPT_SUBMIT exactly once, iff the operation context carries a token."""
     token = consume_turn_origin(chat_param.turn_origin)
@@ -34,6 +34,8 @@ async def _emit_user_prompt_submit(
         session_id=str(branch._owning_session_id or branch.id),
         branch_id=str(branch.id),
         prompt=prompt,
+        model=getattr(imodel, "model_name", None) or "",
+        permission_mode="default",
     )
 
 
@@ -51,7 +53,8 @@ async def chat(
     # (potentially side-effecting) gather.
     ins = _build_instruction(branch, instruction, chat_param)
 
-    await _emit_user_prompt_submit(branch, chat_param, ins)
+    imodel = chat_param.imodel or branch.chat_model
+    await _emit_user_prompt_submit(branch, chat_param, ins, imodel=imodel)
 
     provider_ins, context_report = await _apply_context_providers(
         branch, instruction, chat_param, ins=ins
@@ -64,7 +67,6 @@ async def chat(
         context_blocks=context_report.blocks if context_report else None,
     )
 
-    imodel = chat_param.imodel or branch.chat_model
     if not chat_param._is_sentinel(chat_param.include_token_usage_to_model):
         kw["include_token_usage_to_model"] = chat_param.include_token_usage_to_model
     api_call = await imodel.invoke(**kw)
