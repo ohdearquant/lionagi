@@ -6,6 +6,7 @@ from lionagi.ln._lazy_init import lazy_import
 _LAZY_MAP: dict[str, tuple[str, str | None]] = {
     "AudioSpeechRequest": ("audio", None),
     "AudioTranscriptionRequest": ("audio", None),
+    "OpenAIBatchRequest": ("batch", None),
     "CodexCLIEndpoint": ("codex", None),
     "CodexCodeRequest": ("codex", None),
     "ImageEditRequest": ("images", None),
@@ -15,6 +16,7 @@ _LAZY_MAP: dict[str, tuple[str, str | None]] = {
     "OpenAIResponsesRequest": ("response", None),
     "OpenaiAudioSpeechEndpoint": ("audio", None),
     "OpenaiAudioTranscriptionEndpoint": ("audio", None),
+    "OpenaiBatchEndpoint": ("batch", None),
     "OpenaiChatEndpoint": ("chat", None),
     "OpenaiEmbedEndpoint": ("embed", None),
     "OpenaiImageEditEndpoint": ("images", None),

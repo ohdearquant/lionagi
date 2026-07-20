@@ -106,6 +106,8 @@ def _replayable_file_factory(file_data, field_name: str, *, require_replayable: 
     if isinstance(file_data, (bytes, bytearray)):
         snapshot = bytes(file_data)
         return lambda: io.BytesIO(snapshot)
+    if not require_replayable:
+        return lambda: file_data
 
     seekable = getattr(file_data, "seekable", None)
     if not callable(seekable) or not seekable():

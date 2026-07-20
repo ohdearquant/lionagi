@@ -1,5 +1,3 @@
-import time
-
 import anyio
 import pytest
 
@@ -15,11 +13,12 @@ from lionagi.ln.concurrency import (
 
 @pytest.mark.anyio
 async def test_fail_after_zero_deadline_raises_fast(anyio_backend):
-    t0 = time.perf_counter()
+    completed = False
     with pytest.raises(TimeoutError):
         with fail_after(0):
-            await anyio.sleep(0.001)
-    assert (time.perf_counter() - t0) < 0.5  # should trip reasonably quickly (CI-friendly)
+            await anyio.sleep(0)
+            completed = True
+    assert completed is False
 
 
 @pytest.mark.anyio
@@ -93,9 +92,7 @@ async def test_effective_deadline_inside_fail_at(anyio_backend):
         with fail_at(deadline):
             d = effective_deadline()
             assert d is not None
-            remaining = d - anyio.current_time()
-            # Allow small negative values for timing jitter on slow CI
-            assert -0.1 < remaining <= 0.3
+            assert d == pytest.approx(deadline)
 
 
 @pytest.mark.anyio

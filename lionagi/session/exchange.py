@@ -33,6 +33,7 @@ class Exchange(Element):
     flows: Pile[Flow[Message, Progression]] = None  # type: ignore
     _owner_index: dict[UUID, UUID] = PrivateAttr(default_factory=dict)
     _stop: bool = PrivateAttr(default=False)
+    _run_started: bool = PrivateAttr(default=False)
     _in_flight: dict[UUID, list[Message]] = PrivateAttr(default_factory=dict)
     _in_flight_lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
 
@@ -246,7 +247,22 @@ class Exchange(Element):
         return total
 
     async def run(self, interval: float = 1.0) -> None:
-        """Continuous sync loop; call stop() to exit. Does not reset ``_stop`` on entry — a pre-issued stop() must make run() return immediately, not loop forever. Construct a fresh Exchange to reuse."""
+        """Continuous sync loop; call stop() to exit.
+
+        One-shot: raises RuntimeError if called a second time on the same
+        instance, whether or not the first call already exited. Does not
+        reset ``_stop`` on entry — a stop() issued before this coroutine's
+        first turn (e.g. the DAG it watches over failed immediately) must
+        make this first call return right away rather than clearing that
+        signal and looping forever. Construct a fresh Exchange for a new
+        run instead of reusing one that has already been run.
+        """
+        if self._run_started:
+            raise RuntimeError(
+                f"{self!r} has already been run and cannot be restarted; "
+                "construct a fresh Exchange for a new run."
+            )
+        self._run_started = True
         while not self._stop:
             await self.sync()
             await sleep(interval)

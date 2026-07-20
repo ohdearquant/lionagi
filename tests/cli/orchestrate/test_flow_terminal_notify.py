@@ -52,7 +52,11 @@ async def _make_invocation(db_path: Path, invocation_id: str) -> None:
 def _make_env(tmp_path: Path) -> OrchestrationEnv:
     orc_branch = Branch(name="orchestrator")
     session = Session(default_branch=orc_branch)
-    run = SimpleNamespace(run_id="run-test-1", artifact_root=tmp_path / "artifacts")
+    run = SimpleNamespace(
+        run_id="run-test-1",
+        artifact_root=tmp_path / "artifacts",
+        write_manifest=lambda data: None,
+    )
     return OrchestrationEnv(
         run=run,
         session=session,
@@ -383,6 +387,94 @@ async def test_run_flow_no_hook_configured_is_a_noop(
     assert terminal_status == "completed"
     spawn.assert_not_called()
     spawn_shell.assert_not_called()
+
+
+async def test_run_flow_notify_still_fires_when_invocation_finalize_raises(
+    temp_db_path: Path, tmp_path: Path
+):
+    """Regression: when `_resolve_invocation_terminal_flow` (or the
+    subsequent `update_status('invocation', ...)` write) raises, the guarded
+    lifecycle transition never commits and so never pushes a terminal
+    envelope through the registry for this invocation's entity -- but the
+    `--notify` hook explicitly scoped to that entity must still fire,
+    reporting the flow's own already-computed terminal status, not be
+    silently dropped."""
+    env = _make_env(tmp_path)
+    invocation_id = str(uuid4())
+    await _make_invocation(temp_db_path, invocation_id)
+    out_file = tmp_path / "captured.json"
+
+    with (
+        patch(
+            "lionagi.cli.orchestrate.flow.setup_orchestration",
+            AsyncMock(return_value=env),
+        ),
+        patch(
+            "lionagi.cli.orchestrate.flow._run_flow_inner",
+            AsyncMock(return_value="ok result"),
+        ),
+        patch(
+            "lionagi.cli.orchestrate.flow._resolve_invocation_terminal_flow",
+            AsyncMock(side_effect=RuntimeError("db hiccup during invocation finalize")),
+        ),
+    ):
+        result, terminal_status = await _run_flow(
+            "claude",
+            "do the thing",
+            invocation_id=invocation_id,
+            notify=_capture_command(out_file),
+        )
+
+    # The run's own outcome must be unaffected by the finalize failure.
+    assert result == "ok result"
+    assert terminal_status == "completed"
+
+    assert out_file.exists(), "notify hook never fired despite invocation finalize raising"
+    payload = json.loads(out_file.read_text())
+    assert payload["invocation_id"] == invocation_id
+    assert payload["status"] == "completed"
+
+
+async def test_fallback_terminal_envelope_has_last_known_previous_status(
+    temp_db_path: Path, tmp_path: Path
+):
+    """A failed finalize still emits a transition-shaped envelope, not an initial row."""
+    from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
+
+    env = _make_env(tmp_path)
+    invocation_id = str(uuid4())
+    await _make_invocation(temp_db_path, invocation_id)
+    emitted = []
+    callback_name = f"test.fallback.{invocation_id}"
+    DEFAULT_TERMINAL_CALLBACKS.register(
+        callback_name,
+        emitted.append,
+        kinds=["invocation"],
+        ids=[invocation_id],
+    )
+
+    try:
+        with (
+            patch(
+                "lionagi.cli.orchestrate.flow.setup_orchestration",
+                AsyncMock(return_value=env),
+            ),
+            patch(
+                "lionagi.cli.orchestrate.flow._run_flow_inner",
+                AsyncMock(return_value="ok result"),
+            ),
+            patch(
+                "lionagi.cli.orchestrate.flow._resolve_invocation_terminal_flow",
+                AsyncMock(side_effect=RuntimeError("finalize failed")),
+            ),
+        ):
+            await _run_flow("claude", "do the thing", invocation_id=invocation_id)
+    finally:
+        DEFAULT_TERMINAL_CALLBACKS.unregister(callback_name)
+
+    assert len(emitted) == 1
+    assert emitted[0].previous_status == "running"
+    assert emitted[0].previous_status is not None
 
 
 async def test_run_flow_fires_hook_without_invocation_id(temp_db_path: Path, tmp_path: Path):

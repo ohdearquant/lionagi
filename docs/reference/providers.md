@@ -1,5 +1,15 @@
 # Provider Reference
 
+`iModel` resolves a canonical `(provider, endpoint)` pair through
+`EndpointRegistry`. Canonical names and declared aliases match exactly. Built-ins are
+loaded lazily; on a miss, trusted and enabled plugin providers are consulted; only
+then does lionagi create a generic OpenAI-compatible fallback.
+
+API and CLI providers are different authentication lanes. For example,
+`provider="anthropic"` calls the Anthropic API and reads `ANTHROPIC_API_KEY`, while
+`provider="claude_code"` launches the installed `claude` CLI and uses its login.
+Likewise, `gemini` is the Google API and `gemini_code` is the Gemini CLI.
+
 ## API providers
 
 Pass `provider=` to `iModel()`, or let lionagi infer from the model name.
@@ -94,7 +104,9 @@ pip install lionagi[ag2]
 
 | Provider | `provider=` string | Aliases | Endpoint | Type |
 |----------|--------------------|---------|----------|------|
-| AG2 | `"ag2"` | `"autogen"` | `group_chat` (aliases: `groupchat`, `chat`) | `agentic` |
+| AG2 GroupChat | `"ag2"` | `"autogen"` | `group_chat` (aliases: `groupchat`, `chat`) | `agentic` |
+| AG2 beta Agent | `"ag2"` | `"autogen"` | `agent` (aliases: `beta`, `ask`) | `agentic` |
+| AG2 NLIP remote | `"ag2"` | `"autogen"` | `nlip` (aliases: `nlip_remote`, `remote`) | `agentic` |
 
 AG2GroupChatEndpoint is stream-only — it yields `StreamChunk` events for each agent turn.
 `_call()` raises `NotImplementedError`; use `branch.run()` or iterate `endpoint.stream()` directly.
@@ -184,10 +196,11 @@ lionagi/providers/
     └── sandbox.py          # shared worktree helpers
 ```
 
-Each endpoint is a single file `{endpoint}.py` containing both the `Endpoint` subclass
-and its Pydantic request/response schemas. The `_config.py` at the provider root declares
-one or more `ProviderConfig` enums; each member carries the endpoint path, aliases,
-type, options class, base URL, and auth type.
+Each endpoint has a focused module containing its `Endpoint` subclass; larger
+providers may keep shared request/response schemas in private sibling modules. The
+`_config.py` at the provider root declares one or more `ProviderConfig` enums; each
+member carries the endpoint path, aliases, type, options class, base URL, and auth
+type.
 
 Each provider's `__init__.py` lazily re-exports every endpoint and request class, so the
 import collapses to two layers and loads nothing until first access:
@@ -233,7 +246,7 @@ MyProviderConfigs._PROVIDER = "myprovider"
 MyProviderConfigs._PROVIDER_ALIASES = ["my-provider"]
 ```
 
-**Step 3 — write `chat.py` using the `@register` decorator**
+**Step 3 — write `chat.py` using the config member's registration decorator**
 
 ```python
 from lionagi.service.connections import Endpoint, EndpointConfig
@@ -271,7 +284,10 @@ def _import_all_providers():
 ```
 
 `EndpointRegistry.match(provider="myprovider", endpoint="chat")` will then find the
-endpoint automatically.
+endpoint automatically. This registry edit is for built-in providers. Third-party
+providers should normally be declared by a plugin; trusted, enabled plugin provider
+targets are imported lazily after a built-in miss, and cannot override a built-in
+provider name.
 
 ## Default provider config
 

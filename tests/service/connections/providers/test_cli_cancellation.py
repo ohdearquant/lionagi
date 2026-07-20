@@ -11,6 +11,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _block_real_process_group_signals(monkeypatch):
+    """Turn an unsafe mock PID into a test failure, never a worker signal."""
+    import lionagi.ln._proc as proc_mod
+
+    if not hasattr(proc_mod.os, "killpg"):
+        return
+
+    def fail_if_unmocked(pgid, sig):
+        raise AssertionError(f"unmocked os.killpg({pgid}, {sig}) in subprocess unit test")
+
+    monkeypatch.setattr(proc_mod.os, "killpg", fail_if_unmocked)
+
+
 # ---------------------------------------------------------------------------
 # 1. start_new_session=True is always passed to subprocess creation
 # ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ from lionagi.service.providers import EFFORT_LEVELS as _VALID_EFFORT_LEVELS
 from lionagi.state.db import DEFAULT_DB_PATH, StateDB
 
 from ..registry import studio_route
+from . import run_view
 
 _log = logging.getLogger(__name__)
 
@@ -137,6 +138,13 @@ def _svc_validate_budget_tokens(budget_tokens: Any) -> None:
         return
     if isinstance(budget_tokens, bool) or not isinstance(budget_tokens, int) or budget_tokens <= 0:
         raise ValueError(f"budget_tokens must be a positive integer, got {budget_tokens!r}")
+
+
+def _svc_validate_rate_limit(rate_limit: Any) -> None:
+    """Service-boundary check for the optional rolling-window fire cap."""
+    from lionagi.studio.scheduler.admit import validate_rate_limit
+
+    validate_rate_limit(rate_limit)
 
 
 def _svc_validate_interval_sec(interval: Any, *, required: bool = False) -> None:
@@ -330,6 +338,7 @@ CREATE TABLE IF NOT EXISTS schedules (
     max_runs            INTEGER,
     budget_usd          REAL,
     budget_tokens       INTEGER,
+    rate_limit          JSON,
     project             TEXT,
     created_at          REAL    NOT NULL,
     updated_at          REAL    NOT NULL
@@ -435,6 +444,7 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     _svc_validate_max_runs(data.get("max_runs"))
     _svc_validate_budget_usd(data.get("budget_usd"))
     _svc_validate_budget_tokens(data.get("budget_tokens"))
+    _svc_validate_rate_limit(data.get("rate_limit"))
     _svc_validate_threshold_config(data.get("threshold_config"))
     if data.get("trigger_type") == "cron":
         _svc_validate_cron_expr(data.get("cron_expr"), required=True)
@@ -531,6 +541,8 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
             _svc_validate_budget_usd(fields["budget_usd"])
         if "budget_tokens" in fields:
             _svc_validate_budget_tokens(fields["budget_tokens"])
+        if "rate_limit" in fields:
+            _svc_validate_rate_limit(fields["rate_limit"])
         if "threshold_config" in fields:
             _svc_validate_threshold_config(fields["threshold_config"])
 
@@ -620,7 +632,7 @@ async def disable_schedule(schedule_id: str) -> bool:
 async def list_schedule_runs(
     schedule_id: str,
     *,
-    status: str | None = None,
+    status: str | list[str] | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
@@ -628,6 +640,22 @@ async def list_schedule_runs(
         return []
     async with StateDB() as db:
         return await db.list_schedule_runs(schedule_id, status=status, limit=limit, offset=offset)
+
+
+async def list_schedule_run_views(
+    schedule_id: str,
+    *,
+    status: str | list[str] | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """RunView list — each row additionally carries a reconciled ``outcome``."""
+    if not DEFAULT_DB_PATH.exists():
+        return []
+    async with StateDB() as db:
+        return await run_view.list_run_views(
+            db, schedule_id, status=status, limit=limit, offset=offset
+        )
 
 
 async def get_schedule_run(run_id: str) -> dict[str, Any] | None:
@@ -644,7 +672,20 @@ async def get_schedule_run(run_id: str) -> dict[str, Any] | None:
                 (run_id,),
             )
             run["chain_children"] = rows
+        # Layer the RunView-reconciled fields on top, additively —
+        # chain_children (legacy) and outcome/duration_ms/... coexist.
+        view = await run_view.get_run_view(db, run_id)
+        if view is not None:
+            run = {**run, **view}
     return run
+
+
+async def get_schedule_status(schedule_id: str) -> dict[str, Any] | None:
+    """'Did it work?' view: schedule header + latest RunView + shared exit code."""
+    if not DEFAULT_DB_PATH.exists():
+        return None
+    async with StateDB() as db:
+        return await run_view.get_schedule_status_view(db, schedule_id)
 
 
 # ---------------------------------------------------------------------------
@@ -679,6 +720,7 @@ class CreateScheduleRequest(BaseModel):
     max_runs: int | None = None
     budget_usd: float | None = None
     budget_tokens: int | None = None
+    rate_limit: dict | None = None
     project: str | None = None
     threshold_config: dict | None = None
 
@@ -710,6 +752,7 @@ class UpdateScheduleRequest(BaseModel):
     max_runs: int | None = None
     budget_usd: float | None = None
     budget_tokens: int | None = None
+    rate_limit: dict | None = None
     project: str | None = None
     threshold_config: dict | None = None
 
@@ -853,11 +896,13 @@ async def trigger_schedule_route(schedule_id: str) -> dict[str, Any]:
 )
 async def list_schedule_runs_route(
     schedule_id: str,
-    status: str | None = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=200),
+    status: list[str] | None = Query(default=None),  # noqa: B008
+    limit: int = Query(default=20, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
-    rows = await list_schedule_runs(schedule_id, status=status, limit=limit, offset=offset)
+    # RunView-enriched rows (adds outcome/duration_ms/session_ids/artifacts
+    # additively) — status is repeatable (?status=failed&status=timed_out).
+    rows = await list_schedule_run_views(schedule_id, status=status, limit=limit, offset=offset)
     return {"runs": rows, "limit": limit, "offset": offset, "has_next": len(rows) == limit}
 
 
@@ -873,4 +918,17 @@ async def get_schedule_run_route(run_id: str) -> dict[str, Any]:
     data = await get_schedule_run(run_id)
     if data is None:
         raise HTTPException(status_code=404, detail=f"Schedule run '{run_id}' not found")
+    return data
+
+
+@studio_route(
+    "/schedules/{schedule_id}/status",
+    method="GET",
+    area="schedules",
+    name="get_schedule_status",
+)
+async def get_schedule_status_route(schedule_id: str) -> dict[str, Any]:
+    data = await get_schedule_status(schedule_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' not found")
     return data

@@ -144,8 +144,8 @@ def _minimal_valid_json(m: type) -> dict:
     return kwargs  # pragma: no cover
 
 
-def _cli_repair_instruction(schema_hint: str, emits: tuple[type, ...]) -> str:
-    """Repair instruction for CLI workers; supplies a complete fenced-JSON example because CLI workers emit prose, not a malformed schema."""
+def _emission_example(emits: tuple[type, ...]) -> str:
+    """Complete fenced-JSON example for the given emission types."""
     import json as _json
 
     from lionagi.casts.emission import field_name_for
@@ -154,7 +154,26 @@ def _cli_repair_instruction(schema_hint: str, emits: tuple[type, ...]) -> str:
     for m in emits:
         key = field_name_for(m)
         obj[key] = _minimal_valid_json(m)
-    example = f"```json\n{_json.dumps(obj, indent=2)}\n```" if obj else ""
+    return f"```json\n{_json.dumps(obj, indent=2)}\n```" if obj else ""
+
+
+def _cli_emission_primer(schema_hint: str, emits: tuple[type, ...]) -> str:
+    """Appended to a CLI worker's FIRST instruction: CLI workers default to prose,
+    so the fenced-JSON contract and a complete example go up front rather than
+    only in the repair re-prompt."""
+    example = _emission_example(emits)
+    if not example:
+        return ""
+    return (
+        "\n\n# Output contract\n"
+        "Your final reply MUST contain a fenced ```json block with the emission "
+        f"object. {schema_hint}\n\nExample structure:\n{example}"
+    )
+
+
+def _cli_repair_instruction(schema_hint: str, emits: tuple[type, ...]) -> str:
+    """Repair instruction for CLI workers; supplies a complete fenced-JSON example because CLI workers emit prose, not a malformed schema."""
+    example = _emission_example(emits)
     return (
         "Your previous response contained no fenced JSON block, so the pipeline "
         "received nothing. Reply with ONLY a fenced ```json block containing the "
@@ -283,6 +302,10 @@ class EngineRun:
                 f"agent budget exhausted ({self.agents_made}/{self.engine.max_agents})"
             )
         self.agents_made += 1
+        if cwd is None:
+            cwd = self.engine.agent_cwd
+        if extra_prompt is None:
+            extra_prompt = self.engine.agent_extra_prompt
         spec = AgentSpec.compose(
             role,
             modes=modes,
@@ -319,11 +342,15 @@ class EngineRun:
         retries: int = 1,
     ) -> Any:
         """Operate then re-prompt up to *retries* times while *arrived*() is false; CLI workers get a full fenced-JSON example, API workers get key hints."""
-        res = await branch.operate(instruction=instruction)
-        attempt = 0
         # CLI workers emit prose, not fenced JSON — they need the full example form.
         is_cli = bool(getattr(getattr(branch, "chat_model", None), "is_cli", False))
         hint = emission_keys(emits)
+        if is_cli:
+            # Front-load the contract: waiting for the repair pass costs a whole
+            # extra CLI process per worker that defaults to prose.
+            instruction = f"{instruction}{_cli_emission_primer(hint, emits)}"
+        res = await branch.operate(instruction=instruction)
+        attempt = 0
         while not arrived() and attempt < retries:
             attempt += 1
             self.notify(
@@ -473,6 +500,7 @@ class EngineRun:
         verbose: bool = False,
         executor_ref: dict[str, Any] | None = None,
         context: dict[str, Any] | None = None,
+        on_branch_created: Any = None,
         spawn_branch_setup: Any = None,
         on_op_complete: Any = None,
     ) -> dict[str, Any]:
@@ -491,6 +519,7 @@ class EngineRun:
                 verbose=verbose,
                 on_progress=on_progress,
                 executor_ref=executor_ref,
+                on_branch_created=on_branch_created,
                 spawn_branch_setup=spawn_branch_setup,
                 on_op_complete=on_op_complete,
             )
@@ -588,7 +617,14 @@ class Engine:
         judge_model: str | None = None,
         judge_role: str = "critic",
         cancel_timeout_s: float = 30.0,
+        agent_cwd: str | None = None,
+        agent_extra_prompt: str | None = None,
     ) -> None:
+        # Run-wide agent defaults: pin every agent to a working directory (e.g. a
+        # provisioned worktree) and/or a shared standards prompt; per-call
+        # make_agent(cwd=..., extra_prompt=...) still wins.
+        self.agent_cwd = agent_cwd
+        self.agent_extra_prompt = agent_extra_prompt
         self.model = model
         self.models = dict(models) if models else {}
         self.max_depth = max_depth

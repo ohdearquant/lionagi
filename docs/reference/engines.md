@@ -10,13 +10,14 @@ Stateless event-driven engine base.
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `model` | `None` | Default model string for every stage. |
-| `models` | `{}` | Per-stage model overrides: `{"stage": "provider/model", ...}`. |
+| `models` | `None` | Optional per-stage model overrides: `{"stage": "provider/model", ...}`. The constructor copies a provided mapping and normalizes `None` or an empty mapping to an internal `{}`. |
 | `max_depth` | `3` | Maximum recursion depth or cycle generation. |
 | `max_concurrent` | `5` | Concurrency semaphore width (simultaneous agent slots). |
 | `max_agents` | `50` | Hard cap on total agents the run may create. |
 | `deadline_s` | `None` | Wall-clock cap in seconds; `None` = unbounded. |
 | `judge_model` | `None` | If set, a cheap gate agent runs at expansion points. `None` = no gate (fail-open). |
 | `judge_role` | `"critic"` | Casts role for the judge agent. |
+| `cancel_timeout_s` | `30.0` | Seconds to wait for spawned tasks to settle after cancellation. Tasks still pending at the deadline are warned about and abandoned after one final cancellation request. |
 
 On budget exhaustion `Engine.run()` calls `_partial_export()` (override in subclasses to return a partial result) instead of raising. Caller-initiated cancellation still propagates as `CancelledError`.
 
@@ -38,6 +39,15 @@ Extends `Engine` with:
 | `max_fix_rounds` | `3` | Maximum test-fail re-prompt rounds before concluding. |
 | `test_timeout_s` | `600.0` | Wall-clock cap for each subprocess test run. |
 | `repair_retries` | `1` | Emission-repair turns per stage when the model emits no valid event. |
+| `turn_timeout_s` | `600.0` | Wall-clock cap for each implementer model turn, including fix turns. A timeout records `turn_timeout` and drives the emission-repair path; `None` disables the cap. |
+| `strict_spec` | `False` | Raise `ValueError` on the first spec-lint warning before creating an agent. When `False`, warnings are emitted and execution continues. |
+| `heartbeat_interval_s` | `30.0` | Seconds between implement-stage `WorkerHeartbeat` checks; file mtime changes also emit `WorkerActivity`. `None` disables heartbeats. |
+| `stage_timeout_s` | `None` | Optional wall-clock cap applied to every model stage. A timeout always emits `WorkAborted` (with a `hard` flag). Implement and fix timeouts are hard: the run aborts and concludes failed. Plan and verify timeouts are soft: the stage is bounded but the run recovers — a timed-out planner degrades to the raw task text, and a timed-out verifier omits its advisory verdict while the test result still decides pass/fail. |
+| `worker_extra_tools` | `()` | Additional tool names granted only to the implementer, appended to `coding_tools`. |
+| `worker_mcp_servers` | `None` | Optional MCP server names granted only to the implementer. |
+| `worker_extra_prompt` | `None` | Optional extra prompt text passed only to the implementer. |
+| `auto_repair_cmds` | `None` | Optional commands run in sequence before each authoritative full test gate. Successful commands emit `AutoRepairApplied`; failed commands are reported without aborting the run. Internally normalized to `[]`. |
+| `fast_test_cmd` | `None` | Optional string or argument-list command used as an incremental gate on intermediate substantive fix rounds; the declared `test_cmd` remains the final ground-truth gate. |
 
 Per-stage model routing keys: `"plan"`, `"implement"`, `"verify"`.
 

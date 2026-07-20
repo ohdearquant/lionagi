@@ -12,14 +12,14 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import JSON, MetaData, bindparam, event, inspect, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.schema import CreateTable
 
 from lionagi._paths import LIONAGI_HOME
 from lionagi.config import settings
 from lionagi.libs.path_safety import check_path_safe as _check_path_safe
 from lionagi.ln import json_dumps as _json_dumps
-from lionagi.ln.concurrency import Lock
+from lionagi.ln.concurrency import CancelScope, Lock
 from lionagi.state.engine import (
     dialect_of,
     make_engine,
@@ -29,12 +29,25 @@ from lionagi.state.engine import (
 from lionagi.state.lifecycle import LifecycleNotFoundError as _LifecycleNotFoundError
 from lionagi.state.lifecycle import adapters as _lifecycle_adapters
 from lionagi.state.lifecycle import policy as _lifecycle_policy
+from lionagi.state.lifecycle.models import (
+    ActorRecord as _ActorRecord,
+)
+from lionagi.state.lifecycle.models import (
+    InitialStateCommand as _InitialStateCommand,
+)
+from lionagi.state.lifecycle.models import (
+    ReasonRecord as _ReasonRecord,
+)
 from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService as _LifecycleService
+from lionagi.state.reasons import LEGACY_IMPORTED as _LEGACY_IMPORTED
 from lionagi.state.reasons import (
     PlayReasons as _PlayReasons,
 )
 from lionagi.state.reasons import (
     RunReasons as _RunReasons,
+)
+from lionagi.state.reasons import (
+    ScheduleReasons as _ScheduleReasons,
 )
 from lionagi.state.reasons import (
     ShowReasons as _ShowReasons,
@@ -51,6 +64,7 @@ from lionagi.state.reasons import (
 from lionagi.state.schema_meta import metadata
 from lionagi.state.schema_meta import schedules as _schedules_table
 from lionagi.state.schema_migrations import MIGRATION_COLUMNS as _MIGRATION_COLUMNS
+from lionagi.state.schema_migrations import MIGRATION_INDEXES as _MIGRATION_INDEXES
 
 _RUN_DEFAULTS: dict[str, str] = {
     "running": _RunReasons.STARTED_OK,
@@ -73,6 +87,18 @@ _PLAY_DEFAULTS: dict[str, str] = {
     "gate_failed": _PlayReasons.GATE_FAILED_VERDICT,
 }
 
+_INITIAL_REASON_CODES: dict[tuple[str, str], str] = {
+    ("session", "running"): _RunReasons.STARTED_OK,
+    ("invocation", "running"): _RunReasons.STARTED_OK,
+    ("show", "active"): _ShowReasons.ACTIVE_CREATED,
+    ("show", "imported"): _LEGACY_IMPORTED,
+    ("play", "pending"): _PlayReasons.PENDING_CREATED,
+    ("schedule_run", "queued"): _ScheduleReasons.QUEUED_CREATED,
+    ("schedule_run", "running"): _RunReasons.STARTED_OK,
+    ("schedule_run", "failed"): _RunReasons.FAILED_EXCEPTION,
+    ("schedule_run", "skipped"): _ScheduleReasons.SKIPPED_PRECONDITION,
+}
+
 
 def _default_reason_code_for_entity_status(entity_type: str, status: str) -> str | None:
     """Map (entity_type, status) to canonical reason_code, or None."""
@@ -92,6 +118,7 @@ _VALID_STATUS_SOURCES: frozenset[str] = frozenset({"executor", "agent", "admin",
 
 _SESSION_COLUMNS = frozenset(
     {
+        "cc_session_id",
         "name",
         "user",
         "node_metadata",
@@ -286,6 +313,7 @@ TEAM_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["team"]
 # two transactions that a crash between them could leave inconsistent.
 EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     "session": frozenset({"ended_at"}),
+    "invocation": frozenset({"ended_at"}),
 }
 
 # ── ADR-0035 status vocabulary (valid, not just terminal) ──────────────
@@ -425,6 +453,46 @@ class StateDB:
             self.__lifecycle_service = _LifecycleService(self)
         return self.__lifecycle_service
 
+    async def _initialize_managed_entity_in_tx(
+        self,
+        conn,
+        *,
+        entity_type: str,
+        entity_id: str,
+        status: str,
+        actor_id: str,
+    ) -> None:
+        reason_code = _INITIAL_REASON_CODES.get((entity_type, status))
+        if reason_code is None:
+            # Compatibility repositories may insert historical terminal rows
+            # directly. Those are not declared lifecycle initial states and
+            # must not receive a fabricated creation event.
+            return
+        policy = _lifecycle_policy.DEFAULT_REGISTRY.get(entity_type)
+        await conn.execute(
+            text(
+                f"UPDATE {policy.table} SET status_reason_code = :reason_code, "  # noqa: S608
+                "status_reason_summary = :reason_summary, "
+                "status_evidence_refs = :evidence_refs WHERE id = :entity_id"
+            ).bindparams(bindparam("evidence_refs", type_=JSON)),
+            {
+                "reason_code": reason_code,
+                "reason_summary": "",
+                "evidence_refs": [],
+                "entity_id": entity_id,
+            },
+        )
+        await self._lifecycle_service().initialize_in_transaction(
+            conn,
+            _InitialStateCommand(
+                entity_type=entity_type,
+                entity_id=entity_id,
+                status=status,
+                reason=_ReasonRecord(code=reason_code),
+                actor=_ActorRecord(type="system", id=actor_id),
+            ),
+        )
+
     # ── backward-compat path property ─────────────────────────────────
 
     @property
@@ -470,7 +538,16 @@ class StateDB:
             self._engine = None
 
     async def __aenter__(self) -> StateDB:
-        await self.open()
+        try:
+            await self.open()
+        except BaseException:
+            # __aexit__ is not entered when __aenter__ fails. Dispose the
+            # partially opened engine here so its driver worker cannot outlive
+            # a lock-contention or migration failure. Direct open() retains its
+            # established inspect-and-retry behavior on schema failures.
+            with CancelScope(shield=True):
+                await self.close()
+            raise
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
@@ -602,6 +679,9 @@ class StateDB:
             # admit 'flow_yaml') carry a CHECK on schedules.action_kind that
             # omits 'command'.
             await self._drop_legacy_schedules_command_check()
+            # Existing DBs carry a CHECK on schedules.trigger_type that
+            # omits 'at' (the declarative ScheduleSet absolute-time trigger).
+            await self._drop_legacy_schedules_trigger_type_check()
             # existing DBs created before the completion-trust gate carry a
             # 6-value CHECK on invocations.status that omits 'completed_empty'.
             await self._drop_legacy_invocations_status_check()
@@ -611,6 +691,7 @@ class StateDB:
             await self._drop_legacy_schedule_runs_check()
         async with self._engine.begin() as conn:
             await conn.run_sync(metadata.create_all)
+            await self._reconcile_indexes(conn)
             # Seed immutable reference rows; ON CONFLICT DO NOTHING is safe to
             # re-run on every open() because the rows are identity-stable.
             await conn.execute(
@@ -640,6 +721,7 @@ class StateDB:
             )
 
     _MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = _MIGRATION_COLUMNS
+    _MIGRATION_INDEXES: dict[str, tuple[str, ...]] = _MIGRATION_INDEXES
 
     async def _reconcile_columns(self) -> None:
         for table, columns in self._MIGRATION_COLUMNS.items():
@@ -655,8 +737,70 @@ class StateDB:
                 continue
             for name, defn in columns:
                 if name not in existing:
-                    async with self._engine.begin() as conn:
-                        await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {defn}"))
+                    add_column = f"ALTER TABLE {table} ADD COLUMN {name} {defn}"
+                    if self.dialect == "postgresql":
+                        add_column = f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {defn}"
+                    try:
+                        async with self._engine.begin() as conn:
+                            await conn.execute(text(add_column))
+                            if table == "schedule_runs" and name == "dispatched_at":
+                                await self._backfill_dispatched_at(conn)
+                    except OperationalError:
+                        # SQLite has no ADD COLUMN IF NOT EXISTS. Another process
+                        # may commit the same migration after our inspection but
+                        # before our ALTER obtains the WAL write lock. Only
+                        # suppress the error when a fresh inspection proves that
+                        # the requested column now exists.
+                        if self.dialect != "sqlite":
+                            raise
+                        async with self._engine.connect() as conn:
+                            reconciled = await conn.run_sync(
+                                lambda c, t=table, n=name: (
+                                    n in {col["name"] for col in inspect(c).get_columns(t)}
+                                )
+                            )
+                        if not reconciled:
+                            raise
+
+    async def _reconcile_indexes(self, conn) -> None:
+        """Create indexes that ``metadata.create_all`` cannot add to existing tables."""
+        for statement in self._MIGRATION_INDEXES.get(self.dialect, ()):
+            await conn.execute(text(statement))
+
+    async def _backfill_dispatched_at(self, conn) -> None:
+        """One-time migration backfill for the ``dispatched_at`` column just
+        added to ``schedule_runs``.
+
+        ``dispatched_at`` is only stamped going forward, by
+        ``SchedulerEngine._mark_dispatched()``. Without a backfill, every row
+        left at ``status = 'running'`` from before this column existed would
+        have ``dispatched_at IS NULL`` -- indistinguishable from a row whose
+        launch genuinely never got confirmed. ``list_undispatched_schedule_
+        runs()`` (consumed by ``SchedulerEngine._recover_undispatched_
+        fires()`` on the next daemon startup) would then treat every such row
+        as crashed-before-dispatch and re-fire it, even one that is still
+        genuinely executing across the upgrade restart.
+
+        Stamping ``dispatched_at`` to the row's own ``fired_at`` (NOT NULL by
+        schema) excludes these pre-existing rows from that scan -- the same
+        "no signal to distinguish, so don't auto-retry" resolution
+        ``_backfill_action_cwd()`` applies to ``action_cwd``. A still-running
+        row is left alone (nothing re-fires it); a row that actually crashed
+        pre-migration falls through to ``reap_stale_schedule_runs()``'s
+        wall-clock deadline instead of being auto-retried on ambiguous
+        evidence. Scoped to ``schedule_id IS NOT NULL`` to match
+        ``list_undispatched_schedule_runs()`` and leave the leased ad-hoc
+        task queue (its own dispatch/lease model) untouched. Runs inside the
+        same transaction as the ``ALTER TABLE`` that adds the column, so it
+        only ever executes once, the moment the column is created.
+        """
+        await conn.execute(
+            text(
+                "UPDATE schedule_runs SET dispatched_at = fired_at "
+                "WHERE status = 'running' AND dispatched_at IS NULL "
+                "AND schedule_id IS NOT NULL"
+            )
+        )
 
     _LEGACY_SESSION_STATUS_CHECK_MARKER = "'running', 'completed', 'failed', 'aborted'"
 
@@ -713,6 +857,7 @@ class StateDB:
                         """
                         CREATE TABLE sessions_new (
                           id              TEXT    PRIMARY KEY,
+                          cc_session_id   TEXT,
                           created_at      REAL    NOT NULL,
                           node_metadata   JSON,
                           name            TEXT,
@@ -983,6 +1128,83 @@ class StateDB:
             # ANY failure path restores enforcement in the finally block; a
             # flush failure must not leave the pooled connection with
             # foreign keys silently disabled.
+            try:
+                await driver.commit()
+                await driver.execute("BEGIN IMMEDIATE")
+                try:
+                    await driver.execute(create_stmt)
+                    insert_sql = (
+                        f"INSERT INTO schedules_new ({col_list}) SELECT {col_list} FROM schedules"  # noqa: S608
+                    )
+                    await driver.execute(insert_sql)
+                    await driver.execute("DROP TABLE schedules")
+                    await driver.execute("ALTER TABLE schedules_new RENAME TO schedules")
+                    for idx_sql in index_sqls:
+                        await driver.execute(idx_sql)
+                    await driver.commit()
+                except BaseException:
+                    await driver.rollback()
+                    raise
+            finally:
+                await driver.execute("PRAGMA foreign_keys = ON")
+                await driver.commit()
+
+    # Substring present only in the widened schedules CREATE SQL; its
+    # absence indicates a legacy DB whose trigger_type CHECK still omits
+    # 'at' (the declarative ScheduleSet layer's absolute-time trigger).
+    _LEGACY_SCHEDULES_TRIGGER_TYPE_MARKER = "'at'"
+
+    async def _drop_legacy_schedules_trigger_type_check(self) -> None:
+        """Rebuild ``schedules`` if its trigger_type CHECK still omits 'at'.
+
+        Same rename -> CREATE new -> INSERT SELECT -> DROP old pattern as
+        ``_drop_legacy_schedules_command_check``.
+        """
+        if self.dialect != "sqlite":
+            return
+        async with self._engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT sql FROM sqlite_master WHERE type='table' AND name='schedules'"
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if row is None or row["sql"] is None:
+            return
+        create_sql: str = row["sql"]
+        if self._LEGACY_SCHEDULES_TRIGGER_TYPE_MARKER in create_sql:
+            return
+
+        async with self._engine.connect() as conn:
+            index_rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT sql FROM sqlite_master "
+                            "WHERE type='index' AND tbl_name='schedules' AND sql IS NOT NULL"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            index_sqls = [r["sql"] for r in index_rows]
+
+            cols_rows = (await conn.execute(text("PRAGMA table_info(schedules)"))).mappings().all()
+            cols = [r["name"] for r in cols_rows]
+        col_list = ", ".join(cols)
+
+        rebuild_table = _schedules_table.to_metadata(MetaData(), name="schedules_new")
+        create_stmt = str(CreateTable(rebuild_table).compile(dialect=self._engine.dialect))
+
+        async with self._engine.connect() as conn:
+            driver = (await conn.get_raw_connection()).driver_connection
+            await driver.execute("PRAGMA foreign_keys = OFF")
             try:
                 await driver.commit()
                 await driver.execute("BEGIN IMMEDIATE")
@@ -1495,7 +1717,7 @@ class StateDB:
         async with self._tx() as conn:
             result = await conn.execute(
                 text(
-                    """INSERT INTO sessions (id, created_at, node_metadata, name, "user",
+                    """INSERT INTO sessions (id, cc_session_id, created_at, node_metadata, name, "user",
                        progression_id, first_msg_id, last_msg_id, updated_at,
                        playbook_name, agent_name, invocation_kind, show_topic,
                        show_play_name, artifacts_path, artifact_contract_json,
@@ -1503,7 +1725,7 @@ class StateDB:
                        status, started_at, ended_at, last_message_at, invocation_id,
                        model, provider, effort, agent_hash,
                        project, project_source)
-                       VALUES (:id, :created_at, :node_metadata, :name, :user,
+                       VALUES (:id, :cc_session_id, :created_at, :node_metadata, :name, :user,
                                :progression_id, :first_msg_id, :last_msg_id, :updated_at,
                                :playbook_name, :agent_name, :invocation_kind, :show_topic,
                                :show_play_name, :artifacts_path, :artifact_contract_json,
@@ -1519,6 +1741,7 @@ class StateDB:
                 ),
                 {
                     "id": session["id"],
+                    "cc_session_id": session.get("cc_session_id"),
                     "created_at": session.get("created_at", now),
                     "node_metadata": session.get("node_metadata"),
                     "name": session.get("name"),
@@ -1552,6 +1775,14 @@ class StateDB:
                 },
             )
             # Only increment session_count when INSERT actually created a row.
+            if result.rowcount and session.get("status") is not None:
+                await self._initialize_managed_entity_in_tx(
+                    conn,
+                    entity_type="session",
+                    entity_id=session["id"],
+                    status=session["status"],
+                    actor_id="create_session",
+                )
             if session.get("invocation_id") and result.rowcount:
                 await conn.execute(
                     text(
@@ -1575,6 +1806,20 @@ class StateDB:
                     await conn.execute(
                         text("SELECT * FROM sessions WHERE id = :id"),
                         {"id": session_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return self._row_to_dict(row) if row else None
+
+    async def get_session_by_cc_id(self, cc_session_id: str) -> dict[str, Any] | None:
+        async with self._read() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text("SELECT * FROM sessions WHERE cc_session_id = :cc_session_id LIMIT 1"),
+                        {"cc_session_id": cc_session_id},
                     )
                 )
                 .mappings()
@@ -1733,6 +1978,7 @@ class StateDB:
         node_metadata: dict[str, Any] | None = None,
         project: str | None = None,
         project_source: str | None = None,
+        cc_session_id: str | None = None,
     ) -> None:
         """Write attribution/provenance fields without touching updated_at.
 
@@ -1753,6 +1999,9 @@ class StateDB:
             params["project"] = project
             sets.append("project_source = :project_source")
             params["project_source"] = project_source
+        if cc_session_id is not None:
+            sets.append("cc_session_id = :cc_session_id")
+            params["cc_session_id"] = cc_session_id
         if not sets:
             return
         params["_id"] = session_id
@@ -1790,6 +2039,8 @@ class StateDB:
         status_value = fields.pop("status", None)
         if status_value is None:
             return
+        allowed_extra = EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE.get(entity_type, frozenset())
+        extra_fields = {name: fields.pop(name) for name in allowed_extra if name in fields}
         if reason_code is None:
             from warnings import warn
 
@@ -1819,6 +2070,7 @@ class StateDB:
             evidence_refs=evidence_refs,
             source=reason_source,
             actor=reason_actor,
+            extra_fields=extra_fields or None,
             override=override,
             override_actor=override_actor,
             override_justification=override_justification,
@@ -2170,76 +2422,108 @@ class StateDB:
     # ── Schedules (ADR-0070) ──────────────────────────────────────────
 
     async def create_schedule(self, schedule: dict[str, Any]) -> None:
-        now = time.time()
+        stmt, params = self._build_schedule_insert_stmt(schedule)
         async with self._tx() as conn:
-            await conn.execute(
-                text(
-                    """INSERT INTO schedules
-                       (id, name, description, enabled, trigger_type,
-                        cron_expr, interval_sec, github_repo, github_filter,
-                        github_cursor, poll_interval_sec,
-                        action_kind, action_model, action_prompt, action_agent,
-                        action_playbook, action_flow_yaml, action_project, action_cwd,
-                        action_extra_args, action_command, action_command_args,
-                        on_success, on_fail, last_fired_at, next_fire_at,
-                        missed_fire_policy, overlap_policy, max_runs, budget_usd, budget_tokens,
-                        project, threshold_config, last_alert_at, created_at, updated_at)
-                       VALUES (:id, :name, :description, :enabled, :trigger_type,
-                               :cron_expr, :interval_sec, :github_repo, :github_filter,
-                               :github_cursor, :poll_interval_sec,
-                               :action_kind, :action_model, :action_prompt, :action_agent,
-                               :action_playbook, :action_flow_yaml, :action_project, :action_cwd,
-                               :action_extra_args, :action_command, :action_command_args,
-                               :on_success, :on_fail, :last_fired_at, :next_fire_at,
-                               :missed_fire_policy, :overlap_policy, :max_runs, :budget_usd, :budget_tokens,
-                               :project, :threshold_config, :last_alert_at, :created_at, :updated_at)"""
-                ).bindparams(
-                    bindparam("github_filter", type_=JSON),
-                    bindparam("action_extra_args", type_=JSON),
-                    bindparam("action_command_args", type_=JSON),
-                    bindparam("on_success", type_=JSON),
-                    bindparam("on_fail", type_=JSON),
-                    bindparam("threshold_config", type_=JSON),
-                ),
-                {
-                    "id": schedule["id"],
-                    "name": schedule["name"],
-                    "description": schedule.get("description"),
-                    "enabled": schedule.get("enabled", 1),
-                    "trigger_type": schedule["trigger_type"],
-                    "cron_expr": schedule.get("cron_expr"),
-                    "interval_sec": schedule.get("interval_sec"),
-                    "github_repo": schedule.get("github_repo"),
-                    "github_filter": schedule.get("github_filter"),
-                    "github_cursor": schedule.get("github_cursor"),
-                    "poll_interval_sec": schedule.get("poll_interval_sec"),
-                    "action_kind": schedule["action_kind"],
-                    "action_model": schedule.get("action_model"),
-                    "action_prompt": schedule.get("action_prompt"),
-                    "action_agent": schedule.get("action_agent"),
-                    "action_playbook": schedule.get("action_playbook"),
-                    "action_flow_yaml": schedule.get("action_flow_yaml"),
-                    "action_project": schedule.get("action_project"),
-                    "action_cwd": schedule.get("action_cwd"),
-                    "action_extra_args": schedule.get("action_extra_args", []),
-                    "action_command": schedule.get("action_command"),
-                    "action_command_args": schedule.get("action_command_args", []),
-                    "on_success": schedule.get("on_success"),
-                    "on_fail": schedule.get("on_fail"),
-                    "last_fired_at": schedule.get("last_fired_at"),
-                    "next_fire_at": schedule.get("next_fire_at"),
-                    "missed_fire_policy": schedule.get("missed_fire_policy", "skip"),
-                    "overlap_policy": schedule.get("overlap_policy", "skip"),
-                    "max_runs": schedule.get("max_runs"),
-                    "budget_usd": schedule.get("budget_usd"),
-                    "budget_tokens": schedule.get("budget_tokens"),
-                    "project": schedule.get("project"),
-                    "threshold_config": schedule.get("threshold_config"),
-                    "last_alert_at": schedule.get("last_alert_at"),
-                    "created_at": schedule.get("created_at", now),
-                    "updated_at": schedule.get("updated_at", now),
-                },
-            )
+            await conn.execute(stmt, params)
+
+    @staticmethod
+    def _build_schedule_insert_stmt(schedule: dict[str, Any]):
+        """Build the ``INSERT INTO schedules`` statement + bound params for
+        *schedule* without opening a transaction -- shared by
+        ``create_schedule`` and ``apply_schedule_set`` (atomic multi-row
+        ScheduleSet apply)."""
+        now = time.time()
+        stmt = text(
+            """INSERT INTO schedules
+               (id, name, description, enabled, trigger_type,
+                cron_expr, interval_sec, github_repo, github_filter,
+                github_cursor, poll_interval_sec,
+                action_kind, action_model, action_prompt, action_agent,
+                action_playbook, action_flow_yaml, action_project, action_cwd,
+                action_extra_args, action_command, action_command_args,
+                on_success, on_fail, last_fired_at, next_fire_at,
+                missed_fire_policy, overlap_policy, max_runs, budget_usd, budget_tokens,
+                rate_limit,
+                project, threshold_config, last_alert_at,
+                spec_version, managed_by, owner_key, authored_spec,
+                resolved_target, resolved_digest, resolved_timezone,
+                notify_on, notify_command,
+                created_at, updated_at)
+               VALUES (:id, :name, :description, :enabled, :trigger_type,
+                       :cron_expr, :interval_sec, :github_repo, :github_filter,
+                       :github_cursor, :poll_interval_sec,
+                       :action_kind, :action_model, :action_prompt, :action_agent,
+                       :action_playbook, :action_flow_yaml, :action_project, :action_cwd,
+                       :action_extra_args, :action_command, :action_command_args,
+                       :on_success, :on_fail, :last_fired_at, :next_fire_at,
+                       :missed_fire_policy, :overlap_policy, :max_runs, :budget_usd, :budget_tokens,
+                       :rate_limit,
+                       :project, :threshold_config, :last_alert_at,
+                       :spec_version, :managed_by, :owner_key, :authored_spec,
+                       :resolved_target, :resolved_digest, :resolved_timezone,
+                       :notify_on, :notify_command,
+                       :created_at, :updated_at)"""
+        ).bindparams(
+            bindparam("github_filter", type_=JSON),
+            bindparam("action_extra_args", type_=JSON),
+            bindparam("action_command_args", type_=JSON),
+            bindparam("on_success", type_=JSON),
+            bindparam("on_fail", type_=JSON),
+            bindparam("rate_limit", type_=JSON),
+            bindparam("threshold_config", type_=JSON),
+            bindparam("authored_spec", type_=JSON),
+            bindparam("resolved_target", type_=JSON),
+            bindparam("notify_on", type_=JSON),
+        )
+        params = {
+            "id": schedule["id"],
+            "name": schedule["name"],
+            "description": schedule.get("description"),
+            "enabled": schedule.get("enabled", 1),
+            "trigger_type": schedule["trigger_type"],
+            "cron_expr": schedule.get("cron_expr"),
+            "interval_sec": schedule.get("interval_sec"),
+            "github_repo": schedule.get("github_repo"),
+            "github_filter": schedule.get("github_filter"),
+            "github_cursor": schedule.get("github_cursor"),
+            "poll_interval_sec": schedule.get("poll_interval_sec"),
+            "action_kind": schedule["action_kind"],
+            "action_model": schedule.get("action_model"),
+            "action_prompt": schedule.get("action_prompt"),
+            "action_agent": schedule.get("action_agent"),
+            "action_playbook": schedule.get("action_playbook"),
+            "action_flow_yaml": schedule.get("action_flow_yaml"),
+            "action_project": schedule.get("action_project"),
+            "action_cwd": schedule.get("action_cwd"),
+            "action_extra_args": schedule.get("action_extra_args", []),
+            "action_command": schedule.get("action_command"),
+            "action_command_args": schedule.get("action_command_args", []),
+            "on_success": schedule.get("on_success"),
+            "on_fail": schedule.get("on_fail"),
+            "last_fired_at": schedule.get("last_fired_at"),
+            "next_fire_at": schedule.get("next_fire_at"),
+            "missed_fire_policy": schedule.get("missed_fire_policy", "skip"),
+            "overlap_policy": schedule.get("overlap_policy", "skip"),
+            "max_runs": schedule.get("max_runs"),
+            "budget_usd": schedule.get("budget_usd"),
+            "budget_tokens": schedule.get("budget_tokens"),
+            "rate_limit": schedule.get("rate_limit"),
+            "project": schedule.get("project"),
+            "threshold_config": schedule.get("threshold_config"),
+            "last_alert_at": schedule.get("last_alert_at"),
+            "spec_version": schedule.get("spec_version"),
+            "managed_by": schedule.get("managed_by"),
+            "owner_key": schedule.get("owner_key"),
+            "authored_spec": schedule.get("authored_spec"),
+            "resolved_target": schedule.get("resolved_target"),
+            "resolved_digest": schedule.get("resolved_digest"),
+            "resolved_timezone": schedule.get("resolved_timezone"),
+            "notify_on": schedule.get("notify_on"),
+            "notify_command": schedule.get("notify_command"),
+            "created_at": schedule.get("created_at", now),
+            "updated_at": schedule.get("updated_at", now),
+        }
+        return stmt, params
 
     async def get_schedule(self, schedule_id: str) -> dict[str, Any] | None:
         async with self._read() as conn:
@@ -2268,6 +2552,42 @@ class StateDB:
                 .first()
             )
         return self._row_to_dict(row) if row else None
+
+    async def list_schedules_by_owner_key(self, owner_key: str) -> list[dict[str, Any]]:
+        async with self._read() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text("SELECT * FROM schedules WHERE owner_key = :owner_key"),
+                        {"owner_key": owner_key},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [self._row_to_dict(r) for r in rows]
+
+    async def apply_schedule_set(
+        self,
+        *,
+        creates: list[dict[str, Any]],
+        updates: list[tuple[str, dict[str, Any]]],
+        disables: list[str],
+    ) -> None:
+        """Atomically commit a ScheduleSet reconciliation plan: every CREATE,
+        UPDATE, and DISABLE lands in one transaction -- callers must have
+        already validated every member (a partially-invalid set must never
+        reach this method, since every write here commits together)."""
+        async with self._tx() as conn:
+            for schedule in creates:
+                stmt, params = self._build_schedule_insert_stmt(schedule)
+                await conn.execute(stmt, params)
+            for schedule_id, fields in updates:
+                stmt, params = self._build_update_schedule_stmt(schedule_id, fields)
+                await conn.execute(stmt, params)
+            for schedule_id in disables:
+                stmt, params = self._build_update_schedule_stmt(schedule_id, {"enabled": 0})
+                await conn.execute(stmt, params)
 
     async def list_schedules(
         self,
@@ -2334,11 +2654,21 @@ class StateDB:
             "max_runs",
             "budget_usd",
             "budget_tokens",
+            "rate_limit",
             "project",
             "threshold_config",
             "last_alert_at",
             "last_healthy_poll_at",
             "poller_consecutive_401",
+            "spec_version",
+            "managed_by",
+            "owner_key",
+            "authored_spec",
+            "resolved_target",
+            "resolved_digest",
+            "resolved_timezone",
+            "notify_on",
+            "notify_command",
         }
     )
 
@@ -2367,7 +2697,11 @@ class StateDB:
             "action_command_args",
             "on_success",
             "on_fail",
+            "rate_limit",
             "threshold_config",
+            "authored_spec",
+            "resolved_target",
+            "notify_on",
         }
         fields = dict(fields)
         fields["updated_at"] = time.time()
@@ -2398,6 +2732,13 @@ class StateDB:
         stmt, params = self._build_schedule_run_insert_stmt(run)
         async with self._tx() as conn:
             await conn.execute(stmt, params)
+            await self._initialize_managed_entity_in_tx(
+                conn,
+                entity_type="schedule_run",
+                entity_id=params["id"],
+                status=params["status"],
+                actor_id="create_schedule_run",
+            )
 
     @staticmethod
     def _build_schedule_run_insert_stmt(run: dict[str, Any]):
@@ -2455,6 +2796,13 @@ class StateDB:
         sched_stmt, sched_params = self._build_update_schedule_stmt(schedule_id, schedule_fields)
         async with self._tx() as conn:
             await conn.execute(run_stmt, run_params)
+            await self._initialize_managed_entity_in_tx(
+                conn,
+                entity_type="schedule_run",
+                entity_id=run_params["id"],
+                status=run_params["status"],
+                actor_id="create_schedule_run_and_advance",
+            )
             await conn.execute(sched_stmt, sched_params)
 
     async def tombstone_and_replace_schedule_run(
@@ -2491,6 +2839,13 @@ class StateDB:
             if result.rowcount == 0:
                 return False
             await conn.execute(run_stmt, run_params)
+            await self._initialize_managed_entity_in_tx(
+                conn,
+                entity_type="schedule_run",
+                entity_id=run_params["id"],
+                status=run_params["status"],
+                actor_id="tombstone_and_replace_schedule_run",
+            )
         return True
 
     async def update_schedule_run(
@@ -2556,15 +2911,17 @@ class StateDB:
         self,
         schedule_id: str,
         *,
-        status: str | None = None,
+        status: str | list[str] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         conds: list[str] = ["schedule_id = :schedule_id"]
         params: dict[str, Any] = {"schedule_id": schedule_id}
-        if status:
-            conds.append("status = :status")
-            params["status"] = status
+        statuses = [status] if isinstance(status, str) else (status or [])
+        if statuses:
+            placeholders = ", ".join(f":status{i}" for i in range(len(statuses)))
+            conds.append(f"status IN ({placeholders})")
+            params.update({f"status{i}": s for i, s in enumerate(statuses)})
         query = "SELECT * FROM schedule_runs WHERE " + " AND ".join(conds)  # noqa: S608
         query += " ORDER BY fired_at DESC LIMIT :limit OFFSET :offset"
         params["limit"] = limit
@@ -2579,6 +2936,7 @@ class StateDB:
         *,
         chain_depth: int = 0,
         statuses: tuple[str, ...] = ("completed", "failed", "cancelled"),
+        fired_after: float | None = None,
     ) -> int:
         """Count runs that actually fired and reached a terminal status.
 
@@ -2591,6 +2949,9 @@ class StateDB:
         params: dict[str, Any] = {"schedule_id": schedule_id, "chain_depth": chain_depth}
         params.update({f"status{i}": s for i, s in enumerate(statuses)})
         query = f"SELECT COUNT(*) AS n FROM schedule_runs WHERE schedule_id = :schedule_id AND chain_depth = :chain_depth AND status IN ({placeholders})"  # noqa: S608
+        if fired_after is not None:
+            query += " AND fired_at >= :fired_after"
+            params["fired_after"] = fired_after
         async with self._read() as conn:
             row = (await conn.execute(text(query), params)).mappings().first()
         return int(row["n"]) if row else 0
@@ -2799,12 +3160,15 @@ class StateDB:
         return streak, last_status
 
     async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool:
-        """True if *schedule_id* has a genuinely-fired schedule_runs row at
-        or after *since* -- used by missed-fire recovery to tell "never
+        """True if *schedule_id* has a genuinely-fired top-level schedule_runs
+        row at or after *since* -- used by missed-fire recovery to tell "never
         fired" from "fired but crashed before follow-up bookkeeping".
         Excludes ``status = 'skipped'`` rows so a capacity-deferred skip
         (whose next_fire_at is deliberately left untouched) still counts as
         due and retries, rather than being treated as already handled.
+        Excludes ``chain_depth != 0`` rows (on_success/on_fail chain children,
+        which share the parent's schedule_id) so a chain-child fire cannot
+        mask a due top-level occurrence.
         """
         async with self._read() as conn:
             row = (
@@ -2812,7 +3176,7 @@ class StateDB:
                     text(
                         "SELECT 1 FROM schedule_runs "
                         "WHERE schedule_id = :schedule_id AND fired_at >= :since "
-                        "AND status != 'skipped' LIMIT 1"
+                        "AND status != 'skipped' AND chain_depth = 0 LIMIT 1"
                     ),
                     {"schedule_id": schedule_id, "since": since},
                 )
@@ -2909,7 +3273,7 @@ class StateDB:
         )
         now = time.time()
         async with self._tx() as conn:
-            await conn.execute(
+            result = await conn.execute(
                 text(
                     """INSERT INTO invocations
                        (id, skill, plugin, prompt, started_at, ended_at, status,
@@ -2932,6 +3296,14 @@ class StateDB:
                     "node_metadata": invocation.get("node_metadata"),
                 },
             )
+            if result.rowcount:
+                await self._initialize_managed_entity_in_tx(
+                    conn,
+                    entity_type="invocation",
+                    entity_id=invocation["id"],
+                    status=status,
+                    actor_id="create_invocation",
+                )
 
     async def update_invocation(
         self,
@@ -3488,7 +3860,7 @@ class StateDB:
         )
         now = time.time()
         async with self._tx() as conn:
-            await conn.execute(
+            result = await conn.execute(
                 text(
                     """INSERT INTO shows (id, topic, goal, repo, base_branch,
                        integration_branch, status, show_dir, status_source,
@@ -3512,6 +3884,14 @@ class StateDB:
                     "updated_at": now,
                 },
             )
+            if result.rowcount:
+                await self._initialize_managed_entity_in_tx(
+                    conn,
+                    entity_type="show",
+                    entity_id=show["id"],
+                    status=show.get("status", "active"),
+                    actor_id="create_show",
+                )
 
     async def get_show(self, show_id: str) -> dict[str, Any] | None:
         async with self._read() as conn:
@@ -3622,7 +4002,7 @@ class StateDB:
         )
         now = time.time()
         async with self._tx() as conn:
-            await conn.execute(
+            result = await conn.execute(
                 text(
                     """INSERT INTO plays (id, show_id, name, playbook, effort,
                        status, attempt, session_id, started_at, ended_at, exit_code,
@@ -3658,6 +4038,14 @@ class StateDB:
                     "updated_at": now,
                 },
             )
+            if result.rowcount:
+                await self._initialize_managed_entity_in_tx(
+                    conn,
+                    entity_type="play",
+                    entity_id=play["id"],
+                    status=play.get("status", "pending"),
+                    actor_id="create_play",
+                )
 
     async def get_play(self, play_id: str) -> dict[str, Any] | None:
         async with self._read() as conn:
@@ -4464,6 +4852,10 @@ class StateDB:
             "trigger_context",
             "action_args",
             "threshold_config",
+            "rate_limit",
+            "notify_on",
+            "authored_spec",
+            "resolved_target",
             "artifact_contract_json",
             "artifact_verification_json",
             "status_evidence_refs",

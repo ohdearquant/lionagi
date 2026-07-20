@@ -9,6 +9,8 @@ from pydantic import BaseModel
 
 from lionagi._errors import ConfigurationError
 from lionagi.ln import AlcallParams
+from lionagi.protocols.action.tool_hooks import ActionGovernanceDeniedError
+from lionagi.protocols.generic.event import EventStatus
 from lionagi.protocols.messages import ActionRequest, ActionResponse
 
 from .._defaults import get_default_action_call as _get_default_call_params
@@ -81,6 +83,7 @@ async def _act(
             args_summary=_args_summary,
         )
 
+    func_call = None
     try:
         if verbose_action:
             args_ = str(_request["arguments"])
@@ -90,6 +93,19 @@ async def _act(
         func_call = await branch._action_manager.invoke(_request)
         if verbose_action:
             logger.debug("Action %s invoked, status: %s.", _request["function"], func_call.status)
+
+        # ActionManager.invoke() is total: governance denials, schema
+        # revalidation failures, and ordinary tool exceptions are captured as
+        # FAILED status + execution.error rather than raised. Every captured
+        # failure must take the error path; otherwise it emits TOOL_POST and is
+        # persisted as if a tool legitimately returned None.
+        if func_call.status == EventStatus.FAILED:
+            failure = func_call.execution.error
+            if not isinstance(failure, BaseException):
+                failure = RuntimeError(
+                    str(failure) if failure else f"Action {_tool_name!r} failed without an error"
+                )
+            raise failure
 
         if _hooks is not None:
             from lionagi.hooks.bus import HookPoint
@@ -112,7 +128,11 @@ async def _act(
                 call_id=_call_id,
                 tool_name=_tool_name,
                 error=e,
-                duration=None,
+                duration=(
+                    func_call.execution.duration
+                    if func_call is not None and func_call.status == EventStatus.FAILED
+                    else None
+                ),
             )
 
         content = {
@@ -121,12 +141,17 @@ async def _act(
             "arguments": _request.get("arguments"),
             "branch": str(branch.id),
         }
-        branch._log_manager.log(content)
+        captured_failure = func_call is not None and func_call.status == EventStatus.FAILED
+        if captured_failure:
+            await branch.emit_and_log(func_call)
+        else:
+            branch._log_manager.log(content)
         if verbose_action:
             logger.error("Action %s failed, error: %s.", _request["function"], e)
-        if suppress_errors:
+        if captured_failure or suppress_errors:
             error_msg = f"Error invoking action '{_request['function']}': {e}"
-            logging.error(error_msg)
+            if suppress_errors:
+                logging.error(error_msg)
 
             # Surface the failure in chat history so subsequent rounds
             # (ReAct, LNDL retries) see the error and can self-correct.
@@ -148,6 +173,18 @@ async def _act(
                 sender=branch.id,
                 recipient=branch.id,
             )
+
+        if suppress_errors:
+            # Ordinary tool failures historically degrade to output=None when
+            # suppressed. Keep that caller contract while persisting the
+            # error-bearing ActionResponse above. Governance denials remain
+            # visible in the returned response so the model can adapt.
+            if captured_failure and not isinstance(e, ActionGovernanceDeniedError):
+                return ActionResponseModel(
+                    function=_request.get("function", "unknown"),
+                    arguments=_request.get("arguments", {}),
+                    output=None,
+                )
 
             return ActionResponseModel(
                 function=_request.get("function", "unknown"),

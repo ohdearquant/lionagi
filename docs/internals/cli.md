@@ -51,10 +51,10 @@ instead. Which variant applies is decided by `messenger_bound` in
 `team_worker_system()` in `_orchestration.py`.
 
 `_notify.py`: `--notify` is scoped compatibility sugar over the terminal-
-callback registry. After the flow/play run's own entity id is known, it
-registers the legacy payload shape (kind/playbook/save_dir/cwd/exit_class/
-started_at/ended_at/status/invocation_id) as an exec adapter filtered to
-that one entity, and unregisters it once the run's teardown fires. This is
+callback registry. `li agent` and `li o fanout` always scope to their
+**session** entity because only their sessions transition to terminal. `li o
+flow` / `li play` additionally finalize and scope to an **invocation** when
+`--invocation` is set, because flow owns that finalization. This is
 deliberately different from the settings-level `notify.on_terminal` handler
 (bootstrapped once per process, unscoped, delivering the new minimal
 envelope) — `--notify` is a per-run override carrying the old payload shape
@@ -445,10 +445,40 @@ its persisted system message — which, for a role/preset branch, is the compose
 block, not the bare profile body — so `add_message` must not run for it either, or it clobbers
 that persisted message via `set_system`.
 
+For a brand-new branch, `took_create_agent_path` (set in the same leg that builds the branch)
+is the authoritative signal. A resumed/continued branch cannot use the *current* invocation's
+profile for this decision — the profile reloaded this leg (`has_role_key`) describes only what
+was passed to *this* `-a`, not how the persisted branch was originally built; resuming a
+role-composed branch under a different, plain profile (or the same profile with `role:` since
+removed) would then make the guard treat it as plain and clobber its composed message. Instead,
+`create_agent` (`lionagi/agent/factory.py`) stamps every branch it builds with an immutable
+`CREATE_AGENT_BRANCH_ORIGIN_KEY` marker in `branch.metadata`, which round-trips through
+`Branch.to_dict()`/`from_dict()` with the rest of `metadata`. On a resumed/continued leg,
+`_run_agent` consults that marker on the reloaded branch instead of re-deriving the guard from
+the current profile.
+
 **`_run_agent` auto-resume terminal-status guard** — known before teardown runs: an auto-resume
 leg is about to fire on this same session, so this leg's teardown must not stamp a terminal
 status the resumed leg would then be blocked from overwriting by the ADR-0035 terminal guard
 (see `_runs.py` `_teardown_common` defer_terminal, below).
+
+## `_agent_depth.py` — inherited agent-depth env marker
+
+`LIONAGI_AGENT_DEPTH` (integer string; unset/`0` = top-level, `>=1` = spawned worker) lets an
+external policy hook distinguish a seat session from a worker it spawned, using process
+ancestry-independent env inheritance — ancestry breaks under `nohup`/`setsid` detachment and
+launchd reparenting, but env inheritance survives it. `LIONAGI_SEAT_PROFILES` is an
+operator-configured, comma-separated set of `-a` profile names that reset depth to 0 instead of
+incrementing it; the set is empty by default and no profile name is hardcoded in source.
+
+`stamp_agent_depth(agent_name)` (called from `_run_agent`) and `stamp_worker_depth()` (called
+from `_run_fanout` and `_run_flow`, which also covers `li play`) both set
+`os.environ["LIONAGI_AGENT_DEPTH"]` before any engine spawn. `_cli_subprocess.py`'s
+`ndjson_from_cli` passes `env=None` to `create_subprocess_exec` for all three CLI-backed engines
+(`claude_code`, `codex`, `gemini_code`), so the child inherits this process's `os.environ`
+verbatim — the stamp propagates with zero endpoint changes. `inherited_depth()` is captured once
+at import as a module constant rather than read live, so `_run_agent`'s in-process auto-resume
+recursion re-stamps to the same depth instead of double-incrementing.
 
 ## `kill.py`
 

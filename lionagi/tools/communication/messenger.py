@@ -132,9 +132,13 @@ class LionMessenger(LionTool):
             content: str = None,
             urgency: str = None,
         ) -> str:
-            """Send/receive teammate messages, signal done/finished, wake a teammate, or send a help signal.
-            action in {'send','receive','done','finished','wakeup','help'}; 'to'+'content' required for send/wakeup, 'content' required for help.
-            """
+            """Send messages to teammates, receive pending ones, signal
+            done/finished, wake a teammate, or send a help signal. action in
+            {'send', 'receive', 'done', 'finished', 'wakeup', 'help'}; to
+            (name or list of names) and content are required for
+            send/wakeup, neither is required for receive; content (the
+            reason) is required for help, urgency is optional (defaults to
+            'fyi')."""
             if action == "receive":
                 pending = exchange.receive(sender_id)
                 if not pending:

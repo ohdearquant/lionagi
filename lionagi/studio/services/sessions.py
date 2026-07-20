@@ -10,6 +10,7 @@ import aiosqlite
 from fastapi import HTTPException
 
 from lionagi._errors import NotFoundError
+from lionagi.state.claude_mirror import session_db_id
 from lionagi.state.db import DEFAULT_DB_PATH, SESSION_TERMINAL_STATUSES
 
 from ..registry import studio_route
@@ -345,6 +346,25 @@ async def _fetch_role_counts(db: aiosqlite.Connection, msg_ids: list[str]) -> di
     return counts
 
 
+async def _fetch_message_bounds(
+    db: aiosqlite.Connection, msg_ids: list[str]
+) -> tuple[float | None, float | None]:
+    """Return persisted timestamp bounds without hydrating message content."""
+    if not msg_ids:
+        return None, None
+    cur = await db.execute(
+        """SELECT MIN(m.created_at) AS first_message_at,
+                  MAX(m.created_at) AS last_message_at
+           FROM json_each(?) AS ids
+           JOIN messages m ON m.id = ids.value""",
+        (json.dumps(msg_ids),),
+    )
+    row = await cur.fetchone()
+    if row is None:
+        return None, None
+    return row["first_message_at"], row["last_message_at"]
+
+
 async def _fetch_action_messages(
     db: aiosqlite.Connection, msg_ids: list[str]
 ) -> list[dict[str, Any]]:
@@ -412,9 +432,20 @@ def _branch_message_stats(
         function = content.get("function") or ""
         arguments = content.get("arguments")
         arguments = arguments if isinstance(arguments, dict) else {}
-        file_path = arguments.get("file_path") or arguments.get("path")
-        if isinstance(file_path, str) and file_path:
-            files.add(file_path)
+        tool_name = str(function).lower().replace("-", "_").rsplit("__", 1)[-1].rsplit(".", 1)[-1]
+        if tool_name in {
+            "read",
+            "read_file",
+            "write",
+            "write_file",
+            "edit",
+            "edit_file",
+            "multiedit",
+            "notebookedit",
+        }:
+            file_path = arguments.get("file_path") or arguments.get("path")
+            if isinstance(file_path, str) and file_path:
+                files.add(file_path)
 
         response_id = content.get("action_response_id")
         response_msg = response_by_id.get(response_id) if response_id else None
@@ -544,6 +575,7 @@ async def get_session(
             messages = [by_id[mid] for mid in window_ids if mid in by_id]
 
             role_counts = await _fetch_role_counts(db, full_msg_ids)
+            first_message_at, last_message_at = await _fetch_message_bounds(db, full_msg_ids)
             action_messages = await _fetch_action_messages(db, full_msg_ids)
             # message_count is the DB role-aggregate, not message_total: a
             # progression can reference ids whose row was pruned, so the two can diverge.
@@ -576,6 +608,8 @@ async def get_session(
                     "messages_truncated": message_total > len(messages),
                     "message_has_older": has_older,
                     "message_stats": full_stats["branches"][branch_id],
+                    "first_message_at": first_message_at,
+                    "last_message_at": last_message_at,
                     "model": br["model"],
                     "provider": br["provider"],
                     "agent_name": br["agent_name"],
@@ -643,6 +677,21 @@ async def get_session(
         # get_run()'s liveness check can find the recorded pid.
         "node_metadata": session_row["node_metadata"],
     }
+
+
+async def get_session_by_cc_id(cc_uid: str) -> dict[str, Any] | None:
+    """Return a mirrored Claude Code session, including legacy unbackfilled rows."""
+    if not DEFAULT_DB_PATH.exists():
+        return None
+
+    async with _open_db(_DB) as db:
+        cur = await db.execute(
+            "SELECT id FROM sessions WHERE cc_session_id = ? LIMIT 1",
+            (cc_uid,),
+        )
+        row = await cur.fetchone()
+
+    return await get_session(row["id"] if row else session_db_id(cc_uid))
 
 
 async def get_session_messages_after(session_id: str, after_ts: float) -> list[dict[str, Any]]:

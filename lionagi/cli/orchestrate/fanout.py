@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 
 from lionagi._errors import TimeoutError as LionTimeoutError
@@ -13,7 +14,8 @@ from lionagi.orchestration.prompts import SYNTHESIS_INSTRUCTION
 from lionagi.session.exchange import Exchange
 from lionagi.tools.communication.messenger import LionMessenger
 
-from .._logging import log_error, progress
+from .._agent_depth import stamp_worker_depth
+from .._logging import log_error, progress, warn
 from .._providers import parse_model_spec
 from .._util import classify_exception
 from ._common import (
@@ -23,6 +25,7 @@ from ._common import (
     _format_result_text,
     _post_results_to_team,
 )
+from ._notify import register_flow_notify_scope, unregister_flow_notify_scope
 from ._orchestration import (
     OrchestrationEnv,
     available_roles,
@@ -64,6 +67,7 @@ async def _run_fanout(
     invocation_id: str | None = None,
     project: str | None = None,
     pack: str | None = None,
+    notify: str | None = None,
 ) -> tuple[str, str]:
     """Three-phase fan-out: decompose → fan out → synthesize.
 
@@ -72,6 +76,8 @@ async def _run_fanout(
     teardown path settles on) reaches the caller's exit code instead of being
     silently dropped in favour of a hardcoded success.
     """
+    stamp_worker_depth()
+    _started_at = time.time()
     env = await setup_orchestration(
         pattern_name="Fanout",
         model_spec=model_spec,
@@ -105,6 +111,22 @@ async def _run_fanout(
         project=project,
     )
 
+    # Session-scoped: stop_live_persist terminalizes only the session; invocation
+    # records are finalized externally and would never fire.
+    _notify_scope_name: str | None = None
+    if notify:
+        _notify_scope_name = register_flow_notify_scope(
+            override=notify,
+            entity_kind="session",
+            entity_id=str(env.session.id),
+            invocation_id=invocation_id,
+            flow_kind="fanout",
+            playbook=playbook_name,
+            save_dir=save_dir,
+            cwd=cwd or os.getcwd(),
+            started_at=_started_at,
+        )
+
     inner_kw = dict(
         env=env,
         num_workers=num_workers,
@@ -135,6 +157,8 @@ async def _run_fanout(
                 raise LionTimeoutError(msg)
         else:
             result = await _run_fanout_inner(model_spec, prompt, **inner_kw)
+        if _shared.get("artifact_failures"):
+            _terminal_status = "failed"
     except BaseException as exc:
         _terminal_status = classify_exception(exc)
         raise
@@ -143,6 +167,8 @@ async def _run_fanout(
             effective_status = await stop_live_persist(env, status=_terminal_status)
             if effective_status != _terminal_status:
                 _terminal_status = effective_status
+            # Unregister after stop_live_persist fires the terminal transition.
+            unregister_flow_notify_scope(_notify_scope_name)
             for _br in env.session.branches:
                 await _br.mdls.shutdown()
 
@@ -244,25 +270,71 @@ async def _run_fanout_inner(
 
     t1 = time.monotonic()
     conc = max_concurrent if max_concurrent > 0 else len(fanned_nodes)
-    if env.exchange is not None:
-        async with create_task_group() as tg:
-            tg.start_soon(env.exchange.run, 0.5)
-            try:
-                result2 = await env.session.flow(
-                    env.builder.get_graph(),
-                    max_concurrent=conc,
-                    verbose=env.verbose,
-                )
-            finally:
-                env.exchange.stop()
-        # Route any final outbox sends left over after the last collect tick.
-        await env.exchange.collect_all()
-    else:
-        result2 = await env.session.flow(
-            env.builder.get_graph(),
-            max_concurrent=conc,
-            verbose=env.verbose,
-        )
+    graph = env.builder.get_graph()
+    node_workers = {str(node_id): (i + 1, node_id) for i, node_id in enumerate(fanned_nodes)}
+    saved_workers: dict[int, dict] = {}
+    artifact_failures: dict[int, dict] = {}
+
+    from lionagi.engines import PlanningEngine
+    from lionagi.session.signal import NodeCompleted
+
+    def _save_completed_worker(sig, _ctx) -> None:
+        worker_entry = node_workers.get(sig.op_id)
+        if worker_entry is None:
+            return
+        worker_number, node_id = worker_entry
+        node = graph.internal_nodes.get(node_id)
+        response = getattr(node, "response", None) if node is not None else None
+        response_text = str(response) if response is not None else "(no response)"
+        worker_result = {
+            "worker": worker_number,
+            "model": fanned_labels[worker_number - 1],
+            "response": response_text,
+            "time_ms": sig.elapsed * 1000,
+        }
+        artifact_path = env.run.artifact_root / f"worker_{worker_number}.md"
+        try:
+            artifact_path.write_text(response_text)
+        except OSError as exc:
+            artifact_failures[worker_number] = {
+                "worker": worker_number,
+                "path": str(artifact_path),
+                "error": str(exc),
+            }
+            warn(f"Failed to save worker {worker_number} artifact to {artifact_path}: {exc}")
+            if _shared is not None:
+                _shared["artifact_failures"] = [
+                    artifact_failures[i] for i in sorted(artifact_failures)
+                ]
+            return
+        saved_workers[worker_number] = worker_result
+        if _shared is not None:
+            _shared["saved_workers"] = [saved_workers[i] for i in sorted(saved_workers)]
+
+    env.session.observe(NodeCompleted, handler=_save_completed_worker)
+    eng_run = PlanningEngine().new_run(session=env.session)
+    try:
+        if env.exchange is not None:
+            async with create_task_group() as tg:
+                tg.start_soon(env.exchange.run, 0.5)
+                try:
+                    result2 = await eng_run.run_dag(
+                        graph,
+                        max_concurrent=conc,
+                        verbose=env.verbose,
+                    )
+                finally:
+                    env.exchange.stop()
+            # Route any final outbox sends left over after the last collect tick.
+            await env.exchange.collect_all()
+        else:
+            result2 = await eng_run.run_dag(
+                graph,
+                max_concurrent=conc,
+                verbose=env.verbose,
+            )
+    finally:
+        env.session.observer.unobserve(_save_completed_worker)
     t_fanout = time.monotonic() - t1
 
     op_results = result2.get("operation_results", {})
@@ -283,11 +355,9 @@ async def _run_fanout_inner(
 
     progress(f"Phase 2 done ({t_fanout:.1f}s).")
 
-    for wr in worker_results:
-        (env.run.artifact_root / f"worker_{wr['worker']}.md").write_text(wr["response"])
-    progress(f"Saved {len(worker_results)} worker results to {env.run.artifact_root}")
+    progress(f"Saved {len(saved_workers)} worker results to {env.run.artifact_root}")
     if _shared is not None:
-        _shared["saved_workers"] = worker_results
+        _shared["saved_workers"] = [saved_workers[i] for i in sorted(saved_workers)]
 
     synthesis_result = None
     if with_synthesis and contexts:

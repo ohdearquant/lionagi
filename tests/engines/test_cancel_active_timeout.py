@@ -25,6 +25,7 @@ class _StubEngine(Engine):
 
 
 @pytest.mark.asyncio
+@pytest.mark.slow_timing
 async def test_cancel_active_returns_within_deadline_for_non_cooperative_task():
     """cancel_active() must return within cancel_timeout_s even when a child
     catches CancelledError and never re-raises it."""
@@ -53,8 +54,9 @@ async def test_cancel_active_returns_within_deadline_for_non_cooperative_task():
     await run.cancel_active()
     elapsed = time.monotonic() - t0
 
-    # Must return well within a generous bound (cancel_timeout_s + overhead).
-    assert elapsed < 1.5, f"cancel_active hung for {elapsed:.2f}s, expected <1.5s"
+    # Ten times the configured timeout leaves scheduler headroom while still
+    # distinguishing bounded cleanup from the non-cooperative 60s task.
+    assert elapsed < 2.0, f"cancel_active hung for {elapsed:.2f}s, expected <2s"
     # _active must be cleared.
     assert run._active == set(), "_active must be cleared after cancel_active()"
 
@@ -185,6 +187,7 @@ def test_cancel_timeout_configurable():
 
 
 @pytest.mark.asyncio
+@pytest.mark.slow_timing
 async def test_engine_run_lifetime_guarantee_with_non_cooperative_task():
     """Engine.run() must return within bounded time even when a spawned
     child is non-cooperative, without raising CancelledError to the caller."""

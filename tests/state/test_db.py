@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import time
 import uuid
+from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import text
 
 from lionagi.state.db import StateDB
 
@@ -141,9 +143,192 @@ async def test_context_manager():
     assert state._engine is None
 
 
+async def test_managed_entity_creations_write_initial_lifecycle_history(db: StateDB):
+    progression_id = uid()
+    await db.create_progression(progression_id)
+    session_id = uid()
+    await db.create_session(
+        {"id": session_id, "progression_id": progression_id, "status": "running"}
+    )
+
+    invocation_id = uid()
+    await db.create_invocation({"id": invocation_id, "skill": "test", "started_at": time.time()})
+
+    show_id = uid()
+    await db.create_show({"id": show_id, "topic": "creation-history", "show_dir": "shows/history"})
+    play_id = uid()
+    await db.create_play({"id": play_id, "show_id": show_id, "name": "first"})
+
+    schedule_id = uid()
+    await db.create_schedule(
+        {
+            "id": schedule_id,
+            "name": "creation-history",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    schedule_run_id = uid()
+    await db.create_schedule_run(
+        {
+            "id": schedule_run_id,
+            "schedule_id": schedule_id,
+            "trigger_context": {},
+            "action_kind": "agent",
+            "action_args": [],
+            "status": "running",
+            "fired_at": time.time(),
+        }
+    )
+    advanced_run_id = uid()
+    advanced_run = {
+        "id": advanced_run_id,
+        "schedule_id": schedule_id,
+        "trigger_context": {},
+        "action_kind": "agent",
+        "action_args": [],
+        "status": "running",
+        "fired_at": time.time(),
+    }
+    await db.create_schedule_run_and_advance(
+        advanced_run,
+        schedule_id=schedule_id,
+        schedule_fields={"last_fired_at": time.time()},
+    )
+    replacement_run_id = uid()
+    replacement_run = {**advanced_run, "id": replacement_run_id}
+    assert await db.tombstone_and_replace_schedule_run(
+        schedule_run_id,
+        replacement_run,
+    )
+
+    # Idempotent creation retries do not append another creation event.
+    await db.create_session(
+        {"id": session_id, "progression_id": progression_id, "status": "running"}
+    )
+
+    expected = {
+        session_id: ("session", "running"),
+        invocation_id: ("invocation", "running"),
+        show_id: ("show", "active"),
+        play_id: ("play", "pending"),
+        schedule_run_id: ("schedule_run", "running"),
+        advanced_run_id: ("schedule_run", "running"),
+        replacement_run_id: ("schedule_run", "running"),
+    }
+    placeholders = ", ".join(f":id{i}" for i in range(len(expected)))
+    params = {f"id{i}": entity_id for i, entity_id in enumerate(expected)}
+    async with db._read() as conn:
+        rows = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT entity_type, entity_id, previous_status, status "
+                        f"FROM status_transitions WHERE entity_id IN ({placeholders})"
+                    ),
+                    params,
+                )
+            )
+            .mappings()
+            .all()
+        )
+
+    assert len(rows) == len(expected)
+    for row in rows:
+        assert row["previous_status"] is None
+        assert (row["entity_type"], row["status"]) == expected[row["entity_id"]]
+
+
+async def test_creation_history_failure_rolls_back_managed_entity(
+    db: StateDB, monkeypatch: pytest.MonkeyPatch
+):
+    from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService
+
+    async def _fail_initial_history(self, connection, command):
+        raise RuntimeError("forced history failure")
+
+    monkeypatch.setattr(
+        SQLAlchemyLifecycleService,
+        "initialize_in_transaction",
+        _fail_initial_history,
+    )
+    invocation_id = uid()
+    with pytest.raises(RuntimeError, match="forced history failure"):
+        await db.create_invocation(
+            {"id": invocation_id, "skill": "test", "started_at": time.time()}
+        )
+
+    assert await db.get_invocation(invocation_id) is None
+
+
 async def test_engine_is_none_when_closed():
     """_engine is None before open() is called."""
     state = StateDB(":memory:")
+    assert state._engine is None
+
+
+async def test_context_open_failure_disposes_partial_engine(monkeypatch):
+    """A context-entry error must not leave the driver's worker alive."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    import lionagi.state.db as db_mod
+
+    engine = MagicMock()
+    engine.dispose = AsyncMock()
+    monkeypatch.setattr(db_mod, "make_engine", lambda *_args, **_kwargs: engine)
+    monkeypatch.setattr(db_mod, "_install_begin_immediate", lambda *_args: None)
+
+    state = StateDB(":memory:")
+
+    async def fail_schema() -> None:
+        raise RuntimeError("schema is locked")
+
+    monkeypatch.setattr(state, "_apply_schema", fail_schema)
+
+    with pytest.raises(RuntimeError, match="schema is locked"):
+        async with state:
+            raise AssertionError("context body must not run")
+
+    engine.dispose.assert_awaited_once()
+    assert state._engine is None
+
+
+async def test_context_cancelled_open_shields_partial_engine_disposal(monkeypatch):
+    """Cancellation during context entry must not interrupt engine disposal."""
+    import anyio
+
+    import lionagi.state.db as db_mod
+
+    dispose_started = anyio.Event()
+    dispose_finished = anyio.Event()
+
+    class FakeEngine:
+        sync_engine = object()
+
+        async def dispose(self) -> None:
+            dispose_started.set()
+            await anyio.lowlevel.checkpoint()
+            dispose_finished.set()
+
+    engine = FakeEngine()
+    monkeypatch.setattr(db_mod, "make_engine", lambda *_args, **_kwargs: engine)
+    monkeypatch.setattr(db_mod, "_install_begin_immediate", lambda *_args: None)
+
+    state = StateDB(":memory:")
+
+    async def hang_schema() -> None:
+        await anyio.sleep_forever()
+
+    monkeypatch.setattr(state, "_apply_schema", hang_schema)
+
+    with pytest.raises(TimeoutError):
+        with anyio.fail_after(0.01):
+            async with state:
+                raise AssertionError("context body must not run")
+
+    assert dispose_started.is_set()
+    assert dispose_finished.is_set()
     assert state._engine is None
 
 
@@ -814,14 +999,19 @@ async def test_finalize_branch_missing_row_is_noop(db: StateDB):
     assert updated is False
 
 
-async def test_finalize_branch_defaults_ended_at_to_now(db: StateDB):
+async def test_finalize_branch_defaults_ended_at_to_now(
+    db: StateDB, monkeypatch: pytest.MonkeyPatch
+):
+    import lionagi.state.db as state_db_mod
+
+    fixed_now = 1_000_000.0
+    monkeypatch.setattr(state_db_mod, "time", SimpleNamespace(time=lambda: fixed_now))
     branch = await _make_branch(db)
-    before = time.time()
 
     await db.finalize_branch(branch["id"], status="completed")
 
     row = await db.get_branch(branch["id"])
-    assert row["ended_at"] >= before
+    assert row["ended_at"] == fixed_now
 
 
 @pytest.mark.parametrize(

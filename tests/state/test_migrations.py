@@ -5,10 +5,21 @@
 
 from __future__ import annotations
 
+import asyncio
+import multiprocessing
+import queue
+import sqlite3
+import traceback
+from contextlib import asynccontextmanager
+from pathlib import Path
+
 import aiosqlite
 import pytest
 
 from lionagi.state.schema_migrations import MIGRATION_COLUMNS
+
+_NUM_CONCURRENT_WORKERS = 4
+_BARRIER_TIMEOUT_SECONDS = 15
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -17,6 +28,70 @@ async def _column_names(db: aiosqlite.Connection, table: str) -> set[str]:
     cur = await db.execute(f"PRAGMA table_info({table})")
     rows = await cur.fetchall()
     return {row["name"] for row in rows}
+
+
+def _create_pre_cc_session_db(db_path: Path) -> None:
+    """Create a current SQLite schema whose sessions table predates cc_session_id."""
+    from lionagi.state.db import _SCHEMA_PATH
+
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(_SCHEMA_PATH.read_text())
+        conn.execute("DROP INDEX idx_sessions_cc_session")
+        conn.execute("ALTER TABLE sessions RENAME COLUMN cc_session_id TO legacy_cc_session_id")
+
+
+def _open_state_db_worker(
+    db_path: str,
+    start_barrier,
+    inspection_barrier,
+    result_queue,
+) -> None:
+    """Open and close one StateDB in a spawned process."""
+    import lionagi.state.db as state_db_module
+    from lionagi.state.db import StateDB
+
+    original_make_engine = state_db_module.make_engine
+
+    class _SynchronizedEngine:
+        def __init__(self, engine) -> None:
+            self._engine = engine
+            self._alter_synchronized = False
+
+        def begin(self):
+            if not self._alter_synchronized:
+                self._alter_synchronized = True
+
+                @asynccontextmanager
+                async def synchronized_begin():
+                    inspection_barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
+                    async with self._engine.begin() as connection:
+                        yield connection
+
+                return synchronized_begin()
+            return self._engine.begin()
+
+        def __getattr__(self, name: str):
+            return getattr(self._engine, name)
+
+    def synchronized_make_engine(*args, **kwargs):
+        return _SynchronizedEngine(original_make_engine(*args, **kwargs))
+
+    # This fixture is missing only cc_session_id, so the first begin() follows
+    # its missing-column inspection and immediately precedes its ALTER.
+    state_db_module.make_engine = synchronized_make_engine
+
+    async def _open() -> None:
+        state = StateDB(db_path)
+        await state.open()
+        await state.close()
+
+    try:
+        start_barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
+        asyncio.run(_open())
+    except Exception:  # noqa: BLE001
+        result_queue.put(traceback.format_exc())
+    else:
+        result_queue.put(None)
 
 
 # ── Old-schema fixture ────────────────────────────────────────────────────────
@@ -185,6 +260,106 @@ async def test_reconcile_is_idempotent(old_schema_db):
             assert col_name in actual
 
 
+async def test_statedb_upgrade_adds_cc_session_lookup_index(tmp_path: Path) -> None:
+    """Existing databases gain the partial lookup index after the column migration."""
+    from sqlalchemy import text
+
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "pre-cc-session.db"
+    _create_pre_cc_session_db(db_path)
+
+    state = StateDB(db_path)
+    await state.open()
+    try:
+        await state.create_progression("progression-1")
+        await state.execute(
+            "INSERT INTO sessions "
+            "(id, cc_session_id, created_at, progression_id, updated_at) "
+            "VALUES (:id, :cc_session_id, :created_at, :progression_id, :updated_at)",
+            {
+                "id": "session-1",
+                "cc_session_id": "cc-session-1",
+                "created_at": 1.0,
+                "progression_id": "progression-1",
+                "updated_at": 1.0,
+            },
+        )
+        async with state._read() as conn:
+            indexes = (await conn.execute(text("PRAGMA index_list(sessions)"))).mappings().all()
+            plan = (
+                (
+                    await conn.execute(
+                        text(
+                            "EXPLAIN QUERY PLAN SELECT * FROM sessions "
+                            "WHERE cc_session_id = :cc_session_id LIMIT 1"
+                        ),
+                        {"cc_session_id": "cc-session-1"},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+    finally:
+        await state.close()
+
+    assert "idx_sessions_cc_session" in {row["name"] for row in indexes}
+    details = [row["detail"] for row in plan]
+    assert any("SEARCH sessions" in detail for detail in details), details
+    assert any("idx_sessions_cc_session" in detail for detail in details), details
+
+
+def test_concurrent_statedb_opens_reconcile_cc_session_column(tmp_path: Path) -> None:
+    """Concurrent first opens tolerate another process winning the ALTER race."""
+    db_path = tmp_path / "concurrent-pre-cc-session.db"
+    _create_pre_cc_session_db(db_path)
+
+    context = multiprocessing.get_context("spawn")
+    start_barrier = context.Barrier(_NUM_CONCURRENT_WORKERS + 1)
+    inspection_barrier = context.Barrier(_NUM_CONCURRENT_WORKERS)
+    result_queue = context.Queue()
+    processes = [
+        context.Process(
+            target=_open_state_db_worker,
+            args=(
+                str(db_path),
+                start_barrier,
+                inspection_barrier,
+                result_queue,
+            ),
+        )
+        for _ in range(_NUM_CONCURRENT_WORKERS)
+    ]
+
+    results: list[str | None] = []
+    try:
+        for process in processes:
+            process.start()
+        start_barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
+        for process in processes:
+            process.join(timeout=30)
+        for _ in processes:
+            try:
+                results.append(result_queue.get(timeout=2))
+            except queue.Empty:
+                results.append("worker exited without reporting a result")
+    finally:
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5)
+        result_queue.close()
+        result_queue.join_thread()
+
+    exit_codes = [process.exitcode for process in processes]
+    assert all(code == 0 for code in exit_codes), exit_codes
+    assert results == [None] * len(processes), results
+
+    with sqlite3.connect(db_path) as conn:
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(sessions)")]
+    assert columns.count("cc_session_id") == 1
+
+
 async def test_sessions_upgrade_path_populates_adr0028_columns(old_schema_db):
     """After upgrade, sessions table has the ADR-0057 status-reason columns."""
     db = old_schema_db
@@ -266,7 +441,7 @@ async def test_schedule_runs_upgrade_path_gains_resume_packet(old_schema_db):
 
 
 async def test_schedules_upgrade_path_gains_budget_columns(old_schema_db):
-    """After upgrade, an existing schedules table gains budget_usd/budget_tokens."""
+    """After upgrade, an existing schedules table gains its optional budget columns."""
     db = old_schema_db
 
     for table, columns in MIGRATION_COLUMNS.items():
@@ -281,7 +456,7 @@ async def test_schedules_upgrade_path_gains_budget_columns(old_schema_db):
     await db.commit()
 
     actual = await _column_names(db, "schedules")
-    assert {"budget_usd", "budget_tokens"} <= actual
+    assert {"budget_usd", "budget_tokens", "rate_limit"} <= actual
 
 
 async def test_drop_legacy_invocations_status_check_with_fk_referencing_rows(tmp_path):
@@ -653,3 +828,133 @@ async def test_update_schedule_run_rejects_unknown_field():
         await state.update_schedule_run("run-resume-3", not_a_real_field="x")
 
     await state.close()
+
+
+async def test_dispatched_at_migration_backfills_preexisting_running_rows(tmp_path):
+    """A ``schedule_runs`` row already at ``status='running'`` when the
+    ``dispatched_at`` column is first added must have it backfilled to its
+    ``fired_at`` — not left ``NULL``.
+
+    Without the backfill, ``dispatched_at IS NULL`` is indistinguishable
+    between "genuinely never dispatched" and "predates the column
+    entirely", so ``list_undispatched_schedule_runs()`` (consumed by
+    ``SchedulerEngine._recover_undispatched_fires()`` on the next daemon
+    startup) would treat every pre-existing running row as crashed and
+    duplicate-fire a replacement for it — including one that is still
+    genuinely executing across the upgrade restart.
+    """
+    from sqlalchemy import text
+
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "legacy_no_dispatched_at.db"
+
+    async with aiosqlite.connect(str(db_path)) as raw:
+        await raw.execute(
+            """
+            CREATE TABLE schedules (
+              id           TEXT    PRIMARY KEY,
+              name         TEXT    NOT NULL UNIQUE,
+              enabled      INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+              trigger_type TEXT    NOT NULL CHECK(trigger_type IN ('cron', 'interval', 'github_poll')),
+              action_kind  TEXT    NOT NULL CHECK(action_kind IN ('agent', 'flow', 'fanout', 'play', 'flow_yaml')),
+              created_at   REAL    NOT NULL,
+              updated_at   REAL    NOT NULL
+            )
+            """
+        )
+        # schedule_runs at ADR-0071 D4 shape (lease_attempts present) but
+        # pre-dating the dispatched_at / resume_packet columns entirely.
+        await raw.execute(
+            """
+            CREATE TABLE schedule_runs (
+              id                  TEXT    PRIMARY KEY,
+              schedule_id         TEXT    REFERENCES schedules(id) ON DELETE CASCADE,
+              invocation_id       TEXT,
+              trigger_context     JSON    NOT NULL,
+              action_kind         TEXT    NOT NULL,
+              action_args         JSON    NOT NULL,
+              status              TEXT    NOT NULL DEFAULT 'running'
+                                  CHECK(status IN ('queued', 'waiting_dependency', 'running',
+                                                   'retry_wait', 'completed', 'failed',
+                                                   'timed_out', 'skipped', 'cancelled')),
+              exit_code           INTEGER,
+              chain_parent_id     TEXT    REFERENCES schedule_runs(id),
+              chain_depth         INTEGER NOT NULL DEFAULT 0,
+              fired_at            REAL    NOT NULL,
+              ended_at            REAL,
+              error_detail        TEXT,
+              created_at          REAL    NOT NULL,
+              updated_at          REAL,
+              status_reason_code     TEXT,
+              status_reason_summary  TEXT,
+              status_evidence_refs   JSON,
+              queued_at           REAL,
+              leased_by           TEXT,
+              lease_expires_at    REAL,
+              concurrency_key     TEXT,
+              lease_attempts      INTEGER NOT NULL DEFAULT 0,
+              required_capabilities  JSON,
+              execution_target       TEXT,
+              library_ref             TEXT,
+              library_content_hash    TEXT
+            )
+            """
+        )
+        await raw.execute(
+            "INSERT INTO schedules (id, name, trigger_type, action_kind, created_at, updated_at) "
+            "VALUES ('sched-da', 'sched-da', 'interval', 'agent', 1.0, 1.0)"
+        )
+        # A row still genuinely running (or orphaned by an unrelated earlier
+        # crash) at the moment of the upgrade -- fired_at is deliberately
+        # far in the past so a naive "treat as undispatched" scan would be
+        # the only thing standing between it and a duplicate re-fire.
+        await raw.execute(
+            "INSERT INTO schedule_runs "
+            "(id, schedule_id, trigger_context, action_kind, action_args, status, "
+            " chain_depth, fired_at, created_at) "
+            "VALUES ('run-da-running', 'sched-da', '{}', 'agent', '{}', 'running', 0, 100.0, 100.0)"
+        )
+        # A row already terminal before the upgrade -- must NOT be touched
+        # by the backfill (it was never a candidate for the recovery scan).
+        await raw.execute(
+            "INSERT INTO schedule_runs "
+            "(id, schedule_id, trigger_context, action_kind, action_args, status, "
+            " chain_depth, fired_at, created_at) "
+            "VALUES ('run-da-completed', 'sched-da', '{}', 'agent', '{}', 'completed', 0, 50.0, 50.0)"
+        )
+        await raw.commit()
+
+    state = StateDB(db_path)
+    await state.open()
+    try:
+        async with state._read() as conn:
+            running_row = (
+                (
+                    await conn.execute(
+                        text("SELECT * FROM schedule_runs WHERE id = :id"),
+                        {"id": "run-da-running"},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            completed_row = (
+                (
+                    await conn.execute(
+                        text("SELECT * FROM schedule_runs WHERE id = :id"),
+                        {"id": "run-da-completed"},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        assert running_row["dispatched_at"] == running_row["fired_at"] == 100.0
+        assert completed_row["dispatched_at"] is None
+
+        # The whole point of the backfill: the recovery scan must no longer
+        # pick up the pre-existing running row as an undispatched orphan.
+        orphans = await state.list_undispatched_schedule_runs()
+        assert orphans == []
+    finally:
+        await state.close()

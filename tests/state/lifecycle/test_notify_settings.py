@@ -318,6 +318,7 @@ async def test_exec_handler_swallows_nonzero_exit_and_timeout(monkeypatch, caplo
 
 
 @pytest.mark.asyncio
+@pytest.mark.slow_timing
 async def test_cancelled_exec_handler_still_kills_its_child_process_group(tmp_path: Path):
     # Reproduces the race: TerminalCallbackRegistry's own move_on_after
     # budget is set far shorter than the exec handler's internal

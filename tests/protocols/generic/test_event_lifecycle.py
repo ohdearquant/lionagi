@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 
 import pytest
 
@@ -29,14 +30,6 @@ class FailingEvent(Event):
 
     async def _invoke(self) -> None:
         raise ValueError("boom")
-
-
-class SlowEvent(Event):
-    """Event subclass with a measurable delay."""
-
-    async def _invoke(self):
-        await asyncio.sleep(0.05)
-        return "done"
 
 
 class DirectOverrideEvent(Event):
@@ -155,13 +148,16 @@ class TestInvokeLifecycle:
         assert event.execution.duration == first_duration
 
     @pytest.mark.asyncio
-    async def test_duration_recorded(self):
+    async def test_duration_recorded(self, monkeypatch: pytest.MonkeyPatch):
         """Duration is recorded in execution.duration."""
-        event = SlowEvent()
+        clock = iter((100.0, 100.05))
+        monkeypatch.setattr(
+            "lionagi.protocols.generic.event.ln.now_utc",
+            lambda: datetime.fromtimestamp(next(clock), tz=timezone.utc),
+        )
+        event = SuccessEvent()
         await event.invoke()
-        assert event.execution.duration is not None
-        # Slept 50ms, so duration should be at least 0.04s (allow for timing jitter)
-        assert event.execution.duration >= 0.04
+        assert event.execution.duration == pytest.approx(0.05)
 
     @pytest.mark.asyncio
     async def test_duration_recorded_on_failure(self):

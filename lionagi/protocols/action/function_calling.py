@@ -3,13 +3,48 @@
 
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    AliasPath,
+    BaseModel,
+    Field,
+    field_validator,
+    model_validator,
+)
 from typing_extensions import Self
 
 from lionagi.ln.concurrency import is_coro_func
 
 from ..generic.event import Event
 from .tool import Tool
+from .tool_hooks import ActionGovernanceDeniedError
+
+
+class RevalidationDeniedError(ActionGovernanceDeniedError):
+    """Raised when rewritten tool arguments fail schema revalidation after a
+    hook or preprocessor rewrite. A governance denial, not an ordinary tool
+    exception -- distinct from a tool body raising ``PermissionError`` for
+    its own business reasons.
+    """
+
+
+def _add_alias_keys(alias: Any, keys: set[str]) -> None:
+    """Add the input key(s) an alias makes reachable to `keys`.
+
+    Handles a plain string alias, an `AliasPath` (whose reachable input
+    key is its top-level root -- `AliasPath("payload", "value")` accepts
+    input under the top-level key "payload"), and an `AliasChoices`
+    whose `.choices` may themselves contain any mix of strings and
+    nested `AliasPath` entries.
+    """
+    if isinstance(alias, str):
+        keys.add(alias)
+    elif isinstance(alias, AliasPath):
+        if alias.path and isinstance(alias.path[0], str):
+            keys.add(alias.path[0])
+    elif isinstance(alias, AliasChoices):
+        for choice in alias.choices:
+            _add_alias_keys(choice, keys)
 
 
 class FunctionCalling(Event):
@@ -65,14 +100,40 @@ class FunctionCalling(Event):
 
         # Re-validate after any pre-stage rewrite (hook layer or preprocessor
         # above) so a rewrite can never bypass the tool's declared schema.
+        # Keys outside the schema (e.g. an audit marker a preprocessor adds)
+        # are not covered by that validation -- pydantic's default
+        # extra="ignore" would otherwise drop them from model_dump, so they
+        # are carried through untouched rather than silently discarded.
+        #
+        # "Outside the schema" must be judged against the model's declared
+        # input names (field names + aliases), not against the *serialized*
+        # validated dump: a declared field that is aliased and left unset
+        # (e.g. `Field(default=0, validation_alias="a_alias")`) is absent
+        # from `model_dump(exclude_unset=True)` even though it is a real,
+        # schema-covered field. Classifying it as "extra" would let a
+        # preprocessor set it by name and forward the raw, unvalidated
+        # value straight to the callable -- a schema bypass.
         if self.func_tool.request_options:
             try:
                 validated = self.func_tool.request_options(**self.arguments)
             except Exception as e:
-                raise PermissionError(
+                raise RevalidationDeniedError(
                     f"rewritten arguments failed validation for {self.func_tool.function!r}: {e}"
                 ) from e
-            self.arguments = validated.model_dump(exclude_unset=True)
+            validated_args = validated.model_dump(exclude_unset=True)
+            declared_keys: set[str] = set()
+            for field_name, field_info in self.func_tool.request_options.model_fields.items():
+                declared_keys.add(field_name)
+                if isinstance(field_info.alias, str):
+                    declared_keys.add(field_info.alias)
+                # AliasPath (direct or nested inside AliasChoices) still
+                # makes its top-level root key a declared input -- e.g.
+                # `AliasPath("payload", "value")` accepts input under
+                # "payload", not just via its own `.choices` string
+                # members.
+                _add_alias_keys(field_info.validation_alias, declared_keys)
+            extra_args = {k: v for k, v in self.arguments.items() if k not in declared_keys}
+            self.arguments = {**validated_args, **extra_args}
 
         if is_coro_func(self.func_tool.func_callable):
             response = await self.func_tool.func_callable(**self.arguments)

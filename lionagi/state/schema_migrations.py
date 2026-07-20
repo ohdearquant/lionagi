@@ -1,13 +1,14 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ALTER TABLE column definitions consumed by StateDB._reconcile_columns for schema migrations."""
+"""Additive schema definitions consumed by StateDB's runtime migrations."""
 
 from __future__ import annotations
 
 MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
     "sessions": [
         ("updated_at", "REAL"),
+        ("cc_session_id", "TEXT"),
         ("playbook_name", "TEXT"),
         ("agent_name", "TEXT"),
         ("invocation_kind", "TEXT"),
@@ -94,6 +95,8 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # Cumulative spend budget: NULL means unlimited.
         ("budget_usd", "REAL"),
         ("budget_tokens", "INTEGER"),
+        # Rolling-window fire cap: {max_fires, window_sec}; NULL is unlimited.
+        ("rate_limit", "JSON"),
         # Metric threshold alerts: {metric, op, value, window_minutes}
         # config blob + the cooldown timestamp of the last breach fire.
         ("threshold_config", "JSON"),
@@ -109,6 +112,18 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # 'command' action kind.
         ("action_command", "TEXT"),
         ("action_command_args", "JSON"),
+        # Declarative ScheduleSet layer: versioned identity, resolved
+        # snapshot + digest, and set ownership. NULL on legacy/quick-create rows.
+        ("spec_version", "TEXT"),
+        ("managed_by", "TEXT"),
+        ("owner_key", "TEXT"),
+        ("authored_spec", "JSON"),
+        ("resolved_target", "JSON"),
+        ("resolved_digest", "TEXT"),
+        ("resolved_timezone", "TEXT"),
+        # Terminal notification: filtered callback on the spawned invocation.
+        ("notify_on", "JSON"),
+        ("notify_command", "TEXT"),
     ],
     "schedule_runs": [
         # ADR-0057: schedule_runs originally had no updated_at.
@@ -175,4 +190,21 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("expires_at", "REAL"),
         ("updated_at", "REAL"),
     ],
+}
+
+# metadata.create_all() skips indexes when their table already exists. Keep
+# dialect-specific, idempotent DDL here for indexes introduced after deployment.
+MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
+    "sqlite": (
+        "CREATE INDEX IF NOT EXISTS idx_sessions_cc_session "
+        "ON sessions(cc_session_id) WHERE cc_session_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_schedules_owner_key "
+        "ON schedules(owner_key) WHERE owner_key IS NOT NULL",
+    ),
+    "postgresql": (
+        "CREATE INDEX IF NOT EXISTS idx_sessions_cc_session "
+        "ON sessions(cc_session_id) WHERE cc_session_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_schedules_owner_key "
+        "ON schedules(owner_key) WHERE owner_key IS NOT NULL",
+    ),
 }

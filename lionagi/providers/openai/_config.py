@@ -64,6 +64,14 @@ class OpenAIConfigs(ProviderConfig, Enum):
         "https://api.openai.com/v1",
         "bearer",
     )
+    BATCH = (
+        "batches",
+        ["batch"],
+        EndpointType.API,
+        LazyType("lionagi.providers.openai.batch:OpenAIBatchRequest"),
+        "https://api.openai.com/v1",
+        "bearer",
+    )
 
 
 OpenAIConfigs._PROVIDER = "openai"

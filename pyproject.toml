@@ -1,6 +1,6 @@
 [project]
 name = "lionagi"
-version = "0.28.0"
+version = "0.29.1"
 description = "An Intelligence Operating System."
 authors = [
     { name = "HaiyangLi", email = "quantocean.li@gmail.com" },
@@ -214,8 +214,11 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 timeout = 300
 timeout_method = "thread"
+faulthandler_timeout = 270
 markers = [
     "performance: marks tests as performance benchmarks",
+    "flaky_quarantine: temporarily excluded from required CI by tests/quarantine.txt",
+    "slow_timing: intentionally exercises a real wall-clock deadline with generous headroom",
     "slow: marks tests as slow (> 1 second)",
     "integration: exercises multiple Studio server components, FastAPI TestClient, SQLite, or filesystem state",
     "unit: marks tests as unit tests",
@@ -261,9 +264,8 @@ exclude = [
 ]
 
 [tool.pyright]
-include = ["lionagi"]
+include = ["lionagi", "tests/typing/branch_chat.py"]
 exclude = [
-    "tests",
     "apps/studio/frontend",
     "**/__pycache__",
     "**/node_modules",
@@ -273,6 +275,24 @@ exclude = [
 ]
 typeCheckingMode = "basic"
 pythonVersion = "3.10"
+# The codebase uses the implicit-Optional idiom (`param: X = None`) throughout;
+# treat those parameters as `X | None` instead of flagging every call site.
+strictParameterNoneValue = false
+# Type-hygiene backlog (~1.4k findings, 2026-07-17): surfaced as warnings so
+# editors reserve errors for genuine breakage. Re-promote per-rule as the
+# sweep burns files down (start: session/branch.py, protocols/generic/pile.py,
+# state/db.py).
+reportArgumentType = "warning"
+reportAttributeAccessIssue = "warning"
+reportOptionalMemberAccess = "warning"
+reportCallIssue = "warning"
+reportGeneralTypeIssues = "warning"
+reportReturnType = "warning"
+reportAssignmentType = "warning"
+reportOptionalSubscript = "warning"
+reportOperatorIssue = "warning"
+reportIndexIssue = "warning"
+reportOptionalCall = "warning"
 reportMissingImports = "warning"
 reportMissingModuleSource = "none"
 reportUnknownMemberType = "none"

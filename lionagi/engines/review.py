@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic import Field
@@ -66,6 +67,20 @@ _DIM_MODE: dict[str, str] = {
     "performance": "evidential",
     "maintainability": "metacognitive",
 }
+
+
+_LOC_PAT = re.compile(r"^(?P<file>[\w./\\-]+?)[:@](?P<line>\d+)")
+
+
+def _verify_key(issue: IssueFound) -> str:
+    """Dedup key for adversarial verification. Two dimensions often surface the
+    same defect with different wording, so keying on the raw description spawns
+    duplicate heavyweight verifiers; when the location parses as path:line,
+    bucket nearby lines of the same file together instead."""
+    m = _LOC_PAT.match(issue.location.strip()) if issue.location else None
+    if m:
+        return f"verify:{m.group('file')}:{int(m.group('line')) // 25}"
+    return f"verify:{issue.description}"
 
 
 def _dimension_instruction(artifact: str, dimension: str) -> str:
@@ -135,6 +150,38 @@ class ReviewEngine(Engine):
         self.verify_severities = set(verify_severities)
         self.repair_retries = repair_retries
 
+    # -- lifecycle --------------------------------------------------------------
+
+    async def _partial_export(  # type: ignore[override]
+        self, run: EngineRun, artifact: str, *, dimensions: tuple[str, ...] | None = None
+    ) -> str:
+        """Return an already-computed verdict after budget/deadline exhaustion
+        instead of discarding it.
+
+        A synthesis agent's structured emission is captured onto the session
+        bus via the branch's async signal-emission side channel (on_message_
+        added -> fire-and-forget emit_message()) independently of whether the
+        ``synth.operate()`` call in ``_verdict`` itself ever returns — so a
+        ReviewVerdict can already exist in ``run.by_type(ReviewVerdict)`` even
+        though the deadline watchdog cancelled ``_run_task`` before ``_verdict``
+        reached its ``return`` statement (e.g. a CLI-backed worker still
+        retrying its emission). The base ``Engine._partial_export`` no-op
+        would silently drop that verdict; this surfaces it, flagged via the
+        normal EngineResult degrade signal.
+        """
+        verdicts = run.by_type(ReviewVerdict)
+        if not verdicts:
+            return ""
+        verdict = verdicts[-1]
+        run.notify("verdict_emitted_on_exhaustion", verdict=verdict.verdict)
+        status_header = (
+            "**status: budget_exhausted (verdict emitted on exhaustion)** — "
+            "run terminated by deadline/budget after the verdict was computed "
+            f"({run.agents_made} agents)\n\n"
+        )
+        blocking = f"\n\nBlocking: {', '.join(verdict.blocking)}" if verdict.blocking else ""
+        return f"{status_header}{verdict.verdict}: {verdict.rationale}{blocking}"
+
     async def _run(
         self, run: EngineRun, artifact: str, *, dimensions: tuple[str, ...] | None = None
     ) -> str:
@@ -158,7 +205,7 @@ class ReviewEngine(Engine):
     # -- reactions ------------------------------------------------------------
 
     def _on_issue(self, run: EngineRun, issue: IssueFound) -> None:
-        if issue.severity in self.verify_severities and not run.seen(f"verify:{issue.description}"):
+        if issue.severity in self.verify_severities and not run.seen(_verify_key(issue)):
             run.spawn(self._verify(run, issue))
 
     # -- stages ---------------------------------------------------------------

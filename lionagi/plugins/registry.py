@@ -257,8 +257,10 @@ def _build_snapshot() -> list[PluginRecord]:
     for surface, extractor in _NAMED_SURFACES:
         owners: dict[str, list[str]] = {}
         for d in candidates:
-            for cap_name in extractor(d.manifest):
-                owners.setdefault(cap_name, []).append(d.manifest.name)
+            manifest = d.manifest
+            assert manifest is not None
+            for cap_name in extractor(manifest):
+                owners.setdefault(cap_name, []).append(manifest.name)
         for cap_name, owner_names in owners.items():
             if len(owner_names) > 1:
                 msg = (
@@ -430,6 +432,13 @@ class PluginRegistry:
 
     _snapshot: ClassVar[list[PluginRecord] | None] = None
     _lock: ClassVar[threading.Lock] = threading.Lock()
+    # Monotonic counter bumped every time _snapshot is (re)built. id()-based
+    # tokens are reusable once the prior snapshot list is garbage-collected,
+    # so a rebuilt snapshot could get the SAME id() as an earlier one a
+    # caller had cached -- making a stale entry look current and skipping
+    # the post-reset trust/enablement/peer-collision recheck. A counter that
+    # only ever increases cannot repeat.
+    _generation: ClassVar[int] = 0
     # Keyed by (plugin_name, target, content_hash) so re-trusted content is
     # structurally a cache miss, not dependent on prior eviction.
     _activation_cache: ClassVar[dict[tuple[str, str, str], Any]] = {}
@@ -442,6 +451,7 @@ class PluginRegistry:
         with cls._lock:
             if cls._snapshot is None:
                 cls._snapshot = _build_snapshot()
+                cls._generation += 1
             return cls._snapshot
 
     @classmethod
@@ -451,6 +461,22 @@ class PluginRegistry:
             cls._snapshot = None
             cls._activation_cache = {}
             cls._activation_errors = {}
+
+    @classmethod
+    def snapshot_generation(cls) -> int:
+        """Cheap process-lifetime token for the cached plugin scan: identical
+        across calls until ``reset()`` forces a rebuild, at which point it
+        strictly increases. Lets a caller that already fully validated a
+        plugin against the live snapshot cheaply detect ``nothing has been
+        reset since`` without repeating the scan itself; never a substitute
+        for the full, per-target trust/eligibility check ``activate_target()``
+        performs whenever this token *does* change. A monotonic counter
+        (not ``id()`` of the cached snapshot list) so the token can never
+        repeat across the process lifetime, even after many reset() cycles
+        recycle the same memory address for a new snapshot object.
+        """
+        cls._ensure_loaded()
+        return cls._generation
 
     @classmethod
     def list_plugins(cls) -> list[PluginRecord]:
@@ -474,6 +500,20 @@ class PluginRegistry:
             assert fresh.manifest is not None
             for rel in fresh.manifest.capabilities.agents:
                 stem = Path(rel).stem
+                out[f"{plugin_name}/{stem}"] = (plugin_name, fresh.bundle_dir / rel)
+        return out
+
+    @classmethod
+    def active_playbook_files(cls) -> dict[str, tuple[str, Path]]:
+        """``<plugin>/<name>`` -> (plugin name, absolute playbook path), for
+        every ACTIVE plugin. Consumed by ``lionagi.cli.orchestrate``.
+        """
+        out: dict[str, tuple[str, Path]] = {}
+        active, _, _ = _fresh_active_plugins(cls._ensure_loaded())
+        for plugin_name, fresh in active.items():
+            assert fresh.manifest is not None
+            for rel in fresh.manifest.capabilities.playbooks:
+                stem = Path(rel).stem.removesuffix(".playbook")
                 out[f"{plugin_name}/{stem}"] = (plugin_name, fresh.bundle_dir / rel)
         return out
 
@@ -522,31 +562,70 @@ class PluginRegistry:
     def activate_target(cls, plugin_name: str, target: str) -> Any:
         """Stage 2: resolve a bundle-relative ``path.py:callable`` (or bare
         ``path.py`` module) reference. Eligibility and trust are revalidated
-        fresh on every call, never from the cached snapshot. See
-        docs/internals/runtime.md for the single-read and cache-key contract.
+        fresh on every call by rescanning only the requested plugin; the
+        cached snapshot supplies its bundle-directory candidate, not a trust
+        verdict. See docs/internals/runtime.md for the single-read and
+        cache-key contract.
         """
-        active, _, by_name = _fresh_active_plugins(cls._ensure_loaded())
-        fresh = active.get(plugin_name)
-        if fresh is None:
-            matches = by_name.get(plugin_name, [])
-            if len(matches) == 1:
-                candidate = matches[0]
-                assert candidate.manifest is not None
-                if (
-                    _is_live_active(candidate.manifest)
-                    and _trust_state(candidate) is not TrustState.TRUSTED
-                ):
-                    msg = (
-                        f"plugin {plugin_name!r} is no longer trusted (the manifest or a "
-                        f"declared file changed since the cached scan) — re-run "
-                        f"`li plugin trust {plugin_name}` or `li plugin list` to refresh"
-                    )
-                    raise PluginActivationError(plugin_name, target, msg)
+        records = cls._ensure_loaded()
+        record = cls.get(plugin_name)
+        if record is None or sum(item.name == plugin_name for item in records) != 1:
             msg = f"plugin {plugin_name!r} is not active (no such plugin, or untrusted/disabled/incompatible)"
+            raise PluginActivationError(plugin_name, target, msg)
+
+        fresh = _rescan(record)
+        if fresh is None:
+            msg = (
+                f"plugin {plugin_name!r} is no longer trusted (the manifest or a "
+                f"declared file changed since the cached scan) — re-run "
+                f"`li plugin trust {plugin_name}` or `li plugin list` to refresh"
+            )
             raise PluginActivationError(plugin_name, target, msg)
         assert fresh.manifest is not None
 
-        resolution = _target_resolution_map(fresh.manifest)
+        manifest = fresh.manifest
+        if not _is_live_active(manifest):
+            msg = f"plugin {plugin_name!r} is not active (no such plugin, or untrusted/disabled/incompatible)"
+            raise PluginActivationError(plugin_name, target, msg)
+        if manifest.name != plugin_name or _trust_state(fresh) is not TrustState.TRUSTED:
+            msg = (
+                f"plugin {plugin_name!r} is no longer trusted (the manifest or a "
+                f"declared file changed since the cached scan) — re-run "
+                f"`li plugin trust {plugin_name}` or `li plugin list` to refresh"
+            )
+            raise PluginActivationError(plugin_name, target, msg)
+        tool_names = _tool_names(manifest)
+        if len(tool_names) != len(set(tool_names)):
+            msg = f"plugin {plugin_name!r} is not active (no such plugin, or untrusted/disabled/incompatible)"
+            raise PluginActivationError(plugin_name, target, msg)
+
+        # ADR-0088 D6: a tool name shared with another live-eligible plugin is a
+        # hard error, not a shadow. Only the requested plugin is rescanned above;
+        # other plugins' tool ownership comes from their cached manifests, but
+        # enabled/compatible is still re-derived live (via _is_live_active) so
+        # disabling the other plugin resolves the collision without a reset().
+        other_tool_owners: dict[str, list[str]] = {}
+        for other in records:
+            if other.name == plugin_name or other.manifest is None:
+                continue
+            if other.state not in (PluginState.ACTIVE, PluginState.COLLISION):
+                continue
+            if not _is_live_active(other.manifest):
+                continue
+            for other_tool_name in _tool_names(other.manifest):
+                other_tool_owners.setdefault(other_tool_name, []).append(other.name)
+
+        for tool_name in tool_names:
+            colliding_owners = list(dict.fromkeys(other_tool_owners.get(tool_name, [])))
+            if colliding_owners:
+                names = ", ".join([plugin_name, *colliding_owners])
+                msg = (
+                    f"tool {tool_name!r} is declared by multiple enabled plugins "
+                    f"({names}) — disable one with `li plugin disable <name>`"
+                )
+                raise PluginActivationError(plugin_name, target, msg)
+
+        resolution = _target_resolution_map(manifest)
         if target not in resolution:
             msg = (
                 f"target {target!r} is not declared by plugin {plugin_name!r}'s manifest "

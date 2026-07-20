@@ -2,11 +2,13 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 
+import anyio
+
 from lionagi.ln import bcall
 
 
 async def async_func(x: int) -> int:
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(0)
     return x * 2
 
 
@@ -15,7 +17,7 @@ def sync_func(x: int) -> int:
 
 
 async def async_func_with_error(x: int) -> int:
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(0)
     if x == 3:
         raise ValueError("mock error")
     return x * 2
@@ -47,24 +49,28 @@ class TestBCallFunction(unittest.IsolatedAsyncioTestCase):
             async_func_with_error,
             batch_size=2,
             retry_attempts=1,
+            retry_initial_delay=0,
             retry_default=0,
         ):
             batches.append(batch)
         self.assertEqual(batches, [[2, 4], [0, 8], [10]])
 
     async def test_bcall_with_timeout(self):
+        async def blocked(x: int) -> int:
+            await anyio.sleep_forever()
+            return x
+
         inputs = [1, 2, 3]
         batches = []
         async for batch in bcall(
             inputs,
-            async_func,
+            blocked,
             batch_size=2,
-            retry_timeout=0.05,
+            retry_timeout=0,
             retry_default="timeout",
             retry_attempts=0,
         ):
             batches.append(batch)
-        # All should timeout since async_func sleeps for 0.1s
         self.assertEqual(batches, [["timeout", "timeout"], ["timeout"]])
 
     async def test_bcall_with_max_concurrent(self):

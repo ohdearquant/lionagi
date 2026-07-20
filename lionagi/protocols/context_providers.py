@@ -35,7 +35,7 @@ class ContextProvider(Protocol):
 @dataclass(frozen=True)
 class ProviderReport:
     """Per-turn observability: rendered blocks plus which providers fired,
-    were skipped (budget) or failed (exception)."""
+    were skipped (budget) or failed (exception or invalid output)."""
 
     blocks: list[str] = field(default_factory=list)
     fired: list[dict] = field(default_factory=list)
@@ -58,6 +58,13 @@ class ContextProviderRegistry:
     def __init__(self, budget: int = _DEFAULT_BUDGET):
         self.budget = budget
         self._entries: list[_Entry] = []
+        self.stats: dict[str, int] = {
+            "recall_turns": 0,
+            "blocks_injected": 0,
+            "failed": 0,
+            "writeback_records": 0,
+            "writeback_failed": 0,
+        }
 
     def register(
         self,
@@ -93,17 +100,18 @@ class ContextProviderRegistry:
         for entry in self._entries:
             try:
                 text = await entry.provider.provide(branch, instruction)
+                if text is not None and not isinstance(text, str):
+                    raise TypeError("context provider output must be a string or None")
+                if not text:
+                    continue
+                tokens = TokenCalculator.tokenize(text)
+                if entry.max_tokens and tokens > entry.max_tokens:
+                    report.skipped.append(entry.name)
+                    continue
+                successes.append((entry, text, tokens))
             except Exception:
                 logger.warning("context provider %r raised; skipping", entry.name, exc_info=True)
                 report.failed.append(entry.name)
-                continue
-            if not text:
-                continue
-            tokens = TokenCalculator.tokenize(text)
-            if entry.max_tokens and tokens > entry.max_tokens:
-                report.skipped.append(entry.name)
-                continue
-            successes.append((entry, text, tokens))
 
         # Drop lowest-priority first over budget; stable sort preserves
         # registration order among equal priorities.
@@ -123,18 +131,27 @@ class ContextProviderRegistry:
                 report.blocks.append(text)
                 report.fired.append({"provider_name": entry.name, "tokens": tokens})
 
+        if report.fired:
+            self.stats["recall_turns"] += 1
+        self.stats["blocks_injected"] += len(report.fired)
+        self.stats["failed"] += len(report.failed)
         return report
 
     async def gather_writeback(self, branch: Branch, action_responses: list) -> None:
         """POST-turn hook: providers with an optional `writeback` method persist
-        from the turn's action responses; errors are warned + skipped, never block."""
+        from the turn's action responses and may return a record count; errors are
+        warned + skipped, never block."""
         for entry in self._entries:
             hook = getattr(entry.provider, "writeback", None)
             if hook is None:
                 continue
             try:
-                await hook(branch, action_responses)
+                result = await hook(branch, action_responses)
             except Exception:
+                self.stats["writeback_failed"] += 1
                 logger.warning(
                     "context provider %r writeback raised; skipping", entry.name, exc_info=True
                 )
+                continue
+            if isinstance(result, int):
+                self.stats["writeback_records"] += result

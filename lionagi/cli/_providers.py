@@ -52,6 +52,7 @@ __all__ = (
     "resolve_model_spec",
     "resolve_persisted_effort",
     "AgentProfile",
+    "build_agent_profile_catalog",
     "build_deadline_preamble",
     "list_agents",
     "load_agent_profile",
@@ -277,6 +278,16 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
             "Same effect as an agent profile's 'resume_on_timeout: once'."
         ),
     )
+    parser.add_argument(
+        "--notify",
+        metavar="CMD",
+        default=None,
+        help=(
+            "Shell command template run once this run reaches its terminal "
+            "status. Overrides .lionagi/settings.yaml notify.on_terminal. "
+            "Substitutes {payload} (full JSON), {status}, {invocation_id}."
+        ),
+    )
 
 
 # ── Agent profile loading (absorbed from _agents.py) ─────────────────────────
@@ -320,6 +331,7 @@ class AgentProfile:
     bypass: bool = False
     fast_mode: bool = False
     lion_system: bool = True
+    khive_injection: Any = None
     artifact_defaults: dict | None = None
     timeout: int | None = None
     """Default --timeout (seconds) used when the CLI flag is not given."""
@@ -328,14 +340,30 @@ class AgentProfile:
     extra: dict = field(default_factory=dict)
 
 
-def _resolve_profile_path(agents_dir: Path, name: str) -> Path | None:
-    """Return profile path for NAME: directory layout (<name>/<name>.md) before flat (<name>.md)."""
-    dir_candidate = agents_dir / name / f"{name}.md"
-    if dir_candidate.is_file():
-        return dir_candidate
-    flat_candidate = agents_dir / f"{name}.md"
-    if flat_candidate.is_file():
-        return flat_candidate
+def _unreadable_symlink_target(path: Path) -> str | None:
+    """Return a broken/non-file symlink's declared target, if applicable."""
+    if not path.is_symlink() or path.is_file():
+        return None
+    try:
+        return str(path.readlink())
+    except OSError:
+        return "<unreadable>"
+
+
+def _resolve_profile_path(
+    agents_dir: Path,
+    name: str,
+    *,
+    unreadable_symlinks: list[tuple[Path, str]] | None = None,
+) -> Path | None:
+    """Return profile path for NAME, recording unreadable candidate symlinks."""
+    candidates = (agents_dir / name / f"{name}.md", agents_dir / f"{name}.md")
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+        target = _unreadable_symlink_target(candidate)
+        if target is not None and unreadable_symlinks is not None:
+            unreadable_symlinks.append((candidate, target))
     return None
 
 
@@ -363,14 +391,44 @@ def list_agents() -> list[str]:
             continue
         # Directory layout
         for child in agents_dir.iterdir():
-            if child.is_dir() and (child / f"{child.name}.md").is_file():
+            profile_path = child / f"{child.name}.md"
+            if _unreadable_symlink_target(profile_path) is not None:
+                continue
+            if child.is_dir() and profile_path.is_file():
                 seen.add(child.name)
         # Flat legacy layout
         for p in agents_dir.glob("*.md"):
+            if _unreadable_symlink_target(p) is not None:
+                continue
             if p.is_file():
                 seen.add(p.stem)
     seen.update(_plugin_agent_profiles().keys())
     return sorted(seen)
+
+
+def build_agent_profile_catalog() -> dict[str, dict[str, Any]]:
+    """Index discoverable profiles by name and resolved runtime configuration.
+
+    Prompt bodies are deliberately omitted: the catalog is a discovery surface,
+    not a second path for exposing or copying profile instructions.
+    """
+    catalog: dict[str, dict[str, Any]] = {}
+    for name in list_agents():
+        profile = load_agent_profile(name)
+        catalog[name] = {
+            "model": profile.model,
+            "effort": profile.effort,
+            "role": profile.extra.get("role"),
+            "pack": profile.extra.get("pack"),
+            "yolo": profile.yolo,
+            "bypass": profile.bypass,
+            "fast_mode": profile.fast_mode,
+            "lion_system": profile.lion_system,
+            "khive_injection": profile.khive_injection,
+            "timeout": profile.timeout,
+            "resume_on_timeout": profile.resume_on_timeout,
+        }
+    return catalog
 
 
 def _resolve_plugin_profile_path(name: str) -> Path | None:
@@ -431,9 +489,14 @@ def load_agent_profile(name: str) -> AgentProfile:
         _validate_bare_name(name)
 
     dirs = _find_lionagi_dirs()
+    unreadable_symlinks: list[tuple[Path, str]] = []
     if not plugin_token:
         for d in dirs:
-            path = _resolve_profile_path(d / "agents", name)
+            path = _resolve_profile_path(
+                d / "agents",
+                name,
+                unreadable_symlinks=unreadable_symlinks,
+            )
             if path is not None:
                 _warn_if_shadowing_plugin_profile(name)
                 text = path.read_text()
@@ -449,8 +512,10 @@ def load_agent_profile(name: str) -> AgentProfile:
             "or ~/.lionagi/agents/ globally."
         )
 
-    available = list_agents()
+    available = sorted(_plugin_agent_profiles().keys()) if plugin_token else list_agents()
     msg = f"Agent profile '{name}' not found"
+    for path, target in unreadable_symlinks:
+        msg += f"\n{path} exists but its symlink target is unreadable: {target}"
     if available:
         msg += f"\nAvailable: {', '.join(available)}"
     raise FileNotFoundError(msg)
@@ -510,6 +575,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         bypass=bool(frontmatter.get("bypass", False)),
         fast_mode=bool(frontmatter.get("fast_mode", False)),
         lion_system=lion_system,
+        khive_injection=frontmatter.get("khive_injection"),
         artifact_defaults=frontmatter.get("artifact_defaults"),
         timeout=_parse_profile_timeout(name, frontmatter.get("timeout")),
         resume_on_timeout=_parse_profile_resume_on_timeout(
@@ -526,6 +592,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
                 "bypass",
                 "fast_mode",
                 "lion_system",
+                "khive_injection",
                 "artifact_defaults",
                 "timeout",
                 "resume_on_timeout",

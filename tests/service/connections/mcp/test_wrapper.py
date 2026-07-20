@@ -22,6 +22,7 @@ from lionagi.service.connections.mcp_wrapper import (
     MCPConnectionPool,
     MCPSecurityConfig,
     _classify_keyword,
+    _property_is_bounded,
     _schema_is_insufficient,
     create_mcp_tool,
     validate_mcp_tool_admission,
@@ -1460,74 +1461,6 @@ class TestValidateMcpToolAdmission:
             "executor-identity-with-insufficient-schema",
             id="unevaluatedproperties-nested-in-property-value-denies",
         ),
-        # --- Array-applicator over-block: `items`/`prefixItems` are DENIED
-        # applicators -- their mere presence denies regardless of what their
-        # own subschema contains, including a fully bounded one. These three
-        # schemas are provably safe on their own (see the oracle
-        # differentials in `ARRAY_APPLICATOR_OVER_BLOCK_CASES` below, which
-        # confirm the validator itself still bounds them): a caller cannot
-        # inject a free-form value through any of them. The denial is a
-        # deliberate, accepted over-block, not evidence the schema is
-        # unsafe -- recovering admission for a bounded array position is a
-        # separate, individually-argued delta with its own oracle-soundness
-        # argument, not folded into this change. A nested array bounded by
-        # `enum`/`const` items at every level. ---
-        pytest.param(
-            "exec",
-            {
-                "type": "object",
-                "properties": {
-                    "operation": {"const": "status"},
-                    "args": {
-                        "type": "array",
-                        "items": {"type": "array", "items": {"enum": ["a", "b"]}},
-                    },
-                },
-                "additionalProperties": False,
-            },
-            None,
-            "executor-identity-with-insufficient-schema",
-            id="nested-array-bounded-by-enum-items-denies-under-array-applicator-rule",
-        ),
-        # A closed tuple (`prefixItems` all enum/const-bounded AND
-        # `items: false`, so no elements beyond the prefix are permitted at
-        # all) denies too -- `prefixItems` is a denied applicator regardless
-        # of the closing `items: false` sitting alongside it.
-        pytest.param(
-            "exec",
-            {
-                "type": "object",
-                "properties": {
-                    "operation": {"const": "status"},
-                    "args": {
-                        "type": "array",
-                        "prefixItems": [{"enum": ["a"]}, {"const": "b"}],
-                        "items": False,
-                    },
-                },
-                "additionalProperties": False,
-            },
-            None,
-            "executor-identity-with-insufficient-schema",
-            id="closed-tuple-prefixitems-bounded-denies-under-array-applicator-rule",
-        ),
-        # `items` alone (bounded, no `prefixItems`) denies too -- every
-        # position being governed by the same enum-restricted schema does
-        # not matter; `items`' mere presence is what denies.
-        pytest.param(
-            "exec",
-            {
-                "type": "object",
-                "properties": {
-                    "operation": {"const": "status"},
-                    "args": {"type": "array", "items": {"enum": ["a", "b"]}},
-                },
-                "additionalProperties": False,
-            },
-            None,
-            "executor-identity-with-insufficient-schema",
-            id="items-enum-with-no-prefixitems-denies-under-array-applicator-rule",
-        ),
     ]
 
     ADMIT_CASES = [
@@ -1996,6 +1929,52 @@ class TestValidateMcpToolAdmission:
             None,
             id="content-schema-annotation-removed-still-remains-admitted",
         ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {"type": "array", "items": {"enum": ["a", "b"]}},
+                },
+                "additionalProperties": False,
+            },
+            None,
+            id="enum-bounded-array-is-admitted",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {
+                        "type": "array",
+                        "prefixItems": [{"enum": ["a"]}, {"const": "b"}],
+                        "items": False,
+                    },
+                },
+                "additionalProperties": False,
+            },
+            None,
+            id="closed-bounded-tuple-is-admitted",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {
+                        "type": "array",
+                        "items": {"type": "array", "items": {"enum": ["a", "b"]}},
+                    },
+                },
+                "additionalProperties": False,
+            },
+            None,
+            id="nested-bounded-array-is-admitted",
+        ),
     ]
 
     @pytest.mark.parametrize("tool_name, input_schema, description, reason", DENY_CASES)
@@ -2187,25 +2166,7 @@ class TestValidateMcpToolAdmission:
             {"operation": "status", "options": {"mode": "a", "command": "rm -rf /"}}
         )
 
-    # --- Array-applicator over-block: `items`/`prefixItems` are DENIED
-    # applicators under the sufficiency proof's keyword registry -- their
-    # mere presence denies a node regardless of what their own subschema
-    # contains, including a subschema that is itself fully bounded
-    # (`enum`/`const`-restricted items, or a closed tuple via `prefixItems`
-    # + `items: false`). Unlike the other named necessity cases above
-    # (F1-F6), the oracle differential here goes the OTHER way: the raw
-    # validator does NOT accept an injected command through any of these
-    # schemas -- they were already closed on their own -- so denying them is
-    # a deliberate, accepted over-block, not a missed bypass. Behavior-
-    # visible consequence: a strong-executor-named tool that declares a
-    # bounded array argument (e.g. `args: {"type": "array", "items":
-    # {"enum": [...]}}`) alongside a fixed operation, and that was
-    # previously admitted, now refuses registration. Recovering admission
-    # for a bounded array position is a separate, individually-argued delta
-    # with its own oracle-soundness argument -- not part of this change; a
-    # bounded schema wrongly denied is a support cost, an unbounded schema
-    # admitted is a security defect, so ties break to deny.
-    ARRAY_APPLICATOR_OVER_BLOCK_DENY_CASES = [
+    BOUNDED_ARRAY_CASES = [
         pytest.param(
             {
                 "type": "object",
@@ -2218,7 +2179,8 @@ class TestValidateMcpToolAdmission:
                 },
                 "additionalProperties": False,
             },
-            {"operation": "status"},
+            {"operation": "status", "args": [["a"]]},
+            {"operation": "status", "args": [["rm -rf /"]]},
             id="nested-array-bounded-by-enum-items",
         ),
         pytest.param(
@@ -2234,7 +2196,8 @@ class TestValidateMcpToolAdmission:
                 },
                 "additionalProperties": False,
             },
-            {"operation": "status"},
+            {"operation": "status", "args": ["a", "b"]},
+            {"operation": "status", "args": ["rm -rf /", "b"]},
             id="closed-tuple-prefixitems-bounded-with-items-false",
         ),
         pytest.param(
@@ -2246,32 +2209,149 @@ class TestValidateMcpToolAdmission:
                 },
                 "additionalProperties": False,
             },
-            {"operation": "status"},
+            {"operation": "status", "args": ["a", "b"]},
+            {"operation": "status", "args": ["rm -rf /"]},
             id="items-enum-with-no-prefixitems",
         ),
     ]
 
-    @pytest.mark.parametrize("schema, minimal_instance", ARRAY_APPLICATOR_OVER_BLOCK_DENY_CASES)
-    def test_array_applicator_over_block_denies_despite_oracle_confirming_schema_is_bounded(
-        self, schema, minimal_instance
+    @pytest.mark.parametrize("schema, honest_instance, injected_instance", BOUNDED_ARRAY_CASES)
+    def test_bounded_array_admission_matches_oracle_rejection(
+        self, schema, honest_instance, injected_instance
     ):
-        """`items`/`prefixItems` deny at sight under the sufficiency proof's
-        keyword registry even when their own subschema is fully bounded.
-        The inverted oracle differential proves this is an over-block, not
-        a bypass: the raw validator accepts the minimal, honest instance,
-        and rejects both a bare command string and a command riding
-        alongside the fixed operation -- the schema was never actually
-        unsafe on its own."""
-        with pytest.raises(PermissionError) as exc_info:
-            validate_mcp_tool_admission("exec", schema, None)
-        message = str(exc_info.value)
-        assert "exec" in message
-        assert "executor-identity-with-insufficient-schema" in message
-
+        assert validate_mcp_tool_admission("exec", schema, None) is None
         validator = Draft202012Validator(schema)
-        assert validator.is_valid(minimal_instance)
-        assert not validator.is_valid("rm -rf /")
-        assert not validator.is_valid({**minimal_instance, "command": "rm -rf /"})
+        assert validator.is_valid(honest_instance)
+        assert not validator.is_valid(injected_instance)
+
+    OPEN_ARRAY_CASES = [
+        pytest.param(
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {
+                        "type": "array",
+                        "prefixItems": [{"const": "a"}],
+                    },
+                },
+                "additionalProperties": False,
+            },
+            {"operation": "status", "args": ["a", "rm -rf /"]},
+            id="prefix-items-with-open-tail",
+        ),
+        pytest.param(
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {"type": "array", "items": {"type": "string"}},
+                },
+                "additionalProperties": False,
+            },
+            {"operation": "status", "args": ["rm -rf /"]},
+            id="unbounded-items-schema",
+        ),
+        pytest.param(
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {
+                        "type": "array",
+                        "prefixItems": [{"const": "a"}],
+                        "unevaluatedItems": True,
+                    },
+                },
+                "additionalProperties": False,
+            },
+            {"operation": "status", "args": ["a", "rm -rf /"]},
+            id="unevaluated-items-open-tail",
+        ),
+    ]
+
+    @pytest.mark.parametrize("schema, injected_instance", OPEN_ARRAY_CASES)
+    def test_open_array_denial_matches_oracle_acceptance(self, schema, injected_instance):
+        with pytest.raises(PermissionError):
+            validate_mcp_tool_admission("exec", schema, None)
+        assert Draft202012Validator(schema).is_valid(injected_instance)
+
+    def test_explicit_open_unevaluated_items_denies_closed_tuple(self):
+        array_schema = {
+            "type": "array",
+            "prefixItems": [{"const": "a"}],
+            "items": False,
+            "unevaluatedItems": True,
+        }
+        schema = {
+            "type": "object",
+            "properties": {
+                "operation": {"const": "status"},
+                "args": array_schema,
+            },
+            "additionalProperties": False,
+        }
+
+        assert not _property_is_bounded(array_schema)
+        with pytest.raises(PermissionError):
+            validate_mcp_tool_admission("exec", schema, None)
+
+    def test_malformed_prefix_items_denies_closed_tuple(self):
+        array_schema = {
+            "type": "array",
+            "prefixItems": None,
+            "items": False,
+        }
+        schema = {
+            "type": "object",
+            "properties": {
+                "operation": {"const": "status"},
+                "args": array_schema,
+            },
+            "additionalProperties": False,
+        }
+
+        assert not _property_is_bounded(array_schema)
+        with pytest.raises(PermissionError):
+            validate_mcp_tool_admission("exec", schema, None)
+
+    def test_cyclic_bounded_array_short_circuits_and_denies(self):
+        array_schema = {"type": "array"}
+        array_schema["items"] = array_schema
+        schema = {
+            "type": "object",
+            "properties": {
+                "operation": {"const": "status"},
+                "args": array_schema,
+            },
+            "additionalProperties": False,
+        }
+
+        with patch(
+            "lionagi.service.connections.mcp_wrapper._property_is_bounded",
+            wraps=_property_is_bounded,
+        ) as bounded:
+            assert not bounded(array_schema)
+            assert bounded.call_count == 2
+        with pytest.raises(PermissionError):
+            validate_mcp_tool_admission("exec", schema, None)
+
+    def test_deep_bounded_array_denies(self):
+        array_schema = {"type": "array", "items": False}
+        for _ in range(20):
+            array_schema = {"type": "array", "items": array_schema}
+        schema = {
+            "type": "object",
+            "properties": {
+                "operation": {"const": "status"},
+                "args": array_schema,
+            },
+            "additionalProperties": False,
+        }
+
+        assert not _property_is_bounded(array_schema)
+        with pytest.raises(PermissionError):
+            validate_mcp_tool_admission("exec", schema, None)
 
     SYNTHETIC_UNKNOWN_KEYWORD_DENY_CASES = [
         pytest.param(
@@ -2741,15 +2821,9 @@ class TestValidateMcpToolAdmission:
         assert "maintenance" in message
         assert "unbounded-command-input" in message
 
-    def test_wide_anyof_fanout_stays_bounded_and_denies(self):
-        """A 10,000-branch `anyOf` fan-out (all harmless enum-bounded
-        properties) must not be fully walked node-by-node: the node-work
-        budget trips, and for an executor-signaling tool that unresolvable
-        result denies fail-closed -- in well under a second, not the
-        multi-second cost of walking every branch."""
-        import time
-
-        huge_schema = {
+    @staticmethod
+    def _wide_anyof_schema():
+        return {
             "type": "object",
             "anyOf": [
                 {"properties": {f"field_{i}": {"type": "string", "enum": ["a", "b"]}}}
@@ -2757,12 +2831,30 @@ class TestValidateMcpToolAdmission:
             ],
         }
 
-        start = time.perf_counter()
+    def test_wide_anyof_fanout_denies_fail_closed(self):
+        """A traversal that exhausts its node budget must deny fail-closed."""
         with pytest.raises(PermissionError) as exc_info:
+            validate_mcp_tool_admission(
+                "maintenance", self._wide_anyof_schema(), "runs shell commands"
+            )
+
+        assert "executor-description-with-broad-input" in str(exc_info.value)
+
+    @pytest.mark.performance
+    def test_wide_anyof_fanout_stays_bounded(self):
+        """A 10,000-branch `anyOf` fan-out (all harmless enum-bounded
+        properties) must not be fully walked node-by-node: the node-work
+        budget trips, and for an executor-signaling tool that unresolvable
+        result denies fail-closed -- in well under a second, not the
+        multi-second cost of walking every branch."""
+        import time
+
+        huge_schema = self._wide_anyof_schema()
+        start = time.perf_counter()
+        with pytest.raises(PermissionError):
             validate_mcp_tool_admission("maintenance", huge_schema, "runs shell commands")
         elapsed = time.perf_counter() - start
 
-        assert "executor-description-with-broad-input" in str(exc_info.value)
         assert elapsed < 2.0
 
     def test_wide_anyof_fanout_admits_when_not_executor_signaling(self):

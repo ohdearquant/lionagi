@@ -6,6 +6,7 @@ be silently swallowed into a clean-looking result."""
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -14,7 +15,7 @@ from lionagi.engines.engine import Engine, EngineBudgetError, EngineResult
 from lionagi.engines.hypothesis import HypothesisEngine
 from lionagi.engines.planning import PlanningEngine
 from lionagi.engines.research import FindingEmitted, ResearchEngine
-from lionagi.engines.review import IssueFound, ReviewEngine
+from lionagi.engines.review import IssueFound, ReviewEngine, ReviewVerdict
 from lionagi.ln import gather as ln_gather
 from lionagi.ln.concurrency._compat import (
     ExceptionGroup,
@@ -119,12 +120,12 @@ async def test_review_root_gather_budget_error_does_not_raise(monkeypatch):
     """A too-tight max_agents hitting the root dimension fan-out (ln_gather in
     ReviewEngine._run) must not raise EngineBudgetError to the caller.
 
-    ReviewEngine has no _partial_export override yet (a separate PR gives the
-    base a structured honest-partial default) — the base default still
-    returns None, so the returned value here is None, not a rich EngineResult.
-    What this test guarantees is the crash-stop: no exception, and the run's
-    own degrade signal (_budget_notified) is recorded even though this PR
-    does not yet surface it through the return value for this engine.
+    ReviewEngine now overrides _partial_export (matching Research/Hypothesis):
+    when the budget hits before any ReviewVerdict was ever computed, it
+    returns an empty string instead of the base class's bare None default, so
+    the caller always gets a wrapped EngineResult with the degrade signal
+    surfaced through .degraded/.degrade_reason, not just the internal
+    run._budget_notified flag.
     """
     eng = ReviewEngine(dimensions=("correctness", "security"), max_agents=1, repair_retries=0)
     run = eng.new_run()
@@ -135,9 +136,88 @@ async def test_review_root_gather_budget_error_does_not_raise(monkeypatch):
 
     result = await eng.run("some artifact text")
 
-    assert result is None, f"expected the base _partial_export default (None), got {result!r}"
+    assert isinstance(result, EngineResult), f"expected EngineResult, got {type(result)!r}"
+    assert result.degraded is True
+    assert result.degrade_reason == "budget"
+    assert result.text == "", "no verdict was ever computed before the budget hit"
     assert run.agents_made == 1, "only one dimension reviewer should have been made"
     assert run._budget_notified is True, "the budget-exhaustion signal must still be recorded"
+
+
+# ---------------------------------------------------------------------------
+# 2b. Repro production bug gtd 6b76e4ff (2026-07-17) — verdict computed then
+#     dropped when the deadline fires before synth.operate() returns
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.slow_timing
+async def test_review_verdict_emitted_on_exhaustion_not_dropped(monkeypatch):
+    """A ReviewVerdict already captured onto the run's event store (via the
+    branch's async signal-emission side channel, exactly like a real LLM
+    turn's on_message_added -> fire-and-forget emit_message()) before the
+    deadline cancels the run must be returned via _partial_export, not
+    discarded.
+
+    Reproduces the production bug (gtd 6b76e4ff, 2026-07-17, leo's reactive
+    PR-review daemon): the codex terra engine sometimes needs emission
+    retries before its structured verdict settles. If the deadline watchdog
+    fires while _verdict()'s synth.operate() call is still in flight, the
+    verdict was already computed/emitted onto run.by_type(ReviewVerdict), but
+    pre-fix the base Engine._partial_export no-op (inherited by ReviewEngine)
+    discarded it and Engine.run() returned a bare None — the daemon reported
+    NO-VERDICT despite a verdict existing in the event stream.
+    """
+    verdict = ReviewVerdict(
+        verdict="REQUEST-CHANGES",
+        rationale="the sql query is not parameterized",
+        blocking=["sqli in query()"],
+    )
+
+    class _FastReviewBranch:
+        def __init__(self, dimension: str):
+            self.name = f"review-{dimension}"
+
+        async def operate(self, *, instruction: str) -> str:
+            return ""  # no issues found — keeps the repro focused on the verdict stage
+
+    class _SlowSynthBranch:
+        name = "verdict"
+
+        def __init__(self, run: Any) -> None:
+            self._run = run
+
+        async def operate(self, *, instruction: str) -> str:
+            # The verdict is "computed": captured onto the session bus exactly
+            # like the real fire-and-forget StructuredOutput path does for an
+            # LLM turn, independent of whether this operate() call itself
+            # ever returns.
+            await self._run.emit(verdict)
+            # ... then the codex terra engine's own emission-retry turn blows
+            # past the deadline before operate() can return.
+            await asyncio.sleep(10)
+            return "unreachable"  # pragma: no cover
+
+    eng = ReviewEngine(dimensions=("correctness",), deadline_s=0.05, repair_retries=0)
+    run = eng.new_run()
+
+    async def fake_make_agent(role: str, *, name: str | None = None, exempt: bool = False, **kw):
+        if name == "verdict":
+            return _SlowSynthBranch(run)
+        return _FastReviewBranch(name or role)
+
+    monkeypatch.setattr(run, "make_agent", fake_make_agent)
+    monkeypatch.setattr(eng, "new_run", lambda **kw: run)
+
+    result = await eng.run("some artifact text")
+
+    assert isinstance(result, EngineResult), f"expected EngineResult, got {type(result)!r}"
+    assert result.degraded is True
+    assert result.degrade_reason == "deadline"
+    captured = result.events_by_type(ReviewVerdict)
+    assert captured, "the already-computed verdict must survive into the partial-export result"
+    assert captured[-1].verdict == "REQUEST-CHANGES"
+    assert "REQUEST-CHANGES" in result.text
 
 
 # ---------------------------------------------------------------------------

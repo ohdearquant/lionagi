@@ -3,6 +3,7 @@ import unittest
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import anyio
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
@@ -11,12 +12,12 @@ from lionagi.ln import alcall, lcall
 
 
 async def mock_func(x: int, add: int = 0) -> int:
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(0)
     return x + add
 
 
 async def mock_func_with_error(x: int) -> int:
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(0)
     if x == 3:
         raise ValueError("mock error")
     return x
@@ -34,16 +35,25 @@ class TestLCallFunction(unittest.IsolatedAsyncioTestCase):
 
     async def test_lcall_with_retries(self):
         inputs = [1, 2, 3]
-        results = await alcall(inputs, mock_func_with_error, retry_attempts=1, retry_default=0)
+        results = await alcall(
+            inputs,
+            mock_func_with_error,
+            retry_attempts=1,
+            retry_initial_delay=0,
+            retry_default=0,
+        )
         self.assertEqual(results, [1, 2, 0])
 
     async def test_lcall_with_timeout(self):
+        async def blocked(x: int) -> int:
+            await anyio.sleep_forever()
+            return x
+
         inputs = [1, 2, 3]
-        # With timeout of 0.05s and mock_func sleeping for 0.1s, all should timeout
         results = await alcall(
             inputs,
-            mock_func,
-            retry_timeout=0.05,
+            blocked,
+            retry_timeout=0,
             retry_default="timeout",
             retry_attempts=0,
         )

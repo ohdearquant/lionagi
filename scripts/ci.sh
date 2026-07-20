@@ -9,6 +9,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FRONTEND_DIR="$REPO_ROOT/apps/studio/frontend"
 MARKETPLACE_DIR="$REPO_ROOT/marketplace"
 NOTEBOOK_HYGIENE_SCRIPT="$REPO_ROOT/scripts/lint_notebook_hygiene.py"
+QUARANTINE_SCRIPT="$REPO_ROOT/scripts/quarantine.py"
+PY_HYGIENE_SCRIPT="$REPO_ROOT/scripts/lint_python_hygiene.py"
 
 _has_cmd() { command -v "$1" &>/dev/null; }
 
@@ -31,6 +33,11 @@ lint-python() {
   fi
 }
 
+lint-quarantine() {
+  echo "==> pytest quarantine manifest"
+  uv run python "$QUARANTINE_SCRIPT" check --max-entries 15
+}
+
 fmt-python() {
   echo "==> ruff format"
   uv run ruff format "${@:-.}"
@@ -39,32 +46,72 @@ fmt-python() {
 }
 
 # Wall-clock perf/scaling tests are unreliable under CI load + coverage; they
-# are gated behind the `performance` marker and validated by benchmarks.yml.
+# are gated behind the `performance` marker and run by ci.yml's dedicated lane.
 # Override with PYTEST_MARKEXPR=performance (or "") to run them locally.
 test-python() {
   echo "==> pytest"
   # --max-worker-restart=0: a hard-crashed xdist worker ("node down") otherwise
   # wedges the session for ~15 minutes before the job dies with no test name;
   # failing fast prints "crashed while running <nodeid>" instead.
+  local report_args=()
+  if [ -n "${PYTEST_JUNIT_XML:-}" ]; then
+    mkdir -p "$(dirname "$PYTEST_JUNIT_XML")"
+    report_args=(-o junit_family=legacy --junitxml="$PYTEST_JUNIT_XML")
+  fi
+  local targets=("$@")
+  [ ${#targets[@]} -gt 0 ] || targets=(tests/)
   uv run pytest \
     --asyncio-mode=auto \
     --maxfail="${MAXFAIL:-3}" \
     --max-worker-restart="${MAX_WORKER_RESTART:-0}" \
-    -m "${PYTEST_MARKEXPR:-not performance}" \
+    -m "${PYTEST_MARKEXPR:-not performance and not flaky_quarantine}" \
     --disable-warnings \
-    "${@:-tests/}"
+    "${report_args[@]}" \
+    "${targets[@]}"
 }
 
 test-python-cov() {
   echo "==> pytest with coverage"
+  local report_args=()
+  if [ -n "${PYTEST_JUNIT_XML:-}" ]; then
+    mkdir -p "$(dirname "$PYTEST_JUNIT_XML")"
+    report_args=(-o junit_family=legacy --junitxml="$PYTEST_JUNIT_XML")
+  fi
+  local targets=("$@")
+  [ ${#targets[@]} -gt 0 ] || targets=(tests/)
   uv run pytest \
     --asyncio-mode=auto \
     --maxfail="${MAXFAIL:-1}" \
     --max-worker-restart="${MAX_WORKER_RESTART:-0}" \
-    -m "${PYTEST_MARKEXPR:-not performance}" \
+    -m "${PYTEST_MARKEXPR:-not performance and not flaky_quarantine}" \
     --disable-warnings \
     --cov=lionagi --cov-report=xml --cov-report=term \
-    "${@:-tests/}"
+    "${report_args[@]}" \
+    "${targets[@]}"
+}
+
+test-python-quarantine() {
+  echo "==> quarantined pytest lane"
+  local quarantine_count
+  quarantine_count=$(uv run python "$QUARANTINE_SCRIPT" count)
+  if [ "$quarantine_count" -eq 0 ]; then
+    echo "No quarantined tests; lane is green."
+    return 0
+  fi
+
+  local report_args=()
+  if [ -n "${PYTEST_JUNIT_XML:-}" ]; then
+    mkdir -p "$(dirname "$PYTEST_JUNIT_XML")"
+    report_args=(-o junit_family=legacy --junitxml="$PYTEST_JUNIT_XML")
+  fi
+  uv run pytest \
+    --asyncio-mode=auto \
+    --maxfail="${MAXFAIL:-0}" \
+    --max-worker-restart="${MAX_WORKER_RESTART:-0}" \
+    -m flaky_quarantine \
+    --disable-warnings \
+    "${report_args[@]}" \
+    tests/
 }
 
 # ---------------------------------------------------------------------------
@@ -236,6 +283,41 @@ _hygiene_rg_scan() {
   return 2
 }
 
+# Same contract as _hygiene_rg_scan (0=pass, 1=match found, 2=scanner error).
+# Public credits are allowlisted only as complete, known lines; sharing a line
+# with a public name must not hide separate process narration. Of the remaining
+# mentions, retain only actor/action, possessive-directive, role-level, and
+# passive-attribution forms so geographic or common-noun uses do not fire.
+_hygiene_founder_name_scan() {
+  local rg_bin="$1"
+  local label="$2"
+  shift 2
+
+  local output
+  local rg_rc=0
+  output="$("$rg_bin" -n "$@" 2>&1)" || rg_rc=$?
+
+  if [ "$rg_rc" -gt 1 ]; then
+    printf '%s\n' "$output" >&2
+    echo "  scanner error: ripgrep failed while checking $label (exit $rg_rc)" >&2
+    return 2
+  fi
+
+  local public_credit_re
+  public_credit_re='^[^:]+:[0-9]+:(lionagi: author Haiyang \(Ocean\) Li|Author: Haiyang Li - Ocean|copyright: Copyright &copy; 2024-2026 Ocean Li and LionAGI Contributors)$'
+  local process_re
+  process_re="(^|[^[:alnum:]_])Ocean('s[[:space:]]+(directive|direction|decision|request|approval|instruction|guidance|review|feedback|plan|preference|mandate)|[[:space:]]+(approved|confirmed|said|says|wants|wanted|decided|directed|reviewed|requested|instructed|asked|agreed|rejected|preferred|mandated)|-level)([^[:alnum:]_]|$)|(^|[^[:alnum:]_])(approved|confirmed|directed|reviewed|requested|instructed)([[:space:]]+[[:alnum:]_-]+){0,3}[[:space:]]+by[[:space:]]+Ocean([^[:alnum:]_]|$)"
+
+  local leaked
+  leaked="$(printf '%s\n' "$output" | grep -vE "$public_credit_re" | grep -E "$process_re" || true)"
+  if [ -n "$leaked" ]; then
+    printf '%s\n' "$leaked"
+    echo "  FAIL: $label found"
+    return 1
+  fi
+  return 0
+}
+
 lint-hygiene() {
   echo "==> publication hygiene lint (docs/notebooks/cookbooks/root)"
   cd "$REPO_ROOT"
@@ -273,8 +355,8 @@ lint-hygiene() {
   fi
 
   echo "  checking internal namespace identifiers (lambda:<name>)..."
-  # Source code is excluded from this textual pass. Notebook prose and outputs
-  # are parsed separately so valid lambda expressions in code cells are not
+  # .py/.ipynb are excluded from this textual pass and parsed separately
+  # (below) so valid Python lambda expressions in actual code are never
   # mistaken for namespace identifiers.
   if _hygiene_rg_scan "$rg_bin" "internal namespace identifiers" --hidden -g '!*.py' -g '!*.ipynb' '\blambda:[a-z][a-z0-9_-]*\b' "${CONTENT_PATHS[@]}"; then
     :
@@ -286,6 +368,17 @@ lint-hygiene() {
     :
   else
     scan_rc=$?
+    if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
+  fi
+  if uv run python "$PY_HYGIENE_SCRIPT" docs/ notebooks/ cookbooks/; then
+    :
+  else
+    scan_rc=$?
+    if [ "$scan_rc" -eq 1 ]; then
+      echo "  FAIL: internal namespace identifiers found in Python comments/strings"
+    else
+      echo "  scanner error: python hygiene scan failed (exit $scan_rc)" >&2
+    fi
     if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
   fi
   if uv run python "$NOTEBOOK_HYGIENE_SCRIPT" notebooks/ cookbooks/; then
@@ -315,14 +408,14 @@ lint-hygiene() {
     if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
   fi
 
-  echo "  checking founder-name process narration (Ocean's)..."
-  if _hygiene_rg_scan "$rg_bin" "founder-name process narration" --hidden "\bOcean's\b" "${CONTENT_PATHS[@]}"; then
+  echo "  checking founder-name process narration (Ocean / Ocean's)..."
+  if _hygiene_founder_name_scan "$rg_bin" "founder-name process narration" --hidden "\bOcean('s)?\b" "${CONTENT_PATHS[@]}"; then
     :
   else
     scan_rc=$?
     if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
   fi
-  if _hygiene_rg_scan "$rg_bin" "founder-name process narration at repo root" --hidden --max-depth 1 -g '!.git' "\bOcean's\b" .; then
+  if _hygiene_founder_name_scan "$rg_bin" "founder-name process narration at repo root" --hidden --max-depth 1 -g '!.git' "\bOcean('s)?\b" .; then
     :
   else
     scan_rc=$?
@@ -346,6 +439,7 @@ lint-hygiene() {
 
 lint() {
   lint-python "$@"
+  lint-quarantine
   lint-frontend
   lint-marketplace
   lint-hygiene
@@ -359,6 +453,7 @@ fmt() {
 ci() {
   echo "=== CI: lint ==="
   lint-python
+  lint-quarantine
   lint-frontend
   lint-marketplace
   lint-hygiene
@@ -383,14 +478,15 @@ cmd="${1:-help}"
 shift 2>/dev/null || true
 
 case "$cmd" in
-  lint-python|fmt-python|test-python|test-python-cov) "$cmd" "$@" ;;
+  lint-python|lint-quarantine|fmt-python|test-python|test-python-cov|test-python-quarantine) "$cmd" "$@" ;;
   lint-frontend|fmt-frontend|fmt-check-frontend|build-frontend|typecheck-frontend|fe-install) "$cmd" "$@" ;;
   lint-marketplace|lint-hygiene) "$cmd" "$@" ;;
   lint|fmt|ci) "$cmd" "$@" ;;
   help|--help|-h)
     echo "Usage: scripts/ci.sh <command>"
     echo ""
-    echo "Python:      lint-python, fmt-python, test-python, test-python-cov"
+    echo "Python:      lint-python, lint-quarantine, fmt-python, test-python,"
+    echo "             test-python-cov, test-python-quarantine"
     echo "Frontend:    fe-install, lint-frontend, fmt-frontend, fmt-check-frontend,"
     echo "             build-frontend, typecheck-frontend"
     echo "Marketplace: lint-marketplace"

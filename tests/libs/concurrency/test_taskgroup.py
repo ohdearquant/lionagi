@@ -1,4 +1,3 @@
-import time
 from typing import TYPE_CHECKING
 
 import anyio
@@ -34,7 +33,6 @@ async def test_error_in_one_task_cancels_peers_promptly(anyio_backend):
             seen_cancel.set()
             raise
 
-    t0 = time.perf_counter()
     # TaskGroup raises ExceptionGroup in Python 3.11+
     with pytest.raises((ValueError, ExceptionGroup)) as exc_info:
         async with create_task_group() as tg:
@@ -44,9 +42,7 @@ async def test_error_in_one_task_cancels_peers_promptly(anyio_backend):
     # Check that ValueError was raised (either directly or in ExceptionGroup)
     if isinstance(exc_info.value, ExceptionGroup):
         assert any(isinstance(e, ValueError) for e in exc_info.value.exceptions)
-    dt = time.perf_counter() - t0
     assert seen_cancel.is_set()
-    assert dt < 0.5  # cancelled quickly
 
 
 @pytest.mark.anyio

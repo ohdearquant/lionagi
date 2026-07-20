@@ -102,6 +102,42 @@ async def test_start_creates_session_and_registers_hook_on_orc_branch(
     await stop_live_persist(env, status="completed")
 
 
+async def test_orchestration_manifest_tracks_start_and_terminal_status(
+    temp_db_path: Path, tmp_path: Path
+):
+    from lionagi.cli._runs import RunDir
+
+    env = _minimal_env()
+    env.run = RunDir(
+        run_id="orchestration-run",
+        state_root=tmp_path / "state",
+        artifact_root=tmp_path / "artifacts",
+    )
+    env.run.ensure_state_dirs()
+    env.run.ensure_artifact_root()
+
+    await start_live_persist(
+        env,
+        invocation_kind="flow",
+        agent_name="orchestrator",
+        model="codex/model",
+        provider="codex",
+    )
+
+    started = env.run.read_manifest()
+    assert started["branch_id"] == str(env.orc_branch.id)
+    assert started["agent_name"] == "orchestrator"
+    assert started["provider"] == "codex"
+    assert started["status"] == "running"
+    assert started["ended_at"] is None
+
+    await stop_live_persist(env, status="completed")
+
+    completed = env.run.read_manifest()
+    assert completed["status"] == "completed"
+    assert completed["ended_at"] >= completed["started_at"]
+
+
 # ── start_live_persist: failure path closes the DB ────────────────────────────
 
 
@@ -182,6 +218,82 @@ async def test_register_branch_hook_creates_row_on_first_message(
     assert str(msg.id) in session_prog
 
     await stop_live_persist(env, status="completed")
+
+
+async def test_reactive_spawn_persists_spawned_branch(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A spawned branch is wired before its first message reaches persistence."""
+    from lionagi.casts.emission import SpawnRequest, TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    env = _minimal_env()
+    worker = Branch(name="worker")
+    env.session.include_branches(worker)
+    env.builder = OperationGraphBuilder()
+    node_id = env.builder.add_operation(
+        "operate",
+        node_id="initial",
+        branch=worker,
+        instruction="spawn follow-up work",
+    )
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    spawned_branch_ids: list[str] = []
+
+    async def operate(self, instruction=None, **kwargs):
+        if self.id == worker.id:
+            return SpawnRequest(
+                instruction="persist the spawned result",
+                assignee="worker",
+                independent=True,
+            )
+        spawned_branch_ids.append(str(self.id))
+        await self.msgs.a_add_message(assistant_response="durable spawned result")
+        return "durable spawned result"
+
+    monkeypatch.setattr(Branch, "operate", operate)
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="spawn follow-up work", assignee="worker")],
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[node_id],
+        known_nodes={node_id},
+        deps_by_node={node_id: []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"worker": worker},
+        worker_models=["test/model"],
+    )
+
+    try:
+        exec_result = await _execute_dag(
+            env,
+            plan_result,
+            dag_state,
+            max_concurrent=1,
+            max_ops=0,
+        )
+
+        assert exec_result.n_spawned == 1
+        assert len(spawned_branch_ids) == 1
+        spawned_branch_id = spawned_branch_ids[0]
+        assert spawned_branch_id in ctx["branch_prog_ids"]
+        spawned_row = await ctx["db"].get_branch(spawned_branch_id)
+        assert spawned_row is not None
+        assert spawned_row["session_id"] == ctx["session_id"]
+        progression = await ctx["db"].get_progression(ctx["branch_prog_ids"][spawned_branch_id])
+        assert len(progression) == 1
+    finally:
+        await stop_live_persist(env, status="completed")
 
 
 async def test_register_branch_hook_ensure_branch_row_idempotent(
@@ -778,6 +890,72 @@ def test_finalize_stores_dag_extras_for_live_persist_teardown(
     assert getattr(env, "_finalize_extras", None) == extras
     assert orc_branch_id == str(env.orc_branch.id)
     assert (tmp_path / f"{orc_branch_id}.json").exists()
+
+
+def test_finalize_merges_summed_khive_injection_stats(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import lionagi.cli.orchestrate._orchestration as orch_mod
+    from lionagi.cli.orchestrate._orchestration import finalize_orchestration
+
+    monkeypatch.setattr(orch_mod, "save_last_branch_pointer", lambda *_: None)
+    monkeypatch.setattr(orch_mod, "hint", lambda *_: None)
+
+    env = _minimal_env()
+    worker = Branch(name="worker")
+    env.session.include_branches(worker)
+    for branch in (env.orc_branch, worker):
+        _mock_chat_model(branch)
+        branch.providers.register(object())
+    env.orc_branch.providers.stats.update({"recall_turns": 2, "blocks_injected": 3, "failed": 1})
+    worker.providers.stats.update(
+        {"recall_turns": 4, "writeback_records": 5, "writeback_failed": 2}
+    )
+    configure_run_for_finalize(env, tmp_path)
+
+    finalize_orchestration(
+        env,
+        kind="fanout",
+        prompt="analyze",
+        extras={"existing": "value"},
+        emit_hints=False,
+    )
+
+    assert env._finalize_extras == {
+        "existing": "value",
+        "khive_injection": {
+            "recall_turns": 6,
+            "blocks_injected": 3,
+            "failed": 1,
+            "writeback_records": 5,
+            "writeback_failed": 2,
+        },
+    }
+
+
+def test_finalize_omits_khive_injection_stats_without_registered_providers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import lionagi.cli.orchestrate._orchestration as orch_mod
+    from lionagi.cli.orchestrate._orchestration import finalize_orchestration
+
+    monkeypatch.setattr(orch_mod, "save_last_branch_pointer", lambda *_: None)
+    monkeypatch.setattr(orch_mod, "hint", lambda *_: None)
+
+    env = _minimal_env()
+    _mock_chat_model(env.orc_branch)
+    configure_run_for_finalize(env, tmp_path)
+
+    finalize_orchestration(
+        env,
+        kind="flow",
+        prompt="analyze",
+        extras={"existing": "value"},
+        emit_hints=False,
+    )
+
+    assert env._finalize_extras == {"existing": "value"}
+    assert "khive_injection" not in env._finalize_extras
 
 
 # ── Test 2.3 — finalize emits resume hints for orchestrator and workers ────────
@@ -1819,6 +1997,184 @@ async def test_execute_dag_escalation_without_artifact_declaration_fails_loud(
     evidence = s["status_evidence_refs"]
     evidence = _json.loads(evidence) if isinstance(evidence, str) else evidence
     assert any(e.get("id") == "worker" for e in evidence)
+
+
+async def test_execute_dag_drains_inflight_branch_status_before_teardown(
+    temp_db_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionagi.engines import PlanningEngine
+    from lionagi.session.signal import NodeCompleted
+
+    env = _minimal_env()
+    worker = Branch(name="worker")
+    env.session.include_branches(worker)
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+    write_started = asyncio.Event()
+    release_write = asyncio.Event()
+    events: list[str] = []
+    real_update_branch = ctx["db"].update_branch
+
+    async def delayed_update_branch(branch_id, **kwargs):
+        events.append("write-started")
+        write_started.set()
+        await release_write.wait()
+        await real_update_branch(branch_id, **kwargs)
+        events.append("write-finished")
+
+    monkeypatch.setattr(ctx["db"], "update_branch", delayed_update_branch)
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="work", assignee="worker")],
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={"worker": worker},
+        worker_models=["codex/model"],
+    )
+
+    async def run_dag(graph, **kwargs):
+        await env.session.emit(NodeCompleted(op_id="node-0", name="worker"))
+        return {
+            "operation_results": {"node-0": "done"},
+            "spawned_operations": 0,
+            "escalated_operations": [],
+        }
+
+    engine_run = SimpleNamespace(run_dag=run_dag)
+    with patch.object(PlanningEngine, "new_run", return_value=engine_run):
+
+        async def execute_then_teardown():
+            await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+            events.append("teardown-started")
+            await stop_live_persist(env, status="completed")
+
+        execute_task = asyncio.create_task(execute_then_teardown())
+        await write_started.wait()
+        await asyncio.sleep(0)
+        assert not execute_task.done()
+        events.append("teardown-waiting")
+        release_write.set()
+        await execute_task
+
+    assert events.index("write-finished") < events.index("teardown-started")
+    assert env._live_persist is None
+
+
+async def test_flow_timeout_shields_completed_branch_status_until_commit(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from lionagi._errors import TimeoutError as LionTimeoutError
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate import flow as flow_module
+    from lionagi.cli.orchestrate._orchestration import register_branch_hook
+    from lionagi.engines import PlanningEngine
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.session.signal import NodeCompleted
+
+    env = _minimal_env()
+    env.run.run_id = "timeout-status-drain"
+    env.builder = OperationGraphBuilder()
+
+    release_write = asyncio.Event()
+    execution_cancelled = asyncio.Event()
+    status_write_cancelled = asyncio.Event()
+    write_committed = asyncio.Event()
+    worker_id = ""
+
+    async def plan_once(*args, **kwargs):
+        return [TaskAssignment(task="finish one operation", assignee="worker")]
+
+    async def build_worker(*args, **kwargs):
+        nonlocal worker_id
+        worker = Branch(name=kwargs["agent_id"])
+        worker_id = str(worker.id)
+        env.session.include_branches(worker)
+        ctx = env._live_persist
+        assert ctx is not None
+        register_branch_hook(ctx, worker)
+        await worker.msgs.a_add_message(assistant_response="durable result")
+
+        real_update_branch = ctx["db"].update_branch
+
+        async def delayed_update_branch(branch_id, **fields):
+            if fields.get("status") != "completed":
+                return await real_update_branch(branch_id, **fields)
+            try:
+                await release_write.wait()
+            except asyncio.CancelledError:
+                status_write_cancelled.set()
+                raise
+            await real_update_branch(branch_id, **fields)
+            write_committed.set()
+
+        real_close = ctx["db"].close
+
+        async def tracked_close():
+            assert write_committed.is_set()
+            await real_close()
+
+        monkeypatch.setattr(ctx["db"], "update_branch", delayed_update_branch)
+        monkeypatch.setattr(ctx["db"], "close", tracked_close)
+        return worker, "test/model", None, False
+
+    class BlockingEngineRun:
+        async def run_dag(self, graph, **kwargs):
+            node_id = str(next(iter(graph.internal_nodes)))
+            await env.session.emit(NodeCompleted(op_id=node_id, name="worker"))
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                execution_cancelled.set()
+                raise
+
+    async def release_after_timeout():
+        await execution_cancelled.wait()
+        await asyncio.sleep(0.05)
+        release_write.set()
+
+    async def setup_env(**kwargs):
+        return env
+
+    monkeypatch.setattr(flow_module, "setup_orchestration", setup_env)
+    monkeypatch.setattr(flow_module, "available_roles", lambda: ["worker"])
+    monkeypatch.setattr(flow_module, "plan", plan_once)
+    monkeypatch.setattr(flow_module, "build_worker_branch", build_worker)
+    monkeypatch.setattr(PlanningEngine, "new_run", lambda self, *, session: BlockingEngineRun())
+
+    release_task = asyncio.create_task(release_after_timeout())
+    try:
+        with pytest.raises(LionTimeoutError):
+            await flow_module._run_flow("test/model", "run once", timeout=2)
+    finally:
+        release_write.set()
+        release_task.cancel()
+        await asyncio.gather(release_task, return_exceptions=True)
+
+    assert execution_cancelled.is_set()
+    assert not status_write_cancelled.is_set()
+    assert write_committed.is_set()
+    async with StateDB() as db:
+        branch = await db.get_branch(worker_id)
+    assert branch is not None
+    assert branch["status"] == "completed"
+    assert env._live_persist is None
 
 
 async def test_execute_dag_escalation_backstop_catches_reactively_spawned_node(

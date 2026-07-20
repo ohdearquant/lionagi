@@ -13,9 +13,9 @@ Regression class this module pins, in plain terms:
    ``override=True`` is a completely different case: it raises
    ``TransitionRejectedError``. A caller (or a future refactor) that treats
    one of these as the other is a live bug, not a style choice. The two
-   contracts can also *interact* — a terminal row with a stale guard still
-   returns ``False``, not a raise, because the guard check happens before
-   the terminal-exit check; this file pins that interaction directly.
+   contracts can also *interact* — a terminal row with a stale version guard
+   is still rejected and audited because terminal-exit policy is evaluated
+   before a write-only version conflict; this file pins that interaction.
 
 2. New statuses get added to one vocabulary source (a schema ``CHECK``
    constraint, the ``PolicyRegistry``, or the ``VALID_STATUSES_BY_ENTITY_TYPE``
@@ -439,8 +439,8 @@ async def test_cas_miss_on_expected_statuses_returns_false_silently(db: StateDB)
 
 
 @pytest.mark.asyncio
-async def test_cas_miss_on_expected_updated_at_returns_false_silently(db: StateDB) -> None:
-    """The version guard (`expected_updated_at`) is a distinct CAS channel from `expected_statuses` -- pinned separately because a caller could plausibly drop one and keep the other without any status-only test noticing. A stale version snapshot is also a silent `False`."""
+async def test_terminal_rejection_precedes_expected_updated_at_conflict(db: StateDB) -> None:
+    """A stale version guard does not suppress terminal-exit rejection or its audit."""
     sid = await _make_session(db, status="running")
     stale_snapshot = await db.get_session(sid)
     stale_version = stale_snapshot["updated_at"]
@@ -455,19 +455,21 @@ async def test_cas_miss_on_expected_updated_at_returns_false_silently(db: StateD
         source="executor",
     )
 
-    applied = await db.update_status(
-        "session",
-        sid,
-        new_status="completed",
-        reason_code=SessionReasons.HEALTH_STALE_NO_HEARTBEAT,
-        source="executor",
-        expected_statuses={"failed"},  # status membership alone would pass...
-        expected_updated_at=stale_version,  # ...but the version guard catches it
-    )
-    assert applied is False
+    with pytest.raises(TransitionRejectedError):
+        await db.update_status(
+            "session",
+            sid,
+            new_status="completed",
+            reason_code=SessionReasons.HEALTH_STALE_NO_HEARTBEAT,
+            source="executor",
+            expected_statuses={"failed"},
+            expected_updated_at=stale_version,
+        )
 
     row = await db.get_session(sid)
-    assert row["status"] == "failed"  # unchanged by the losing writer
+    assert row["status"] == "failed"
+    events = await db.list_admin_events(action="status_transition_rejected", target_id=sid)
+    assert len(events) == 1
 
 
 @pytest.mark.asyncio

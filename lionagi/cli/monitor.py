@@ -902,7 +902,6 @@ def _watch_loop(
 # ── Wait-for-terminal primitive (li monitor run / li monitor --run) ───────────
 # Scripting primitive; see docs/internals/cli.md for the full contract.
 
-_TERMINAL_SCHEDULE_RUN_STATUSES = frozenset({"completed", "failed", "cancelled", "skipped"})
 # Default wait bound so a stuck run can't hang forever; pass max_wait=0 to opt
 # into unbounded waiting explicitly.
 _DEFAULT_MAX_WAIT_SECONDS = 900.0
@@ -1030,25 +1029,46 @@ async def _poll_pending_sessions_once(
         del pending[run_id]
 
 
+# fire_now() hands the run_id back to its HTTP/CLI caller before the fired
+# occurrence row is durably written (_fire runs as a background task) -- an
+# id resolved immediately after a manual trigger can race that insert. Retry
+# unresolved ids within this bounded grace period instead of giving up on a
+# single up-front lookup.
+_RESOLVE_GRACE_SECONDS = 1.0
+_RESOLVE_GRACE_POLL_SECONDS = 0.2
+
+
 async def _resolve_watched_runs(
-    db: Any, ids: list[str]
+    db: Any, ids: list[str], *, grace_seconds: float | None = None
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], list[str]]:
-    """Resolve every requested id once, up front. Ids that aren't schedule_runs
-    are also tried against sessions (`li monitor run <session_id>` support)."""
+    """Resolve every requested id, retrying not-yet-found ones for a bounded
+    grace period. Ids that aren't schedule_runs are also tried against
+    sessions (`li monitor run <session_id>` support)."""
+    import asyncio
+
+    if grace_seconds is None:
+        grace_seconds = _RESOLVE_GRACE_SECONDS
     pending: dict[str, dict[str, Any]] = {}
     session_pending: dict[str, dict[str, Any]] = {}
-    unresolved: list[str] = []
-    for raw_id in ids:
-        row = await _resolve_schedule_run(db, raw_id)
-        if row is not None:
-            pending[row["id"]] = row  # canonical id as key: dedupes prefix collisions
-            continue
-        session_row = await _resolve_session_run(db, raw_id)
-        if session_row is not None:
-            session_pending[session_row["id"]] = session_row
-        else:
-            unresolved.append(raw_id)
-    return pending, session_pending, unresolved
+    remaining = list(ids)
+    deadline = time.monotonic() + grace_seconds if grace_seconds > 0 else None
+    while remaining:
+        still_missing: list[str] = []
+        for raw_id in remaining:
+            row = await _resolve_schedule_run(db, raw_id)
+            if row is not None:
+                pending[row["id"]] = row  # canonical id as key: dedupes prefix collisions
+                continue
+            session_row = await _resolve_session_run(db, raw_id)
+            if session_row is not None:
+                session_pending[session_row["id"]] = session_row
+            else:
+                still_missing.append(raw_id)
+        remaining = still_missing
+        if not remaining or deadline is None or time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(_RESOLVE_GRACE_POLL_SECONDS)
+    return pending, session_pending, remaining
 
 
 async def _schedule_name(db: Any, schedule_id: str, *, cache: dict[str, str]) -> str:
@@ -1075,6 +1095,10 @@ async def _poll_pending_once(
 ) -> None:
     """Check every still-pending run once; print, record, and drop terminal
     ones. See docs/internals/cli.md for the cancellation-atomicity contract."""
+    # Shared schema vocabulary — a hand-listed subset here once omitted
+    # timed_out, leaving timed-out occurrences waiting forever.
+    from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES
+
     from ._logging import log_error
 
     for run_id in list(pending):
@@ -1084,7 +1108,7 @@ async def _poll_pending_once(
             # resolve as failure so the wait can't hang on state that never returns.
             row = {**pending[run_id], "status": "failed", "exit_code": None}
             log_error(f"schedule_run {run_id!r} disappeared from state.db while waiting")
-        elif row["status"] not in _TERMINAL_SCHEDULE_RUN_STATUSES:
+        elif row["status"] not in SCHEDULE_RUN_TERMINAL_STATUSES:
             continue
         name = await _schedule_name(db, row["schedule_id"], cache=schedule_names)
         # Resolved before the print/append/delete trio below (not between

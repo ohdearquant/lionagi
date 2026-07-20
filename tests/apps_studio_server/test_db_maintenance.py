@@ -8,6 +8,7 @@ import json
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -76,6 +77,10 @@ def test_checkpoint_writes_admin_event(tmp_path, monkeypatch):
 
     db_path = tmp_path / "state.db"
     _patch_db(monkeypatch, db_path)
+    import lionagi.state.db as state_db_mod
+
+    fixed_now = 1_000_000.0
+    monkeypatch.setattr(state_db_mod, "time", SimpleNamespace(time=lambda: fixed_now))
 
     run_async(_make_session_in(db_path, status="running", started_at=time.time()))
 
@@ -87,7 +92,7 @@ def test_checkpoint_writes_admin_event(tmp_path, monkeypatch):
 
     last_cp = run_async(maint.get_last_checkpoint_at())
     assert last_cp is not None
-    assert last_cp <= time.time()
+    assert last_cp == fixed_now
 
 
 def test_checkpoint_missing_db_is_noop(tmp_path, monkeypatch):

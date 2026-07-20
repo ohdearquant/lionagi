@@ -1,5 +1,5 @@
 site_name: LionAGI
-site_description: Orchestrate multi-agent AI workflows from the command line or Python
+site_description: Governed multi-agent orchestration for Python, the command line, and durable operations
 site_url: https://ohdearquant.github.io/lionagi/
 repo_url: https://github.com/ohdearquant/lionagi
 repo_name: ohdearquant/lionagi
@@ -8,26 +8,24 @@ copyright: Copyright &copy; 2024-2026 Ocean Li and LionAGI Contributors
 
 theme:
   name: material
+  custom_dir: docs/overrides
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
       primary: black
-      accent: amber
+      accent: deep orange
       toggle:
-        icon: material/brightness-7
+        icon: material/weather-night
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
       primary: black
       accent: amber
       toggle:
-        icon: material/brightness-4
+        icon: material/white-balance-sunny
         name: Switch to light mode
-  font:
-    text: Inter
-    code: JetBrains Mono
+  font: false
   features:
-    - announce.dismiss
     - content.action.edit
     - content.action.view
     - content.code.annotate
@@ -35,7 +33,6 @@ theme:
     - content.code.select
     - content.tabs.link
     - content.tooltips
-    - header.autohide
     - navigation.footer
     - navigation.indexes
     - navigation.instant
@@ -54,10 +51,21 @@ theme:
     - toc.follow
     - toc.integrate
   icon:
-    logo: material/graph
     repo: fontawesome/brands/github
     edit: material/pencil
     view: material/eye
+
+# Historical v0 design material remains in the repository for archaeology, but
+# it is intentionally absent from the public site and search index.
+exclude_docs: |
+  _archive/
+  cookbook/reliable-artifact-production.md
+  cookbook/reliable-multi-leg-runs.md
+  cookbook/reliable-recurring-runs.md
+  cookbook/reliable-review-runs.md
+  overrides/
+  reference/migrate-logs.md
+  reference/outcomes-work.md
 
 markdown_extensions:
   - abbr
@@ -125,9 +133,6 @@ plugins:
       minify_css: true
       htmlmin_opts:
         remove_comments: true
-  - git-revision-date-localized:
-      enable_creation_date: true
-      type: iso_datetime
   - git-committers:
       repository: ohdearquant/lionagi
       branch: main
@@ -170,67 +175,79 @@ plugins:
   #       font_family: Inter
 
 nav:
-  - Home: index.md
+  - Start:
+      - Overview: index.md
+      - Start here: getting-started/index.md
+      - Install & authenticate: getting-started/install.md
+      - First agent & flow: getting-started/first-flow.md
+      - Python quickstart: getting-started/python.md
+      - Choose a surface: choosing-a-surface.md
 
-  - Get Started:
-      - Install: getting-started/install.md
-      - First Flow: getting-started/first-flow.md
-
-  - Concepts: concepts.md
-
-  - Choosing a Surface: choosing-a-surface.md
-
-  - How lionagi Compares: comparison/index.md
-
-  - Cookbook:
-      - cookbook/index.md
-      - Codebase Audit: cookbook/codebase-audit.md
-      - Research Synthesis: cookbook/research-synthesis.md
-      - Multi-Model Pipeline: cookbook/multi-model-pipeline.md
-      - Team Coordination: cookbook/team-coordination.md
-      - Resumable Background: cookbook/resumable-background.md
-
-  - CLI Reference: cli-reference.md
-
-  - API:
-      - api/index.md
+  - Build:
+      - Python SDK: api/index.md
       - Branch: api/branch.md
-      - Session: api/session.md
-      - Operations: api/operations.md
-      - iModel: api/imodel.md
-      - Flow: api/flow.md
-      - Team: api/team.md
+      - Structured operations: api/operations.md
+      - DAG workflows: api/flow.md
+      - Models & providers: api/imodel.md
+      - Agents & permissions: api/agent-config.md
+      - Worktree sandboxes: api/sandbox.md
 
-  - Reference:
-      - Advanced: reference/advanced.md
-      - Providers: reference/providers.md
-      - Protocols (core): reference/protocols-core.md
+  - Orchestrate:
+      - Orchestration guide: guides/orchestration.md
+      - Core concepts: concepts.md
+      - CLI reference: cli-reference.md
+      - Session: api/session.md
+      - Team coordination: api/team.md
       - Engines: reference/engines.md
-      - Operations & Service: reference/operations-service.md
       - Casts: reference/casts.md
-      - Outcomes & Work: reference/outcomes-work.md
-      - Agent & Hooks: reference/agent-hooks.md
-      - Testing, State & Session: reference/testing-state-session.md
-      - Migrate Logs: reference/migrate-logs.md
+
+  - Operate:
+      - Durable operations: guides/durable-operations.md
+      - Studio & schedules: guides/studio.md
+      - Scheduling workflows: guides/scheduling-workflows.md
+      - Providers: reference/providers.md
+      - State & testing: reference/testing-state-session.md
       - Troubleshooting: reference/troubleshooting.md
 
-  - Migration:
-      - 0.22.5 → 0.22.6: migration/0.22.5-to-0.22.6.md
+  - Recipes:
+      - Overview: cookbook/index.md
+      - Codebase audit: cookbook/codebase-audit.md
+      - Research synthesis: cookbook/research-synthesis.md
+      - Multi-model pipeline: cookbook/multi-model-pipeline.md
+      - Team coordination: cookbook/team-coordination.md
+      - Resumable background run: cookbook/resumable-background.md
 
-  - Community:
+  - Reference:
+      - Reference map: reference/index.md
+      - CLI: cli-reference.md
+      - Advanced Python: reference/advanced.md
+      - Protocols: reference/protocols-core.md
+      - Operations & service: reference/operations-service.md
+      - Agent hooks: reference/agent-hooks.md
+      - Note: api/note.md
+      - How LionAGI compares: comparison/index.md
+      - Migration:
+          - 0.22.5 → 0.22.6: migration/0.22.5-to-0.22.6.md
+          - 0.22.9 → 0.23.0: migration/0.22.9-to-0.23.0.md
+          - 0.23.0 → 0.23.1: migration/0.23.0-to-0.23.1.md
+
+  - Contribute:
       - Contributing: contributing.md
-      - Code of Conduct: code-of-conduct.md
+      - Architecture direction: governance/direction.md
+      - ADR index: adr/README.md
+      - Core internals: internals/core.md
+      - Runtime internals: internals/runtime.md
+      - CLI internals: internals/cli.md
+      - Studio internals: internals/studio.md
+      - Code of conduct: code-of-conduct.md
 
 extra:
-  version:
-    provider: mike
-    default: stable
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/ohdearquant/lionagi
       name: GitHub
     - icon: fontawesome/brands/discord
-      link: https://discord.gg/lionagi
+      link: https://discord.gg/JDj9ENhUE8
       name: Discord Community
     - icon: fontawesome/brands/twitter
       link: https://twitter.com/lionagi
@@ -238,29 +255,10 @@ extra:
     - icon: fontawesome/brands/linkedin
       link: https://www.linkedin.com/in/quantoceanli/
       name: LinkedIn
-  
-  analytics:
-    provider: google
-    property: !ENV GOOGLE_ANALYTICS_KEY
-  
-  consent:
-    title: Cookie consent
-    description: >- 
-      We use cookies to recognize your repeated visits and preferences, as well
-      as to measure the effectiveness of our documentation and whether users
-      find what they're searching for. With your consent, you're helping us to
-      make our documentation better.
-    actions:
-      - accept
-      - reject
-      - manage
-  
   generator: false
 
 extra_css:
   - stylesheets/extra.css
-  - https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap
-  - https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap
 
 extra_javascript:
   - https://unpkg.com/mermaid@10/dist/mermaid.min.js

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -48,6 +49,59 @@ def test_schedule_create_subcommand_args():
     assert args.name == "my-sched"
     assert args.cron == "0 * * * *"
     assert args.prompt == "ping"
+
+
+def test_schedule_action_kind_choices_match_store_vocabulary():
+    from lionagi.studio.cli import add_schedule_subparser
+    from lionagi.studio.scheduler.subprocess import (
+        _ALIAS_ACTION_KINDS,
+        _VALID_ACTION_KINDS,
+    )
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    schedule_parser = sub.choices["schedule"]
+    action_subparsers = next(
+        action
+        for action in schedule_parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    create_parser = action_subparsers.choices["create"]
+    action_kind = next(action for action in create_parser._actions if action.dest == "action_kind")
+
+    assert set(action_kind.choices) == _VALID_ACTION_KINDS | set(_ALIAS_ACTION_KINDS)
+
+
+def test_schedule_create_normalizes_action_kind_alias(monkeypatch):
+    import lionagi.studio.cli as schedule_cli
+
+    captured = {}
+
+    def fake_api(path, method="GET", body=None):
+        captured.update(path=path, method=method, body=body)
+        return {"id": "schedule-id"}
+
+    monkeypatch.setattr(schedule_cli, "_api", fake_api)
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    schedule_cli.add_schedule_subparser(sub)
+    args = parser.parse_args(
+        [
+            "schedule",
+            "create",
+            "nightly",
+            "--cron",
+            "0 0 * * *",
+            "--action-kind",
+            "playbook",
+            "--playbook",
+            "review",
+        ]
+    )
+
+    assert schedule_cli.run_schedule(args) == 0
+    assert captured["body"]["action_kind"] == "play"
 
 
 def test_schedule_enable_disable_trigger_delete_accept_id():
@@ -147,6 +201,536 @@ def test_schedule_runs_subcommand():
     args = parser.parse_args(["schedule", "runs", "sched-abc"])
     assert args.schedule_action == "runs"
     assert args.id == "sched-abc"
+    assert args.limit == 20
+    assert args.status is None
+    assert args.as_json is False
+
+
+def test_schedule_runs_subcommand_limit_status_json_flags():
+    """--limit/--status (repeatable)/--json all parse onto `runs`."""
+    from lionagi.studio.cli import add_schedule_subparser
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(
+        [
+            "schedule",
+            "runs",
+            "sched-abc",
+            "--limit",
+            "5",
+            "--status",
+            "failed",
+            "--status",
+            "timed_out",
+            "--json",
+        ]
+    )
+    assert args.limit == 5
+    assert args.status == ["failed", "timed_out"]
+    assert args.as_json is True
+
+
+def test_schedule_run_singular_subcommand():
+    """li schedule run <run-id> [--json] parses correctly."""
+    from lionagi.studio.cli import add_schedule_subparser
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "run", "9c8f4d5a2b10", "--json"])
+    assert args.schedule_action == "run"
+    assert args.id == "9c8f4d5a2b10"
+    assert args.as_json is True
+
+
+def test_schedule_status_subcommand_wait_and_json():
+    """li schedule status <id> [--wait] [--json] parses correctly."""
+    from lionagi.studio.cli import add_schedule_subparser
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "status", "sched-abc", "--wait", "--json"])
+    assert args.schedule_action == "status"
+    assert args.id == "sched-abc"
+    assert args.wait is True
+    assert args.as_json is True
+
+
+def test_schedule_trigger_wait_flag_parses():
+    """li schedule trigger <id> --wait parses correctly, default False."""
+    from lionagi.studio.cli import add_schedule_subparser
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "trigger", "sched-abc"])
+    assert args.wait is False
+    args = parser.parse_args(["schedule", "trigger", "sched-abc", "--wait"])
+    assert args.wait is True
+
+
+# ---------------------------------------------------------------------------
+# run_schedule dispatch: runs/run/status/trigger --wait
+# ---------------------------------------------------------------------------
+
+
+def test_schedule_runs_limit_out_of_range_rejected(monkeypatch, capsys):
+    """--limit outside [1, 200] is rejected before any API call."""
+    import lionagi.studio.cli as sched_mod
+
+    api_called = []
+    monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: api_called.append(1))
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "runs", "sched-abc", "--limit", "500"])
+    result = run_schedule(args)
+
+    assert result == 1
+    assert not api_called
+    assert "--limit" in capsys.readouterr().err
+
+
+def test_schedule_runs_dispatches_with_limit_and_status_query(monkeypatch):
+    """run_schedule runs builds the query string from --limit/--status."""
+    import lionagi.studio.cli as sched_mod
+
+    captured = {}
+
+    def _fake_api(path, method="GET", body=None):
+        captured["path"] = path
+        return {"runs": [], "limit": 5, "offset": 0, "has_next": False}
+
+    monkeypatch.setattr(sched_mod, "_api", _fake_api)
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(
+        ["schedule", "runs", "sched-abc", "--limit", "5", "--status", "failed"]
+    )
+    result = run_schedule(args)
+
+    assert result == 0
+    assert captured["path"] == "/sched-abc/runs?limit=5&status=failed"
+
+
+def test_schedule_runs_empty_prints_no_runs(monkeypatch, capsys):
+    import lionagi.studio.cli as sched_mod
+
+    monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: {"runs": []})
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "runs", "sched-abc"])
+    result = run_schedule(args)
+
+    assert result == 0
+    assert "(no runs)" in capsys.readouterr().out
+
+
+def test_schedule_runs_human_table_uses_fired_at_not_started_at(monkeypatch, capsys):
+    """Regression: the human table must render `fired_at` (the real schedule_runs
+    column), not the nonexistent `started_at` that used to print as '?'."""
+    import lionagi.studio.cli as sched_mod
+
+    fake_run = {
+        "id": "run1",
+        "status": "completed",
+        "fired_at": 1_752_000_000.0,
+        "ended_at": 1_752_000_010.0,
+        "duration_ms": 10000,
+        "outcome": {"code": "run.completed.ok", "summary": "completed: 1 artifact(s)"},
+        "invocation_id": "inv1",
+        "artifacts": ["/runs/inv1/artifacts"],
+    }
+    monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: {"runs": [fake_run]})
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "runs", "sched-abc"])
+    result = run_schedule(args)
+
+    out = capsys.readouterr().out
+    assert result == 0
+    assert "?" not in out.replace("(no runs)", "")
+    assert "run1" in out
+    assert "inv1" in out
+
+
+def test_schedule_runs_json_emits_raw_api_response(monkeypatch, capsys):
+    import lionagi.studio.cli as sched_mod
+
+    api_response = {"runs": [{"id": "run1", "status": "completed"}], "limit": 20, "offset": 0}
+    monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: api_response)
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "runs", "sched-abc", "--json"])
+    result = run_schedule(args)
+
+    assert result == 0
+    import json as _json
+
+    assert _json.loads(capsys.readouterr().out) == api_response
+
+
+def test_schedule_run_singular_dispatches_and_prints_table(monkeypatch, capsys):
+    import lionagi.studio.cli as sched_mod
+
+    fake_run = {
+        "id": "run1",
+        "status": "failed",
+        "fired_at": 1_752_000_000.0,
+        "ended_at": 1_752_000_010.0,
+        "duration_ms": 10000,
+        "outcome": {"code": "run.failed.failed", "summary": "tests failed"},
+        "invocation_id": "inv1",
+        "artifacts": [],
+    }
+    monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: fake_run)
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "run", "run1"])
+    result = run_schedule(args)
+
+    out = capsys.readouterr().out
+    assert result == 0
+    assert "run1" in out and "tests faile" in out
+
+
+def test_schedule_run_singular_not_found_returns_1(monkeypatch):
+    import lionagi.studio.cli as sched_mod
+
+    monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: None)
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "run", "nonexistent"])
+    result = run_schedule(args)
+
+    assert result == 1
+
+
+def _status_response(**overrides) -> dict:
+    base = {
+        "schedule": {
+            "id": "sched-abc",
+            "name": "nightly",
+            "enabled": True,
+            "trigger_type": "cron",
+            "cron_expr": "0 2 * * *",
+            "interval_sec": None,
+            "next_fire_at": 1_752_100_000.0,
+        },
+        "latest_run": {
+            "id": "run1",
+            "status": "failed",
+            "exit_code": 1,
+            "fired_at": 1_752_000_000.0,
+            "ended_at": 1_752_000_010.0,
+            "duration_ms": 10000,
+            "outcome": {"code": "run.failed.failed", "summary": "tests failed"},
+            "invocation_id": "inv1",
+            "session_ids": ["sess1"],
+            "artifacts": ["/runs/inv1/artifacts"],
+        },
+        "exit_code": 1,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_schedule_status_human_output_includes_inspect_line(monkeypatch, capsys):
+    """The status block must route to `li monitor <invocation>` for drill-in."""
+    import lionagi.studio.cli as sched_mod
+
+    monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: _status_response())
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "status", "sched-abc"])
+    result = run_schedule(args)
+
+    out = capsys.readouterr().out
+    assert result == 1  # exit_code from the response, ordinary failure
+    assert "inspect:     li monitor inv1" in out
+    assert "outcome:     run.failed.failed" in out
+    assert "session:     sess1" in out
+
+
+def test_schedule_status_json_matches_human_fields(monkeypatch, capsys):
+    """Human and JSON views must agree on the same underlying data."""
+    import json as _json
+
+    import lionagi.studio.cli as sched_mod
+
+    response = _status_response()
+    monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: response)
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "status", "sched-abc", "--json"])
+    result = run_schedule(args)
+
+    parsed = _json.loads(capsys.readouterr().out)
+    assert result == response["exit_code"]
+    assert parsed == response
+
+
+def test_schedule_status_no_runs_yet(monkeypatch, capsys):
+    import lionagi.studio.cli as sched_mod
+
+    monkeypatch.setattr(
+        sched_mod, "_api", lambda *a, **kw: _status_response(latest_run=None, exit_code=2)
+    )
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "status", "sched-abc"])
+    result = run_schedule(args)
+
+    out = capsys.readouterr().out
+    assert result == 2
+    assert "last run:    (none)" in out
+
+
+def test_schedule_status_not_found_returns_1(monkeypatch):
+    import lionagi.studio.cli as sched_mod
+
+    monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: None)
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "status", "sched-abc"])
+    result = run_schedule(args)
+
+    assert result == 1
+
+
+def test_schedule_status_wait_polls_until_terminal(monkeypatch):
+    """--wait must keep polling while the latest run is still 'running'."""
+    import lionagi.studio.cli as sched_mod
+
+    responses = [
+        _status_response(latest_run={"status": "running"}, exit_code=3),
+        _status_response(latest_run={"status": "running"}, exit_code=3),
+        _status_response(),
+    ]
+    calls = []
+
+    def _fake_api(path, **kw):
+        calls.append(path)
+        return responses.pop(0)
+
+    monkeypatch.setattr(sched_mod, "_api", _fake_api)
+    monkeypatch.setattr("time.sleep", lambda secs: None)
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "status", "sched-abc", "--wait"])
+    result = run_schedule(args)
+
+    assert result == 1
+    assert len(calls) == 3
+
+
+# ---------------------------------------------------------------------------
+# trigger --wait: grace-period retry across the fire-now-before-insert race
+# ---------------------------------------------------------------------------
+
+
+def test_schedule_trigger_without_wait_unchanged(monkeypatch, capsys):
+    """No --wait: trigger returns as soon as the run id comes back (existing behavior)."""
+    import lionagi.studio.cli as sched_mod
+
+    monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: {"ok": True, "run_id": "run1"})
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "trigger", "sched-abc"])
+    result = run_schedule(args)
+
+    out = capsys.readouterr().out
+    assert result == 0
+    assert "Run: run1" in out
+
+
+def test_schedule_trigger_wait_retries_through_the_creation_race(monkeypatch, capsys):
+    """The occurrence lookup 404s (returns None) a couple of times right after
+    trigger — --wait must retry through the grace period rather than failing."""
+    import lionagi.studio.cli as sched_mod
+
+    calls = []
+
+    def _fake_api(path, method="GET", body=None):
+        calls.append(path)
+        if path == "/sched-abc/trigger":
+            return {"ok": True, "run_id": "run1"}
+        assert path == "/runs/run1"
+        # First two lookups race the not-yet-written row; third finds it running,
+        # fourth finds it terminal.
+        if len(calls) <= 3:
+            return None if len(calls) <= 2 else {"status": "running", "outcome": None}
+        return {"status": "completed", "outcome": {"code": "run.completed.ok", "summary": "ok"}}
+
+    monkeypatch.setattr(sched_mod, "_api", _fake_api)
+    monkeypatch.setattr("time.sleep", lambda secs: None)
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "trigger", "sched-abc", "--wait"])
+    result = run_schedule(args)
+
+    out = capsys.readouterr().out
+    assert result == 0
+    assert "status: completed" in out
+
+
+def test_schedule_trigger_wait_never_appears_errors(monkeypatch, capsys):
+    """The occurrence never shows up within the grace period: a clear error, not a hang."""
+    import lionagi.studio.cli as sched_mod
+
+    def _fake_api(path, method="GET", body=None):
+        if path == "/sched-abc/trigger":
+            return {"ok": True, "run_id": "run1"}
+        return None
+
+    monkeypatch.setattr(sched_mod, "_api", _fake_api)
+    monkeypatch.setattr("time.sleep", lambda secs: None)
+    monkeypatch.setattr(sched_mod, "_TRIGGER_WAIT_GRACE_SECONDS", 0.01)
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "trigger", "sched-abc", "--wait"])
+    result = run_schedule(args)
+
+    assert result == 1
+    assert "never appeared" in capsys.readouterr().err
+
+
+def test_schedule_trigger_wait_treats_timed_out_as_terminal(monkeypatch, capsys):
+    """A timed-out occurrence must stop the poll loop like any other terminal
+    status, not spin until the wait deadline."""
+    import lionagi.studio.cli as sched_mod
+
+    calls = []
+
+    def _fake_api(path, method="GET", body=None):
+        calls.append(path)
+        if path == "/sched-abc/trigger":
+            return {"ok": True, "run_id": "run1"}
+        return {"status": "timed_out", "outcome": {"code": "timed_out", "summary": "timed out"}}
+
+    monkeypatch.setattr(sched_mod, "_api", _fake_api)
+    monkeypatch.setattr("time.sleep", lambda secs: None)
+    monkeypatch.setattr(sched_mod, "_TRIGGER_WAIT_MAX_SECONDS", 0.05)
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "trigger", "sched-abc", "--wait"])
+    result = run_schedule(args)
+
+    out = capsys.readouterr().out
+    assert result == 1
+    assert "status: timed_out" in out
+    assert calls.count("/runs/run1") == 1
+
+
+def test_schedule_status_wait_treats_timed_out_as_terminal(monkeypatch):
+    """--wait must stop polling once the latest run reaches 'timed_out', not
+    just the completed/failed/cancelled/skipped subset it used to check."""
+    import lionagi.studio.cli as sched_mod
+
+    calls = []
+
+    def _fake_api(path, **kw):
+        calls.append(path)
+        return _status_response(latest_run={"status": "timed_out"}, exit_code=124)
+
+    monkeypatch.setattr(sched_mod, "_api", _fake_api)
+    monkeypatch.setattr("time.sleep", lambda secs: None)
+    monkeypatch.setattr(sched_mod, "_TRIGGER_WAIT_MAX_SECONDS", 0.05)
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "status", "sched-abc", "--wait"])
+    result = run_schedule(args)
+
+    assert result == 124
+    assert len(calls) == 1
+
+
+def test_schedule_trigger_no_run_id_skips_wait(monkeypatch, capsys):
+    """A trigger response without a run_id (shouldn't normally happen) must not
+    crash --wait — it just returns after printing 'Triggered'."""
+    import lionagi.studio.cli as sched_mod
+
+    monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: {"ok": True})
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "trigger", "sched-abc", "--wait"])
+    result = run_schedule(args)
+
+    assert result == 0
 
 
 def test_schedule_list_dispatches_to_api(monkeypatch):
@@ -1380,3 +1964,154 @@ def test_schedule_create_zero_max_tokens_errors(monkeypatch, capsys):
     assert outcome["result"] == 1
     assert outcome["called"] is False
     assert "must be a positive integer" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# `li schedule validate` / `li schedule apply` — declarative ScheduleSet CLI
+# ---------------------------------------------------------------------------
+
+
+def _parse_schedule_args(argv_tail: list[str]):
+    from lionagi.studio.cli import add_schedule_subparser
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    return parser.parse_args(["schedule", *argv_tail])
+
+
+def test_schedule_validate_and_apply_registered():
+    args = _parse_schedule_args(["validate", "schedules.yaml"])
+    assert args.schedule_action == "validate"
+    assert args.file == "schedules.yaml"
+
+    args = _parse_schedule_args(["apply", "schedules.yaml", "--dry-run", "--adopt", "--json"])
+    assert args.schedule_action == "apply"
+    assert args.dry_run is True
+    assert args.adopt is True
+    assert args.as_json is True
+
+
+@pytest.fixture
+def agent_profile_cwd(tmp_path, monkeypatch):
+    import lionagi.cli._providers as providers_mod
+
+    agents_dir = tmp_path / ".lionagi" / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "reviewer.md").write_text("---\nmodel: anthropic/claude-sonnet-5\n---\nBody.\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(providers_mod, "_find_lionagi_dirs", lambda: [agents_dir.parent])
+    return tmp_path
+
+
+@pytest.fixture
+def temp_state_db(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    return db_path
+
+
+def _write_manifest(cwd) -> Path:
+    manifest = Path(cwd) / "schedules.yaml"
+    manifest.write_text(
+        f"""
+apiVersion: lionagi.io/v1alpha1
+kind: ScheduleSet
+metadata:
+  name: automation
+  project: demo
+schedules:
+  nightly-review:
+    trigger:
+      cron:
+        expression: "0 2 * * *"
+        timezone: America/New_York
+    target:
+      kind: agent
+      profile: reviewer
+      prompt: "check things"
+    execution:
+      cwd: {cwd}
+"""
+    )
+    return manifest
+
+
+def test_schedule_validate_valid_file_exits_zero(agent_profile_cwd, capsys):
+    from lionagi.studio.cli import run_schedule
+
+    manifest = _write_manifest(agent_profile_cwd)
+    args = _parse_schedule_args(["validate", str(manifest)])
+    result = run_schedule(args)
+    assert result == 0
+    assert "VALID" in capsys.readouterr().out
+
+
+def test_schedule_validate_invalid_file_exits_nonzero(agent_profile_cwd, capsys):
+    from lionagi.studio.cli import run_schedule
+
+    manifest = _write_manifest(agent_profile_cwd)
+    manifest.write_text(manifest.read_text().replace("reviewer", "ghost-profile"))
+    args = _parse_schedule_args(["validate", str(manifest)])
+    result = run_schedule(args)
+    assert result == 1
+    assert "does not exist" in capsys.readouterr().err
+
+
+def test_schedule_validate_missing_file_exits_nonzero(capsys):
+    from lionagi.studio.cli import run_schedule
+
+    args = _parse_schedule_args(["validate", "/no/such/schedules.yaml"])
+    result = run_schedule(args)
+    assert result == 1
+    assert "not found" in capsys.readouterr().err
+
+
+def test_schedule_apply_dry_run_never_writes(agent_profile_cwd, temp_state_db, capsys):
+    import asyncio
+
+    from lionagi.state.db import StateDB
+    from lionagi.studio.cli import run_schedule
+
+    manifest = _write_manifest(agent_profile_cwd)
+    args = _parse_schedule_args(["apply", str(manifest), "--dry-run"])
+    result = run_schedule(args)
+    out = capsys.readouterr().out
+    assert result == 0
+    assert "CREATE" in out
+    assert "Plan: 1 create" in out
+
+    async def _rows():
+        async with StateDB() as db:
+            return await db.list_schedules()
+
+    assert asyncio.run(_rows()) == []
+
+
+def test_schedule_apply_then_idempotent_reapply(agent_profile_cwd, temp_state_db, capsys):
+    from lionagi.studio.cli import run_schedule
+
+    manifest = _write_manifest(agent_profile_cwd)
+    args = _parse_schedule_args(["apply", str(manifest)])
+    result = run_schedule(args)
+    out = capsys.readouterr().out
+    assert result == 0
+    assert "Applied atomically: 1 created" in out
+
+    args2 = _parse_schedule_args(["apply", str(manifest)])
+    result2 = run_schedule(args2)
+    out2 = capsys.readouterr().out
+    assert result2 == 0
+    assert "Applied atomically: 0 created, 0 updated, 1 unchanged" in out2
+
+
+def test_schedule_apply_json_output_shape(agent_profile_cwd, temp_state_db, capsys):
+    from lionagi.studio.cli import run_schedule
+
+    manifest = _write_manifest(agent_profile_cwd)
+    args = _parse_schedule_args(["apply", str(manifest), "--dry-run", "--json"])
+    result = run_schedule(args)
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert payload["dry_run"] is True
+    assert payload["plan"] == [{"name": "demo/nightly-review", "action": "CREATE", "detail": None}]

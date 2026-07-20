@@ -937,7 +937,7 @@ def to_list_type(value: Any, /) -> list[Any]:
     if isinstance(value, UUID):
         return [value]
     if isinstance(value, str):
-        return ID.get_id(value) if ID.is_id(value) else []
+        return [ID.get_id(value)] if ID.is_id(value) else []
     if isinstance(value, Element):
         return [value]
     if hasattr(value, "values") and callable(value.values):

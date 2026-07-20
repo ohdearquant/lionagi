@@ -24,6 +24,7 @@ from lionagi.providers._provider_errors import (
     ProviderQuotaError,
     ProviderSafetyError,
     ProviderStreamDisconnectError,
+    ProviderTeardownError,
     ProviderUnsupportedModelError,
     classify_provider_error,
 )
@@ -223,6 +224,12 @@ def test_classify_stream_disconnected_returns_stream_disconnect_error():
         "timeout waiting for websocket)"
     )
     assert isinstance(err, ProviderStreamDisconnectError)
+    assert err.retryable is True
+
+
+def test_classify_agy_loop_closed_teardown_is_retryable():
+    err = classify_provider_error("agy teardown failed: Event loop is closed")
+    assert isinstance(err, ProviderTeardownError)
     assert err.retryable is True
 
 

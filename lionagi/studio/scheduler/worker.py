@@ -17,6 +17,14 @@ worker's advertised capabilities/execution targets. A row this worker cannot
 serve is left ``queued``, never faked. Remote execution targets and
 workflow-registry resolution remain later slices (ADR-0073, remote worker
 binding).
+
+ADR-0071 D3 extracts the per-row admission predicate (capability match,
+concurrency-key block, the waiter cap, and the duration guard) into
+``lionagi.studio.scheduler.admit.admit()``. A terminal ``AdmissionDecision``
+transitions the row ``queued -> skipped`` (never faked as "running") and, when
+the submission carried a notify request, emits a ``dispatch_outbox``
+notification -- a claim-time rejection
+must surface observably even though the submitter is no longer on the wire.
 """
 
 from __future__ import annotations
@@ -31,17 +39,29 @@ from typing import Any
 from sqlalchemy import bindparam, text
 from sqlalchemy.types import JSON
 
+from lionagi.dispatch.outbox import enqueue_dispatch
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
 from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
 from lionagi.studio.scheduler import capabilities
 from lionagi.studio.scheduler import subprocess as _subprocess
+from lionagi.studio.scheduler.admit import (
+    DEFAULT_KEY_CONCURRENCY,
+    DEFAULT_WAITER_CAP_MULTIPLIER,
+    AdmissionDecision,
+    WorkerCaps,
+    admit,
+    normalize_action_args,
+    notify_request,
+)
 
 _log = logging.getLogger(__name__)
 
 __all__ = (
     "DEFAULT_HEARTBEAT_TTL_SECONDS",
+    "DEFAULT_KEY_CONCURRENCY",
     "DEFAULT_LEASE_TTL_SECONDS",
+    "DEFAULT_WAITER_CAP_MULTIPLIER",
     "MAX_LEASE_ATTEMPTS",
     "TASK_WORKER_ENABLED",
     "claim_and_execute",
@@ -310,16 +330,26 @@ async def claim_and_execute(
     advertised_capabilities: list[str] | None = None,
     execution_targets: list[str] | None = None,
     heartbeat_ttl: float = DEFAULT_HEARTBEAT_TTL_SECONDS,
+    waiter_cap_multiplier: int = DEFAULT_WAITER_CAP_MULTIPLIER,
+    key_concurrency: int = DEFAULT_KEY_CONCURRENCY,
 ) -> int:
     """Claim every eligible queued row this worker can serve, then execute each.
 
     D4 match rule: row R is claimable iff its capability tokens are a subset
     of *advertised_capabilities* AND its execution_target is in
     *execution_targets* (NULL/empty target = claimable by anyone). Candidates
-    are then ordered by affinity match, ties broken by ``queued_at``. A row
-    sharing a ``concurrency_key`` with another row already ``running`` (or
-    claimed earlier in this pass) is skipped -- advisory admission only; the
-    worker-side host lock stays authoritative.
+    are then ordered by affinity match, ties broken by ``queued_at``.
+
+    ADR-0071 D3: each candidate is routed through
+    ``lionagi.studio.scheduler.admit.admit()``, which folds in the
+    capability match above, the concurrency-key block (a matching key
+    currently ``running`` -- this pass or a prior one -- defers the row),
+    the per-key waiter cap (*waiter_cap_multiplier* x *key_concurrency*,
+    D-Cap), and the duration guard (D6). A deferred decision is skipped
+    (left ``queued``, retried next tick) -- advisory admission only; the
+    worker-side host lock stays authoritative. A terminal decision
+    transitions the row to ``skipped`` and surfaces the reason (see
+    ``_reject_claim``).
 
     Candidates are paged oldest-first through a ``(queued_at, id)`` keyset
     cursor until *limit* eligible candidates are found or the queue is
@@ -336,6 +366,7 @@ async def claim_and_execute(
     Returns the number of rows claimed (regardless of execution outcome).
     Each claim is one guarded CAS (``queued -> running``); a lost race or a
     row another caller already moved is skipped, not retried within this pass.
+    A terminal admission rejection never counts toward the returned total.
     """
     execute = execute if execute is not None else default_execute
     now = now if now is not None else time.time()
@@ -384,11 +415,26 @@ async def claim_and_execute(
     # never truncates before affinity gets a chance to reorder.
     candidates = candidates[:limit]
 
+    # `running_keys` seeds admit()'s pass-local `claimed_keys`: a key claimed
+    # earlier in this same pass stays treated as an active holder even after
+    # its row goes terminal, before later candidates are examined (unchanged
+    # from the pre-extraction behavior).
+    worker_caps = WorkerCaps(
+        advertised_capabilities=advertised,
+        lease_ttl=lease_ttl,
+        waiter_cap_multiplier=waiter_cap_multiplier,
+        key_concurrency=key_concurrency,
+        claimed_keys=running_keys,
+    )
+
     claimed = 0
     for row, _required in candidates:
-        concurrency_key = row["concurrency_key"]
-        if concurrency_key is not None and concurrency_key in running_keys:
+        decision = await admit(row, worker_caps, db, now=now)
+        if not decision.admitted:
+            if decision.terminal:
+                await _reject_claim(db, row, decision)
             continue
+        concurrency_key = row["concurrency_key"]
         run_id = row["id"]
         result = await transition(
             db,
@@ -416,7 +462,7 @@ async def claim_and_execute(
         if concurrency_key is not None:
             # Advisory: nothing else in this same pass may claim a row
             # sharing this key, even after this row finishes executing.
-            running_keys.add(concurrency_key)
+            worker_caps.claimed_keys.add(concurrency_key)
         # Lease identity travels to the terminal write: if it lapses mid-run
         # and the reaper reassigns the row, this write's guard mismatches
         # and is dropped instead of clobbering the live lease.
@@ -424,6 +470,67 @@ async def claim_and_execute(
         await _execute_claimed(db, run_id, row, execute, lease_guard)
 
     return claimed
+
+
+async def _reject_claim(db: StateDB, row: Any, decision: AdmissionDecision) -> None:
+    """Surface a terminal admission rejection observably: the row moves ``queued -> skipped`` carrying
+    the rejection reason on the schedule_runs row itself (status_reason_code
+    / status_reason_summary), and -- whenever the original submission carried
+    a notify request (``admit.notify_request``) -- a ``dispatch_outbox``
+    notification is emitted, since the submitter already received a success
+    at submit time and is no longer on the wire by claim time.
+
+    Goes through ``StateDB.update_status()`` rather than
+    ``lionagi.state.transitions.transition()`` (used by every other
+    schedule_run transition in this module): the legacy transition surface
+    hardcodes ``write_reason_columns=False`` and only appends to the
+    status_transitions audit table, which satisfies every other caller here
+    but not this one -- the row's own reason columns must carry it. ``update_status()`` writes those columns by default
+    for schedule_run (nothing overrides the schedule_run lifecycle policy's
+    ``reason_columns=True``), so this is a one-call, no-side-channel fix that
+    leaves claim/complete/fail's own transitions unchanged."""
+    run_id = row["id"]
+    reason_code = decision.reason_code or RunReasons.SKIPPED_WAITER_CAP_EXCEEDED
+    applied = await db.update_status(
+        "schedule_run",
+        run_id,
+        new_status="skipped",
+        reason_code=reason_code,
+        reason_summary=decision.reason_summary or "",
+        source="system",
+        actor="task_admission",
+        expected_statuses={"queued"},
+    )
+    if not applied:
+        # Lost the race (the row was cancelled or otherwise moved
+        # concurrently) -- nothing further to surface.
+        return
+
+    action_args = normalize_action_args(row.get("action_args"))
+    notify = notify_request(action_args)
+    if notify is not None:
+        # The row is already correctly skipped above; an optional
+        # notification failing (e.g. an outbox/DB hiccup) must never abort
+        # the claim pass -- other queued rows still need to be claimed this
+        # tick. Contain and log instead of letting it propagate.
+        try:
+            await enqueue_dispatch(
+                db,
+                kind=notify.get("kind", "terminal_notify"),
+                deliver_to=notify["deliver_to"],
+                body={
+                    "schedule_run_id": run_id,
+                    "reason_code": decision.reason_code,
+                    "reason_summary": decision.reason_summary,
+                },
+                dedup_key=notify.get("dedup_key"),
+                schedule_run_id=run_id,
+            )
+        except Exception:
+            _log.exception(
+                "terminal-rejection notify dispatch failed for schedule_run %s",
+                run_id,
+            )
 
 
 async def _execute_claimed(
@@ -485,6 +592,8 @@ async def worker_tick(
     advertised_capabilities: list[str] | None = None,
     execution_targets: list[str] | None = None,
     heartbeat_ttl: float = DEFAULT_HEARTBEAT_TTL_SECONDS,
+    waiter_cap_multiplier: int = DEFAULT_WAITER_CAP_MULTIPLIER,
+    key_concurrency: int = DEFAULT_KEY_CONCURRENCY,
 ) -> dict[str, int]:
     """One worker tick: heartbeat, then reaper pass, then claim pass. Split from
     any sleep loop so tests (and the Studio daemon's own tick) can drive a
@@ -507,5 +616,7 @@ async def worker_tick(
         advertised_capabilities=advertised_capabilities,
         execution_targets=execution_targets,
         heartbeat_ttl=heartbeat_ttl,
+        waiter_cap_multiplier=waiter_cap_multiplier,
+        key_concurrency=key_concurrency,
     )
     return {**reaped, "claimed": claimed}

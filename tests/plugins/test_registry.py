@@ -164,6 +164,22 @@ class TestCollisions:
         assert "shared_tool" in r1.error
         assert "tools" in r1.error
 
+    def test_activate_target_rejects_cross_plugin_tool_name_collision(self, write_plugin):
+        """A plugin's own manifest can be internally consistent (unique name,
+        no duplicate tool within itself) while still being in PluginState.COLLISION
+        because another enabled plugin declares the same tool name. activate_target()
+        must reject it rather than only checking the target plugin in isolation."""
+        _write_tool_plugin(write_plugin, "p1", tool_name="shared_tool", agent_name="a1")
+        _write_tool_plugin(write_plugin, "p2", tool_name="shared_tool", agent_name="a2")
+        _trust_by_dir_name("p1")
+        _trust_by_dir_name("p2")
+
+        PluginRegistry.reset()
+        assert PluginRegistry.get("p1").state is PluginState.COLLISION
+
+        with pytest.raises(PluginActivationError, match="shared_tool"):
+            PluginRegistry.activate_target("p1", "tools/t.py:t")
+
     def test_two_active_plugins_same_agent_name_is_not_a_collision(self, write_plugin):
         """Agent profiles are namespaced (<plugin>/<name>) — same local name across two
         plugins is not a hard error, only the bare name becomes ambiguous (resolver's job)."""
@@ -235,6 +251,30 @@ capabilities:
 
 
 class TestActivateTarget:
+    def test_activation_rescans_only_the_requested_plugin(self, write_plugin, monkeypatch):
+        import lionagi.plugins.registry as registry_mod
+
+        requested_bundle = _write_tool_plugin(write_plugin, "p1", tool_name="tool1")
+        unrelated_bundle = _write_tool_plugin(write_plugin, "p2", tool_name="tool2")
+        _trust_by_dir_name("p1")
+        _trust_by_dir_name("p2")
+        PluginRegistry.reset()
+
+        real_rescan = registry_mod._rescan
+        rescanned = []
+
+        def recording_rescan(record):
+            rescanned.append(record.bundle_dir)
+            return real_rescan(record)
+
+        monkeypatch.setattr(registry_mod, "_rescan", recording_rescan)
+
+        fn = PluginRegistry.activate_target("p1", "tools/t.py:t")
+
+        assert fn() == 1
+        assert rescanned == [requested_bundle]
+        assert unrelated_bundle not in rescanned
+
     def test_activates_lazily_and_caches(self, write_plugin):
         _write_tool_plugin(write_plugin, "p1", tool_body="def t():\n    return 42\n")
         _trust_by_dir_name("p1")
@@ -368,6 +408,90 @@ class TestActivateTarget:
         write_user_settings(settings)
 
         assert "p1/a" not in PluginRegistry.active_agent_profile_files()
+
+
+PLAYBOOK_MANIFEST = """\
+name: {name}
+version: "0.1.0"
+lionagi: ">=0.0,<100.0"
+
+capabilities:
+  playbooks: [playbooks/{playbook}.playbook.yaml]
+"""
+
+
+def _write_playbook_plugin(
+    write_plugin, dir_name: str, *, name: str | None = None, playbook: str = "pb"
+):
+    return write_plugin(
+        dir_name,
+        PLAYBOOK_MANIFEST.format(name=name or dir_name, playbook=playbook),
+        files={f"playbooks/{playbook}.playbook.yaml": "prompt: hi\n"},
+    )
+
+
+class TestActivePlaybookFiles:
+    """ADR-0088 D3/D6: a plugin's declared playbooks join the search namespaced
+    as ``<plugin>/<name>``, only for a trusted + enabled + compatible plugin."""
+
+    def test_active_plugin_playbook_is_namespaced(self, write_plugin):
+        _write_playbook_plugin(write_plugin, "p1", playbook="deep-research")
+        _trust_by_dir_name("p1")
+        PluginRegistry.reset()
+
+        files = PluginRegistry.active_playbook_files()
+        assert "p1/deep-research" in files
+        plugin_name, path = files["p1/deep-research"]
+        assert plugin_name == "p1"
+        assert path.name == "deep-research.playbook.yaml"
+
+    def test_untrusted_plugin_playbook_is_absent(self, write_plugin):
+        _write_playbook_plugin(write_plugin, "p1", playbook="deep-research")
+        # never trusted
+        assert "p1/deep-research" not in PluginRegistry.active_playbook_files()
+
+    def test_two_active_plugins_same_playbook_name_is_not_a_collision(self, write_plugin):
+        """Playbooks are namespaced — same local name across two plugins is not a
+        hard error, only the bare name becomes ambiguous (resolver's job)."""
+        _write_playbook_plugin(write_plugin, "p1", playbook="research")
+        _write_playbook_plugin(write_plugin, "p2", playbook="research")
+        _trust_by_dir_name("p1")
+        _trust_by_dir_name("p2")
+        PluginRegistry.reset()
+
+        assert PluginRegistry.get("p1").state is PluginState.ACTIVE
+        assert PluginRegistry.get("p2").state is PluginState.ACTIVE
+        files = PluginRegistry.active_playbook_files()
+        assert "p1/research" in files
+        assert "p2/research" in files
+
+    def test_editing_playbook_after_first_access_removes_it_from_active_files(self, write_plugin):
+        bundle = _write_playbook_plugin(write_plugin, "p1", playbook="deep-research")
+        _trust_by_dir_name("p1")
+        PluginRegistry.reset()
+
+        assert PluginRegistry.get("p1").state is PluginState.ACTIVE
+        assert "p1/deep-research" in PluginRegistry.active_playbook_files()
+
+        (bundle / "playbooks" / "deep-research.playbook.yaml").write_text(
+            "prompt: attacker-controlled\n"
+        )
+
+        assert "p1/deep-research" not in PluginRegistry.active_playbook_files()
+
+    def test_disabling_after_first_access_removes_playbooks_without_reset(self, write_plugin):
+        _write_playbook_plugin(write_plugin, "p1", playbook="deep-research")
+        _trust_by_dir_name("p1")
+        PluginRegistry.reset()
+
+        assert PluginRegistry.get("p1").state is PluginState.ACTIVE
+        assert "p1/deep-research" in PluginRegistry.active_playbook_files()
+
+        settings = read_user_settings()
+        settings.setdefault("plugins", {})["p1"] = {"enabled": False}
+        write_user_settings(settings)
+
+        assert "p1/deep-research" not in PluginRegistry.active_playbook_files()
 
 
 class TestTrustExecutionAtomicity:
@@ -522,3 +646,46 @@ class TestMultiColonTargetBypass:
 
         fn = PluginRegistry.activate_target("p1", "tools/t.py:t")
         assert fn() == 7
+
+
+class TestSnapshotGenerationMonotonicity:
+    """``snapshot_generation()`` is a trust token: a consumer that already
+    fully revalidated a plugin entry treats an unchanged token as ``nothing
+    was reset since`` and skips the expensive full recheck. An ``id()``-based
+    token is unsound for this: ``id()`` is a memory address, reusable once
+    the prior snapshot list is garbage-collected, so a rebuilt snapshot can
+    land at the SAME address as an earlier one a caller cached -- making a
+    stale, no-longer-eligible entry look current. A monotonic counter that
+    only ever increases cannot repeat.
+    """
+
+    def test_generation_strictly_increases_across_many_resets(self, write_plugin):
+        _write_tool_plugin(write_plugin, "p1")
+        _trust_by_dir_name("p1")
+
+        seen: list[int] = []
+        for _ in range(40):
+            PluginRegistry.reset()
+            seen.append(PluginRegistry.snapshot_generation())
+
+        assert seen == sorted(seen), "generation must never decrease across resets"
+        assert len(set(seen)) == len(seen), (
+            "generation token repeated across resets -- a rebuilt snapshot "
+            "must never be able to masquerade as an earlier one"
+        )
+        assert all(b > a for a, b in zip(seen, seen[1:])), (
+            "generation must strictly increase on every rebuild, not merely stay non-decreasing"
+        )
+
+    def test_generation_is_stable_between_resets(self, write_plugin):
+        _write_tool_plugin(write_plugin, "p1")
+        _trust_by_dir_name("p1")
+        PluginRegistry.reset()
+
+        first = PluginRegistry.snapshot_generation()
+        # Repeat reads (and touching the cached snapshot via list_plugins())
+        # without an intervening reset() must not bump the token.
+        PluginRegistry.list_plugins()
+        second = PluginRegistry.snapshot_generation()
+
+        assert first == second

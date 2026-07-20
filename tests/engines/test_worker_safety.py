@@ -61,6 +61,7 @@ class _ScriptedBranch:
 
 
 @pytest.mark.asyncio
+@pytest.mark.slow_timing
 async def test_cancel_active_returns_within_timeout_when_task_swallows_cancelled_error():
     """cancel_active must return within ~timeout+buffer even when a task swallows CancelledError."""
     run = _StubEngine().new_run()
@@ -83,7 +84,7 @@ async def test_cancel_active_returns_within_timeout_when_task_swallows_cancelled
 
 
 @pytest.mark.asyncio
-async def test_cancel_active_returns_fast_when_tasks_cooperate():
+async def test_cancel_active_returns_fast_when_tasks_cooperate(monkeypatch: pytest.MonkeyPatch):
     """When tasks cooperate with cancellation, cancel_active returns well before timeout."""
     run = _StubEngine().new_run()
 
@@ -93,10 +94,18 @@ async def test_cancel_active_returns_fast_when_tasks_cooperate():
     run.spawn(cooperative())
     run.spawn(cooperative())
     run.engine.cancel_timeout_s = 5.0
-    t0 = time.monotonic()
+    original_wait = asyncio.wait
+    wait_results: list[tuple[float | None, set[asyncio.Task]]] = []
+
+    async def recording_wait(tasks, *, timeout=None):
+        done, pending = await original_wait(tasks, timeout=timeout)
+        wait_results.append((timeout, pending))
+        return done, pending
+
+    monkeypatch.setattr(asyncio, "wait", recording_wait)
     await run.cancel_active()
-    elapsed = time.monotonic() - t0
-    assert elapsed < 1.0
+
+    assert wait_results == [(5.0, set())]
     assert not run._active
 
 
@@ -693,4 +702,108 @@ async def test_hanging_fix_round_aborts_with_caveat(tmp_path, monkeypatch):
     assert result.passed is False
     assert "stage aborted by watchdog" in result.caveats
     assert verify_calls == [], "verify must not run after a watchdog abort"
+    assert (export_dir / "report.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_hanging_plan_is_bounded_but_does_not_abort_the_run(tmp_path, monkeypatch):
+    """A hung _plan stage must be bounded (soft watchdog) and degrade to the raw-task
+    plan, letting implement/test proceed — it must NOT poison run._aborted and fail the run."""
+    import sys
+
+    eng = CodingEngine(repair_retries=0, max_fix_rounds=0, stage_timeout_s=0.2)
+    run = eng.new_run()
+
+    class _HangingPlanBranch:
+        name = "plan"
+
+        async def operate(self, *, instruction, **kw):
+            await asyncio.sleep(60)  # planner hangs indefinitely
+            return "never"
+
+    implement_branch = _ScriptedBranch(
+        run, [ChangeProposed(summary="did the work")], name="implement"
+    )
+    branches = {"plan": _HangingPlanBranch(), "implement": implement_branch}
+
+    async def fake_make(role, *, name=None, **kw):
+        return branches.get(name, _ScriptedBranch(run, [], name=name))
+
+    monkeypatch.setattr(run, "make_agent", fake_make)
+    monkeypatch.setattr(eng, "_capture_diff", lambda r: _async(""))
+
+    export_dir = tmp_path / "export"
+    events: list[dict] = []
+    run.on_event = events.append
+
+    result = await eng._run(
+        run,
+        "plan hangs but work still happens",
+        test_cmd=[sys.executable, "-c", "exit(0)"],  # tests pass
+        workspace=str(tmp_path),
+        export_dir=export_dir,
+    )
+
+    plan_aborted = [e for e in events if e["type"] == "WorkAborted" and e.get("stage") == "plan"]
+    assert plan_aborted, f"soft plan-abort not found in {[e['type'] for e in events]}"
+    assert plan_aborted[0].get("hard") is False, "plan watchdog must be soft (hard=False)"
+
+    # The run must NOT be failed by the plan timeout: implement ran and tests passed.
+    assert implement_branch.calls, "implement must run despite a hung planner"
+    assert result.passed is True
+    assert "stage aborted by watchdog" not in result.caveats
+
+
+@pytest.mark.asyncio
+async def test_hanging_verify_is_bounded_and_run_still_concludes(tmp_path, monkeypatch):
+    """A hung _verify stage must be bounded (soft watchdog): the advisory verdict is
+    dropped, but the run concludes on the test result rather than hanging or failing."""
+    import sys
+
+    eng = CodingEngine(repair_retries=0, max_fix_rounds=0, stage_timeout_s=0.2)
+    run = eng.new_run()
+    plan_ev = WorkPlanned(approach="implement, then verify hangs")
+
+    class _HangingVerifyBranch:
+        name = "verify"
+
+        async def operate(self, *, instruction, **kw):
+            await asyncio.sleep(60)  # verifier hangs indefinitely
+            return "never"
+
+    branches = {
+        "plan": _ScriptedBranch(run, [plan_ev], name="plan"),
+        "implement": _ScriptedBranch(
+            run, [ChangeProposed(summary="did the work")], name="implement"
+        ),
+        "verify": _HangingVerifyBranch(),
+    }
+
+    async def fake_make(role, *, name=None, **kw):
+        return branches.get(name, _ScriptedBranch(run, [], name=name))
+
+    monkeypatch.setattr(run, "make_agent", fake_make)
+    monkeypatch.setattr(eng, "_capture_diff", lambda r: _async(""))
+
+    export_dir = tmp_path / "export"
+    events: list[dict] = []
+    run.on_event = events.append
+
+    result = await eng._run(
+        run,
+        "verify hangs after passing tests",
+        test_cmd=[sys.executable, "-c", "exit(0)"],  # tests pass
+        workspace=str(tmp_path),
+        export_dir=export_dir,
+    )
+
+    verify_aborted = [
+        e for e in events if e["type"] == "WorkAborted" and e.get("stage") == "verify"
+    ]
+    assert verify_aborted, f"soft verify-abort not found in {[e['type'] for e in events]}"
+    assert verify_aborted[0].get("hard") is False, "verify watchdog must be soft (hard=False)"
+
+    # Verdict comes from the tests, not the (dropped) verify note; run concludes.
+    assert result.passed is True
+    assert "stage aborted by watchdog" not in result.caveats
     assert (export_dir / "report.md").exists()

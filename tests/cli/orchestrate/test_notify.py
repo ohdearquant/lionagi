@@ -198,6 +198,7 @@ async def test_nonzero_exit_is_swallowed_and_logged(caplog):
     assert any("exited 3" in r.message for r in caplog.records)
 
 
+@pytest.mark.slow_timing
 async def test_timeout_is_swallowed_and_logged(caplog, monkeypatch: pytest.MonkeyPatch):
     # The exec adapter's own internal timeout (patched short here) fires
     # before the registry's outer per-emit budget (left at the default 10s)

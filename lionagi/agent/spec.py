@@ -77,6 +77,7 @@ class AgentSpec(HooksMixin):
     mcp_servers: list[str] | None = None
     mcp_config_path: str | None = None
     context_management: bool = True
+    khive_injection: Any = None
 
     @classmethod
     def compose(
@@ -94,6 +95,7 @@ class AgentSpec(HooksMixin):
         system_prompt: str | None = None,
         cwd: str | None = None,
         yolo: bool = False,
+        khive_injection: Any = None,
     ) -> AgentSpec:
         """Build an AgentSpec from a role name/object; ``emits=None`` uses role's declared contract."""
         prof = Profile.compose(role, modes=modes)
@@ -110,6 +112,7 @@ class AgentSpec(HooksMixin):
             extra_prompt=system_prompt or None,
             cwd=cwd,
             yolo=yolo,
+            khive_injection=khive_injection,
         )
 
     @classmethod
@@ -168,6 +171,8 @@ class AgentSpec(HooksMixin):
             spec.lion_system = bool(data["lion_system"])
         if "context_management" in data:
             spec.context_management = bool(data["context_management"])
+        if "khive_injection" in data:
+            spec.khive_injection = data["khive_injection"]
         return spec
 
     def build_system_message(self) -> str:
@@ -205,6 +210,8 @@ class AgentSpec(HooksMixin):
         }
         if self.cwd:
             data["cwd"] = self.cwd
+        if isinstance(self.khive_injection, (bool, dict)):
+            data["khive_injection"] = self.khive_injection
         with open(path, "w") as f:
             import yaml
 

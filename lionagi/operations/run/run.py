@@ -234,6 +234,29 @@ async def _stream_with_liveness(
                 max_attempts,
             )
             continue
+        except BaseException:
+            # Cancellation or GeneratorExit can land while the first chunk is
+            # still pending, before control reaches the post-yield finally
+            # below. Close the owned stream explicitly so subprocess cleanup
+            # runs synchronously, then preserve the original unwind reason.
+            _unwinding = sys.exc_info()[1] is not None
+            try:
+                await agen.aclose()
+            except Exception as close_exc:
+                logger.debug(
+                    "run: liveness watchdog agen.aclose() raised during first-chunk cleanup: %r",
+                    close_exc,
+                )
+            except BaseException as close_exc:
+                if not _unwinding:
+                    raise
+                logger.debug(
+                    "run: liveness watchdog agen.aclose() raised %r while "
+                    "another exception was already propagating; suppressing "
+                    "the secondary cleanup failure",
+                    close_exc,
+                )
+            raise
         else:
             try:
                 yield first_chunk
@@ -265,6 +288,40 @@ async def _stream_with_liveness(
                         close_exc,
                     )
             return
+
+
+# Fields inside a "result" chunk's metadata that CLI providers may emit as a
+# per-turn delta rather than a running total (see codex.py's turn.completed
+# handler). Every provider that only ever emits one "result" chunk per run()
+# call (claude_code, gemini_code) reports these as the final total, which sums
+# correctly here too since there is nothing else to add it to.
+_RESULT_META_DELTA_KEYS = ("total_cost_usd", "num_turns")
+
+
+def _accumulate_result_meta(result_meta: dict, metadata: dict) -> None:
+    """Merge a "result" chunk's metadata into the in-progress accumulator.
+
+    Numeric usage/cost/turn fields are summed (codex emits marginal deltas
+    across multiple turn.completed events within one flush window); every
+    other field (e.g. duration_ms, a point-in-time snapshot rather than a
+    delta) is overwritten with the latest value.
+    """
+    for key, value in metadata.items():
+        if key == "usage" and isinstance(value, dict):
+            usage = result_meta.setdefault("usage", {})
+            for uk, uv in value.items():
+                if isinstance(uv, (int, float)) and not isinstance(uv, bool):
+                    usage[uk] = usage.get(uk, 0) + uv
+                else:
+                    usage[uk] = uv
+        elif (
+            key in _RESULT_META_DELTA_KEYS
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+        ):
+            result_meta[key] = result_meta.get(key, 0) + value
+        else:
+            result_meta[key] = value
 
 
 async def run(
@@ -354,11 +411,16 @@ async def run(
                     "run: observer raised during RunStart emission; run proceeds normally"
                 )
 
-        await _apply_context_providers(branch, instruction, param, ins=ins)
-        try:
-            ins, kw = _prepare_run_kwargs(branch, instruction, param, ins=ins)
-        finally:
-            branch._context_injection_slot = None
+        provider_ins, context_report = await _apply_context_providers(
+            branch, instruction, param, ins=ins
+        )
+        ins, kw = _prepare_run_kwargs(
+            branch,
+            instruction,
+            param,
+            ins=provider_ins or ins,
+            context_blocks=context_report.blocks if context_report else None,
+        )
 
         # Committed before the yield below: any consumer that receives this
         # Instruction from the generator must find it already present in
@@ -528,7 +590,7 @@ async def run(
 
                         case "result":
                             if chunk.metadata:
-                                result_meta.update(chunk.metadata)
+                                _accumulate_result_meta(result_meta, chunk.metadata)
 
                         case "error":
                             # A CLI provider marks a resumed-session end-of-stream by

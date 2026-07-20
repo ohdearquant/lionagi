@@ -103,6 +103,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/schedules/runs/{run_id}"),
     ("GET", "/api/schedules/{schedule_id}"),
     ("GET", "/api/schedules/{schedule_id}/runs"),
+    ("GET", "/api/schedules/{schedule_id}/status"),
     ("GET", "/api/sessions/"),
     ("GET", "/api/sessions/{session_id}"),
     ("GET", "/api/sessions/{session_id}/signals"),
@@ -234,7 +235,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 98
+    assert len(_GOLDEN_ROUTES) == 99
 
 
 def _compiled_match_shape(path_template: str) -> str:
@@ -624,6 +625,7 @@ _SCHEDULE_DETAIL_KEYS = sorted(
         "action_playbook",
         "action_project",
         "action_prompt",
+        "authored_spec",
         "budget_tokens",
         "budget_usd",
         "consecutive_failures",
@@ -640,17 +642,26 @@ _SCHEDULE_DETAIL_KEYS = sorted(
         "last_fired_at",
         "last_healthy_poll_at",
         "last_status",
+        "managed_by",
         "max_runs",
         "missed_fire_policy",
         "name",
         "next_fire_at",
+        "notify_command",
+        "notify_on",
         "on_fail",
         "on_success",
         "overlap_policy",
+        "owner_key",
         "poll_interval_sec",
         "poller_consecutive_401",
         "project",
+        "rate_limit",
         "recent_runs",
+        "resolved_digest",
+        "resolved_target",
+        "resolved_timezone",
+        "spec_version",
         "threshold_config",
         "trigger_type",
         "updated_at",

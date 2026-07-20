@@ -4,15 +4,34 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Callable
 from typing import Any
 
 from lionagi._errors import ConfigurationError
+from lionagi.ln.concurrency import is_coro_func
 from lionagi.session.branch import Branch
 
 from .spec import AgentSpec
 
-__all__ = ("create_agent", "_chain_pre_hooks", "_chain_post_hooks")
+__all__ = (
+    "create_agent",
+    "CREATE_AGENT_BRANCH_ORIGIN_KEY",
+    "_chain_pre_hooks",
+    "_chain_post_hooks",
+)
+
+# Stamped into `branch.metadata` for every Branch this factory produces. The
+# key's presence (not the current invocation's profile) is the durable,
+# immutable record that a branch's system message was composed via
+# create_agent (role header + policy block) rather than a bare profile body.
+# It round-trips through Branch.to_dict()/from_dict() with the rest of
+# `metadata`, so a later resume/continue-last leg can consult the PERSISTED
+# branch itself instead of re-deriving "was this create_agent-composed?"
+# from whatever profile happens to be supplied on the resuming invocation
+# (which may differ, or may have since dropped its `role:` key) — see
+# lionagi/cli/agent.py `_run_agent`'s system-prompt reapply guard.
+CREATE_AGENT_BRANCH_ORIGIN_KEY = "create_agent_origin"
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +97,13 @@ async def create_agent(
         if provider in CLI_PROVIDERS:
             extra["api_key"] = "dummy"
 
+        # Codex executes `-C <repo>`; the request model's repo defaults to the
+        # calling process cwd, so an agent assigned a workspace via spec.cwd
+        # would otherwise run against whatever directory the host process
+        # happens to be in.
+        if provider == "codex" and spec.cwd:
+            extra["repo"] = spec.cwd
+
         chat_model = iModel(
             provider=provider,
             model=model_name,
@@ -89,6 +115,10 @@ async def create_agent(
         branch_kwargs["log_config"] = log_config
 
     branch = Branch(**branch_kwargs)
+    # Immutable branch-origin marker (see CREATE_AGENT_BRANCH_ORIGIN_KEY):
+    # stamped once, here, on every branch this factory builds; never read or
+    # written anywhere else in the branch's lifetime.
+    branch.metadata[CREATE_AGENT_BRANCH_ORIGIN_KEY] = True
 
     system_message = spec.build_system_message()
     if "coding" in spec.tools and getattr(spec, "context_management", True):
@@ -108,6 +138,7 @@ async def create_agent(
 
     _apply_permissions(spec)
     _register_tools(branch, spec)
+    _register_providers(branch, spec)
     await _load_mcp(branch, spec, trust_project_settings=trust_project_settings)
     _forward_mcp_to_cli_request(branch, spec, trust_project_settings=trust_project_settings)
     _wire_external_hooks(branch, spec)
@@ -264,6 +295,39 @@ def _chain_post_hooks(tool_name: str, hooks: list[Callable]) -> Callable | None:
     return chained
 
 
+def _compose_preprocessor(original: Callable | None, new: Callable) -> Callable:
+    """Compose a spec-derived preprocessor in front of a tool's existing one.
+
+    Ordering keeps the security recheck closest to the actual invocation:
+    the tool's own preprocessor (if any) runs first, then the spec chain.
+    """
+    if original is None:
+        return new
+
+    async def composed(args: dict, **kw) -> Any:
+        args = await original(args, **kw) if is_coro_func(original) else original(args, **kw)
+        return await new(args, **kw) if is_coro_func(new) else new(args, **kw)
+
+    return composed
+
+
+def _compose_postprocessor(original: Callable | None, new: Callable) -> Callable:
+    """Compose a spec-derived postprocessor around a tool's existing one.
+
+    Ordering mirrors `_compose_preprocessor`: the spec chain runs immediately
+    after the tool call (closest to invocation), then the tool's own
+    postprocessor (if any) runs last.
+    """
+    if original is None:
+        return new
+
+    async def composed(result: Any, **kw) -> Any:
+        result = await new(result, **kw) if is_coro_func(new) else new(result, **kw)
+        return await original(result, **kw) if is_coro_func(original) else original(result, **kw)
+
+    return composed
+
+
 def _attach_hooks(tool: Any, spec: AgentSpec, canonical_name: str) -> Any:
     security_hooks = _tool_hooks(spec, "security_pre", canonical_name)
     user_pre_hooks = _tool_hooks(spec, "pre", canonical_name)
@@ -271,9 +335,9 @@ def _attach_hooks(tool: Any, spec: AgentSpec, canonical_name: str) -> Any:
     pre = _chain_pre_hooks(canonical_name, security_hooks, user_pre_hooks)
     post = _chain_post_hooks(canonical_name, post_hooks)
     if pre is not None:
-        tool.preprocessor = pre
+        tool.preprocessor = _compose_preprocessor(tool.preprocessor, pre)
     if post is not None:
-        tool.postprocessor = post
+        tool.postprocessor = _compose_postprocessor(tool.postprocessor, post)
     return tool
 
 
@@ -306,6 +370,86 @@ def _register_tools(branch: Branch, spec: AgentSpec) -> None:
                 SearchTool(workspace_root=workspace_root).to_tool(), spec, "search"
             )
             branch.register_tools(tool)
+
+
+def _register_providers(branch: Branch, spec: AgentSpec) -> None:
+    # LIONAGI_KHIVE_INJECTION is the fleet-wide injection kill-switch.
+    env_setting = os.getenv("LIONAGI_KHIVE_INJECTION")
+    if env_setting is not None and env_setting.strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
+        return
+
+    configured = spec.khive_injection
+    # Only None/False disable — an empty mapping is a valid opt-in that must
+    # still receive the fleet defaults (derived profile_id + writeback on).
+    if configured is None or configured is False:
+        return
+
+    from lionagi.tools.khive_injection import (
+        ComposePolicy,
+        KhiveInjectionPolicy,
+        KhiveInjectionProvider,
+        RecallPolicy,
+        WritebackPolicy,
+    )
+
+    if isinstance(configured, KhiveInjectionPolicy):
+        policy = configured
+    elif isinstance(configured, dict):
+        policy_kwargs = dict(configured)
+        nested_policy_types = {
+            "recall": RecallPolicy,
+            "compose": ComposePolicy,
+            "writeback": WritebackPolicy,
+        }
+        for field_name, policy_type in nested_policy_types.items():
+            value = policy_kwargs.get(field_name)
+            if isinstance(value, dict):
+                policy_kwargs[field_name] = policy_type(**value)
+        defaults = {}
+        if "profile_id" not in policy_kwargs:
+            defaults["profile_id"] = f"{spec.profile.role.name}-recall-v1"
+        if "writeback" not in policy_kwargs:
+            defaults["writeback"] = WritebackPolicy(enabled=True)
+        policy = KhiveInjectionPolicy(**{**defaults, **policy_kwargs})
+    elif configured is True:
+        policy = KhiveInjectionPolicy(
+            profile_id=f"{spec.profile.role.name}-recall-v1",
+            writeback=WritebackPolicy(enabled=True),
+        )
+    else:
+        raise TypeError(
+            "khive_injection must be None, a bool, a mapping, or a KhiveInjectionPolicy"
+        )
+
+    branch.providers.register(KhiveInjectionProvider(policy))
+
+
+def register_profile_injection(branch: Branch, role_name: str, profile: Any) -> None:
+    """Register a CLI agent profile's khive injection provider onto ``branch``.
+
+    Shared by the orchestrate path and the bare ``li agent`` path so both honor a
+    profile's ``khive_injection`` opt-in without routing through the coding preset —
+    injection is a context-provider concern, orthogonal to CodingToolkit/path-guards.
+    The provider is keyed on ``{role_name}-recall-v1`` (role_name is the invoked
+    profile name). None/False disables; the env kill-switch is honored by
+    ``_register_providers``.
+    """
+    configured = getattr(profile, "khive_injection", None)
+    # Only None/False disable — an empty mapping is a valid opt-in (see _register_providers).
+    if configured is None or configured is False:
+        return
+
+    from lionagi.casts.pattern import Role
+    from lionagi.casts.profile import Profile
+
+    identity = Profile(name=role_name, role=Role(name=role_name, description="", body=""))
+    provider_spec = AgentSpec(profile=identity, pack=None, khive_injection=configured)
+    _register_providers(branch, provider_spec)
 
 
 def _register_coding_tools(branch: Branch, spec: AgentSpec) -> None:
@@ -389,10 +533,38 @@ async def _load_mcp(
     if mcp_path is None:
         return
 
-    await branch.acts.load_mcp_config(
+    from lionagi.service.connections.mcp_wrapper import MCPSecurityConfig
+
+    # ActionManager.load_mcp_config() no longer implies trust when its
+    # `mcp_security` argument is omitted (ADR-0011 delta row 3) -- an
+    # omitted policy now falls through to the wrapper's fail-closed
+    # default instead. Reaching this point already required an explicit
+    # trust act: either `spec.mcp_config_path` was set directly, or
+    # `mcp_path` resolved from the operator's own home-level `.mcp.json`
+    # (the same "global config is inherently trusted" precedent as
+    # settings.yaml's always-loaded global file), or the caller opted into
+    # `trust_project_settings=True` for a project-level file. This is the
+    # one, explicit, documented compatibility decision for lionagi's own
+    # MCP auto-load consumer -- not a silent default buried in the generic
+    # library call.
+    loaded = await branch.acts.load_mcp_config(
         mcp_path,
         server_names=spec.mcp_servers,
+        mcp_security=MCPSecurityConfig.trusted(),
     )
+
+    # Apply the same hook chain static tools get (security_pre/pre/post from
+    # spec.hook_handlers, wired via _attach_hooks in _register_tools) to
+    # MCP-discovered tools too -- they are registered after built-in tool
+    # interception and would otherwise keep their bare default preprocessor
+    # (ADR-0041 delta row 2). Reuses _attach_hooks, the same function static
+    # registration uses, so both paths stay on one shared chain-application
+    # path rather than a copied block.
+    for tool_names in loaded.values():
+        for tool_name in tool_names:
+            tool = branch.acts.registry.get(tool_name)
+            if tool is not None:
+                _attach_hooks(tool, spec, tool_name)
 
 
 def _forward_mcp_to_cli_request(

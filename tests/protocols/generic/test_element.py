@@ -1,8 +1,9 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 import pytest
 
+from lionagi.protocols.generic import element as element_mod
 from lionagi.protocols.generic.element import ID, Element, validate_order
 
 
@@ -29,10 +30,19 @@ def test_element_metadata_validation():
     assert element.metadata == {"key": "value"}
 
 
-def test_element_timestamp():
-    now = datetime.now().timestamp()
-    element = Element()
-    assert element.created_at >= now
+def test_element_timestamp(monkeypatch):
+    # A moving clock: created_at must be stamped fresh from the clock at each
+    # construction and advance between instances — the freshness/ordering property,
+    # not merely equality to a chosen value.
+    t0 = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    t1 = datetime(2024, 6, 1, 12, 0, 5, tzinfo=timezone.utc)
+    monkeypatch.setattr(element_mod, "now_utc", lambda: t0)
+    first = Element()
+    monkeypatch.setattr(element_mod, "now_utc", lambda: t1)
+    second = Element()
+    assert first.created_at == t0.timestamp()
+    assert second.created_at == t1.timestamp()
+    assert second.created_at > first.created_at
 
 
 def test_element_equality():

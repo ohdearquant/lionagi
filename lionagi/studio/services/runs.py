@@ -769,6 +769,34 @@ def _open_regular_file_no_follow(root: Path, resolved: Path) -> int:
         raise
 
 
+def _decode_capped_utf8(raw_slice: bytes) -> str | None:
+    """Decode a byte-capped file read, tolerating only a multibyte UTF-8
+    sequence that was split by the cap boundary itself.
+
+    Returns the decoded text, or ``None`` if the slice is not valid UTF-8
+    even once any boundary-truncated trailing sequence is set aside — i.e.
+    the content is genuinely non-text/binary and should still 415,
+    regardless of whether it happens to exceed the read cap.
+    """
+    try:
+        return raw_slice.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        # Only tolerate an incomplete multibyte sequence cut off exactly at
+        # the end of the slice (the cap boundary). Any other decode failure
+        # -- an invalid start/continuation byte anywhere else in the slice --
+        # means the content itself is not valid UTF-8.
+        if exc.reason != "unexpected end of data" or exc.end != len(raw_slice):
+            return None
+        try:
+            raw_slice[: exc.start].decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        # Everything before the cut-off tail is confirmed valid UTF-8, so the
+        # only thing being masked here is the boundary-truncated trailing
+        # character itself -- safe to render it as a replacement character.
+        return raw_slice.decode("utf-8", errors="replace")
+
+
 async def get_run_file(run_id: str, path: str) -> dict[str, Any]:
     """Read-only content fetch for a file inside a run's artifact root;
     always re-validates against the live artifact root rather than trusting the caller."""
@@ -814,8 +842,11 @@ async def get_run_file(run_id: str, path: str) -> dict[str, Any]:
     truncated = len(raw) > _MAX_FILE_READ_BYTES
     if truncated:
         # A split multibyte UTF-8 sequence at the cap boundary must read as
-        # truncation, not a binary file — only the untruncated branch gets a 415.
-        content = raw[:_MAX_FILE_READ_BYTES].decode("utf-8", errors="replace")
+        # truncation, not a binary file -- but a genuinely non-text file that
+        # happens to exceed the cap must still 415, the same as a small one.
+        content = _decode_capped_utf8(raw[:_MAX_FILE_READ_BYTES])
+        if content is None:
+            raise HTTPException(status_code=415, detail="File is not text/UTF-8") from None
     else:
         try:
             content = raw.decode("utf-8")

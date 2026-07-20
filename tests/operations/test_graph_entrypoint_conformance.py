@@ -454,16 +454,6 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
             "test_scheduler_build_argv_only_dispatches_registered_o_subcommands"
         ),
     ),
-    GraphSurface(
-        key="reactive-callback-gap",
-        symbol="lionagi.operations.flow._assign_injected_branch / ReactiveExecutor",
-        location=None,
-        role="known_violation",
-        expected_target=None,
-        persistence="known_violation",
-        reason="reactive flows do not forward on_branch_created to preallocated or injected clones; "
-        "see the strict-xfail regression in tests/operations/test_reactive_flow.py",
-    ),
 )
 
 
@@ -512,6 +502,7 @@ def _collect_kernel_import_bindings(tree: ast.AST) -> set[str]:
 
 
 _FLOW_MODULE_PATH = "lionagi.operations.flow"
+_FLOW_MODULE_SUFFIX = "operations.flow"
 
 
 def _dotted_name(expr: ast.expr) -> str | None:
@@ -593,9 +584,9 @@ def _is_flow_module_expr(expr: ast.expr, env: _FlowModuleEnv) -> bool:
         return True
     if isinstance(expr, ast.Attribute):
         dotted = _dotted_name(expr)
-        if dotted == _FLOW_MODULE_PATH:
-            root = dotted.split(".", 1)[0]
-            return root in env.lionagi_roots
+        if dotted is not None:
+            root, separator, suffix = dotted.partition(".")
+            return bool(separator) and suffix == _FLOW_MODULE_SUFFIX and root in env.lionagi_roots
     if isinstance(expr, ast.Call) and len(expr.args) == 1:
         callee = expr.func
         callee_ok = (isinstance(callee, ast.Name) and callee.id in env.import_module_funcs) or (
@@ -953,7 +944,9 @@ def _replay_binding_events(
             for alias in node.names:
                 if alias.name == _FLOW_MODULE_PATH and alias.asname:
                     env.names.add(alias.asname)
-                elif alias.name.split(".", 1)[0] == "lionagi" and not alias.asname:
+                elif alias.name == "lionagi":
+                    env.lionagi_roots.add(alias.asname or "lionagi")
+                elif alias.name.startswith("lionagi.") and not alias.asname:
                     env.lionagi_roots.add("lionagi")
                 elif alias.name == "importlib":
                     env.importlib_mods.add(alias.asname or "importlib")
@@ -1827,6 +1820,39 @@ def test_shadowed_lionagi_name_dotted_getattr_is_not_misreported(tmp_path):
         f"{sorted(discovery.executor_sites)}"
     )
     assert ("shadowed_root.py", "run") not in discovery.call_sites
+
+
+def test_aliased_lionagi_root_dotted_getattr_discovers_executor_construction(tmp_path):
+    rogue = tmp_path / "aliased_root.py"
+    rogue.write_text(
+        "import lionagi as SDK\n\n\n"
+        "async def run(session, graph):\n"
+        '    return await getattr(SDK.operations.flow, "DependencyAwareExecutor")(\n'
+        "        session, graph\n"
+        "    ).execute()\n"
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    key = ("aliased_root.py", "run")
+    assert discovery.executor_sites == {key}
+    assert key in discovery.call_sites
+
+
+def test_aliased_lionagi_root_only_matches_the_flow_module_suffix(tmp_path):
+    benign = tmp_path / "aliased_non_flow.py"
+    benign.write_text(
+        "import lionagi as SDK\n\n\n"
+        "async def run(session, graph):\n"
+        '    return await getattr(SDK.operations.flow.helpers, "DependencyAwareExecutor")(\n'
+        "        session, graph\n"
+        "    ).execute()\n"
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    assert discovery.executor_sites == set()
+    assert ("aliased_non_flow.py", "run") not in discovery.call_sites
 
 
 def test_arbitrary_import_module_named_callee_is_not_misreported(tmp_path):
@@ -3847,10 +3873,12 @@ async def test_planning_engine_run_delegates_to_engine_run_run_dag():
 async def test_run_fanout_inner_calls_env_session_flow_with_builder_graph(tmp_path):
     from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate import fanout as fanout_mod
+    from lionagi.engines import PlanningEngine
     from tests.cli.orchestrate.test_flow_phases import _FakeBranch, _make_env
 
     env = _make_env(tmp_path)
     env.exchange = None
+    env.session.observer = mock.MagicMock()
 
     assignments = [TaskAssignment(task="do it", assignee="researcher")]
 
@@ -3868,14 +3896,22 @@ async def test_run_fanout_inner_calls_env_session_flow_with_builder_graph(tmp_pa
 
     env.session.flow = AsyncMock(return_value={"operation_results": {}})
 
+    async def run_dag(graph, **kwargs):
+        return await env.session.flow(graph, verbose=kwargs.get("verbose", False))
+
+    engine_run = mock.MagicMock()
+    engine_run.run_dag = AsyncMock(side_effect=run_dag)
+
     with (
         mock.patch.object(fanout_mod, "plan", fake_plan),
         mock.patch.object(fanout_mod, "available_roles", fake_available_roles),
         mock.patch.object(fanout_mod, "build_worker_branch", fake_build_worker_branch),
         mock.patch.object(fanout_mod, "finalize_orchestration", fake_finalize),
+        mock.patch.object(PlanningEngine, "new_run", return_value=engine_run),
     ):
         await fanout_mod._run_fanout_inner("codex/gpt-5.5", "do the batch", env=env, num_workers=1)
 
+    engine_run.run_dag.assert_awaited_once()
     env.session.flow.assert_called_once()
     called_graph = env.session.flow.call_args.args[0]
     assert called_graph.nodes == env.builder._nodes
@@ -3888,14 +3924,19 @@ def _persistence_seam_env(tmp_path):
     tests/cli/orchestrate/test_flow_terminal_notify.py's `_make_env` uses —
     unlike the generic tests/cli/orchestrate/test_live_persist.py fixture,
     the tests below never call start_live_persist directly."""
-    from types import SimpleNamespace
-
     from lionagi import Branch, Session
+    from lionagi.cli._runs import RunDir
     from lionagi.cli.orchestrate._orchestration import OrchestrationEnv
 
     orc_branch = Branch(name="orchestrator")
     session = Session(default_branch=orc_branch)
-    run = SimpleNamespace(run_id="run-test-1", artifact_root=tmp_path / "artifacts")
+    run = RunDir(
+        run_id="run-test-1",
+        state_root=tmp_path / "state",
+        artifact_root=tmp_path / "artifacts",
+    )
+    run.ensure_state_dirs()
+    run.ensure_artifact_root()
     env = OrchestrationEnv(
         run=run,
         session=session,

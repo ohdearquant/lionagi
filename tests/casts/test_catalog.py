@@ -6,6 +6,9 @@
 from __future__ import annotations
 
 import json
+from importlib.resources import as_file, files
+
+import yaml
 
 from lionagi.casts.catalog import build_catalog
 from lionagi.casts.emission import EscalationRequest, field_name_for
@@ -24,6 +27,40 @@ class TestBuildCatalog:
     def test_modes_count_matches_list_modes(self):
         cat = build_catalog()
         assert len(cat["modes"]) == len(list_modes())
+
+    def test_default_pack_resolves_catalog_keys_and_covers_role_files(self):
+        packaged = files("lionagi.casts").joinpath("packs", "default.yaml")
+        with as_file(packaged) as path:
+            pack_data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+        catalog = build_catalog()
+        catalog_role_entries = {entry["name"]: entry for entry in catalog["roles"]}
+        catalog_roles = set(catalog_role_entries)
+        catalog_modes = {entry["name"] for entry in catalog["modes"]}
+        pack_roles = set(pack_data.get("roles") or {})
+        top_level_modes = set(pack_data.get("modes") or {})
+        referenced_modes = {
+            mode
+            for role_spec in (pack_data.get("roles") or {}).values()
+            for field in ("default_modes", "modes_allow")
+            for mode in role_spec.get(field, ())
+        }
+
+        problems = []
+        if unknown_roles := pack_roles - catalog_roles:
+            problems.append(f"unknown default-pack roles: {sorted(unknown_roles)}")
+        if unresolved_roles := {
+            role
+            for role in pack_roles & catalog_roles
+            if catalog_role_entries[role]["config"] is None
+        }:
+            problems.append(f"unresolved default-pack roles: {sorted(unresolved_roles)}")
+        if unknown_modes := (top_level_modes | referenced_modes) - catalog_modes:
+            problems.append(f"unknown default-pack modes: {sorted(unknown_modes)}")
+        if uncovered_roles := catalog_roles - pack_roles:
+            problems.append(f"uncovered role files: {sorted(uncovered_roles)}")
+
+        assert not problems, "; ".join(problems)
 
     def test_role_entry_shape(self):
         cat = build_catalog()

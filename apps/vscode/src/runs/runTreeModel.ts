@@ -108,6 +108,16 @@ export function applySignalRow(state: RunTreeState, row: SignalRow): void {
       newState = "failed";
       break;
     case "NodeEscalated":
+      // A soft ("fyi") help signal (route="notify") is informational only —
+      // the emitting node keeps working toward its own terminal state, so it
+      // must not get pinned into the terminal "escalated" lane. Mirrors
+      // _signal_to_state returning None for urgency="fyi" in
+      // lionagi/session/signal.py. Only a "blocked"-urgency escalation
+      // (route "higher_tier"/"give_up") or a bare route (no request
+      // attached) is treated as escalated.
+      if (p["route"] === "notify") {
+        return;
+      }
       newState = "escalated";
       break;
     case "NodeSpawned":

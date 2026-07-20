@@ -106,6 +106,7 @@ CREATE INDEX IF NOT EXISTS idx_run_tags_tag ON run_tags(tag);
 
 CREATE TABLE IF NOT EXISTS sessions (
   id              TEXT    PRIMARY KEY,
+  cc_session_id   TEXT,
   created_at      REAL    NOT NULL,
   node_metadata   JSON,
   name            TEXT,
@@ -206,6 +207,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_invocation
 -- Project-scoped session listing in Studio.
 CREATE INDEX IF NOT EXISTS idx_sessions_project
   ON sessions(project) WHERE project IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sessions_cc_session
+  ON sessions(cc_session_id) WHERE cc_session_id IS NOT NULL;
 
 -- ── Branches ──────────────────────────────────────────────────────────────
 -- A progression with identity.  Branch config (provider, model,
@@ -408,7 +411,7 @@ CREATE TABLE IF NOT EXISTS schedules (
   enabled             INTEGER NOT NULL DEFAULT 1
                       CHECK(enabled IN (0, 1)),
   trigger_type        TEXT    NOT NULL
-                      CHECK(trigger_type IN ('cron', 'interval', 'github_poll')),
+                      CHECK(trigger_type IN ('cron', 'interval', 'github_poll', 'at')),
   cron_expr           TEXT,
   interval_sec        INTEGER,
   github_repo         TEXT,
@@ -452,6 +455,10 @@ CREATE TABLE IF NOT EXISTS schedules (
   -- schedule the same way max_runs does.
   budget_usd          REAL,
   budget_tokens       INTEGER,
+  -- Rolling-window fire cap. NULL means unlimited; otherwise the JSON shape
+  -- is {max_fires, window_sec}. Exhaustion defers a due fire without
+  -- disabling or advancing the schedule.
+  rate_limit          JSON,
   project             TEXT,
   -- Metric threshold alerts: when set, this schedule's own cron/interval
   -- cadence only evaluates a metric (does not unconditionally fire); the
@@ -469,6 +476,23 @@ CREATE TABLE IF NOT EXISTS schedules (
   -- github_poll_consecutive_401 threshold metrics.
   last_healthy_poll_at    REAL,
   poller_consecutive_401  INTEGER NOT NULL DEFAULT 0,
+  -- Declarative ScheduleSet layer: versioned document identity, resolved
+  -- target/trigger snapshot + digest, and set ownership. NULL on every row
+  -- created before this layer (legacy) or by an unmanaged quick-create.
+  spec_version        TEXT,
+  managed_by          TEXT
+                      CHECK(managed_by IS NULL OR managed_by IN ('cli', 'declaration')),
+  owner_key           TEXT,
+  authored_spec       JSON,
+  resolved_target     JSON,
+  resolved_digest     TEXT,
+  resolved_timezone   TEXT,
+  -- Terminal notification (declaration-layer `notify`): registers the
+  -- existing run terminal-callback machinery on the invocation this
+  -- schedule spawns, filtered to notify_on. Replaces on_fail for
+  -- declaration-managed schedules; NULL/empty means no callback.
+  notify_on           JSON,
+  notify_command      TEXT,
   created_at          REAL    NOT NULL,
   updated_at          REAL    NOT NULL
 );
@@ -479,6 +503,8 @@ CREATE INDEX IF NOT EXISTS idx_schedules_name
   ON schedules(name);
 CREATE INDEX IF NOT EXISTS idx_schedules_project
   ON schedules(project) WHERE project IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_schedules_owner_key
+  ON schedules(owner_key) WHERE owner_key IS NOT NULL;
 
 -- ── Schedule Runs (ADR-0027) ─────────────────────────────────────────────────
 -- ADR-0071 D2: generalized into the durable task-application entity. schedule_id

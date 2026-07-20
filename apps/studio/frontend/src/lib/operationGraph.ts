@@ -35,10 +35,25 @@ const KIND_TO_STATE: Record<string, OperationStatus | undefined> = {
   NodeEscalated: "escalated",
 };
 
-export function laneFor(kinds: string[]): OperationStatus {
+// A lane-projection input: either a bare kind string (back-compat; an
+// unaccompanied "NodeEscalated" with no route info still projects to
+// "escalated", matching an EscalationRequest-less signal on the backend) or
+// a {kind, route} pair carrying the NodeEscalated route so a soft ("fyi")
+// help signal (route="notify") can be told apart from a real escalation.
+export type LaneSignal = string | { kind: string; route?: string };
+
+export function laneFor(kinds: LaneSignal[]): OperationStatus {
   let state: OperationStatus = "queued";
   let inTerminal = false;
-  for (const k of kinds) {
+  for (const entry of kinds) {
+    const k = typeof entry === "string" ? entry : entry.kind;
+    const route = typeof entry === "string" ? undefined : entry.route;
+    // Soft ("fyi") help signal: NodeEscalated fires for observability but
+    // the emitting node keeps working toward its own terminal state — must
+    // not get pinned into the terminal "escalated" lane. Mirrors
+    // _signal_to_state returning None for urgency="fyi" in
+    // lionagi/session/signal.py.
+    if (k === "NodeEscalated" && route === "notify") continue;
     const newState = KIND_TO_STATE[k];
     if (!newState) continue;
     if (inTerminal && newState !== "queued" && newState !== "running") continue;
@@ -46,6 +61,14 @@ export function laneFor(kinds: string[]): OperationStatus {
     inTerminal = TERMINAL.has(state);
   }
   return state;
+}
+
+// Build the laneFor() input for one signal event, carrying its route when
+// present (currently only NodeEscalated sets it) so laneFor can tell a soft
+// help signal apart from a real escalation.
+function toLaneSignal(ev: SignalEvent): LaneSignal {
+  const route = ev.payload?.route;
+  return typeof route === "string" ? { kind: ev.kind, route } : ev.kind;
 }
 
 // ── Transitive reduction ──────────────────────────────────────────────────────
@@ -95,7 +118,7 @@ export function transitiveReduce<E extends { source: string; target: string }>(e
 
 export function buildOperationGraph(events: SignalEvent[]): OperationGraphState {
   const order: string[] = [];
-  const kindsByOp = new Map<string, string[]>();
+  const kindsByOp = new Map<string, LaneSignal[]>();
   const nameByOp = new Map<string, string>();
   const elapsedByOp = new Map<string, number>();
   const firstTsByOp = new Map<string, number>();
@@ -113,7 +136,7 @@ export function buildOperationGraph(events: SignalEvent[]): OperationGraphState 
       causeOpIdByOp.set(ev.op_id, null);
     }
 
-    kindsByOp.get(ev.op_id)!.push(ev.kind);
+    kindsByOp.get(ev.op_id)!.push(toLaneSignal(ev));
 
     const ts = ev.ts;
     if (!firstTsByOp.has(ev.op_id) || ts < firstTsByOp.get(ev.op_id)!) {
@@ -194,7 +217,7 @@ export interface NodeSignalStatus {
 }
 
 export function buildNodeStatusesByName(events: SignalEvent[]): Map<string, NodeSignalStatus> {
-  const kindsByName = new Map<string, string[]>();
+  const kindsByName = new Map<string, LaneSignal[]>();
   const elapsedByName = new Map<string, number>();
 
   for (const ev of events) {
@@ -203,7 +226,7 @@ export function buildNodeStatusesByName(events: SignalEvent[]): Map<string, Node
     const name = payload && typeof payload.name === "string" ? payload.name : "";
     if (!name) continue;
 
-    (kindsByName.get(name) ?? kindsByName.set(name, []).get(name)!).push(ev.kind);
+    (kindsByName.get(name) ?? kindsByName.set(name, []).get(name)!).push(toLaneSignal(ev));
 
     const elapsed = payload?.elapsed;
     if (typeof elapsed === "number") {

@@ -238,6 +238,138 @@ async def test_mirror_session_creates_rich_session_row(temp_db_path: Path) -> No
 
 
 @pytest.mark.asyncio
+async def test_mirror_session_persists_and_queries_cc_session_id(temp_db_path: Path) -> None:
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=SID,
+            events=_conversation(),
+            tool_names={},
+            status="running",
+        )
+        row = await db.get_session_by_cc_id(SID)
+        missing = await db.get_session_by_cc_id("missing-session")
+
+    assert row is not None
+    assert row["id"] == session_db_id(SID)
+    assert row["cc_session_id"] == SID
+    assert missing is None
+
+
+@pytest.mark.asyncio
+async def test_mirror_session_backfills_cc_session_id_on_existing_row(
+    temp_db_path: Path,
+) -> None:
+    sprog = _det(SID, "sprog")
+    async with StateDB() as db:
+        await db.create_progression(sprog)
+        await db.create_session(
+            {
+                "id": session_db_id(SID),
+                "progression_id": sprog,
+                "name": "Legacy Claude Code session",
+                "status": "running",
+            }
+        )
+        before = await db.get_session(session_db_id(SID))
+
+        await mirror_session(
+            db,
+            session_uid=SID,
+            events=_conversation(),
+            tool_names={},
+            status="running",
+        )
+        after = await db.get_session_by_cc_id(SID)
+
+    assert before is not None
+    assert before["cc_session_id"] is None
+    assert after is not None
+    assert after["cc_session_id"] == SID
+
+
+@pytest.mark.asyncio
+async def test_cc_session_id_backfill_does_not_bump_updated_at(
+    temp_db_path: Path,
+) -> None:
+    # The cc_session_id backfill is not activity: it must not move the liveness
+    # clock, or a concurrent reconcile_session_status CAS (expected_updated_at)
+    # can be silently defeated by this one-time backfill.
+    from lionagi.state.reasons import RunReasons
+
+    sprog = _det(SID, "sprog")
+    sid = session_db_id(SID)
+    async with StateDB() as db:
+        await db.create_progression(sprog)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": sprog,
+                "name": "Legacy Claude Code session",
+                "status": "running",
+                "updated_at": 1000.0,
+                "last_message_at": 1000.0,
+            }
+        )
+        before = await db.get_session(sid)
+        expected_updated_at = before["updated_at"]
+
+        # No new events on this pass -- only the one-time cc_session_id backfill
+        # runs; a real new message would legitimately bump updated_at via
+        # touch_session_activity, which is not what's under test here.
+        await mirror_session(
+            db,
+            session_uid=SID,
+            events=[],
+            tool_names={},
+            status="running",
+        )
+        after = await db.get_session(sid)
+        assert after["cc_session_id"] == SID
+        assert after["updated_at"] == expected_updated_at
+
+        # A concurrent reconciler that read updated_at before the backfill must
+        # still win its compare-and-set afterward.
+        written = await db.update_status(
+            "session",
+            sid,
+            new_status="completed",
+            reason_code=RunReasons.COMPLETED_OK,
+            expected_statuses={"running"},
+            expected_updated_at=expected_updated_at,
+        )
+    assert written is True
+
+
+@pytest.mark.asyncio
+async def test_mirror_session_preserves_empty_cc_session_id(temp_db_path: Path) -> None:
+    sprog = _det(SID, "sprog")
+    async with StateDB() as db:
+        await db.create_progression(sprog)
+        await db.create_session(
+            {
+                "id": session_db_id(SID),
+                "cc_session_id": "",
+                "progression_id": sprog,
+                "name": "Claude Code session with an empty external id",
+                "status": "running",
+            }
+        )
+
+        await mirror_session(
+            db,
+            session_uid=SID,
+            events=_conversation(),
+            tool_names={},
+            status="running",
+        )
+        after = await db.get_session(session_db_id(SID))
+
+    assert after is not None
+    assert after["cc_session_id"] == ""
+
+
+@pytest.mark.asyncio
 async def test_mirror_session_is_idempotent(temp_db_path: Path) -> None:
     events = _conversation()
     async with StateDB() as db:

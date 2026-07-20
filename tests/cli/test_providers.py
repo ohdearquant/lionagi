@@ -18,6 +18,13 @@ def test_parse_model_spec_folds_effort_suffix_for_gemini_code():
     assert ms.effort == "high"
 
 
+def test_parse_model_spec_normalizes_mixed_case_effort_suffix():
+    ms = parse_model_spec("codex/gpt-5.4-Max")
+
+    assert ms.model == "codex/gpt-5.4"
+    assert ms.effort == "max"
+
+
 def test_parse_model_spec_rejects_effort_for_bare_gemini_provider():
     """The bare 'gemini' provider (direct Google API, not the agy CLI) still
     does not support effort levels — ValueError is raised."""
@@ -341,6 +348,8 @@ def test_build_imodel_from_spec_mixed_case_xhigh_clamps_claude_to_high(monkeypat
         ("gpt-5.4", "ultra", "xhigh"),
         ("gpt-5.4-mini", "max", "xhigh"),
         ("gpt-5.4-mini", "ultra", "xhigh"),
+        ("gpt-5.3-codex", "max", "xhigh"),
+        ("gpt-5.3-codex", "ultra", "xhigh"),
         ("gpt-5.3-codex-spark", "max", "xhigh"),
         ("gpt-5.3-codex-spark", "ultra", "xhigh"),
         ("codex-auto-review", "max", "xhigh"),
@@ -355,6 +364,25 @@ def test_clamp_codex_effort_is_model_aware(model, effort, expected):
     from lionagi.service.providers import _clamp_codex_effort
 
     assert _clamp_codex_effort(effort, model) == expected
+
+
+def test_codex_code_request_clamps_effort_when_model_kwarg_omitted():
+    """CodexCodeRequest(reasoning_effort="max") with no explicit model= kwarg
+    must clamp against the field's own default model, matching the result of
+    passing that same default explicitly. Pydantic v2 `mode="before"`
+    validators only see keys the caller actually supplied — omitting `model`
+    must not silently skip the clamp for the request that will actually be
+    sent against the default model."""
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    omitted = CodexCodeRequest(prompt="hello", reasoning_effort="max")
+    explicit_default = CodexCodeRequest(
+        prompt="hello", reasoning_effort="max", model="gpt-5.3-codex"
+    )
+
+    assert omitted.model == "gpt-5.3-codex"
+    assert omitted.reasoning_effort == explicit_default.reasoning_effort
+    assert omitted.reasoning_effort == "xhigh"
 
 
 def test_build_imodel_from_spec_codex_sol_keeps_max(monkeypatch):
@@ -414,3 +442,73 @@ def test_gemini_ultra_folds_to_high():
     )
     assert isinstance(chat_model, str)
     assert "High" in chat_model
+
+
+def test_find_lionagi_dirs_memoizes_git_probe_per_location(monkeypatch, tmp_path):
+    import lionagi._paths as paths
+
+    calls: list = []
+    paths.clear_lionagi_dirs_cache()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(paths, "_find_git_root", lambda cwd: calls.append(cwd) or None)
+
+    try:
+        first = paths.find_lionagi_dirs()
+        second = paths.find_lionagi_dirs()
+    finally:
+        paths.clear_lionagi_dirs_cache()
+
+    assert first == second
+    assert calls == [tmp_path]
+
+
+def test_slash_profile_miss_skips_directory_scan(monkeypatch, tmp_path):
+    """A slash-token miss must not trigger the list_agents() directory scan (still expensive),
+    but must still populate the Available listing from the already-computed plugin profiles."""
+    import lionagi.cli._providers as providers
+
+    find_calls: list = []
+    monkeypatch.setattr(
+        providers,
+        "_find_lionagi_dirs",
+        lambda: find_calls.append(True) or [tmp_path / ".lionagi"],
+    )
+    monkeypatch.setattr(providers, "_resolve_plugin_profile_path", lambda _name: None)
+    monkeypatch.setattr(providers, "_plugin_agent_profiles", lambda: {})
+    monkeypatch.setattr(
+        providers,
+        "list_agents",
+        lambda: pytest.fail("slash-token misses must not scan profiles for an Available listing"),
+    )
+
+    with pytest.raises(FileNotFoundError, match="Agent profile 'openai/gpt-4o' not found"):
+        providers.load_agent_profile("openai/gpt-4o")
+
+    assert find_calls == [True]
+
+
+def test_slash_profile_miss_includes_available_plugin_profiles(monkeypatch, tmp_path):
+    """A typo'd '<plugin>/<name>' token still gets an 'Available:' hint listing the
+    resolvable plugin-namespaced profiles, without paying for a directory scan."""
+    import lionagi.cli._providers as providers
+
+    monkeypatch.setattr(providers, "_find_lionagi_dirs", lambda: [tmp_path / ".lionagi"])
+    monkeypatch.setattr(providers, "_resolve_plugin_profile_path", lambda _name: None)
+    monkeypatch.setattr(
+        providers,
+        "_plugin_agent_profiles",
+        lambda: {"myplugin/reviewer": ("myplugin", tmp_path / "reviewer.md")},
+    )
+    monkeypatch.setattr(
+        providers,
+        "list_agents",
+        lambda: pytest.fail("slash-token misses must not scan profiles for an Available listing"),
+    )
+
+    with pytest.raises(FileNotFoundError) as exc_info:
+        providers.load_agent_profile("myplugin/reviewr")
+
+    message = str(exc_info.value)
+    assert "Agent profile 'myplugin/reviewr' not found" in message
+    assert "Available: myplugin/reviewer" in message

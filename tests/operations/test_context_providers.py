@@ -5,6 +5,8 @@
 budget/failure semantics, and the pre-turn fold that renders provider
 blocks into the first message without ever touching the durable record."""
 
+import asyncio
+
 import pytest
 
 from lionagi.operations.chat._prepare import _prepare_run_kwargs
@@ -38,6 +40,52 @@ class _RaisingProvider:
 
     async def provide(self, branch, instruction):
         raise RuntimeError("boom")
+
+
+class _BadOutput:
+    def __bool__(self):
+        raise TypeError("provider output cannot be inspected")
+
+
+class _BadOutputProvider:
+    name = "bad-output"
+
+    async def provide(self, branch, instruction):
+        return _BadOutput()
+
+
+class _WritebackProvider:
+    def __init__(self, name="writer", records_written=0):
+        self.name = name
+        self.records_written = records_written
+        self.calls = []
+
+    async def provide(self, branch, instruction):
+        return None
+
+    async def writeback(self, branch, action_responses):
+        self.calls.append((branch, action_responses))
+        return self.records_written
+
+
+class _RaisingWritebackProvider:
+    name = "raising-writer"
+
+    async def provide(self, branch, instruction):
+        return None
+
+    async def writeback(self, branch, action_responses):
+        raise RuntimeError("writeback failed")
+
+
+class _NonIntWritebackProvider:
+    name = "non-int-writer"
+
+    async def provide(self, branch, instruction):
+        return None
+
+    async def writeback(self, branch, action_responses):
+        return {"written": 3}
 
 
 def _chat_param(branch, **overrides):
@@ -77,6 +125,8 @@ async def test_gather_reports_fired_names_and_token_counts():
     assert len(report.fired) == 1
     assert report.fired[0]["provider_name"] == "p1"
     assert report.fired[0]["tokens"] > 0
+    assert registry.stats["recall_turns"] == 1
+    assert registry.stats["blocks_injected"] == 1
 
 
 @pytest.mark.asyncio
@@ -125,6 +175,71 @@ async def test_gather_contains_raising_provider_and_still_renders_others():
     assert "raiser" in report.failed
     assert report.blocks == ["survivor"]
     assert report.fired[0]["provider_name"] == "survivor"
+    assert registry.stats["failed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_gather_contains_bad_provider_output_and_still_renders_others():
+    registry = ContextProviderRegistry()
+    registry.register(_BadOutputProvider())
+    registry.register(_StubProvider("survivor", name="survivor"))
+
+    report = await registry.gather(branch=None, instruction=None)
+
+    assert report.failed == ["bad-output"]
+    assert report.blocks == ["survivor"]
+
+
+@pytest.mark.asyncio
+async def test_gather_writeback_calls_registered_hook():
+    registry = ContextProviderRegistry()
+    writer = _WritebackProvider(records_written=3)
+    registry.register(writer)
+    branch = object()
+    action_responses = [object()]
+
+    await registry.gather_writeback(branch, action_responses)
+
+    assert writer.calls == [(branch, action_responses)]
+    assert registry.stats["writeback_records"] == 3
+
+
+@pytest.mark.asyncio
+async def test_gather_writeback_skips_provider_without_hook():
+    registry = ContextProviderRegistry()
+    registry.register(_StubProvider("context", name="reader"))
+    writer = _WritebackProvider()
+    registry.register(writer)
+
+    await registry.gather_writeback(None, ["response"])
+
+    assert writer.calls == [(None, ["response"])]
+
+
+@pytest.mark.asyncio
+async def test_gather_writeback_warns_and_continues_to_sibling(caplog):
+    registry = ContextProviderRegistry()
+    registry.register(_RaisingWritebackProvider())
+    writer = _WritebackProvider(name="survivor")
+    registry.register(writer)
+
+    await registry.gather_writeback(None, ["response"])
+
+    assert writer.calls == [(None, ["response"])]
+    assert "context provider 'raising-writer' writeback raised; skipping" in caplog.text
+    assert registry.stats["writeback_failed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_gather_writeback_non_int_return_is_not_a_failure(caplog):
+    registry = ContextProviderRegistry()
+    registry.register(_NonIntWritebackProvider())
+
+    await registry.gather_writeback(None, ["response"])
+
+    assert registry.stats["writeback_failed"] == 0
+    assert registry.stats["writeback_records"] == 0
+    assert "writeback raised" not in caplog.text
 
 
 def test_registry_is_falsy_when_empty():
@@ -148,15 +263,28 @@ def test_branch_providers_lazily_created_and_zero_cost_when_unused():
 
 
 @pytest.mark.asyncio
-async def test_zero_providers_path_leaves_slot_untouched_and_fold_unchanged(make_mocked_branch):
+async def test_zero_providers_path_leaves_fold_unchanged(make_mocked_branch):
     branch = make_mocked_branch(system="You are helpful", response="ok")
     chat_param = _chat_param(branch)
 
     ins, kw = _prepare_run_kwargs(branch, "hello", chat_param)
 
-    assert branch._context_injection_slot is None
     first = kw["messages"][0]["content"]
     assert branch.msgs.system.rendered in first
+
+
+def test_prepare_run_kwargs_renders_explicit_context_blocks(make_mocked_branch):
+    branch = make_mocked_branch(system="You are helpful", response="ok")
+    chat_param = _chat_param(branch)
+
+    _, kw = _prepare_run_kwargs(
+        branch,
+        "hello",
+        chat_param,
+        context_blocks=["call-local-knowledge"],
+    )
+
+    assert "call-local-knowledge" in kw["messages"][0]["content"]
 
 
 # ---------------------------------------------------------------------------
@@ -177,9 +305,6 @@ async def test_provider_text_rendered_but_never_persisted(make_mocked_branch):
 
     for msg in branch.msgs.messages:
         assert "INJECTED-KNOWLEDGE-BLOCK" not in str(msg.content)
-
-    # slot cleared after the turn
-    assert branch._context_injection_slot is None
 
 
 @pytest.mark.asyncio
@@ -209,6 +334,24 @@ async def test_raising_provider_skipped_others_still_render(make_mocked_branch):
     first_content = sent_messages[0]["content"]
     assert "still here" in first_content
     assert result == "ok"
+
+
+@pytest.mark.asyncio
+async def test_non_string_provider_output_fails_open_end_to_end(make_mocked_branch):
+    branch = make_mocked_branch(system="You are helpful", response="ok")
+    invalid_output = object()
+    branch.providers.register(_StubProvider(invalid_output, name="invalid"))
+    branch.providers.register(_StubProvider("valid context", name="valid"))
+
+    result = await branch.communicate(instruction="hello", skip_validation=True)
+
+    sent_messages = branch.chat_model.invoke.call_args.kwargs["messages"]
+    first_content = sent_messages[0]["content"]
+    assert result == "ok"
+    assert "valid context" in first_content
+    assert str(invalid_output) not in first_content
+    assert branch.last_context_report.blocks == ["valid context"]
+    assert branch.last_context_report.failed == ["invalid"]
 
 
 @pytest.mark.asyncio
@@ -260,7 +403,6 @@ async def test_systemless_branch_skips_providers_with_observable_report(
     assert report.blocks == [] and report.fired == []
     sent_messages = branch.chat_model.invoke.call_args.kwargs["messages"]
     assert all("should never render" not in m["content"] for m in sent_messages)
-    assert branch._context_injection_slot is None
 
 
 @pytest.mark.asyncio
@@ -274,3 +416,66 @@ async def test_last_context_report_populated_on_systemful_turn(make_mocked_branc
     assert isinstance(report, ProviderReport)
     assert [f["provider_name"] for f in report.fired] == ["kp"]
     assert report.fired[0]["tokens"] > 0
+
+
+@pytest.mark.asyncio
+async def test_last_context_report_visible_after_child_task_turn(make_mocked_branch):
+    branch = make_mocked_branch(system="You are helpful", response="ok")
+    branch.providers.register(_StubProvider("child context"), name="child")
+    assert branch.last_context_report is None
+
+    turn = asyncio.create_task(branch.communicate(instruction="hello", skip_validation=True))
+    result = await turn
+
+    report = branch.last_context_report
+    assert result == "ok"
+    assert isinstance(report, ProviderReport)
+    assert report.blocks == ["child context"]
+    assert [entry["provider_name"] for entry in report.fired] == ["child"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_turn_reports_are_task_scoped_and_prompts_are_isolated(
+    make_mocked_branch,
+):
+    branch = make_mocked_branch(system="You are helpful", response="ok")
+
+    class _InstructionProvider:
+        name = "instruction-context"
+
+        async def provide(self, branch, instruction):
+            return f"CTX-{instruction.content.instruction}"
+
+    branch.providers.register(_InstructionProvider())
+
+    first_invoke_started = asyncio.Event()
+    release_first_invoke = asyncio.Event()
+    original_invoke = branch.chat_model.invoke.side_effect
+    rendered_prompts = {}
+
+    async def invoke(**kwargs):
+        prompt = kwargs["messages"][0]["content"]
+        turn = "first" if "CTX-first" in prompt else "second"
+        rendered_prompts[turn] = prompt
+        if turn == "first":
+            first_invoke_started.set()
+            await release_first_invoke.wait()
+        return await original_invoke(**kwargs)
+
+    branch.chat_model.invoke.side_effect = invoke
+
+    async def communicate_and_read_report(turn):
+        result = await branch.communicate(instruction=turn, skip_validation=True)
+        return result, branch.last_context_report
+
+    first_task = asyncio.create_task(communicate_and_read_report("first"))
+    await first_invoke_started.wait()
+    second_result, second_report = await communicate_and_read_report("second")
+    release_first_invoke.set()
+    first_result, first_report = await first_task
+
+    assert first_result == second_result == "ok"
+    assert first_report.blocks == ["CTX-first"]
+    assert second_report.blocks == ["CTX-second"]
+    assert "CTX-second" not in rendered_prompts["first"]
+    assert "CTX-first" not in rendered_prompts["second"]

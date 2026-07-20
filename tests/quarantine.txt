@@ -1,0 +1,6 @@
+# date | pytest nodeid | failure signature
+#
+# Keep this file empty unless a test has produced the same false-failure signature in
+# two independent CI runs. The quarantine lane applies the flaky_quarantine marker at
+# collection time from these exact nodeids; scripts/ci.sh excludes that marker from the
+# required lane. See docs/internals/ci.md for entry and exit criteria.

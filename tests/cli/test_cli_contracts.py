@@ -100,7 +100,10 @@ AGENT_HELP_FLAGS = [
     "--fast",
     "--form",
     "--help",
+    "--image",
     "--invocation",
+    "--list-profiles",
+    "--notify",
     "--preset",
     "--project",
     "--prompt",
@@ -125,11 +128,16 @@ SCHEDULE_SUBCOMMANDS = [
     "get",
     "limits",
     "create",
+    "validate",
+    "apply",
     "enable",
     "disable",
     "trigger",
     "delete",
     "runs",
+    "run",
+    "status",
+    "export",
 ]
 
 SCHEDULE_CREATE_HELP_FLAGS = [

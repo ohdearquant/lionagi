@@ -18,6 +18,7 @@ pytestmark = pytest.mark.skipif(
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_SCRIPT = REPO_ROOT / "scripts" / "ci.sh"
 NOTEBOOK_HYGIENE_SCRIPT = REPO_ROOT / "scripts" / "lint_notebook_hygiene.py"
+PY_HYGIENE_SCRIPT = REPO_ROOT / "scripts" / "lint_python_hygiene.py"
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 
 
@@ -27,6 +28,7 @@ def public_repo(tmp_path: Path) -> Path:
         (tmp_path / directory).mkdir()
     shutil.copy2(CI_SCRIPT, tmp_path / "scripts" / "ci.sh")
     shutil.copy2(NOTEBOOK_HYGIENE_SCRIPT, tmp_path / "scripts" / "lint_notebook_hygiene.py")
+    shutil.copy2(PY_HYGIENE_SCRIPT, tmp_path / "scripts" / "lint_python_hygiene.py")
     return tmp_path
 
 
@@ -119,6 +121,146 @@ def test_internal_identifier_in_notebook_markdown_is_rejected(public_repo: Path)
 
     assert result.returncode != 0
     assert "internal namespace identifiers" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "transform = lambda:x + 1\n",
+        "factory = lambda:{}\n",
+        "normalize = lambda:item.strip()\n",
+    ],
+)
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        Path("docs/example.py"),
+        Path("notebooks/example.py"),
+        Path("cookbooks/example.py"),
+    ],
+)
+def test_python_lambda_without_space_in_python_source_is_accepted(
+    public_repo: Path, relative_path: Path, source: str
+) -> None:
+    # Regression for #2149: the .py handling added to close the gap must not
+    # trip on Python's own zero-arg `lambda:` closure syntax written as real
+    # code (as opposed to a leaked namespace identifier in a comment/string).
+    (public_repo / relative_path).write_text(source)
+
+    result = _run_hygiene(public_repo)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "# assigned per lambda:leo direction\ndef f():\n    return 1\n",
+        'def send():\n    return dict(to="lambda:leo", subject="hi")\n',
+        '"""Docstring narrating work owned by lambda:sample-unit."""\n',
+    ],
+)
+def test_internal_identifier_in_python_source_is_rejected(public_repo: Path, source: str) -> None:
+    # Regression for #2149: a leaked internal namespace identifier in a .py
+    # comment, string literal, or docstring under docs/notebooks/cookbooks
+    # must fail the gate -- previously the `-g '!*.py'` exclusion let it
+    # through silently with no replacement scan.
+    (public_repo / "cookbooks" / "example.py").write_text(source)
+
+    result = _run_hygiene(public_repo)
+
+    assert result.returncode != 0
+    assert "internal namespace identifiers" in result.stdout
+
+
+def test_python_lambda_in_fstring_replacement_field_is_accepted(public_repo: Path) -> None:
+    (public_repo / "cookbooks" / "example.py").write_text('value = f"{(lambda:x + 1)()}"\n')
+
+    result = _run_hygiene(public_repo)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_internal_identifier_in_fstring_literal_segment_is_rejected(
+    public_repo: Path,
+) -> None:
+    (public_repo / "cookbooks" / "example.py").write_text(
+        'value = f"assigned to lambda:sample-unit: {1}"\n'
+    )
+
+    result = _run_hygiene(public_repo)
+
+    assert result.returncode != 0
+    assert "internal namespace identifiers" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "as Ocean confirmed the plan\n",
+        "**R4 (Ocean-level):** confirmed without escalation.\n",
+        "directed separately by Ocean.\n",
+    ],
+)
+def test_bare_founder_name_mention_is_rejected(public_repo: Path, content: str) -> None:
+    # Regression for #2150: the founder-name check previously only matched
+    # the possessive "Ocean's" and missed bare mentions -- exactly the leak
+    # shape #2115 hand-fixed throughout docs/_archive/.
+    (public_repo / "docs" / "example.md").write_text(content)
+
+    result = _run_hygiene(public_repo)
+
+    assert result.returncode != 0
+    assert "founder-name process narration" in result.stdout
+
+
+def test_possessive_founder_name_mention_is_still_rejected(public_repo: Path) -> None:
+    (public_repo / "docs" / "example.md").write_text("per Ocean's direction\n")
+
+    result = _run_hygiene(public_repo)
+
+    assert result.returncode != 0
+    assert "founder-name process narration" in result.stdout
+
+
+def test_founder_actor_narration_with_public_name_on_same_line_is_rejected(
+    public_repo: Path,
+) -> None:
+    (public_repo / "docs" / "example.md").write_text(
+        "Ocean approved the plan after Haiyang reviewed it.\n"
+    )
+
+    result = _run_hygiene(public_repo)
+
+    assert result.returncode != 0
+    assert "founder-name process narration" in result.stdout
+
+
+def test_geographic_ocean_prose_is_accepted(public_repo: Path) -> None:
+    (public_repo / "docs" / "example.md").write_text("Pacific Ocean currents are studied here.\n")
+
+    result = _run_hygiene(public_repo)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "lionagi: author Haiyang (Ocean) Li\n",
+        "Author: Haiyang Li - Ocean\n",
+        "copyright: Copyright &copy; 2024-2026 Ocean Li and LionAGI Contributors\n",
+    ],
+)
+def test_founder_public_byline_is_not_rejected(public_repo: Path, content: str) -> None:
+    # False-positive guard for #2150: the founder's own public credit lines
+    # (author bylines, the mkdocs.yml copyright notice) must keep passing
+    # once the check widens past the possessive-only pattern.
+    (public_repo / "docs" / "example.md").write_text(content)
+
+    result = _run_hygiene(public_repo)
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_missing_ripgrep_fails_with_install_guidance(public_repo: Path) -> None:

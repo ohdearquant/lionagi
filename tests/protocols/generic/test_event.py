@@ -1,8 +1,9 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
 from lionagi.ln.types import Unset
+from lionagi.protocols.generic import element as element_mod
 from lionagi.protocols.generic.event import Event, EventStatus, Execution
 
 
@@ -81,10 +82,16 @@ def test_event_with_error():
     assert event.execution.error == "Test error"
 
 
-def test_event_duration():
-    start = datetime.now().timestamp()
-    execution = Execution(duration=1.5)
-    event = Event(execution=execution)
+def test_event_duration(monkeypatch):
+    t0 = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    t1 = datetime(2024, 6, 1, 12, 0, 5, tzinfo=timezone.utc)
+    monkeypatch.setattr(element_mod, "now_utc", lambda: t0)
+    first = Event(execution=Execution(duration=1.5))
+    monkeypatch.setattr(element_mod, "now_utc", lambda: t1)
+    second = Event(execution=Execution(duration=2.5))
 
-    assert event.execution.duration == 1.5
-    assert event.created_at >= start
+    assert first.execution.duration == 1.5
+    # created_at is stamped fresh at construction and advances between events.
+    assert first.created_at == t0.timestamp()
+    assert second.created_at == t1.timestamp()
+    assert second.created_at > first.created_at
