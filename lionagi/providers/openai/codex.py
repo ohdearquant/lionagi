@@ -5,14 +5,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
+import re
 import warnings
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from textwrap import shorten
 from typing import Any, Literal
 
+import toml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lionagi.libs.path_safety import check_add_dirs_safe as check_add_dir_entries_safe
@@ -72,6 +73,49 @@ CodexReasoningEffort = Literal[
 ]
 
 __all__ = ("CodexCodeRequest", "stream_codex_cli", "CodexCLIEndpoint")
+
+
+# --------------------------------------------------------------------------- -c value serialization
+# codex's `-c key=value` parses `value` as TOML, falling back to a raw string
+# literal only when TOML parsing fails (see `codex exec --help`). A
+# JSON-style dump of a dict/list is NOT valid TOML (`:` instead of `=`,
+# unquoted-key rules differ) — it either mis-parses into the fallback literal
+# string (breaking any override whose target field expects a table, e.g.
+# `mcp_servers.<name>.env`) or, worse, coincidentally parses into a
+# different-than-intended TOML value. Every override value must therefore be
+# emitted as syntactically valid TOML instead.
+_TOML_BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _toml_scalar(value: str | int | float | bool) -> str:
+    """Render a single TOML scalar (or its quoted-string form), via the
+    vendored ``toml`` encoder so quoting/escaping stays spec-correct."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    # toml.dumps({"x": value}) always renders "x = <literal>\n" for scalars;
+    # strip the synthetic key so only the literal remains.
+    dumped = toml.dumps({"x": value})
+    return dumped[len("x = ") :].rstrip("\n")
+
+
+def _toml_key(key: str) -> str:
+    return key if _TOML_BARE_KEY_RE.match(key) else _toml_scalar(key)
+
+
+def toml_override_value(value: Any) -> str:
+    """Serialize ``value`` as a TOML value literal suitable for the
+    right-hand side of a codex `-c key=value` override (an inline table for
+    dicts, a TOML array for lists, spec-correct scalars otherwise)."""
+    if isinstance(value, dict):
+        if not value:
+            return "{}"
+        pairs = ", ".join(f"{_toml_key(k)} = {toml_override_value(v)}" for k, v in value.items())
+        return "{ " + pairs + " }"
+    if isinstance(value, list | tuple):
+        return "[" + ", ".join(toml_override_value(v) for v in value) + "]"
+    if isinstance(value, str | int | float | bool):
+        return _toml_scalar(value)
+    raise TypeError(f"Unsupported codex `-c` override value type: {type(value)!r}")
 
 
 # --------------------------------------------------------------------------- request model
@@ -360,8 +404,7 @@ class CodexCodeRequest(BaseModel):
             args.extend(["-i", image])
 
         for key, value in self.config_overrides.items():
-            serialized = json.dumps(value) if not isinstance(value, str) else value
-            args.extend(["-c", f"{key}={serialized}"])
+            args.extend(["-c", f"{key}={toml_override_value(value)}"])
 
         # Working directory (always emit)
         args.extend(["-C", str(self.cwd())])

@@ -34,8 +34,8 @@ from lionagi.service.imodel import iModel
 
 def test_mcp_servers_excluded_from_model_dump():
     """exclude=True hides mcp_servers from model_dump(), by design."""
-    req = ClaudeCodeRequest(prompt="hi", mcp_servers={"khive": {"command": "khive-mcp"}})
-    assert req.mcp_servers == {"khive": {"command": "khive-mcp"}}
+    req = ClaudeCodeRequest(prompt="hi", mcp_servers={"khive": {"command": "kkernel"}})
+    assert req.mcp_servers == {"khive": {"command": "kkernel"}}
     assert "mcp_servers" not in req.model_dump()
     assert "mcp_servers" not in req.model_dump(mode="json")
 
@@ -43,9 +43,9 @@ def test_mcp_servers_excluded_from_model_dump():
 def test_mcp_servers_survives_auto_finish_model_copy():
     """The auto_finish continuation turn clones via model_copy (field-
     preserving), not model_dump/model_validate — mcp_servers must survive."""
-    req = ClaudeCodeRequest(prompt="hi", mcp_servers={"khive": {"command": "khive-mcp"}})
+    req = ClaudeCodeRequest(prompt="hi", mcp_servers={"khive": {"command": "kkernel"}})
     req2 = req.model_copy(deep=True)
-    assert req2.mcp_servers == {"khive": {"command": "khive-mcp"}}
+    assert req2.mcp_servers == {"khive": {"command": "kkernel"}}
 
 
 @pytest.mark.asyncio
@@ -54,13 +54,13 @@ async def test_mcp_servers_present_on_live_request_but_absent_from_persisted_dic
     mcp_servers; the persisted-record view (APICalling.to_dict(), which
     feeds event logs / branch snapshots) intentionally does not."""
     m = iModel(provider="claude_code", model="sonnet", api_key="dummy")
-    m.endpoint.config.kwargs["mcp_servers"] = {"khive": {"command": "khive-mcp"}}
+    m.endpoint.config.kwargs["mcp_servers"] = {"khive": {"command": "kkernel"}}
 
     api_call = await m.create_event(prompt="hi")
 
     live_request = api_call.payload["request"]
     assert isinstance(live_request, ClaudeCodeRequest)
-    assert live_request.mcp_servers == {"khive": {"command": "khive-mcp"}}
+    assert live_request.mcp_servers == {"khive": {"command": "kkernel"}}
 
     persisted = api_call.to_dict()
     assert "mcp_servers" not in persisted["payload"]["request"]

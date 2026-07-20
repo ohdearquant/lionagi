@@ -7,20 +7,22 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field
 
 from lionagi.casts.emission import Finding, Gap, Verdict
 
-from .engine import ChainEvent, ChainRun, Engine, EngineEvent, EngineRun
+from .engine import ChainEvent, ChainRun, Engine, EngineEvent, EngineRun, role_profile_route
 
 logger = logging.getLogger("lionagi.engines")
 
 __all__ = (
     "ChainEvent",
     "FindingPosted",
+    "DedupChecked",
     "QuestionRaised",
     "EvidenceCollected",
     "HypothesisFormed",
@@ -44,6 +46,32 @@ class FindingPosted(Finding, ChainEvent):
     gen: int = Field(default=0, description="Cycle generation — copy from your instruction.")
     parent_ref: str = Field(
         default="", description="Id of the upstream event that surfaced this, '' for seeds."
+    )
+
+
+class DedupChecked(EngineEvent, ChainEvent):
+    """Novelty verdict on a finding against the target repo's issue tracker; runs before extraction when a dedup repo is configured."""
+
+    finding_ref: str = Field(description="Id of the finding this verdict covers.")
+    verdict: Literal["new", "duplicate", "extends"] = Field(
+        description=(
+            "new (no issue covers the mechanism) | duplicate (an issue covers this "
+            "exact mechanism; closed means already fixed) | extends (a related issue "
+            "exists but not this exact mechanism)."
+        )
+    )
+    issue_number: int | None = Field(
+        default=None, description="Most specific matching issue number; null for new."
+    )
+    issue_title: str = Field(default="", description="Title of the matched issue, '' for new.")
+    issue_state: str = Field(default="", description="open | closed | '' for new.")
+    source_confirmed: bool | None = Field(
+        default=None,
+        description="Whether the finding's cite was confirmed in source; null if not checked.",
+    )
+    rationale: str = Field(
+        default="",
+        description="One line citing the matched issue text or the decisive absence.",
     )
 
 
@@ -133,6 +161,7 @@ class ApplicationMapped(EngineEvent, ChainEvent):
 
 _EVENT_PREFIX: dict[type, str] = {
     FindingPosted: "F",
+    DedupChecked: "D",
     QuestionRaised: "Q",
     EvidenceCollected: "E",
     HypothesisFormed: "H",
@@ -212,14 +241,83 @@ def _extract_instruction(f: FindingPosted, decisions: str, cap: int) -> str:
         f"- evidence: {f.evidence or '(none)'}\n"
         f"- source: {f.source or '(unknown)'}\n\n"
         "Extract the architectural questions hidden in it — every implicit choice "
-        "where an alternative was rejected without evidence. For each, emit a "
-        "question_raised with: area, what_is_unknown (the claim under test, phrased "
-        "as 'why X over Y?'), alternatives (the rejected options), decision_ref "
-        "(the decision id from the register it bears on, '' if none), "
+        "where an alternative was rejected without evidence. If the finding is "
+        "already adjudicated (mechanism established, remedy decided), extract the "
+        "questions that VALIDATE the adjudication instead: does the chosen remedy "
+        "close the failure under adversarial conditions, is it better than the "
+        "rejected remedies, does the same mechanism recur elsewhere. For each, "
+        "emit a question_raised with: area, what_is_unknown (the claim under test, "
+        "phrased as 'why X over Y?'), alternatives (the rejected options), "
+        "decision_ref (the decision id from the register it bears on, '' if none), "
         f"parent_ref='{f.eid}', gen={f.gen}. At most {cap} questions; skip choices "
-        "that are pure style with no reversal cost."
+        "that are pure style with no reversal cost. Only if genuinely nothing is "
+        "open and nothing needs validation, emit no questions and say why."
         f"{_register_block(decisions)}"
     )
+
+
+def _dedup_instruction(
+    f: FindingPosted,
+    repo: str,
+    seed_issues: tuple[int, ...],
+    has_checkout: bool,
+) -> str:
+    seeds = ""
+    if seed_issues:
+        seeds = (
+            "3. Known related issues to verify precisely (do NOT limit the search "
+            f"to them): {', '.join(f'#{n}' for n in seed_issues)}.\n"
+        )
+    confirm = (
+        "4. Source-confirm the finding's cite by reading the cited symbol in the "
+        "checkout at your working directory; set source_confirmed true/false.\n"
+        if has_checkout
+        else "4. No checkout is available; set source_confirmed to null.\n"
+    )
+    return (
+        f"A finding is entering a hypothesis pipeline (id {f.eid}, cycle {f.gen}):\n"
+        f"- claim: {f.description}\n"
+        f"- evidence: {f.evidence or '(none)'}\n"
+        f"- source: {f.source or '(unknown)'}\n\n"
+        f"Determine whether the GitHub repo '{repo}' already tracks this finding's "
+        "MECHANISM. Match on the defect mechanism (what breaks, where, why), never "
+        "on title keywords or line numbers — line numbers drift, and same-file is "
+        "not same-mechanism.\n\n"
+        "Method (read-only):\n"
+        "1. Query filed issues, OPEN and CLOSED — a closed issue means already "
+        f"fixed, still a duplicate: `gh issue list --repo {repo} --state all "
+        "--limit 400 --json number,title,state`, plus "
+        f'`gh search issues --repo {repo} "<concept and symbol terms>"`.\n'
+        f"2. Read candidate bodies: `gh issue view <N> --repo {repo} --json "
+        "title,body,state`; judge whether the issue covers THIS mechanism, not "
+        "merely the same file or area. Place the finding against the MOST "
+        "SPECIFIC covering issue.\n"
+        f"{seeds}{confirm}\n"
+        f"Emit a dedup_checked with: finding_ref='{f.eid}', verdict ('new' | "
+        "'duplicate' | 'extends'), issue_number / issue_title / issue_state for "
+        "the most specific match (null / '' for new; for 'extends' state in the "
+        "rationale what the issue covers vs the gap this finding adds), "
+        "source_confirmed, rationale (one line citing the matched issue text or "
+        "the decisive absence).\n\n"
+        "HARD constraints: read-only — never file, edit, comment on, or close any "
+        "issue or PR; no builds, compiles, or tests; every issue number you cite "
+        "must come from a query result you actually saw — never fabricate one."
+    )
+
+
+def _judge_bar(gen: int) -> str:
+    """Escalating admission bar appended to judge subjects for recursive cycles."""
+    if gen >= 2:
+        return (
+            "\n\nEscalated bar (cycle 2+): admit only if leaving this unanswered "
+            "plausibly threatens correctness."
+        )
+    if gen == 1:
+        return (
+            "\n\nEscalated bar (cycle 1): admit only if the answer could change a "
+            "register decision or an already-drawn conclusion."
+        )
+    return ""
 
 
 def _research_instruction(q: QuestionRaised) -> str:
@@ -347,6 +445,19 @@ def render_evidence(run: HypothesisRun) -> str:
     parts = [f"# Evidence chains ({len(chains)})"]
     for chain in chains:
         parts.append("\n- " + " -> ".join(_label(e) for e in chain))
+    dedups = run.events_of(DedupChecked)
+    if dedups:
+        parts.append(f"\n\n# Novelty verdicts ({len(dedups)})")
+        for d in dedups:
+            issue = f" #{d.issue_number} ({d.issue_state})" if d.issue_number else ""
+            parts.append(f"\n- {d.finding_ref}: {d.verdict}{issue} — {d.rationale}")
+        queue = filing_queue(run)
+        if queue:
+            parts.append(f"\n\n# Filing queue — certified findings, not yet filed ({len(queue)})")
+            parts.append("\nFiling is the owner's call; this engine never files.")
+            for item in queue:
+                ext = f" (extends #{item['issue_number']})" if item.get("issue_number") else ""
+                parts.append(f"\n- {item['finding_ref']} [{item['verdict']}{ext}] {item['claim']}")
     parts.append(f"\n\n# Conclusions ({len(run.events_of(ConclusionDrawn))})")
     for c in run.events_of(ConclusionDrawn):
         parts.append(f"\n- {c.eid} [{c.basis} conf={c.confidence:.2f}] {c.verdict} — {c.rationale}")
@@ -365,6 +476,36 @@ def render_evidence(run: HypothesisRun) -> str:
         for q in open_qs:
             parts.append(f"\n- {q.eid} {q.what_is_unknown}")
     return "".join(parts)
+
+
+def filing_queue(run: HypothesisRun) -> list[dict[str, Any]]:
+    """Findings certified 'new' or 'extends' by the dedup stage, with their conclusions — ready for the owner to file. The engine never files."""
+    conclusions = run.events_of(ConclusionDrawn)
+    questions = {q.eid: q for q in run.events_of(QuestionRaised)}
+    out: list[dict[str, Any]] = []
+    for d in run.events_of(DedupChecked):
+        if d.verdict not in ("new", "extends"):
+            continue
+        f = run.find(d.finding_ref)
+        if not isinstance(f, FindingPosted):
+            continue
+        related = [
+            c.eid
+            for c in conclusions
+            if (q := questions.get(c.question_ref)) is not None and q.parent_ref == f.eid
+        ]
+        out.append(
+            {
+                "finding_ref": f.eid,
+                "claim": f.description,
+                "verdict": d.verdict,
+                "issue_number": d.issue_number,
+                "source_confirmed": d.source_confirmed,
+                "rationale": d.rationale,
+                "conclusions": related,
+            }
+        )
+    return out
 
 
 def _synthesis_instruction(run: HypothesisRun) -> str:
@@ -392,6 +533,9 @@ class HypothesisRun(ChainRun):
         super().__init__(engine, **kwargs)
         self.pending: list[ExperimentDesigned] = []
         self.decisions: str = ""
+        # Findings that passed the dedup gate (and its judge, for gen > 0), so
+        # extraction neither re-judges nor waits on a second novelty check.
+        self.dedup_cleared: set[str] = set()
 
     # -- typed overrides (narrower signatures than the Any base) ---------------
 
@@ -423,6 +567,7 @@ class HypothesisRun(ChainRun):
             "decisions_touched": sorted(
                 {a.decision_ref for a in self.events_of(ApplicationMapped) if a.decision_ref}
             ),
+            "filing_queue": filing_queue(self),
         }
         chains_path = d / "chains.json"
         chains_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
@@ -433,6 +578,55 @@ class HypothesisRun(ChainRun):
         return {"chains": str(chains_path), "report": str(report_path)}
 
 
+def _experiment_question_gen(run: HypothesisRun, x: ExperimentDesigned) -> int:
+    """The generation of the question behind an experiment (via its hypothesis), 0 if untraceable."""
+    h = run.find(x.hypothesis_ref)
+    q = run.find(h.question_ref) if isinstance(h, HypothesisFormed) else None
+    return q.gen if isinstance(q, QuestionRaised) else 0
+
+
+def _result_question_gen(run: HypothesisRun, r: ResultRecorded) -> int:
+    """The generation of the question behind a result (via experiment -> hypothesis), 0 if untraceable."""
+    x = run.find(r.experiment_ref)
+    return _experiment_question_gen(run, x) if isinstance(x, ExperimentDesigned) else 0
+
+
+def _derive_finding_gen(run: HypothesisRun, parent_ref: str) -> int | None:
+    """The generation a FindingPosted must carry, derived from its indexed
+    parent rather than trusted from the emission — closes the bypass where an
+    omitted, stale, or forged ``gen`` field defeats the recursion bound. Seeds
+    (``parent_ref`` empty) and findings raised off validation (``parent_ref``
+    an ExperimentDesigned id) are the only two legitimate routes. Returns
+    ``None`` when a non-empty ``parent_ref`` does not resolve to a legitimate
+    parent — the caller must reject the emission rather than default to
+    gen 0, which would restart the depth budget for a forged reference."""
+    if not parent_ref:
+        return 0
+    parent = run.find(parent_ref)
+    if isinstance(parent, ExperimentDesigned):
+        return _experiment_question_gen(run, parent) + 1
+    return None
+
+
+def _derive_question_gen(run: HypothesisRun, parent_ref: str) -> int | None:
+    """The generation a QuestionRaised must carry, derived from its indexed
+    parent rather than trusted from the emission. A question raised directly
+    off a finding (extraction) shares that finding's cycle; a question raised
+    off another question (research) or off a result (validate -> conclude)
+    starts the next cycle. Returns ``None`` for a non-empty ``parent_ref``
+    that does not resolve — see ``_derive_finding_gen``."""
+    if not parent_ref:
+        return 0
+    parent = run.find(parent_ref)
+    if isinstance(parent, FindingPosted):
+        return parent.gen
+    if isinstance(parent, QuestionRaised):
+        return parent.gen + 1
+    if isinstance(parent, ResultRecorded):
+        return _result_question_gen(run, parent) + 1
+    return None
+
+
 # --- Engine ---
 
 
@@ -440,6 +634,38 @@ class HypothesisEngine(Engine):
     """Evidence-chain engine for hypothesis-driven development (stateless config). See docs/reference/engines.md for parameter details."""
 
     run_context_cls: type[EngineRun] = HypothesisRun
+
+    #: Per-stage model fallbacks, consulted after the caller's ``models`` /
+    #: ``model``. CLI-backed providers so a bare run needs no API key; heavier
+    #: reasoning tiers on decomposition, validation, and verdict stages; a
+    #: lighter tier where the work is retrieval- or mapping-shaped.
+    STAGE_MODEL_DEFAULTS: dict[str, str] = {
+        "dedup": "codex/gpt-5.6-luna",
+        "extract": "codex/gpt-5.6-terra",
+        "research": "codex/gpt-5.6-terra",
+        "hypothesize": "codex/gpt-5.6-terra",
+        "design": "codex/gpt-5.6-luna",
+        "validate": "codex/gpt-5.6-terra",
+        "conclude": "codex/gpt-5.6-terra",
+        "apply": "codex/gpt-5.6-luna",
+        "synthesize": "claude_code/sonnet",
+    }
+    #: Per-stage reasoning-effort fallbacks, same precedence as models.
+    #: Highest on conclude (the verdict gate), high on the stages that shape
+    #: the run (extract, hypothesize, validate), medium on volume/mapping legs.
+    STAGE_EFFORT_DEFAULTS: dict[str, str] = {
+        "dedup": "medium",
+        "extract": "high",
+        "research": "medium",
+        "hypothesize": "high",
+        "design": "medium",
+        "validate": "high",
+        "conclude": "xhigh",
+        "apply": "medium",
+    }
+    #: Judge defaults ON for this engine (pass ``judge_model=None`` to disable):
+    #: recursive cycles need a cheap quality gate or they expand on noise.
+    DEFAULT_JUDGE_MODEL: str = "claude_code/haiku"
 
     def __init__(
         self,
@@ -452,6 +678,11 @@ class HypothesisEngine(Engine):
         conclude_role: str = "critic",
         apply_role: str = "architect",
         synthesis_role: str = "synthesizer",
+        dedup_role: str = "investigator",
+        dedup_repo: str | None = None,
+        dedup_cwd: str | None = None,
+        dedup_seed_issues: tuple[int, ...] = (),
+        dedup_tools: tuple[str, ...] = ("bash",),
         executable_methods: tuple[str, ...] = ("analysis", "comparison", "proof"),
         validate_tools: tuple[str, ...] = (),
         validate_cwd: str | None = None,
@@ -460,6 +691,18 @@ class HypothesisEngine(Engine):
         repair_retries: int = 1,
         **kwargs: Any,
     ) -> None:
+        # Recursion default: two cycles. Cycle 1 catches what execution
+        # surfaces; deeper cycles trade quadratic agent spend for tail findings
+        # and are opt-in via max_depth.
+        kwargs.setdefault("max_depth", 2)
+        kwargs.setdefault("judge_model", self.DEFAULT_JUDGE_MODEL)
+        # Context injection is opt-in (pass khive_injection=True, a policy
+        # mapping, or a KhiveInjectionPolicy to the engine constructor): a
+        # default-on gate would writeback and recall raw content across
+        # runs/projects with no isolation. Leaving this unset here means
+        # each stage falls through to its role's agent profile (see
+        # EngineRun.make_agent / role_profile_injection), same as any other
+        # Engine subclass.
         super().__init__(**kwargs)
         self.question_role = question_role
         self.research_role = research_role
@@ -469,12 +712,58 @@ class HypothesisEngine(Engine):
         self.conclude_role = conclude_role
         self.apply_role = apply_role
         self.synthesis_role = synthesis_role
+        self.dedup_role = dedup_role
+        self.dedup_repo = dedup_repo
+        self.dedup_cwd = dedup_cwd
+        self.dedup_seed_issues = tuple(dedup_seed_issues)
+        self.dedup_tools = tuple(dedup_tools)
         self.executable_methods = set(executable_methods)
         self.validate_tools = tuple(validate_tools)
         self.validate_cwd = validate_cwd
         self.validate_permissions = validate_permissions
         self.max_questions = max_questions
         self.repair_retries = repair_retries
+
+    def _stage_role(self, stage: str) -> str:
+        return {
+            "dedup": self.dedup_role,
+            "extract": self.question_role,
+            "research": self.research_role,
+            "hypothesize": self.hypothesis_role,
+            "design": self.design_role,
+            "validate": self.validate_role,
+            "conclude": self.conclude_role,
+            "apply": self.apply_role,
+            "synthesize": self.synthesis_role,
+        }.get(stage, "")
+
+    def model_for(self, stage: str) -> str | None:
+        # Explicit stage/engine settings > the stage role's agent profile
+        # (.lionagi/agents/<role>.md) > the shipped stage table.
+        explicit = self.models.get(stage) or self.model
+        if explicit:
+            return explicit
+        prof_model, _ = role_profile_route(self._stage_role(stage))
+        return prof_model or self.STAGE_MODEL_DEFAULTS.get(stage)
+
+    def effort_for(self, stage: str) -> str | None:
+        explicit = self.efforts.get(stage) or self.effort
+        if explicit:
+            return explicit
+        model = self.model_for(stage)
+        if model:
+            from lionagi.service.providers import _EFFORT_SUFFIX_RE  # noqa: PLC0415
+
+            if _EFFORT_SUFFIX_RE.match(model.split("/", 1)[-1]):
+                # The model spec bakes its own effort suffix — respect it
+                # rather than overriding with a table default.
+                return None
+        _, prof_effort = role_profile_route(self._stage_role(stage))
+        return prof_effort or self.STAGE_EFFORT_DEFAULTS.get(stage)
+
+    def question_cap(self, gen: int) -> int:
+        """Breadth halves each cycle: gen 0 gets ``max_questions``, gen 1 half, and so on, floored at 1 — recursion narrows instead of exploding."""
+        return max(1, self.max_questions >> gen)
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -523,6 +812,7 @@ class HypothesisEngine(Engine):
         # Collector first: stamps eids before any reaction reads them.
         run.observe(ChainEvent, lambda e, _c: run.collect(e))
         run.observe(FindingPosted, lambda f, _c: self._on_finding(run, f))
+        run.observe(DedupChecked, lambda d, _c: self._on_dedup(run, d))
         run.observe(QuestionRaised, lambda q, _c: self._on_question(run, q))
         run.observe(HypothesisFormed, lambda h, _c: self._on_hypothesis(run, h))
         run.observe(ExperimentDesigned, lambda x, _c: self._on_experiment(run, x))
@@ -533,6 +823,19 @@ class HypothesisEngine(Engine):
             await run.emit(FindingPosted(description=seed, source="seed", gen=0))
 
         await run.wait_quiescence()
+        # Total pipeline failure: stages errored and nothing beyond the seeds
+        # was produced. Synthesizing an empty report would launder the failure
+        # into a green-looking result — fail loud instead.
+        produced = any(
+            run.events_of(t)
+            for t in (DedupChecked, QuestionRaised, EvidenceCollected, ConclusionDrawn)
+        )
+        if run._agent_errors and not produced:
+            raise RuntimeError(
+                "hypothesis pipeline produced no events beyond the seed findings; "
+                f"{len(run._agent_errors)} stage failure(s), first: "
+                f"{run._agent_errors[0]}"
+            )
         report = await self._synthesize(run)
         if export_dir is not None:
             paths = run.export(export_dir, report=report)
@@ -542,14 +845,58 @@ class HypothesisEngine(Engine):
     # -- reactions ------------------------------------------------------------
 
     def _on_finding(self, run: HypothesisRun, f: FindingPosted) -> None:
+        # Never trust the emitted gen — derive it from the indexed parent so
+        # an omitted, stale, or forged value cannot bypass the recursion bound.
+        gen = _derive_finding_gen(run, f.parent_ref)
+        if gen is None:
+            # Non-empty parent_ref that doesn't resolve to a real parent: a
+            # forged/unroutable reference must never be treated as a fresh
+            # gen-0 seed, since that would restart the depth budget.
+            run.notify(
+                "unroutable_parent_ref", eid=f.eid, parent_ref=f.parent_ref, event="FindingPosted"
+            )
+            return
+        f.gen = gen
         if f.gen > self.max_depth:
             run.notify("cycle_capped", eid=f.eid, gen=f.gen)
             return
-        if run.seen(f"f:{f.description}"):
+        if run.seen(f"f:{f.description}|{f.evidence}|{f.source}|{f.parent_ref}"):
             return
+        if self.dedup_repo:
+            # A dedup leg that raises (agent construction, timeout, ...) must
+            # not drop the finding — release it to extraction the same way a
+            # missing-but-not-errored verdict does.
+            run.spawn(self._guard(run, "dedup", self._dedup, f, on_error=self._dedup_release))
+        else:
+            run.spawn(self._guard(run, "extract", self._extract, f))
+
+    def _on_dedup(self, run: HypothesisRun, d: DedupChecked) -> None:
+        f = run.find(d.finding_ref)
+        if not isinstance(f, FindingPosted):
+            run.notify("dedup_orphan", eid=d.eid, finding_ref=d.finding_ref)
+            return
+        if d.verdict == "duplicate":
+            run.notify(
+                "finding_duplicate",
+                eid=f.eid,
+                issue=d.issue_number,
+                state=d.issue_state,
+            )
+            return
+        if f.eid in run.dedup_cleared:
+            return
+        run.dedup_cleared.add(f.eid)
         run.spawn(self._guard(run, "extract", self._extract, f))
 
     def _on_question(self, run: HypothesisRun, q: QuestionRaised) -> None:
+        # Same untrusted-gen closure as _on_finding.
+        gen = _derive_question_gen(run, q.parent_ref)
+        if gen is None:
+            run.notify(
+                "unroutable_parent_ref", eid=q.eid, parent_ref=q.parent_ref, event="QuestionRaised"
+            )
+            return
+        q.gen = gen
         if q.gen > self.max_depth:
             run.notify("cycle_capped", eid=q.eid, gen=q.gen)
             return
@@ -579,18 +926,82 @@ class HypothesisEngine(Engine):
 
     # -- stages ---------------------------------------------------------------
 
-    async def _guard(self, run: HypothesisRun, stage: str, fn: Any, event: Any) -> None:
-        """Run a stage function, logging and notifying on failure so a stage error never kills the pipeline."""
+    async def _guard(
+        self,
+        run: HypothesisRun,
+        stage: str,
+        fn: Any,
+        event: Any,
+        *,
+        on_error: Callable[[HypothesisRun, Any], None] | None = None,
+    ) -> None:
+        """Run a stage function, logging and notifying on failure so a stage error never kills the pipeline.
+
+        ``on_error`` runs after the failure telemetry when set — used by
+        stages (dedup) whose failure must still release the event to its
+        fallback path rather than just being logged.
+        """
         try:
             await fn(run, event)
         except Exception as exc:
             logger.warning("hypothesis stage %s failed: %s", stage, exc)
+            # agent_error feeds the run's terminal-failure accounting so a run
+            # where every stage died is surfaced as failed, not green.
+            run.notify("agent_error", agent=stage, error=str(exc))
             run.notify("stage_error", stage=stage, error=str(exc))
+            if on_error is not None:
+                on_error(run, event)
+
+    async def _dedup(self, run: HypothesisRun, f: FindingPosted) -> None:
+        # The novelty gate carries the recursive-cycle judge so junk findings
+        # are rejected before a tracker-search agent is spent on them.
+        if f.gen > 0 and not await self.judge(run, f.eid, _label(f) + _judge_bar(f.gen)):
+            return
+        emits = (DedupChecked,)
+        cwd = self.dedup_cwd or self.validate_cwd
+        async with run._sem:
+            agent = await run.make_agent(
+                self.dedup_role,
+                name=f"dedup-{f.eid}",
+                model=self.model_for("dedup"),
+                effort=self.effort_for("dedup"),
+                tools=self.dedup_tools,
+                permissions="safe" if self.dedup_tools else None,
+                cwd=cwd,
+                emits=emits,
+            )
+            await run.operate_with_repair(
+                agent,
+                _dedup_instruction(f, self.dedup_repo or "", self.dedup_seed_issues, bool(cwd)),
+                arrived=lambda: any(d.finding_ref == f.eid for d in run.events_of(DedupChecked)),
+                emits=emits,
+                retries=self.repair_retries,
+                # The dedup instruction requires actually running gh queries — a
+                # non-CLI (API) model only gets tool-calling when actions=True.
+                actions=bool(self.dedup_tools),
+            )
+        if not any(d.finding_ref == f.eid for d in run.events_of(DedupChecked)):
+            self._dedup_release(run, f)
+
+    def _dedup_release(self, run: HypothesisRun, f: FindingPosted) -> None:
+        """Fail-open path shared by a missing dedup verdict and a dedup stage
+        error/timeout: an unanswered novelty check must not silently drop the
+        finding — a possible duplicate in the queue beats a lost finding."""
+        if f.eid in run.dedup_cleared:
+            return
+        run.dedup_cleared.add(f.eid)
+        run.notify("dedup_missing", eid=f.eid)
+        run.spawn(self._guard(run, "extract", self._extract, f))
 
     async def _extract(self, run: HypothesisRun, f: FindingPosted) -> None:
         # Seeds (gen 0) are caller-provided; agent-sourced findings (gen > 0)
-        # pass the judge before spending more budget.
-        if f.gen > 0 and not await self.judge(run, f.eid, _label(f)):
+        # pass the judge before spending more budget — unless the dedup gate
+        # already judged them.
+        if (
+            f.gen > 0
+            and f.eid not in run.dedup_cleared
+            and not await self.judge(run, f.eid, _label(f) + _judge_bar(f.gen))
+        ):
             return
         emits = (QuestionRaised,)
         async with run._sem:
@@ -598,19 +1009,24 @@ class HypothesisEngine(Engine):
                 self.question_role,
                 name=f"extract-{f.eid}",
                 model=self.model_for("extract"),
+                effort=self.effort_for("extract"),
                 emits=emits,
             )
             await run.operate_with_repair(
                 agent,
-                _extract_instruction(f, run.decisions, self.max_questions),
+                _extract_instruction(f, run.decisions, self.question_cap(f.gen)),
                 arrived=lambda: any(x.parent_ref == f.eid for x in run.events_of(QuestionRaised)),
                 emits=emits,
                 retries=self.repair_retries,
             )
+        if not any(x.parent_ref == f.eid for x in run.events_of(QuestionRaised)):
+            # Distinguish "finding fully settled, nothing to test" from a
+            # malformed emission so an empty report is explainable.
+            run.notify("no_questions", eid=f.eid, gen=f.gen)
 
     async def _research(self, run: HypothesisRun, q: QuestionRaised) -> None:
         subject = f"{_label(q)} | alternatives: {'; '.join(q.alternatives) or '(none)'}"
-        if not await self.judge(run, q.eid, subject):
+        if not await self.judge(run, q.eid, subject + _judge_bar(q.gen)):
             return
         emits = (EvidenceCollected, QuestionRaised)
         async with run._sem:
@@ -618,6 +1034,7 @@ class HypothesisEngine(Engine):
                 self.research_role,
                 name=f"research-{q.eid}",
                 model=self.model_for("research"),
+                effort=self.effort_for("research"),
                 emits=emits,
             )
             await run.operate_with_repair(
@@ -636,6 +1053,7 @@ class HypothesisEngine(Engine):
                 self.hypothesis_role,
                 name=f"hypothesize-{q.eid}",
                 model=self.model_for("hypothesize"),
+                effort=self.effort_for("hypothesize"),
                 emits=h_emits,
             )
             await run.operate_with_repair(
@@ -656,6 +1074,7 @@ class HypothesisEngine(Engine):
                 self.design_role,
                 name=f"design-{h.eid}",
                 model=self.model_for("design"),
+                effort=self.effort_for("design"),
                 emits=emits,
             )
             await run.operate_with_repair(
@@ -678,6 +1097,7 @@ class HypothesisEngine(Engine):
                 self.validate_role,
                 name=f"validate-{x.eid}",
                 model=self.model_for("validate"),
+                effort=self.effort_for("validate"),
                 tools=self.validate_tools,
                 permissions=self.validate_permissions if self.validate_tools else None,
                 cwd=self.validate_cwd,
@@ -691,6 +1111,7 @@ class HypothesisEngine(Engine):
                 ),
                 emits=(ResultRecorded,),
                 retries=self.repair_retries,
+                actions=bool(self.validate_tools),
             )
 
     async def _conclude(self, run: HypothesisRun, r: ResultRecorded) -> None:
@@ -706,6 +1127,7 @@ class HypothesisEngine(Engine):
                 self.conclude_role,
                 name=f"conclude-{r.eid}",
                 model=self.model_for("conclude"),
+                effort=self.effort_for("conclude"),
                 emits=emits,
             )
             await run.operate_with_repair(
@@ -722,6 +1144,7 @@ class HypothesisEngine(Engine):
                 self.apply_role,
                 name=f"apply-{c.eid}",
                 model=self.model_for("apply"),
+                effort=self.effort_for("apply"),
                 emits=(ApplicationMapped,),
             )
             # No repair: "bears on nothing -> emit nothing" is legitimate here.
@@ -738,6 +1161,7 @@ class HypothesisEngine(Engine):
             self.synthesis_role,
             name="synthesizer",
             model=self.model_for("synthesize"),
+            effort=self.effort_for("synthesize"),
             exempt=True,
         )
         res = await synth.operate(instruction=_synthesis_instruction(run))

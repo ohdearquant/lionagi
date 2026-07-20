@@ -130,12 +130,19 @@ async def test_policy_instance_is_registered_unchanged():
 
 
 @pytest.mark.asyncio
-async def test_invalid_policy_configuration_fails_at_spawn():
-    with pytest.raises(TypeError, match="khive_injection must be"):
-        await create_agent(
-            AgentSpec.coding(khive_injection="enabled"),
-            load_settings=False,
-        )
+async def test_invalid_policy_configuration_fails_open_not_raises(caplog):
+    """Provider construction failures (bad policy shape, unsupported
+    snapshot_id, ...) must degrade to "no injection this turn" rather than
+    aborting agent creation — matching KhiveInjectionProvider.provide()'s own
+    transport-failure fail-open."""
+    branch = await create_agent(
+        AgentSpec.coding(khive_injection="enabled"),
+        load_settings=False,
+    )
+
+    registry = branch._context_providers
+    assert registry is None or len(registry) == 0
+    assert any("khive_injection must be" in r.message for r in caplog.records)
 
 
 @pytest.mark.parametrize(

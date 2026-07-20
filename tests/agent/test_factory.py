@@ -755,14 +755,14 @@ async def test_forward_mcp_populates_claude_code_request_mcp_servers(tmp_path):
     carries the same servers, and --mcp-config shows up in as_cmd_args()."""
     from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
-    mcp_path = _write_mcp_config(tmp_path, {"khive": {"command": "khive-mcp"}})
+    mcp_path = _write_mcp_config(tmp_path, {"khive": {"command": "kkernel"}})
 
     config = AgentSpec.compose("reviewer", model="claude_code/sonnet")
     config.mcp_config_path = mcp_path
     branch = await create_agent(config, load_settings=False)
 
     kwargs = branch.chat_model.endpoint.config.kwargs
-    assert kwargs.get("mcp_servers") == {"khive": {"command": "khive-mcp"}}
+    assert kwargs.get("mcp_servers") == {"khive": {"command": "kkernel"}}
 
     payload, _ = branch.chat_model.endpoint.create_payload({"prompt": "hi"})
     request = payload["request"]
@@ -770,7 +770,7 @@ async def test_forward_mcp_populates_claude_code_request_mcp_servers(tmp_path):
     args = request.as_cmd_args()
     assert "--mcp-config" in args
     assert json.loads(args[args.index("--mcp-config") + 1]) == {
-        "mcpServers": {"khive": {"command": "khive-mcp"}}
+        "mcpServers": {"khive": {"command": "kkernel"}}
     }
 
 
@@ -778,7 +778,7 @@ async def test_forward_mcp_filters_by_spec_mcp_servers(tmp_path):
     """spec.mcp_servers is a name filter, consistent with island 1's server_names."""
     mcp_path = _write_mcp_config(
         tmp_path,
-        {"khive": {"command": "khive-mcp"}, "other": {"command": "other-mcp"}},
+        {"khive": {"command": "kkernel"}, "other": {"command": "other-mcp"}},
     )
 
     config = AgentSpec.compose("reviewer", model="claude_code/sonnet")
@@ -787,7 +787,7 @@ async def test_forward_mcp_filters_by_spec_mcp_servers(tmp_path):
     branch = await create_agent(config, load_settings=False)
 
     kwargs = branch.chat_model.endpoint.config.kwargs
-    assert kwargs.get("mcp_servers") == {"khive": {"command": "khive-mcp"}}
+    assert kwargs.get("mcp_servers") == {"khive": {"command": "kkernel"}}
 
 
 async def test_forward_mcp_noop_when_spec_has_no_mcp_fields(tmp_path, monkeypatch):
@@ -810,29 +810,402 @@ async def test_forward_mcp_noop_for_non_claude_code_when_no_mcp_fields(tmp_path,
     assert "mcp_servers" not in branch.chat_model.endpoint.config.kwargs
 
 
-async def test_forward_mcp_codex_provider_warns_and_noops(tmp_path, caplog):
-    """Test plan item 6: codex/gemini provider + MCP fields set -> logged
-    warning, no passthrough field populated (no MCP field exists to set)."""
-    import logging
-
-    mcp_path = _write_mcp_config(tmp_path, {"khive": {"command": "khive-mcp"}})
+async def test_forward_mcp_codex_provider_flattens_to_config_overrides(tmp_path):
+    """codex provider + MCP fields set -> each server forwarded as
+    `mcp_servers.<name>.<field>` config overrides (the codex CLI's `-c` form);
+    server shapes the CLI cannot express are skipped, not emitted broken."""
+    mcp_path = _write_mcp_config(
+        tmp_path,
+        {
+            "khive": {"command": "kkernel", "args": ["mcp"]},
+            "shapeless": {"transport": "mystery"},
+        },
+    )
 
     config = AgentSpec.compose("reviewer", model="codex/gpt-5.5")
     config.mcp_config_path = mcp_path
 
-    with caplog.at_level(logging.WARNING, logger="lionagi.agent.factory"):
-        branch = await create_agent(config, load_settings=False)
+    branch = await create_agent(config, load_settings=False)
 
-    assert "mcp_servers" not in branch.chat_model.endpoint.config.kwargs
-    assert any(
-        "no MCP passthrough" in rec.message and "codex" in rec.message for rec in caplog.records
+    kwargs = branch.chat_model.endpoint.config.kwargs
+    assert "mcp_servers" not in kwargs
+    assert kwargs.get("config_overrides") == {
+        "mcp_servers.khive.command": "kkernel",
+        "mcp_servers.khive.args": ["mcp"],
+    }
+
+
+def test_codex_request_serializes_mcp_server_overrides():
+    """The flattened override keys survive into `-c key=value` CLI args,
+    serialized as valid TOML (codex parses the `-c` value as TOML, not
+    JSON -- see test_codex_request_serializes_config_override_values_as_toml
+    for the dict/env case this distinction matters for)."""
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    req = CodexCodeRequest(
+        prompt="hi",
+        config_overrides={
+            "mcp_servers.khive.command": "kkernel",
+            "mcp_servers.khive.args": ["mcp"],
+        },
     )
+    args = req.as_cmd_args()
+    assert 'mcp_servers.khive.command="kkernel"' in args
+    assert 'mcp_servers.khive.args=["mcp"]' in args
+
+
+def test_codex_request_serializes_config_override_values_as_toml():
+    """codex's `-c key=value` parses `value` as TOML, not JSON. A dict
+    override (e.g. an MCP server's `env` map) must render as a TOML inline
+    table -- json.dumps(...) produces `:`-separated pairs that are not valid
+    TOML and either mis-parse into a raw-string fallback or hard-fail config
+    loading (confirmed against the installed codex CLI: `-c
+    mcp_servers.x.env={"K": "v"}` raises `invalid type: string ... expected
+    a map`). Round-trip the produced value string through the `toml` parser
+    to prove it is valid TOML, not just string-matched."""
+    import toml
+
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    req = CodexCodeRequest(
+        prompt="hi",
+        config_overrides={
+            "mcp_servers.khive.env": {"API_KEY": "sekret", "OTHER_VAR": "value"},
+        },
+    )
+    args = req.as_cmd_args()
+    idx = args.index("-c")
+    override_arg = args[idx + 1]
+    key, _, value_str = override_arg.partition("=")
+    assert key == "mcp_servers.khive.env"
+
+    parsed = toml.loads(f"x = {value_str}")
+    assert parsed == {"x": {"API_KEY": "sekret", "OTHER_VAR": "value"}}
+
+    # The old json.dumps behavior is NOT valid TOML for a dict value -- guard
+    # against regressing back to it.
+    assert ":" not in value_str
+
+
+async def test_forward_mcp_codex_forwards_extended_server_fields(tmp_path):
+    """codex's MCP server schema supports more than command/args/env/url
+    (verified against the installed CLI's `codex mcp list --json` output
+    field names). Every field present in the source config gets forwarded,
+    not silently dropped. `http_headers` is exercised separately (it's a
+    secret-carrying field routed to the profile file, not argv overrides --
+    see test_forward_mcp_codex_http_headers_routed_to_profile_file_not_argv)."""
+    mcp_path = _write_mcp_config(
+        tmp_path,
+        {
+            "khive": {
+                "command": "kkernel",
+                "cwd": "/tmp/khive",
+                "startup_timeout_ms": 5000,
+                "enabled": True,
+                "required": False,
+                "env_vars": ["PATH"],
+                "bearer_token_env_var": "KHIVE_TOKEN",
+                "env_http_headers": {"Authorization": "KHIVE_AUTH_ENV"},
+            }
+        },
+    )
+
+    config = AgentSpec.compose("reviewer", model="codex/gpt-5.5")
+    config.mcp_config_path = mcp_path
+    branch = await create_agent(config, load_settings=False)
+
+    overrides = branch.chat_model.endpoint.config.kwargs.get("config_overrides")
+    assert overrides["mcp_servers.khive.cwd"] == "/tmp/khive"
+    assert overrides["mcp_servers.khive.startup_timeout_ms"] == 5000
+    assert overrides["mcp_servers.khive.enabled"] is True
+    assert overrides["mcp_servers.khive.required"] is False
+    assert overrides["mcp_servers.khive.env_vars"] == ["PATH"]
+    assert overrides["mcp_servers.khive.bearer_token_env_var"] == "KHIVE_TOKEN"
+    # env_http_headers values are env-var *names* the codex process resolves
+    # locally, not secret literals -- safe to stay on the `-c` override path.
+    assert overrides["mcp_servers.khive.env_http_headers"] == {"Authorization": "KHIVE_AUTH_ENV"}
+
+
+async def test_forward_mcp_codex_unsupported_field_raises(tmp_path):
+    """A field the codex CLI's MCP server schema does not support must be a
+    loud ConfigurationError, not a silent drop."""
+    from lionagi._errors import ConfigurationError
+
+    mcp_path = _write_mcp_config(
+        tmp_path,
+        {"khive": {"command": "kkernel", "totally_unsupported_field": "x"}},
+    )
+
+    config = AgentSpec.compose("reviewer", model="codex/gpt-5.5")
+    config.mcp_config_path = mcp_path
+
+    with pytest.raises(ConfigurationError, match="totally_unsupported_field"):
+        await create_agent(config, load_settings=False)
+
+
+async def test_forward_mcp_codex_env_routed_to_profile_file_not_argv(tmp_path, monkeypatch):
+    """MCP server `env` maps may carry secrets (API keys/tokens) and must
+    never land on the codex command line (visible via `ps`, persisted
+    request records, etc). They're routed through a private, 0600 on-disk
+    profile file that codex layers in via `-p <profile>`."""
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex_home"))
+
+    mcp_path = _write_mcp_config(
+        tmp_path,
+        {"khive": {"command": "kkernel", "env": {"API_KEY": "top-secret-value"}}},
+    )
+
+    config = AgentSpec.compose("reviewer", model="codex/gpt-5.5")
+    config.mcp_config_path = mcp_path
+    branch = await create_agent(config, load_settings=False)
+
+    kwargs = branch.chat_model.endpoint.config.kwargs
+    overrides = kwargs.get("config_overrides") or {}
+    assert "mcp_servers.khive.env" not in overrides
+    assert all("top-secret-value" not in str(v) for v in overrides.values())
+
+    profile_name = kwargs.get("profile")
+    assert profile_name
+
+    payload, _ = branch.chat_model.endpoint.create_payload({"prompt": "hi"})
+    request = payload["request"]
+    args = request.as_cmd_args()
+    assert not any("top-secret-value" in arg for arg in args)
+    assert "-p" in args
+    assert args[args.index("-p") + 1] == profile_name
+
+    import stat
+
+    profile_path = tmp_path / "codex_home" / f"{profile_name}.config.toml"
+    assert profile_path.exists()
+    mode = stat.S_IMODE(profile_path.stat().st_mode)
+    assert mode == 0o600
+
+    import toml as toml_lib
+
+    doc = toml_lib.loads(profile_path.read_text())
+    assert doc == {"mcp_servers": {"khive": {"env": {"API_KEY": "top-secret-value"}}}}
+
+
+async def test_forward_mcp_codex_env_conflicts_with_explicit_profile(tmp_path, monkeypatch):
+    """If the caller already pinned an explicit codex profile, silently
+    overwriting it to smuggle in MCP env secrets would drop whatever the
+    caller's profile was for -- fail loudly instead."""
+    from lionagi._errors import ConfigurationError
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex_home"))
+
+    mcp_path = _write_mcp_config(
+        tmp_path,
+        {"khive": {"command": "kkernel", "env": {"API_KEY": "top-secret-value"}}},
+    )
+
+    config = AgentSpec.compose("reviewer", model="codex/gpt-5.5")
+    config.mcp_config_path = mcp_path
+
+    branch = Branch(chat_model="codex/gpt-5.5")
+    branch.chat_model.endpoint.config.kwargs["profile"] = "my-existing-profile"
+
+    with pytest.raises(ConfigurationError, match="profile"):
+        await create_agent(config, load_settings=False, chat_model=branch.chat_model)
+
+
+async def test_forward_mcp_codex_http_headers_routed_to_profile_file_not_argv(
+    tmp_path, monkeypatch
+):
+    """A literal `http_headers` value (e.g. a static `Authorization: Bearer
+    ...` header) may itself be a secret and must never land on the codex
+    command line -- routed through the same private, 0600 profile file as
+    `env`. `env_http_headers` (env-var *names*, not secret values) stays on
+    the `-c` override path, unaffected."""
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex_home"))
+
+    mcp_path = _write_mcp_config(
+        tmp_path,
+        {
+            "khive": {
+                "command": "kkernel",
+                "http_headers": {"Authorization": "Bearer top-secret-bearer-value"},
+                "env_http_headers": {"X-Other": "SOME_ENV_VAR_NAME"},
+            }
+        },
+    )
+
+    config = AgentSpec.compose("reviewer", model="codex/gpt-5.5")
+    config.mcp_config_path = mcp_path
+    branch = await create_agent(config, load_settings=False)
+
+    kwargs = branch.chat_model.endpoint.config.kwargs
+    overrides = kwargs.get("config_overrides") or {}
+    assert "mcp_servers.khive.http_headers" not in overrides
+    assert overrides.get("mcp_servers.khive.env_http_headers") == {"X-Other": "SOME_ENV_VAR_NAME"}
+
+    profile_name = kwargs.get("profile")
+    assert profile_name
+
+    payload, _ = branch.chat_model.endpoint.create_payload({"prompt": "hi"})
+    request = payload["request"]
+    args = request.as_cmd_args()
+    full_arg_string = " ".join(args)
+    assert "top-secret-bearer-value" not in full_arg_string
+
+    import stat
+
+    profile_path = tmp_path / "codex_home" / f"{profile_name}.config.toml"
+    assert profile_path.exists()
+    mode = stat.S_IMODE(profile_path.stat().st_mode)
+    assert mode == 0o600
+
+    import toml as toml_lib
+
+    doc = toml_lib.loads(profile_path.read_text())
+    assert doc == {
+        "mcp_servers": {
+            "khive": {"http_headers": {"Authorization": "Bearer top-secret-bearer-value"}}
+        }
+    }
+
+
+async def test_forward_mcp_codex_stale_profile_files_reaped_on_write(tmp_path, monkeypatch):
+    """A profile file from a killed-not-terminated prior process (SIGKILL,
+    crash skips the `atexit` cleanup) must not accumulate forever under
+    $CODEX_HOME -- the next write reaps anything older than 24h."""
+    import os
+    import time
+
+    codex_home = tmp_path / "codex_home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    stale = codex_home / "lionagi-mcp-deadbeefdeadbeefdeadbeefdeadbeef.config.toml"
+    stale.write_text('[mcp_servers.old]\nenv = {SECRET = "leftover"}\n')
+    old_time = time.time() - (25 * 60 * 60)
+    os.utime(stale, (old_time, old_time))
+
+    fresh = codex_home / "lionagi-mcp-fresh0000fresh0000fresh0000fresh0.config.toml"
+    fresh.write_text('[mcp_servers.recent]\nenv = {SECRET = "still-live"}\n')
+
+    mcp_path = _write_mcp_config(
+        tmp_path,
+        {"khive": {"command": "kkernel", "env": {"API_KEY": "new-secret"}}},
+    )
+    config = AgentSpec.compose("reviewer", model="codex/gpt-5.5")
+    config.mcp_config_path = mcp_path
+    await create_agent(config, load_settings=False)
+
+    assert not stale.exists()
+    assert fresh.exists()
+
+
+async def test_forward_mcp_codex_empty_allowlist_disables_discovered_servers(tmp_path, monkeypatch):
+    """spec.mcp_servers=[] is an explicit "zero servers" allowlist, distinct
+    from spec.mcp_servers=None ("not configured"). codex has no wholesale
+    `mcp_servers` clear override (`-c mcp_servers={}` merges rather than
+    replaces, confirmed against the installed CLI), so each server the
+    .mcp.json would otherwise have exposed must be disabled by name.
+
+    CODEX_HOME points at an isolated dir with a config.toml carrying no
+    ambient `[mcp_servers.*]` tables, so ambient ecosystem discovery
+    contributes nothing here and the exact-override assertion below stays
+    scoped to just the two lionagi-resolved servers (ambient-union coverage
+    is test_forward_mcp_codex_empty_allowlist_disables_ambient_servers_too)."""
+    codex_home = tmp_path / "codex_home"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text('model = "gpt-5"\n')
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    mcp_path = _write_mcp_config(
+        tmp_path,
+        {"khive": {"command": "kkernel"}, "other": {"command": "other-mcp"}},
+    )
+
+    config = AgentSpec.compose("reviewer", model="codex/gpt-5.5")
+    config.mcp_config_path = mcp_path
+    config.mcp_servers = []
+    branch = await create_agent(config, load_settings=False)
+
+    overrides = branch.chat_model.endpoint.config.kwargs.get("config_overrides")
+    assert overrides == {
+        "mcp_servers.khive.enabled": False,
+        "mcp_servers.other.enabled": False,
+    }
+
+
+async def test_forward_mcp_codex_empty_allowlist_disables_ambient_servers_too(
+    tmp_path, monkeypatch
+):
+    """The bug this closes: an explicit allowlist that disables nothing
+    because no lionagi MCP config file resolves at all (mcp_config_path
+    unset, nothing auto-discovered) must still disable servers codex would
+    load on its own from its ambient/profile config -- otherwise
+    mcp_servers=[] is a no-op and every ambient server stays enabled."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    codex_home = tmp_path / "codex_home"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text(
+        '[mcp_servers.ambient-one]\ncommand = "one"\n\n'
+        '[mcp_servers.ambient-two]\nurl = "https://two.example/mcp"\n'
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    config = AgentSpec.compose("reviewer", model="codex/gpt-5.5", cwd=str(tmp_path / "elsewhere"))
+    config.mcp_servers = []  # explicit empty allowlist; no lionagi MCP config resolves
+    branch = await create_agent(config, load_settings=False)
+
+    overrides = branch.chat_model.endpoint.config.kwargs.get("config_overrides")
+    assert overrides == {
+        "mcp_servers.ambient-one.enabled": False,
+        "mcp_servers.ambient-two.enabled": False,
+    }
+
+
+async def test_forward_mcp_codex_allowlist_enforcement_fails_closed_on_double_discovery_failure(
+    tmp_path, monkeypatch
+):
+    """If both discovery paths fail (no readable/parseable CODEX_HOME
+    config.toml, and `codex mcp list --json` also fails), an explicit
+    allowlist that can no longer be verified must raise rather than silently
+    leave whatever ambient servers exist enabled."""
+    from lionagi._errors import ConfigurationError
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex_home_missing"))  # no config.toml
+
+    def _boom(*args, **kwargs):
+        raise FileNotFoundError("codex CLI not found")
+
+    monkeypatch.setattr("subprocess.run", _boom)
+
+    config = AgentSpec.compose("reviewer", model="codex/gpt-5.5", cwd=str(tmp_path / "elsewhere"))
+    config.mcp_servers = []
+
+    with pytest.raises(ConfigurationError, match="allowlist"):
+        await create_agent(config, load_settings=False)
+
+
+async def test_forward_mcp_codex_none_allowlist_is_still_a_noop(tmp_path, monkeypatch):
+    """spec.mcp_servers=None (never touched) must stay a true no-op for
+    codex too -- only an explicit (possibly empty) allowlist triggers the
+    disabling behavior, so ambient discovery (which would raise/behave
+    unpredictably against this test's unpatched environment) must never even
+    be attempted. Isolated HOME/cwd so no ambient .mcp.json resolves
+    (mirrors test_forward_mcp_noop_when_spec_has_no_mcp_fields)."""
+    import lionagi.agent.factory as factory_mod
+
+    def _fail_if_called():
+        raise AssertionError("ambient discovery must not run for a None allowlist")
+
+    monkeypatch.setattr(factory_mod, "_discover_ambient_codex_mcp_server_names", _fail_if_called)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    config = AgentSpec.compose("reviewer", model="codex/gpt-5.5", cwd=str(tmp_path / "elsewhere"))
+    branch = await create_agent(config, load_settings=False)
+    assert "config_overrides" not in branch.chat_model.endpoint.config.kwargs
 
 
 async def test_forward_mcp_gemini_provider_warns_and_noops(tmp_path, caplog):
     import logging
 
-    mcp_path = _write_mcp_config(tmp_path, {"khive": {"command": "khive-mcp"}})
+    mcp_path = _write_mcp_config(tmp_path, {"khive": {"command": "kkernel"}})
 
     config = AgentSpec.compose("reviewer", model="gemini_code/gemini-3.5-flash")
     config.mcp_config_path = mcp_path
@@ -889,7 +1262,7 @@ async def test_forward_mcp_explicit_empty_allowlist_forces_zero_servers(tmp_path
 
     mcp_path = _write_mcp_config(
         tmp_path,
-        {"khive": {"command": "khive-mcp"}, "other": {"command": "other-mcp"}},
+        {"khive": {"command": "kkernel"}, "other": {"command": "other-mcp"}},
     )
 
     config = AgentSpec.compose("reviewer", model="claude_code/sonnet")
@@ -950,7 +1323,7 @@ async def test_forward_mcp_does_not_mutate_shared_chat_model_across_branches(tmp
 
     mcp_path = _write_mcp_config(
         tmp_path,
-        {"khive": {"command": "khive-mcp"}, "other": {"command": "other-mcp"}},
+        {"khive": {"command": "kkernel"}, "other": {"command": "other-mcp"}},
     )
 
     shared_chat_model = iModel(provider="claude_code", model="sonnet", api_key="dummy")
@@ -966,7 +1339,7 @@ async def test_forward_mcp_does_not_mutate_shared_chat_model_across_branches(tmp
     branch_b = await create_agent(config_b, load_settings=False, chat_model=shared_chat_model)
 
     assert branch_a.chat_model.endpoint.config.kwargs.get("mcp_servers") == {
-        "khive": {"command": "khive-mcp"}
+        "khive": {"command": "kkernel"}
     }, "branch_a's filter must not have been overwritten by branch_b's create_agent call"
     assert branch_b.chat_model.endpoint.config.kwargs.get("mcp_servers") == {
         "other": {"command": "other-mcp"}
@@ -982,7 +1355,7 @@ async def test_forward_mcp_preserves_shared_executor_and_session(tmp_path):
 
     mcp_path = _write_mcp_config(
         tmp_path,
-        {"khive": {"command": "khive-mcp"}, "other": {"command": "other-mcp"}},
+        {"khive": {"command": "kkernel"}, "other": {"command": "other-mcp"}},
     )
 
     shared_chat_model = iModel(provider="claude_code", model="sonnet", api_key="dummy")
@@ -1001,7 +1374,7 @@ async def test_forward_mcp_preserves_shared_executor_and_session(tmp_path):
 
     # (a) independent mcp_servers kwargs per branch, sharing one caller iModel.
     assert branch_a.chat_model.endpoint.config.kwargs.get("mcp_servers") == {
-        "khive": {"command": "khive-mcp"}
+        "khive": {"command": "kkernel"}
     }
     assert branch_b.chat_model.endpoint.config.kwargs.get("mcp_servers") == {
         "other": {"command": "other-mcp"}
