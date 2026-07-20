@@ -12,6 +12,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   re-exported from `lionagi.protocols.types`). Neither had an in-tree caller. Removed outright
   per the own-use scope in `docs/governance/standards/deprecation-policy.md` section 0, with no
   compatibility alias.
+- `Observable` (`lionagi.protocols._concepts`, `lionagi.protocols.types`), renamed to
+  `PileItem`. The name previously pointed at a structural protocol and now had to point at the
+  nominal admission ABC Pile actually enforces; rather than let the same name's `isinstance`
+  answers invert under existing callers, the nominal contract ships under a new name and every
+  in-tree caller (`Element`, `Pile`, `Communicatable`, `SessionObserver`,
+  `validate_sender_recipient`) was updated in this change.
+
+### Added
+
+- `PileItem` (`lionagi.protocols._concepts`, `lionagi.protocols.types`): the nominal Pile-item
+  admission contract, renamed from `Observable`.
 
 ## [0.29.1] - 2026-07-15
 

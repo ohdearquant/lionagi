@@ -12,7 +12,7 @@ __all__ = (
     "Manager",
     "Relational",
     "Sendable",
-    "Observable",
+    "PileItem",
     "Communicatable",
     "Condition",
     "Collective",
@@ -46,16 +46,8 @@ class Sendable(ABC):  # noqa: B024
     pass
 
 
-class Observable(ABC):  # noqa: B024
-    """The Pile-item admission contract: an item must inherit this ABC.
-
-    This is the sole public ``Observable`` symbol. Admission is nominal
-    (``isinstance`` against this class), not structural — an object that
-    merely exposes an ``id`` attribute without inheriting from this class
-    does not satisfy it. Pile relies on the full Element contract (equality,
-    ``to_dict``/``from_dict`` reconstruction) that a bare ``id`` property
-    does not provide.
-    """
+class PileItem(ABC):  # noqa: B024
+    """Pile-item admission contract. Nominal: requires inheritance, not a bare ``id`` attribute."""
 
     pass
 
@@ -71,7 +63,7 @@ class Composed(ABC):
         """Compose from components."""
 
 
-class Communicatable(Observable):
+class Communicatable(PileItem):
     """Communicatable must define 'mailbox' and send/receive methods."""
 
     @abstractmethod
