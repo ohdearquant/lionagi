@@ -1462,7 +1462,16 @@ def _finalize_flow(
     output_format: str,
     show_graph: bool,
 ) -> str:
-    """Format output, write synthesis artifact, post team messages, and finalize run."""
+    """Format output, write synthesis artifact, post team messages, and finalize run.
+
+    The DAG already has its result by the time this runs, so ``output`` is
+    computed first and always returned. Everything below it is post-completion
+    persistence/teardown (synthesis file, team inbox post, branch snapshots,
+    run pointer) — best-effort. A failure there is a real defect but not a DAG
+    failure: it's caught and stashed on ``env._finalize_error`` for the run's
+    teardown to surface via its own reason code, rather than raising and
+    letting the caller conflate it with the DAG's own outcome.
+    """
     agent_results = exec_result.agent_results
     n_spawned = exec_result.n_spawned
     assignments = plan_result.assignments
@@ -1474,65 +1483,74 @@ def _finalize_flow(
     else:
         output = _format_result_text(agent_results, synthesis_result, header_fn=_flow_header_fn)
 
-    if synthesis_result:
-        env.run.synthesis_path.write_text(synthesis_result["response"])
+    try:
+        if synthesis_result:
+            env.run.synthesis_path.write_text(synthesis_result["response"])
 
-    if env.team_data:
-        _post_results_to_team(env.team_data, agent_results, agent_ids, synthesis_result)
+        if env.team_data:
+            _post_results_to_team(env.team_data, agent_results, agent_ids, synthesis_result)
 
-    # "agents" must cover every id "operations" (below) references, so it
-    # walks agent_results (which includes spawned nodes), not just the
-    # fixed-size plan-time assignments, or a spawned id resolves to nothing.
-    agents_meta = [
-        {
-            "id": agent_ids[i],
-            "name": agent_ids[i],
-            "model": worker_models[i],
-            "artifact_dir": str(env.run.agent_artifact_dir(agent_ids[i])),
-            "spawned": False,
-        }
-        for i in range(len(assignments))
-    ]
-    agents_meta.extend(
-        {
-            "id": r["agent_id"],
-            "name": r.get("assignee") or r["name"],
-            "model": r.get("model", ""),
-            "artifact_dir": str(env.run.agent_artifact_dir(r["agent_id"])),
-            "spawned": True,
-        }
-        for r in agent_results
-        if r.get("spawned")
-    )
+        # "agents" must cover every id "operations" (below) references, so it
+        # walks agent_results (which includes spawned nodes), not just the
+        # fixed-size plan-time assignments, or a spawned id resolves to nothing.
+        agents_meta = [
+            {
+                "id": agent_ids[i],
+                "name": agent_ids[i],
+                "model": worker_models[i],
+                "artifact_dir": str(env.run.agent_artifact_dir(agent_ids[i])),
+                "spawned": False,
+            }
+            for i in range(len(assignments))
+        ]
+        agents_meta.extend(
+            {
+                "id": r["agent_id"],
+                "name": r.get("assignee") or r["name"],
+                "model": r.get("model", ""),
+                "artifact_dir": str(env.run.agent_artifact_dir(r["agent_id"])),
+                "spawned": True,
+            }
+            for r in agent_results
+            if r.get("spawned")
+        )
 
-    finalize_orchestration(
-        env,
-        kind="flow",
-        prompt=prompt,
-        extras={
-            "agents": agents_meta,
-            "operations": [
-                {
-                    "id": r["id"],
-                    "agent_id": r["agent_id"],
-                    "control": False,
-                    "spawned": r.get("spawned", False),
-                    "depends_on": r.get("depends_on") or [],
-                }
-                for r in agent_results
-            ],
-        },
-    )
+        finalize_orchestration(
+            env,
+            kind="flow",
+            prompt=prompt,
+            extras={
+                "agents": agents_meta,
+                "operations": [
+                    {
+                        "id": r["id"],
+                        "agent_id": r["agent_id"],
+                        "control": False,
+                        "spawned": r.get("spawned", False),
+                        "depends_on": r.get("depends_on") or [],
+                    }
+                    for r in agent_results
+                ],
+            },
+        )
 
-    if show_graph:
-        from lionagi.operations._visualize_graph import visualize_graph
+        if show_graph:
+            from lionagi.operations._visualize_graph import visualize_graph
 
-        with contextlib.suppress(Exception):
-            visualize_graph(
-                env.builder,
-                title=f"Flow DAG — {len(assignments)} assignments (+{n_spawned} spawned)",
-                save_path=str(env.run.dag_image_path),
-            )
+            with contextlib.suppress(Exception):
+                visualize_graph(
+                    env.builder,
+                    title=f"Flow DAG — {len(assignments)} assignments (+{n_spawned} spawned)",
+                    save_path=str(env.run.dag_image_path),
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "flow finalize step failed after the DAG already completed; "
+            "DAG result is unaffected: %s",
+            exc,
+            exc_info=True,
+        )
+        env._finalize_error = {"error_class": type(exc).__name__, "error": str(exc)}
 
     return output
 

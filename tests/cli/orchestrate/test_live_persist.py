@@ -1357,6 +1357,63 @@ async def test_stop_verification_preserves_non_completed_reason(
     assert v["status"] == "failed"
 
 
+# ── issue #2053: post-completion finalize error must not flip a successful DAG ──
+
+
+async def test_stop_finalize_error_stays_completed_with_distinct_reason(
+    temp_db_path: Path,
+):
+    """A DAG that completed cleanly, but whose post-completion finalize step
+    (team-teardown/persistence) raised, must keep status="completed" (exit 0)
+    — the finalize error surfaces via its own reason code instead of flipping
+    the run's terminal status, and is distinguishable from both a clean
+    completion and a real DAG failure."""
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    # Mirrors what _finalize_flow (lionagi/cli/orchestrate/flow.py) stashes on
+    # the env when a post-DAG finalize step (e.g. _post_results_to_team's file
+    # lock) raises after the DAG already produced its result.
+    env._finalize_error = {"error_class": "TimeoutError", "error": "team lock timed out"}
+
+    final_status = await stop_live_persist(env, status="completed")
+    assert final_status == "completed"
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "completed"
+    assert s["status_reason_code"] == "run.completed.finalize_error"
+    assert s["status_reason_code"] not in ("run.completed.ok", "run.failed.exception")
+    assert "TimeoutError" in s["status_reason_summary"]
+
+
+async def test_stop_finalize_error_does_not_override_real_dag_failure_reason(
+    temp_db_path: Path,
+):
+    """When the DAG itself failed, a finalize error must not mask the real
+    failure reason — it's recorded, but FAILED_EXCEPTION (or whatever the DAG
+    raised) stays the reason code, not COMPLETED_FINALIZE_ERROR."""
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    env._finalize_error = {"error_class": "OSError", "error": "disk full"}
+    dag_exc = RuntimeError("planner blew up")
+
+    final_status = await stop_live_persist(env, status="failed", exception=dag_exc)
+    assert final_status == "failed"
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed"
+    assert s["status_reason_code"] == "run.failed.exception"
+
+
 # ── ADR-0064 + ADR-0057: session→invocation propagation on missing artifact ──
 #
 # The tests above prove the *session* row flips to failed/FAILED_MISSING_ARTIFACT.
