@@ -13,6 +13,12 @@ lifecycle hook points — and the built-in handlers registered via
 | `MESSAGE_ADD` | `message.add` | `branch.py _persist_via_bus` — every inbound message |
 | `USER_PROMPT_SUBMIT` | `prompt.submit` | `operations/chat/chat.py` and `operations/run/run.py`, immediately before provider invocation / streaming begins — fires only when the operation context carries a turn-origin token (blocking, via `blocking_emit`) |
 | `BRANCH_END` | `branch.end` | `cli/_runs.py teardown_persist` — once per branch the teardown owns, only when the run reached a genuine terminal outcome (never for the "running" reconciliation-suppression case) |
+| `API_PRE_CALL` | `api.pre_call` | `operations/_api_hooks.py emit_api_pre_call`, called from `operations/chat/chat.py` (before `imodel.invoke()`) and `operations/run/run.py` (before the CLI stream starts) — only when the calling Branch is session-bound (`branch._hooks is not None`); a standalone `iModel` never reaches this callsite |
+| `API_POST_CALL` | `api.post_call` | `operations/_api_hooks.py emit_api_post_call`, called from the same two sites once the call has settled — success, a provider-reported failure (`api_call.status`), or a raised exception (`error=...`, `status="error"`) |
+| `API_STREAM_CHUNK` | `api.stream_chunk` | `operations/_api_hooks.py emit_api_stream_chunk`, called from `operations/run/run.py` for every chunk of a session-bound stream; payload carries a redacted `chunk_type` only, not the raw chunk |
+| `TOOL_PRE` | `tool.pre` | `operations/act/act.py`, before tool invocation (blocking via `blocking_emit`) |
+| `TOOL_POST` | `tool.post` | `operations/act/act.py`, after successful tool invocation |
+| `TOOL_ERROR` | `tool.error` | `operations/act/act.py`, on tool invocation failure |
 
 ### Registered in DEFAULT_HOOKS (handlers wired; emit callsite deferred to ADR-0023b)
 
@@ -22,21 +28,18 @@ lifecycle hook points — and the built-in handlers registered via
 | `SESSION_END` | `session.end` | `persist_session_end` |
 | `BRANCH_CREATE` | `branch.create` | `persist_branch_provenance` |
 
-### Reserved (vocabulary only; no handler and no emit callsite yet, per ADR-0023)
+### Dormant (vocabulary only; no handler and no emit callsite)
 
-| Point | Value | Planned surface |
+| Point | Value | Status |
 |-------|-------|----------------|
-| `API_PRE_CALL` | `api.pre_call` | Before each iModel API call |
-| `API_POST_CALL` | `api.post_call` | After each iModel API call (tokens / latency) |
-| `API_STREAM_CHUNK` | `api.stream_chunk` | Per-chunk during streaming responses |
-| `TOOL_PRE` | `tool.pre` | Before tool invocation (blocking via `blocking_emit`) |
-| `TOOL_POST` | `tool.post` | After successful tool invocation |
-| `TOOL_ERROR` | `tool.error` | On tool invocation failure |
-| `ARTIFACT_CREATED` | `artifact.created` | Deprecated/not yet wired: no emit site or payload contract exists |
+| `ARTIFACT_CREATED` | `artifact.created` | Deprecated compatibility vocabulary: no emit site or payload contract exists |
 
 `ARTIFACT_CREATED` is retained only for enum compatibility. Do not register new
 handlers against it until an artifact owner defines a typed payload and a
-production emit site.
+production emit site. `HookBus.on()` emits a `UserWarning` when a handler is
+registered against any point in `lionagi.hooks.DORMANT_POINTS` (today, just
+`ARTIFACT_CREATED`) so that mistake surfaces at registration time instead of
+being discovered later as a handler that silently never ran.
 
 ## Bus dispatch semantics
 

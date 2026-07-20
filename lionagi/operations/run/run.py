@@ -25,6 +25,7 @@ from lionagi.protocols.messages import (
 )
 from lionagi.providers._provider_errors import WorkerLivenessError, classify_provider_error
 
+from .._api_hooks import emit_api_post_call, emit_api_pre_call, emit_api_stream_chunk
 from .._turn_origin import consume_turn_origin
 from ..chat._prepare import _apply_context_providers, _build_instruction, _prepare_run_kwargs
 from ..types import ChatParam, ParseParam, RunParam
@@ -365,6 +366,7 @@ async def run(
 
     _run_exc: BaseException | None = None
     _terminal_emitted: bool = False
+    _api_call_started: bool = False
     _t0_run = _time.monotonic()
 
     try:
@@ -472,6 +474,18 @@ async def run(
         # Provider-reported usage from the terminal "result" chunk (codex: tokens; claude_code: cost/turns/duration).
         # Stamped onto the final AssistantResponse; re-tokenizing message history undercounts internal tool turns.
         result_meta: dict = {}
+        # Whole-call usage accumulator: never cleared (unlike result_meta,
+        # which resets on every flush so each AssistantResponse only carries
+        # its own window's metadata). Codex splits one run() call into
+        # multiple flush windows (tool-response flushes between "result"
+        # chunks) and emits marginal per-window deltas, so the terminal
+        # API_POST_CALL must sum every window's usage, not just the last
+        # one. _accumulate_result_meta's "usage" branch always adds
+        # (never overwrites), so feeding it every incoming chunk here, in
+        # parallel with result_meta, sums exactly once per chunk — no
+        # double-count regardless of how many flushes land in between.
+        _total_usage_meta: dict = {}
+        last_usage: dict | None = None
 
         async def _flush_response() -> AssistantResponse | None:
             if not text_parts:
@@ -527,12 +541,16 @@ async def run(
 
         kw["stream"] = True
         _api_call_holder: list = []
+        await emit_api_pre_call(branch, model)
+        _api_call_started = True
         stream_gen = _stream_with_liveness(
             model, kw, _stream_deadline, _liveness_timeout, _api_call_holder
         )
         try:
             try:
                 async for chunk in stream_gen:
+                    if branch._hooks is not None:
+                        await emit_api_stream_chunk(branch, model, chunk)
                     match chunk.type:
                         case "system":
                             if sid := chunk.metadata.get("session_id"):
@@ -591,6 +609,9 @@ async def run(
                         case "result":
                             if chunk.metadata:
                                 _accumulate_result_meta(result_meta, chunk.metadata)
+                                _accumulate_result_meta(_total_usage_meta, chunk.metadata)
+                                if isinstance(_total_usage_meta.get("usage"), dict):
+                                    last_usage = dict(_total_usage_meta["usage"])
 
                         case "error":
                             # A CLI provider marks a resumed-session end-of-stream by
@@ -709,6 +730,16 @@ async def run(
     finally:
         # _terminal_emitted guards against double emission on Python <3.11 where finally also runs after GeneratorExit.
         await branch.drain_signals()
+
+        if _api_call_started:
+            _terminal_api_call = _api_call_holder[0] if _api_call_holder else None
+            await emit_api_post_call(
+                branch,
+                branch.chat_model,
+                _terminal_api_call,
+                error=_run_exc,
+                tokens=last_usage,
+            )
 
         if has_observer and not _terminal_emitted:
             _terminal_emitted = True
