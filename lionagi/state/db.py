@@ -2022,9 +2022,18 @@ class StateDB:
         override: bool = False,
         override_actor: str | None = None,
         override_justification: str | None = None,
+        set_if_null: frozenset[str] = frozenset(),
         **fields: Any,
     ) -> None:
-        """Update session fields; route status changes through update_status()."""
+        """Update session fields; route status changes through update_status().
+
+        Fields named in *set_if_null* are written as ``COALESCE(col, :col)``
+        instead of a plain assignment: the write only takes effect while the
+        column is still NULL, so a concurrent duplicate call converges onto
+        whichever value landed first instead of overwriting it. This is a
+        single atomic UPDATE, not a read-then-write, so it stays correct
+        under concurrent callers.
+        """
         _validate_columns(fields, _SESSION_COLUMNS)
         if "invocation_kind" in fields:
             _validate_enum(
@@ -2060,7 +2069,10 @@ class StateDB:
 
         if fields:
             fields["updated_at"] = time.time()
-            sets = ", ".join(f'"{k}" = :{k}' for k in fields)
+            sets = ", ".join(
+                f'"{k}" = COALESCE("{k}", :{k})' if k in set_if_null else f'"{k}" = :{k}'
+                for k in fields
+            )
             params = dict(fields)
             params["_id"] = session_id
             async with self._tx() as conn:
@@ -3017,7 +3029,7 @@ class StateDB:
             params["_id"] = run_id
             stmt = text(f"UPDATE schedule_runs SET {sets} WHERE id = :_id")  # noqa: S608
             if "resume_packet" in fields:
-                stmt = stmt.bindparams(bindparam("resume_packet", type_=JSON))
+                stmt = stmt.bindparams(bindparam("resume_packet", type_=JSON(none_as_null=True)))
             async with self._tx() as conn:
                 await conn.execute(stmt, params)
 
