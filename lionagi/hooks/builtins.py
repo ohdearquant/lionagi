@@ -54,27 +54,29 @@ async def persist_session_start(
     current_status = row.get("status")
     if current_status in SESSION_TERMINAL_STATUSES:
         return
-    already_started = row.get("status_reason_code") == RunReasons.STARTED_OK
-    if already_started and row.get("started_at") is not None:
-        # A session can be created with status="running" directly (its
-        # initial-state history row already carries STARTED_OK before this
-        # hook ever fires), so status_reason_code alone can't tell a genuine
-        # first SESSION_START from a duplicate re-emit. started_at is only
-        # ever set by a completed first write below, so its presence is the
-        # true "already started" signal -- a no-op here, matching a second
-        # SESSION_START for an already-STARTED_OK session.
-        return
-    fields = {
+
+    # A session can be created with status="running" directly (its
+    # initial-state history row already carries STARTED_OK before this hook
+    # ever fires), and the CLI can pre-stamp started_at before SESSION_START
+    # is emitted -- neither signal is owned by this handler, so neither can
+    # tell a genuine first emission from a duplicate. Write idempotently
+    # instead of classifying: provenance fields are safe to re-write every
+    # time (a duplicate carries the same values), an omitted field must
+    # leave the stored one alone, and started_at is "first writer wins" via
+    # a single atomic COALESCE update rather than a read-then-write.
+    provenance = {
         "model": model,
         "provider": provider,
         "effort": effort,
         "agent_name": agent_name,
         "agent_hash": agent_hash,
         "invocation_id": invocation_id,
-        "started_at": time.time(),
     }
-    if already_started:
-        await db.update_session(session_id, **fields)
+    fields = {k: v for k, v in provenance.items() if v is not None}
+    fields["started_at"] = time.time()
+
+    if row.get("status_reason_code") == RunReasons.STARTED_OK:
+        await db.update_session(session_id, set_if_null=frozenset({"started_at"}), **fields)
         return
     await db.update_session(
         session_id,
@@ -82,6 +84,7 @@ async def persist_session_start(
         # would swallow the transition and silently drop provenance fields.
         reason_code=RunReasons.STARTED_OK,
         status="running",
+        set_if_null=frozenset({"started_at"}),
         **fields,
     )
 
