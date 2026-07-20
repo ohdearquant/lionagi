@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -52,7 +53,7 @@ class DedupChecked(EngineEvent, ChainEvent):
     """Novelty verdict on a finding against the target repo's issue tracker; runs before extraction when a dedup repo is configured."""
 
     finding_ref: str = Field(description="Id of the finding this verdict covers.")
-    verdict: str = Field(
+    verdict: Literal["new", "duplicate", "extends"] = Field(
         description=(
             "new (no issue covers the mechanism) | duplicate (an issue covers this "
             "exact mechanism; closed means already fixed) | extends (a related issue "
@@ -577,6 +578,49 @@ class HypothesisRun(ChainRun):
         return {"chains": str(chains_path), "report": str(report_path)}
 
 
+def _experiment_question_gen(run: HypothesisRun, x: ExperimentDesigned) -> int:
+    """The generation of the question behind an experiment (via its hypothesis), 0 if untraceable."""
+    h = run.find(x.hypothesis_ref)
+    q = run.find(h.question_ref) if isinstance(h, HypothesisFormed) else None
+    return q.gen if isinstance(q, QuestionRaised) else 0
+
+
+def _result_question_gen(run: HypothesisRun, r: ResultRecorded) -> int:
+    """The generation of the question behind a result (via experiment -> hypothesis), 0 if untraceable."""
+    x = run.find(r.experiment_ref)
+    return _experiment_question_gen(run, x) if isinstance(x, ExperimentDesigned) else 0
+
+
+def _derive_finding_gen(run: HypothesisRun, parent_ref: str) -> int:
+    """The generation a FindingPosted must carry, derived from its indexed
+    parent rather than trusted from the emission — closes the bypass where an
+    omitted, stale, or forged ``gen`` field defeats the recursion bound. Seeds
+    (``parent_ref`` empty) and findings raised off validation (``parent_ref``
+    an ExperimentDesigned id) are the only two legitimate routes."""
+    if not parent_ref:
+        return 0
+    parent = run.find(parent_ref)
+    if isinstance(parent, ExperimentDesigned):
+        return _experiment_question_gen(run, parent) + 1
+    return 0
+
+
+def _derive_question_gen(run: HypothesisRun, parent_ref: str) -> int:
+    """The generation a QuestionRaised must carry, derived from its indexed
+    parent rather than trusted from the emission. A question raised directly
+    off a finding (extraction) shares that finding's cycle; a question raised
+    off another question (research) or off a result (validate -> conclude)
+    starts the next cycle."""
+    parent = run.find(parent_ref)
+    if isinstance(parent, FindingPosted):
+        return parent.gen
+    if isinstance(parent, QuestionRaised):
+        return parent.gen + 1
+    if isinstance(parent, ResultRecorded):
+        return _result_question_gen(run, parent) + 1
+    return 0
+
+
 # --- Engine ---
 
 
@@ -795,13 +839,19 @@ class HypothesisEngine(Engine):
     # -- reactions ------------------------------------------------------------
 
     def _on_finding(self, run: HypothesisRun, f: FindingPosted) -> None:
+        # Never trust the emitted gen — derive it from the indexed parent so
+        # an omitted, stale, or forged value cannot bypass the recursion bound.
+        f.gen = _derive_finding_gen(run, f.parent_ref)
         if f.gen > self.max_depth:
             run.notify("cycle_capped", eid=f.eid, gen=f.gen)
             return
-        if run.seen(f"f:{f.description}"):
+        if run.seen(f"f:{f.description}|{f.evidence}|{f.source}|{f.parent_ref}"):
             return
         if self.dedup_repo:
-            run.spawn(self._guard(run, "dedup", self._dedup, f))
+            # A dedup leg that raises (agent construction, timeout, ...) must
+            # not drop the finding — release it to extraction the same way a
+            # missing-but-not-errored verdict does.
+            run.spawn(self._guard(run, "dedup", self._dedup, f, on_error=self._dedup_release))
         else:
             run.spawn(self._guard(run, "extract", self._extract, f))
 
@@ -824,6 +874,8 @@ class HypothesisEngine(Engine):
         run.spawn(self._guard(run, "extract", self._extract, f))
 
     def _on_question(self, run: HypothesisRun, q: QuestionRaised) -> None:
+        # Same untrusted-gen closure as _on_finding.
+        q.gen = _derive_question_gen(run, q.parent_ref)
         if q.gen > self.max_depth:
             run.notify("cycle_capped", eid=q.eid, gen=q.gen)
             return
@@ -853,8 +905,21 @@ class HypothesisEngine(Engine):
 
     # -- stages ---------------------------------------------------------------
 
-    async def _guard(self, run: HypothesisRun, stage: str, fn: Any, event: Any) -> None:
-        """Run a stage function, logging and notifying on failure so a stage error never kills the pipeline."""
+    async def _guard(
+        self,
+        run: HypothesisRun,
+        stage: str,
+        fn: Any,
+        event: Any,
+        *,
+        on_error: Callable[[HypothesisRun, Any], None] | None = None,
+    ) -> None:
+        """Run a stage function, logging and notifying on failure so a stage error never kills the pipeline.
+
+        ``on_error`` runs after the failure telemetry when set — used by
+        stages (dedup) whose failure must still release the event to its
+        fallback path rather than just being logged.
+        """
         try:
             await fn(run, event)
         except Exception as exc:
@@ -863,6 +928,8 @@ class HypothesisEngine(Engine):
             # where every stage died is surfaced as failed, not green.
             run.notify("agent_error", agent=stage, error=str(exc))
             run.notify("stage_error", stage=stage, error=str(exc))
+            if on_error is not None:
+                on_error(run, event)
 
     async def _dedup(self, run: HypothesisRun, f: FindingPosted) -> None:
         # The novelty gate carries the recursive-cycle judge so junk findings
@@ -888,14 +955,22 @@ class HypothesisEngine(Engine):
                 arrived=lambda: any(d.finding_ref == f.eid for d in run.events_of(DedupChecked)),
                 emits=emits,
                 retries=self.repair_retries,
+                # The dedup instruction requires actually running gh queries — a
+                # non-CLI (API) model only gets tool-calling when actions=True.
+                actions=bool(self.dedup_tools),
             )
         if not any(d.finding_ref == f.eid for d in run.events_of(DedupChecked)):
-            # Fail open: an unanswered novelty check must not silently drop the
-            # finding — a possible duplicate in the queue beats a lost finding.
-            run.notify("dedup_missing", eid=f.eid)
-            if f.eid not in run.dedup_cleared:
-                run.dedup_cleared.add(f.eid)
-                run.spawn(self._guard(run, "extract", self._extract, f))
+            self._dedup_release(run, f)
+
+    def _dedup_release(self, run: HypothesisRun, f: FindingPosted) -> None:
+        """Fail-open path shared by a missing dedup verdict and a dedup stage
+        error/timeout: an unanswered novelty check must not silently drop the
+        finding — a possible duplicate in the queue beats a lost finding."""
+        if f.eid in run.dedup_cleared:
+            return
+        run.dedup_cleared.add(f.eid)
+        run.notify("dedup_missing", eid=f.eid)
+        run.spawn(self._guard(run, "extract", self._extract, f))
 
     async def _extract(self, run: HypothesisRun, f: FindingPosted) -> None:
         # Seeds (gen 0) are caller-provided; agent-sourced findings (gen > 0)
@@ -1015,6 +1090,7 @@ class HypothesisEngine(Engine):
                 ),
                 emits=(ResultRecorded,),
                 retries=self.repair_retries,
+                actions=bool(self.validate_tools),
             )
 
     async def _conclude(self, run: HypothesisRun, r: ResultRecorded) -> None:

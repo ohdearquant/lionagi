@@ -78,12 +78,21 @@ async def test_finding_spawns_extraction_and_dedups():
 
 @pytest.mark.asyncio
 async def test_cycle_cap_blocks_question_expansion():
+    # gen is derived from the indexed parent, not trusted from the emission
+    # (see test_hypothesis_routing.py's recursion-bound tests) — so the boundary
+    # here is set up via a real parent chain, not a raw gen= on the child.
     eng = HypothesisEngine(max_depth=2)
     run = eng.new_run()
     calls = _mute(eng, "research")
     _wire(eng, run)
-    await run.emit(QuestionRaised(area="a", what_is_unknown="in budget?", gen=2))
-    await run.emit(QuestionRaised(area="a", what_is_unknown="over budget?", gen=3))
+    parent_at_1 = run.collect(QuestionRaised(area="a", what_is_unknown="parent at gen 1", gen=1))
+    parent_at_2 = run.collect(QuestionRaised(area="a", what_is_unknown="parent at gen 2", gen=2))
+    await run.emit(
+        QuestionRaised(area="a", what_is_unknown="in budget?", parent_ref=parent_at_1.eid)
+    )
+    await run.emit(
+        QuestionRaised(area="a", what_is_unknown="over budget?", parent_ref=parent_at_2.eid)
+    )
     await run.wait_quiescence()
     assert [e.what_is_unknown for _, e in calls] == ["in budget?"]
 
