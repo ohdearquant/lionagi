@@ -25,7 +25,7 @@ worker.
 | `li monitor run ID...` | Wait for scheduled runs and their chains; optionally keep watching |
 | `li agent status [ID]` | Read stable session/invocation status, optionally as JSON |
 | `li o ctl {status,pause,resume,msg}` | Inspect or steer a live flow by ID |
-| `li kill ID` | Terminate one running entity or sweep stale processes; play kills also reap the linked worker chain |
+| `li kill ID` | Terminate one running entity or sweep stale processes; play kills also reap the linked worker chain; a show kill does not reach its plays' workers ([details](#li-kill)) |
 
 ### Reuse, coordination, and operation
 
@@ -539,6 +539,49 @@ unique prefixes. `li monitor run` follows a watched run's scheduler chain by
 default; `--no-chain` disables that behavior. After the initial set drains,
 `--follow` keeps the monitor open and prints newly created schedule runs. The
 initial wait defaults to a bounded 900 seconds.
+
+---
+
+## `li kill`
+
+Terminate a running entity by id, or sweep stale entities whose OS process is
+already dead. Source: `cli/kill.py` (`add_kill_subparser`).
+
+```bash
+li kill abc123                        # kill by id prefix
+li kill <play-id>                     # also reaps the play's linked worker session
+li kill abc123 --reason 'stuck'
+li kill abc123 --recursive            # kill + direct children (session -> invocation)
+li kill --all-stale                   # sweep dead-PID sessions/invocations
+li kill --all-stale --threshold 3600  # only rows older than 1h
+li kill --all-stale --dry-run
+```
+
+| Arg/Flag | Default | Notes |
+|----------|---------|-------|
+| `id` | none | Entity ID or prefix (≥6 chars): run/session/invocation/play/show |
+| `--reason` | `""` | Recorded in `status_transitions` |
+| `--recursive` | false | Also kill direct child entities |
+| `--all-stale` | false | Sweep stale sessions/invocations (and their child-derived plays/shows) |
+| `--threshold SECS` | 3600 | Only sweep entities started more than this long ago |
+| `--dry-run` | false | Only valid with `--all-stale`; prints without cancelling |
+| `--grace SECS` | 5.0 | Wait after SIGTERM before escalating to SIGKILL |
+
+**`--recursive` scope boundary.** Recursion only reaches PID-bearing workers,
+and it stops at the play level:
+
+- Killing a **play** always reaps its linked worker session (and that
+  session's invocation), with or without `--recursive`.
+- Killing a **session** with `--recursive` also cancels its linked invocation.
+- Killing a **show** — with or without `--recursive` — only aborts the show
+  row and cancels its own running plays' status. It does **not** reach those
+  plays' worker sessions or invocations; the underlying processes keep
+  running.
+
+To stop everything under a show, kill the play id or session id directly
+(`li monitor <show-id>` lists its plays). `--all-stale` covers the abandoned
+case: once a play's worker session is stale, sweeping cancels the play and
+show rows too.
 
 ---
 

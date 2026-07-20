@@ -679,11 +679,19 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
             "entities whose underlying OS process is dead.\n\n"
             "The entity's status is set to 'cancelled' (sessions/invocations) "
             "or 'aborted' (shows) with reason tracking per ADR-0028.\n\n"
+            "Recursion boundary: --recursive walks play -> session -> invocation "
+            "and always reaches the PID-bearing workers. Killing a SHOW only "
+            "aborts the show row and its running plays (status-only) -- it does "
+            "NOT reap those plays' worker sessions/invocations, even with "
+            "--recursive. To stop a show's workers, kill the play id or session "
+            "id directly.\n\n"
             "Examples:\n"
             "  li kill abc123                        # kill by id prefix\n"
             "  li kill <play-id>                     # also reap linked workers\n"
             "  li kill abc123 --reason 'stuck'\n"
             "  li kill abc123 --recursive            # kill + direct children\n"
+            "  li kill <show-id> --recursive         # aborts show + plays only;\n"
+            "                                         # plays' workers keep running\n"
             "  li kill --all-stale                   # sweep dead-PID rows\n"
             "  li kill --all-stale --threshold 3600  # only rows older than 1h\n"
             "  li kill --all-stale --dry-run\n"
@@ -709,7 +717,10 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help=(
             "Also kill direct child entities (e.g. invocations spawned by a session). "
-            "Play kills always reap their linked workers."
+            "Play kills always reap their linked workers. Does NOT extend to shows: "
+            "killing a show --recursive aborts the show and its plays (status-only) "
+            "but leaves the plays' worker sessions/invocations running -- kill the "
+            "play or session id directly to stop those."
         ),
     )
     kill.add_argument(
