@@ -800,6 +800,79 @@ async def test_resume_packet_null_roundtrips_as_none():
     await state.close()
 
 
+async def test_clearing_resume_packet_stores_sql_null():
+    """update_schedule_run(resume_packet=None) must write a real SQL NULL,
+    not the JSON literal ``null`` -- the read mapper decodes both forms to
+    Python None, which would hide a regression here, so this asserts against
+    the raw stored column via ``IS NULL``/``IS NOT NULL``."""
+    from sqlalchemy import text
+
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    await state.create_schedule(
+        {
+            "id": "sched-resume-clear",
+            "name": "resume-test-clear",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    await state.create_schedule_run(
+        {
+            "id": "run-resume-clear",
+            "schedule_id": "sched-resume-clear",
+            "trigger_context": {},
+            "action_kind": "agent",
+            "action_args": {},
+            "status": "running",
+            "fired_at": 1.0,
+        }
+    )
+
+    await state.update_schedule_run(
+        "run-resume-clear",
+        resume_packet={"lion_class": "x", "id": "elem-1"},
+    )
+
+    async with state._engine.connect() as conn:
+        not_null_row = (
+            await conn.execute(
+                text(
+                    "SELECT resume_packet FROM schedule_runs "
+                    "WHERE id = :id AND resume_packet IS NOT NULL"
+                ),
+                {"id": "run-resume-clear"},
+            )
+        ).first()
+    assert not_null_row is not None
+
+    await state.update_schedule_run("run-resume-clear", resume_packet=None)
+
+    async with state._engine.connect() as conn:
+        null_row = (
+            await conn.execute(
+                text(
+                    "SELECT resume_packet FROM schedule_runs "
+                    "WHERE id = :id AND resume_packet IS NULL"
+                ),
+                {"id": "run-resume-clear"},
+            )
+        ).first()
+    assert null_row is not None, (
+        "resume_packet should be SQL NULL after clearing, not the JSON literal 'null'"
+    )
+
+    fetched = await state.get_schedule_run("run-resume-clear")
+    assert fetched is not None
+    assert fetched["resume_packet"] is None
+
+    await state.close()
+
+
 async def test_update_schedule_run_rejects_unknown_field():
     """update_schedule_run's field allowlist still rejects unrecognized
     fields — resume_packet joining the allowed set must not widen it."""

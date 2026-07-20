@@ -3017,7 +3017,7 @@ class StateDB:
             params["_id"] = run_id
             stmt = text(f"UPDATE schedule_runs SET {sets} WHERE id = :_id")  # noqa: S608
             if "resume_packet" in fields:
-                stmt = stmt.bindparams(bindparam("resume_packet", type_=JSON))
+                stmt = stmt.bindparams(bindparam("resume_packet", type_=JSON(none_as_null=True)))
             async with self._tx() as conn:
                 await conn.execute(stmt, params)
 
