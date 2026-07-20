@@ -66,25 +66,19 @@ def test_import_claude_writes_hooks_external_block(capsys, tmp_path):
 
 
 def test_import_creates_lionagi_dir_visible_to_same_process_discovery(tmp_path):
-    """`li hooks import` is the one production call site that creates `.lionagi/`
-    at runtime; find_lionagi_dirs() is memoized per (cwd, home) for the process
-    lifetime, so a caller that primed the cache before the directory existed
-    must see the new directory afterward, not the stale empty result."""
+    """`li hooks import` creates `.lionagi/` at runtime; `find_lionagi_dirs()`
+    is uncached, so a call before the directory exists and one after must
+    each reflect current topology."""
     import lionagi._paths as paths
 
-    paths.clear_lionagi_dirs_cache()
-    try:
-        # Prime the cache for this (cwd, home) before `.lionagi/` exists.
-        assert paths.find_lionagi_dirs() == []
+    assert paths.find_lionagi_dirs() == []
 
-        _write_claude_settings(tmp_path, CLAUDE_SETTINGS)
-        code = cli_main(["hooks", "import", "claude", "--cwd", str(tmp_path)])
-        assert code == 0
+    _write_claude_settings(tmp_path, CLAUDE_SETTINGS)
+    code = cli_main(["hooks", "import", "claude", "--cwd", str(tmp_path)])
+    assert code == 0
 
-        assert (tmp_path / ".lionagi").is_dir()
-        assert paths.find_lionagi_dirs() == [tmp_path / ".lionagi"]
-    finally:
-        paths.clear_lionagi_dirs_cache()
+    assert (tmp_path / ".lionagi").is_dir()
+    assert paths.find_lionagi_dirs() == [tmp_path / ".lionagi"]
 
 
 def test_import_claude_rejects_unmappable_event(capsys, tmp_path):
