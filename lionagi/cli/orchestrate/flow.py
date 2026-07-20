@@ -1040,6 +1040,11 @@ async def _execute_dag(
             messenger_bound=dag_state.messenger_bound,
             max_rounds=team_max_rounds,
             exchange=getattr(env, "exchange", None),
+            # env.team_data is the snapshot `_load_team`/`_create_fanout_team`
+            # returned when this run attached/created the team, before this
+            # run posted anything — its message count is exactly this run's
+            # history boundary (0 for a freshly created team).
+            message_boundary=len(env.team_data.get("messages", [])),
         )
         env.messenger.on("done", _team_coordinator.on_done)
         env.messenger.on("finished", _team_coordinator.on_finished)

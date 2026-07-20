@@ -182,6 +182,20 @@ the coordinator to do about it: no unread `kind="message"` mail sitting in
 an **idle** worker's inbox, and either the round budget is exhausted or the
 caller isn't asking for one more round anyway.
 
+`history_boundary` scopes the active/idle/retired classification to the
+current run generation: `--team-attach` reuses one team file (and often the
+same role-derived worker names) across runs, so a prior run's `done`/
+`finished`/`wakeup` signals sit in the same message list a fresh run reads.
+Without a boundary those signals would classify this run's workers as
+already idle or retired before either has posted anything of its own —
+`TeamLifecycleCoordinator` snapshots `len(messages)` at attach time
+(`message_boundary`, wired through `make_team_lifecycle_coordinator`) and
+only messages at or after it count toward active/idle/retired. Content
+(`kind="message"`) mail is deliberately exempt from the boundary — the
+pending-mail scan always looks at the full history, so `--team-attach`'s
+"prior content stays visible" contract holds even though prior *lifecycle*
+signals no longer leak into the new run.
+
 ## `_context_from.py` — context-ref resolution and distillation
 
 `li agent --context-from <ref>`: resolve prior-run refs into a bounded context block.
