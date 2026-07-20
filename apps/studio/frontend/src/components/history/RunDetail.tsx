@@ -73,6 +73,15 @@ export function shouldRenderAuthoredGraph(
   return !(isEdgeless && opGraph.edges.length > 0);
 }
 
+// Raw SSE payloads arrive as an untyped Record — this is the boundary where
+// an event is asserted to be a SessionMessage. SessionMessage.timestamp is a
+// required number (the server column is REAL NOT NULL), so a malformed or
+// future event carrying a non-numeric timestamp must be rejected here rather
+// than let the cast manufacture a value the type promises can't happen.
+export function isSessionMessageEvent(event: Record<string, unknown>): boolean {
+  return !!(event.id && event.role && event.branch_id && typeof event.timestamp === "number");
+}
+
 export function appendStreamedMessage(
   session: SessionDetail,
   branchId: string,
@@ -920,7 +929,7 @@ export default function RunDetail({ id }: RunDetailProps) {
         return;
       }
       setLive(true);
-      if (event.id && event.role && event.branch_id) {
+      if (isSessionMessageEvent(event)) {
         const msg = event as unknown as SessionMessage;
         setSession((prev) => {
           if (!prev) return prev;

@@ -433,7 +433,7 @@ def _branch_message_stats(
         arguments = content.get("arguments")
         arguments = arguments if isinstance(arguments, dict) else {}
         tool_name = str(function).lower().replace("-", "_").rsplit("__", 1)[-1].rsplit(".", 1)[-1]
-        if tool_name in {
+        if not tool_name or tool_name in {
             "read",
             "read_file",
             "write",

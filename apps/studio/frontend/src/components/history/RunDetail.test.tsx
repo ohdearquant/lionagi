@@ -503,6 +503,24 @@ describe("history/RunDetail.tsx — live branch aggregates", () => {
       "terminal-tail",
     ]);
   });
+
+  it("rejects a raw SSE event whose timestamp is not a number before it is cast to SessionMessage", async () => {
+    const { isSessionMessageEvent } = await import("./RunDetail");
+
+    const malformed: Record<string, unknown> = {
+      id: "streamed-later",
+      role: "assistant",
+      branch_id: "branch-1",
+      content: { assistant_response: "live" },
+      sender: "worker",
+      timestamp: null,
+      lion_class: "AssistantResponse",
+    };
+    const wellFormed: Record<string, unknown> = { ...malformed, timestamp: 50 };
+
+    expect(isSessionMessageEvent(malformed)).toBe(false);
+    expect(isSessionMessageEvent(wellFormed)).toBe(true);
+  });
 });
 
 describe("history/RunDetail.tsx — segmented branch totals", () => {

@@ -1106,6 +1106,32 @@ def test_branch_file_stats_only_accept_structured_file_tool_paths():
     assert stats["files"] == ["/repo/Makefile", "/repo/src/main.py"]
 
 
+def test_branch_file_stats_capture_empty_or_missing_function_name():
+    from lionagi.studio.services.sessions import _branch_message_stats
+
+    action_messages = [
+        {
+            "id": "empty-fn",
+            "lion_class": "ActionRequest",
+            "content": {"function": "", "arguments": {"file_path": "/repo/src/empty.py"}},
+        },
+        {
+            "id": "missing-fn",
+            "lion_class": "ActionRequest",
+            "content": {"arguments": {"path": "/repo/src/missing.py"}},
+        },
+        {
+            "id": "bash",
+            "lion_class": "ActionRequest",
+            "content": {"function": "Bash", "arguments": {"path": "//"}},
+        },
+    ]
+
+    stats = _branch_message_stats(3, {"action": 3}, action_messages)
+
+    assert stats["files"] == ["/repo/src/empty.py", "/repo/src/missing.py"]
+
+
 async def test_get_session_message_count_is_db_aggregate_not_progression_length(
     patched_sessions_db,
 ):
