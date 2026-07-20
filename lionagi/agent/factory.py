@@ -73,6 +73,7 @@ async def create_agent(
         from lionagi.service.providers import (
             CLI_PROVIDERS,
             PROVIDER_EFFORT_KWARG,
+            PROVIDER_REPO_KWARG,
             PROVIDER_YOLO_KWARGS,
             parse_model_spec,
         )
@@ -100,12 +101,15 @@ async def create_agent(
         if provider in CLI_PROVIDERS:
             extra["api_key"] = "dummy"
 
-        # Codex executes `-C <repo>`; the request model's repo defaults to the
-        # calling process cwd, so an agent assigned a workspace via spec.cwd
-        # would otherwise run against whatever directory the host process
-        # happens to be in.
-        if provider == "codex" and spec.cwd:
-            extra["repo"] = spec.cwd
+        # CLI providers execute as a subprocess against a working directory;
+        # each request model's repo/workspace field defaults to the calling
+        # process cwd, so an agent assigned a workspace via spec.cwd would
+        # otherwise run against whatever directory the host process happens
+        # to be in.
+        if spec.cwd:
+            repo_kwarg = PROVIDER_REPO_KWARG.get(provider)
+            if repo_kwarg:
+                extra[repo_kwarg] = spec.cwd
 
         chat_model = iModel(
             provider=provider,

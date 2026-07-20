@@ -15,6 +15,7 @@ __all__ = (
     "PROVIDER_BYPASS_KWARGS",
     "PROVIDER_EFFORT_KWARG",
     "PROVIDER_FAST_KWARGS",
+    "PROVIDER_REPO_KWARG",
     "PROVIDER_TO_ALIAS",
     "PROVIDER_YOLO_KWARGS",
     "PROVIDERS_EFFORT_VIA_MODEL_NAME",
@@ -135,6 +136,13 @@ PROVIDER_EFFORT_KWARG: dict[str, str] = {
     "codex": "reasoning_effort",
     "pi": "thinking",
 }
+
+# Every CLI provider's request model runs its subprocess against a `repo`
+# field that defaults to the calling process's cwd (CodexCodeRequest,
+# ClaudeCodeRequest, GeminiCodeRequest, PiCodeRequest all declare
+# `repo: Path = Field(default_factory=Path.cwd, exclude=True)`), so an agent
+# assigned a workspace needs that value forwarded explicitly.
+PROVIDER_REPO_KWARG: dict[str, str] = {p: "repo" for p in CLI_PROVIDERS}
 
 # agy-backed aliases fold effort into the resolved --model name via resolve_agy_model
 # instead of a kwarg — classified separately from PROVIDER_EFFORT_KWARG below.
