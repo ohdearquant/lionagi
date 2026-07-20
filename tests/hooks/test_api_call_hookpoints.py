@@ -650,3 +650,133 @@ async def test_api_stream_chunk_preserves_legitimate_chunk_type():
     signals = observer.by_type(HookSignal)
     payload = _sanitize_signal_payload(signals[0])
     assert payload["kwargs"]["chunk_type"] == "content_block_delta"
+
+
+# ── fix-forward: emit-site numeric / logging / credential-shape hardening ────
+
+
+def test_typed_usage_drops_non_finite_counts_without_raising():
+    """A provider-sent NaN/inf token count must not abort the call. ``_num``
+    passed the ``isinstance(int | float)`` gate on a non-finite float and then
+    ``int(nan)``/``int(inf)`` raised on the unguarded success-path emit; the
+    value is now dropped as if absent, its synonym key still consulted."""
+    from lionagi.operations._api_hooks import _typed_usage
+
+    assert _typed_usage({"input_tokens": float("nan"), "output_tokens": 3}) == {
+        "input_tokens": 0,
+        "output_tokens": 3,
+    }
+    assert _typed_usage({"input_tokens": 5, "output_tokens": float("inf")}) == {
+        "input_tokens": 5,
+        "output_tokens": 0,
+    }
+    # A non-finite value under a primary key falls through to its synonym.
+    assert _typed_usage({"input_tokens": float("nan"), "prompt_tokens": 7}) == {
+        "input_tokens": 7,
+        "output_tokens": 0,
+    }
+    # All-non-finite reduces to the no-usage contract (None), never a raise.
+    assert _typed_usage({"input_tokens": float("nan"), "output_tokens": float("-inf")}) is None
+
+
+async def test_chat_success_survives_non_finite_provider_usage():
+    """End-to-end: a successful call whose usage carries a non-finite count
+    must still emit, not abort on the post-call path."""
+    import types as _types
+
+    from lionagi.hooks.bus import HookSignal
+    from lionagi.operations._api_hooks import emit_api_post_call
+    from lionagi.session.observer import SessionObserver, _sanitize_signal_payload
+
+    branch = Branch()
+    observer = SessionObserver()
+    branch._hooks = HookBus(observer=observer)
+    imodel = _types.SimpleNamespace(
+        model_name="gpt-4.1-mini",
+        endpoint=_types.SimpleNamespace(config=_types.SimpleNamespace(provider="openai")),
+    )
+    api_call = _types.SimpleNamespace(
+        status=_types.SimpleNamespace(value="completed"),
+        execution=_types.SimpleNamespace(duration=0.1, error=None),
+        response=None,
+    )
+    # Pre-fix: int(nan) raised out of the unguarded emit and aborted a success.
+    await emit_api_post_call(
+        branch,
+        imodel,
+        api_call,
+        tokens={"input_tokens": float("nan"), "output_tokens": 4},
+    )
+    payload = _sanitize_signal_payload(observer.by_type(HookSignal)[0])
+    assert payload["kwargs"]["tokens"] == {"input_tokens": 0, "output_tokens": 4}
+    assert payload["kwargs"]["status"] == "completed"
+
+
+async def test_log_api_metrics_reports_actual_token_counts(caplog):
+    """The built-in api-metrics logger read ``tokens.get("total")`` -- a key
+    ``_typed_usage`` never emits -- so every successful call logged
+    ``tokens=None``. It now surfaces the real input/output counts."""
+    import logging
+
+    from lionagi.hooks.builtins import log_api_metrics
+
+    with caplog.at_level(logging.INFO):
+        await log_api_metrics(
+            model="gpt-4.1-mini",
+            provider="openai",
+            tokens={"input_tokens": 5, "output_tokens": 3},
+            latency_ms=12.0,
+        )
+    msg = caplog.records[-1].getMessage()
+    assert "input_tokens=5" in msg
+    assert "output_tokens=3" in msg
+    assert "tokens=None" not in msg  # pre-fix leaked exactly this
+
+
+def test_safe_identifier_redacts_allowlist_passing_credential():
+    """A credential can satisfy the identifier allowlist (API keys are
+    ``[A-Za-z0-9_-]``), so ``_safe_identifier`` denies known secret prefixes
+    even when the value is otherwise well-formed. Legitimate model/provider
+    identifiers are untouched."""
+    from lionagi.operations._api_hooks import _safe_identifier
+
+    # All satisfy _IDENTIFIER_RE yet are credential-shaped -- pre-fix they
+    # passed through verbatim.
+    assert _safe_identifier("sk-proj-abc123DEF456ghi789") == "unknown"
+    assert _safe_identifier("ghp_abcdef0123456789ABCDEF") == "unknown"
+    assert _safe_identifier("xoxb-1234-5678-abcdefABCDEF") == "unknown"
+    # Legitimate identifiers survive.
+    assert _safe_identifier("gpt-4.1-mini") == "gpt-4.1-mini"
+    assert _safe_identifier("claude-opus-4-8") == "claude-opus-4-8"
+    assert _safe_identifier("openai") == "openai"
+    assert _safe_identifier("anthropic") == "anthropic"
+
+
+async def test_api_post_call_redacts_credential_shaped_model_name():
+    """End-to-end: a credential-shaped model name that satisfies the allowlist
+    must not reach telemetry verbatim."""
+    import types as _types
+
+    from lionagi.hooks.bus import HookSignal
+    from lionagi.operations._api_hooks import emit_api_post_call
+    from lionagi.session.observer import SessionObserver, _sanitize_signal_payload
+
+    cred = "sk-proj-abc123DEF456ghi789jkl012"
+    branch = Branch()
+    observer = SessionObserver()
+    branch._hooks = HookBus(observer=observer)
+    imodel = _types.SimpleNamespace(
+        model_name=cred,
+        endpoint=_types.SimpleNamespace(config=_types.SimpleNamespace(provider="openai")),
+    )
+    api_call = _types.SimpleNamespace(
+        status=_types.SimpleNamespace(value="completed"),
+        execution=_types.SimpleNamespace(duration=0.1, error=None),
+        response=None,
+    )
+    await emit_api_post_call(
+        branch, imodel, api_call, tokens={"input_tokens": 1, "output_tokens": 1}
+    )
+    payload = _sanitize_signal_payload(observer.by_type(HookSignal)[0])
+    assert cred not in json_dumps(payload)
+    assert payload["kwargs"]["model"] == "unknown"
