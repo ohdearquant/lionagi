@@ -18,6 +18,7 @@ __all__ = (
     "ExecutionError",
     "ConfigurationError",
     "TimeoutError",
+    "EmptyOutgoingContentError",
     "ItemNotFoundError",
     "ItemExistsError",
 )
