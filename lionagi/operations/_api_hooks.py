@@ -223,7 +223,7 @@ async def emit_api_stream_chunk(branch: Branch, imodel: Any, chunk: Any) -> None
     from lionagi.hooks.bus import HookPoint
 
     model, provider = _model_and_provider(imodel)
-    chunk_type = getattr(chunk, "type", None) or type(chunk).__name__
+    chunk_type = _safe_identifier(getattr(chunk, "type", None) or type(chunk).__name__)
     await hooks.emit(
         HookPoint.API_STREAM_CHUNK,
         session_id=str(branch._owning_session_id or branch.id),

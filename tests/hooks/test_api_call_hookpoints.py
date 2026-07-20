@@ -586,3 +586,67 @@ async def test_run_single_result_chunk_usage_unaffected_by_accumulator():
 
     post = calls[HookPoint.API_POST_CALL][0]
     assert post["tokens"] == {"input_tokens": 5, "output_tokens": 3}
+
+
+# ── stream chunk_type redaction (issue #1965 fix leg r4) ────────────────────
+
+
+async def test_api_stream_chunk_scrubs_secret_shaped_marker_in_chunk_type():
+    """``chunk.type`` is response-derived, provider-influenced text -- the same
+    class of untrusted input as ``model``/``provider`` in
+    ``_model_and_provider``, which already goes through ``_safe_identifier``.
+    A malicious/compromised stream source setting ``.type`` to a secret-shaped
+    string with embedded control characters must not have that string reach
+    persisted telemetry."""
+    import types as _types
+
+    from lionagi.hooks.bus import HookBus, HookSignal
+    from lionagi.operations._api_hooks import emit_api_stream_chunk
+    from lionagi.session.observer import SessionObserver, _sanitize_signal_payload
+
+    secret = "sk-LEAK-\n\x00-drop-table"
+
+    branch = Branch()
+    observer = SessionObserver()
+    branch._hooks = HookBus(observer=observer)
+
+    imodel = _types.SimpleNamespace(
+        model_name="gpt-4.1-mini",
+        endpoint=_types.SimpleNamespace(config=_types.SimpleNamespace(provider="openai")),
+    )
+    chunk = _types.SimpleNamespace(type=secret)
+
+    await emit_api_stream_chunk(branch, imodel, chunk)
+
+    signals = observer.by_type(HookSignal)
+    assert len(signals) == 1
+    payload = _sanitize_signal_payload(signals[0])
+
+    assert secret not in json_dumps(payload)
+    assert payload["kwargs"]["chunk_type"] == "unknown"
+
+
+async def test_api_stream_chunk_preserves_legitimate_chunk_type():
+    """A well-shaped SDK chunk type (matching ``_safe_identifier``'s charset)
+    must survive verbatim -- only out-of-shape input is redacted."""
+    import types as _types
+
+    from lionagi.hooks.bus import HookBus, HookSignal
+    from lionagi.operations._api_hooks import emit_api_stream_chunk
+    from lionagi.session.observer import SessionObserver, _sanitize_signal_payload
+
+    branch = Branch()
+    observer = SessionObserver()
+    branch._hooks = HookBus(observer=observer)
+
+    imodel = _types.SimpleNamespace(
+        model_name="gpt-4.1-mini",
+        endpoint=_types.SimpleNamespace(config=_types.SimpleNamespace(provider="openai")),
+    )
+    chunk = _types.SimpleNamespace(type="content_block_delta")
+
+    await emit_api_stream_chunk(branch, imodel, chunk)
+
+    signals = observer.by_type(HookSignal)
+    payload = _sanitize_signal_payload(signals[0])
+    assert payload["kwargs"]["chunk_type"] == "content_block_delta"
