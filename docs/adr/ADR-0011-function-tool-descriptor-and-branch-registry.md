@@ -478,8 +478,12 @@ tool:
   before the per-server recovery loop and propagate. Top-level `load_mcp_tools()` also
   raises `ValueError` when neither `server_names` nor a config path supplies a server
   set.
-- **Policy reuse:** an explicit policy is remembered under a content-derived server key,
-  allowing the proxy's later `get_client()` call to recover the same authorization.
+- **Policy reuse:** an explicit policy is remembered so the proxy's later `get_client()`
+  call can recover the same authorization. For a named server the key binds the server's
+  name together with its resolved transport content, so an authorization granted for one
+  named server is never recovered for a different one that happens to resolve to the same
+  transport. An anonymous inline configuration has no name to bind, so its key is derived
+  from content alone.
 - **Pool identity:** named configs use `server:<name>` and therefore reuse a connected
   client by server name. Inline configs use the command plus the Python dictionary's
   object identity, so reuse occurs only when the same dictionary object is passed again;
