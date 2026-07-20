@@ -14,12 +14,47 @@ unaffected. Emission is purely observational: it wraps the existing
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from lionagi.session.branch import Branch
 
 __all__ = ("emit_api_pre_call", "emit_api_post_call", "emit_api_stream_chunk")
+
+# Closed status vocabulary for the emitted payload — every EventStatus value
+# (the terminal status an APICalling can settle into) plus "error" (this
+# adapter's own label for a raised exception, never provider-reported).
+# Anything outside this set — a raw provider status string, or a status
+# object whose ``.value`` was never validated against EventStatus — is
+# redacted to "unknown" rather than forwarded.
+_STATUS_VOCAB = frozenset(
+    {
+        "pending",
+        "processing",
+        "completed",
+        "failed",
+        "skipped",
+        "cancelled",
+        "aborted",
+        "error",
+    }
+)
+
+# Expected shape for a model/provider identifier: lionagi's own naming
+# convention (letters, digits, ``. _ - : /``), capped well above any real
+# identifier in use. A value outside this shape is redacted rather than
+# forwarded verbatim, even though these fields are normally sourced from
+# local iModel/endpoint configuration rather than provider response text.
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_.:/-]{1,128}$")
+
+
+def _safe_status(value: Any) -> str:
+    return value if isinstance(value, str) and value in _STATUS_VOCAB else "unknown"
+
+
+def _safe_identifier(value: Any) -> str:
+    return value if isinstance(value, str) and _IDENTIFIER_RE.match(value) else "unknown"
 
 
 def _model_and_provider(imodel: Any) -> tuple[str, str]:
@@ -29,7 +64,7 @@ def _model_and_provider(imodel: Any) -> tuple[str, str]:
     config = getattr(endpoint, "config", None)
     if config is not None:
         provider = getattr(config, "provider", None) or ""
-    return model, provider
+    return _safe_identifier(model), _safe_identifier(provider)
 
 
 def _extract_tokens(response: Any) -> dict | None:
@@ -45,6 +80,34 @@ def _extract_tokens(response: Any) -> dict | None:
         return None
     usage = item.get("usage")
     return dict(usage) if isinstance(usage, dict) else None
+
+
+def _typed_usage(tokens: dict | None) -> dict[str, int] | None:
+    """Reduce a best-effort usage mapping to a typed numeric summary.
+
+    The raw ``tokens`` dict (a provider's own response shape, forwarded
+    verbatim before this fix) can carry non-numeric fields alongside the
+    counts. Only ``input_tokens``/``output_tokens`` (or their
+    ``prompt_tokens``/``completion_tokens`` synonyms — same normalization as
+    ``_collect_branch_usage``) survive, coerced to ``int``; every other key,
+    and any non-numeric value under a recognized key, is dropped. ``None``
+    when neither count is present, matching the prior no-usage contract.
+    """
+    if not isinstance(tokens, dict):
+        return None
+
+    def _num(*keys: str) -> int | None:
+        for key in keys:
+            val = tokens.get(key)
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                return int(val)
+        return None
+
+    input_tokens = _num("input_tokens", "prompt_tokens")
+    output_tokens = _num("output_tokens", "completion_tokens")
+    if input_tokens is None and output_tokens is None:
+        return None
+    return {"input_tokens": input_tokens or 0, "output_tokens": output_tokens or 0}
 
 
 def _error_summary(error: str | BaseException | None) -> str | None:
@@ -99,16 +162,18 @@ async def emit_api_post_call(
     call ended:
 
     - ``status``: ``"error"`` when an exception was raised (``error`` is
-      set), otherwise the provider-reported ``api_call.status`` verbatim
-      (``"completed"``/``"failed"``/...).
+      set), otherwise ``api_call.status`` mapped onto the closed status
+      vocabulary (``"completed"``/``"failed"``/... — anything else becomes
+      ``"unknown"``, never a raw provider string).
     - ``error``: populated whenever *either* an exception was raised *or*
       the call settled with a provider-reported failure and nothing was
       raised (``api_call.execution.error``) -- a FAILED ``APICalling`` that
       never raises must not leave this field null just because raising
       wasn't how it failed. Always reduced to a class-name-only summary
       (see ``_error_summary``), never the raw message.
-    - ``tokens``: best-effort usage extracted from the settled response;
-      ``None`` when the shape is unrecognized or the call never produced one.
+    - ``tokens``: typed numeric usage summary (``input_tokens``/
+      ``output_tokens`` ints); ``None`` when the shape is unrecognized or
+      the call never produced one. Never the raw provider usage mapping.
     """
     hooks = branch._hooks
     if hooks is None:
@@ -138,9 +203,9 @@ async def emit_api_post_call(
         branch_id=str(branch.id),
         model=model,
         provider=provider,
-        status=status,
+        status=_safe_status(status),
         latency_ms=latency_ms,
-        tokens=tokens,
+        tokens=_typed_usage(tokens),
         error=_error_summary(error),
     )
 

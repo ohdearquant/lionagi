@@ -333,10 +333,12 @@ async def test_chat_api_post_call_never_leaks_secret_shaped_error_text():
 # | provider FAILED, not raised      | "failed"    | class-name/label | best-effort    |
 # | raised exception                 | "error"     | class-name/label | None           |
 # | cancellation (BaseException)     | "error"     | "CancelledError" | None           |
+# | CLI stream completion            | known/None   | None             | best-effort    |
+# | CLI stream failure               | "error"     | class-name/label | partial/None   |
 #
 # A single parametrized test asserting this table generically -- rather than
-# three separate hardcoded scenario tests -- is what catches a *fourth* exit
-# path added later that forgets to populate `error` on failure, or that
+# separate hardcoded scenario tests -- is what catches an exit path added later
+# that forgets to populate `error` on failure, or that
 # reintroduces raw message text: a scenario-specific test only checks the
 # exact value it was written against, so a new path with the same shape but
 # a different bug (e.g. `error` populated but with the raw message again)
@@ -401,17 +403,45 @@ async def _run_chat_scenario(scenario: str):
     raise AssertionError(f"unknown scenario {scenario!r}")
 
 
-@pytest.mark.parametrize("scenario", ["success", "failed_status", "raised", "cancelled"])
+async def _run_stream_scenario(scenario: str):
+    branch = Branch()
+    if scenario == "stream_success":
+        chunks = [StreamChunk(type="text", content="hello")]
+    elif scenario == "stream_failure":
+        chunks = [StreamChunk(type="error", content="boom: leak-me-not")]
+    else:  # pragma: no cover - caller is parametrized below
+        raise AssertionError(f"unknown scenario {scenario!r}")
+
+    branch.chat_model = _make_fake_cli_model(chunks)
+    calls = _wire(branch, HookPoint.API_PRE_CALL, HookPoint.API_POST_CALL)
+    if scenario == "stream_failure":
+        with pytest.raises(Exception):
+            async for _ in run(branch, "hi there", RunParam()):
+                pass
+    else:
+        async for _ in run(branch, "hi there", RunParam()):
+            pass
+    return calls
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ["success", "failed_status", "raised", "cancelled", "stream_success", "stream_failure"],
+)
 async def test_api_post_call_field_invariant_holds_across_exit_paths(scenario):
-    calls = await _run_chat_scenario(scenario)
+    if scenario.startswith("stream_"):
+        calls = await _run_stream_scenario(scenario)
+    else:
+        calls = await _run_chat_scenario(scenario)
 
     # Pairing: exactly one pre-call, exactly one post-call, regardless of exit path.
     assert len(calls[HookPoint.API_PRE_CALL]) == 1
     assert len(calls[HookPoint.API_POST_CALL]) == 1
     post = calls[HookPoint.API_POST_CALL][0]
 
-    if scenario == "success":
-        assert post["status"] == "completed"
+    if scenario in ("success", "stream_success"):
+        if scenario == "success":
+            assert post["status"] == "completed"
         assert post["error"] is None
     else:
         # Every non-success exit path must populate error (never silently
@@ -423,3 +453,136 @@ async def test_api_post_call_field_invariant_holds_across_exit_paths(scenario):
         assert post["error"] is not None
         assert "leak-me-not" not in post["error"]
         assert post["status"] in ("failed", "error")
+
+
+# ── closed telemetry payload (issue #1965 fix leg r3) ───────────────────────
+
+
+async def test_api_post_call_closed_payload_scrubs_secret_shaped_marker_everywhere():
+    """SessionObserver-backed probe: a settled call whose status object,
+    tokens mapping, model name, and provider name all carry the SAME
+    secret-shaped marker. The adapter boundary must build a closed,
+    allowlisted payload -- none of the four fields may reach persistence
+    with the marker intact, because field-by-field redaction is a treadmill
+    and the wrong class of fix."""
+    import types as _types
+
+    from lionagi.hooks.bus import HookBus, HookSignal
+    from lionagi.session.observer import SessionObserver, _sanitize_signal_payload
+
+    secret = "sk-LEAK var=name;drop-table"
+
+    branch = Branch()
+    observer = SessionObserver()
+    branch._hooks = HookBus(observer=observer)
+
+    imodel = _types.SimpleNamespace(
+        model_name=secret,
+        endpoint=_types.SimpleNamespace(config=_types.SimpleNamespace(provider=secret)),
+    )
+    api_call = _types.SimpleNamespace(
+        # A status object whose .value is raw text, not validated against
+        # EventStatus -- exactly the shape a non-exception provider failure
+        # reason can take without ever raising.
+        status=_types.SimpleNamespace(value=secret),
+        execution=_types.SimpleNamespace(duration=None, error=None),
+        response=None,
+    )
+    tokens = {"input_tokens": 5, "output_tokens": 3, "raw_provider_debug": secret}
+
+    from lionagi.operations._api_hooks import emit_api_post_call
+
+    await emit_api_post_call(branch, imodel, api_call, tokens=tokens)
+
+    signals = observer.by_type(HookSignal)
+    assert len(signals) == 1
+    payload = _sanitize_signal_payload(signals[0])
+
+    assert secret not in json_dumps(payload)
+    kwargs = payload["kwargs"]
+    assert kwargs["status"] == "unknown"
+    assert kwargs["model"] == "unknown"
+    assert kwargs["provider"] == "unknown"
+    assert kwargs["tokens"] == {"input_tokens": 5, "output_tokens": 3}
+
+
+async def test_api_post_call_closed_payload_preserves_legitimate_values():
+    """The closed-payload rewrite must not collapse ordinary, well-shaped
+    values to "unknown" -- only out-of-vocabulary/out-of-shape input is
+    redacted."""
+    branch = LionAGIMockFactory.create_mocked_branch(response="hello")
+    calls = _wire(branch, HookPoint.API_PRE_CALL, HookPoint.API_POST_CALL)
+
+    await branch.chat("hi there")
+
+    pre = calls[HookPoint.API_PRE_CALL][0]
+    post = calls[HookPoint.API_POST_CALL][0]
+    assert pre["model"] == "gpt-4o-mini"
+    assert pre["provider"] == "openai"
+    assert post["status"] == "completed"
+
+
+# ── multi-turn usage accumulation (issue #1965 fix leg r3) ──────────────────
+
+
+async def test_run_accumulates_usage_across_multiple_flush_windows():
+    """Codex splits one run() call into multiple flush windows (a tool-call
+    round-trip forces a flush between "result" chunks) and reports marginal
+    per-window deltas, not a running total. The terminal API_POST_CALL must
+    report the SUM of every window's usage, not just the last window's --
+    overwriting last_usage from each window's result_meta silently drops
+    every earlier window's tokens."""
+    branch = Branch()
+    branch.chat_model = _make_fake_cli_model(
+        [
+            StreamChunk(type="text", content="hello"),
+            StreamChunk(
+                type="result",
+                metadata={"usage": {"input_tokens": 2, "output_tokens": 1}},
+            ),
+            StreamChunk(
+                type="tool_use",
+                tool_name="lookup",
+                tool_id="t1",
+                tool_input={"q": "x"},
+            ),
+            StreamChunk(type="tool_result", tool_id="t1", tool_output="ok"),
+            StreamChunk(type="text", content="world"),
+            StreamChunk(
+                type="result",
+                metadata={"usage": {"input_tokens": 10, "output_tokens": 7}},
+            ),
+        ]
+    )
+    calls = _wire(branch, HookPoint.API_PRE_CALL, HookPoint.API_POST_CALL)
+
+    results = []
+    async for msg in run(branch, "hi there", RunParam()):
+        results.append(msg)
+
+    post = calls[HookPoint.API_POST_CALL][0]
+    assert post["tokens"] == {"input_tokens": 12, "output_tokens": 8}
+
+
+async def test_run_single_result_chunk_usage_unaffected_by_accumulator():
+    """A provider that emits exactly one "result" chunk per run() call
+    (claude_code, gemini_code) must report exactly that chunk's usage --
+    the whole-call accumulator must not introduce a double-count when there
+    is nothing to accumulate across."""
+    branch = Branch()
+    branch.chat_model = _make_fake_cli_model(
+        [
+            StreamChunk(type="text", content="hello"),
+            StreamChunk(
+                type="result",
+                metadata={"usage": {"input_tokens": 5, "output_tokens": 3}},
+            ),
+        ]
+    )
+    calls = _wire(branch, HookPoint.API_PRE_CALL, HookPoint.API_POST_CALL)
+
+    async for _ in run(branch, "hi there", RunParam()):
+        pass
+
+    post = calls[HookPoint.API_POST_CALL][0]
+    assert post["tokens"] == {"input_tokens": 5, "output_tokens": 3}

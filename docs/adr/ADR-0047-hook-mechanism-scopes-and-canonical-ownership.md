@@ -90,8 +90,11 @@ This ADR does not decide:
   hook execution.
 - The persistence schema for session signals or messages. This ADR records the hook-side payload and
   routing contracts only.
-- A new API-call telemetry bridge. The current absence is recorded; implementing the bridge is a
-  separate change with its own typed payload.
+- Service-hook control semantics. The operation-layer API-call telemetry adapter (`API_PRE_CALL`/
+  `API_POST_CALL`/`API_STREAM_CHUNK`, delivered — see the production matrix below) is
+  observation-only: it wraps `imodel.invoke()`/streaming call sites from the outside and never
+  touches `HookRegistry`/`HookedEvent`, so it does not alter per-`iModel` pre-invocation control
+  (replace/abort/exit).
 - Artifact production ownership. No canonical artifact emit site exists in the hook system today.
 - User code discovery or import trust for hook modules. The loader resolves already registered
   names; it is not a general plugin loader.
@@ -248,8 +251,8 @@ points emit. The shipped production matrix is:
 | `TOOL_ERROR` | `_act()` when invoke raises | `call_id`, `tool_name`, `error`, `duration=None` | wired |
 | `MESSAGE_ADD` | routed Branch message callback | `branch_id`, `message` | conditionally wired by persistence routing |
 | `USER_PROMPT_SUBMIT` | `chat()`/`run()` before provider invocation when a turn-origin token is present | operation-specific prompt context | wired, blocking, at most once per user-originated turn |
-| `API_PRE_CALL` | operation layer, before the provider invocation | `session_id`, `branch_id`, `model`, `provider` | wired |
-| `API_POST_CALL` | operation layer, once the call has settled | `model`, `provider`, `status`, `error`, `latency_ms`, `tokens` | wired |
+| `API_PRE_CALL` | operation layer, before the provider invocation | `session_id`, `branch_id`, `model`, `provider` (identifiers validated against an expected shape) | wired |
+| `API_POST_CALL` | operation layer, once the call has settled | `model`, `provider` (validated), `status` (closed vocabulary), `error` (class-name label), `latency_ms`, `tokens` (typed `input_tokens`/`output_tokens` ints) | wired |
 | `API_STREAM_CHUNK` | operation layer, per stream chunk | redacted `chunk_type` discriminator only | wired |
 | `ARTIFACT_CREATED` | none | none | deprecated compatibility vocabulary; no emit site or payload contract |
 
