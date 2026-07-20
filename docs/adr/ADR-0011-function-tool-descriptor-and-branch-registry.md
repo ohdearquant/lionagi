@@ -42,11 +42,10 @@ not ordinary.** The registry currently accepts a one-entry MCP configuration, di
 remote schemas, builds a local async proxy, remembers transport policy, and reaches a
 process-global client pool. Command and URL transports are fail-closed under direct pool
 use, and the two explicit config-loading helpers no longer upgrade an omitted policy to a
-permissive one: it stays unset and is passed through unchanged. It then reaches the pool's
-fail-closed default only when no policy has already been recorded for the same identity;
-where one has, that remembered authorization is substituted first (see Policy recovery
-below). So loading a config file is no longer an implicit trust act on its own, but it is
-not yet an independent one either. Discovered tools
+permissive one: it stays unset and is passed through unchanged, and reaches the pool's
+fail-closed default with no possibility of substituting a remembered authorization from
+an earlier caller (see Policy recovery below). So loading a config file is no longer an
+implicit trust act at all. Discovered tools
 use the remote tool's unqualified name in the branch registry, so remote servers can
 collide with each other or with local tools (`lionagi/protocols/action/manager.py`;
 `lionagi/service/connections/mcp_wrapper.py`).
@@ -481,17 +480,17 @@ tool:
   `MCPSecurityConfig.trusted()` explicitly, and that choice is threaded per load without
   mutating the process-global default. A transport `PermissionError` is logged and
   re-raised; other server failures become an empty registered-name list or a warning.
-- **Policy recovery is process-scoped, and it is wider than the loader contract
-  intends.** An explicit policy is remembered against the resolved transport so the
-  proxy's own later `get_client()` call, which carries no policy, recovers the same
-  authorization. That recovery is keyed by the same policy identity described under
-  Policy reuse — server name plus resolved transport content for a named server, content
-  alone for an inline config — and by nothing narrower, so a *different* caller that
-  later loads a transport matching that identity with no policy also inherits the earlier
-  authorization rather than being denied. Delta 3 is therefore delivered for a first
-  load in a process and not yet for a subsequent one; closing that gap requires
-  distinguishing the proxy's re-entry from a fresh loader call, which is tracked
-  separately.
+- **Policy recovery is process-scoped and proxy-only.** An explicit policy is
+  remembered against the resolved transport so the proxy's stored callable can recover
+  the same authorization on a later reconnect with no policy of its own. That recovery
+  is keyed by the same policy identity described under Policy reuse — server name plus
+  resolved transport content for a named server, content alone for an inline config —
+  but it is reachable only through `MCPConnectionPool._get_reconnect_client()`, a
+  private method whose only caller is the proxy built by `create_mcp_tool`. The public
+  `get_client()` accepts only an explicit `MCPSecurityConfig` or `None` for its
+  `security` argument (anything else raises `TypeError`) and never recovers a
+  remembered policy, so a fresh loader call that omits a policy is denied even when an
+  earlier caller already authorized the identical resolved transport.
 - **Loader input failure:** config-file existence, JSON shape, and parsing errors occur
   before the per-server recovery loop and propagate. Top-level `load_mcp_tools()` also
   raises `ValueError` when neither `server_names` nor a config path supplies a server
@@ -558,7 +557,7 @@ unqualified names make collision handling a branch-registration concern.
 |---|-------|------|-------|
 | 1 | Version and narrow raw-callable schema derivation so Python defaults remain optional, positional-only and `*args` signatures require an explicit adapter, open `**kwargs` callables require an explicit schema, schemas without `required` are accepted, and tests prove provider schema and runtime validation agree. | M | (filled at issue-open time) |
 | 2 | Move MCP configuration, discovery, namespacing, and pool lifecycle into a service-owned factory that returns ready `Tool` descriptors; acceptance requires `protocols.action` to have no service-layer import, remote identities to be collision-free, and per-tool request models to resolve by that canonical identity without key mutation or silent fallback. | M | (filled at issue-open time) |
-| 3 | Require the MCP-loading caller to make an explicit transport-trust decision; acceptance requires omitted policy to preserve the wrapper's fail-closed command and URL defaults and an explicit trusted-config mode to be observable. | S | partly delivered — holds only for the first load of a given identity in a process. Once any caller has authorized that identity explicitly, every later caller that loads it with no policy inherits that authorization and is not denied, regardless of whether that later caller made any trust decision of its own (see Policy recovery above) |
+| 3 | Require the MCP-loading caller to make an explicit transport-trust decision; acceptance requires omitted policy to preserve the wrapper's fail-closed command and URL defaults and an explicit trusted-config mode to be observable. | S | delivered — an omitted policy is denied on every load, not only the first, because policy recovery is reachable only through the proxy's private reconnect path and never through the loader-facing `get_client()` call (see Policy recovery above) |
 
 ## Alternatives considered
 
@@ -621,10 +620,11 @@ allowing both transport classes, on the reasoning that selecting and loading a c
 file was itself a trust decision. That convenience created a semantic split: the same
 omitted policy meant "deny" through the pool and "allow" through a loader, and nothing
 in the calling code made the difference visible. Delta 3 replaced it with the behavior
-now described under Loader trust, where an omitted policy denies in both paths on a
-first load and trust is a named, observable choice. The remembered-policy recovery
-described above still carries an earlier authorization into a later omitted-policy load,
-so the original convenience survives in narrower form.
+now described under Loader trust, where an omitted policy denies through every loader
+call, first or later, and trust is a named, observable choice. The remembered-policy
+recovery described above is scoped to the proxy's own reconnect and is not reachable
+through a loader call at all, so the original convenience does not survive even in
+narrower form.
 
 ## Notes
 
