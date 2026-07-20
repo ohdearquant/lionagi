@@ -1525,3 +1525,40 @@ async def test_search_tool_gets_workspace_root_from_cwd(tmp_path):
     result = await tool.func_callable(action="grep", pattern="x", path=str(outside))
     assert result["success"] is False
     assert "workspace root" in (result.get("error") or "")
+
+
+async def test_forward_mcp_codex_profile_created_0600_without_chmod_window(tmp_path, monkeypatch):
+    """The secret-bearing profile must be 0600 from the moment it exists.
+    A write-then-chmod sequence leaves a umask-permission window where the
+    secrets are world/group-readable (and a wrong-mode file if the write is
+    interrupted), so the file has to be created with mode 0600 directly —
+    proven here by a permissive umask plus asserting no chmod ever ran on it."""
+    import os as os_mod
+    import stat
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex_home"))
+
+    chmodded: list = []
+    real_chmod = os_mod.chmod
+    monkeypatch.setattr(
+        os_mod, "chmod", lambda p, m, **kw: (chmodded.append(str(p)), real_chmod(p, m, **kw))
+    )
+
+    old_umask = os_mod.umask(0)
+    try:
+        mcp_path = _write_mcp_config(
+            tmp_path,
+            {"khive": {"command": "kkernel", "env": {"API_KEY": "top-secret-value"}}},
+        )
+        config = AgentSpec.compose("reviewer", model="codex/gpt-5.5")
+        config.mcp_config_path = mcp_path
+        branch = await create_agent(config, load_settings=False)
+    finally:
+        os_mod.umask(old_umask)
+
+    profile_name = branch.chat_model.endpoint.config.kwargs["profile"]
+    profile_path = tmp_path / "codex_home" / f"{profile_name}.config.toml"
+    assert profile_path.exists()
+    # 0600 despite umask 0: the mode came from creation, not a later chmod.
+    assert stat.S_IMODE(profile_path.stat().st_mode) == 0o600
+    assert str(profile_path) not in chmodded
