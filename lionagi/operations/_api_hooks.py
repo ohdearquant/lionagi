@@ -72,6 +72,21 @@ def _safe_identifier(value: Any) -> str:
     return value
 
 
+# Closed chunk-type vocabulary — the normalized ``StreamChunk.type`` values
+# (``service/types/stream_chunk.py``). Unlike model/provider, ``chunk.type``
+# reaches this adapter from a provider stream (``operations/run/run.py``), so a
+# malformed or compromised adapter could set it to an arbitrary string,
+# including a prefixless credential the identifier allowlist would admit. Only
+# the closed vocabulary is forwarded; anything else is redacted.
+_CHUNK_TYPE_VOCAB = frozenset(
+    {"system", "thinking", "text", "tool_use", "tool_result", "result", "error"}
+)
+
+
+def _safe_chunk_type(value: Any) -> str:
+    return value if isinstance(value, str) and value in _CHUNK_TYPE_VOCAB else "unknown"
+
+
 def _model_and_provider(imodel: Any) -> tuple[str, str]:
     model = getattr(imodel, "model_name", None) or ""
     provider = ""
@@ -240,7 +255,7 @@ async def emit_api_stream_chunk(branch: Branch, imodel: Any, chunk: Any) -> None
     from lionagi.hooks.bus import HookPoint
 
     model, provider = _model_and_provider(imodel)
-    chunk_type = _safe_identifier(getattr(chunk, "type", None) or type(chunk).__name__)
+    chunk_type = _safe_chunk_type(getattr(chunk, "type", None))
     await hooks.emit(
         HookPoint.API_STREAM_CHUNK,
         session_id=str(branch._owning_session_id or branch.id),
