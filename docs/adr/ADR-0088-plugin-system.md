@@ -182,17 +182,23 @@ Two-stage laziness, mirroring the endpoint registry's `_ensure_loaded` pattern:
   trigger points:
   - `ActionManager` tool-name miss → "does a trusted, enabled plugin declare this
     tool?"
-  - provider resolution: **`EndpointRegistry.match()` never misses today** — on no
-    registered match it silently falls through to a generic OpenAI-compatible
-    endpoint, so there is no existing miss event to hook. This decision therefore
-    requires a small, named refactor of the registry: an interception point after
-    "no registered entry matched" and **before** the generic fallback, which
-    consults the plugin registry, imports any declared provider module for that
-    provider name (the module self-registers at import time via the existing
-    decorator, so importing before the fallback is sufficient — no registry
-    reload), re-runs the match once, and only then falls back. Without this
-    interception a plugin provider would silently receive the generic endpoint
-    instead of its own — a wrong-answer failure, not an error.
+  - provider resolution: **`EndpointRegistry.match()` never missed at the time this
+    ADR was written** — on no registered match it silently fell through to a
+    generic OpenAI-compatible endpoint, so there was no existing miss event to
+    hook. This decision therefore required a small, named refactor of the
+    registry: an interception point after "no registered entry matched" and
+    **before** the generic fallback, which consults the plugin registry, imports
+    any declared provider module for that provider name (the module
+    self-registers at import time via the existing decorator, so importing before
+    the fallback is sufficient — no registry reload), re-runs the match once, and
+    only then falls back. Without this interception a plugin provider would
+    silently receive the generic endpoint instead of its own — a wrong-answer
+    failure, not an error. `EndpointRegistry.match()` now misses loudly for a
+    genuinely unregistered provider (#2026: raises `ProviderNotFoundError` unless
+    the caller opts in), but the interception point described here still runs
+    first, in the same position, for the same reason — a plugin-declared
+    provider must get a chance to activate before either the fallback or the
+    raise.
   - agent-profile resolution miss → plugin `agents/` entries join the search list
     after project and global profiles.
   - playbooks: discovery today is global-only and split across a pre-argparse CLI
