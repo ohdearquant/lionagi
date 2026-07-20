@@ -811,6 +811,51 @@ class StateDB:
             )
         )
 
+    async def _rebuild_check_constraint(self, table: str, already_rebuilt, rebuild) -> None:
+        """Run a legacy CHECK-constraint table rebuild, tolerant of a concurrent winner.
+
+        Two processes cold-opening the same legacy DB can both observe the
+        same stale CHECK and enter the identical DROP/CREATE/INSERT/RENAME
+        rebuild. SQLite's write lock serializes the two attempts, but the
+        loser can still surface an OperationalError (busy-timeout exceeded
+        waiting for the write lock). Mirrors the catch-and-reinspect guard
+        in ``_reconcile_columns``: only suppress the error when a fresh read
+        of ``sqlite_master`` proves the rebuild already landed — via this
+        process or a racing one — otherwise re-raise.
+
+        ``already_rebuilt`` takes the table's current ``sqlite_master.sql``
+        (or ``None`` if the table is now missing) and returns whether the
+        table is in its post-rebuild shape.
+        """
+        try:
+            await rebuild()
+        except OperationalError as original_error:
+            if self.dialect != "sqlite":
+                raise
+            # The reinspection read is itself a fresh connection contending
+            # for the same schema lock as every other queued racer, so under
+            # deep enough contention it can raise OperationalError too. That
+            # must not surface as a *different*, less informative crash than
+            # the write failure we were already handling.
+            try:
+                async with self._engine.connect() as conn:
+                    row = (
+                        (
+                            await conn.execute(
+                                text(
+                                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=:t"
+                                ),
+                                {"t": table},
+                            )
+                        )
+                        .mappings()
+                        .first()
+                    )
+            except OperationalError:
+                raise original_error from None
+            if not already_rebuilt(row["sql"] if row is not None else None):
+                raise
+
     _LEGACY_SESSION_STATUS_CHECK_MARKER = "'running', 'completed', 'failed', 'aborted'"
 
     async def _drop_legacy_session_status_check(self) -> None:
@@ -852,88 +897,95 @@ class StateDB:
             cols = [r["name"] for r in cols_rows]
         col_list = ", ".join(cols)
 
-        async with self._engine.begin() as conn:
-            await conn.execute(text("PRAGMA foreign_keys = OFF"))
-            try:
-                # Create without FK references: the referenced tables (messages,
-                # invocations) may not exist yet in a minimal legacy DB.
-                # metadata.create_all() runs AFTER this rebuild and will not
-                # re-create sessions (table already exists after rename).
-                # FK enforcement relies on the PRAGMA which is already set up
-                # by make_engine and applies to all DML after schema init.
-                await conn.execute(
-                    text(
-                        """
-                        CREATE TABLE sessions_new (
-                          id              TEXT    PRIMARY KEY,
-                          cc_session_id   TEXT,
-                          created_at      REAL    NOT NULL,
-                          node_metadata   JSON,
-                          name            TEXT,
-                          user            TEXT,
-                          progression_id  TEXT    NOT NULL,
-                          first_msg_id    TEXT,
-                          last_msg_id     TEXT,
-                          updated_at      REAL    NOT NULL,
-                          playbook_name   TEXT,
-                          agent_name      TEXT,
-                          invocation_kind TEXT CHECK(
-                                            invocation_kind IS NULL
-                                            OR invocation_kind IN
-                                              ('agent', 'play', 'flow', 'fanout', 'show-play')
-                                          ),
-                          show_topic      TEXT,
-                          show_play_name  TEXT,
-                          artifacts_path  TEXT,
-                          source_kind     TEXT    DEFAULT 'live' CHECK(
-                                            source_kind IS NULL
-                                            OR source_kind IN ('live', 'imported_fs')
-                                          ),
-                          status          TEXT,
-                          started_at      REAL,
-                          ended_at        REAL,
-                          last_message_at REAL,
-                          current_phase   TEXT,
-                          invocation_id   TEXT,
-                          model           TEXT,
-                          provider        TEXT,
-                          effort          TEXT,
-                          agent_hash      TEXT,
-                          project         TEXT,
-                          project_source  TEXT,
-                          status_reason_code     TEXT,
-                          status_reason_summary  TEXT,
-                          status_evidence_refs   JSON,
-                          artifact_contract_json      JSON,
-                          artifact_verification_json  JSON,
-                          input_tokens    INTEGER,
-                          output_tokens   INTEGER,
-                          total_cost_usd  REAL,
-                          num_turns       INTEGER,
-                          duration_ms     REAL
+        async def _rebuild() -> None:
+            async with self._engine.begin() as conn:
+                await conn.execute(text("PRAGMA foreign_keys = OFF"))
+                try:
+                    # Create without FK references: the referenced tables (messages,
+                    # invocations) may not exist yet in a minimal legacy DB.
+                    # metadata.create_all() runs AFTER this rebuild and will not
+                    # re-create sessions (table already exists after rename).
+                    # FK enforcement relies on the PRAGMA which is already set up
+                    # by make_engine and applies to all DML after schema init.
+                    await conn.execute(
+                        text(
+                            """
+                            CREATE TABLE sessions_new (
+                              id              TEXT    PRIMARY KEY,
+                              cc_session_id   TEXT,
+                              created_at      REAL    NOT NULL,
+                              node_metadata   JSON,
+                              name            TEXT,
+                              user            TEXT,
+                              progression_id  TEXT    NOT NULL,
+                              first_msg_id    TEXT,
+                              last_msg_id     TEXT,
+                              updated_at      REAL    NOT NULL,
+                              playbook_name   TEXT,
+                              agent_name      TEXT,
+                              invocation_kind TEXT CHECK(
+                                                invocation_kind IS NULL
+                                                OR invocation_kind IN
+                                                  ('agent', 'play', 'flow', 'fanout', 'show-play')
+                                              ),
+                              show_topic      TEXT,
+                              show_play_name  TEXT,
+                              artifacts_path  TEXT,
+                              source_kind     TEXT    DEFAULT 'live' CHECK(
+                                                source_kind IS NULL
+                                                OR source_kind IN ('live', 'imported_fs')
+                                              ),
+                              status          TEXT,
+                              started_at      REAL,
+                              ended_at        REAL,
+                              last_message_at REAL,
+                              current_phase   TEXT,
+                              invocation_id   TEXT,
+                              model           TEXT,
+                              provider        TEXT,
+                              effort          TEXT,
+                              agent_hash      TEXT,
+                              project         TEXT,
+                              project_source  TEXT,
+                              status_reason_code     TEXT,
+                              status_reason_summary  TEXT,
+                              status_evidence_refs   JSON,
+                              artifact_contract_json      JSON,
+                              artifact_verification_json  JSON,
+                              input_tokens    INTEGER,
+                              output_tokens   INTEGER,
+                              total_cost_usd  REAL,
+                              num_turns       INTEGER,
+                              duration_ms     REAL
+                            )
+                            """
                         )
-                        """
                     )
-                )
-                select_cols = []
-                for c in cols:
-                    if c == "updated_at":
-                        select_cols.append(
-                            "COALESCE(updated_at, created_at, strftime('%s','now')) AS updated_at"
-                        )
-                    else:
-                        select_cols.append(c)
-                select_list = ", ".join(select_cols)
-                insert_sql = (
-                    f"INSERT INTO sessions_new ({col_list}) SELECT {select_list} FROM sessions"  # noqa: S608
-                )
-                await conn.execute(text(insert_sql))
-                await conn.execute(text("DROP TABLE sessions"))
-                await conn.execute(text("ALTER TABLE sessions_new RENAME TO sessions"))
-                for idx_sql in index_sqls:
-                    await conn.execute(text(idx_sql))
-            finally:
-                await conn.execute(text("PRAGMA foreign_keys = ON"))
+                    select_cols = []
+                    for c in cols:
+                        if c == "updated_at":
+                            select_cols.append(
+                                "COALESCE(updated_at, created_at, strftime('%s','now')) AS updated_at"
+                            )
+                        else:
+                            select_cols.append(c)
+                    select_list = ", ".join(select_cols)
+                    insert_sql = (
+                        f"INSERT INTO sessions_new ({col_list}) SELECT {select_list} FROM sessions"  # noqa: S608
+                    )
+                    await conn.execute(text(insert_sql))
+                    await conn.execute(text("DROP TABLE sessions"))
+                    await conn.execute(text("ALTER TABLE sessions_new RENAME TO sessions"))
+                    for idx_sql in index_sqls:
+                        await conn.execute(text(idx_sql))
+                finally:
+                    await conn.execute(text("PRAGMA foreign_keys = ON"))
+
+        await self._rebuild_check_constraint(
+            "sessions",
+            lambda sql: sql is None or self._LEGACY_SESSION_STATUS_CHECK_MARKER not in sql,
+            _rebuild,
+        )
 
     # Substring present only in the post-#1174 schedules CREATE SQL;
     # its absence indicates a legacy DB whose action_kind CHECK needs rebuilding.
@@ -1015,34 +1067,39 @@ class StateDB:
         # `schedules` on the next open, stranding every original row.
         # `BEGIN IMMEDIATE` reclaims the atomicity the old `engine.begin()`
         # path had, without reintroducing the pragma-inside-transaction bug.
-        async with self._engine.connect() as conn:
-            driver = (await conn.get_raw_connection()).driver_connection
-            await driver.execute("PRAGMA foreign_keys = OFF")
-            # Everything after the OFF pragma — including the flush commit
-            # that makes it take effect — sits inside the outer try so that
-            # ANY failure path restores enforcement in the finally block; a
-            # flush failure must not leave the pooled connection with
-            # foreign keys silently disabled.
-            try:
-                await driver.commit()
-                await driver.execute("BEGIN IMMEDIATE")
+        async def _rebuild() -> None:
+            async with self._engine.connect() as conn:
+                driver = (await conn.get_raw_connection()).driver_connection
+                await driver.execute("PRAGMA foreign_keys = OFF")
+                # Everything after the OFF pragma — including the flush commit
+                # that makes it take effect — sits inside the outer try so that
+                # ANY failure path restores enforcement in the finally block; a
+                # flush failure must not leave the pooled connection with
+                # foreign keys silently disabled.
                 try:
-                    await driver.execute(create_stmt)
-                    insert_sql = (
-                        f"INSERT INTO schedules_new ({col_list}) SELECT {col_list} FROM schedules"  # noqa: S608
-                    )
-                    await driver.execute(insert_sql)
-                    await driver.execute("DROP TABLE schedules")
-                    await driver.execute("ALTER TABLE schedules_new RENAME TO schedules")
-                    for idx_sql in index_sqls:
-                        await driver.execute(idx_sql)
                     await driver.commit()
-                except BaseException:
-                    await driver.rollback()
-                    raise
-            finally:
-                await driver.execute("PRAGMA foreign_keys = ON")
-                await driver.commit()
+                    await driver.execute("BEGIN IMMEDIATE")
+                    try:
+                        await driver.execute(create_stmt)
+                        insert_sql = f"INSERT INTO schedules_new ({col_list}) SELECT {col_list} FROM schedules"  # noqa: S608
+                        await driver.execute(insert_sql)
+                        await driver.execute("DROP TABLE schedules")
+                        await driver.execute("ALTER TABLE schedules_new RENAME TO schedules")
+                        for idx_sql in index_sqls:
+                            await driver.execute(idx_sql)
+                        await driver.commit()
+                    except BaseException:
+                        await driver.rollback()
+                        raise
+                finally:
+                    await driver.execute("PRAGMA foreign_keys = ON")
+                    await driver.commit()
+
+        await self._rebuild_check_constraint(
+            "schedules",
+            lambda sql: sql is not None and self._LEGACY_SCHEDULES_FLOW_YAML_MARKER in sql,
+            _rebuild,
+        )
 
     # Substring present only in the widened schedules CREATE SQL;
     # its absence indicates a legacy DB whose action_kind CHECK still omits
@@ -1129,34 +1186,39 @@ class StateDB:
         # `schedules` on the next open, stranding every original row.
         # `BEGIN IMMEDIATE` reclaims the atomicity the old `engine.begin()`
         # path had, without reintroducing the pragma-inside-transaction bug.
-        async with self._engine.connect() as conn:
-            driver = (await conn.get_raw_connection()).driver_connection
-            await driver.execute("PRAGMA foreign_keys = OFF")
-            # Everything after the OFF pragma — including the flush commit
-            # that makes it take effect — sits inside the outer try so that
-            # ANY failure path restores enforcement in the finally block; a
-            # flush failure must not leave the pooled connection with
-            # foreign keys silently disabled.
-            try:
-                await driver.commit()
-                await driver.execute("BEGIN IMMEDIATE")
+        async def _rebuild() -> None:
+            async with self._engine.connect() as conn:
+                driver = (await conn.get_raw_connection()).driver_connection
+                await driver.execute("PRAGMA foreign_keys = OFF")
+                # Everything after the OFF pragma — including the flush commit
+                # that makes it take effect — sits inside the outer try so that
+                # ANY failure path restores enforcement in the finally block; a
+                # flush failure must not leave the pooled connection with
+                # foreign keys silently disabled.
                 try:
-                    await driver.execute(create_stmt)
-                    insert_sql = (
-                        f"INSERT INTO schedules_new ({col_list}) SELECT {col_list} FROM schedules"  # noqa: S608
-                    )
-                    await driver.execute(insert_sql)
-                    await driver.execute("DROP TABLE schedules")
-                    await driver.execute("ALTER TABLE schedules_new RENAME TO schedules")
-                    for idx_sql in index_sqls:
-                        await driver.execute(idx_sql)
                     await driver.commit()
-                except BaseException:
-                    await driver.rollback()
-                    raise
-            finally:
-                await driver.execute("PRAGMA foreign_keys = ON")
-                await driver.commit()
+                    await driver.execute("BEGIN IMMEDIATE")
+                    try:
+                        await driver.execute(create_stmt)
+                        insert_sql = f"INSERT INTO schedules_new ({col_list}) SELECT {col_list} FROM schedules"  # noqa: S608
+                        await driver.execute(insert_sql)
+                        await driver.execute("DROP TABLE schedules")
+                        await driver.execute("ALTER TABLE schedules_new RENAME TO schedules")
+                        for idx_sql in index_sqls:
+                            await driver.execute(idx_sql)
+                        await driver.commit()
+                    except BaseException:
+                        await driver.rollback()
+                        raise
+                finally:
+                    await driver.execute("PRAGMA foreign_keys = ON")
+                    await driver.commit()
+
+        await self._rebuild_check_constraint(
+            "schedules",
+            lambda sql: sql is not None and self._LEGACY_SCHEDULES_COMMAND_MARKER in sql,
+            _rebuild,
+        )
 
     # Substring present only in the widened schedules CREATE SQL; its
     # absence indicates a legacy DB whose trigger_type CHECK still omits
@@ -1211,29 +1273,34 @@ class StateDB:
         rebuild_table = _schedules_table.to_metadata(MetaData(), name="schedules_new")
         create_stmt = str(CreateTable(rebuild_table).compile(dialect=self._engine.dialect))
 
-        async with self._engine.connect() as conn:
-            driver = (await conn.get_raw_connection()).driver_connection
-            await driver.execute("PRAGMA foreign_keys = OFF")
-            try:
-                await driver.commit()
-                await driver.execute("BEGIN IMMEDIATE")
+        async def _rebuild() -> None:
+            async with self._engine.connect() as conn:
+                driver = (await conn.get_raw_connection()).driver_connection
+                await driver.execute("PRAGMA foreign_keys = OFF")
                 try:
-                    await driver.execute(create_stmt)
-                    insert_sql = (
-                        f"INSERT INTO schedules_new ({col_list}) SELECT {col_list} FROM schedules"  # noqa: S608
-                    )
-                    await driver.execute(insert_sql)
-                    await driver.execute("DROP TABLE schedules")
-                    await driver.execute("ALTER TABLE schedules_new RENAME TO schedules")
-                    for idx_sql in index_sqls:
-                        await driver.execute(idx_sql)
                     await driver.commit()
-                except BaseException:
-                    await driver.rollback()
-                    raise
-            finally:
-                await driver.execute("PRAGMA foreign_keys = ON")
-                await driver.commit()
+                    await driver.execute("BEGIN IMMEDIATE")
+                    try:
+                        await driver.execute(create_stmt)
+                        insert_sql = f"INSERT INTO schedules_new ({col_list}) SELECT {col_list} FROM schedules"  # noqa: S608
+                        await driver.execute(insert_sql)
+                        await driver.execute("DROP TABLE schedules")
+                        await driver.execute("ALTER TABLE schedules_new RENAME TO schedules")
+                        for idx_sql in index_sqls:
+                            await driver.execute(idx_sql)
+                        await driver.commit()
+                    except BaseException:
+                        await driver.rollback()
+                        raise
+                finally:
+                    await driver.execute("PRAGMA foreign_keys = ON")
+                    await driver.commit()
+
+        await self._rebuild_check_constraint(
+            "schedules",
+            lambda sql: sql is not None and self._LEGACY_SCHEDULES_TRIGGER_TYPE_MARKER in sql,
+            _rebuild,
+        )
 
     # Substring present only in the post-completion-trust-gate invocations
     # CREATE SQL; its absence indicates a legacy DB whose status CHECK needs
@@ -1298,46 +1365,53 @@ class StateDB:
         # SQLAlchemy connection never actually takes effect. Go through the
         # raw driver connection instead (same technique as `_raw_sqlite_exec`)
         # so the pragma flip is real autocommit, not swallowed by an open txn.
-        async with self._engine.connect() as conn:
-            driver = (await conn.get_raw_connection()).driver_connection
-            await driver.execute("PRAGMA foreign_keys = OFF")
-            try:
-                await driver.execute(
-                    """
-                    CREATE TABLE invocations_new (
-                      id              TEXT    PRIMARY KEY,
-                      skill           TEXT    NOT NULL,
-                      plugin          TEXT,
-                      prompt          TEXT,
-                      started_at      REAL    NOT NULL,
-                      ended_at        REAL,
-                      status          TEXT    NOT NULL DEFAULT 'running'
-                                      CHECK(status IN ('running', 'completed',
-                                            'completed_empty', 'failed',
-                                            'timed_out', 'aborted', 'cancelled')),
-                      session_count   INTEGER NOT NULL DEFAULT 0,
-                      created_at      REAL    NOT NULL,
-                      updated_at      REAL    NOT NULL,
-                      node_metadata   JSON,
-                      status_reason_code     TEXT,
-                      status_reason_summary  TEXT,
-                      status_evidence_refs   JSON
+        async def _rebuild() -> None:
+            async with self._engine.connect() as conn:
+                driver = (await conn.get_raw_connection()).driver_connection
+                await driver.execute("PRAGMA foreign_keys = OFF")
+                try:
+                    await driver.execute(
+                        """
+                        CREATE TABLE invocations_new (
+                          id              TEXT    PRIMARY KEY,
+                          skill           TEXT    NOT NULL,
+                          plugin          TEXT,
+                          prompt          TEXT,
+                          started_at      REAL    NOT NULL,
+                          ended_at        REAL,
+                          status          TEXT    NOT NULL DEFAULT 'running'
+                                          CHECK(status IN ('running', 'completed',
+                                                'completed_empty', 'failed',
+                                                'timed_out', 'aborted', 'cancelled')),
+                          session_count   INTEGER NOT NULL DEFAULT 0,
+                          created_at      REAL    NOT NULL,
+                          updated_at      REAL    NOT NULL,
+                          node_metadata   JSON,
+                          status_reason_code     TEXT,
+                          status_reason_summary  TEXT,
+                          status_evidence_refs   JSON
+                        )
+                        """
                     )
-                    """
-                )
-                insert_sql = (
-                    f"INSERT INTO invocations_new ({col_list}) "  # noqa: S608
-                    f"SELECT {col_list} FROM invocations"
-                )
-                await driver.execute(insert_sql)
-                await driver.execute("DROP TABLE invocations")
-                await driver.execute("ALTER TABLE invocations_new RENAME TO invocations")
-                for idx_sql in index_sqls:
-                    await driver.execute(idx_sql)
-                await driver.commit()
-            finally:
-                await driver.execute("PRAGMA foreign_keys = ON")
-                await driver.commit()
+                    insert_sql = (
+                        f"INSERT INTO invocations_new ({col_list}) "  # noqa: S608
+                        f"SELECT {col_list} FROM invocations"
+                    )
+                    await driver.execute(insert_sql)
+                    await driver.execute("DROP TABLE invocations")
+                    await driver.execute("ALTER TABLE invocations_new RENAME TO invocations")
+                    for idx_sql in index_sqls:
+                        await driver.execute(idx_sql)
+                    await driver.commit()
+                finally:
+                    await driver.execute("PRAGMA foreign_keys = ON")
+                    await driver.commit()
+
+        await self._rebuild_check_constraint(
+            "invocations",
+            lambda sql: sql is not None and self._LEGACY_INVOCATIONS_STATUS_MARKER in sql,
+            _rebuild,
+        )
 
     async def _backup_before_rebuild(self, label: str) -> None:
         """Copy the on-disk state.db aside before an in-place table rebuild (ADR-0071 D2).
@@ -1447,78 +1521,85 @@ class StateDB:
         # cross-table foreign keys from an isolated, single-table MetaData).
         # The literal mirrors the CREATE TABLE in schema.sql; parity between
         # the two is test-enforced.
-        async with self._engine.connect() as conn:
-            driver = (await conn.get_raw_connection()).driver_connection
-            await driver.execute("PRAGMA foreign_keys = OFF")
-            try:
-                await driver.execute(
-                    """
-                    CREATE TABLE schedule_runs_new (
-                      id                  TEXT    PRIMARY KEY,
-                      schedule_id         TEXT    REFERENCES schedules(id) ON DELETE CASCADE,
-                      invocation_id       TEXT    REFERENCES invocations(id),
-                      trigger_context     JSON    NOT NULL,
-                      action_kind         TEXT    NOT NULL,
-                      action_args         JSON    NOT NULL,
-                      status              TEXT    NOT NULL DEFAULT 'running'
-                                          CHECK(status IN ('queued', 'waiting_dependency',
-                                                'running', 'retry_wait', 'completed',
-                                                'failed', 'timed_out', 'skipped',
-                                                'cancelled')),
-                      exit_code           INTEGER,
-                      chain_parent_id     TEXT    REFERENCES schedule_runs(id),
-                      chain_depth         INTEGER NOT NULL DEFAULT 0,
-                      fired_at            REAL    NOT NULL,
-                      ended_at            REAL,
-                      error_detail        TEXT,
-                      created_at          REAL    NOT NULL,
-                      updated_at          REAL,
-                      status_reason_code     TEXT,
-                      status_reason_summary  TEXT,
-                      status_evidence_refs   JSON,
-                      queued_at           REAL,
-                      leased_by           TEXT,
-                      lease_expires_at    REAL,
-                      concurrency_key     TEXT,
-                      lease_attempts      INTEGER NOT NULL DEFAULT 0,
-                      required_capabilities  JSON,
-                      execution_target       TEXT,
-                      library_ref             TEXT,
-                      library_content_hash    TEXT,
-                      dispatched_at           REAL,
-                      resume_packet           JSON
+        async def _rebuild() -> None:
+            async with self._engine.connect() as conn:
+                driver = (await conn.get_raw_connection()).driver_connection
+                await driver.execute("PRAGMA foreign_keys = OFF")
+                try:
+                    await driver.execute(
+                        """
+                        CREATE TABLE schedule_runs_new (
+                          id                  TEXT    PRIMARY KEY,
+                          schedule_id         TEXT    REFERENCES schedules(id) ON DELETE CASCADE,
+                          invocation_id       TEXT    REFERENCES invocations(id),
+                          trigger_context     JSON    NOT NULL,
+                          action_kind         TEXT    NOT NULL,
+                          action_args         JSON    NOT NULL,
+                          status              TEXT    NOT NULL DEFAULT 'running'
+                                              CHECK(status IN ('queued', 'waiting_dependency',
+                                                    'running', 'retry_wait', 'completed',
+                                                    'failed', 'timed_out', 'skipped',
+                                                    'cancelled')),
+                          exit_code           INTEGER,
+                          chain_parent_id     TEXT    REFERENCES schedule_runs(id),
+                          chain_depth         INTEGER NOT NULL DEFAULT 0,
+                          fired_at            REAL    NOT NULL,
+                          ended_at            REAL,
+                          error_detail        TEXT,
+                          created_at          REAL    NOT NULL,
+                          updated_at          REAL,
+                          status_reason_code     TEXT,
+                          status_reason_summary  TEXT,
+                          status_evidence_refs   JSON,
+                          queued_at           REAL,
+                          leased_by           TEXT,
+                          lease_expires_at    REAL,
+                          concurrency_key     TEXT,
+                          lease_attempts      INTEGER NOT NULL DEFAULT 0,
+                          required_capabilities  JSON,
+                          execution_target       TEXT,
+                          library_ref             TEXT,
+                          library_content_hash    TEXT,
+                          dispatched_at           REAL,
+                          resume_packet           JSON
+                        )
+                        """
                     )
-                    """
-                )
-                insert_sql = (
-                    f"INSERT INTO schedule_runs_new ({col_list}) "  # noqa: S608
-                    f"SELECT {col_list} FROM schedule_runs"
-                )
-                await driver.execute(insert_sql)
-                await driver.execute("DROP TABLE schedule_runs")
-                await driver.execute("ALTER TABLE schedule_runs_new RENAME TO schedule_runs")
-                for idx_sql in index_sqls:
-                    await driver.execute(idx_sql)
-                for trig_sql in trigger_sqls:
-                    await driver.execute(trig_sql)
-                # New ADR-0071 queue indexes: not part of the pre-rebuild
-                # index set, so replaying index_sqls above never creates
-                # them. Create explicitly (idempotent) so a migrated DB ends
-                # up with the same indexes as a freshly-created one.
-                await driver.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_schedule_runs_queue "
-                    "ON schedule_runs(status, queued_at) "
-                    "WHERE status IN ('queued', 'retry_wait')"
-                )
-                await driver.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_schedule_runs_concurrency "
-                    "ON schedule_runs(concurrency_key, status) "
-                    "WHERE status IN ('queued', 'running', 'retry_wait')"
-                )
-                await driver.commit()
-            finally:
-                await driver.execute("PRAGMA foreign_keys = ON")
-                await driver.commit()
+                    insert_sql = (
+                        f"INSERT INTO schedule_runs_new ({col_list}) "  # noqa: S608
+                        f"SELECT {col_list} FROM schedule_runs"
+                    )
+                    await driver.execute(insert_sql)
+                    await driver.execute("DROP TABLE schedule_runs")
+                    await driver.execute("ALTER TABLE schedule_runs_new RENAME TO schedule_runs")
+                    for idx_sql in index_sqls:
+                        await driver.execute(idx_sql)
+                    for trig_sql in trigger_sqls:
+                        await driver.execute(trig_sql)
+                    # New ADR-0071 queue indexes: not part of the pre-rebuild
+                    # index set, so replaying index_sqls above never creates
+                    # them. Create explicitly (idempotent) so a migrated DB ends
+                    # up with the same indexes as a freshly-created one.
+                    await driver.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_schedule_runs_queue "
+                        "ON schedule_runs(status, queued_at) "
+                        "WHERE status IN ('queued', 'retry_wait')"
+                    )
+                    await driver.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_schedule_runs_concurrency "
+                        "ON schedule_runs(concurrency_key, status) "
+                        "WHERE status IN ('queued', 'running', 'retry_wait')"
+                    )
+                    await driver.commit()
+                finally:
+                    await driver.execute("PRAGMA foreign_keys = ON")
+                    await driver.commit()
+
+        await self._rebuild_check_constraint(
+            "schedule_runs",
+            lambda sql: sql is not None and self._LEGACY_SCHEDULE_RUNS_QUEUE_MARKER in sql,
+            _rebuild,
+        )
 
     # ── Schema version ─────────────────────────────────────────────────
 
