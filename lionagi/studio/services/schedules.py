@@ -672,11 +672,12 @@ async def get_schedule_run(run_id: str) -> dict[str, Any] | None:
                 (run_id,),
             )
             run["chain_children"] = rows
-        # Layer the RunView-reconciled fields on top, additively —
-        # chain_children (legacy) and outcome/duration_ms/... coexist.
-        view = await run_view.get_run_view(db, run_id)
-        if view is not None:
-            run = {**run, **view}
+        # Layer the RunView-reconciled fields on top of the SAME row already
+        # fetched above, additively — chain_children (legacy) and
+        # outcome/duration_ms/... coexist without a second, independent read
+        # of schedule_runs that could observe a different row state.
+        view = await run_view.build_run_view_for(db, run)
+        run = {**run, **view}
     return run
 
 
@@ -897,7 +898,7 @@ async def trigger_schedule_route(schedule_id: str) -> dict[str, Any]:
 async def list_schedule_runs_route(
     schedule_id: str,
     status: list[str] | None = Query(default=None),  # noqa: B008
-    limit: int = Query(default=20, ge=1, le=200),
+    limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
     # RunView-enriched rows (adds outcome/duration_ms/session_ids/artifacts
