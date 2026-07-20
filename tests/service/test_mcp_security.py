@@ -1,11 +1,14 @@
 """Tests for MCP security: fail-closed transport security requiring explicit opt-in before transport construction."""
 
+import copy
+
 import pytest
 
 from lionagi.service.connections.mcp_wrapper import (
     MCPConnectionPool,
     MCPSecurityConfig,
     _filter_env,
+    _MCPRecoveryCapability,
     _validate_command,
     _validate_url,
 )
@@ -1138,5 +1141,54 @@ class TestRecoveryIsUnforgeable:
             assert rehydrated.mcp_capability is None
             with pytest.raises(PermissionError):
                 await rehydrated.func_callable()
+        finally:
+            self._reset()
+
+    async def test_recovery_capability_never_appears_in_any_serialization(self):
+        """Absence check across EVERY serialization surface, not just the one
+        `mode="python"` dict the rehydration test above spot-checks: the
+        capability must be missing from `to_dict` in all modes, from
+        `to_json`, and from the `mcp_config` field itself, at any nesting
+        depth. A deepcopy is the deliberate exception -- it is an in-process
+        copy across no trust boundary, so it legitimately retains the live
+        capability; only the persistence surfaces must drop it (asserted so a
+        later change that "fixes" deepcopy to drop it, breaking legitimate
+        in-process cloning, is caught)."""
+        from lionagi.protocols.action.tool import Tool
+
+        self._reset()
+        try:
+            capability = MCPConnectionPool._mint_capability(MCPSecurityConfig(allow_commands=True))
+            tool = Tool(
+                mcp_config={"ping": {"command": "echo", "args": ["a"]}},
+                mcp_capability=capability,
+            )
+
+            def _walk(obj):
+                """Yield every dict key and every leaf value at any depth."""
+                if isinstance(obj, dict):
+                    for k, v in obj.items():
+                        yield k
+                        yield from _walk(v)
+                elif isinstance(obj, (list, tuple, set)):
+                    for v in obj:
+                        yield from _walk(v)
+                else:
+                    yield obj
+
+            for mode in ("python", "json", "db"):
+                nodes = list(_walk(tool.to_dict(mode=mode)))
+                assert "mcp_capability" not in nodes, mode
+                assert not any(isinstance(n, _MCPRecoveryCapability) for n in nodes), mode
+                # The capability's policy must not leak by value either.
+                assert capability.security not in nodes, mode
+
+            assert "mcp_capability" not in tool.to_json()
+            # `mcp_config` is a serializable field and must never carry it.
+            assert "mcp_capability" not in list(_walk(tool.mcp_config))
+
+            clone = copy.deepcopy(tool)
+            assert isinstance(clone.mcp_capability, _MCPRecoveryCapability)
+            assert "mcp_capability" not in list(_walk(clone.to_dict(mode="python")))
         finally:
             self._reset()
