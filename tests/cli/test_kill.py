@@ -975,6 +975,41 @@ async def test_do_kill_all_stale_access_denied_not_cancelled(
         ] == "running", "AccessDenied must not be treated as a dead/recycled pid"
 
 
+async def test_do_kill_all_stale_process_vanishing_mid_check_does_not_abort_sweep(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A process dying between the liveness check and the psutil detail reads
+    (NoSuchProcess from environ/create_time/cmdline) must classify the row as
+    stale and keep the sweep going — not escape and abort the whole sweep with
+    later rows unprocessed."""
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+
+    fake_no_such = type("NoSuchProcess", (Exception,), {})
+    fake_psutil = MagicMock()
+    fake_psutil.NoSuchProcess = fake_no_such
+    fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    fake_proc = MagicMock()
+    fake_proc.environ.side_effect = fake_no_such("gone")
+    fake_proc.cmdline.side_effect = fake_no_such("gone")
+    fake_proc.create_time.side_effect = fake_no_such("gone")
+    fake_psutil.Process.return_value = fake_proc
+    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        first = await _seed_session(db, status="running", pid=11111, started_at=old_start)
+        second = await _seed_session(db, status="running", pid=22222, started_at=old_start)
+
+    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
+    assert rc == 0
+
+    async with StateDB() as db:
+        for sid in (first, second):
+            assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+                "status"
+            ] == "cancelled", "vanished processes are stale; BOTH rows must be swept"
+
+
 # ── cascade kill ───────────────────────────────────────────────────────────────
 
 

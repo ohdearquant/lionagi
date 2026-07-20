@@ -141,7 +141,9 @@ def _check_pid_identity_tristate(
             create_time_ok = (
                 abs(proc.create_time() - expected_create_time) <= _CREATE_TIME_TOLERANCE
             )
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except psutil.NoSuchProcess:
+            return "not_ours"
+        except psutil.AccessDenied:
             return "unverifiable"
         if not create_time_ok:
             return "not_ours"
@@ -149,6 +151,11 @@ def _check_pid_identity_tristate(
     if expected_session_id is not None:
         try:
             marker = proc.environ().get("LIONAGI_SESSION_ID")
+        except psutil.NoSuchProcess:
+            # The process died between the liveness check and here: the row
+            # is genuinely stale, and letting this escape would abort the
+            # whole sweep with later rows unprocessed.
+            return "not_ours"
         except (psutil.AccessDenied, NotImplementedError):
             marker = None
         if marker is not None:
@@ -161,7 +168,9 @@ def _check_pid_identity_tristate(
 
     try:
         cmdline = proc.cmdline()
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
+    except psutil.NoSuchProcess:
+        return "not_ours"
+    except psutil.AccessDenied:
         return "unverifiable"
 
     return "ours" if _cmdline_is_lionagi(cmdline, expected_cmd) else "not_ours"
