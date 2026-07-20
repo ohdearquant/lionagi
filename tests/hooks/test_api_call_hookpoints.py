@@ -128,6 +128,34 @@ async def test_chat_emits_api_post_call_with_error_status_when_invoke_raises():
     assert "provider is down" not in post["error"]
 
 
+async def test_chat_emits_api_post_call_error_from_failed_status_without_raise():
+    """A provider-returned FAILED APICalling carries its failure reason on
+    ``api_call.execution.error``, not as a raised exception -- the payload's
+    error field must still reflect it rather than staying null, and must not
+    leak the raw failure text either."""
+    branch = LionAGIMockFactory.create_mocked_branch(response="broken", status=EventStatus.FAILED)
+
+    async def _failed_invoke(**kw):
+        api_call = LionAGIMockFactory.create_api_calling_mock(
+            response_data="broken", status=EventStatus.FAILED
+        )
+        api_call.execution.error = "rate limited: sk-secret-token-12345"
+        return api_call
+
+    branch.chat_model.invoke = _failed_invoke
+    calls = _wire(branch, HookPoint.API_PRE_CALL, HookPoint.API_POST_CALL)
+
+    from lionagi._errors import ExecutionError
+
+    with pytest.raises(ExecutionError):
+        await branch.chat("hi there")
+
+    post = calls[HookPoint.API_POST_CALL][0]
+    assert post["status"] == "failed"
+    assert post["error"] is not None
+    assert "sk-secret-token-12345" not in post["error"]
+
+
 async def test_chat_emits_paired_post_call_on_cancellation_during_invoke():
     """asyncio.CancelledError is a BaseException, not an Exception -- a bare
     ``except Exception`` around ``imodel.invoke()`` lets cancellation mid-call
@@ -244,6 +272,32 @@ async def test_run_without_session_bus_does_not_crash():
     assert results  # ran to completion unaffected
 
 
+async def test_run_terminal_tokens_survive_the_final_response_flush():
+    """The last text flush (which happens after the stream loop ends, at the
+    same point the terminal API_POST_CALL is emitted) clears result_meta
+    right after stamping it onto the AssistantResponse -- a run whose
+    "result" chunk arrives before its final text must still report the
+    tokens it received, not None, at the terminal post-call emission."""
+    branch = Branch()
+    branch.chat_model = _make_fake_cli_model(
+        [
+            StreamChunk(type="text", content="hello"),
+            StreamChunk(
+                type="result",
+                metadata={"usage": {"input_tokens": 5, "output_tokens": 3}},
+            ),
+        ]
+    )
+    calls = _wire(branch, HookPoint.API_PRE_CALL, HookPoint.API_POST_CALL)
+
+    results = []
+    async for msg in run(branch, "hi there", RunParam()):
+        results.append(msg)
+
+    post = calls[HookPoint.API_POST_CALL][0]
+    assert post["tokens"] == {"input_tokens": 5, "output_tokens": 3}
+
+
 async def test_chat_api_post_call_never_leaks_secret_shaped_error_text():
     """A provider exception's message can carry request bodies, full URLs
     with query parameters, or credential fragments -- none of that may reach
@@ -266,3 +320,106 @@ async def test_chat_api_post_call_never_leaks_secret_shaped_error_text():
 
     post = calls[HookPoint.API_POST_CALL][0]
     assert secret not in json_dumps(post)
+
+
+# ── unified pairing/field invariant ──────────────────────────────────────────
+#
+# Every API_PRE_CALL is followed by exactly one API_POST_CALL carrying
+# whatever is actually known at that point about how the call ended:
+#
+# | exit path                       | status      | error            | tokens         |
+# |----------------------------------|-------------|------------------|----------------|
+# | success                          | "completed" | None             | best-effort    |
+# | provider FAILED, not raised      | "failed"    | class-name/label | best-effort    |
+# | raised exception                 | "error"     | class-name/label | None           |
+# | cancellation (BaseException)     | "error"     | "CancelledError" | None           |
+#
+# A single parametrized test asserting this table generically -- rather than
+# three separate hardcoded scenario tests -- is what catches a *fourth* exit
+# path added later that forgets to populate `error` on failure, or that
+# reintroduces raw message text: a scenario-specific test only checks the
+# exact value it was written against, so a new path with the same shape but
+# a different bug (e.g. `error` populated but with the raw message again)
+# would slip through unless every failure path is checked against the same
+# generic assertions.
+
+
+async def _run_chat_scenario(scenario: str):
+    if scenario == "success":
+        branch = LionAGIMockFactory.create_mocked_branch(response="hello")
+        calls = _wire(branch, HookPoint.API_PRE_CALL, HookPoint.API_POST_CALL)
+        await branch.chat("hi there")
+        return calls
+
+    if scenario == "failed_status":
+        branch = LionAGIMockFactory.create_mocked_branch(response="hello")
+
+        async def _failed_invoke(**kw):
+            api_call = LionAGIMockFactory.create_api_calling_mock(
+                response_data="broken", status=EventStatus.FAILED
+            )
+            api_call.execution.error = "boom: leak-me-not"
+            return api_call
+
+        branch.chat_model.invoke = _failed_invoke
+        calls = _wire(branch, HookPoint.API_PRE_CALL, HookPoint.API_POST_CALL)
+        with pytest.raises(Exception):
+            await branch.chat("hi there")
+        return calls
+
+    if scenario == "raised":
+        branch = LionAGIMockFactory.create_mocked_branch(response="hello")
+
+        async def _boom(**kw):
+            raise RuntimeError("leak-me-not")
+
+        branch.chat_model.invoke = _boom
+        calls = _wire(branch, HookPoint.API_PRE_CALL, HookPoint.API_POST_CALL)
+        with pytest.raises(RuntimeError):
+            await branch.chat("hi there")
+        return calls
+
+    if scenario == "cancelled":
+        import asyncio
+
+        branch = LionAGIMockFactory.create_mocked_branch(response="hello")
+        calls = _wire(branch, HookPoint.API_PRE_CALL, HookPoint.API_POST_CALL)
+        invoke_started = asyncio.Event()
+
+        async def _blocking_invoke(**kwargs):
+            invoke_started.set()
+            await asyncio.Event().wait()
+
+        branch.chat_model.invoke = _blocking_invoke
+        task = asyncio.ensure_future(branch.chat("hi there"))
+        await invoke_started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return calls
+
+    raise AssertionError(f"unknown scenario {scenario!r}")
+
+
+@pytest.mark.parametrize("scenario", ["success", "failed_status", "raised", "cancelled"])
+async def test_api_post_call_field_invariant_holds_across_exit_paths(scenario):
+    calls = await _run_chat_scenario(scenario)
+
+    # Pairing: exactly one pre-call, exactly one post-call, regardless of exit path.
+    assert len(calls[HookPoint.API_PRE_CALL]) == 1
+    assert len(calls[HookPoint.API_POST_CALL]) == 1
+    post = calls[HookPoint.API_POST_CALL][0]
+
+    if scenario == "success":
+        assert post["status"] == "completed"
+        assert post["error"] is None
+    else:
+        # Every non-success exit path must populate error (never silently
+        # null just because the failure surfaced via a status field instead
+        # of a raised exception), and it must never carry raw message text --
+        # every scenario above embeds a distinct marker string that would
+        # appear verbatim in `error` if the fix regressed to str(error) /
+        # str(execution.error).
+        assert post["error"] is not None
+        assert "leak-me-not" not in post["error"]
+        assert post["status"] in ("failed", "error")

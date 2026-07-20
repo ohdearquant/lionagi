@@ -474,6 +474,14 @@ async def run(
         # Provider-reported usage from the terminal "result" chunk (codex: tokens; claude_code: cost/turns/duration).
         # Stamped onto the final AssistantResponse; re-tokenizing message history undercounts internal tool turns.
         result_meta: dict = {}
+        # Last known usage mapping, tracked independently of result_meta:
+        # _flush_response() clears result_meta right after stamping it onto a
+        # message (to avoid double-counting on a later flush within the same
+        # run() call), so by the time the terminal API_POST_CALL emission
+        # below reads it, a run that flushes its last text after the "result"
+        # chunk would see an already-cleared dict and report tokens=None even
+        # though usage was in fact received. last_usage survives that clear.
+        last_usage: dict | None = None
 
         async def _flush_response() -> AssistantResponse | None:
             if not text_parts:
@@ -597,6 +605,8 @@ async def run(
                         case "result":
                             if chunk.metadata:
                                 _accumulate_result_meta(result_meta, chunk.metadata)
+                                if isinstance(result_meta.get("usage"), dict):
+                                    last_usage = dict(result_meta["usage"])
 
                         case "error":
                             # A CLI provider marks a resumed-session end-of-stream by
@@ -723,7 +733,7 @@ async def run(
                 branch.chat_model,
                 _terminal_api_call,
                 error=_run_exc,
-                tokens=result_meta.get("usage") if result_meta else None,
+                tokens=last_usage,
             )
 
         if has_observer and not _terminal_emitted:

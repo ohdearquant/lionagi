@@ -92,7 +92,24 @@ async def emit_api_post_call(
     tokens: dict | None = None,
 ) -> None:
     """Fire API_POST_CALL once the call has settled — success, provider-reported
-    failure (``api_call.status``), or a raised exception (``error``)."""
+    failure (``api_call.status``), or a raised exception (``error``).
+
+    Every ``API_PRE_CALL`` this adapter's caller emits is paired with exactly
+    one ``API_POST_CALL`` carrying whatever is actually known about how the
+    call ended:
+
+    - ``status``: ``"error"`` when an exception was raised (``error`` is
+      set), otherwise the provider-reported ``api_call.status`` verbatim
+      (``"completed"``/``"failed"``/...).
+    - ``error``: populated whenever *either* an exception was raised *or*
+      the call settled with a provider-reported failure and nothing was
+      raised (``api_call.execution.error``) -- a FAILED ``APICalling`` that
+      never raises must not leave this field null just because raising
+      wasn't how it failed. Always reduced to a class-name-only summary
+      (see ``_error_summary``), never the raw message.
+    - ``tokens``: best-effort usage extracted from the settled response;
+      ``None`` when the shape is unrecognized or the call never produced one.
+    """
     hooks = branch._hooks
     if hooks is None:
         return
@@ -102,11 +119,15 @@ async def emit_api_post_call(
     duration = getattr(getattr(api_call, "execution", None), "duration", None)
     latency_ms = duration * 1000.0 if isinstance(duration, int | float) else None
 
+    status_obj = getattr(api_call, "status", None)
+    provider_status = getattr(status_obj, "value", None)
+
     if error is not None:
         status = "error"
     else:
-        status_obj = getattr(api_call, "status", None)
-        status = getattr(status_obj, "value", None)
+        status = provider_status
+        if provider_status == "failed":
+            error = getattr(getattr(api_call, "execution", None), "error", None)
 
     if tokens is None and api_call is not None:
         tokens = _extract_tokens(getattr(api_call, "response", None))
