@@ -94,8 +94,9 @@ mcp = [
     # fastmcp -> mcp pulls Starlette transitively but mcp only pins
     # starlette>=0.27, so floor the patched version here too (mirrors [studio]).
     "starlette>=1.3.1",
-    # fastmcp does not floor mcp itself, so pull the patched release forward
-    # here for the same dependency-hygiene reason as starlette above. lionagi
+    # fastmcp only requires mcp>=1.24.0,<2.0, which predates the advisories,
+    # so pull the patched release forward here for the same dependency-hygiene
+    # reason as starlette above. lionagi
     # uses MCP as a client only, so this floors the version we resolve rather
     # than turning on any server-side transport protection.
     "mcp>=1.28.1",
