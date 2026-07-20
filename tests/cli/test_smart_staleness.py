@@ -177,8 +177,12 @@ async def test_do_kill_all_stale_does_not_sweep_play_with_live_session(
     import os
 
     own_pid = os.getpid()
-    # _pid_alive returns True for our own pid, False for others.
+    # _pid_alive returns True for our own pid, False for others. The identity
+    # check is mocked too: our own pid is genuinely the pytest process, not a
+    # lionagi CLI invocation, so the real cmdline check would (correctly)
+    # reject it -- here it stands in for a live, identity-matching session.
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: pid == own_pid)
+    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", lambda *a, **kw: True)
 
     old_time = time.time() - 7200
     async with StateDB() as db:

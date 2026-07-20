@@ -761,8 +761,9 @@ async def test_do_kill_all_stale_cancels_dead_pid(
 async def test_do_kill_all_stale_skips_live_pid(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """Running session with a LIVE PID is not touched."""
+    """Running session with a LIVE, identity-matching PID is not touched."""
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", lambda *a, **kw: True)
 
     old_start = time.time() - 7200
     async with StateDB() as db:
@@ -775,6 +776,27 @@ async def test_do_kill_all_stale_skips_live_pid(
         assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
             "status"
         ] == "running"
+
+
+async def test_do_kill_all_stale_sweeps_reused_pid(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A live PID that no longer identifies as the tracked process (reused
+    after the original died) must still be swept, not treated as live."""
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", lambda *a, **kw: False)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", pid=12345, started_at=old_start)
+
+    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
+    assert rc == 0
+
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "cancelled"
 
 
 async def test_do_kill_all_stale_skips_recent(temp_db_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -960,10 +982,43 @@ async def test_do_kill_play_reaps_worker_chain_without_recursive_flag(
         ] == "blocked"
 
 
+async def test_do_kill_active_show_succeeds(temp_db_path: Path):
+    """`li kill <show-id>` on a fresh, unmocked active show maps to 'aborted'."""
+    async with StateDB() as db:
+        show_id = await _seed_show(db)  # default status="active" -- no mocking
+
+    rc = await _do_kill(show_id)
+    assert rc == 0
+
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM shows WHERE id = ?", (show_id,)))[
+            "status"
+        ] == "aborted"
+
+
+@pytest.mark.parametrize("terminal_status", ["completed", "aborted", "imported"])
+async def test_do_kill_show_terminal_statuses_refuse(temp_db_path: Path, terminal_status: str):
+    """A show already in a terminal (non-'active') status is rejected, rc=1."""
+    async with StateDB() as db:
+        show_id = await _seed_show(db, status=terminal_status)
+
+    rc = await _do_kill(show_id)
+    assert rc == 1
+
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM shows WHERE id = ?", (show_id,)))[
+            "status"
+        ] == terminal_status
+
+
 async def test_do_kill_recursive_show_does_not_reap_play_workers(
-    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
-    """A recursive show kill remains limited to its direct running plays."""
+    """--recursive is a documented no-op boundary for shows (ADR-0104): the
+    show row goes terminal, but its plays/workers are left untouched."""
+    from lionagi.cli._logging import configure_cli_logging
+
+    configure_cli_logging(verbose=False)
     signalled_pids: list[int] = []
 
     def fake_terminate(pid: int, **kwargs: Any) -> str:
@@ -974,21 +1029,15 @@ async def test_do_kill_recursive_show_does_not_reap_play_workers(
         invocation_id = await _seed_invocation(db, status="running", pid=43002)
         session_id = await _seed_session(db, status="running", pid=43001)
         await db.update_session(session_id, invocation_id=invocation_id)
-        show_id = await _seed_show(db)
+        show_id = await _seed_show(db)  # default status="active" -- no mocking
         play_id = await _seed_play(db, show_id, session_id=session_id)
 
-    async def resolve_running_show(db: StateDB, id_or_short: str):
-        assert id_or_short == show_id
-        show_row = await db.fetch_one("SELECT * FROM shows WHERE id = ?", (show_id,))
-        assert show_row is not None
-        show_row["status"] = "running"
-        return "shows", "show", show_row
-
-    monkeypatch.setattr("lionagi.cli.kill._resolve_entity", resolve_running_show)
     monkeypatch.setattr("lionagi.cli.kill._terminate_pid", fake_terminate)
 
+    capsys.readouterr()
     assert await _do_kill(show_id, recursive=True) == 0
     assert signalled_pids == []
+    assert "does not reap a show's plays or their workers" in capsys.readouterr().err
 
     async with StateDB() as db:
         assert (await db.fetch_one("SELECT status FROM shows WHERE id = ?", (show_id,)))[
@@ -996,7 +1045,7 @@ async def test_do_kill_recursive_show_does_not_reap_play_workers(
         ] == "aborted"
         assert (await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,)))[
             "status"
-        ] == "blocked"
+        ] == "running"
         assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (session_id,)))[
             "status"
         ] == "running"

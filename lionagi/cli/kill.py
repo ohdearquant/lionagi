@@ -406,8 +406,12 @@ async def _do_kill(
 
         table, entity_type, row = resolved
         current_status = row.get("status")
+        # Shows never reach "running" (they persist as 'active' per the
+        # shows.status vocabulary in state/db.py); every other entity type
+        # uses "running" as its only killable status.
+        killable_status = "active" if entity_type == "show" else "running"
 
-        if current_status != "running":
+        if current_status != killable_status:
             log_error(
                 f"{entity_type} {row['id'][:12]} is already in terminal state: "
                 f"{current_status!r} — nothing to kill"
@@ -419,6 +423,17 @@ async def _do_kill(
 
         if entity_type == "play":
             children = await _walk_running_children(db, entity_type, row["id"])
+        elif entity_type == "show":
+            # ADR-0104 explicitly defers show-level reaping: a show kill only
+            # marks the show row terminal. --recursive is a documented no-op
+            # here rather than a partial reap of the show's plays/workers.
+            children = []
+            if recursive:
+                warn(
+                    f"show {row['id'][:12]}: --recursive does not reap a show's "
+                    "plays or their workers (deferred per ADR-0104) — kill the "
+                    "play or session ids directly to stop a show's workers"
+                )
         elif recursive:
             children = await _list_running_children(db, entity_type, row["id"])
         else:
@@ -530,7 +545,11 @@ async def _do_kill_all_stale(
                     continue
 
                 pid = _read_pid_from_entity(row_dict)
-                if pid is not None and _pid_alive(pid):
+                # A live pid alone isn't enough: if the original process died
+                # and the OS reused its pid, `_pid_alive` still reports True.
+                # Require the same identity check `_check_pid_identity` uses
+                # in the direct-kill path before treating the row as live.
+                if pid is not None and _pid_alive(pid) and _check_pid_identity(pid, "lionagi"):
                     skipped_live += 1
                     if verbose:
                         print(
@@ -677,14 +696,16 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
         description=(
             "Kill a running lionagi entity by id, or sweep all stale running "
             "entities whose underlying OS process is dead.\n\n"
-            "The entity's status is set to 'cancelled' (sessions/invocations) "
-            "or 'aborted' (shows) with reason tracking per ADR-0028.\n\n"
+            "The entity's status is set to 'cancelled' (sessions/invocations), "
+            "'blocked' (plays), or 'aborted' (shows) with reason tracking per "
+            "ADR-0028.\n\n"
             "Recursion boundary: --recursive walks play -> session -> invocation "
-            "and always reaches the PID-bearing workers. SHOW rows cannot be "
-            "killed by id today: shows persist as 'active' (never 'running'), "
-            "so a show id is rejected as already-terminal. To stop a show's "
-            "work, kill its play ids or session ids directly; --all-stale "
-            "cancels play and show rows once their workers are gone.\n\n"
+            "and always reaches the PID-bearing workers. A SHOW kill ('active' "
+            "-> 'aborted') only marks the show row terminal: --recursive has no "
+            "effect on shows, since reaping a show's plays/workers is deferred "
+            "per ADR-0104. To stop a show's work, kill its play ids or session "
+            "ids directly; --all-stale cancels play and show rows once their "
+            "workers are gone.\n\n"
             "Examples:\n"
             "  li kill abc123                        # kill by id prefix\n"
             "  li kill <play-id>                     # also reap linked workers\n"
@@ -716,10 +737,9 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help=(
             "Also kill direct child entities (e.g. invocations spawned by a session). "
-            "Play kills always reap their linked workers. Does NOT extend to shows: "
-            "show rows are rejected as already-terminal (they persist as 'active', "
-            "never 'running') -- kill the play or session id directly to stop a "
-            "show's workers."
+            "Play kills always reap their linked workers. Has no effect on show kills: "
+            "reaping a show's plays/workers is deferred per ADR-0104 -- kill the play "
+            "or session id directly to stop a show's workers."
         ),
     )
     kill.add_argument(
