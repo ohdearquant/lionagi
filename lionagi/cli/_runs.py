@@ -4,9 +4,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
+import tempfile
 import time
 import uuid
 import warnings
@@ -54,6 +56,24 @@ def _new_run_id() -> str:
 def current_run_id() -> str | None:
     """Return the run_id inherited from the environment (subprocess case)."""
     return os.environ.get(_RUN_ID_ENV_VAR) or None
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    """Write *payload* to *path* so readers never see a partial file.
+
+    The temp file is uniquely named and lives in the destination directory
+    (os.replace is only atomic within a filesystem), so concurrent writers
+    of the same target cannot corrupt each other's in-progress write.
+    """
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(payload, indent=2))
+        os.replace(tmp_name, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +139,15 @@ class RunDir:
     # ── Manifest I/O ────────────────────────────────────────────────
 
     def write_manifest(self, data: dict) -> None:
+        """Replace run.json with *data* plus this run's identity fields.
+
+        The write is atomic (a uniquely-named temp file in the same
+        directory, then os.replace), so a concurrent reader observes either
+        the previous manifest or the new one, never a truncated file. It is
+        a whole-file replacement, not a merge: the caller owns the full
+        manifest contents, and two writers racing on one run still resolve
+        last-writer-wins.
+        """
         self.state_root.mkdir(parents=True, exist_ok=True)
         payload = {
             "run_id": self.run_id,
@@ -126,12 +155,43 @@ class RunDir:
             "artifact_root": str(self.artifact_root),
             **data,
         }
-        self.manifest_path.write_text(json.dumps(payload, indent=2))
+        _atomic_write_json(self.manifest_path, payload)
 
     def read_manifest(self) -> dict:
         if not self.manifest_path.exists():
             return {}
         return json.loads(self.manifest_path.read_text())
+
+    # ── Notify-outcome I/O (separate from the manifest; see notify_settings.py) ──
+
+    @property
+    def notify_outcome_path(self) -> Path:
+        return self.state_root / "notify_outcome.json"
+
+    def write_notify_outcome(self, data: dict) -> None:
+        """Atomically replace notify_outcome.json; never merges with a prior
+        outcome and never touches the manifest."""
+        self.state_root.mkdir(parents=True, exist_ok=True)
+        _atomic_write_json(self.notify_outcome_path, data)
+
+    @property
+    def notify_stderr_path(self) -> Path:
+        return self.state_root / "notify_stderr.log"
+
+    def write_notify_stderr(self, text: str) -> Path:
+        """Capture a notify adapter's stderr to an owner-only file (0600).
+
+        Adapter output is free text that may carry a credential from any
+        source, so it is written once, readable only by the user running
+        the process, and referenced by path everywhere else instead of
+        being copied into records or log lines.
+        """
+        self.state_root.mkdir(parents=True, exist_ok=True)
+        path = self.notify_stderr_path
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        return path
 
     # ── Directory setup ─────────────────────────────────────────────
 

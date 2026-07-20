@@ -313,6 +313,405 @@ async def test_exec_handler_swallows_nonzero_exit_and_timeout(monkeypatch, caplo
     assert any("exited 1" in r.message for r in caplog.records)
 
 
+# ── Adapter outcome visibility: notify_outcome.json + the CLI warn() channel ──
+#
+# Outcome recording is never automatic: a bare build_handler(resolved) call
+# (the process-wide default registered by register_settings_terminal_callback)
+# has no bound run and therefore never records anything. Only a handler built
+# via register_run_notify_outcome_scope(run, ...) -- or build_handler(...,
+# outcome_fn=...) directly in these tests -- writes an outcome, and only into
+# that specific run's own notify_outcome.json (never run.json).
+
+
+def _outcome_fn_for(run):
+    from lionagi.state.lifecycle.notify_settings import _record_notify_outcome_to_run
+
+    def _fn(*, ok, exit_code, stderr_text):
+        return _record_notify_outcome_to_run(
+            run, ok=ok, exit_code=exit_code, stderr_text=stderr_text
+        )
+
+    return _fn
+
+
+@pytest.mark.asyncio
+async def test_exec_handler_records_nonzero_exit_outcome_and_warns(monkeypatch, tmp_path):
+    import lionagi.cli._runs as runs_mod
+    from lionagi.cli._runs import allocate_run
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="notify-fail-run")
+    run.write_manifest({"status": "completed", "ended_at": 123.0})
+
+    warn_calls: list[str] = []
+    monkeypatch.setattr("lionagi.cli._logging.warn", warn_calls.append)
+
+    class _FakeProc:
+        pid = 123
+        returncode = 1
+
+        async def communicate(self, data=None):
+            return (b"", b"boom\nsecond line")
+
+    async def _fake_exec(*argv, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=("notify-hook",)), outcome_fn=_outcome_fn_for(run)
+    )
+    await handler(_envelope())  # must not raise
+
+    outcome = json.loads(run.notify_outcome_path.read_text())
+    assert outcome == {
+        "ok": False,
+        "exit_code": 1,
+        "stderr_path": str(run.notify_stderr_path),
+    }
+    # The stderr text lives only in the captured file, never in the record --
+    # and the capture is the whole output, not just its first line.
+    assert run.notify_stderr_path.read_text() == "boom\nsecond line"
+    # The outcome lands in its own file -- run.json's own terminal status is
+    # never touched by notify bookkeeping.
+    manifest = json.loads(run.manifest_path.read_text())
+    assert "notify_outcome" not in manifest
+    assert manifest["status"] == "completed"
+    assert manifest["ended_at"] == 123.0
+
+    assert len(warn_calls) == 1
+    assert "exited 1" in warn_calls[0]
+    # Only the adapter's own name (argv[0]'s basename) identifies it in the
+    # user-facing warn line -- never the full argv repr.
+    assert "notify-hook" in warn_calls[0]
+    assert "('notify-hook',)" not in warn_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_exec_handler_redacts_argv_and_bounds_stderr_in_warn_and_outcome(
+    monkeypatch, tmp_path
+):
+    """A secret-bearing argv (webhook URLs, tokens as args) must never
+    appear in the warn-channel line or the persisted notify_outcome.json --
+    only the adapter's own name (argv[0]'s basename). Stderr content is
+    adapter-controlled and can't be scrubbed for arbitrary secrets, but it
+    is bounded to STDERR_SNIPPET_LIMIT chars, capping exposure."""
+    import lionagi.cli._runs as runs_mod
+    from lionagi.cli._runs import allocate_run
+    from lionagi.state.lifecycle.notify_settings import STDERR_SNIPPET_LIMIT
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="notify-secret-run")
+
+    warn_calls: list[str] = []
+    monkeypatch.setattr("lionagi.cli._logging.warn", warn_calls.append)
+
+    secret = "sekret123"
+    secret_argv = ("notify", "--token", secret)
+    long_detail = "adapter failure detail " + ("x" * 400)
+
+    class _FakeProc:
+        pid = 789
+        returncode = 1
+
+        async def communicate(self, data=None):
+            return (b"", long_detail.encode())
+
+    async def _fake_exec(*args, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=secret_argv), outcome_fn=_outcome_fn_for(run)
+    )
+    await handler(_envelope())  # must not raise
+
+    outcome_text = run.notify_outcome_path.read_text()
+    outcome = json.loads(outcome_text)
+
+    # The secret argv element never leaks into either surface.
+    assert secret not in outcome_text
+    assert len(warn_calls) == 1
+    assert secret not in warn_calls[0]
+    assert "--token" not in warn_calls[0]
+    assert "notify" in warn_calls[0]
+
+    # The adapter's stderr is not in the record at all -- only a path to the
+    # owner-only file that holds it.
+    assert outcome["stderr_path"] == str(run.notify_stderr_path)
+    assert len(warn_calls[0]) < len(long_detail)
+
+
+@pytest.mark.asyncio
+async def test_exec_handler_records_timeout_outcome_and_warns(monkeypatch, tmp_path):
+    import lionagi.cli._runs as runs_mod
+    from lionagi.cli._runs import allocate_run
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="notify-timeout-run")
+
+    warn_calls: list[str] = []
+    monkeypatch.setattr("lionagi.cli._logging.warn", warn_calls.append)
+
+    class _FakeProc:
+        pid = 456
+
+        async def communicate(self, data=None):
+            raise asyncio.TimeoutError()
+
+    async def _fake_exec(*argv, **kwargs):
+        return _FakeProc()
+
+    async def _fake_terminate(proc, grace=None):
+        return None
+
+    async def _fake_await_dead(proc, grace=2.0):
+        return None
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.aterminate_process_group", _fake_terminate
+    )
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings._await_proc_dead", _fake_await_dead
+    )
+
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=("notify-hook",)), outcome_fn=_outcome_fn_for(run)
+    )
+    await handler(_envelope())  # must not raise
+
+    outcome = json.loads(run.notify_outcome_path.read_text())
+    assert outcome == {
+        "ok": False,
+        "exit_code": None,
+        "stderr_path": None,
+    }
+    assert len(warn_calls) == 1
+    assert "timed out" in warn_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_exec_handler_records_spawn_error_outcome_and_warns(monkeypatch, tmp_path):
+    import lionagi.cli._runs as runs_mod
+    from lionagi.cli._runs import allocate_run
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="notify-spawn-error-run")
+
+    warn_calls: list[str] = []
+    monkeypatch.setattr("lionagi.cli._logging.warn", warn_calls.append)
+
+    async def _fake_exec(*argv, **kwargs):
+        raise FileNotFoundError("no such file: notify-hook")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=("notify-hook",)), outcome_fn=_outcome_fn_for(run)
+    )
+    await handler(_envelope())  # must not raise
+
+    outcome = json.loads(run.notify_outcome_path.read_text())
+    assert outcome["ok"] is False
+    assert outcome["exit_code"] is None
+    # A spawn failure produces no adapter output to capture; the reason is
+    # Python's own message and stays on the warning channel.
+    assert outcome["stderr_path"] is None
+    assert len(warn_calls) == 1
+    assert "failed to run" in warn_calls[0]
+    assert "notify-hook" in warn_calls[0]
+    assert "('notify-hook',)" not in warn_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_exec_handler_records_success_outcome_without_warn(monkeypatch, tmp_path):
+    import lionagi.cli._runs as runs_mod
+    from lionagi.cli._runs import allocate_run
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="notify-ok-run")
+
+    warn_calls: list[str] = []
+    monkeypatch.setattr("lionagi.cli._logging.warn", warn_calls.append)
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self, data=None):
+            return (b"", b"")
+
+    async def _fake_exec(*argv, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=("notify-hook",)), outcome_fn=_outcome_fn_for(run)
+    )
+    await handler(_envelope())
+
+    outcome = json.loads(run.notify_outcome_path.read_text())
+    assert outcome == {
+        "ok": True,
+        "exit_code": 0,
+        "stderr_path": None,
+    }
+    assert warn_calls == []
+
+
+@pytest.mark.asyncio
+async def test_exec_handler_outcome_recording_is_a_noop_without_a_bound_run(tmp_path, monkeypatch):
+    """build_handler() with no outcome_fn (the process-wide default
+    registration, before any run-scoped override exists) never guesses at a
+    target run -- outcome recording is skipped, not misattributed."""
+    import lionagi.cli._runs as runs_mod
+    from lionagi.cli._runs import allocate_run
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="unbound-run")
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self, data=None):
+            return (b"", b"")
+
+    async def _fake_exec(*argv, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    handler = build_handler(ResolvedNotifyHandler(argv=("notify-hook",)))
+    await handler(_envelope())  # must not raise
+
+    assert not run.notify_outcome_path.exists()
+
+
+# ── Run-scoped attribution: bound at registration time, never last-writer-wins ──
+
+
+@pytest.mark.asyncio
+async def test_run_scoped_outcome_survives_a_later_run_allocation(monkeypatch, tmp_path):
+    """A late outcome for run A's entity must land on A even after run B has
+    been allocated in the same process -- the handler is bound to A's RunDir
+    at registration time, not resolved dynamically against whichever run is
+    "current" when the callback fires."""
+    import lionagi.cli._runs as runs_mod
+    from lionagi.cli._runs import allocate_run
+    from lionagi.state.lifecycle.notify_settings import (
+        register_run_notify_outcome_scope,
+        unregister_run_notify_outcome_scope,
+    )
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.resolve_notify_config",
+        lambda **kw: ResolvedNotifyHandler(argv=("notify-hook",)),
+    )
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self, data=None):
+            return (b"", b"")
+
+    async def _fake_exec(*argv, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    registry = TerminalCallbackRegistry()
+    run_a = allocate_run(run_id="run-a")
+    name_a = register_run_notify_outcome_scope(
+        run_a, entity_kind="session", entity_id="session-a", registry=registry
+    )
+    assert name_a is not None
+
+    # Run B is allocated afterward, in the same process -- must not affect A's binding.
+    run_b = allocate_run(run_id="run-b")
+    name_b = register_run_notify_outcome_scope(
+        run_b, entity_kind="session", entity_id="session-b", registry=registry
+    )
+    assert name_b is not None
+
+    try:
+        # The "late" terminal event: session-a's own terminal transition,
+        # fired after run-b already exists.
+        envelope_a = RunTerminalEnvelope(
+            event_id="ev-a",
+            entity=EntityRef(kind="session", id="session-a"),
+            previous_status="running",
+            terminal_status="completed",
+            reason_code="run.completed.ok",
+            occurred_at=0.0,
+        )
+        await registry.emit(envelope_a)
+    finally:
+        unregister_run_notify_outcome_scope(name_a, registry=registry)
+        unregister_run_notify_outcome_scope(name_b, registry=registry)
+
+    assert json.loads(run_a.notify_outcome_path.read_text()) == {
+        "ok": True,
+        "exit_code": 0,
+        "stderr_path": None,
+    }
+    assert not run_b.notify_outcome_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_unscoped_entity_records_nothing_never_last_writer_wins(monkeypatch, tmp_path):
+    """A terminal event for an entity with no run-scoped registration must
+    record nothing -- never fall back to whichever run was allocated most
+    recently."""
+    import lionagi.cli._runs as runs_mod
+    from lionagi.cli._runs import allocate_run
+    from lionagi.state.lifecycle.notify_settings import register_run_notify_outcome_scope
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.resolve_notify_config",
+        lambda **kw: ResolvedNotifyHandler(argv=("notify-hook",)),
+    )
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self, data=None):
+            return (b"", b"")
+
+    async def _fake_exec(*argv, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    registry = TerminalCallbackRegistry()
+    # A run is allocated, but its entity ("session-known") is never registered.
+    run = allocate_run(run_id="only-run")
+    register_run_notify_outcome_scope(
+        run, entity_kind="session", entity_id="session-known", registry=registry
+    )
+    # Also install the process-wide default (no outcome_fn) so the unscoped
+    # entity still gets a matching, non-attributing handler.
+    from lionagi.state.lifecycle.notify_settings import build_handler, resolve_notify_config
+
+    default_handler = build_handler(resolve_notify_config())
+    registry.register("notify.settings.on_terminal", default_handler)
+
+    other_envelope = RunTerminalEnvelope(
+        event_id="ev-other",
+        entity=EntityRef(kind="session", id="session-unrelated"),
+        previous_status="running",
+        terminal_status="completed",
+        reason_code="run.completed.ok",
+        occurred_at=0.0,
+    )
+    await registry.emit(other_envelope)
+
+    assert not run.notify_outcome_path.exists()
+
+
 # ── Cancellation (the registry's outer deadline winning the race against
 # the handler's own identical wait_for) must still reap the child ──────────
 
@@ -544,3 +943,231 @@ def test_register_settings_terminal_callback_installs_and_uninstalls(tmp_path, m
 
 def test_default_registry_is_the_process_wide_instance():
     assert isinstance(DEFAULT_TERMINAL_CALLBACKS, TerminalCallbackRegistry)
+
+
+@pytest.mark.asyncio
+async def test_run_scoped_registration_honors_configured_filter(monkeypatch, tmp_path):
+    """A run-scoped registration is an override, so it dispatches on its own
+    match instead of deferring to the process-wide registration's filter. It
+    must therefore apply the configured filter itself -- otherwise an entity
+    the operator excluded via filter.kinds/filter.ids starts receiving
+    notifications the moment it runs under a run scope."""
+    import lionagi.cli._runs as runs_mod
+    from lionagi.cli._runs import allocate_run
+    from lionagi.state.lifecycle.notify_settings import (
+        register_run_notify_outcome_scope,
+        unregister_run_notify_outcome_scope,
+    )
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.resolve_notify_config",
+        lambda **kw: ResolvedNotifyHandler(
+            argv=("notify-hook",), filter_kinds=("play",), filter_ids=("play-allowed",)
+        ),
+    )
+
+    spawned: list[tuple] = []
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self, data=None):
+            return (b"", b"")
+
+    async def _fake_exec(*argv, **kwargs):
+        spawned.append(argv)
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    registry = TerminalCallbackRegistry()
+    run = allocate_run(run_id="filtered-run")
+
+    # Excluded kind: the operator asked for plays only.
+    assert (
+        register_run_notify_outcome_scope(
+            run, entity_kind="session", entity_id="play-allowed", registry=registry
+        )
+        is None
+    )
+    # Right kind, excluded id.
+    assert (
+        register_run_notify_outcome_scope(
+            run, entity_kind="play", entity_id="play-other", registry=registry
+        )
+        is None
+    )
+
+    await registry.emit(
+        RunTerminalEnvelope(
+            event_id="ev-excluded",
+            entity=EntityRef(kind="session", id="play-allowed"),
+            previous_status="running",
+            terminal_status="completed",
+            reason_code="run.completed.ok",
+            occurred_at=0.0,
+        )
+    )
+    assert spawned == []
+    assert not run.notify_outcome_path.exists()
+
+    # The allowed entity still registers and still records its outcome.
+    name = register_run_notify_outcome_scope(
+        run, entity_kind="play", entity_id="play-allowed", registry=registry
+    )
+    assert name is not None
+    try:
+        await registry.emit(
+            RunTerminalEnvelope(
+                event_id="ev-allowed",
+                entity=EntityRef(kind="play", id="play-allowed"),
+                previous_status="running",
+                terminal_status="completed",
+                reason_code="run.completed.ok",
+                occurred_at=0.0,
+            )
+        )
+    finally:
+        unregister_run_notify_outcome_scope(name, registry=registry)
+
+    assert len(spawned) == 1
+    assert json.loads(run.notify_outcome_path.read_text())["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_adapter_argument_values_echoed_on_stderr_are_redacted(monkeypatch, tmp_path, caplog):
+    """The realistic leak path: an adapter fails and echoes its own invocation
+    back on stderr, carrying a token it was passed as an argument. That value
+    must not survive into the warn line, the persisted outcome, or the log."""
+    import lionagi.cli._runs as runs_mod
+    from lionagi.cli._runs import allocate_run
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="redaction-run")
+
+    warn_calls: list[str] = []
+    monkeypatch.setattr("lionagi.cli._logging.warn", warn_calls.append)
+
+    secret = "wh0-t0ken-abcdef123456"
+    secret_argv = ("/usr/local/bin/notify-hook", "--token", secret)
+    echoed = f"notify-hook: request failed: curl -H 'Auth: {secret}' https://hook.example/x"
+
+    class _FakeProc:
+        returncode = 2
+
+        async def communicate(self, data=None):
+            return (b"", echoed.encode())
+
+    async def _fake_exec(*args, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=secret_argv), outcome_fn=_outcome_fn_for(run)
+    )
+    with caplog.at_level(logging.WARNING):
+        await handler(_envelope())
+
+    outcome_text = run.notify_outcome_path.read_text()
+    assert secret not in outcome_text
+    assert json.loads(outcome_text)["stderr_path"] == str(run.notify_stderr_path)
+
+    assert len(warn_calls) == 1
+    assert secret not in warn_calls[0]
+    assert "notify-hook" in warn_calls[0]
+
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert secret not in logged
+    assert "--token" not in logged
+
+
+@pytest.mark.asyncio
+async def test_env_sourced_credential_in_adapter_stderr_reaches_no_shared_surface(
+    monkeypatch, tmp_path, caplog
+):
+    """An adapter can print a credential it got from anywhere -- an inherited
+    environment variable, a file it read -- and no value-matching redaction
+    can recognize it. So the adapter's stderr goes to an owner-only file and
+    every shared surface (warn channel, log, outcome record) carries only the
+    path to it."""
+    import stat
+
+    import lionagi.cli._runs as runs_mod
+    from lionagi.cli._runs import allocate_run
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="env-secret-run")
+
+    warn_calls: list[str] = []
+    monkeypatch.setattr("lionagi.cli._logging.warn", warn_calls.append)
+
+    # The secret is NOT an argv element -- the adapter inherited it.
+    env_secret = "env-cred-9f8e7d6c5b4a"
+    monkeypatch.setenv("NOTIFY_WEBHOOK_TOKEN", env_secret)
+    echoed = f"hook failed: POST rejected for token {env_secret}"
+
+    class _FakeProc:
+        returncode = 1
+
+        async def communicate(self, data=None):
+            return (b"", echoed.encode())
+
+    async def _fake_exec(*args, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=("notify-hook",)), outcome_fn=_outcome_fn_for(run)
+    )
+    with caplog.at_level(logging.DEBUG):
+        await handler(_envelope())
+
+    outcome_text = run.notify_outcome_path.read_text()
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+
+    assert env_secret not in outcome_text
+    assert env_secret not in logged
+    assert len(warn_calls) == 1
+    assert env_secret not in warn_calls[0]
+
+    # The operator can still diagnose: the path is named, and the file holds
+    # the full stderr, readable only by them.
+    captured = run.notify_stderr_path
+    assert str(captured) in warn_calls[0]
+    assert captured.read_text() == echoed
+    assert stat.S_IMODE(captured.stat().st_mode) == 0o600
+    assert json.loads(outcome_text)["stderr_path"] == str(captured)
+
+
+@pytest.mark.asyncio
+async def test_unbound_handler_drops_adapter_stderr_rather_than_sharing_it(monkeypatch, caplog):
+    """With no run bound there is nowhere owner-only to put the stderr, so it
+    is dropped -- never rerouted onto the log or the warning channel."""
+    warn_calls: list[str] = []
+    monkeypatch.setattr("lionagi.cli._logging.warn", warn_calls.append)
+
+    secret = "unbound-secret-abc123"
+
+    class _FakeProc:
+        returncode = 3
+
+        async def communicate(self, data=None):
+            return (b"", f"failed with {secret}".encode())
+
+    async def _fake_exec(*args, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    handler = build_handler(ResolvedNotifyHandler(argv=("notify-hook",)))
+    with caplog.at_level(logging.DEBUG):
+        await handler(_envelope())
+
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert secret not in logged
+    assert len(warn_calls) == 1
+    assert secret not in warn_calls[0]
+    assert "not captured" in warn_calls[0]

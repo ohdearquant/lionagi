@@ -16,7 +16,7 @@ import re
 import shlex
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from lionagi.agent.settings import load_settings
 from lionagi.ln._proc import aterminate_process_group
@@ -31,14 +31,19 @@ from .callbacks import (
     TerminalCallbackRegistry,
 )
 
+if TYPE_CHECKING:
+    from lionagi.cli._runs import RunDir
+
 logger = logging.getLogger(__name__)
 
 __all__ = (
     "PayloadBuilder",
     "ResolvedNotifyHandler",
     "build_handler",
+    "register_run_notify_outcome_scope",
     "register_settings_terminal_callback",
     "resolve_notify_config",
+    "unregister_run_notify_outcome_scope",
 )
 
 # Matches inside a quoted span are stripped before this runs, so a literal
@@ -268,6 +273,115 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> ResolvedNotifyHandle
     return None
 
 
+# Returns the path the adapter's stderr was captured to, or None.
+OutcomeFn = Callable[..., "str | None"]
+
+
+def _record_notify_outcome_to_run(
+    run: RunDir, *, ok: bool, exit_code: int | None, stderr_text: str | None
+) -> str | None:
+    """Best-effort: record the exec adapter's outcome into *run*'s own
+    notify_outcome.json (a single file, replacement semantics, never merged
+    with -- or written into -- run.json), and capture the adapter's stderr
+    to an owner-readable file beside it. Returns that file's path, or None
+    if there was no stderr to capture. Never raises: this must never affect
+    the run itself.
+
+    The stderr text itself is never placed in the outcome record. Adapter
+    output is free text that can contain a credential from any source --
+    an inherited environment variable, a file the adapter read -- so it
+    cannot be scrubbed by matching against values we know. Keeping it in
+    one owner-only file, referenced by path, is what bounds the exposure:
+    the aggregated surfaces (this record, the log, the warning channel)
+    carry the path instead of the content.
+    """
+    stderr_path: str | None = None
+    try:
+        if stderr_text:
+            stderr_path = str(run.write_notify_stderr(stderr_text))
+    except Exception:  # noqa: BLE001 -- outcome bookkeeping must never affect the run
+        logger.debug("failed to capture notify.on_terminal adapter stderr", exc_info=True)
+    try:
+        run.write_notify_outcome(
+            {
+                "ok": ok,
+                "exit_code": exit_code,
+                "stderr_path": stderr_path,
+            }
+        )
+    except Exception:  # noqa: BLE001 -- outcome bookkeeping must never affect the run
+        logger.debug("failed to record notify.on_terminal outcome", exc_info=True)
+    return stderr_path
+
+
+def _warn_adapter_failure(msg: str) -> None:
+    try:
+        from lionagi.cli._logging import warn
+
+        warn(msg)
+    except Exception:  # noqa: BLE001 -- surfacing the failure must never affect the run
+        logger.debug("failed to emit notify.on_terminal warn-channel line", exc_info=True)
+
+
+# A notify.on_terminal adapter's argv routinely carries secrets (webhook
+# URLs, tokens passed as args), and its stderr is adapter-controlled free
+# text whose most common leak shape is the adapter echoing its own
+# invocation back on failure. No surface -- the warn-channel line, the
+# persisted notify_outcome.json, or the log -- carries the argument values
+# or an unfiltered stderr line: adapters are identified by argv[0]'s
+# basename, and any argument value appearing verbatim in a stderr or
+# exception snippet is replaced before that snippet goes anywhere.
+STDERR_SNIPPET_LIMIT = 200
+
+# Argument values shorter than this are not worth replacing and would
+# corrupt unrelated text (a bare "-v" or "0" occurs everywhere).
+MIN_REDACTABLE_ARG_LEN = 4
+
+
+def _adapter_label(argv: Sequence[str]) -> str:
+    """The adapter's display name for every surface: argv[0]'s basename
+    only, never the full argv (which may carry secret args)."""
+    if not argv:
+        return "<adapter>"
+    return os.path.basename(str(argv[0])) or str(argv[0])
+
+
+def _redact_arg_values(text: str, argv: Sequence[str]) -> str:
+    """Replace any adapter argument value that appears verbatim in *text*.
+
+    An adapter's own arguments are the one class of secret that can be
+    identified exactly, and an adapter echoing its invocation back on
+    stderr is the realistic way one of them escapes. Longest values are
+    replaced first so a substring never leaves a partial value behind.
+    This is not a general secret scanner: a secret the adapter obtains
+    elsewhere and prints cannot be recognized here.
+    """
+    values = sorted(
+        (str(arg) for arg in tuple(argv)[1:] if len(str(arg)) >= MIN_REDACTABLE_ARG_LEN),
+        key=len,
+        reverse=True,
+    )
+    for value in values:
+        text = text.replace(value, "***")
+    return text
+
+
+def _first_line(text: str, argv: Sequence[str] = ()) -> str | None:
+    """First line of *text* with adapter argument values replaced, bounded
+    to STDERR_SNIPPET_LIMIT chars.
+
+    Redaction runs before bounding so a value straddling the limit cannot
+    leave a partial value in the truncated result.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return None
+    line = _redact_arg_values(stripped.splitlines()[0], argv)
+    if len(line) > STDERR_SNIPPET_LIMIT:
+        line = line[:STDERR_SNIPPET_LIMIT] + "…"
+    return line
+
+
 async def _await_proc_dead(proc: asyncio.subprocess.Process, grace: float = 2.0) -> None:
     try:
         await asyncio.wait_for(proc.wait(), timeout=grace)
@@ -288,12 +402,21 @@ def _default_payload(envelope: RunTerminalEnvelope) -> dict[str, Any]:
     return envelope.to_dict()
 
 
+def _noop_outcome_fn(*, ok: bool, exit_code: int | None, stderr_text: str | None) -> str | None:
+    """No run is bound to this handler -- outcome recording is skipped
+    rather than guessing at a target (see register_run_notify_outcome_scope).
+    With no run directory there is nowhere owner-only to put the adapter's
+    stderr, so it is dropped rather than routed to a shared surface."""
+    return None
+
+
 def _make_exec_handler(
     argv: Sequence[str],
     *,
     payload_fn: PayloadBuilder = _default_payload,
     argv_fn: ArgvBuilder | None = None,
     env_fn: EnvBuilder | None = None,
+    outcome_fn: OutcomeFn = _noop_outcome_fn,
 ) -> TerminalCallbackHandler:
     static_argv = tuple(argv)
 
@@ -318,7 +441,13 @@ def _make_exec_handler(
             if proc is not None:
                 await aterminate_process_group(proc, grace=None)
                 await _await_proc_dead(proc)
-            logger.warning("notify.on_terminal exec adapter %r timed out", launch_argv)
+            logger.warning(
+                "notify.on_terminal exec adapter %s timed out", _adapter_label(launch_argv)
+            )
+            outcome_fn(ok=False, exit_code=None, stderr_text=None)
+            _warn_adapter_failure(
+                f"notify.on_terminal adapter {_adapter_label(launch_argv)} timed out"
+            )
             return
         except get_cancelled_exc_class():
             # The registry's shared deadline races this call's own timeout and
@@ -330,17 +459,47 @@ def _make_exec_handler(
                     await _await_proc_dead(proc)
             raise
         except Exception as exc:  # noqa: BLE001 -- an adapter failure must never affect the run
-            logger.warning("notify.on_terminal exec adapter %r failed to run: %s", launch_argv, exc)
+            detail = _first_line(str(exc), launch_argv)
+            logger.warning(
+                "notify.on_terminal exec adapter %s failed to run: %s",
+                _adapter_label(launch_argv),
+                detail,
+            )
+            outcome_fn(ok=False, exit_code=None, stderr_text=None)
+            warn_suffix = f": {detail}" if detail else ""
+            _warn_adapter_failure(
+                f"notify.on_terminal adapter {_adapter_label(launch_argv)} failed to run{warn_suffix}"
+            )
             return
         if proc.returncode != 0:
-            detail = stderr_bytes.decode(errors="replace").strip()
-            suffix = f": {detail}" if detail else ""
-            logger.warning(
-                "notify.on_terminal exec adapter %r exited %s%s",
-                launch_argv,
-                proc.returncode,
-                suffix,
+            # The adapter's own stderr never reaches the log, the warning
+            # channel, or the outcome record: it is free text that can carry
+            # a credential the adapter obtained anywhere (an inherited env
+            # var, a file it read), which no value-matching redaction can
+            # recognize. It is captured to an owner-only file and referenced
+            # by path instead.
+            stderr_text = stderr_bytes.decode(errors="replace").strip()
+            stderr_path = outcome_fn(
+                ok=False, exit_code=proc.returncode, stderr_text=stderr_text or None
             )
+            if stderr_path:
+                where = f"; stderr captured at {stderr_path}"
+            elif stderr_text:
+                where = "; stderr not captured (no run directory bound to this handler)"
+            else:
+                where = ""
+            logger.warning(
+                "notify.on_terminal exec adapter %s exited %s%s",
+                _adapter_label(launch_argv),
+                proc.returncode,
+                where,
+            )
+            _warn_adapter_failure(
+                f"notify.on_terminal adapter {_adapter_label(launch_argv)} exited "
+                f"{proc.returncode}{where}"
+            )
+        else:
+            outcome_fn(ok=True, exit_code=0, stderr_text=None)
 
     return _exec_handler
 
@@ -357,10 +516,18 @@ def build_handler(
     payload_fn: PayloadBuilder = _default_payload,
     argv_fn: ArgvBuilder | None = None,
     env_fn: EnvBuilder | None = None,
+    outcome_fn: OutcomeFn | None = None,
 ) -> TerminalCallbackHandler | None:
     """Build the process-local handler for a resolved adapter spec, or
     ``None`` if the spec fails to build (never raises). A python adapter ref
     is imported eagerly here so a bad ref resolves to disabled, not a crash.
+
+    *outcome_fn*, if given, is called with the exec adapter's outcome
+    (``ok``, ``exit_code``, ``stderr_text``) and returns the path its stderr
+    was captured to, if any -- omit it (the default)
+    when no specific run is bound to this handler; outcome recording is then
+    skipped rather than guessing at a target run. Never applies to a python
+    adapter (only the exec adapter's process outcome is tracked).
     """
     if resolved.python_ref is not None:
         try:
@@ -382,7 +549,10 @@ def build_handler(
             return None
         return handler
     assert resolved.argv is not None  # _resolve_* never returns an empty spec
-    return _make_exec_handler(resolved.argv, payload_fn=payload_fn, argv_fn=argv_fn, env_fn=env_fn)
+    kwargs: dict[str, Any] = {"payload_fn": payload_fn, "argv_fn": argv_fn, "env_fn": env_fn}
+    if outcome_fn is not None:
+        kwargs["outcome_fn"] = outcome_fn
+    return _make_exec_handler(resolved.argv, **kwargs)
 
 
 def register_settings_terminal_callback(
@@ -410,3 +580,57 @@ def register_settings_terminal_callback(
         ids=resolved.filter_ids,
     )
     return True
+
+
+def register_run_notify_outcome_scope(
+    run: RunDir,
+    *,
+    entity_kind: str,
+    entity_id: str,
+    registry: TerminalCallbackRegistry = DEFAULT_TERMINAL_CALLBACKS,
+    project_dir: str | None = None,
+) -> str | None:
+    """Bind the settings-driven notify.on_terminal exec adapter's outcome to
+    *run*, scoped to this run's own terminal entity (``entity_kind``/
+    ``entity_id``), so a late-arriving outcome always lands on this run --
+    or nowhere -- even if the process has since allocated other runs. The
+    scoped registration is an override, so it takes over adapter dispatch
+    for this entity from the process-wide default registered by
+    ``register_settings_terminal_callback`` (which never attributes an
+    outcome to any run). Returns the registration name (pass to
+    ``unregister_run_notify_outcome_scope`` in a ``finally`` block), or
+    ``None`` if notify.on_terminal resolved to disabled or if this entity is
+    excluded by the configured filter (never raises).
+    """
+    resolved = resolve_notify_config(project_dir=project_dir)
+    if resolved is None:
+        return None
+    # The scoped registration is an override, so it dispatches on its own
+    # match rather than deferring to the process-wide registration's filter.
+    # It must therefore apply the configured filter itself: without this, an
+    # entity the operator excluded via filter.kinds/filter.ids would start
+    # receiving notifications as soon as it ran under a run scope.
+    if resolved.filter_kinds is not None and entity_kind not in resolved.filter_kinds:
+        return None
+    if resolved.filter_ids is not None and entity_id not in resolved.filter_ids:
+        return None
+
+    def _outcome_fn(*, ok: bool, exit_code: int | None, stderr_text: str | None) -> str | None:
+        return _record_notify_outcome_to_run(
+            run, ok=ok, exit_code=exit_code, stderr_text=stderr_text
+        )
+
+    handler = build_handler(resolved, outcome_fn=_outcome_fn)
+    if handler is None:
+        return None
+    name = f"notify.settings.on_terminal.{entity_kind}.{entity_id}"
+    registry.register(name, handler, kinds=[entity_kind], ids=[entity_id], override=True)
+    return name
+
+
+def unregister_run_notify_outcome_scope(
+    name: str | None,
+    registry: TerminalCallbackRegistry = DEFAULT_TERMINAL_CALLBACKS,
+) -> None:
+    if name is not None:
+        registry.unregister(name)
