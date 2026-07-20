@@ -180,6 +180,29 @@ class TestCollisions:
         with pytest.raises(PluginActivationError, match="shared_tool"):
             PluginRegistry.activate_target("p1", "tools/t.py:t")
 
+    def test_activate_target_disabling_colliding_plugin_resolves_without_reset(self, write_plugin):
+        """`activate_target`'s collision check re-derives the *other* plugin's
+        enabled/compatible state fresh (via `_is_live_active`) on every call,
+        even though the other plugin's cached record is only rescanned for
+        the requested plugin itself -- so disabling the colliding plugin
+        resolves the collision on the very next call, with no
+        `PluginRegistry.reset()` in between."""
+        _write_tool_plugin(write_plugin, "p1", tool_name="shared_tool", agent_name="a1")
+        _write_tool_plugin(write_plugin, "p2", tool_name="shared_tool", agent_name="a2")
+        _trust_by_dir_name("p1")
+        _trust_by_dir_name("p2")
+
+        PluginRegistry.reset()
+        with pytest.raises(PluginActivationError, match="shared_tool"):
+            PluginRegistry.activate_target("p1", "tools/t.py:t")
+
+        settings = read_user_settings()
+        settings.setdefault("plugins", {})["p2"] = {"enabled": False}
+        write_user_settings(settings)
+        # No PluginRegistry.reset() here -- this is the behavior under test.
+
+        PluginRegistry.activate_target("p1", "tools/t.py:t")  # should now succeed
+
     def test_two_active_plugins_same_agent_name_is_not_a_collision(self, write_plugin):
         """Agent profiles are namespaced (<plugin>/<name>) — same local name across two
         plugins is not a hard error, only the bare name becomes ambiguous (resolver's job)."""
