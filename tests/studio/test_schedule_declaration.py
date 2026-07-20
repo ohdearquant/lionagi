@@ -335,11 +335,38 @@ def test_notify_anchor_then_explicit_bool_tagged_key_still_rejected():
 
 def test_notify_alias_of_implicit_anchored_key_stays_text():
     """An anchored-but-untagged key (`&a on:`) is still implicit resolution,
-    so it keeps the text leniency; an alias reusing it inherits the same
-    node and therefore the same outcome."""
-    manifest = _notify_yaml_manifest("      &a on: [failed]\n      command: notify-run\n")
+    so it keeps the text leniency; an alias (`*a`) reusing it in a second
+    schedule's notify block inherits the same node and therefore the same
+    outcome."""
+    manifest = """
+apiVersion: lionagi.io/v1alpha1
+kind: ScheduleSet
+metadata:
+  name: a
+  project: demo
+schedules:
+  m:
+    trigger:
+      every: 1h
+    target:
+      kind: command
+      executable: notify-run
+    notify:
+      &a on: [failed]
+      command: notify-run
+  n:
+    trigger:
+      every: 1h
+    target:
+      kind: command
+      executable: notify-run
+    notify:
+      *a : [timed_out]
+      command: notify-run
+"""
     doc = parse_schedule_set(manifest)
     assert doc.schedules["m"].notify.on == ["failed"]
+    assert doc.schedules["n"].notify.on == ["timed_out"]
 
 
 def test_sequence_mapping_key_raises_value_error_not_type_error():
