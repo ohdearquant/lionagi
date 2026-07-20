@@ -763,7 +763,7 @@ async def test_do_kill_all_stale_skips_live_pid(
 ):
     """Running session with a LIVE, identity-matching PID is not touched."""
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
-    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", lambda *a, **kw: True)
+    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity_tristate", lambda *a, **kw: "ours")
 
     old_start = time.time() - 7200
     async with StateDB() as db:
@@ -784,7 +784,9 @@ async def test_do_kill_all_stale_sweeps_reused_pid(
     """A live PID that no longer identifies as the tracked process (reused
     after the original died) must still be swept, not treated as live."""
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
-    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", lambda *a, **kw: False)
+    monkeypatch.setattr(
+        "lionagi.cli.kill._check_pid_identity_tristate", lambda *a, **kw: "not_ours"
+    )
 
     old_start = time.time() - 7200
     async with StateDB() as db:
@@ -855,6 +857,157 @@ async def test_do_kill_all_stale_uses_stale_auto_reason(
         )
         assert row is not None
         assert row["reason_code"] == RunReasons.CANCELLED_STALE_AUTO
+
+
+async def test_do_kill_all_stale_recycled_pid_swept_with_correlation(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A recycled pid occupied by an unrelated lionagi-shaped process must be
+    swept once the row's own pid_create_time is correlated against it, even
+    though the cmdline alone still looks like a genuine lionagi invocation."""
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+
+    fake_psutil = MagicMock()
+    fake_proc = MagicMock()
+    fake_proc.cmdline.return_value = ["/usr/bin/python3", "-m", "lionagi.cli"]
+    fake_proc.environ.return_value = {}
+    fake_proc.create_time.return_value = 999.0  # does NOT match recorded 100.0
+    fake_psutil.Process.return_value = fake_proc
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        sid = str(uuid.uuid4())
+        prog = str(uuid.uuid4())
+        await db.create_progression(prog)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": prog,
+                "status": "running",
+                "started_at": old_start,
+                "node_metadata": {"pid": 12345, "pid_create_time": 100.0},
+            }
+        )
+
+    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
+    assert rc == 0
+
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "cancelled", "recycled pid with mismatched create_time must be swept"
+
+
+async def test_do_kill_all_stale_matching_correlation_skips_live(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """When the row's pid_create_time genuinely matches the live process,
+    the sweep must still skip it as live (not a regression on the happy path)."""
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+
+    fake_psutil = MagicMock()
+    fake_proc = MagicMock()
+    fake_proc.cmdline.return_value = ["/usr/bin/python3", "-m", "lionagi.cli"]
+    fake_proc.environ.return_value = {}
+    fake_proc.create_time.return_value = 100.0  # matches recorded value
+    fake_psutil.Process.return_value = fake_proc
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        sid = str(uuid.uuid4())
+        prog = str(uuid.uuid4())
+        await db.create_progression(prog)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": prog,
+                "status": "running",
+                "started_at": old_start,
+                "node_metadata": {"pid": 12345, "pid_create_time": 100.0},
+            }
+        )
+
+    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
+    assert rc == 0
+
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "running", "a genuinely live, correlated process must not be swept"
+
+
+async def test_do_kill_all_stale_access_denied_not_cancelled(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A live pid we cannot inspect (psutil.AccessDenied) must be treated as
+    still alive by the sweep, not cancelled out from under a running worker.
+
+    Discrimination: on unfixed code the sweep's bare `_check_pid_identity`
+    call collapses AccessDenied to False ("not ours"), so the row gets
+    cancelled while the process keeps running. Post-fix the tri-state check
+    reports "unverifiable" and the sweep skips it.
+    """
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+
+    fake_access_denied = type("AccessDenied", (Exception,), {})
+    fake_psutil = MagicMock()
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = fake_access_denied
+    fake_psutil.Process.side_effect = fake_access_denied("no access")
+    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", pid=54321, started_at=old_start)
+
+    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
+    assert rc == 0
+
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "running", "AccessDenied must not be treated as a dead/recycled pid"
+
+
+async def test_do_kill_all_stale_process_vanishing_mid_check_does_not_abort_sweep(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A process dying between the liveness check and the psutil detail reads
+    (NoSuchProcess from environ/create_time/cmdline) must classify the row as
+    stale and keep the sweep going — not escape and abort the whole sweep with
+    later rows unprocessed."""
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+
+    fake_no_such = type("NoSuchProcess", (Exception,), {})
+    fake_psutil = MagicMock()
+    fake_psutil.NoSuchProcess = fake_no_such
+    fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    fake_proc = MagicMock()
+    fake_proc.environ.side_effect = fake_no_such("gone")
+    fake_proc.cmdline.side_effect = fake_no_such("gone")
+    fake_proc.create_time.side_effect = fake_no_such("gone")
+    fake_psutil.Process.return_value = fake_proc
+    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        first = await _seed_session(db, status="running", pid=11111, started_at=old_start)
+        second = await _seed_session(db, status="running", pid=22222, started_at=old_start)
+
+    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
+    assert rc == 0
+
+    async with StateDB() as db:
+        for sid in (first, second):
+            assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+                "status"
+            ] == "cancelled", "vanished processes are stale; BOTH rows must be swept"
 
 
 # ── cascade kill ───────────────────────────────────────────────────────────────
