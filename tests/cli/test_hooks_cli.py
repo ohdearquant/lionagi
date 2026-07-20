@@ -157,6 +157,35 @@ def test_import_refuses_to_write_through_a_symlinked_settings_file(capsys, tmp_p
     assert settings_path.is_symlink()
 
 
+def test_import_refuses_to_write_through_a_symlinked_lionagi_directory(capsys, tmp_path):
+    """A project-controlled `.lionagi` DIRECTORY (not just the final
+    settings.yaml component) that is a symlink to a directory outside the
+    project must never be written through -- the final-component
+    O_NOFOLLOW guard alone does not protect against a symlinked
+    intermediate component, so this must be caught by the fd-anchored
+    walk that opens `.lionagi` itself with O_NOFOLLOW off the project
+    root."""
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    outside_settings = outside_dir / "settings.yaml"
+    outside_settings.write_text("do-not-touch: true\n")
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    (project_dir / ".lionagi").symlink_to(outside_dir, target_is_directory=True)
+
+    _write_claude_settings(project_dir, CLAUDE_SETTINGS)
+
+    code = cli_main(["hooks", "import", "claude", "--cwd", str(project_dir)])
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "symlink" in err.lower()
+    assert str(outside_dir.resolve()) in err
+
+    assert outside_settings.read_text() == "do-not-touch: true\n"
+    assert (project_dir / ".lionagi").is_symlink()
+
+
 # ---------------------------------------------------------------------------
 # `li hooks trust`
 # ---------------------------------------------------------------------------

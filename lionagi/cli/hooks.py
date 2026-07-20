@@ -217,7 +217,8 @@ def _run_import(source: str, path: str | None, cwd: str | None) -> int:
 
     external, report = _translate_config(data, source_label=source)
 
-    settings_path = project_dir / ".lionagi" / "settings.yaml"
+    lionagi_dir = project_dir / ".lionagi"
+    settings_path = lionagi_dir / "settings.yaml"
     if settings_path.is_symlink():
         log_error(
             f"refusing to write through a symlinked settings file: "
@@ -242,27 +243,56 @@ def _run_import(source: str, path: str | None, cwd: str | None) -> int:
         imported_count += sum(len(g["hooks"]) for g in groups)
 
     if imported_count:
-        settings_path.parent.mkdir(parents=True, exist_ok=True)
-        # O_NOFOLLOW is the atomic guard against a symlink swapped in after
-        # the is_symlink() check above; that earlier check just gives a
-        # clearer error message for the common (non-race) case.
+        # fd-anchored component walk: the up-front is_symlink() check above
+        # only covers the final component and only at check time, not
+        # write time -- it gives a clearer error for the common case but
+        # enforces nothing. The real guard is here: `project_dir` itself is
+        # the trusted anchor (opened once, never re-traversed by path), and
+        # every subsequent component is opened relative to that anchor's fd
+        # with O_NOFOLLOW, so a symlink at ANY intermediate component --
+        # not just the final one -- fails the open instead of being
+        # silently followed outside the project.
+        root_fd = os.open(str(project_dir), os.O_RDONLY | os.O_DIRECTORY)
+        lion_fd = None
         try:
-            fd = os.open(
-                str(settings_path),
-                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
-                0o644,
-            )
-        except OSError as exc:
-            if settings_path.is_symlink():
+            try:
+                lion_fd = os.open(
+                    ".lionagi", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd
+                )
+            except FileNotFoundError:
+                os.mkdir(".lionagi", dir_fd=root_fd)
+                lion_fd = os.open(
+                    ".lionagi", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd
+                )
+            except OSError:
                 log_error(
-                    f"refusing to write through a symlinked settings file: "
-                    f"{settings_path} -> {os.path.realpath(settings_path)}"
+                    f"refusing to write through a symlinked .lionagi directory: "
+                    f"{lionagi_dir} -> {os.path.realpath(lionagi_dir)}"
                 )
                 return 1
-            log_error(f"could not open {settings_path} for writing: {exc}")
-            return 1
-        with os.fdopen(fd, "w") as f:
-            yaml.safe_dump(existing, f, sort_keys=False, allow_unicode=True)
+
+            try:
+                fd = os.open(
+                    "settings.yaml",
+                    os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+                    0o644,
+                    dir_fd=lion_fd,
+                )
+            except OSError as exc:
+                if settings_path.is_symlink():
+                    log_error(
+                        f"refusing to write through a symlinked settings file: "
+                        f"{settings_path} -> {os.path.realpath(settings_path)}"
+                    )
+                    return 1
+                log_error(f"could not open {settings_path} for writing: {exc}")
+                return 1
+            with os.fdopen(fd, "w") as f:
+                yaml.safe_dump(existing, f, sort_keys=False, allow_unicode=True)
+        finally:
+            if lion_fd is not None:
+                os.close(lion_fd)
+            os.close(root_fd)
 
     for line in report:
         print(line)
