@@ -3,6 +3,7 @@
 import pytest
 
 from lionagi.service.connections.mcp_wrapper import (
+    RECOVER_AUTHORIZED_POLICY,
     MCPConnectionPool,
     MCPSecurityConfig,
     _filter_env,
@@ -540,7 +541,11 @@ class TestPerServerPolicyPersistence:
         MCPConnectionPool._server_security.clear()
         MCPConnectionPool._clients.clear()
 
-    async def test_invocation_without_security_recovers_recorded_policy(self, monkeypatch):
+    async def test_proxy_marker_recovers_recorded_policy(self, monkeypatch):
+        """The tool proxy (`create_mcp_tool`'s stored callable) re-enters a
+        transport it already holds by passing RECOVER_AUTHORIZED_POLICY
+        explicitly -- that is the ONLY thing that recovers a remembered
+        policy (issue #2356)."""
         self._reset()
         seen = []
 
@@ -557,16 +562,45 @@ class TestPerServerPolicyPersistence:
             policy = MCPSecurityConfig(allow_commands=True)
             # Trusted load records the policy (no client created — tool_names path).
             MCPConnectionPool.remember_security({"command": "echo", "args": ["a"]}, policy)
-            # Stored callable invokes get_client WITHOUT a policy, with a fresh
-            # dict of the SAME content (the real flow strips only `_`-prefixed
-            # metadata, so transport fields are identical) — the recorded policy
-            # must be recovered.
-            await MCPConnectionPool.get_client({"command": "echo", "args": ["a"]})
+            # Stored callable invokes get_client with the recovery marker, on a
+            # fresh dict of the SAME content (the real flow strips only
+            # `_`-prefixed metadata, so transport fields are identical) — the
+            # recorded policy must be recovered.
+            await MCPConnectionPool.get_client(
+                {"command": "echo", "args": ["a"]}, security=RECOVER_AUTHORIZED_POLICY
+            )
             assert seen[-1] is policy
         finally:
             self._reset()
 
-    async def test_reconnect_after_cleanup_recovers_policy(self, monkeypatch):
+    async def test_invocation_without_marker_does_not_recover_recorded_policy(self, monkeypatch):
+        """The bug in issue #2356: a bare, policy-omitting get_client() call
+        used to recover whatever policy an earlier caller authorized for the
+        same resolved transport. A caller that makes no trust decision (does
+        not pass RECOVER_AUTHORIZED_POLICY) must stay fail-closed, even
+        though the exact same transport was authorized moments ago."""
+        self._reset()
+        seen = []
+
+        class _FakeClient:
+            def is_connected(self):
+                return False
+
+        async def fake_create(config, security=None):
+            seen.append(security)
+            return _FakeClient()
+
+        monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+        try:
+            policy = MCPSecurityConfig(allow_commands=True)
+            MCPConnectionPool.remember_security({"command": "echo", "args": ["a"]}, policy)
+            # No security kwarg at all -- a fresh loader's shape, not the proxy's.
+            await MCPConnectionPool.get_client({"command": "echo", "args": ["a"]})
+            assert seen[-1] is None
+        finally:
+            self._reset()
+
+    async def test_reconnect_after_cleanup_recovers_policy_via_marker(self, monkeypatch):
         self._reset()
         seen = []
 
@@ -585,10 +619,43 @@ class TestPerServerPolicyPersistence:
             # Discovery records the policy.
             await MCPConnectionPool.get_client({"server": "srv"}, security=policy)
             assert seen[-1] is policy
-            # Cached client cleaned up; reconnect without an explicit policy.
+            # Cached client cleaned up; the remembered policy survives the
+            # eviction (by design). The proxy reconnecting still recovers it,
+            # but only because it asks for that explicitly via the marker.
             MCPConnectionPool._clients.clear()
-            await MCPConnectionPool.get_client({"server": "srv"})
+            await MCPConnectionPool.get_client(
+                {"server": "srv"}, security=RECOVER_AUTHORIZED_POLICY
+            )
             assert seen[-1] is policy
+        finally:
+            self._reset()
+            MCPConnectionPool._configs.pop("srv", None)
+
+    async def test_reconnect_after_cleanup_without_marker_stays_fail_closed(self, monkeypatch):
+        """Same eviction-survives-in-the-map scenario as the marker test
+        above, but from a loader's shape (no marker): the surviving map entry
+        must NOT be reachable without the marker, cache state notwithstanding."""
+        self._reset()
+        seen = []
+
+        class _FakeClient:
+            def is_connected(self):
+                return True
+
+        async def fake_create(config, security=None):
+            seen.append(security)
+            return _FakeClient()
+
+        monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+        try:
+            MCPConnectionPool._configs["srv"] = {"command": "echo"}
+            policy = MCPSecurityConfig(allow_commands=True)
+            await MCPConnectionPool.get_client({"server": "srv"}, security=policy)
+            assert seen[-1] is policy
+            MCPConnectionPool._clients.clear()
+            # A fresh loader-shaped call (no marker) after the same eviction.
+            await MCPConnectionPool.get_client({"server": "srv"})
+            assert seen[-1] is None
         finally:
             self._reset()
             MCPConnectionPool._configs.pop("srv", None)
@@ -649,12 +716,13 @@ class TestPerServerPolicyPersistence:
             # Trust only the safe config.
             MCPConnectionPool.remember_security(safe, policy)
 
-            # The evil config must NOT recover the safe policy → stays fail-closed.
-            await MCPConnectionPool.get_client(evil)
+            # The evil config must NOT recover the safe policy → stays fail-closed,
+            # even via the recovery marker.
+            await MCPConnectionPool.get_client(evil, security=RECOVER_AUTHORIZED_POLICY)
             assert seen[-1] is None, "different args must not inherit another config's policy"
 
-            # The safe config still recovers its own policy.
-            await MCPConnectionPool.get_client(safe)
+            # The safe config still recovers its own policy through the marker.
+            await MCPConnectionPool.get_client(safe, security=RECOVER_AUTHORIZED_POLICY)
             assert seen[-1] is policy
         finally:
             self._reset()
@@ -788,3 +856,113 @@ class TestPerServerPolicyPersistence:
             self._reset()
             MCPConnectionPool._configs.pop("trusted-name", None)
             MCPConnectionPool._configs.pop("other-name", None)
+
+
+class TestFreshLoadDoesNotInheritEarlierCallerTrust:
+    """Issue #2356: `None` at `get_client(security=...)` used to mean two
+    different things -- "the proxy re-entering a transport it already holds"
+    and "a loader that made no trust decision" -- and both hit the same
+    recovery. This reproduces the issue's own repro (two real
+    `ActionManager.load_mcp_config()` calls, client cache cleared between
+    them) and the proxy path that must keep working."""
+
+    def _reset(self):
+        MCPConnectionPool._security = None
+        MCPConnectionPool._server_security.clear()
+        MCPConnectionPool._clients.clear()
+        MCPConnectionPool._configs.clear()
+
+    async def test_second_load_mcp_config_omitting_policy_is_denied(self, tmp_path, monkeypatch):
+        """A second load_mcp_config() with no policy, in a process where the
+        same transport was previously loaded as trusted, must be denied --
+        even though the client cache was cleared in between (the remembered
+        policy in `_server_security` outlives that eviction by design)."""
+        import json
+
+        from lionagi.protocols.action.manager import ActionManager
+
+        self._reset()
+        try:
+            cfg_path = tmp_path / ".mcp.json"
+            cfg_path.write_text(json.dumps({"mcpServers": {"srv": {"command": "echo"}}}))
+
+            class _FakeClient:
+                def is_connected(self):
+                    return True
+
+                async def list_tools(self):
+                    return []
+
+            observed = []
+
+            async def fake_create(config, security=None):
+                # Mirrors `_create_client`'s own precedence (explicit >
+                # process-global > fail-closed default) and runs the REAL
+                # validator, without spawning a real transport.
+                effective = (
+                    security
+                    if security is not None
+                    else (MCPConnectionPool._security or MCPSecurityConfig())
+                )
+                observed.append(security)
+                _validate_command(config["command"], effective)
+                return _FakeClient()
+
+            monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+
+            mgr_1 = ActionManager()
+            await mgr_1.load_mcp_config(str(cfg_path), mcp_security=MCPSecurityConfig.trusted())
+            assert observed[-1] == MCPSecurityConfig.trusted()
+
+            # The issue's repro step: client cache cleared, remembered policy left intact.
+            MCPConnectionPool._clients.clear()
+
+            mgr_2 = ActionManager()
+            with pytest.raises(PermissionError, match="allow_commands=False"):
+                await mgr_2.load_mcp_config(str(cfg_path))
+            # The fresh loader's own (omitted) policy reached the validator --
+            # it was never substituted with mgr_1's trusted() decision.
+            assert observed[-1] is None
+        finally:
+            self._reset()
+
+    async def test_proxy_tool_reconnects_without_reauthorization(self, monkeypatch):
+        """The other half of the acceptance criteria: create_mcp_tool's
+        stored callable (the proxy) must still reconnect an
+        already-authorized transport with no policy of its own."""
+        from lionagi.service.connections.mcp_wrapper import create_mcp_tool
+
+        self._reset()
+        try:
+            policy = MCPSecurityConfig(allow_commands=True)
+            mcp_config = {
+                "command": "echo",
+                "args": ["a"],
+                "_original_tool_name": "ping",
+            }
+            # The transport was authorized once, e.g. by discovery.
+            MCPConnectionPool.remember_security({"command": "echo", "args": ["a"]}, policy)
+
+            class _FakeClient:
+                def is_connected(self):
+                    return False
+
+                async def call_tool(self, name, kwargs):
+                    return {"ok": True}
+
+            observed = []
+
+            async def fake_create(config, security=None):
+                observed.append(security)
+                return _FakeClient()
+
+            monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+
+            tool_callable = create_mcp_tool(mcp_config, "ping")
+            result = await tool_callable()
+            assert result == {"ok": True}
+            # The proxy passed no policy of its own -- it recovered the one
+            # the transport was already authorized under.
+            assert observed[-1] is policy
+        finally:
+            self._reset()
