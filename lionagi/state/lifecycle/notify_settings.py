@@ -364,7 +364,7 @@ def build_handler(
     """
     if resolved.python_ref is not None:
         try:
-            return _make_python_handler(resolved.python_ref)
+            handler = _make_python_handler(resolved.python_ref)
         except Exception as exc:  # noqa: BLE001 -- a bad adapter ref must resolve to disabled
             logger.warning(
                 "notify.on_terminal python adapter %r failed to import: %s; resolving to disabled.",
@@ -372,6 +372,15 @@ def build_handler(
                 exc,
             )
             return None
+        if not callable(handler):
+            logger.warning(
+                "notify.on_terminal python adapter %r resolved to a non-callable "
+                "%s; resolving to disabled.",
+                resolved.python_ref,
+                type(handler).__name__,
+            )
+            return None
+        return handler
     assert resolved.argv is not None  # _resolve_* never returns an empty spec
     return _make_exec_handler(resolved.argv, payload_fn=payload_fn, argv_fn=argv_fn, env_fn=env_fn)
 
