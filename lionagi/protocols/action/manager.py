@@ -36,6 +36,9 @@ class ActionManager(Manager):
         self._tool_pre_hooks: list[ToolPreHook] = []
         self._tool_post_hooks: list[ToolPostHook] = []
         self._plugin_shadow_warned: set[tuple[str, str]] = set()
+        # Keyed by (PluginRegistry.snapshot_generation(), tool name) so a
+        # reset()/rebuild invalidates it structurally, not by size or TTL.
+        self._plugin_shadow_resolution_cache: dict[tuple[int, str], Any] = {}
 
         tools = []
         if args:
@@ -169,14 +172,32 @@ class ActionManager(Manager):
         *name* -- the already-registered tool wins and the plugin declaration
         is rejected.
 
-        When more than one enabled plugin declares *name*, that is a peer
-        collision, a hard error regardless of the local registration -- it
-        is not caught here and propagates to the caller."""
-        from lionagi.plugins.registry import PluginRegistry
+        Purely diagnostic: a peer collision between two *other* plugins
+        declaring *name* is irrelevant to a tool that already resolved
+        locally, so it is swallowed here rather than raised -- a
+        locally-registered tool must never fail to resolve because of this
+        diagnostic.
+
+        `PluginRegistry.resolve_tool_target` rescans every installed
+        plugin's manifest from disk on every call; since this check is a
+        diagnostic only (never changes which tool actually runs), the
+        resolution is cached per registered-tool name for the lifetime of
+        the current plugin-registry generation, so repeated hits are free.
+        A `PluginRegistry.reset()` bumps the generation and forces exactly
+        one fresh resolution on the next call."""
+        from lionagi.plugins.registry import PluginRegistry, PluginToolCollisionError
 
         if not PluginRegistry.list_plugins():
             return
-        resolved = PluginRegistry.resolve_tool_target(name)
+        cache_key = (PluginRegistry.snapshot_generation(), name)
+        if cache_key in self._plugin_shadow_resolution_cache:
+            resolved = self._plugin_shadow_resolution_cache[cache_key]
+        else:
+            try:
+                resolved = PluginRegistry.resolve_tool_target(name)
+            except PluginToolCollisionError:
+                resolved = None
+            self._plugin_shadow_resolution_cache[cache_key] = resolved
         if resolved is None:
             return
         warn_key = (resolved.plugin_name, name)
