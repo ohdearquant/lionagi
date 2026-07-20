@@ -9,6 +9,8 @@ import asyncio
 import threading
 import time
 
+import pytest
+
 from lionagi.protocols.generic.element import Element
 from lionagi.protocols.generic.pile import Pile
 
@@ -226,6 +228,7 @@ async def test_async_with_block_excludes_sync_thread():
 async def test_adump_snapshot_excludes_sync_thread_mutation(tmp_path):
     # While adump holds its snapshot region, a sync-thread include() must not
     # interleave; it lands only after the region releases.
+    pytest.importorskip("pandas", reason="adump serializes through the optional pandas adapter")
     pile = Pile()
     pile.include([_Item() for _ in range(3)])
 
@@ -351,3 +354,37 @@ async def test_async_pile_iterator_bulk_iteration_yields_between_items():
 
     assert seen == 2000
     assert ticks >= 1000, f"ticker starved during bulk iteration (ticks={ticks})"
+
+
+async def test_cardinality_reads_excluded_while_async_method_holds_locks():
+    # __len__ / size / is_empty / __bool__ must sit inside the cross-family
+    # boundary like every other public read: a sync thread's cardinality
+    # read blocks while an async method holds both locks.
+    from lionagi.ln import async_synchronized
+
+    pile = Pile()
+    pile.include(_Item())
+
+    entered = asyncio.Event()
+
+    @async_synchronized
+    async def slow_op(self):
+        entered.set()
+        await asyncio.sleep(0.5)
+
+    got: list = []
+
+    def sync_reads():
+        got.append((len(pile), pile.size(), pile.is_empty(), bool(pile)))
+
+    task = asyncio.ensure_future(slow_op(pile))
+    await asyncio.wait_for(entered.wait(), 5)
+
+    reader = threading.Thread(target=sync_reads)
+    reader.start()
+    await asyncio.sleep(0.15)
+    assert not got, "cardinality reads must wait while an async method holds the locks"
+
+    await task
+    reader.join(5)
+    assert got == [(1, 1, False, True)]
