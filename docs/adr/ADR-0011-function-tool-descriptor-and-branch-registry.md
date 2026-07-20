@@ -484,8 +484,11 @@ tool:
   named server is never recovered for a different one that happens to resolve to the same
   transport. An anonymous inline configuration has no name to bind, so its key is derived
   from content alone.
-- **Pool identity:** named configs use `server:<name>` and therefore reuse a connected
-  client by server name. Inline configs use the command plus the Python dictionary's
+- **Pool identity:** a named config's cache identity contains the server name together
+  with its resolved transport content, with `server:<name>` only its prefix, so a
+  connected client is reused only when both match. Reloading a different command or URL
+  under the same name yields a different identity and the stale client is dropped rather
+  than reused. Inline configs use the command plus the Python dictionary's
   object identity, so reuse occurs only when the same dictionary object is passed again;
   the MCP proxy creates a fresh metadata-stripped dictionary for each call and has no
   stable inline reuse key. A disconnected cached client is dropped, and `cleanup()`
