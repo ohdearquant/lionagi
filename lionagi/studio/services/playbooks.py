@@ -9,7 +9,7 @@ import anyio
 import yaml
 from fastapi import Body, HTTPException
 
-from lionagi._paths import LIONAGI_HOME
+from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
 from lionagi.service.providers import EFFORT_LEVELS as _VALID_EFFORT_LEVELS
 
 from ..registry import studio_route
@@ -195,7 +195,7 @@ def install_builtin_playbook(name: str) -> dict[str, Any]:
     dest = _PLAYBOOKS_ROOT / f"{stem}.playbook.yaml"
     installed_now = False
     if not dest.exists():
-        dest.parent.mkdir(parents=True, exist_ok=True)
+        ensure_lionagi_dir(dest.parent)
         shutil.copyfile(src, dest)
         installed_now = True
 

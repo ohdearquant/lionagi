@@ -127,13 +127,15 @@ def _check_studio_daemon(url: str | None = None, timeout: float = 1.5) -> dict[s
 
 
 def _check_lionagi_home(home: Path | None = None) -> dict[str, str]:
+    from lionagi._paths import ensure_lionagi_dir
+
     if home is None:
         from lionagi._paths import LIONAGI_HOME
 
         home = LIONAGI_HOME
     runs_dir = home / "runs"
     try:
-        runs_dir.mkdir(parents=True, exist_ok=True)
+        ensure_lionagi_dir(runs_dir)
         probe = runs_dir / ".doctor-write-probe"
         probe.write_text("ok")
         probe.unlink()

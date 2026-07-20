@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from lionagi._paths import LIONAGI_HOME
+from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
 
 from ._logging import hint, log_error, progress, warn
 
@@ -184,7 +184,7 @@ def _load_states() -> dict[str, _FileState]:
 
 
 def _save_states(states: dict[str, _FileState]) -> None:
-    _OFFSETS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    ensure_lionagi_dir(_OFFSETS_PATH.parent)
     payload = {
         key: {
             "offset": st.offset,

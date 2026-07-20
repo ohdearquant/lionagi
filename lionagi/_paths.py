@@ -13,6 +13,7 @@ __all__ = (
     "LIONAGI_HOME",
     "RUNS_ROOT",
     "clear_lionagi_dirs_cache",
+    "ensure_lionagi_dir",
     "find_lionagi_dirs",
 )
 
@@ -81,6 +82,21 @@ def find_lionagi_dirs() -> list[Path]:
 def clear_lionagi_dirs_cache() -> None:
     """Clear cached directory discovery after filesystem topology changes."""
     _find_lionagi_dirs_cached.cache_clear()
+
+
+def ensure_lionagi_dir(path: Path) -> Path:
+    """Create *path* (with parents) if missing, then invalidate discovery cache.
+
+    Every production call site that may bring a `.lionagi` directory --
+    project-local or the global `~/.lionagi` -- into existence for the first
+    time must create it through this helper instead of calling `Path.mkdir`
+    directly, so a later `find_lionagi_dirs()` call in the same process sees
+    the new topology instead of the pre-creation result cached by an earlier
+    call.
+    """
+    path.mkdir(parents=True, exist_ok=True)
+    clear_lionagi_dirs_cache()
+    return path
 
 
 # Keep the conventional lru_cache hook available on the public finder while

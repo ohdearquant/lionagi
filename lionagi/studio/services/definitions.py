@@ -10,7 +10,7 @@ import anyio
 from fastapi import HTTPException, Query
 from pydantic import BaseModel
 
-from lionagi._paths import LIONAGI_HOME
+from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
 from lionagi.state.db import DEFAULT_DB_PATH
 
 from ..registry import studio_route
@@ -231,7 +231,7 @@ async def save_definition(
             )
 
         def _write_disk() -> None:
-            disk_file.parent.mkdir(parents=True, exist_ok=True)
+            ensure_lionagi_dir(disk_file.parent)
             disk_file.write_text(content)
 
         await anyio.to_thread.run_sync(_write_disk)
