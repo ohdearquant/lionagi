@@ -105,8 +105,11 @@ AG2 NLIP connects to a remote HTTP endpoint. See
 ### Fallback
 
 After built-ins and trusted, enabled plugin providers are consulted, an unrecognized
-`provider` falls back to a generic OpenAI-compatible endpoint. Pass `base_url=` for
-the custom host; a provider name alone cannot supply a usable URL.
+`provider` raises `ProviderNotFoundError` naming the requested provider and every
+registered provider, unless the caller opts in explicitly. Pass `openai_compatible=True`
+to route the unrecognized provider to a generic OpenAI-compatible endpoint. A registered
+provider is never rejected this way, even if the requested `endpoint=` isn't one of its
+own -- only a `provider` name that matches no registration falls into this path.
 
 ## Endpoint matching
 
@@ -124,7 +127,10 @@ provider/endpoint names or their declared aliases:
   the default `endpoint="chat"`.
 - On a built-in miss, trusted and enabled plugin provider targets are loaded lazily.
 - Built-in provider names win if a plugin declares a collision.
-- A final miss returns the generic OpenAI-compatible `Endpoint` fallback.
+- A final miss raises `ProviderNotFoundError` unless the caller passes
+  `openai_compatible=True` (or the deprecated `base_url=` migration path), in which case
+  it returns the generic OpenAI-compatible `Endpoint` fallback. This only applies to a
+  `provider` name that matches no registration at all.
 
 ## Common construction patterns
 
@@ -174,6 +180,7 @@ cmap  = li.iModel(provider="firecrawl", endpoint="map")
 model = li.iModel(
     provider="my_provider",
     base_url="https://my-api.example.com/v1",
+    openai_compatible=True,
     model="my-model",
 )
 ```

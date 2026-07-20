@@ -48,6 +48,12 @@ the same fallback path (`lionagi/service/connections/registry.py`; `EndpointRegi
 `_import_all_providers`, and `lionagi/service/connections/endpoint_config.py`;
 `EndpointConfig._validate_provider`).
 
+> This describes the resolver as it stood when this ADR was written. Delta #1 below (#2026) has
+> since resolved the ignored-import and unconditional-fallback parts of this problem statement: a
+> failed bundled import is now classified and logged, and the generic fallback requires explicit
+> opt-in for a genuinely unrecognized provider. A registered provider is never routed through this
+> fallback path for an unmatched endpoint.
+
 The shipped spine is:
 
 ```text
@@ -321,10 +327,14 @@ test support but is imported through the same bootstrap
 
 - **Lazy bootstrap.** The first `match()` or `list_providers()` call imports the fixed modules under
   a process-local lock. `_loaded` is set after the loop. Later calls do not rescan modules.
-- **Import failure.** Each `ImportError` is ignored without a diagnostic. Other exception types
-  escape and prevent `_loaded` from being set.
-- **Registration order.** Entries are appended. There is no canonical-key, alias, endpoint-class,
-  or metadata validation and no duplicate detection.
+- **Import failure (resolved by #2026).** Was: each `ImportError` ignored without a diagnostic.
+  Now: a genuinely-missing optional dependency logs at debug, a broken bundled module logs a
+  warning naming the module and the error; other exception types still escape and prevent
+  `_loaded` from being set.
+- **Registration order.** Entries are appended. Canonical-key and alias collision validation was
+  added by #2026 (a provider/alias already claimed by a *different* canonical provider raises
+  `ProviderAliasCollisionError`); re-registering the same provider under multiple endpoints
+  remains expected and unvalidated beyond that.
 - **Provider match.** The raw provider must equal the canonical string or one of its aliases. The
   comparison is case-sensitive and does not trim. Normalization in `EndpointConfig` happens only
   after a class or fallback has already been chosen.
@@ -332,9 +342,13 @@ test support but is imported through the same bootstrap
   endpoint or alias selects the first match. Punctuation is literal.
 - **Single-endpoint provider.** If a provider has exactly one canonical registration, any unmatched
   non-empty endpoint selects it. The requested endpoint string is not retained as a mismatch.
-- **Miss.** Every other miss creates the base `Endpoint` with provider as supplied, endpoint or
-  `chat/completions`, bearer JSON POST settings, `requires_tokens=True`, and name
-  `openai_compatible_chat`. It does not set `openai_compatible=True`.
+- **Miss (resolved by #2026).** Was: every miss silently created the base `Endpoint` with provider
+  as supplied. Now: a `provider` matching no registration raises `ProviderNotFoundError` naming
+  every registered provider, unless the caller passes `openai_compatible=True` or (deprecated,
+  warns) `base_url=`; a `provider` that *is* registered but lacks the requested endpoint still
+  falls through to the generic `Endpoint` (provider as supplied, endpoint or `chat/completions`,
+  bearer JSON POST settings, `requires_tokens=True`, name `openai_compatible_chat`,
+  `openai_compatible=True`), since the provider identity was never in question.
 - **Instantiation.** A match instantiates `entry.cls(None, **kwargs)`; class metadata creates a fresh
   `EndpointConfig`. Registry entries store classes and immutable metadata, not shared endpoint
   instances.
@@ -633,7 +647,7 @@ the shared agentic output and cleanup contract.
 
 | # | Delta | Size | Issue |
 |---|-------|------|-------|
-| 1 | Replace positional provider declarations with typed authoring records; canonicalize and validate every provider, endpoint, and alias key; report failed bundled imports; and require explicit opt-in for generic OpenAI-compatible fallback, with compatibility coverage for existing custom-provider callers. | M | #2026 |
+| 1 | ~~Replace positional provider declarations with typed authoring records; canonicalize and validate every provider, endpoint, and alias key; report failed bundled imports; and require explicit opt-in for generic OpenAI-compatible fallback, with compatibility coverage for existing custom-provider callers.~~ **Resolved** -- canonicalization/collision checks, failed-import diagnostics, and explicit-opt-in fallback (`openai_compatible=True` / deprecated `base_url=`) landed; a registered provider is never routed to the fallback for an unmatched endpoint. | M | #2026 |
 | 2 | Route `invoke()` and `stream()` through one bounded admission lifecycle that applies request, token, and concurrency limits before provider work; propagate one deadline through queueing, retries, and transport; and prove that cancellation leaves no queued or active orphan. | L | (filled at issue-open time) |
 | 3 | Apply retry and circuit policy to HTTP stream establishment before the first emitted chunk, prohibit automatic replay after output begins, and add tests for pre-first-byte failure, mid-stream failure, normal EOF, and caller cancellation. | M | (filled at issue-open time) |
 | 4 | Publish an agentic-adapter conformance contract for request construction, normalized chunks, error classification, resume identifiers, and transport cleanup; run it against every subprocess, in-process, and remote adapter while retaining vendor parsers beside their vendors. | M | (filled at issue-open time) |

@@ -29,7 +29,7 @@ from lionagi.plugins.discovery import discover_plugins
 from lionagi.plugins.registry import PluginActivationError, PluginRegistry, PluginState
 from lionagi.plugins.trust import trust_plugin
 from lionagi.service.connections.match_endpoint import match_endpoint
-from lionagi.service.connections.registry import EndpointRegistry
+from lionagi.service.connections.registry import EndpointRegistry, ProviderNotFoundError
 
 MANIFEST = """\
 name: {name}
@@ -152,7 +152,7 @@ class TestPluginProviderHit:
         )
 
         assert PluginRegistry.active_provider_targets() == []
-        second = match_endpoint(provider="acme-llm", endpoint="chat")
+        second = match_endpoint(provider="acme-llm", endpoint="chat", openai_compatible=True)
 
         assert type(first).__name__ == "PluginProviderEndpoint"
         assert type(second).__name__ == "Endpoint"
@@ -229,7 +229,7 @@ class TestPluginProviderRevalidationCaching:
             PROVIDER_MODULE.format(provider="acme-llm") + "\n# changed after activation\n"
         )
 
-        second = match_endpoint(provider="acme-llm", endpoint="chat")
+        second = match_endpoint(provider="acme-llm", endpoint="chat", openai_compatible=True)
 
         assert call_count > calls_before_edit
         assert type(second).__name__ == "Endpoint"
@@ -275,7 +275,7 @@ class TestPluginProviderRevalidationCaching:
             "test setup must actually restore the original mtime"
         )
 
-        second = match_endpoint(provider="acme-llm", endpoint="chat")
+        second = match_endpoint(provider="acme-llm", endpoint="chat", openai_compatible=True)
 
         assert call_count > calls_before_attack, (
             "restoring a target file's mtime after editing its content must "
@@ -365,7 +365,7 @@ class TestPluginProviderRevalidationCaching:
 
         monkeypatch.setattr(pathlib.Path, "stat", frozen_ctime_stat)
 
-        second = match_endpoint(provider="acme-llm", endpoint="chat")
+        second = match_endpoint(provider="acme-llm", endpoint="chat", openai_compatible=True)
 
         assert call_count > calls_before_attack, (
             "a same-length in-place edit whose mtime is restored and whose "
@@ -418,7 +418,7 @@ class TestPluginProviderRevalidationCaching:
             PROVIDER_MODULE.format(provider="acme-sibling") + "\n# changed after activation\n"
         )
 
-        second = match_endpoint(provider="acme-llm", endpoint="chat")
+        second = match_endpoint(provider="acme-llm", endpoint="chat", openai_compatible=True)
 
         assert call_count > calls_before_edit
         assert type(second).__name__ == "Endpoint"
@@ -486,7 +486,7 @@ class TestPluginProviderRevalidationCaching:
 
         monkeypatch.setattr(pathlib.Path, "stat", frozen_ctime_stat)
 
-        second = match_endpoint(provider="acme-llm", endpoint="chat")
+        second = match_endpoint(provider="acme-llm", endpoint="chat", openai_compatible=True)
 
         assert call_count > calls_before_attack, (
             "an equal-length edit to any declared sibling must force a fresh "
@@ -525,7 +525,7 @@ class TestPluginProviderRevalidationCaching:
                 ns=(previous_stat.st_atime_ns, previous_stat.st_mtime_ns + 1_000_000_000),
             )
 
-        second = match_endpoint(provider="acme-llm", endpoint="chat")
+        second = match_endpoint(provider="acme-llm", endpoint="chat", openai_compatible=True)
 
         assert call_count > calls_before_edit
         assert type(second).__name__ == "Endpoint"
@@ -549,7 +549,11 @@ class TestPluginProviderConsultConcurrency:
             activation_calls += 1
             module_name = "_registry_nested_plugin"
             if activation_calls == 1:
-                nested_results.append(match_endpoint(provider="nested-missing", endpoint="chat"))
+                nested_results.append(
+                    match_endpoint(
+                        provider="nested-missing", endpoint="chat", openai_compatible=True
+                    )
+                )
                 endpoint_cls = type("PluginProviderEndpoint", (), {"__module__": module_name})
                 EndpointRegistry.register(provider="outer-provider", endpoint="chat")(endpoint_cls)
             return SimpleNamespace(__name__=module_name)
@@ -655,7 +659,7 @@ class TestPluginProviderMiss:
         # shape as when no plugin is installed at all.
         _write_provider_plugin(write_plugin, "wr", name="web-research", provider="acme-llm")
 
-        result = match_endpoint(provider="totally-unknown", endpoint="chat")
+        result = match_endpoint(provider="totally-unknown", endpoint="chat", openai_compatible=True)
 
         assert type(result).__name__ == "Endpoint"
         assert result.config.provider == "totally-unknown"
@@ -663,9 +667,18 @@ class TestPluginProviderMiss:
         assert result.config.auth_type == "bearer"
         assert result.config.content_type == "application/json"
 
+    def test_genuinely_unknown_provider_raises_identically_with_no_opt_in(self, write_plugin):
+        # Same setup as above, but without opting into the generic fallback:
+        # plugin consultation happening must not change the terminal
+        # behavior for a provider nothing declares -- it raises either way.
+        _write_provider_plugin(write_plugin, "wr", name="web-research", provider="acme-llm")
+
+        with pytest.raises(ProviderNotFoundError, match="totally-unknown"):
+            match_endpoint(provider="totally-unknown", endpoint="chat")
+
     def test_no_plugins_installed_falls_back_identically(self, write_plugin):
         # `write_plugin` only gives us the isolated HOME; write nothing.
-        result = match_endpoint(provider="totally-unknown", endpoint="")
+        result = match_endpoint(provider="totally-unknown", endpoint="", openai_compatible=True)
 
         assert type(result).__name__ == "Endpoint"
         assert result.config.provider == "totally-unknown"
@@ -680,7 +693,7 @@ class TestPluginProviderExclusion:
             write_plugin, "wr", name="web-research", provider="acme-llm", trust=False
         )
 
-        result = match_endpoint(provider="acme-llm", endpoint="chat")
+        result = match_endpoint(provider="acme-llm", endpoint="chat", openai_compatible=True)
 
         assert type(result).__name__ == "Endpoint"
         assert result.config.provider == "acme-llm"
@@ -693,7 +706,7 @@ class TestPluginProviderExclusion:
         write_user_settings(settings)
         PluginRegistry.reset()
 
-        result = match_endpoint(provider="acme-llm", endpoint="chat")
+        result = match_endpoint(provider="acme-llm", endpoint="chat", openai_compatible=True)
 
         assert type(result).__name__ == "Endpoint"
         assert _module_key("web-research") not in sys.modules
@@ -709,7 +722,7 @@ class TestPluginProviderExclusion:
             PROVIDER_MODULE.format(provider="acme-llm") + "\n# tampered after trust\n"
         )
 
-        result = match_endpoint(provider="acme-llm", endpoint="chat")
+        result = match_endpoint(provider="acme-llm", endpoint="chat", openai_compatible=True)
 
         assert type(result).__name__ == "Endpoint"
         assert _module_key("web-research") not in sys.modules
@@ -725,7 +738,7 @@ class TestPluginProviderExclusion:
         )
         _trust("wr")
 
-        result = match_endpoint(provider="acme-llm", endpoint="chat")
+        result = match_endpoint(provider="acme-llm", endpoint="chat", openai_compatible=True)
 
         assert type(result).__name__ == "Endpoint"
         assert _module_key("web-research") not in sys.modules
@@ -796,8 +809,12 @@ class TestPluginProviderBuiltinCollision:
         with caplog.at_level(logging.WARNING, logger="lionagi.service.connections.registry"):
             # A miss on an unrelated provider is what drives `match()` to
             # consult (and thus import) every active plugin provider target,
-            # including the one that collides with "openai".
-            match_endpoint(provider="totally-unrelated", endpoint="chat")
+            # including the one that collides with "openai". The provider
+            # itself is still genuinely unregistered, so this raises -- the
+            # collision-rejection side effect (asserted below) already ran
+            # by the time it does.
+            with pytest.raises(ProviderNotFoundError, match="totally-unrelated"):
+                match_endpoint(provider="totally-unrelated", endpoint="chat")
 
         assert "web-research" in caplog.text
         assert "openai" in caplog.text
