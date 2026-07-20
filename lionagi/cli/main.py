@@ -556,14 +556,14 @@ def main(argv: list[str] | None = None) -> int:
 
     # Same pre-argparse scan, so a project-scoped .lionagi/settings.yaml
     # next to a `--cwd DIR` target isn't missed in favor of the shell's cwd.
+    # Scans every token (never breaks early) so a repeated `--cwd` mirrors
+    # argparse's own last-one-wins precedence instead of taking the first.
     _cwd_override: str | None = None
     for _i, _tok in enumerate(_pre_sentinel):
         if _tok == "--cwd" and _i + 1 < len(_pre_sentinel):
             _cwd_override = _pre_sentinel[_i + 1]
-            break
-        if _tok.startswith("--cwd="):
+        elif _tok.startswith("--cwd="):
             _cwd_override = _tok.split("=", 1)[1]
-            break
 
     # The first of the two settings-driven notify bootstrap points (Studio
     # service startup is the other); resolution failures are swallowed inside.
