@@ -635,6 +635,149 @@ async def test_untrusted_imported_advisory_event_is_error_not_raise(monkeypatch,
 
 
 # ---------------------------------------------------------------------------
+# Approval cwd vs exec cwd, and the hash-to-exec TOCTOU (real subprocesses,
+# no mocking of create_subprocess_exec): a trust record pins a relative
+# command to the executable it resolves to IN THE APPROVED DIRECTORY: the
+# process that actually runs must be that exact file, never whatever
+# same-named program happens to sit in the calling process's own cwd, and
+# never a file swapped into the approved path after its digest was read.
+# ---------------------------------------------------------------------------
+
+
+async def test_approved_relative_command_runs_from_approval_cwd_not_process_cwd(
+    monkeypatch, tmp_path
+):
+    """The exact attack described in the review: approve `./guard` while
+    resolving it against one directory, then invoke the hook while some
+    OTHER directory (containing a different, attacker-controlled `./guard`)
+    is the calling process's own cwd. Only the approved program may run."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from lionagi.plugins._user_settings import write_user_settings
+
+    approved_dir = tmp_path / "approved"
+    approved_dir.mkdir()
+    approved_script = approved_dir / "guard"
+    approved_script.write_text("#!/bin/sh\nexit 0\n")
+    approved_script.chmod(0o755)
+
+    attacker_dir = tmp_path / "attacker"
+    attacker_dir.mkdir()
+    attacker_script = attacker_dir / "guard"
+    attacker_script.write_text("#!/bin/sh\necho ATTACKER-RAN 1>&2\nexit 2\n")
+    attacker_script.chmod(0o755)
+
+    record = compute_trust_record(["./guard"], str(approved_dir))
+    write_user_settings({"trusted_hook_commands": [record]})
+
+    monkeypatch.chdir(attacker_dir)  # the calling process's OWN cwd
+
+    hook = external_hook_adapter(
+        event="PreToolUse",
+        command=["./guard"],
+        source="imported:claude",
+        cwd=str(approved_dir),  # the adapter's configured/approved cwd
+    )
+    result = await hook("bash", {"command": ["ls"]})
+    assert result == ToolPreDecision(decision="allow", updated_input=None), (
+        "the approved script (exit 0) must have run, not the attacker's "
+        "same-named script in the process cwd (exit 2, 'ATTACKER-RAN')"
+    )
+
+
+async def test_content_pinned_trust_survives_same_path_replacement_after_digest_read(
+    monkeypatch, tmp_path
+):
+    """Issue 6: the approved path is overwritten with different content in
+    the window between the digest read and the actual spawn. The old code
+    re-resolved and re-executed ``argv[0]`` with no further check, silently
+    running the substituted (attacker) bytes. Fixed: the fd opened before
+    the digest was read is the exec target on platforms that support
+    exec-by-fd; where that is unsupported (this suite's CI/dev platform
+    included, see ``_spawn``'s ``/dev/fd`` fallback), the resolved-path
+    fallback re-verifies the content immediately beforehand and must fail
+    closed rather than silently running the substituted file -- it must
+    never come back as an unqualified allow."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    import lionagi.hooks.external as ext_mod
+    from lionagi.plugins._user_settings import write_user_settings
+
+    approved_dir = tmp_path / "approved"
+    approved_dir.mkdir()
+    script = approved_dir / "guard"
+    script.write_text("#!/bin/sh\nexit 0\n")
+    script.chmod(0o755)
+
+    record = compute_trust_record(["./guard"], str(approved_dir))
+    write_user_settings({"trusted_hook_commands": [record]})
+
+    original_hash_fd = ext_mod._hash_fd
+
+    def _swap_after_hash(fd):
+        digest = original_hash_fd(fd)
+        # Attacker wins the race right after the digest was read but before
+        # the process is spawned.
+        script.write_text("#!/bin/sh\necho ATTACKER-RAN 1>&2\nexit 2\n")
+        script.chmod(0o755)
+        return digest
+
+    monkeypatch.setattr(ext_mod, "_hash_fd", _swap_after_hash)
+
+    hook = external_hook_adapter(
+        event="PreToolUse", command=["./guard"], source="imported:claude", cwd=str(approved_dir)
+    )
+    result = await hook("bash", {"command": ["ls"]})
+    assert result.decision == "deny", (
+        "a same-path substitution in the digest-to-exec window must never "
+        "resolve to allow -- either the fd-bound exec ignores it entirely, "
+        "or the resolved-path fallback's re-verify must catch and deny it"
+    )
+    assert "ATTACKER-RAN" not in (result.reason or ""), "the attacker script must never have run"
+
+
+async def test_content_pinned_trust_survives_symlink_swap_after_digest_read(monkeypatch, tmp_path):
+    """Same race as above, via a symlink swap instead of an in-place
+    overwrite: the approved regular file is replaced by a symlink pointing
+    at an attacker script after its digest was read."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    import lionagi.hooks.external as ext_mod
+    from lionagi.plugins._user_settings import write_user_settings
+
+    approved_dir = tmp_path / "approved"
+    approved_dir.mkdir()
+    script = approved_dir / "guard"
+    script.write_text("#!/bin/sh\nexit 0\n")
+    script.chmod(0o755)
+
+    attacker_script = tmp_path / "attacker_guard"
+    attacker_script.write_text("#!/bin/sh\necho ATTACKER-RAN 1>&2\nexit 2\n")
+    attacker_script.chmod(0o755)
+
+    record = compute_trust_record(["./guard"], str(approved_dir))
+    write_user_settings({"trusted_hook_commands": [record]})
+
+    original_hash_fd = ext_mod._hash_fd
+
+    def _swap_symlink_after_hash(fd):
+        digest = original_hash_fd(fd)
+        script.unlink()
+        script.symlink_to(attacker_script)
+        return digest
+
+    monkeypatch.setattr(ext_mod, "_hash_fd", _swap_symlink_after_hash)
+
+    hook = external_hook_adapter(
+        event="PreToolUse", command=["./guard"], source="imported:claude", cwd=str(approved_dir)
+    )
+    result = await hook("bash", {"command": ["ls"]})
+    assert result.decision == "deny", (
+        "a symlink swap in the digest-to-exec window must never resolve to "
+        "allow -- either the fd-bound exec ignores it entirely, or the "
+        "resolved-path fallback's re-verify must catch and deny it"
+    )
+    assert "ATTACKER-RAN" not in (result.reason or ""), "the attacker script must never have run"
+
+
+# ---------------------------------------------------------------------------
 # Bounded subprocess output (Issue 2 fix): stdout AND stderr are capped while
 # streaming, never after an unbounded `communicate()`-style full buffer.
 # ---------------------------------------------------------------------------

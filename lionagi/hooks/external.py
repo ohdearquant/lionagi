@@ -31,6 +31,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -187,6 +188,143 @@ def compute_trust_record(command: list[str], cwd: str) -> dict[str, str]:
         "resolved_path": str(resolved),
         "content_digest": compute_executable_digest(resolved),
     }
+
+
+@dataclass(frozen=True, slots=True)
+class _BoundExecutable:
+    """The exact file object a hook invocation will execute: an open fd
+    (opened ``O_NOFOLLOW`` off the resolved path, verified as a regular
+    file) plus the resolved path it was opened from. ``expected_digest`` is
+    the content hash a source-having (imported/pinned) command was matched
+    against, carried along so a same-invocation fallback spawn can
+    re-verify it did not change out from under the fd; ``None`` for a
+    project/user-authored command, which has no pinned digest to check.
+
+    Binding execution to this fd (see :func:`_spawn`) rather than a path
+    string closes the gap between "the bytes we hashed and matched against
+    a trust record" and "the bytes that actually run" -- nothing can swap
+    the file at *path* after this fd was opened without affecting what
+    subsequently executes."""
+
+    fd: int
+    path: Path
+    expected_digest: str | None
+
+
+def _open_executable_fd(path: Path) -> int:
+    """Open *path* for execution without following a symlink at its final
+    path component, and verify what was opened is a regular file.
+
+    Raises :class:`ExternalHookConfigError` (never lets a bare ``OSError``
+    escape) if *path* cannot be opened this way or is not a regular file --
+    the caller is expected to treat this exactly like an unresolvable
+    command. The returned fd is the caller's to close (or to hand to a
+    spawned subprocess via ``pass_fds`` and close afterward in the parent).
+    """
+    try:
+        fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise ExternalHookConfigError(
+            f"hooks_external: cannot open resolved executable {path}: {exc}"
+        ) from exc
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ExternalHookConfigError(
+                f"hooks_external: resolved executable {path} is not a regular file"
+            )
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _hash_fd(fd: int) -> str:
+    """``sha256`` over an open fd's full content, read from offset 0 --
+    the same bytes :func:`compute_executable_digest` would hash from a
+    path, but read from the exact descriptor that will later be exec'd
+    (see :func:`_open_executable_fd`) rather than a fresh path lookup that
+    could resolve to a different file by the time it runs."""
+    os.lseek(fd, 0, os.SEEK_SET)
+    digest = hashlib.sha256()
+    while True:
+        chunk = os.read(fd, 1 << 20)
+        if not chunk:
+            break
+        digest.update(chunk)
+    os.lseek(fd, 0, os.SEEK_SET)
+    return digest.hexdigest()
+
+
+def _prepare_trusted_execution(
+    command: list[str], *, source: str, cwd: str
+) -> tuple[_BoundExecutable | None, str]:
+    """Resolve, open, and content-verify *command* for a source-having
+    (imported) entry in one pass, so the fd whose bytes get hash-compared
+    against the trust record is the SAME fd later handed to ``exec`` --
+    never a separate re-resolution of ``argv[0]`` that a swap could win a
+    race against (see :func:`_BoundExecutable`).
+
+    Returns ``(bound, "")`` on a match, or ``(None, reason)`` when the
+    command cannot be resolved/opened or does not match an approved trust
+    record; the caller must never fall back to spawning the raw argv in
+    the failure case.
+    """
+    try:
+        resolved_path = resolve_hook_executable(command, cwd)
+    except ExternalHookConfigError as exc:
+        return None, f"untrusted hook command {command!r} (source={source!r}): {exc}"
+    try:
+        fd = _open_executable_fd(resolved_path)
+    except ExternalHookConfigError as exc:
+        return None, f"untrusted hook command {command!r} (source={source!r}): {exc}"
+
+    from lionagi.plugins._user_settings import read_user_settings
+
+    trusted = read_user_settings().get("trusted_hook_commands", [])
+    if not isinstance(trusted, list):
+        trusted = []
+    argv_hash = compute_command_hash(command)
+    content_digest = _hash_fd(fd)
+    argv_matches = [
+        record
+        for record in trusted
+        if isinstance(record, dict) and record.get("argv_hash") == argv_hash
+    ]
+    for record in argv_matches:
+        if (
+            record.get("resolved_path") == str(resolved_path)
+            and record.get("content_digest") == content_digest
+        ):
+            return _BoundExecutable(fd=fd, path=resolved_path, expected_digest=content_digest), ""
+
+    os.close(fd)
+    if argv_matches:
+        return None, (
+            f"hook command {command!r} (source={source!r}) resolves to a different "
+            f"executable than was approved (now: {str(resolved_path)!r}); the "
+            "approved path or its contents changed since `li hooks trust` -- fails "
+            "closed, this is not the executable that was reviewed"
+        )
+    return None, f"untrusted hook command {command!r} (source={source!r})"
+
+
+def _reverify_bound(bound: _BoundExecutable) -> None:
+    """Re-open and re-hash ``bound.path`` immediately before a resolved-path
+    fallback spawn (see :func:`_spawn`), to shrink -- as close to zero as a
+    path-based exec allows -- the window in which a same-path substitution
+    could slip an unreviewed file into place. Raises
+    :class:`ExternalHookConfigError` on any mismatch or open failure; the
+    caller must treat that as a hook failure, never fall through to exec."""
+    fd = _open_executable_fd(bound.path)
+    try:
+        if bound.expected_digest is not None and _hash_fd(fd) != bound.expected_digest:
+            raise ExternalHookConfigError(
+                f"hooks_external: {bound.path} changed since it was verified "
+                "moments ago; refusing the resolved-path fallback exec"
+            )
+    finally:
+        os.close(fd)
 
 
 def _trust_status(command: list[str], *, source: str | None, cwd: str) -> tuple[bool, str]:
@@ -376,16 +514,58 @@ async def _drain(proc: Any, envelope_bytes: bytes) -> tuple[bytes, bytes]:
     return stdout_bytes, stderr_bytes
 
 
+async def _spawn(argv: list[str], bound: _BoundExecutable | None, cwd: str) -> Any:
+    """Spawn *argv* in *cwd* -- the same directory the command was resolved
+    against for approval (ADR-0048's cwd-consistency contract; see
+    :func:`resolve_hook_executable`), never whichever directory the calling
+    process happens to be in.
+
+    When *bound* is set (a source-having/imported command that went through
+    :func:`_prepare_trusted_execution`), execution binds to that exact
+    verified fd via ``/dev/fd/<fd>`` (with ``pass_fds`` keeping it open
+    across the exec) rather than a path string, so nothing can substitute a
+    different file between the trust check and the process that actually
+    runs. This falls back to spawning the resolved path directly only if
+    the fd-exec attempt itself fails at spawn time (observed for some
+    shebang scripts on platforms where executing via ``/dev/fd`` re-opens
+    the path instead of reusing the fd) -- the fallback re-verifies the
+    file immediately beforehand (:func:`_reverify_bound`) to keep the
+    substitution window as small as a path-based exec can get it, since it
+    can no longer bind to the exact fd. *bound* is ``None`` for a
+    project/user-authored command (no separate resolution or pinning
+    applies to it); it still spawns in *cwd*, just via the raw argv.
+    """
+    common = {
+        "stdin": asyncio.subprocess.PIPE,
+        "stdout": asyncio.subprocess.PIPE,
+        "stderr": asyncio.subprocess.PIPE,
+        "start_new_session": True,
+        "cwd": cwd,
+    }
+    if bound is None:
+        return await asyncio.create_subprocess_exec(*argv, **common)
+    try:
+        return await asyncio.create_subprocess_exec(
+            *argv, executable=f"/dev/fd/{bound.fd}", pass_fds=(bound.fd,), **common
+        )
+    except OSError:
+        logger.warning(
+            "hook %r: exec via /dev/fd failed; falling back to a resolved-path "
+            "spawn after re-verifying its content",
+            argv[0],
+        )
+        _reverify_bound(bound)
+        return await asyncio.create_subprocess_exec(*argv, executable=str(bound.path), **common)
+
+
 async def _run_hook_process(
-    argv: list[str], envelope_bytes: bytes, timeout: float
+    argv: list[str],
+    bound: _BoundExecutable | None,
+    cwd: str,
+    envelope_bytes: bytes,
+    timeout: float,
 ) -> tuple[int, bytes, bytes]:
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        start_new_session=True,
-    )
+    proc = await _spawn(argv, bound, cwd)
     try:
         stdout_bytes, stderr_bytes = await asyncio.wait_for(
             _drain(proc, envelope_bytes),
@@ -462,6 +642,8 @@ async def _execute_hook(
     envelope: dict[str, Any],
     timeout: float,
     blocking: bool,
+    bound: _BoundExecutable | None = None,
+    cwd: str = ".",
 ) -> HookVerdict:
     """Spawn *argv*, exchange *envelope*, and normalize the exit-code + stdout
     contract into a :class:`HookVerdict`.
@@ -472,6 +654,12 @@ async def _execute_hook(
     :func:`_json_safe`, but not otherwise guaranteed for every field) fails
     here and never spawns a process, so no path can orphan a running hook
     subprocess whose handle was lost to a serialization error.
+
+    *bound* and *cwd* are threaded straight to :func:`_spawn` -- see that
+    function's docstring for the fd-binding and cwd-consistency contract
+    this enforces; both default to values that never matter to a caller
+    that fails closed before spawning (i.e. the serialization-error case
+    below never reaches ``_spawn`` at all).
 
     Exit 0 -- stdout parsed as JSON if non-empty. Exit 2 -- block; stderr is
     the reason. Any other exit, or a spawn/IO error -- hook failure (deny on
@@ -487,7 +675,7 @@ async def _execute_hook(
         )
     try:
         returncode, stdout_bytes, stderr_bytes = await _run_hook_process(
-            argv, envelope_bytes, timeout
+            argv, bound, cwd, envelope_bytes, timeout
         )
     except _HookTimeoutError as exc:
         return HookVerdict(outcome="deny" if blocking else "error", reason=str(exc))
@@ -560,13 +748,33 @@ def external_hook_adapter(
         # Re-resolved every call, not cached from adapter construction: the
         # executable a relative/PATH-searched command resolves to can change
         # between approval and this exact invocation (D7 content pinning).
-        trusted, reason = _trust_status(command, source=source, cwd=resolved_cwd)
-        if not trusted:
-            reason = f"{reason}; run `li hooks trust` to approve it"
-            return HookVerdict(outcome="deny" if blocking else "error", reason=reason)
-        return await _execute_hook(
-            argv=command, envelope=envelope, timeout=timeout, blocking=blocking
-        )
+        # For a source-having (imported) entry, resolution, the trust-record
+        # match, AND the fd that gets exec'd all come from this ONE
+        # `_prepare_trusted_execution` call -- never a fresh re-resolution of
+        # `command[0]` that a swap between "approved" and "exec'd" could win
+        # a race against (see `_BoundExecutable`). A project/user-authored
+        # entry (source is falsy) has no separate approval to bind against;
+        # it always spawns in `resolved_cwd`, matching the directory it would
+        # have resolved a relative path against.
+        bound: _BoundExecutable | None = None
+        if source:
+            bound, reason = _prepare_trusted_execution(command, source=source, cwd=resolved_cwd)
+            if bound is None:
+                reason = f"{reason}; run `li hooks trust` to approve it"
+                return HookVerdict(outcome="deny" if blocking else "error", reason=reason)
+        try:
+            return await _execute_hook(
+                argv=command,
+                envelope=envelope,
+                timeout=timeout,
+                blocking=blocking,
+                bound=bound,
+                cwd=resolved_cwd,
+            )
+        finally:
+            if bound is not None:
+                with contextlib.suppress(OSError):
+                    os.close(bound.fd)
 
     if event == "PreToolUse":
 
