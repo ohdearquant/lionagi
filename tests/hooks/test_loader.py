@@ -127,6 +127,20 @@ def test_build_session_bus_empty_list_leaves_point_unregistered():
     assert bus.handlers_for(HookPoint.SESSION_START) != []
 
 
+def test_build_session_bus_empty_list_disables_an_existing_default():
+    """``session.start: []`` is the documented way to turn off a hook point
+    that DOES have a default handler -- this is the actual "override with an
+    empty list zeroes out an existing default" branch of build_session_bus's
+    ``if point in overrides: ... for handler in overrides[point]`` loop.
+    (message.add has no default since persist_message left DEFAULT_HOOKS, so
+    asserting an empty list against it can't exercise this branch.)"""
+    bus = build_session_bus({"session.start": []})
+    assert bus.handlers_for(HookPoint.SESSION_START) == []
+    # Other defaults untouched.
+    assert bus.handlers_for(HookPoint.SESSION_END) == DEFAULT_HOOKS[HookPoint.SESSION_END]
+    assert bus.handlers_for(HookPoint.BRANCH_CREATE) == DEFAULT_HOOKS[HookPoint.BRANCH_CREATE]
+
+
 def test_build_session_bus_adds_handlers_for_non_default_points():
     """Profile may register handlers on points that have no default."""
     bus = build_session_bus({"api.post_call": ["log_api_metrics"], "tool.pre": ["log_tool_call"]})
