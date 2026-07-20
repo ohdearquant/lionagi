@@ -348,10 +348,13 @@ class ActionManager(Manager):
     ) -> list[str]:
         registered_tools = []
 
-        if security is not None:
-            from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+        from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
 
-            MCPConnectionPool.remember_security(server_config, security)
+        # Mint the recovery authorization once, bound to this call's
+        # effective security, and thread it into every Tool created below.
+        # It never touches `_server_security`/config-keyed state: each Tool
+        # holds the capability only in its own excluded, non-serialized slot.
+        capability = MCPConnectionPool._mint_capability(security)
 
         server_name = None
         if isinstance(server_config, dict) and "server" in server_config:
@@ -389,12 +392,15 @@ class ActionManager(Manager):
                 if request_options and tool_name in request_options:
                     tool_request_options = request_options[tool_name]
 
-                tool = Tool(mcp_config=mcp_config, request_options=tool_request_options)
+                tool = Tool(
+                    mcp_config=mcp_config,
+                    request_options=tool_request_options,
+                    mcp_capability=capability,
+                )
                 self.register_tool(tool, update=update)
                 registered_tools.append(tool_name)
         else:
             from lionagi.service.connections.mcp_wrapper import (
-                MCPConnectionPool,
                 validate_mcp_tool_admission,
             )
 
@@ -444,6 +450,7 @@ class ActionManager(Manager):
                         mcp_config=mcp_config,
                         request_options=tool_request_options,
                         tool_schema=tool_schema,
+                        mcp_capability=capability,
                     )
                     self.register_tool(tool_obj, update=update)
                     registered_tools.append(tool_name)
@@ -465,13 +472,15 @@ class ActionManager(Manager):
 
         # An omitted policy is not upgraded to a permissive one here:
         # `mcp_security` stays None and flows through to
-        # `register_mcp_server` -> `MCPConnectionPool.get_client`. There it
-        # reaches the wrapper's own fail-closed `MCPSecurityConfig()` default
-        # only when no policy has already been recorded for the same identity;
-        # if one has, the pool substitutes that remembered authorization, so a
-        # load in a process that already authorized this transport is not
-        # denied. A caller wanting the permissive behavior outright passes
-        # `mcp_security=MCPSecurityConfig.trusted()` explicitly.
+        # `register_mcp_server` -> `MCPConnectionPool.get_client`, which
+        # reaches the wrapper's fail-closed `MCPSecurityConfig()` default --
+        # unless the process owner has called `set_security_config()`, an
+        # explicit process-wide decision that then applies to every
+        # omitted-policy call. Either way, this loader path never recovers a
+        # policy some OTHER caller authorized for the same identity; only the
+        # MCP proxy's own reconnect does that. A caller wanting the permissive
+        # behavior outright passes `mcp_security=MCPSecurityConfig.trusted()`
+        # explicitly.
         loaded_names = MCPConnectionPool.load_config(config_path)
 
         if server_names is None:
@@ -508,9 +517,10 @@ async def load_mcp_tools(
     manager = ActionManager()
 
     # See load_mcp_config's matching comment: an omitted policy stays None
-    # rather than being silently upgraded to a permissive one, and reaches the
-    # wrapper's fail-closed default only when no policy is already recorded for
-    # the same identity.
+    # rather than being silently upgraded to a permissive one, and reaches
+    # the wrapper's fail-closed default unless a process-global policy was
+    # explicitly set. Either way, it never recovers a policy some earlier
+    # caller authorized for the same identity.
 
     if config_path:
         MCPConnectionPool.load_config(config_path)

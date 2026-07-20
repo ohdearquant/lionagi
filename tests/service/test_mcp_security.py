@@ -1,11 +1,14 @@
 """Tests for MCP security: fail-closed transport security requiring explicit opt-in before transport construction."""
 
+import copy
+
 import pytest
 
 from lionagi.service.connections.mcp_wrapper import (
     MCPConnectionPool,
     MCPSecurityConfig,
     _filter_env,
+    _MCPRecoveryCapability,
     _validate_command,
     _validate_url,
 )
@@ -350,11 +353,6 @@ class TestLoadMcpConfigTrustedLoad:
         # file, so no cached client/policy from another test leaks in.
         MCPConnectionPool._security = None
         MCPConnectionPool._clients = {}
-        MCPConnectionPool._server_security = {
-            k: v
-            for k, v in MCPConnectionPool._server_security.items()
-            if not k.startswith("trustcheck:")
-        }
 
         cfg = tmp_path / ".mcp.json"
         cfg.write_text(
@@ -537,10 +535,14 @@ class TestPerServerPolicyPersistence:
 
     def _reset(self):
         MCPConnectionPool._security = None
-        MCPConnectionPool._server_security.clear()
         MCPConnectionPool._clients.clear()
 
-    async def test_invocation_without_security_recovers_recorded_policy(self, monkeypatch):
+    async def test_proxy_reconnect_recovers_recorded_policy(self, monkeypatch):
+        """The tool proxy (`create_mcp_tool`'s stored callable) re-enters a
+        transport it already holds via the capability-gated
+        `_get_reconnect_client` -- that is the ONLY thing that recovers an
+        authorized policy (issue #2356), and it is not reachable through the
+        public `get_client` API."""
         self._reset()
         seen = []
 
@@ -555,18 +557,70 @@ class TestPerServerPolicyPersistence:
         monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
         try:
             policy = MCPSecurityConfig(allow_commands=True)
-            # Trusted load records the policy (no client created — tool_names path).
-            MCPConnectionPool.remember_security({"command": "echo", "args": ["a"]}, policy)
-            # Stored callable invokes get_client WITHOUT a policy, with a fresh
-            # dict of the SAME content (the real flow strips only `_`-prefixed
-            # metadata, so transport fields are identical) — the recorded policy
-            # must be recovered.
-            await MCPConnectionPool.get_client({"command": "echo", "args": ["a"]})
+            # Trusted registration mints this proxy's own recovery capability
+            # (no client created — tool_names path).
+            capability = MCPConnectionPool._mint_capability(policy)
+            # Stored callable invokes the capability-gated reconnect path, on
+            # a fresh dict of the SAME content (the real flow strips only
+            # `_`-prefixed metadata, so transport fields are identical) — the
+            # capability's policy must be recovered.
+            await MCPConnectionPool._get_reconnect_client(
+                {"command": "echo", "args": ["a"]}, capability
+            )
             assert seen[-1] is policy
         finally:
             self._reset()
 
-    async def test_reconnect_after_cleanup_recovers_policy(self, monkeypatch):
+    async def test_public_get_client_cannot_select_recovery(self, monkeypatch):
+        """A normal public caller has no way to reach the recovery branch at
+        all: `get_client`'s `security` parameter accepts only an explicit
+        `MCPSecurityConfig` or `None`, and recovery only happens through the
+        private, capability-gated `_get_reconnect_client`."""
+        self._reset()
+
+        async def fake_create(config, security=None):
+            return object()
+
+        monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+        try:
+            # Passing anything other than an MCPSecurityConfig or None is
+            # rejected outright -- there is no sentinel a public caller can
+            # construct or import to select recovery through this method.
+            with pytest.raises(TypeError):
+                await MCPConnectionPool.get_client(
+                    {"command": "echo", "args": ["a"]}, security=object()
+                )
+        finally:
+            self._reset()
+
+    async def test_invocation_without_marker_does_not_recover_recorded_policy(self, monkeypatch):
+        """The bug in issue #2356: a bare, policy-omitting get_client() call
+        used to recover whatever policy an earlier caller authorized for the
+        same resolved transport. A caller that makes no trust decision
+        stays fail-closed, even though the exact same transport was
+        authorized moments ago (and even holds a live capability for it --
+        `get_client` has no parameter that accepts one)."""
+        self._reset()
+        seen = []
+
+        class _FakeClient:
+            def is_connected(self):
+                return False
+
+        async def fake_create(config, security=None):
+            seen.append(security)
+            return _FakeClient()
+
+        monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+        try:
+            MCPConnectionPool._mint_capability(MCPSecurityConfig(allow_commands=True))
+            # No security kwarg at all -- a fresh loader's shape, not the proxy's.
+            await MCPConnectionPool.get_client({"command": "echo", "args": ["a"]})
+            assert seen[-1] is None
+        finally:
+            self._reset()
+
+    async def test_reconnect_after_cleanup_recovers_policy_via_proxy_path(self, monkeypatch):
         self._reset()
         seen = []
 
@@ -582,13 +636,45 @@ class TestPerServerPolicyPersistence:
         try:
             MCPConnectionPool._configs["srv"] = {"command": "echo"}
             policy = MCPSecurityConfig(allow_commands=True)
-            # Discovery records the policy.
+            # Discovery mints this proxy's capability.
             await MCPConnectionPool.get_client({"server": "srv"}, security=policy)
             assert seen[-1] is policy
-            # Cached client cleaned up; reconnect without an explicit policy.
+            capability = MCPConnectionPool._mint_capability(policy)
+            # Cached client cleaned up; the proxy reconnecting still recovers
+            # its policy, but only because it presents its own capability.
             MCPConnectionPool._clients.clear()
-            await MCPConnectionPool.get_client({"server": "srv"})
+            await MCPConnectionPool._get_reconnect_client({"server": "srv"}, capability)
             assert seen[-1] is policy
+        finally:
+            self._reset()
+            MCPConnectionPool._configs.pop("srv", None)
+
+    async def test_reconnect_after_cleanup_without_marker_stays_fail_closed(self, monkeypatch):
+        """Same eviction-survives-in-the-map scenario as the proxy-path test
+        above, but from a loader's shape (through the public `get_client`):
+        the surviving map entry must NOT be reachable through that method,
+        cache state notwithstanding."""
+        self._reset()
+        seen = []
+
+        class _FakeClient:
+            def is_connected(self):
+                return True
+
+        async def fake_create(config, security=None):
+            seen.append(security)
+            return _FakeClient()
+
+        monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+        try:
+            MCPConnectionPool._configs["srv"] = {"command": "echo"}
+            policy = MCPSecurityConfig(allow_commands=True)
+            await MCPConnectionPool.get_client({"server": "srv"}, security=policy)
+            assert seen[-1] is policy
+            MCPConnectionPool._clients.clear()
+            # A fresh loader-shaped call (no marker) after the same eviction.
+            await MCPConnectionPool.get_client({"server": "srv"})
+            assert seen[-1] is None
         finally:
             self._reset()
             MCPConnectionPool._configs.pop("srv", None)
@@ -617,19 +703,30 @@ class TestPerServerPolicyPersistence:
             mgr = ActionManager()
             policy = MCPSecurityConfig(allow_commands=True)
             # tool_names branch builds Tool objects without creating a client;
-            # the policy must still be recorded for first-invocation recovery.
+            # each Tool must still carry its own recovery capability for
+            # first-invocation recovery, bound to this call's policy.
             await mgr.register_mcp_server(
                 {"command": "echo", "args": []},
                 tool_names=["foo"],
                 security=policy,
             )
-            key = MCPConnectionPool._policy_key({"command": "echo", "args": []})
-            assert MCPConnectionPool._server_security[key] is policy
+            tool = mgr.registry["foo"]
+            assert tool.mcp_capability is not None
+            assert tool.mcp_capability.security is policy
+            # The capability never appears in serialized state.
+            assert "mcp_capability" not in tool.to_dict()
         finally:
             self._reset()
 
-    async def test_shared_command_different_args_do_not_share_policy(self, monkeypatch):
-        """Policy key must fingerprint the whole transport: a trusted config must NOT authorize a different args set sharing the same executable."""
+    async def test_capability_recovery_is_bound_to_the_minting_call_not_the_config(
+        self, monkeypatch
+    ):
+        """Recovery authority is the capability OBJECT, not a config-derived
+        key: presenting one proxy's capability against a different config
+        still reconnects that config under the capability's own policy --
+        this is safe only because capabilities are never exposed, forged, or
+        looked up by config; each Tool always presents the capability minted
+        for its OWN registration call alongside its OWN captured config."""
         self._reset()
         seen = []
 
@@ -641,43 +738,17 @@ class TestPerServerPolicyPersistence:
         try:
             policy = MCPSecurityConfig(allow_commands=True)
             safe = {"command": "python", "args": ["safe_server.py"]}
-            evil = {"command": "python", "args": ["-c", "import os; os.system('x')"]}
+            capability = MCPConnectionPool._mint_capability(policy)
 
-            # Distinct fingerprints — the leak would make these collide.
-            assert MCPConnectionPool._policy_key(safe) != MCPConnectionPool._policy_key(evil)
+            # No capability presented at all -> fails closed regardless of config.
+            with pytest.raises(PermissionError):
+                await MCPConnectionPool._get_reconnect_client(safe, None)
 
-            # Trust only the safe config.
-            MCPConnectionPool.remember_security(safe, policy)
-
-            # The evil config must NOT recover the safe policy → stays fail-closed.
-            await MCPConnectionPool.get_client(evil)
-            assert seen[-1] is None, "different args must not inherit another config's policy"
-
-            # The safe config still recovers its own policy.
-            await MCPConnectionPool.get_client(safe)
+            # A different (fresh, unrelated) call gets its own fail-closed capability.
+            other_capability = MCPConnectionPool._mint_capability(None)
+            assert other_capability.security != policy
+            await MCPConnectionPool._get_reconnect_client(safe, capability)
             assert seen[-1] is policy
-        finally:
-            self._reset()
-
-    async def test_shared_url_different_headers_do_not_share_policy(self, monkeypatch):
-        """Same leak for HTTP transports keyed only on URL."""
-        self._reset()
-        seen = []
-
-        async def fake_create(config, security=None):
-            seen.append(security)
-            return object()
-
-        monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
-        try:
-            policy = MCPSecurityConfig(allow_urls=True)
-            trusted = {"url": "https://api.example.com", "headers": {"X-Tenant": "a"}}
-            other = {"url": "https://api.example.com", "headers": {"X-Tenant": "b"}}
-
-            assert MCPConnectionPool._policy_key(trusted) != MCPConnectionPool._policy_key(other)
-            MCPConnectionPool.remember_security(trusted, policy)
-            await MCPConnectionPool.get_client(other)
-            assert seen[-1] is None
         finally:
             self._reset()
 
@@ -788,3 +859,336 @@ class TestPerServerPolicyPersistence:
             self._reset()
             MCPConnectionPool._configs.pop("trusted-name", None)
             MCPConnectionPool._configs.pop("other-name", None)
+
+
+class TestFreshLoadDoesNotInheritEarlierCallerTrust:
+    """Issue #2356: `None` at `get_client(security=...)` used to mean two
+    different things -- "the proxy re-entering a transport it already holds"
+    and "a loader that made no trust decision" -- and both hit the same
+    recovery. This reproduces the issue's own repro (two real
+    `ActionManager.load_mcp_config()` calls, client cache cleared between
+    them) and the proxy path that must keep working."""
+
+    def _reset(self):
+        MCPConnectionPool._security = None
+        MCPConnectionPool._clients.clear()
+        MCPConnectionPool._configs.clear()
+
+    async def test_second_load_mcp_config_omitting_policy_is_denied(self, tmp_path, monkeypatch):
+        """A second load_mcp_config() with no policy, in a process where the
+        same transport was previously loaded as trusted, must be denied --
+        with NO cache-clearing between the two calls. This is the live path:
+        the first discovery client is still connected when the second,
+        policy-omitting loader runs, so its effective security (fail-closed
+        default) must produce a cache MISS against the first call's trusted
+        entry rather than reuse the still-connected trusted client."""
+        import json
+
+        from lionagi.protocols.action.manager import ActionManager
+
+        self._reset()
+        try:
+            cfg_path = tmp_path / ".mcp.json"
+            cfg_path.write_text(json.dumps({"mcpServers": {"srv": {"command": "echo"}}}))
+
+            class _FakeClient:
+                def is_connected(self):
+                    return True
+
+                async def list_tools(self):
+                    return []
+
+            observed = []
+
+            async def fake_create(config, security=None):
+                # Mirrors `_create_client`'s own precedence (explicit >
+                # process-global > fail-closed default) and runs the REAL
+                # validator, without spawning a real transport.
+                effective = (
+                    security
+                    if security is not None
+                    else (MCPConnectionPool._security or MCPSecurityConfig())
+                )
+                observed.append(security)
+                _validate_command(config["command"], effective)
+                return _FakeClient()
+
+            monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+
+            mgr_1 = ActionManager()
+            await mgr_1.load_mcp_config(str(cfg_path), mcp_security=MCPSecurityConfig.trusted())
+            assert observed[-1] == MCPSecurityConfig.trusted()
+            assert len(MCPConnectionPool._clients) == 1
+
+            # NO client-cache clearing here: the first, trusted discovery
+            # client is still connected. This is the exact scenario the
+            # config-only cache key used to admit silently.
+            mgr_2 = ActionManager()
+            with pytest.raises(PermissionError, match="allow_commands=False"):
+                await mgr_2.load_mcp_config(str(cfg_path))
+            # The fresh loader's own (omitted) policy reached the validator --
+            # it was never substituted with mgr_1's trusted() decision, and
+            # the connected trusted client was never returned to it.
+            assert observed[-1] is None
+        finally:
+            self._reset()
+
+    async def test_proxy_tool_reconnects_without_reauthorization(self, monkeypatch):
+        """The other half of the acceptance criteria: create_mcp_tool's
+        stored callable (the proxy) must still reconnect an
+        already-authorized transport with no policy argument of its own --
+        as long as it holds the capability minted for it at authorization
+        time."""
+        from lionagi.service.connections.mcp_wrapper import create_mcp_tool
+
+        self._reset()
+        try:
+            policy = MCPSecurityConfig(allow_commands=True)
+            mcp_config = {
+                "command": "echo",
+                "args": ["a"],
+                "_original_tool_name": "ping",
+            }
+            # The transport was authorized once, e.g. by discovery, minting
+            # this proxy's own recovery capability.
+            capability = MCPConnectionPool._mint_capability(policy)
+
+            class _FakeClient:
+                def is_connected(self):
+                    return False
+
+                async def call_tool(self, name, kwargs):
+                    return {"ok": True}
+
+            observed = []
+
+            async def fake_create(config, security=None):
+                observed.append(security)
+                return _FakeClient()
+
+            monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+
+            tool_callable = create_mcp_tool(mcp_config, "ping", capability)
+            result = await tool_callable()
+            assert result == {"ok": True}
+            # The proxy passed no policy of its own -- it recovered the one
+            # its own capability was minted under.
+            assert observed[-1] is policy
+        finally:
+            self._reset()
+
+
+class TestProcessGlobalPolicyIsExplicitNotInherited:
+    """`set_security_config()` sets a process-wide default that an omitted
+    per-call policy falls back to (`_create_client`'s precedence: explicit >
+    process-global > fail-closed default). This is a deliberate,
+    process-owner-level trust decision -- the reviewed real ordering
+    (`set_security_config(trusted)` then a bare `get_client()`) is admitted
+    by design. It is NOT the same defect as issue #2356: that bug was one
+    caller silently inheriting a policy a DIFFERENT caller explicitly
+    authorized only for a specific server identity via `get_client(security=...)`
+    or the loader path. A process-global policy applies uniformly to every
+    server identity in the process once set, regardless of whether any
+    per-server policy was ever recorded, and is set through a distinct,
+    dedicated API that has no production caller today."""
+
+    def _reset(self):
+        MCPConnectionPool._security = None
+        MCPConnectionPool._clients.clear()
+        MCPConnectionPool._configs.clear()
+
+    async def test_bare_call_after_set_security_config_is_admitted(self, monkeypatch):
+        """The real ordering: process owner sets a global trusted policy,
+        then a caller that makes no per-call trust decision of its own is
+        admitted under it. Fail-closed default is skipped only because a
+        process-global policy was explicitly set -- not because of any
+        per-server recovery."""
+        self._reset()
+        seen = []
+
+        async def fake_create(config, security=None):
+            effective = security or MCPConnectionPool._security or MCPSecurityConfig()
+            seen.append(effective)
+            _validate_command(config["command"], effective)
+            return object()
+
+        monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+        try:
+            MCPConnectionPool.set_security_config(MCPSecurityConfig.trusted())
+            await MCPConnectionPool.get_client({"command": "echo", "args": ["a"]})
+            assert seen[-1] == MCPSecurityConfig.trusted()
+        finally:
+            self._reset()
+
+    async def test_global_policy_applies_uniformly_not_per_server_recovery(self, monkeypatch):
+        """A process-global policy is not scoped to any one server identity
+        the way capability-based recovery is: it admits an omitted-policy
+        call for a server identity that was NEVER individually authorized,
+        which distinguishes it from the per-caller-inheritance bug this PR
+        closes."""
+        self._reset()
+        seen = []
+
+        async def fake_create(config, security=None):
+            effective = security or MCPConnectionPool._security or MCPSecurityConfig()
+            seen.append(effective)
+            _validate_command(config["command"], effective)
+            return object()
+
+        monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+        try:
+            MCPConnectionPool.set_security_config(MCPSecurityConfig.trusted())
+            # Never authorized individually, no capability minted for it at all.
+            await MCPConnectionPool.get_client({"command": "never-seen", "args": []})
+            assert seen[-1] == MCPSecurityConfig.trusted()
+        finally:
+            self._reset()
+
+    async def test_without_global_policy_bare_call_stays_fail_closed(self, monkeypatch):
+        """Control: with no process-global policy set, the same bare call
+        stays fail-closed, confirming the admission above comes from the
+        explicit global policy and not from some other implicit default."""
+        self._reset()
+        seen = []
+
+        async def fake_create(config, security=None):
+            effective = security or MCPConnectionPool._security or MCPSecurityConfig()
+            seen.append(effective)
+            _validate_command(config["command"], effective)
+            return object()
+
+        monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+        try:
+            with pytest.raises(PermissionError, match="allow_commands=False"):
+                await MCPConnectionPool.get_client({"command": "echo", "args": ["a"]})
+        finally:
+            self._reset()
+
+
+class TestRecoveryIsUnforgeable:
+    """The exact reproductions in the PR #2362 re-review verdict: recovery
+    must be a capability object, not a config-keyed lookup, so it cannot be
+    reached by a stored bound method, a subclass alias, or a proxy
+    reconstructed from persisted `mcp_config`. Every one of these must fail
+    closed (no prior policy recovered)."""
+
+    def _reset(self):
+        MCPConnectionPool._security = None
+        MCPConnectionPool._clients.clear()
+
+    async def _authorize(self, monkeypatch) -> None:
+        """Records an `allow_commands=True` policy the way a real trusted
+        registration would, without spawning a subprocess."""
+
+        async def fake_create(config, security=None):
+            return type("ConnectedClient", (), {"is_connected": lambda self: True})()
+
+        monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+        policy = MCPSecurityConfig(allow_commands=True)
+        await MCPConnectionPool.get_client({"command": "echo", "args": ["a"]}, security=policy)
+
+    async def test_stored_bound_method_does_not_recover(self, monkeypatch):
+        self._reset()
+        try:
+            await self._authorize(monkeypatch)
+            # A caller stores a reference to the classmethod itself.
+            stored = MCPConnectionPool._get_reconnect_client
+            with pytest.raises(PermissionError):
+                await stored({"command": "echo", "args": ["a"]})
+        finally:
+            self._reset()
+
+    async def test_subclass_public_alias_does_not_recover(self, monkeypatch):
+        self._reset()
+        try:
+            await self._authorize(monkeypatch)
+
+            class _Evil(MCPConnectionPool):
+                reconnect = MCPConnectionPool._get_reconnect_client
+
+            with pytest.raises(PermissionError):
+                await _Evil.reconnect({"command": "echo", "args": ["a"]})
+        finally:
+            self._reset()
+
+    async def test_serialized_mcp_config_rehydration_does_not_recover(self, monkeypatch):
+        """A Tool built directly from a persisted `mcp_config` dict (the
+        `mcp_capability` field is `exclude=True`, so it is never part of
+        that dict) has no capability, and its calls fail closed instead of
+        recovering the policy the original authorized Tool held."""
+        from lionagi.protocols.action.tool import Tool
+
+        self._reset()
+        try:
+            await self._authorize(monkeypatch)
+
+            async def fake_create(config, security=None):
+                raise AssertionError(
+                    "should never construct a transport for a rehydrated, capability-less proxy"
+                )
+
+            original = Tool(
+                mcp_config={"ping": {"command": "echo", "args": ["a"]}},
+                mcp_capability=MCPConnectionPool._mint_capability(
+                    MCPSecurityConfig(allow_commands=True)
+                ),
+            )
+            serialized = original.to_dict(mode="python")
+            assert "mcp_capability" not in serialized
+
+            monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+            rehydrated = Tool(mcp_config={"ping": {"command": "echo", "args": ["a"]}})
+            assert rehydrated.mcp_capability is None
+            with pytest.raises(PermissionError):
+                await rehydrated.func_callable()
+        finally:
+            self._reset()
+
+    async def test_recovery_capability_never_appears_in_any_serialization(self):
+        """Absence check across EVERY serialization surface, not just the one
+        `mode="python"` dict the rehydration test above spot-checks: the
+        capability must be missing from `to_dict` in all modes, from
+        `to_json`, and from the `mcp_config` field itself, at any nesting
+        depth. A deepcopy is the deliberate exception -- it is an in-process
+        copy across no trust boundary, so it legitimately retains the live
+        capability; only the persistence surfaces must drop it (asserted so a
+        later change that "fixes" deepcopy to drop it, breaking legitimate
+        in-process cloning, is caught)."""
+        from lionagi.protocols.action.tool import Tool
+
+        self._reset()
+        try:
+            capability = MCPConnectionPool._mint_capability(MCPSecurityConfig(allow_commands=True))
+            tool = Tool(
+                mcp_config={"ping": {"command": "echo", "args": ["a"]}},
+                mcp_capability=capability,
+            )
+
+            def _walk(obj):
+                """Yield every dict key and every leaf value at any depth."""
+                if isinstance(obj, dict):
+                    for k, v in obj.items():
+                        yield k
+                        yield from _walk(v)
+                elif isinstance(obj, (list, tuple, set)):
+                    for v in obj:
+                        yield from _walk(v)
+                else:
+                    yield obj
+
+            for mode in ("python", "json", "db"):
+                nodes = list(_walk(tool.to_dict(mode=mode)))
+                assert "mcp_capability" not in nodes, mode
+                assert not any(isinstance(n, _MCPRecoveryCapability) for n in nodes), mode
+                # The capability's policy must not leak by value either.
+                assert capability.security not in nodes, mode
+
+            assert "mcp_capability" not in tool.to_json()
+            # `mcp_config` is a serializable field and must never carry it.
+            assert "mcp_capability" not in list(_walk(tool.mcp_config))
+
+            clone = copy.deepcopy(tool)
+            assert isinstance(clone.mcp_capability, _MCPRecoveryCapability)
+            assert "mcp_capability" not in list(_walk(clone.to_dict(mode="python")))
+        finally:
+            self._reset()

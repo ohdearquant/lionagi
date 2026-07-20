@@ -265,10 +265,12 @@ MCP discovery follows this search contract:
 | `mcp_servers is None` | discover all configured servers |
 | explicit list | load only the named servers |
 
-The current `ActionManager.load_mcp_config()` supplies
-`MCPSecurityConfig(allow_commands=True, allow_urls=True)` when no transport policy is passed.
-The factory does not expose an `mcp_security` argument. This is current behavior, not the
-aspirational trust contract in ADR-0044.
+The factory calls `ActionManager.load_mcp_config()` with `mcp_security=MCPSecurityConfig.trusted()`
+explicitly for every explicitly selected MCP path -- it does not rely on `load_mcp_config()`'s own
+omitted-policy handling, which fails closed now that an omission is no longer upgraded to a
+permissive policy (ADR-0011 delta row 3). `AgentSpec` does not expose an `mcp_security` field, so a
+caller building through this path cannot request a narrower transport policy than `trusted()`. This
+is current behavior, not the aspirational trust contract in ADR-0044.
 
 **Error and repetition semantics.**
 
