@@ -528,6 +528,54 @@ async def test_create_agent_backends_alias_unaffected(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# spec.cwd forwarded into the CLI provider request's repo/workspace field —
+# every CLI provider's request model runs its subprocess against `repo`
+# (defaults to the calling process cwd), so a workspace assigned via
+# spec.cwd must reach it or the agent silently runs in the host cwd instead.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["codex/gpt-5.5", "claude_code/sonnet", "gemini_code/gemini-3.5-flash"],
+)
+async def test_create_agent_forwards_spec_cwd_to_provider_repo_kwarg(monkeypatch, tmp_path, model):
+    import lionagi.service.imodel as imodel_mod
+
+    captured = {}
+    real_init = imodel_mod.iModel.__init__
+
+    def spy_init(self, *args, **kwargs):
+        captured.update(kwargs)
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(imodel_mod.iModel, "__init__", spy_init)
+
+    config = AgentSpec.compose("implementer", model=model, cwd=str(tmp_path))
+    await create_agent(config, load_settings=False)
+
+    assert captured.get("repo") == str(tmp_path)
+
+
+async def test_create_agent_no_cwd_does_not_set_repo_kwarg(monkeypatch):
+    import lionagi.service.imodel as imodel_mod
+
+    captured = {}
+    real_init = imodel_mod.iModel.__init__
+
+    def spy_init(self, *args, **kwargs):
+        captured.update(kwargs)
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(imodel_mod.iModel, "__init__", spy_init)
+
+    config = AgentSpec.compose("implementer", model="claude_code/sonnet")
+    await create_agent(config, load_settings=False)
+
+    assert "repo" not in captured
+
+
+# ---------------------------------------------------------------------------
 # system_prompt without lion_system (line 104)
 # ---------------------------------------------------------------------------
 
