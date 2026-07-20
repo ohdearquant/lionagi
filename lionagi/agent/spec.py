@@ -256,6 +256,20 @@ class AgentSpec(HooksMixin):
         return "\n".join(lines)
 
 
+# The only three headers `_render_policy_block` ever emits. Reachable
+# exclusively through AgentSpec/create_agent composition — a plain profile's
+# bare system prompt (`profile.system_prompt` added via `add_message`) never
+# produces them — so their presence is a structural signal that a persisted
+# system message came from that pipeline, independent of the role body's
+# wording (which drifts over time and can't be exact-matched safely).
+_POLICY_BLOCK_HEADERS = ("## Authority", "## Operational Boundaries", "## Escalation Conditions")
+
+
+def looks_create_agent_composed(rendered_system: str) -> bool:
+    """True if *rendered_system* carries the create_agent policy-block shape."""
+    return any(header in rendered_system for header in _POLICY_BLOCK_HEADERS)
+
+
 def _resolve_permissions(permissions: Any) -> PermissionPolicy | None:
     from .permissions import PermissionPolicy
 

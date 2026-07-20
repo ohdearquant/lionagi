@@ -499,12 +499,21 @@ async def _run_agent(
 
         composed_via_create_agent = bool(branch.metadata.get(CREATE_AGENT_BRANCH_ORIGIN_KEY))
         if CREATE_AGENT_BRANCH_ORIGIN_KEY not in branch.metadata and has_role_key:
+            from lionagi.agent.spec import looks_create_agent_composed
             from lionagi.protocols.messages.system import System
 
-            has_persisted_system = branch.msgs.system is not None or any(
-                isinstance(message, System) for message in branch.msgs.messages
+            persisted_system = branch.msgs.system or next(
+                (m for m in branch.msgs.messages if isinstance(m, System)), None
             )
-            if has_persisted_system:
+            # "Has any System message" is a false-positive magnet: an ordinary
+            # plain (non-role) profile also persists one via add_message, and
+            # that must NOT be mistaken for a legacy markerless create_agent
+            # branch — doing so silently swallows a newly requested role's
+            # system prompt on resume. Require the create_agent-specific
+            # policy-block shape instead (see looks_create_agent_composed).
+            if persisted_system is not None and looks_create_agent_composed(
+                persisted_system.rendered
+            ):
                 branch.metadata[CREATE_AGENT_BRANCH_ORIGIN_KEY] = True
                 composed_via_create_agent = True
     else:

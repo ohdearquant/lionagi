@@ -144,6 +144,26 @@ async def _make_persisted_role_branch(tmp_path: Path) -> tuple[str, str]:
     return branch_id, rendered
 
 
+def _make_plain_markerless_branch(tmp_path: Path) -> tuple[str, str]:
+    """Persist a branch the way the non-role `-a` path builds one today: a
+    bare Branch with `add_message(system=...)` from a plain profile's system
+    prompt. No policy-block headers, no create_agent composition at all —
+    the false-positive shape this guards against (contrast with
+    `_make_markerless_role_branch`, which mimics a genuine legacy
+    create_agent branch)."""
+    from lionagi import Branch
+
+    rendered = "Summarize the supplied text concisely. No other commentary."
+    branch = Branch(chat_model="claude_code/sonnet")
+    branch.msgs.add_message(system=rendered)
+
+    branch_dir = tmp_path / "branches"
+    branch_dir.mkdir(parents=True, exist_ok=True)
+    branch_id = str(branch.id)
+    (branch_dir / f"{branch_id}.json").write_text(json.dumps(branch.to_dict()))
+    return branch_id, rendered
+
+
 def _make_markerless_role_branch(tmp_path: Path) -> tuple[str, str]:
     """Persist a role-composed-looking branch without using the factory marker."""
     from lionagi import Branch
@@ -274,3 +294,42 @@ async def test_resume_markerless_role_branch_backfills_origin_and_preserves_syst
     branch = branches_created[-1]
     assert _rendered_system(branch) == original_rendered
     assert branch.metadata[CREATE_AGENT_BRANCH_ORIGIN_KEY] is True
+
+
+@pytest.mark.asyncio
+async def test_resume_markerless_plain_branch_applies_newly_requested_role(monkeypatch, tmp_path):
+    """False-positive guard: a markerless branch that is legitimately
+    plain -- e.g. built by an earlier non-role `-a summarizer` leg, never
+    create_agent-composed -- must NOT be mistaken for a legacy create_agent
+    branch just because it carries a System message. Resuming it under a
+    NEW role profile (`-a reviewer`) must apply that role's system prompt,
+    not silently keep operating under the stale plain one."""
+    from lionagi.agent.factory import CREATE_AGENT_BRANCH_ORIGIN_KEY
+
+    branch_id, plain_rendered = _make_plain_markerless_branch(tmp_path)
+    branches_created = _wire_agent_stubs(monkeypatch, tmp_path)
+    _stub_profile(
+        monkeypatch,
+        "reviewer",
+        "---\nmodel: claude_code/sonnet\nrole: reviewer\n---\nReview the requested work critically.",
+    )
+
+    import lionagi.cli.agent as agent_mod
+
+    monkeypatch.setattr(
+        agent_mod, "find_branch", lambda bid: ("run-x", tmp_path / "branches" / f"{bid}.json")
+    )
+
+    from lionagi.cli.agent import _run_agent
+
+    await _run_agent(None, "now review it", resume=branch_id, agent_name="reviewer")
+
+    branch = branches_created[-1]
+    rendered = _rendered_system(branch)
+    assert rendered != plain_rendered, (
+        "resuming a legitimately-plain markerless branch under a newly "
+        "requested role profile must switch its system prompt, not silently "
+        "keep operating under the stale plain-profile one"
+    )
+    assert "Review the requested work critically." in rendered
+    assert CREATE_AGENT_BRANCH_ORIGIN_KEY not in branch.metadata
