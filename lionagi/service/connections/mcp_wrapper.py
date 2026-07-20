@@ -1510,23 +1510,32 @@ class MCPConnectionPool:
     _lock: Lock | None = None
     _lock_guard: threading.Lock = threading.Lock()
     _security: MCPSecurityConfig | None = None
-    # Per-server policy keyed by content signature so reconnects
-    # re-apply the same authorization instead of falling back to fail-closed.
+    # Per-server policy keyed by server name + content signature so
+    # reconnects re-apply the same authorization instead of falling back to
+    # fail-closed, while trust entries stay scoped per server: two servers
+    # never share a decision just because their resolved transports match.
     _server_security: dict[str, MCPSecurityConfig] = {}
 
     @staticmethod
-    def _policy_key(config: dict[str, Any]) -> str:
-        """Content-based key for the per-server policy registry.
+    def _policy_key(config: dict[str, Any], server_name: str | None = None) -> str:
+        """Key for the per-server policy registry, scoped to the identity a
+        trust decision is actually about.
 
         Callers MUST pass an already-*resolved* transport config (see
-        `_resolve_config`) -- never a bare `{"server": name}` reference.
-        Keying on the logical name alone would let a server that is later
-        reloaded with a different command/URL under the same name recover
-        a policy that was only ever authorized for the prior transport.
+        `_resolve_config`) -- never a bare `{"server": name}` reference. When
+        the config was resolved from a named server reference, `server_name`
+        must be supplied so the key binds to that server's name as well as
+        its transport content: two servers with different names must never
+        share a trust decision even if their resolved transports happen to
+        be identical, and a name reloaded with a different transport must
+        never recover the policy authorized for its prior transport.
         """
         material = {k: v for k, v in config.items() if not k.startswith("_")}
         blob = json.dumps(material, sort_keys=True, default=str)
-        return compute_hash(blob)
+        content_hash = compute_hash(blob)
+        if server_name is not None:
+            return f"{server_name}:{content_hash}"
+        return content_hash
 
     @classmethod
     def _resolve_config(cls, server_config: dict[str, Any]) -> dict[str, Any]:
@@ -1551,10 +1560,12 @@ class MCPConnectionPool:
         cls, server_config: dict[str, Any], security: MCPSecurityConfig | None
     ) -> None:
         """Record the policy a server was authorized under, keyed by its
-        resolved transport config. No-op if None."""
+        resolved transport config and (for named refs) the server name.
+        No-op if None."""
         if security is not None:
+            server_name = server_config.get("server")
             config = cls._resolve_config(server_config)
-            cls._server_security[cls._policy_key(config)] = security
+            cls._server_security[cls._policy_key(config, server_name=server_name)] = security
 
     @classmethod
     def _get_lock(cls) -> Lock:
@@ -1608,7 +1619,7 @@ class MCPConnectionPool:
                 # fingerprint so a subsequent omitted-policy get_client()
                 # cannot recover a trust decision that was never made for
                 # the new one.
-                cls._server_security.pop(cls._policy_key(old_server_config), None)
+                cls._server_security.pop(cls._policy_key(old_server_config, server_name=name), None)
                 stale_prefix = f"server:{name}:"
                 for cache_key in [k for k in cls._clients if k.startswith(stale_prefix)]:
                     cls._clients.pop(cache_key, None)
@@ -1632,7 +1643,7 @@ class MCPConnectionPool:
         if "server" in server_config:
             server_name = server_config["server"]
             config = cls._resolve_config(server_config)
-            policy_key = cls._policy_key(config)
+            policy_key = cls._policy_key(config, server_name=server_name)
             cache_key = f"server:{server_name}:{policy_key}"
         else:
             config = server_config

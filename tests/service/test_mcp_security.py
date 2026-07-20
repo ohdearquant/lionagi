@@ -350,7 +350,11 @@ class TestLoadMcpConfigTrustedLoad:
         # file, so no cached client/policy from another test leaks in.
         MCPConnectionPool._security = None
         MCPConnectionPool._clients = {}
-        MCPConnectionPool._server_security.pop("server:trustcheck", None)
+        MCPConnectionPool._server_security = {
+            k: v
+            for k, v in MCPConnectionPool._server_security.items()
+            if not k.startswith("trustcheck:")
+        }
 
         cfg = tmp_path / ".mcp.json"
         cfg.write_text(
@@ -733,3 +737,54 @@ class TestPerServerPolicyPersistence:
         finally:
             self._reset()
             MCPConnectionPool._configs.pop("same-name", None)
+
+    async def test_different_server_names_do_not_share_policy_despite_identical_transport(
+        self, tmp_path, monkeypatch
+    ):
+        """Trust entries are scoped per server: two servers with different
+        names must never share a trust decision, even when their resolved
+        transport configs are byte-identical. Authorizing one server must
+        not let a differently-named server recover that authorization."""
+        import json
+
+        self._reset()
+        try:
+            cfg_path = tmp_path / ".mcp.json"
+            cfg_path.write_text(
+                json.dumps(
+                    {
+                        "mcpServers": {
+                            "trusted-name": {"command": "shared-cmd"},
+                            "other-name": {"command": "shared-cmd"},
+                        }
+                    }
+                )
+            )
+            MCPConnectionPool.load_config(str(cfg_path))
+
+            policy = MCPSecurityConfig(allow_commands=True)
+            cached_client = type("ConnectedClient", (), {"is_connected": lambda self: True})()
+            real_create_client = MCPConnectionPool._create_client
+
+            async def fake_create(config, security=None):
+                if security is policy:
+                    return cached_client
+                return await real_create_client(config, security=security)
+
+            monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+
+            # Explicit trust decision made for "trusted-name" only.
+            assert (
+                await MCPConnectionPool.get_client({"server": "trusted-name"}, security=policy)
+                is cached_client
+            )
+
+            # "other-name" resolves to the identical transport but was never
+            # authorized itself -- it must stay fail-closed, not silently
+            # inherit "trusted-name"'s decision.
+            with pytest.raises(PermissionError, match="allow_commands=False"):
+                await MCPConnectionPool.get_client({"server": "other-name"})
+        finally:
+            self._reset()
+            MCPConnectionPool._configs.pop("trusted-name", None)
+            MCPConnectionPool._configs.pop("other-name", None)
