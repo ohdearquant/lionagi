@@ -3,10 +3,13 @@
 
 """Tests for LionAGI error classes."""
 
+import importlib
+
 import pytest
 
 from lionagi._errors import (
     ConfigurationError,
+    EmptyOutgoingContentError,
     ExecutionError,
     ExistsError,
     ItemExistsError,
@@ -19,6 +22,24 @@ from lionagi._errors import (
     RelationError,
     ResourceError,
     ValidationError,
+)
+
+_EXPECTED_ALL = (
+    "LionError",
+    "ValidationError",
+    "NotFoundError",
+    "ExistsError",
+    "ObservationError",
+    "ResourceError",
+    "RateLimitError",
+    "RelationError",
+    "OperationError",
+    "ExecutionError",
+    "ConfigurationError",
+    "TimeoutError",
+    "EmptyOutgoingContentError",
+    "ItemNotFoundError",
+    "ItemExistsError",
 )
 
 
@@ -310,6 +331,37 @@ class TestConfigurationError:
     def test_inheritance(self):
         """Test ConfigurationError inherits from LionError and ValueError."""
         error = ConfigurationError("bad config")
+        assert isinstance(error, LionError)
+        assert isinstance(error, ValueError)
+
+
+class TestPublicSurface:
+    """Tests for the ``lionagi._errors`` module's declared public surface."""
+
+    def test_all_matches_expected(self):
+        """``lionagi._errors.__all__`` contains exactly the declared public names."""
+        mod = importlib.import_module("lionagi._errors")
+        declared = set(mod.__all__)
+        expected = set(_EXPECTED_ALL)
+        missing = expected - declared
+        extra = declared - expected
+        assert not missing, f"Names missing from __all__: {sorted(missing)}"
+        assert not extra, f"Undocumented names in __all__: {sorted(extra)}"
+
+    def test_all_entries_importable(self):
+        """Every name in __all__ must resolve on the module."""
+        mod = importlib.import_module("lionagi._errors")
+        for name in mod.__all__:
+            assert hasattr(mod, name), f"{name!r} declared in __all__ but not defined"
+
+    def test_empty_outgoing_content_error_in_all(self):
+        """EmptyOutgoingContentError must be part of the public, catchable surface."""
+        mod = importlib.import_module("lionagi._errors")
+        assert "EmptyOutgoingContentError" in mod.__all__
+
+    def test_empty_outgoing_content_error_inheritance(self):
+        """EmptyOutgoingContentError inherits from LionError and ValueError."""
+        error = EmptyOutgoingContentError()
         assert isinstance(error, LionError)
         assert isinstance(error, ValueError)
 
