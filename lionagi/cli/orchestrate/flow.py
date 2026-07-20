@@ -1640,9 +1640,9 @@ async def _run_flow(
     # below. The handler fires from the same guarded lifecycle transition
     # that persists the terminal status — no direct notify call at teardown.
     _notify_scope_name: str | None = None
+    _notify_entity_kind = "invocation" if invocation_id else "session"
+    _notify_entity_id = invocation_id if invocation_id else str(env.session.id)
     if notify:
-        _notify_entity_kind = "invocation" if invocation_id else "session"
-        _notify_entity_id = invocation_id if invocation_id else str(env.session.id)
         _notify_scope_name = register_flow_notify_scope(
             override=notify,
             entity_kind=_notify_entity_kind,
@@ -1654,6 +1654,28 @@ async def _run_flow(
             cwd=cwd or os.getcwd(),
             started_at=_started_at,
         )
+
+    # notify.on_terminal (settings-driven, independent of --notify) outcome
+    # attribution: bind this run into the handler at registration time so a
+    # late-arriving outcome for this entity lands here or nowhere -- never
+    # on a different run this process later allocates. Skipped when --notify
+    # already owns this same entity as an exclusive override (registering a
+    # second override for the same entity would fire the adapter twice).
+    from lionagi.state.lifecycle.notify_settings import (
+        register_run_notify_outcome_scope,
+        unregister_run_notify_outcome_scope,
+    )
+
+    _notify_outcome_scope_name = (
+        None
+        if notify
+        else register_run_notify_outcome_scope(
+            env.run,
+            entity_kind=_notify_entity_kind,
+            entity_id=_notify_entity_id,
+            project_dir=cwd,
+        )
+    )
 
     _orc_model, _orc_provider = parse_orchestrator_provider(env.default_model_spec)
 
@@ -1811,6 +1833,7 @@ async def _run_flow(
                         )
 
             unregister_flow_notify_scope(_notify_scope_name)
+            unregister_run_notify_outcome_scope(_notify_outcome_scope_name)
             for _br in env.session.branches:
                 await _br.mdls.shutdown()
 

@@ -16,7 +16,7 @@ import re
 import shlex
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from lionagi.agent.settings import load_settings
 from lionagi.ln._proc import aterminate_process_group
@@ -31,14 +31,19 @@ from .callbacks import (
     TerminalCallbackRegistry,
 )
 
+if TYPE_CHECKING:
+    from lionagi.cli._runs import RunDir
+
 logger = logging.getLogger(__name__)
 
 __all__ = (
     "PayloadBuilder",
     "ResolvedNotifyHandler",
     "build_handler",
+    "register_run_notify_outcome_scope",
     "register_settings_terminal_callback",
     "resolve_notify_config",
+    "unregister_run_notify_outcome_scope",
 )
 
 # Matches inside a quoted span are stripped before this runs, so a literal
@@ -268,31 +273,27 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> ResolvedNotifyHandle
     return None
 
 
-def _record_notify_outcome(
-    *, ok: bool, exit_code: int | None, stderr_first_line: str | None
+OutcomeFn = Callable[..., None]
+
+
+def _record_notify_outcome_to_run(
+    run: RunDir, *, ok: bool, exit_code: int | None, stderr_first_line: str | None
 ) -> None:
-    """Best-effort: record the exec adapter's outcome onto the active run's
-    manifest (additive field, never overwrites anything else) so a CLI user
-    inspecting run.json can see why a notification didn't fire. Never raises
-    -- this must never affect the run itself.
+    """Best-effort: record the exec adapter's outcome into *run*'s own
+    notify_outcome.json (a single file, replacement semantics, never merged
+    with -- or written into -- run.json). Never raises: this must never
+    affect the run itself.
     """
     try:
-        from lionagi.cli._runs import active_run
-
-        run = active_run()
-        if run is None:
-            return
-        run.write_manifest(
+        run.write_notify_outcome(
             {
-                "notify_outcome": {
-                    "ok": ok,
-                    "exit_code": exit_code,
-                    "stderr_first_line": stderr_first_line,
-                }
+                "ok": ok,
+                "exit_code": exit_code,
+                "stderr_first_line": stderr_first_line,
             }
         )
     except Exception:  # noqa: BLE001 -- outcome bookkeeping must never affect the run
-        logger.debug("failed to record notify.on_terminal outcome in run manifest", exc_info=True)
+        logger.debug("failed to record notify.on_terminal outcome", exc_info=True)
 
 
 def _warn_adapter_failure(msg: str) -> None:
@@ -331,12 +332,18 @@ def _default_payload(envelope: RunTerminalEnvelope) -> dict[str, Any]:
     return envelope.to_dict()
 
 
+def _noop_outcome_fn(*, ok: bool, exit_code: int | None, stderr_first_line: str | None) -> None:
+    """No run is bound to this handler -- outcome recording is skipped
+    rather than guessing at a target (see register_run_notify_outcome_scope)."""
+
+
 def _make_exec_handler(
     argv: Sequence[str],
     *,
     payload_fn: PayloadBuilder = _default_payload,
     argv_fn: ArgvBuilder | None = None,
     env_fn: EnvBuilder | None = None,
+    outcome_fn: OutcomeFn = _noop_outcome_fn,
 ) -> TerminalCallbackHandler:
     static_argv = tuple(argv)
 
@@ -362,7 +369,7 @@ def _make_exec_handler(
                 await aterminate_process_group(proc, grace=None)
                 await _await_proc_dead(proc)
             logger.warning("notify.on_terminal exec adapter %r timed out", launch_argv)
-            _record_notify_outcome(ok=False, exit_code=None, stderr_first_line=None)
+            outcome_fn(ok=False, exit_code=None, stderr_first_line=None)
             _warn_adapter_failure(f"notify.on_terminal adapter {launch_argv!r} timed out")
             return
         except get_cancelled_exc_class():
@@ -376,9 +383,7 @@ def _make_exec_handler(
             raise
         except Exception as exc:  # noqa: BLE001 -- an adapter failure must never affect the run
             logger.warning("notify.on_terminal exec adapter %r failed to run: %s", launch_argv, exc)
-            _record_notify_outcome(
-                ok=False, exit_code=None, stderr_first_line=_first_line(str(exc))
-            )
+            outcome_fn(ok=False, exit_code=None, stderr_first_line=_first_line(str(exc)))
             _warn_adapter_failure(
                 f"notify.on_terminal adapter {launch_argv!r} failed to run: {exc}"
             )
@@ -392,14 +397,12 @@ def _make_exec_handler(
                 proc.returncode,
                 suffix,
             )
-            _record_notify_outcome(
-                ok=False, exit_code=proc.returncode, stderr_first_line=_first_line(detail)
-            )
+            outcome_fn(ok=False, exit_code=proc.returncode, stderr_first_line=_first_line(detail))
             _warn_adapter_failure(
                 f"notify.on_terminal adapter {launch_argv!r} exited {proc.returncode}{suffix}"
             )
         else:
-            _record_notify_outcome(ok=True, exit_code=0, stderr_first_line=None)
+            outcome_fn(ok=True, exit_code=0, stderr_first_line=None)
 
     return _exec_handler
 
@@ -416,10 +419,17 @@ def build_handler(
     payload_fn: PayloadBuilder = _default_payload,
     argv_fn: ArgvBuilder | None = None,
     env_fn: EnvBuilder | None = None,
+    outcome_fn: OutcomeFn | None = None,
 ) -> TerminalCallbackHandler | None:
     """Build the process-local handler for a resolved adapter spec, or
     ``None`` if the spec fails to build (never raises). A python adapter ref
     is imported eagerly here so a bad ref resolves to disabled, not a crash.
+
+    *outcome_fn*, if given, is called with the exec adapter's outcome
+    (``ok``, ``exit_code``, ``stderr_first_line``) -- omit it (the default)
+    when no specific run is bound to this handler; outcome recording is then
+    skipped rather than guessing at a target run. Never applies to a python
+    adapter (only the exec adapter's process outcome is tracked).
     """
     if resolved.python_ref is not None:
         try:
@@ -432,7 +442,10 @@ def build_handler(
             )
             return None
     assert resolved.argv is not None  # _resolve_* never returns an empty spec
-    return _make_exec_handler(resolved.argv, payload_fn=payload_fn, argv_fn=argv_fn, env_fn=env_fn)
+    kwargs: dict[str, Any] = {"payload_fn": payload_fn, "argv_fn": argv_fn, "env_fn": env_fn}
+    if outcome_fn is not None:
+        kwargs["outcome_fn"] = outcome_fn
+    return _make_exec_handler(resolved.argv, **kwargs)
 
 
 def register_settings_terminal_callback(
@@ -460,3 +473,47 @@ def register_settings_terminal_callback(
         ids=resolved.filter_ids,
     )
     return True
+
+
+def register_run_notify_outcome_scope(
+    run: RunDir,
+    *,
+    entity_kind: str,
+    entity_id: str,
+    registry: TerminalCallbackRegistry = DEFAULT_TERMINAL_CALLBACKS,
+    project_dir: str | None = None,
+) -> str | None:
+    """Bind the settings-driven notify.on_terminal exec adapter's outcome to
+    *run*, scoped to this run's own terminal entity (``entity_kind``/
+    ``entity_id``), so a late-arriving outcome always lands on this run --
+    or nowhere -- even if the process has since allocated other runs. The
+    scoped registration is an override, so it takes over adapter dispatch
+    for this entity from the process-wide default registered by
+    ``register_settings_terminal_callback`` (which never attributes an
+    outcome to any run). Returns the registration name (pass to
+    ``unregister_run_notify_outcome_scope`` in a ``finally`` block), or
+    ``None`` if notify.on_terminal resolved to disabled (never raises).
+    """
+    resolved = resolve_notify_config(project_dir=project_dir)
+    if resolved is None:
+        return None
+
+    def _outcome_fn(*, ok: bool, exit_code: int | None, stderr_first_line: str | None) -> None:
+        _record_notify_outcome_to_run(
+            run, ok=ok, exit_code=exit_code, stderr_first_line=stderr_first_line
+        )
+
+    handler = build_handler(resolved, outcome_fn=_outcome_fn)
+    if handler is None:
+        return None
+    name = f"notify.settings.on_terminal.{entity_kind}.{entity_id}"
+    registry.register(name, handler, kinds=[entity_kind], ids=[entity_id], override=True)
+    return name
+
+
+def unregister_run_notify_outcome_scope(
+    name: str | None,
+    registry: TerminalCallbackRegistry = DEFAULT_TERMINAL_CALLBACKS,
+) -> None:
+    if name is not None:
+        registry.unregister(name)

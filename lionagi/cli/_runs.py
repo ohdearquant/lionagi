@@ -29,7 +29,6 @@ __all__ = (
     "LIONAGI_HOME",
     "RUNS_ROOT",
     "RunDir",
-    "active_run",
     "allocate_run",
     "find_branch",
     "load_last_branch",
@@ -121,12 +120,7 @@ class RunDir:
 
     def write_manifest(self, data: dict) -> None:
         self.state_root.mkdir(parents=True, exist_ok=True)
-        # Merge onto whatever is already on disk so an out-of-band writer
-        # (e.g. a terminal-callback handler recording a side outcome) can't
-        # be clobbered by the next full-manifest write from the main flow,
-        # and vice versa.
         payload = {
-            **self.read_manifest(),
             "run_id": self.run_id,
             "state_root": str(self.state_root),
             "artifact_root": str(self.artifact_root),
@@ -139,6 +133,20 @@ class RunDir:
             return {}
         return json.loads(self.manifest_path.read_text())
 
+    # ── Notify-outcome I/O (separate from the manifest; see notify_settings.py) ──
+
+    @property
+    def notify_outcome_path(self) -> Path:
+        return self.state_root / "notify_outcome.json"
+
+    def write_notify_outcome(self, data: dict) -> None:
+        """Atomically replace notify_outcome.json (tmp + os.replace); never
+        merges with a prior outcome and never touches the manifest."""
+        self.state_root.mkdir(parents=True, exist_ok=True)
+        tmp_path = self.notify_outcome_path.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(data, indent=2))
+        os.replace(tmp_path, self.notify_outcome_path)
+
     # ── Directory setup ─────────────────────────────────────────────
 
     def ensure_state_dirs(self) -> None:
@@ -147,20 +155,6 @@ class RunDir:
 
     def ensure_artifact_root(self) -> None:
         self.artifact_root.mkdir(parents=True, exist_ok=True)
-
-
-_active_run: RunDir | None = None
-
-
-def active_run() -> RunDir | None:
-    """The RunDir most recently allocated by this process, if any.
-
-    Best-effort correlation target for code with no direct RunDir reference
-    (e.g. a terminal-callback handler recording a notify-adapter outcome).
-    Meaningless across processes, and only approximate if a process ever
-    allocates more than one run concurrently (none do today).
-    """
-    return _active_run
 
 
 def allocate_run(
@@ -186,8 +180,6 @@ def allocate_run(
             "ended_at": None,
         }
     )
-    global _active_run
-    _active_run = run
     return run
 
 

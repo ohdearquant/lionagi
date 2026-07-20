@@ -313,7 +313,25 @@ async def test_exec_handler_swallows_nonzero_exit_and_timeout(monkeypatch, caplo
     assert any("exited 1" in r.message for r in caplog.records)
 
 
-# ── Adapter outcome visibility: run.json + the CLI warn() channel ──────────
+# ── Adapter outcome visibility: notify_outcome.json + the CLI warn() channel ──
+#
+# Outcome recording is never automatic: a bare build_handler(resolved) call
+# (the process-wide default registered by register_settings_terminal_callback)
+# has no bound run and therefore never records anything. Only a handler built
+# via register_run_notify_outcome_scope(run, ...) -- or build_handler(...,
+# outcome_fn=...) directly in these tests -- writes an outcome, and only into
+# that specific run's own notify_outcome.json (never run.json).
+
+
+def _outcome_fn_for(run):
+    from lionagi.state.lifecycle.notify_settings import _record_notify_outcome_to_run
+
+    def _fn(*, ok, exit_code, stderr_first_line):
+        _record_notify_outcome_to_run(
+            run, ok=ok, exit_code=exit_code, stderr_first_line=stderr_first_line
+        )
+
+    return _fn
 
 
 @pytest.mark.asyncio
@@ -340,17 +358,21 @@ async def test_exec_handler_records_nonzero_exit_outcome_and_warns(monkeypatch, 
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
 
-    handler = build_handler(ResolvedNotifyHandler(argv=("notify-hook",)))
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=("notify-hook",)), outcome_fn=_outcome_fn_for(run)
+    )
     await handler(_envelope())  # must not raise
 
-    manifest = json.loads(run.manifest_path.read_text())
-    assert manifest["notify_outcome"] == {
+    outcome = json.loads(run.notify_outcome_path.read_text())
+    assert outcome == {
         "ok": False,
         "exit_code": 1,
         "stderr_first_line": "boom",
     }
-    # Recording the notify outcome is additive -- it must never disturb the
-    # run's own terminal status already on disk.
+    # The outcome lands in its own file -- run.json's own terminal status is
+    # never touched by notify bookkeeping.
+    manifest = json.loads(run.manifest_path.read_text())
+    assert "notify_outcome" not in manifest
     assert manifest["status"] == "completed"
     assert manifest["ended_at"] == 123.0
 
@@ -392,11 +414,13 @@ async def test_exec_handler_records_timeout_outcome_and_warns(monkeypatch, tmp_p
         "lionagi.state.lifecycle.notify_settings._await_proc_dead", _fake_await_dead
     )
 
-    handler = build_handler(ResolvedNotifyHandler(argv=("notify-hook",)))
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=("notify-hook",)), outcome_fn=_outcome_fn_for(run)
+    )
     await handler(_envelope())  # must not raise
 
-    manifest = json.loads(run.manifest_path.read_text())
-    assert manifest["notify_outcome"] == {
+    outcome = json.loads(run.notify_outcome_path.read_text())
+    assert outcome == {
         "ok": False,
         "exit_code": None,
         "stderr_first_line": None,
@@ -421,11 +445,12 @@ async def test_exec_handler_records_spawn_error_outcome_and_warns(monkeypatch, t
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
 
-    handler = build_handler(ResolvedNotifyHandler(argv=("notify-hook",)))
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=("notify-hook",)), outcome_fn=_outcome_fn_for(run)
+    )
     await handler(_envelope())  # must not raise
 
-    manifest = json.loads(run.manifest_path.read_text())
-    outcome = manifest["notify_outcome"]
+    outcome = json.loads(run.notify_outcome_path.read_text())
     assert outcome["ok"] is False
     assert outcome["exit_code"] is None
     assert "no such file" in outcome["stderr_first_line"]
@@ -455,11 +480,13 @@ async def test_exec_handler_records_success_outcome_without_warn(monkeypatch, tm
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
 
-    handler = build_handler(ResolvedNotifyHandler(argv=("notify-hook",)))
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=("notify-hook",)), outcome_fn=_outcome_fn_for(run)
+    )
     await handler(_envelope())
 
-    manifest = json.loads(run.manifest_path.read_text())
-    assert manifest["notify_outcome"] == {
+    outcome = json.loads(run.notify_outcome_path.read_text())
+    assert outcome == {
         "ok": True,
         "exit_code": 0,
         "stderr_first_line": None,
@@ -468,12 +495,15 @@ async def test_exec_handler_records_success_outcome_without_warn(monkeypatch, tm
 
 
 @pytest.mark.asyncio
-async def test_exec_handler_outcome_recording_is_a_noop_without_an_active_run(monkeypatch):
-    """No RunDir has been allocated in this process (e.g. a bare handler unit
-    test) -- outcome recording must silently skip rather than raise."""
+async def test_exec_handler_outcome_recording_is_a_noop_without_a_bound_run(tmp_path, monkeypatch):
+    """build_handler() with no outcome_fn (the process-wide default
+    registration, before any run-scoped override exists) never guesses at a
+    target run -- outcome recording is skipped, not misattributed."""
     import lionagi.cli._runs as runs_mod
+    from lionagi.cli._runs import allocate_run
 
-    monkeypatch.setattr(runs_mod, "_active_run", None)
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="unbound-run")
 
     class _FakeProc:
         returncode = 0
@@ -488,6 +518,131 @@ async def test_exec_handler_outcome_recording_is_a_noop_without_an_active_run(mo
 
     handler = build_handler(ResolvedNotifyHandler(argv=("notify-hook",)))
     await handler(_envelope())  # must not raise
+
+    assert not run.notify_outcome_path.exists()
+
+
+# ── Run-scoped attribution: bound at registration time, never last-writer-wins ──
+
+
+@pytest.mark.asyncio
+async def test_run_scoped_outcome_survives_a_later_run_allocation(monkeypatch, tmp_path):
+    """A late outcome for run A's entity must land on A even after run B has
+    been allocated in the same process -- the handler is bound to A's RunDir
+    at registration time, not resolved dynamically against whichever run is
+    "current" when the callback fires."""
+    import lionagi.cli._runs as runs_mod
+    from lionagi.cli._runs import allocate_run
+    from lionagi.state.lifecycle.notify_settings import (
+        register_run_notify_outcome_scope,
+        unregister_run_notify_outcome_scope,
+    )
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.resolve_notify_config",
+        lambda **kw: ResolvedNotifyHandler(argv=("notify-hook",)),
+    )
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self, data=None):
+            return (b"", b"")
+
+    async def _fake_exec(*argv, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    registry = TerminalCallbackRegistry()
+    run_a = allocate_run(run_id="run-a")
+    name_a = register_run_notify_outcome_scope(
+        run_a, entity_kind="session", entity_id="session-a", registry=registry
+    )
+    assert name_a is not None
+
+    # Run B is allocated afterward, in the same process -- must not affect A's binding.
+    run_b = allocate_run(run_id="run-b")
+    name_b = register_run_notify_outcome_scope(
+        run_b, entity_kind="session", entity_id="session-b", registry=registry
+    )
+    assert name_b is not None
+
+    try:
+        # The "late" terminal event: session-a's own terminal transition,
+        # fired after run-b already exists.
+        envelope_a = RunTerminalEnvelope(
+            event_id="ev-a",
+            entity=EntityRef(kind="session", id="session-a"),
+            previous_status="running",
+            terminal_status="completed",
+            reason_code="run.completed.ok",
+            occurred_at=0.0,
+        )
+        await registry.emit(envelope_a)
+    finally:
+        unregister_run_notify_outcome_scope(name_a, registry=registry)
+        unregister_run_notify_outcome_scope(name_b, registry=registry)
+
+    assert json.loads(run_a.notify_outcome_path.read_text()) == {
+        "ok": True,
+        "exit_code": 0,
+        "stderr_first_line": None,
+    }
+    assert not run_b.notify_outcome_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_unscoped_entity_records_nothing_never_last_writer_wins(monkeypatch, tmp_path):
+    """A terminal event for an entity with no run-scoped registration must
+    record nothing -- never fall back to whichever run was allocated most
+    recently."""
+    import lionagi.cli._runs as runs_mod
+    from lionagi.cli._runs import allocate_run
+    from lionagi.state.lifecycle.notify_settings import register_run_notify_outcome_scope
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.resolve_notify_config",
+        lambda **kw: ResolvedNotifyHandler(argv=("notify-hook",)),
+    )
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self, data=None):
+            return (b"", b"")
+
+    async def _fake_exec(*argv, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    registry = TerminalCallbackRegistry()
+    # A run is allocated, but its entity ("session-known") is never registered.
+    run = allocate_run(run_id="only-run")
+    register_run_notify_outcome_scope(
+        run, entity_kind="session", entity_id="session-known", registry=registry
+    )
+    # Also install the process-wide default (no outcome_fn) so the unscoped
+    # entity still gets a matching, non-attributing handler.
+    from lionagi.state.lifecycle.notify_settings import build_handler, resolve_notify_config
+
+    default_handler = build_handler(resolve_notify_config())
+    registry.register("notify.settings.on_terminal", default_handler)
+
+    other_envelope = RunTerminalEnvelope(
+        event_id="ev-other",
+        entity=EntityRef(kind="session", id="session-unrelated"),
+        previous_status="running",
+        terminal_status="completed",
+        reason_code="run.completed.ok",
+        occurred_at=0.0,
+    )
+    await registry.emit(other_envelope)
+
+    assert not run.notify_outcome_path.exists()
 
 
 # ── Cancellation (the registry's outer deadline winning the race against
