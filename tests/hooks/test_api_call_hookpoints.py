@@ -203,6 +203,31 @@ async def test_run_emits_post_call_once_even_on_stream_failure():
     assert calls[HookPoint.API_POST_CALL][0]["status"] == "error"
 
 
+async def test_run_without_session_bus_never_calls_stream_chunk_adapter():
+    """The no-bus guard belongs at the run.py call site, not only inside the
+    adapter -- otherwise every streamed chunk still pays for constructing and
+    awaiting a coroutine object that only checks ``branch._hooks is None``
+    and returns. Patching the call site's own reference to
+    ``emit_api_stream_chunk`` and asserting zero calls proves no coroutine
+    for it is ever created on the no-bus path (not just that its body
+    short-circuits)."""
+    from unittest.mock import patch
+
+    branch = Branch()
+    branch.chat_model = _make_fake_cli_model(
+        [StreamChunk(type="text", content="a"), StreamChunk(type="text", content="b")]
+    )
+    assert branch._hooks is None
+
+    with patch("lionagi.operations.run.run.emit_api_stream_chunk") as mock_emit:
+        results = []
+        async for msg in run(branch, "hi there", RunParam()):
+            results.append(msg)
+
+    assert results
+    mock_emit.assert_not_called()
+
+
 async def test_run_without_session_bus_does_not_crash():
     branch = Branch()
     branch.chat_model = _make_fake_cli_model([StreamChunk(type="text", content="ok")])

@@ -537,7 +537,8 @@ async def run(
         try:
             try:
                 async for chunk in stream_gen:
-                    await emit_api_stream_chunk(branch, model, chunk)
+                    if branch._hooks is not None:
+                        await emit_api_stream_chunk(branch, model, chunk)
                     match chunk.type:
                         case "system":
                             if sid := chunk.metadata.get("session_id"):
