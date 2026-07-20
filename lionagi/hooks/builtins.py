@@ -54,6 +54,16 @@ async def persist_session_start(
     current_status = row.get("status")
     if current_status in SESSION_TERMINAL_STATUSES:
         return
+    already_started = row.get("status_reason_code") == RunReasons.STARTED_OK
+    if already_started and row.get("started_at") is not None:
+        # A session can be created with status="running" directly (its
+        # initial-state history row already carries STARTED_OK before this
+        # hook ever fires), so status_reason_code alone can't tell a genuine
+        # first SESSION_START from a duplicate re-emit. started_at is only
+        # ever set by a completed first write below, so its presence is the
+        # true "already started" signal -- a no-op here, matching a second
+        # SESSION_START for an already-STARTED_OK session.
+        return
     fields = {
         "model": model,
         "provider": provider,
@@ -63,7 +73,7 @@ async def persist_session_start(
         "invocation_id": invocation_id,
         "started_at": time.time(),
     }
-    if row.get("status_reason_code") == RunReasons.STARTED_OK:
+    if already_started:
         await db.update_session(session_id, **fields)
         return
     await db.update_session(
