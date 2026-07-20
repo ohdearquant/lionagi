@@ -307,34 +307,58 @@ def _warn_adapter_failure(msg: str) -> None:
 
 # A notify.on_terminal adapter's argv routinely carries secrets (webhook
 # URLs, tokens passed as args), and its stderr is adapter-controlled free
-# text that can echo those secrets back (e.g. a shell script that prints
-# its own invocation on error). User-facing surfaces -- the warn-channel
-# line and the persisted notify_outcome.json -- must never carry either
-# verbatim; developer-only channels (logger.warning/debug) may keep the
-# full argv since those aren't shipped in user-visible/persisted artifacts.
+# text whose most common leak shape is the adapter echoing its own
+# invocation back on failure. No surface -- the warn-channel line, the
+# persisted notify_outcome.json, or the log -- carries the argument values
+# or an unfiltered stderr line: adapters are identified by argv[0]'s
+# basename, and any argument value appearing verbatim in a stderr or
+# exception snippet is replaced before that snippet goes anywhere.
 STDERR_SNIPPET_LIMIT = 200
+
+# Argument values shorter than this are not worth replacing and would
+# corrupt unrelated text (a bare "-v" or "0" occurs everywhere).
+MIN_REDACTABLE_ARG_LEN = 4
 
 
 def _adapter_label(argv: Sequence[str]) -> str:
-    """The adapter's display name for user-facing surfaces: argv[0]'s
-    basename only, never the full argv (which may carry secret args)."""
+    """The adapter's display name for every surface: argv[0]'s basename
+    only, never the full argv (which may carry secret args)."""
     if not argv:
         return "<adapter>"
     return os.path.basename(str(argv[0])) or str(argv[0])
 
 
-def _first_line(text: str) -> str | None:
-    """First line of *text*, bounded to STDERR_SNIPPET_LIMIT chars. Stderr
-    content is adapter-controlled and can echo back secrets from argv (e.g.
-    a webhook URL in a "command not found" or curl error message); bounding
-    the length caps -- without any false promise of full redaction -- how
-    much of that free text ends up in the warn line or the persisted
-    outcome file.
+def _redact_arg_values(text: str, argv: Sequence[str]) -> str:
+    """Replace any adapter argument value that appears verbatim in *text*.
+
+    An adapter's own arguments are the one class of secret that can be
+    identified exactly, and an adapter echoing its invocation back on
+    stderr is the realistic way one of them escapes. Longest values are
+    replaced first so a substring never leaves a partial value behind.
+    This is not a general secret scanner: a secret the adapter obtains
+    elsewhere and prints cannot be recognized here.
+    """
+    values = sorted(
+        (str(arg) for arg in tuple(argv)[1:] if len(str(arg)) >= MIN_REDACTABLE_ARG_LEN),
+        key=len,
+        reverse=True,
+    )
+    for value in values:
+        text = text.replace(value, "***")
+    return text
+
+
+def _first_line(text: str, argv: Sequence[str] = ()) -> str | None:
+    """First line of *text* with adapter argument values replaced, bounded
+    to STDERR_SNIPPET_LIMIT chars.
+
+    Redaction runs before bounding so a value straddling the limit cannot
+    leave a partial value in the truncated result.
     """
     stripped = text.strip()
     if not stripped:
         return None
-    line = stripped.splitlines()[0]
+    line = _redact_arg_values(stripped.splitlines()[0], argv)
     if len(line) > STDERR_SNIPPET_LIMIT:
         line = line[:STDERR_SNIPPET_LIMIT] + "…"
     return line
@@ -396,7 +420,9 @@ def _make_exec_handler(
             if proc is not None:
                 await aterminate_process_group(proc, grace=None)
                 await _await_proc_dead(proc)
-            logger.warning("notify.on_terminal exec adapter %r timed out", launch_argv)
+            logger.warning(
+                "notify.on_terminal exec adapter %s timed out", _adapter_label(launch_argv)
+            )
             outcome_fn(ok=False, exit_code=None, stderr_first_line=None)
             _warn_adapter_failure(
                 f"notify.on_terminal adapter {_adapter_label(launch_argv)} timed out"
@@ -412,8 +438,12 @@ def _make_exec_handler(
                     await _await_proc_dead(proc)
             raise
         except Exception as exc:  # noqa: BLE001 -- an adapter failure must never affect the run
-            logger.warning("notify.on_terminal exec adapter %r failed to run: %s", launch_argv, exc)
-            detail = _first_line(str(exc))
+            detail = _first_line(str(exc), launch_argv)
+            logger.warning(
+                "notify.on_terminal exec adapter %s failed to run: %s",
+                _adapter_label(launch_argv),
+                detail,
+            )
             outcome_fn(ok=False, exit_code=None, stderr_first_line=detail)
             warn_suffix = f": {detail}" if detail else ""
             _warn_adapter_failure(
@@ -422,14 +452,14 @@ def _make_exec_handler(
             return
         if proc.returncode != 0:
             detail = stderr_bytes.decode(errors="replace").strip()
-            suffix = f": {detail}" if detail else ""
+            bounded_detail = _first_line(detail, launch_argv)
+            suffix = f": {bounded_detail}" if bounded_detail else ""
             logger.warning(
-                "notify.on_terminal exec adapter %r exited %s%s",
-                launch_argv,
+                "notify.on_terminal exec adapter %s exited %s%s",
+                _adapter_label(launch_argv),
                 proc.returncode,
                 suffix,
             )
-            bounded_detail = _first_line(detail)
             outcome_fn(ok=False, exit_code=proc.returncode, stderr_first_line=bounded_detail)
             warn_suffix = f": {bounded_detail}" if bounded_detail else ""
             _warn_adapter_failure(
@@ -527,10 +557,20 @@ def register_run_notify_outcome_scope(
     ``register_settings_terminal_callback`` (which never attributes an
     outcome to any run). Returns the registration name (pass to
     ``unregister_run_notify_outcome_scope`` in a ``finally`` block), or
-    ``None`` if notify.on_terminal resolved to disabled (never raises).
+    ``None`` if notify.on_terminal resolved to disabled or if this entity is
+    excluded by the configured filter (never raises).
     """
     resolved = resolve_notify_config(project_dir=project_dir)
     if resolved is None:
+        return None
+    # The scoped registration is an override, so it dispatches on its own
+    # match rather than deferring to the process-wide registration's filter.
+    # It must therefore apply the configured filter itself: without this, an
+    # entity the operator excluded via filter.kinds/filter.ids would start
+    # receiving notifications as soon as it ran under a run scope.
+    if resolved.filter_kinds is not None and entity_kind not in resolved.filter_kinds:
+        return None
+    if resolved.filter_ids is not None and entity_id not in resolved.filter_ids:
         return None
 
     def _outcome_fn(*, ok: bool, exit_code: int | None, stderr_first_line: str | None) -> None:
