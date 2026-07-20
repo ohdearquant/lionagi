@@ -196,7 +196,8 @@ def test_iteration_is_snapshot_during_mutation():
 
     seen = 0
     for element in pile:
-        # Mutating mid-iteration must not corrupt traversal or raise.
+        # Removing already-visited items mid-iteration must not corrupt
+        # traversal or raise (unvisited removals fail loud with KeyError).
         pile.pop(element.id, None)
         seen += 1
     assert seen == 50

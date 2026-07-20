@@ -147,9 +147,11 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
       task-safe under ``_async_lock`` AND excludes sync callers in other
       threads: the async wrapper holds both locks (async lock first, then a
       non-blocking spin on the threading lock) for the duration of the call.
-    - Iteration (``__iter__`` / ``keys`` / ``values`` / ``items``) yields a
-      point-in-time snapshot; mutations made during iteration are not
-      reflected and cannot corrupt the traversal.
+    - Iteration (``__iter__`` / ``__aiter__``) captures a point-in-time
+      snapshot of the *order* under the lock; item lookup stays live, so
+      removing a not-yet-visited item raises ``KeyError`` at that step
+      (fail-loud) instead of silently yielding a stale object. ``keys`` /
+      ``values`` / ``items`` return fully materialized snapshots.
     """
 
     collections: dict[UUID, T] = Field(default_factory=dict)
@@ -350,9 +352,13 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
 
     def __iter__(self) -> Iterator[T]:
         with self._lock:
-            snapshot = [self.collections[key] for key in self.progression]
+            order = list(self.progression)
 
-        yield from snapshot
+        # Order is a point-in-time snapshot, but item lookup stays live:
+        # removing a not-yet-visited item makes the traversal raise KeyError
+        # (fail-loud) rather than silently yielding a stale object.
+        for key in order:
+            yield self.collections[key]
 
     def __next__(self) -> T:
         try:
@@ -583,12 +589,13 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
             while not self._lock.acquire(blocking=False):
                 await _concurrency_sleep(0.0005)
             try:
-                snapshot = [self.collections[key] for key in self.progression]
+                order = list(self.progression)
             finally:
                 self._lock.release()
 
-        for item in snapshot:
-            yield item
+        # Same contract as __iter__: snapshotted order, live item lookup.
+        for key in order:
+            yield self.collections[key]
 
     async def __anext__(self) -> T:
         try:
