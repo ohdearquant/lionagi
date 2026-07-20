@@ -7,7 +7,14 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.engines.review import IssueFound, ReviewEngine, VerifyResult
+from lionagi.engines.review import (
+    DimensionClean,
+    IssueFound,
+    ReviewEngine,
+    VerifyResult,
+    _verify_instruction,
+    _verify_ref,
+)
 
 
 class _FakeAgent:
@@ -142,9 +149,34 @@ async def test_review_dimension_repairs_prose_reviewer():
 
 
 @pytest.mark.asyncio
-async def test_review_dimension_clean_reviewer_fabricates_nothing():
-    """A genuinely clean dimension (prose, no issue) is nudged once but the
-    repair never invents an issue — transport-hardening, not gold-plating."""
+async def test_review_dimension_clean_emission_satisfies_arrival():
+    """A clean dimension is an affirmative dimension_clean emission on the
+    first turn — no repair round, no emission_missing, nothing fabricated."""
+    eng = ReviewEngine(repair_retries=1)
+    run = eng.new_run()
+    events: list[dict] = []
+    run.on_event = events.append
+    clean = DimensionClean(dimension="style", rationale="naming and layout are consistent")
+    agent = _ProseAgent(run, "review-style", emit_on_call=1, event=clean)
+
+    async def fake_make(role, **kw):
+        return agent
+
+    run.make_agent = fake_make
+    await eng._review_dimension(run, "ARTIFACT", "style")
+
+    assert len(agent.calls) == 1  # arrival satisfied, no repair burn
+    assert not any(e["type"] in ("emission_repair", "emission_missing") for e in events)
+    assert len(run.by_type(IssueFound)) == 0
+    assert run.by_type(DimensionClean)[0].dimension == "style"
+    assert "dimension_clean" in agent.calls[0]  # the clean path is instructed, not hoped for
+
+
+@pytest.mark.asyncio
+async def test_review_dimension_silent_reviewer_is_transport_failure():
+    """A reviewer that emits neither an issue nor a dimension_clean is a
+    transport failure: nudged once, then emission_missing — the repair never
+    invents an issue."""
     eng = ReviewEngine(repair_retries=1)
     run = eng.new_run()
     events: list[dict] = []
@@ -160,6 +192,7 @@ async def test_review_dimension_clean_reviewer_fabricates_nothing():
     assert len(agent.calls) == 2  # one repair nudge attempted
     assert any(e["type"] == "emission_missing" for e in events)
     assert len(run.by_type(IssueFound)) == 0  # nothing fabricated
+    assert len(run.by_type(DimensionClean)) == 0
 
 
 @pytest.mark.asyncio
@@ -185,3 +218,39 @@ async def test_verify_repairs_prose_verifier():
     assert "verify_result" in agent.calls[1]
     assert any(e["type"] == "emission_repair" for e in events)
     assert run.by_type(VerifyResult)[0].holds is True
+
+
+@pytest.mark.asyncio
+async def test_verify_arrival_accepts_paraphrased_issue_via_ref():
+    """A verifier that paraphrases the issue text but echoes the engine-assigned
+    ref has arrived — no repair round burned on an emission that landed."""
+    eng = ReviewEngine(repair_retries=1)
+    run = eng.new_run()
+    events: list[dict] = []
+    run.on_event = events.append
+    issue = IssueFound(
+        dimension="security", description="sqli via unescaped id", severity="critical"
+    )
+    ref = _verify_ref(issue)
+    result = VerifyResult(issue="the SQL injection through the id parameter", ref=ref, holds=True)
+    agent = _ProseAgent(run, "verify-security", emit_on_call=1, event=result)
+
+    async def fake_make(role, **kw):
+        return agent
+
+    run.make_agent = fake_make
+    await eng._verify(run, issue)
+
+    assert len(agent.calls) == 1  # paraphrase + correct ref = arrived
+    assert not any(e["type"] in ("emission_repair", "emission_missing") for e in events)
+    assert ref in agent.calls[0]  # the instruction names the token to echo
+
+
+def test_verify_instruction_names_the_ref_field():
+    issue = IssueFound(dimension="security", description="sqli", severity="critical")
+    ref = _verify_ref(issue)
+    text = _verify_instruction(issue, ref)
+    assert f"ref='{ref}'" in text
+    assert "claim: sqli" in text
+    # Deterministic: the same issue always gets the same token.
+    assert _verify_ref(issue) == ref

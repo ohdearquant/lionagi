@@ -140,3 +140,5 @@ Extends `Engine` with:
 | `repair_retries` | `1` | Re-prompt turns when a reviewer or verifier emits no valid event. |
 
 Pipeline shape: fan-out (one reviewer per dimension, parallel) → adversarial verify high-severity issues → quiesce → `ReviewVerdict`.
+
+Every dimension emits affirmatively: issues arrive as `IssueFound`, a clean dimension arrives as `DimensionClean` (dimension + one-sentence rationale). A dimension that emits nothing is therefore a transport failure, never an implicit all-clear — the verdict instruction lists affirmed-clean dimensions separately so downstream consumers can distinguish "reviewed, clean" from "reviewer never reported". Verifier arrival keys on a short engine-assigned `ref` token echoed back in the `VerifyResult`, so a paraphrased issue description does not burn repair rounds.
