@@ -17,6 +17,7 @@ from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.registry import (
     EndpointRegistry,
     ProviderAliasCollisionError,
+    ProviderNotFoundError,
     _import_provider_module,
 )
 
@@ -211,6 +212,45 @@ class TestConcurrentRegistrationAndRemoval:
             pass
 
         assert EndpointRegistry._alias_owners["old-plugin-provider"] == "old-plugin-provider"
+
+    def test_builtin_collision_rejection_releases_unique_alias_for_replacement(self):
+        """A plugin entry whose canonical provider collides with a built-in
+        (openai) is dropped by ``_reject_builtin_collisions``; its otherwise
+        unique alias must not stay claimed in ``_alias_owners`` afterward."""
+
+        @EndpointRegistry.register(
+            provider="openai",
+            endpoint="chat",
+            provider_aliases=["orphan-alias-f2359"],
+        )
+        class _RejectedPluginEndpoint(Endpoint):
+            pass
+
+        entry = next(e for e in EndpointRegistry._entries if e.cls is _RejectedPluginEndpoint)
+        entry.plugin_name = "rejected-plugin"
+        entry.plugin_target = "rejected-plugin:_RejectedPluginEndpoint"
+
+        EndpointRegistry._reject_builtin_collisions(
+            "rejected-plugin",
+            "rejected-plugin:_RejectedPluginEndpoint",
+            _RejectedPluginEndpoint.__module__,
+        )
+
+        assert entry not in EndpointRegistry._entries
+        assert "orphan-alias-f2359" not in EndpointRegistry._alias_owners
+
+        with pytest.raises(ProviderNotFoundError):
+            EndpointRegistry.match("orphan-alias-f2359")
+
+        @EndpointRegistry.register(
+            provider="replacement-provider-f2359",
+            endpoint="chat",
+            provider_aliases=["orphan-alias-f2359"],
+        )
+        class _ReplacementEndpoint(Endpoint):
+            pass
+
+        assert EndpointRegistry._alias_owners["orphan-alias-f2359"] == "replacement-provider-f2359"
 
 
 class TestOptionalDependencyPreflight:

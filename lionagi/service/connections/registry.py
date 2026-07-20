@@ -207,6 +207,20 @@ class EndpointRegistry:
             cls._alias_owners.setdefault(key, provider)
 
     @classmethod
+    def _remove_entries(cls, entries: list[_RegistryEntry]) -> None:
+        """Drop ``entries`` from ``_entries`` and rebuild ``_alias_owners``.
+
+        Must run under ``cls._lock``. Every entry-removal caller (plugin
+        revalidation failure, built-in-collision rejection) goes through
+        this one path, so the alias ledger can never drift from ``_entries``.
+        """
+        if not entries:
+            return
+        drop = {id(e) for e in entries}
+        cls._entries[:] = [e for e in cls._entries if id(e) not in drop]
+        cls._rebuild_alias_owners()
+
+    @classmethod
     def _rebuild_alias_owners(cls) -> None:
         """Recompute ``_alias_owners`` from the surviving ``_entries``.
 
@@ -391,12 +405,7 @@ class EndpointRegistry:
             PluginRegistry.activate_target(entry.plugin_name, entry.plugin_target)
         except PluginActivationError:
             with cls._lock:
-                try:
-                    cls._entries.remove(entry)
-                except ValueError:
-                    pass
-                else:
-                    cls._rebuild_alias_owners()
+                cls._remove_entries([entry])
             return False
 
         entry._validated_generation = generation
@@ -599,7 +608,7 @@ class EndpointRegistry:
         if not builtin_names:
             return
 
-        kept: list[_RegistryEntry] = []
+        rejected: list[_RegistryEntry] = []
         for entry in cls._entries:
             is_this_activation = (
                 entry.plugin_name == plugin_name
@@ -618,9 +627,8 @@ class EndpointRegistry:
                     module,
                     entry.meta.provider,
                 )
-                continue
-            kept.append(entry)
-        cls._entries[:] = kept
+                rejected.append(entry)
+        cls._remove_entries(rejected)
 
     @classmethod
     def _ensure_loaded(cls):
