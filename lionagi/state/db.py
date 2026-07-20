@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sqlite3
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -829,7 +830,10 @@ class StateDB:
         """
         try:
             await rebuild()
-        except OperationalError as original_error:
+        # Five of the six rebuilds execute through the raw aiosqlite driver,
+        # which raises sqlite3.OperationalError directly — NOT SQLAlchemy's
+        # wrapper — so both types must be caught here.
+        except (OperationalError, sqlite3.OperationalError) as original_error:
             if self.dialect != "sqlite":
                 raise
             # The reinspection read is itself a fresh connection contending
@@ -851,7 +855,7 @@ class StateDB:
                         .mappings()
                         .first()
                     )
-            except OperationalError:
+            except (OperationalError, sqlite3.OperationalError):
                 raise original_error from None
             if not already_rebuilt(row["sql"] if row is not None else None):
                 raise

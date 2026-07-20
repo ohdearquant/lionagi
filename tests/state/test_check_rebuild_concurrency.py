@@ -297,6 +297,29 @@ async def test_rebuild_check_constraint_reraises_when_still_legacy():
         await state.close()
 
 
+async def test_rebuild_check_constraint_handles_raw_sqlite_operational_error():
+    """Five of the six rebuilds execute through the raw aiosqlite driver,
+    which raises ``sqlite3.OperationalError`` directly — NOT SQLAlchemy's
+    wrapper. The guard must treat both types identically: swallow when a
+    concurrent winner provably landed the rebuild, re-raise when the table
+    is genuinely still legacy."""
+    state = StateDB(":memory:")
+    await state.open()
+    try:
+
+        async def _raw_boom() -> None:
+            raise sqlite3.OperationalError("database is locked")
+
+        # Winner already rebuilt -> raw error suppressed.
+        await state._rebuild_check_constraint("sessions", lambda sql: True, _raw_boom)
+
+        # Still legacy -> raw error re-raised untouched.
+        with pytest.raises(sqlite3.OperationalError):
+            await state._rebuild_check_constraint("sessions", lambda sql: False, _raw_boom)
+    finally:
+        await state.close()
+
+
 async def test_rebuild_check_constraint_reraises_on_non_sqlite_dialect():
     """The guard only ever suppresses errors on sqlite — other dialects
     always re-raise, matching ``_reconcile_columns``'s guard."""
@@ -401,8 +424,17 @@ async def test_drop_legacy_invocations_status_check_swallows_operational_error(t
                     await raw.execute("ALTER TABLE invocations_new RENAME TO invocations")
                     await raw.execute("PRAGMA foreign_keys = ON")
                     await raw.commit()
-                # ...then our own attempt collides with a lock error.
-                raise OperationalError("statement", {}, Exception("database is locked"))
+                # ...then our own attempt collides with a REAL raw-driver lock
+                # error: a holder connection takes the write reservation and a
+                # near-zero busy timeout makes the contending BEGIN IMMEDIATE
+                # raise sqlite3.OperationalError exactly as it does in
+                # production, rather than a hand-constructed SQLAlchemy
+                # exception the raw path never produces.
+                async with aiosqlite.connect(str(db_path)) as holder:
+                    await holder.execute("BEGIN IMMEDIATE")
+                    async with aiosqlite.connect(str(db_path)) as contender:
+                        await contender.execute("PRAGMA busy_timeout = 1")
+                        await contender.execute("BEGIN IMMEDIATE")
 
             await original(table, already_rebuilt, _winner_then_boom)
         else:
