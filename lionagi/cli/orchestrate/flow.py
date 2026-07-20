@@ -290,6 +290,33 @@ async def _resolve_invocation_terminal_flow(
                     metadata,
                 )
             if all(s == "completed" for s in child_statuses):
+                # A child can be "completed" (its DAG produced its result) yet
+                # carry COMPLETED_FINALIZE_ERROR because a guarded best-effort
+                # teardown step (team post, snapshot, resume pointer, graph)
+                # failed. Collapsing that into plain COMPLETED_OK here would
+                # make the invocation report clean success while the child's
+                # own record says a finalize step failed -- surface the same
+                # degraded reason at the invocation level instead of hiding it.
+                degraded = [
+                    s
+                    for s in sessions
+                    if str(s.get("status_reason_code") or "") == RunReasons.COMPLETED_FINALIZE_ERROR
+                ]
+                if degraded:
+                    degraded_metadata = dict(metadata)
+                    degraded_metadata["finalize_error_session_ids"] = [
+                        s["id"] for s in degraded if s.get("id")
+                    ]
+                    return (
+                        "completed",
+                        RunReasons.COMPLETED_FINALIZE_ERROR,
+                        "Flow completed successfully, but at least one child "
+                        "session recorded a non-output finalize error (a "
+                        "best-effort teardown step failed after that "
+                        "child's own DAG already produced its result).",
+                        [{"kind": "session", "id": s["id"]} for s in degraded if s.get("id")],
+                        degraded_metadata,
+                    )
                 return (
                     "completed",
                     RunReasons.COMPLETED_OK,
@@ -1462,7 +1489,28 @@ def _finalize_flow(
     output_format: str,
     show_graph: bool,
 ) -> str:
-    """Format output, write synthesis artifact, post team messages, and finalize run."""
+    """Format output, write the synthesis artifact, then run best-effort teardown.
+
+    The DAG already has its result by the time this runs, so ``output`` is
+    computed first and always returned. The synthesis artifact write happens
+    next, ahead of everything else and outside any guard: it IS the run's
+    output, so a failure there is a real failure of the run, not a finalize
+    hiccup — it's stashed on ``env._artifact_write_error`` for the run's
+    teardown to flip the terminal status to "failed" over, rather than being
+    swallowed alongside best-effort side effects.
+
+    Everything after that — team inbox post, branch snapshots, resume
+    pointer, the DAG graph image — is post-completion persistence/telemetry
+    whose failure should never fail the run. It's caught and stashed on
+    ``env._finalize_error`` for the run's teardown to surface via its own
+    reason code, rather than raising and letting the caller conflate it with
+    the DAG's own outcome.
+
+    Ordering matters: the output write runs first and unguarded, so a
+    telemetry failure below can never prevent the output from being written,
+    and an output failure is recorded on its own field so a later guarded
+    failure can never mask it.
+    """
     agent_results = exec_result.agent_results
     n_spawned = exec_result.n_spawned
     assignments = plan_result.assignments
@@ -1475,64 +1523,115 @@ def _finalize_flow(
         output = _format_result_text(agent_results, synthesis_result, header_fn=_flow_header_fn)
 
     if synthesis_result:
-        env.run.synthesis_path.write_text(synthesis_result["response"])
+        try:
+            env.run.synthesis_path.write_text(synthesis_result["response"])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "flow finalize: writing the synthesis artifact failed; the run "
+                "produced no output and cannot be reported as completed: %s",
+                exc,
+                exc_info=True,
+            )
+            env._artifact_write_error = {"error_class": type(exc).__name__, "error": str(exc)}
+
+    # Each best-effort side effect below is guarded independently: one
+    # raising (e.g. a stuck team-inbox file lock) must not skip the ones
+    # after it (snapshot, resume pointer, graph image).
+    finalize_errors: list[dict] = []
+
+    def _guard_finalize_step(label: str, fn) -> None:
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "flow finalize step (%s) failed after the DAG already "
+                "completed; DAG result is unaffected: %s",
+                label,
+                exc,
+                exc_info=True,
+            )
+            finalize_errors.append(
+                {"step": label, "error_class": type(exc).__name__, "error": str(exc)}
+            )
 
     if env.team_data:
-        _post_results_to_team(env.team_data, agent_results, agent_ids, synthesis_result)
+        _guard_finalize_step(
+            "team_post",
+            lambda: _post_results_to_team(
+                env.team_data, agent_results, agent_ids, synthesis_result
+            ),
+        )
 
-    # "agents" must cover every id "operations" (below) references, so it
-    # walks agent_results (which includes spawned nodes), not just the
-    # fixed-size plan-time assignments, or a spawned id resolves to nothing.
-    agents_meta = [
-        {
-            "id": agent_ids[i],
-            "name": agent_ids[i],
-            "model": worker_models[i],
-            "artifact_dir": str(env.run.agent_artifact_dir(agent_ids[i])),
-            "spawned": False,
-        }
-        for i in range(len(assignments))
-    ]
-    agents_meta.extend(
-        {
-            "id": r["agent_id"],
-            "name": r.get("assignee") or r["name"],
-            "model": r.get("model", ""),
-            "artifact_dir": str(env.run.agent_artifact_dir(r["agent_id"])),
-            "spawned": True,
-        }
-        for r in agent_results
-        if r.get("spawned")
-    )
+    def _snapshot_and_resume_pointer() -> None:
+        # "agents" must cover every id "operations" (below) references, so it
+        # walks agent_results (which includes spawned nodes), not just the
+        # fixed-size plan-time assignments, or a spawned id resolves to nothing.
+        agents_meta = [
+            {
+                "id": agent_ids[i],
+                "name": agent_ids[i],
+                "model": worker_models[i],
+                "artifact_dir": str(env.run.agent_artifact_dir(agent_ids[i])),
+                "spawned": False,
+            }
+            for i in range(len(assignments))
+        ]
+        agents_meta.extend(
+            {
+                "id": r["agent_id"],
+                "name": r.get("assignee") or r["name"],
+                "model": r.get("model", ""),
+                "artifact_dir": str(env.run.agent_artifact_dir(r["agent_id"])),
+                "spawned": True,
+            }
+            for r in agent_results
+            if r.get("spawned")
+        )
 
-    finalize_orchestration(
-        env,
-        kind="flow",
-        prompt=prompt,
-        extras={
-            "agents": agents_meta,
-            "operations": [
-                {
-                    "id": r["id"],
-                    "agent_id": r["agent_id"],
-                    "control": False,
-                    "spawned": r.get("spawned", False),
-                    "depends_on": r.get("depends_on") or [],
-                }
-                for r in agent_results
-            ],
-        },
-    )
+        finalize_orchestration(
+            env,
+            kind="flow",
+            prompt=prompt,
+            extras={
+                "agents": agents_meta,
+                "operations": [
+                    {
+                        "id": r["id"],
+                        "agent_id": r["agent_id"],
+                        "control": False,
+                        "spawned": r.get("spawned", False),
+                        "depends_on": r.get("depends_on") or [],
+                    }
+                    for r in agent_results
+                ],
+            },
+        )
+
+    _guard_finalize_step("snapshot", _snapshot_and_resume_pointer)
 
     if show_graph:
-        from lionagi.operations._visualize_graph import visualize_graph
 
-        with contextlib.suppress(Exception):
+        def _write_graph_image() -> None:
+            from lionagi.operations._visualize_graph import visualize_graph
+
             visualize_graph(
                 env.builder,
                 title=f"Flow DAG — {len(assignments)} assignments (+{n_spawned} spawned)",
                 save_path=str(env.run.dag_image_path),
             )
+
+        _guard_finalize_step("graph", _write_graph_image)
+
+    if finalize_errors:
+        if len(finalize_errors) == 1:
+            env._finalize_error = {k: v for k, v in finalize_errors[0].items() if k != "step"}
+        else:
+            env._finalize_error = {
+                "error_class": "MultipleFinalizeErrors",
+                "error": "; ".join(
+                    f"{e['step']}: {e['error_class']}: {e['error']}" for e in finalize_errors
+                ),
+            }
 
     return output
 

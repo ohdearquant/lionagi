@@ -78,6 +78,18 @@ class RunReasons:
     FAILED_ESCALATED = "run.failed.escalated"  # undeclared-artifact backstop
     # Loop exited clean but no commits/artifacts were produced (completion-trust gate).
     COMPLETED_EMPTY_NO_EVIDENCE = "run.completed_empty.no_evidence"
+    # DAG produced a genuine result but a post-completion finalize step
+    # (persistence/team-teardown) raised. Status stays "completed" — the
+    # DAG's own outcome, not the finalize step's — this reason code is what
+    # distinguishes it from a clean COMPLETED_OK run.
+    COMPLETED_FINALIZE_ERROR = "run.completed.finalize_error"
+    # The DAG itself completed, but writing its own output (the synthesis
+    # artifact) raised. Unlike COMPLETED_FINALIZE_ERROR, this is a real
+    # failure: a run that cannot deliver its output has not succeeded, so
+    # status flips to "failed" rather than staying "completed". Distinct
+    # from FAILED_MISSING_ARTIFACT (ADR-0029), which is a post-hoc contract
+    # verification gap rather than a raised exception during the write.
+    FAILED_ARTIFACT_WRITE = "run.failed.artifact_write"
     TIMED_OUT_DEADLINE = "run.timed_out.deadline"
     ABORTED_USER = "run.aborted.user"
     CANCELLED_SIGINT = "run.cancelled.sigint"  # issue #1055
