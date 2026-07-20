@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from lionagi._errors import LionError
+from lionagi._errors import EmptyOutgoingContentError, LionError
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.casts.emission import SpawnRequest, TaskAssignment
 from lionagi.ln.concurrency import CancelScope, move_on_after
@@ -1881,6 +1881,8 @@ async def _run_flow_inner(
             assignments = await plan(
                 env.orc_branch, prompt, roles=roster, dag=True, guidance=guidance, max_tasks=max_ops
             )
+        except EmptyOutgoingContentError:
+            raise
         except ValueError as exc:
             # plan() raises a bare ValueError when the orchestrator still
             # overshoots max_tasks after the cap was stated in guidance —
@@ -1900,6 +1902,8 @@ async def _run_flow_inner(
                     + " Return ONLY the assignments list — do not perform the task.",
                     max_tasks=max_ops,
                 )
+            except EmptyOutgoingContentError:
+                raise
             except ValueError as exc:
                 raise FlowPlanError(str(exc)) from exc
         if not assignments:
