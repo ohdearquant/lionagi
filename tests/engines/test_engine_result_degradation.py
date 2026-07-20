@@ -461,6 +461,42 @@ async def test_emission_failure_plus_budget_degrade_stays_degraded_true():
 
 
 @pytest.mark.asyncio
+async def test_emission_failure_plus_deadline_keeps_deadline_reason():
+    """Both an emission failure AND the deadline watchdog firing in the same
+    run: degraded stays True, skipped names the failed agent, and the
+    deadline reason keeps precedence as the surfaced degrade_reason (the
+    emission_failure reason only fills in when no deadline/budget reason is
+    present)."""
+
+    class EmissionThenDeadlineEngine(Engine):
+        async def _run(self, run: EngineRun, spec: str, **kwargs: Any) -> str:
+            await run.operate_with_repair(
+                _NeverEmitBranch(),  # type: ignore[arg-type]
+                "please emit",
+                arrived=lambda: False,
+                emits=(),
+                retries=1,
+            )
+            # ... then blow past the deadline so the watchdog cancels the run.
+            await asyncio.sleep(10)
+            return "unreachable"  # pragma: no cover
+
+        async def _partial_export(self, run: EngineRun, *a: Any, **kw: Any) -> str:
+            return "partial verdict after deadline"
+
+    eng = EmissionThenDeadlineEngine(max_agents=5, deadline_s=0.2)
+    result = await eng.run("some artifact")
+
+    assert isinstance(result, EngineResult), f"expected EngineResult, got {type(result)!r}"
+    assert result.skipped, "expected the exhausted emission to land in .skipped"
+    assert result.degraded is True
+    assert result.degrade_reason == "deadline", (
+        "the deadline reason must remain the surfaced degrade_reason when an "
+        f"emission failure is also present; got {result.degrade_reason!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_clean_run_with_no_skipped_agents_stays_not_degraded():
     """A run where every agent's emission arrives, and no deadline/budget
     fires, must report degraded=False and skipped=[] — the fix must not
