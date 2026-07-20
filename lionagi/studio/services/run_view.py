@@ -193,6 +193,15 @@ async def _run_view_for_run(db: Any, run: dict[str, Any]) -> dict[str, Any]:
     return {**run, **view}
 
 
+async def build_run_view_for(db: Any, run: dict[str, Any]) -> dict[str, Any]:
+    """Reconciled RunView fields (outcome/duration_ms/session_ids/artifacts)
+    for an already-fetched ``schedule_runs`` row — for callers that already
+    hold the row and must not re-read it (a second independent read could
+    observe a different row state on a live daemon)."""
+    invocation, sessions = await _linked(db, run)
+    return build_run_view(run, invocation, sessions)
+
+
 async def get_run_view(db: Any, run_id: str) -> dict[str, Any] | None:
     run = await db.get_schedule_run(run_id)
     if run is None:
