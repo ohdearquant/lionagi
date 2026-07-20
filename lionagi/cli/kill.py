@@ -9,7 +9,7 @@ import os
 import signal
 import time
 from collections import deque
-from typing import Any
+from typing import Any, Literal
 
 import psutil
 
@@ -107,6 +107,64 @@ def _check_pid_identity(
         return False
 
     return _cmdline_is_lionagi(cmdline, expected_cmd)
+
+
+_IdentityVerdict = Literal["ours", "not_ours", "unverifiable"]
+
+
+def _check_pid_identity_tristate(
+    pid: int,
+    expected_cmd: str,
+    *,
+    expected_session_id: str | None = None,
+    expected_create_time: float | None = None,
+) -> _IdentityVerdict:
+    """Sweep-only identity check that separates "definitely not ours" from
+    "cannot tell" (permission denied reading process details).
+
+    The direct-kill path (`_check_pid_identity`) collapses AccessDenied to a
+    refusal, which is the safe default when a human explicitly asked to kill
+    one entity. The stale sweep runs unattended over many rows; if it reused
+    that same collapse, a live worker we simply lack permission to inspect
+    would be swept and its row marked cancelled while the process keeps
+    running. Callers must treat "unverifiable" as still-alive, not as dead.
+    """
+    try:
+        proc = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return "not_ours"
+    except psutil.AccessDenied:
+        return "unverifiable"
+
+    if expected_create_time is not None:
+        try:
+            create_time_ok = (
+                abs(proc.create_time() - expected_create_time) <= _CREATE_TIME_TOLERANCE
+            )
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return "unverifiable"
+        if not create_time_ok:
+            return "not_ours"
+
+    if expected_session_id is not None:
+        try:
+            marker = proc.environ().get("LIONAGI_SESSION_ID")
+        except (psutil.AccessDenied, NotImplementedError):
+            marker = None
+        if marker is not None:
+            return "ours" if marker == expected_session_id else "not_ours"
+        if expected_create_time is None:
+            # No create_time correlation and the env marker is unreadable:
+            # cmdline alone cannot distinguish this run from a different
+            # concurrent one that recycled the pid.
+            return "unverifiable"
+
+    try:
+        cmdline = proc.cmdline()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return "unverifiable"
+
+    return "ours" if _cmdline_is_lionagi(cmdline, expected_cmd) else "not_ours"
 
 
 def _terminate_pid(
@@ -511,6 +569,7 @@ async def _do_kill_all_stale(
     killed = 0
     skipped_live = 0
     skipped_recent = 0
+    skipped_unverifiable = 0
 
     live_status_for: dict[str, str] = {
         "sessions": "running",
@@ -547,15 +606,51 @@ async def _do_kill_all_stale(
                 pid = _read_pid_from_entity(row_dict)
                 # A live pid alone isn't enough: if the original process died
                 # and the OS reused its pid, `_pid_alive` still reports True.
-                # Require the same identity check `_check_pid_identity` uses
-                # in the direct-kill path before treating the row as live.
-                if pid is not None and _pid_alive(pid) and _check_pid_identity(pid, "lionagi"):
-                    skipped_live += 1
-                    if verbose:
-                        print(
-                            f"  skip {entity_type} {entity_id[:12]}: process {pid} is still alive"
-                        )
-                    continue
+                # Correlate against the row's own session id / recorded
+                # create_time — the same fields the direct-kill path uses —
+                # so a recycled pid occupied by a DIFFERENT lionagi process
+                # doesn't pass as "still alive".
+                if pid is not None and _pid_alive(pid):
+                    meta = (
+                        row_dict.get("node_metadata")
+                        if isinstance(row_dict.get("node_metadata"), dict)
+                        else {}
+                    )
+                    expected_session_id = entity_id if entity_type == "session" else None
+                    raw_ct = meta.get("pid_create_time")
+                    try:
+                        expected_create_time = float(raw_ct) if raw_ct is not None else None
+                    except (TypeError, ValueError):
+                        expected_create_time = None
+
+                    verdict = _check_pid_identity_tristate(
+                        pid,
+                        "lionagi",
+                        expected_session_id=expected_session_id,
+                        expected_create_time=expected_create_time,
+                    )
+                    if verdict == "ours":
+                        skipped_live += 1
+                        if verbose:
+                            print(
+                                f"  skip {entity_type} {entity_id[:12]}: "
+                                f"process {pid} is still alive"
+                            )
+                        continue
+                    if verdict == "unverifiable":
+                        # We couldn't read enough of the process to confirm
+                        # identity either way (e.g. AccessDenied). Treat as
+                        # live rather than sweep it out from under a worker
+                        # we simply can't inspect.
+                        skipped_unverifiable += 1
+                        if verbose:
+                            print(
+                                f"  skip {entity_type} {entity_id[:12]}: process {pid} "
+                                "identity unverifiable (permission denied) — treated as live"
+                            )
+                        continue
+                    # verdict == "not_ours": pid was recycled by an unrelated
+                    # process, fall through and sweep the row.
 
                 if dry_run:
                     print(
@@ -684,7 +779,8 @@ async def _do_kill_all_stale(
     prefix = "(dry-run) would cancel" if dry_run else "cancelled"
     print(
         f"\n{prefix} {killed} stale entities "
-        f"[skipped_recent={skipped_recent}, skipped_live_pid={skipped_live}]"
+        f"[skipped_recent={skipped_recent}, skipped_live_pid={skipped_live}, "
+        f"skipped_unverifiable_pid={skipped_unverifiable}]"
     )
     return 0
 
