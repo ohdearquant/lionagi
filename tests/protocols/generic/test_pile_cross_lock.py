@@ -321,3 +321,33 @@ async def test_async_pile_iterator_does_not_block_event_loop():
     assert first is items[0]
     ticker_task.cancel()
     holder.join(5)
+
+
+async def test_async_pile_iterator_bulk_iteration_yields_between_items():
+    # Uncontended bulk iteration through the legacy iterator must checkpoint
+    # between elements so a ready sibling task keeps running.
+    pile = Pile()
+    pile.include([_Item() for _ in range(2000)])
+
+    ticks = 0
+    stop = False
+
+    async def ticker():
+        nonlocal ticks
+        while not stop:
+            ticks += 1
+            await asyncio.sleep(0)
+
+    ticker_task = asyncio.ensure_future(ticker())
+    await asyncio.sleep(0)
+
+    seen = 0
+    it = pile.AsyncPileIterator(pile)
+    async for _ in it:
+        seen += 1
+
+    stop = True
+    await ticker_task
+
+    assert seen == 2000
+    assert ticks >= 1000, f"ticker starved during bulk iteration (ticks={ticks})"

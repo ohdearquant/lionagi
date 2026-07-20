@@ -832,7 +832,11 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
             # subscript path on the event loop.
             if self._agen is None:
                 self._agen = self.pile.__aiter__()
-            return await anext(self._agen)
+            item = await anext(self._agen)
+            # Cooperative checkpoint between elements so bulk iteration over a
+            # large pile cannot monopolize the event loop.
+            await _concurrency_sleep(0)
+            return item
 
     async def __aenter__(self) -> Self:
         # Ordered both-lock acquisition held for the whole `async with pile:`
