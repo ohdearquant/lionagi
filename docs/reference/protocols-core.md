@@ -62,10 +62,15 @@ and ordering are independent — multiple `Progression` objects can reference th
 same item set. Index with `pile[uuid]`, not `pile[0]` (integer indexing goes
 through `Progression`, which is O(n)).
 
-## ObservableProto — V0/V1 compatibility
+## Observable — Pile admission contract
 
-`ObservableProto` is a `@runtime_checkable` structural protocol: any object
-with an `id` property satisfies it without explicit inheritance. All V0
-`Element` subclasses automatically satisfy it. `Observable` is an alias for
-`ObservableProto`. The legacy nominal `Observable` ABC (`LegacyObservable`) is
-kept for `issubclass(...)` checks in `Pile` and must not be removed.
+`Observable` (`lionagi.protocols._concepts.Observable`) is a nominal ABC, not
+a structural protocol: `isinstance(item, Observable)` requires the item's
+class to inherit from it, not merely expose an `id` attribute. `Pile`
+enforces this directly — an object with an `id` property that does not
+inherit `Observable` is rejected on admission. `Element` inherits `Observable`
+directly, so every `Element` subclass (and therefore every V0 model type)
+satisfies the contract automatically. There is no separate structural
+`ObservableProto` — a bare `id` property is not sufficient because `Pile`
+also relies on `Element`'s `to_dict`/`from_dict` reconstruction, which a
+duck-typed object does not provide.

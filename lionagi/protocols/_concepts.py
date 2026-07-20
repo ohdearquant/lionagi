@@ -47,7 +47,15 @@ class Sendable(ABC):  # noqa: B024
 
 
 class Observable(ABC):  # noqa: B024
-    """Observable entities must define 'id'."""
+    """The Pile-item admission contract: an item must inherit this ABC.
+
+    This is the sole public ``Observable`` symbol. Admission is nominal
+    (``isinstance`` against this class), not structural — an object that
+    merely exposes an ``id`` attribute without inheriting from this class
+    does not satisfy it. Pile relies on the full Element contract (equality,
+    ``to_dict``/``from_dict`` reconstruction) that a bare ``id`` property
+    does not provide.
+    """
 
     pass
 
