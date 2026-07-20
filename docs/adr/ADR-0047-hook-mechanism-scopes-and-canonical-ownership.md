@@ -36,11 +36,12 @@ receives the argument mapping and may replace it before the callable runs. The S
 block by raising but cannot transform the Tool's argument mapping. An observation adapter cannot
 manufacture the stronger mutation contract.
 
-**P5 — the public Session vocabulary is wider than the wired implementation.** `HookPoint` has
-thirteen values. Nine have production emit sites: session start/end, branch creation/end, tool
-pre/post/error, message addition, and user prompt submission. `API_PRE_CALL`, `API_POST_CALL`,
-`API_STREAM_CHUNK`, and `ARTIFACT_CREATED` have no production `HookBus` emit site. A declared enum
-member is not evidence that its integration exists.
+**P5 — the public Session vocabulary was wider than the wired implementation.** `HookPoint` has
+thirteen values. Twelve now have production emit sites: session start/end, branch creation/end, tool
+pre/post/error, message addition, user prompt submission, and the three API points, which delta 2
+wired through the operation-layer adapter described below. `ARTIFACT_CREATED` alone still has no
+production `HookBus` emit site. A declared enum member is not evidence that its integration
+exists, which is the reason this problem was recorded rather than the reason it stays true.
 
 **P6 — lazy ownership and compatibility surfaces expose real maintenance traps.** Creating
 `Session.hooks` after branches were included does not backfill the bus onto those branches.
@@ -247,9 +248,9 @@ points emit. The shipped production matrix is:
 | `TOOL_ERROR` | `_act()` when invoke raises | `call_id`, `tool_name`, `error`, `duration=None` | wired |
 | `MESSAGE_ADD` | routed Branch message callback | `branch_id`, `message` | conditionally wired by persistence routing |
 | `USER_PROMPT_SUBMIT` | `chat()`/`run()` before provider invocation when a turn-origin token is present | operation-specific prompt context | wired, blocking, at most once per user-originated turn |
-| `API_PRE_CALL` | none | none | dormant |
-| `API_POST_CALL` | none | none | dormant |
-| `API_STREAM_CHUNK` | none | none | dormant |
+| `API_PRE_CALL` | operation layer, before the provider invocation | `session_id`, `branch_id`, `model`, `provider` | wired |
+| `API_POST_CALL` | operation layer, once the call has settled | `model`, `provider`, `status`, `error`, `latency_ms`, `tokens` | wired |
+| `API_STREAM_CHUNK` | operation layer, per stream chunk | redacted `chunk_type` discriminator only | wired |
 | `ARTIFACT_CREATED` | none | none | deprecated compatibility vocabulary; no emit site or payload contract |
 
 `call_id` is a fresh UUID4 string shared by a Tool's pre and post/error emissions. Argument and
@@ -726,9 +727,11 @@ An adapter is valid only when it preserves all of these properties:
 6. **No duplicate canonical event.** `MESSAGE_ADD` uses `MessageAdded` on the observer and suppresses
    a redundant `HookSignal`.
 
-The three dormant API HookPoints may acquire meaning only through a typed optional
-service-to-session adapter that states when it emits, what it redacts, and whether it observes a
-stream chunk before or after the service handler. `ARTIFACT_CREATED` is retained only as deprecated
+The three API HookPoints acquired meaning through the typed optional adapter this required: it
+lives at the operation layer rather than inside the service, is a no-op when a branch carries no
+bus, states when it emits, and redacts a stream chunk to a type discriminator rather than carrying
+its payload. Standalone iModel behavior and service pre-invocation control are unchanged because
+the adapter is never reached from either. `ARTIFACT_CREATED` is retained only as deprecated
 compatibility vocabulary until the artifact owner supplies a payload and emit site. A contract test
 pins both the public deprecation notice and the absence of a production emitter; merely calling
 `bus.emit()` in a test would not be production integration.
@@ -774,7 +777,7 @@ unlike callables.
 | # | Delta | Size | Issue |
 |---|---|---|---|
 | 1 | Make Session hook attachment independent of lazy access order; accept when branches included before or after `Session.hooks` creation receive the same bus and emit the same tool signals. | S | #1964 |
-| 2 | Give the three dormant API `HookPoint` values production semantics through a typed, optional service-to-session observation adapter; accept when a session-bound iModel records API observations without changing service pre-invocation control or standalone iModel behavior. | M | (filled at issue-open time) |
+| 2 | Give the three dormant API `HookPoint` values production semantics through a typed, optional service-to-session observation adapter; accept when a session-bound iModel records API observations without changing service pre-invocation control or standalone iModel behavior. | M | delivered |
 | 3 | `ARTIFACT_CREATED` is deprecated compatibility vocabulary with no production emit site; contract coverage pins both the no-emitter scan and the public warning until an artifact owner supplies a typed payload. | S | — |
 | 4 | Blocked `TOOL_PRE` attempts record a denial signal before the original exception propagates; tests pin both the audit record and the blocked invocation. | S | — |
 | 5 | Align service hook annotations with runtime behavior; accept when `StreamHandlers` describes the actual stream callback arguments and `iModel.create_event()` has one truthful return type covered by static and runtime tests. | S | (filled at issue-open time) |
