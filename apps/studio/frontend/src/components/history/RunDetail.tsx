@@ -73,6 +73,15 @@ export function shouldRenderAuthoredGraph(
   return !(isEdgeless && opGraph.edges.length > 0);
 }
 
+// Raw SSE payloads arrive as an untyped Record — this is the boundary where
+// an event is asserted to be a SessionMessage. SessionMessage.timestamp is a
+// required number (the server column is REAL NOT NULL), so a malformed or
+// future event carrying a non-numeric timestamp must be rejected here rather
+// than let the cast manufacture a value the type promises can't happen.
+export function isSessionMessageEvent(event: Record<string, unknown>): boolean {
+  return !!(event.id && event.role && event.branch_id && typeof event.timestamp === "number");
+}
+
 export function appendStreamedMessage(
   session: SessionDetail,
   branchId: string,
@@ -104,24 +113,15 @@ export function appendStreamedMessage(
       if (branch.id !== branchId) return branch;
       const firstMessageAt = branch.first_message_at ?? branch.started_at;
       const lastMessageAt = branch.last_message_at ?? branch.ended_at;
-      const timestamp = message.timestamp;
       return {
         ...branch,
         messages: [...branch.messages, message],
         message_total:
           Math.max(branch.message_total ?? branch.messages.length, branch.messages.length) + 1,
         first_message_at:
-          timestamp == null
-            ? firstMessageAt
-            : firstMessageAt == null
-              ? timestamp
-              : Math.min(firstMessageAt, timestamp),
+          firstMessageAt == null ? message.timestamp : Math.min(firstMessageAt, message.timestamp),
         last_message_at:
-          timestamp == null
-            ? lastMessageAt
-            : lastMessageAt == null
-              ? timestamp
-              : Math.max(lastMessageAt, timestamp),
+          lastMessageAt == null ? message.timestamp : Math.max(lastMessageAt, message.timestamp),
       };
     }),
   };
@@ -305,7 +305,6 @@ export function buildRunSteps(
     branchSegments.forEach((segment, index) => {
       const segmentMessages = branch.messages.filter((message) => {
         const timestamp = message.timestamp;
-        if (timestamp == null) return false;
         const after = segment.started_at == null || timestamp >= segment.started_at;
         const before = segment.ended_at == null || timestamp <= segment.ended_at + 1;
         return after && before;
@@ -930,7 +929,7 @@ export default function RunDetail({ id }: RunDetailProps) {
         return;
       }
       setLive(true);
-      if (event.id && event.role && event.branch_id) {
+      if (isSessionMessageEvent(event)) {
         const msg = event as unknown as SessionMessage;
         setSession((prev) => {
           if (!prev) return prev;

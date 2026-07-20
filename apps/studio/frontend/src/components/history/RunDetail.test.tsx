@@ -503,6 +503,24 @@ describe("history/RunDetail.tsx — live branch aggregates", () => {
       "terminal-tail",
     ]);
   });
+
+  it("rejects a raw SSE event whose timestamp is not a number before it is cast to SessionMessage", async () => {
+    const { isSessionMessageEvent } = await import("./RunDetail");
+
+    const malformed: Record<string, unknown> = {
+      id: "streamed-later",
+      role: "assistant",
+      branch_id: "branch-1",
+      content: { assistant_response: "live" },
+      sender: "worker",
+      timestamp: null,
+      lion_class: "AssistantResponse",
+    };
+    const wellFormed: Record<string, unknown> = { ...malformed, timestamp: 50 };
+
+    expect(isSessionMessageEvent(malformed)).toBe(false);
+    expect(isSessionMessageEvent(wellFormed)).toBe(true);
+  });
 });
 
 describe("history/RunDetail.tsx — segmented branch totals", () => {
@@ -577,70 +595,6 @@ describe("history/RunDetail.tsx — segmented branch totals", () => {
 
     expect(intermediateBadge).toBeNull();
     expect(finalBadge?.textContent).toBe("6");
-  });
-
-  it("excludes messages with a null timestamp from a segment with unbounded start/end", async () => {
-    const { buildRunSteps } = await import("./RunDetail");
-    const steps = buildRunSteps(
-      {
-        id: "run-2",
-        name: "run",
-        created_at: 0,
-        updated_at: 200,
-        branches: [
-          {
-            id: "branch-1",
-            name: "worker",
-            created_at: 0,
-            first_message_at: 0,
-            last_message_at: 190,
-            message_total: 2,
-            messages: [
-              {
-                id: "undated-streamed",
-                role: "assistant",
-                content: { assistant_response: "streamed, no timestamp yet" },
-                sender: "worker",
-                timestamp: null,
-                lion_class: "AssistantResponse",
-              },
-              {
-                id: "dated",
-                role: "assistant",
-                content: { assistant_response: "dated" },
-                sender: "worker",
-                timestamp: 50,
-                lion_class: "AssistantResponse",
-              },
-            ],
-          },
-        ],
-      },
-      "completed",
-      [
-        {
-          op_id: "op-1",
-          branch_id: "branch-1",
-          branch_name: "worker",
-          status: "completed",
-          started_at: null,
-          ended_at: null,
-        },
-        {
-          op_id: "op-2",
-          branch_id: "branch-1",
-          branch_name: "worker",
-          status: "completed",
-          started_at: 100,
-          ended_at: 200,
-        },
-      ],
-    );
-
-    expect(steps).toHaveLength(2);
-    const firstSegmentTimestamps = (steps[0].messages ?? []).map((m) => m.timestamp);
-    expect(firstSegmentTimestamps).not.toContain(null);
-    expect(firstSegmentTimestamps).toContain(50);
   });
 });
 

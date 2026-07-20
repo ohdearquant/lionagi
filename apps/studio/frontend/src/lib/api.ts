@@ -592,7 +592,7 @@ export interface SessionMessage {
   role: string;
   content: Record<string, unknown>;
   sender: string | null;
-  timestamp: number | null;
+  timestamp: number;
   lion_class: string;
   branch_id?: string;
 }
@@ -600,7 +600,7 @@ export interface SessionMessage {
 export interface SessionBranch {
   id: string;
   name: string;
-  created_at: number | null;
+  created_at: number;
   /** Persisted full-progression bounds, independent of the messages window. */
   first_message_at?: number | null;
   last_message_at?: number | null;
