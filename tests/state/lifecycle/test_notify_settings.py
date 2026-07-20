@@ -378,6 +378,65 @@ async def test_exec_handler_records_nonzero_exit_outcome_and_warns(monkeypatch, 
 
     assert len(warn_calls) == 1
     assert "exited 1" in warn_calls[0]
+    # Only the adapter's own name (argv[0]'s basename) identifies it in the
+    # user-facing warn line -- never the full argv repr.
+    assert "notify-hook" in warn_calls[0]
+    assert "('notify-hook',)" not in warn_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_exec_handler_redacts_argv_and_bounds_stderr_in_warn_and_outcome(
+    monkeypatch, tmp_path
+):
+    """A secret-bearing argv (webhook URLs, tokens as args) must never
+    appear in the warn-channel line or the persisted notify_outcome.json --
+    only the adapter's own name (argv[0]'s basename). Stderr content is
+    adapter-controlled and can't be scrubbed for arbitrary secrets, but it
+    is bounded to STDERR_SNIPPET_LIMIT chars, capping exposure."""
+    import lionagi.cli._runs as runs_mod
+    from lionagi.cli._runs import allocate_run
+    from lionagi.state.lifecycle.notify_settings import STDERR_SNIPPET_LIMIT
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="notify-secret-run")
+
+    warn_calls: list[str] = []
+    monkeypatch.setattr("lionagi.cli._logging.warn", warn_calls.append)
+
+    secret = "sekret123"
+    secret_argv = ("notify", "--token", secret)
+    long_detail = "adapter failure detail " + ("x" * 400)
+
+    class _FakeProc:
+        pid = 789
+        returncode = 1
+
+        async def communicate(self, data=None):
+            return (b"", long_detail.encode())
+
+    async def _fake_exec(*args, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=secret_argv), outcome_fn=_outcome_fn_for(run)
+    )
+    await handler(_envelope())  # must not raise
+
+    outcome_text = run.notify_outcome_path.read_text()
+    outcome = json.loads(outcome_text)
+
+    # The secret argv element never leaks into either surface.
+    assert secret not in outcome_text
+    assert len(warn_calls) == 1
+    assert secret not in warn_calls[0]
+    assert "--token" not in warn_calls[0]
+    assert "notify" in warn_calls[0]
+
+    # Stderr is bounded, not left as arbitrary-length free text.
+    assert len(outcome["stderr_first_line"]) <= STDERR_SNIPPET_LIMIT + 1  # +1 for the ellipsis
+    assert len(warn_calls[0]) < len(long_detail)
 
 
 @pytest.mark.asyncio
@@ -456,6 +515,8 @@ async def test_exec_handler_records_spawn_error_outcome_and_warns(monkeypatch, t
     assert "no such file" in outcome["stderr_first_line"]
     assert len(warn_calls) == 1
     assert "failed to run" in warn_calls[0]
+    assert "notify-hook" in warn_calls[0]
+    assert "('notify-hook',)" not in warn_calls[0]
 
 
 @pytest.mark.asyncio

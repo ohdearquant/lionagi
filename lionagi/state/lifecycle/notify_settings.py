@@ -305,11 +305,39 @@ def _warn_adapter_failure(msg: str) -> None:
         logger.debug("failed to emit notify.on_terminal warn-channel line", exc_info=True)
 
 
+# A notify.on_terminal adapter's argv routinely carries secrets (webhook
+# URLs, tokens passed as args), and its stderr is adapter-controlled free
+# text that can echo those secrets back (e.g. a shell script that prints
+# its own invocation on error). User-facing surfaces -- the warn-channel
+# line and the persisted notify_outcome.json -- must never carry either
+# verbatim; developer-only channels (logger.warning/debug) may keep the
+# full argv since those aren't shipped in user-visible/persisted artifacts.
+STDERR_SNIPPET_LIMIT = 200
+
+
+def _adapter_label(argv: Sequence[str]) -> str:
+    """The adapter's display name for user-facing surfaces: argv[0]'s
+    basename only, never the full argv (which may carry secret args)."""
+    if not argv:
+        return "<adapter>"
+    return os.path.basename(str(argv[0])) or str(argv[0])
+
+
 def _first_line(text: str) -> str | None:
+    """First line of *text*, bounded to STDERR_SNIPPET_LIMIT chars. Stderr
+    content is adapter-controlled and can echo back secrets from argv (e.g.
+    a webhook URL in a "command not found" or curl error message); bounding
+    the length caps -- without any false promise of full redaction -- how
+    much of that free text ends up in the warn line or the persisted
+    outcome file.
+    """
     stripped = text.strip()
     if not stripped:
         return None
-    return stripped.splitlines()[0]
+    line = stripped.splitlines()[0]
+    if len(line) > STDERR_SNIPPET_LIMIT:
+        line = line[:STDERR_SNIPPET_LIMIT] + "…"
+    return line
 
 
 async def _await_proc_dead(proc: asyncio.subprocess.Process, grace: float = 2.0) -> None:
@@ -370,7 +398,9 @@ def _make_exec_handler(
                 await _await_proc_dead(proc)
             logger.warning("notify.on_terminal exec adapter %r timed out", launch_argv)
             outcome_fn(ok=False, exit_code=None, stderr_first_line=None)
-            _warn_adapter_failure(f"notify.on_terminal adapter {launch_argv!r} timed out")
+            _warn_adapter_failure(
+                f"notify.on_terminal adapter {_adapter_label(launch_argv)} timed out"
+            )
             return
         except get_cancelled_exc_class():
             # The registry's shared deadline races this call's own timeout and
@@ -383,9 +413,11 @@ def _make_exec_handler(
             raise
         except Exception as exc:  # noqa: BLE001 -- an adapter failure must never affect the run
             logger.warning("notify.on_terminal exec adapter %r failed to run: %s", launch_argv, exc)
-            outcome_fn(ok=False, exit_code=None, stderr_first_line=_first_line(str(exc)))
+            detail = _first_line(str(exc))
+            outcome_fn(ok=False, exit_code=None, stderr_first_line=detail)
+            warn_suffix = f": {detail}" if detail else ""
             _warn_adapter_failure(
-                f"notify.on_terminal adapter {launch_argv!r} failed to run: {exc}"
+                f"notify.on_terminal adapter {_adapter_label(launch_argv)} failed to run{warn_suffix}"
             )
             return
         if proc.returncode != 0:
@@ -397,9 +429,12 @@ def _make_exec_handler(
                 proc.returncode,
                 suffix,
             )
-            outcome_fn(ok=False, exit_code=proc.returncode, stderr_first_line=_first_line(detail))
+            bounded_detail = _first_line(detail)
+            outcome_fn(ok=False, exit_code=proc.returncode, stderr_first_line=bounded_detail)
+            warn_suffix = f": {bounded_detail}" if bounded_detail else ""
             _warn_adapter_failure(
-                f"notify.on_terminal adapter {launch_argv!r} exited {proc.returncode}{suffix}"
+                f"notify.on_terminal adapter {_adapter_label(launch_argv)} exited "
+                f"{proc.returncode}{warn_suffix}"
             )
         else:
             outcome_fn(ok=True, exit_code=0, stderr_first_line=None)
