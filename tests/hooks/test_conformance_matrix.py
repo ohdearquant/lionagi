@@ -245,7 +245,7 @@ async def test_exit_code_protocol_zero_two_and_other(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Malformed/partial exit-0 responses (D1/D4 acceptance, Issue 7): only a
+# Malformed/partial exit-0 responses (D1/D4 acceptance): only a
 # genuinely empty stdout means "no opinion" (allow). Every other shape that
 # fails to yield a recognized decision must fail closed on a blocking seam.
 # ---------------------------------------------------------------------------

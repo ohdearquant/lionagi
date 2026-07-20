@@ -461,7 +461,7 @@ async def test_pre_tool_use_nonjson_stdout_fails_closed_on_blocking_seam(monkeyp
 
 
 # ---------------------------------------------------------------------------
-# Malformed/partial exit-0 responses on a blocking seam (Issue 7): only a
+# Malformed/partial exit-0 responses on a blocking seam: only a
 # genuinely empty stdout means "no opinion" (allow). Every other case that
 # fails to yield a recognized decision -- a scalar JSON value, an empty
 # object, a hookSpecificOutput with no permissionDecision key, and an
@@ -757,7 +757,7 @@ async def test_approved_relative_command_runs_from_approval_cwd_not_process_cwd(
 async def test_content_pinned_trust_survives_same_path_replacement_after_digest_read(
     monkeypatch, tmp_path
 ):
-    """Issue 6: the approved path is overwritten with different content in
+    """The approved path is overwritten with different content in
     the window between the digest read and the actual spawn. The old code
     re-resolved and re-executed ``argv[0]`` with no further check, silently
     running the substituted (attacker) bytes. Fixed: the fd opened before
@@ -883,7 +883,7 @@ async def test_read_capped_none_stream_returns_empty():
 
 
 # ---------------------------------------------------------------------------
-# Truncation-to-allow (Issue 3): a hook response cut off at the cap must
+# Truncation-to-allow: a hook response cut off at the cap must
 # never be parsed as a decision -- a truncated exit-0 stdout is a hook
 # failure (deny on a blocking seam), not "whatever the retained prefix
 # happened to say."
@@ -893,7 +893,7 @@ async def test_read_capped_none_stream_returns_empty():
 async def test_truncated_stdout_on_blocking_seam_denies_even_with_a_complete_allow_prefix(
     monkeypatch,
 ):
-    """The exact attack in the verdict: a hook emits a complete
+    """A hook emits a complete
     `{"decision":"allow"}` as the first cap bytes, then arbitrary trailing
     data. Before the fix, the cap silently dropped the trailing bytes and
     the retained prefix parsed clean -- allow. Truncation must now deny
