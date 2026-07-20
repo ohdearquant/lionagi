@@ -16,6 +16,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from lionagi.ln.concurrency import ExceptionGroup
+from lionagi.state.db import TERMINAL_RUN_STATUSES
 from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS, RunTerminalEnvelope
 from lionagi.state.lifecycle.notify_settings import build_handler, resolve_notify_config
 from lionagi.state.reasons import RunReasons, ScheduleReasons
@@ -1104,9 +1105,9 @@ class SchedulerEngine:
 
         Returns ``(allowed, claim)``. ``allowed`` is False only when the
         schedule is bounded (``max_runs`` set) and has already consumed its
-        budget — persisted terminal runs plus runs already
-        claimed-but-not-yet-terminal in this process; callers must refuse to
-        fire in that case. ``claim`` is a ``_MaxRunsClaim`` token when a
+        budget — persisted fired rows (running or resolved) plus fires
+        claimed in this process whose occurrence rows have not yet
+        committed; callers must refuse to fire in that case. ``claim`` is a ``_MaxRunsClaim`` token when a
         bounded schedule's budget was actually reserved, or ``None`` when
         the schedule is unbounded (``max_runs`` unset — always allowed, no
         claim to release). Guarded by an engine-wide lock so concurrent
@@ -1135,7 +1136,7 @@ class SchedulerEngine:
         lock-acquire-in-finally hazards), so a concurrent fire's claim can
         be released by another task while this call is suspended awaiting
         the DB. If ``inflight`` were read *after* that await (an intermediate
-        design), a fire that both completes its terminal write and releases
+        design), a fire that both persists its occurrence row and releases
         its claim entirely within this call's await window would vanish
         from both the persisted count (read too early, before the write)
         and the in-flight snapshot (read too late, after the release) —
@@ -1152,25 +1153,28 @@ class SchedulerEngine:
         sid = schedule["id"]
         async with self._max_runs_lock:
             inflight = self._max_runs_inflight.get(sid, 0)
-            terminal = await self._svc.count_schedule_runs(sid, chain_depth=0)
             # A fired run consumes budget the moment it fires, not when it
-            # resolves — so in-flight 'running' rows must count too, or a
-            # bounded schedule under overlap_policy=allow admits fires past
-            # its budget while a long action is still executing. But a fire
-            # mid-execution is visible BOTH as a held claim and as a
-            # 'running' row, so summing all three (terminal + inflight +
-            # running) would count that one fire twice and starve the
-            # remaining budget. max() counts each fire exactly once
-            # whichever representation it currently has: claim-only (row not
-            # yet written), claim + running row, or running row alone (claim
-            # already released, action still executing).
+            # resolves — so persisted 'running' rows count alongside terminal
+            # ones, or a bounded schedule under overlap_policy=allow admits
+            # fires past its budget while a long action is still executing.
+            # Claims and rows are disjoint representations of a fire: a claim
+            # covers only the window before the occurrence row commits, and
+            # _fire_inner() releases it the moment _write_occurrence()
+            # succeeds (the same ownership transfer the rate-limit claim
+            # does), so summing the two counts each fire exactly once. In
+            # the transfer instant a fire can briefly appear as both — that
+            # overlap only ever over-counts (a spurious refusal, corrected
+            # on the next tick), the safe direction. A restart-orphaned
+            # 'running' row whose claim died with the process, and a fresh
+            # claim-only admission, are DIFFERENT fires and both count —
+            # taking a max() of the two views instead of their sum would
+            # collapse them and admit past the cap.
             fired = await self._svc.count_schedule_runs(
                 sid,
                 chain_depth=0,
-                statuses=("running", "completed", "failed", "timed_out", "cancelled"),
+                statuses=("running", *TERMINAL_RUN_STATUSES),
             )
-            used = max(terminal + inflight, fired)
-            if used >= max_runs:
+            if fired + inflight >= max_runs:
                 return False, None
             self._max_runs_inflight[sid] = inflight + 1
             return True, _MaxRunsClaim(self, sid)
@@ -1215,7 +1219,7 @@ class SchedulerEngine:
             used = await self._svc.count_schedule_runs(
                 sid,
                 chain_depth=0,
-                statuses=("running", "completed", "failed", "timed_out", "cancelled"),
+                statuses=("running", *TERMINAL_RUN_STATUSES),
                 fired_after=cutoff,
             )
             if used + inflight >= max_fires:
@@ -1643,10 +1647,10 @@ class SchedulerEngine:
 
         Only top-level callers (_maybe_fire, fire_now, _tick_github) that
         got an allowed admission reservation pass a non-None claim; chain
-        children never do. Rate-limit ownership transfers to the durable
-        occurrence row as soon as it commits. The idempotent releases here
-        remain the all-exit-path safety net, including failures before an
-        occurrence can be written.
+        children never do. Rate-limit and max-runs ownership transfer to
+        the durable occurrence row as soon as it commits. The idempotent
+        releases here remain the all-exit-path safety net, including
+        failures before an occurrence can be written.
 
         *extra_schedule_fields* and *supersedes_run_id* pass straight
         through to _fire_inner() (github cursor fold-in and recovery
@@ -1660,6 +1664,7 @@ class SchedulerEngine:
                 chain_parent_id=chain_parent_id,
                 chain_depth=chain_depth,
                 rate_limit_claim=rate_limit_claim,
+                max_runs_claim=max_runs_claim,
                 extra_schedule_fields=extra_schedule_fields,
                 supersedes_run_id=supersedes_run_id,
             )
@@ -1784,6 +1789,7 @@ class SchedulerEngine:
         chain_parent_id: str | None = None,
         chain_depth: int = 0,
         rate_limit_claim: _RateLimitClaim | None = None,
+        max_runs_claim: _MaxRunsClaim | None = None,
         extra_schedule_fields: dict[str, Any] | None = None,
         supersedes_run_id: str | None = None,
     ) -> None:
@@ -1916,6 +1922,10 @@ class SchedulerEngine:
                     # The durable row now accounts for this fire across process
                     # restarts; keeping the in-memory reservation would count it twice.
                     rate_limit_claim.release()
+                if max_runs_claim is not None:
+                    # Same transfer: the persisted row (counted via its fired
+                    # status) now carries this fire's max_runs budget unit.
+                    max_runs_claim.release()
                 written = await self._svc.update_status(
                     "schedule_run",
                     run_id,
@@ -2030,6 +2040,9 @@ class SchedulerEngine:
             if rate_limit_claim is not None:
                 # The durable running row now owns the rolling-window slot.
                 rate_limit_claim.release()
+            if max_runs_claim is not None:
+                # The durable running row now owns this fire's max_runs unit.
+                max_runs_claim.release()
             await self._svc.update_status(
                 "schedule_run",
                 run_id,

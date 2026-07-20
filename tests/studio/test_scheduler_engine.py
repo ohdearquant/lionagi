@@ -1988,34 +1988,104 @@ async def test_max_runs_admission_counts_inflight_running_row():
 
 
 @pytest.mark.asyncio
-async def test_max_runs_admission_does_not_double_count_claim_and_row():
-    """A single in-flight fire visible as BOTH a held claim and a 'running'
-    row must consume exactly one unit of budget: with max_runs=2 and one fire
-    mid-execution, a second admission must still be allowed."""
+async def test_max_runs_admission_does_not_double_count_transferred_fire():
+    """A fire whose claim has transferred to its durable 'running' row must
+    consume exactly one unit of budget: with max_runs=2 and one fire
+    mid-execution (row written, claim released), a second admission must
+    still be allowed."""
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
     svc = _make_svc()
 
     async def count(sid, *, chain_depth=0, statuses=None, fired_after=None):
         if statuses and "running" in statuses:
-            return 1  # the in-flight fire's running row
+            return 1  # the mid-execution fire's running row
         return 0  # no terminal rows yet
 
     svc.count_schedule_runs = AsyncMock(side_effect=count)
     engine = SchedulerEngine(svc=svc)
     schedule = _minimal_schedule(max_runs=2)
 
-    # First admission: the in-flight fire holds its claim.
+    # The mid-execution fire's claim was released when its occurrence row
+    # committed (the _fire_inner transfer), so only the row represents it.
+    allowed, claim = await engine._reserve_max_runs_budget(schedule)
+    assert allowed is True, "a transferred fire must consume one unit, not two"
+    assert claim is not None
+    claim.release()
+
+
+@pytest.mark.asyncio
+async def test_max_runs_restart_row_and_new_claim_are_distinct_fires():
+    """A restart-orphaned 'running' row (its claim died with the process)
+    and a fresh claim-only admission are DIFFERENT fires: with max_runs=2,
+    one orphan row plus one admitted claim must exhaust the budget. A max()
+    of the two views would collapse them and admit a third fire."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+
+    async def count(sid, *, chain_depth=0, statuses=None, fired_after=None):
+        # The pre-restart orphan: one durable running row, zero terminal.
+        if statuses and "running" in statuses:
+            return 1
+        return 0
+
+    svc.count_schedule_runs = AsyncMock(side_effect=count)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(max_runs=2)
+
+    # First new admission after restart: orphan row (1) + no claims -> allowed.
     allowed_first, claim_first = await engine._reserve_max_runs_budget(schedule)
     assert allowed_first is True and claim_first is not None
 
-    # Same fire now also has its 'running' row (the count side_effect above).
-    # Budget consumed must be 1, not 2 — the second slot stays available.
+    # Second admission before the first writes its row: orphan row (1) +
+    # first fire's claim (1) fills max_runs=2 -> must refuse.
     allowed_second, claim_second = await engine._reserve_max_runs_budget(schedule)
-    assert allowed_second is True, "one fire held as claim + running row must not be double-counted"
-    assert claim_second is not None
+    assert allowed_second is False, "orphan row + new claim are two fires against a cap of two"
+    assert claim_second is None
     claim_first.release()
-    claim_second.release()
+
+
+@pytest.mark.asyncio
+async def test_fire_transfers_max_runs_claim_at_occurrence_commit():
+    """_fire() must release the max_runs claim as soon as the occurrence row
+    commits — not only from its terminal finally block — so budget ownership
+    lives in exactly one place while the action is still executing."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(max_runs=2)
+
+    allowed, claim = await engine._reserve_max_runs_budget(schedule)
+    assert allowed is True and claim is not None
+    assert engine._max_runs_inflight.get("sched-001") == 1
+
+    inflight_during_action: list[int] = []
+
+    async def spawn(*args, **kwargs):
+        # Runs after the occurrence row committed, before terminal writes.
+        inflight_during_action.append(engine._max_runs_inflight.get("sched-001", 0))
+        return (0, "")
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(side_effect=spawn),
+        ),
+    ):
+        await engine._fire(
+            schedule, "run-xfer", trigger_context={"scheduled": True}, max_runs_claim=claim
+        )
+
+    assert inflight_during_action == [0], (
+        "claim must transfer to the durable row before the action executes"
+    )
+    assert engine._max_runs_inflight.get("sched-001", 0) == 0
 
 
 @pytest.mark.asyncio

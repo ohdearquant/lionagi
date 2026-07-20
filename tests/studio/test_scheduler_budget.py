@@ -14,6 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from lionagi.state.db import TERMINAL_RUN_STATUSES
+
 
 def _minimal_schedule(**overrides) -> dict:
     base = {
@@ -262,7 +264,7 @@ async def test_rate_limit_reservation_uses_rolling_window_cutoff():
     svc.count_schedule_runs.assert_awaited_once_with(
         "sched-001",
         chain_depth=0,
-        statuses=("running", "completed", "failed", "timed_out", "cancelled"),
+        statuses=("running", *TERMINAL_RUN_STATUSES),
         fired_after=940.0,
     )
     claim.release()
@@ -576,7 +578,7 @@ async def test_rate_limit_roundtrips_and_counts_only_fires_inside_window():
     admitted_recent = await state.count_schedule_runs(
         "sched-window",
         chain_depth=0,
-        statuses=("running", "completed", "failed", "timed_out", "cancelled"),
+        statuses=("running", *TERMINAL_RUN_STATUSES),
         fired_after=50.0,
     )
 
