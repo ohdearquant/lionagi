@@ -8,6 +8,7 @@ import pytest
 from lionagi._errors import EmptyOutgoingContentError
 from lionagi.operations.chat._prepare import _prepare_run_kwargs
 from lionagi.operations.types import ChatParam
+from lionagi.protocols.messages.assistant_response import AssistantResponseContent
 from lionagi.protocols.messages.instruction import InstructionContent
 from lionagi.session.branch import Branch
 
@@ -83,6 +84,49 @@ def test_prepare_run_kwargs_raises_when_real_instruction_renders_empty(monkeypat
     # it gets serialized into persisted failure signals (RunFailed) and
     # must not carry caller-supplied content.
     assert "a real, non-empty prompt" not in str(excinfo.value)
+
+
+def test_prepare_run_kwargs_guard_checks_current_turn_not_earlier_history(monkeypatch):
+    """Multi-item case: history contains an earlier Instruction + a real,
+    non-empty-rendering AssistantResponse, so the loop building `chat_msgs`
+    passes through at least one non-empty render before it ever reaches the
+    current turn's entry. Only InstructionContent is patched to render
+    empty, so the earlier AssistantResponse entry still renders fine — the
+    guard's input (the *current turn's* render) is therefore distinguishable
+    from 'whatever the loop last computed while iterating history'. The
+    guard must still fire because the current turn (always the last entry)
+    is an Instruction and renders empty."""
+    branch = Branch()
+    param = ChatParam()
+
+    branch.msgs.add_message(instruction="initial question")
+    branch.msgs.add_message(assistant_response="a real, non-empty answer")
+
+    monkeypatch.setattr(InstructionContent, "rendered", property(lambda self: ""))
+
+    with pytest.raises(EmptyOutgoingContentError, match="instruction_len="):
+        _prepare_run_kwargs(branch, "a real, non-empty prompt", param)
+
+
+def test_prepare_run_kwargs_guard_ignores_earlier_history_render_state(monkeypatch):
+    """Companion case: an earlier historical AssistantResponse renders empty,
+    but the current turn's own Instruction is unpatched and renders
+    normally. The guard must NOT fire — it must track the current turn's
+    render specifically, not get confused by an unrelated empty render
+    earlier in the same loop (the loop's ambient last-value would coincide
+    here too, but only because the current turn happens to be last; this
+    pins that the guard's read is not sensitive to what came before it)."""
+    branch = Branch()
+    param = ChatParam()
+
+    branch.msgs.add_message(instruction="initial question")
+    branch.msgs.add_message(assistant_response="a stale, now-empty-rendering answer")
+
+    monkeypatch.setattr(AssistantResponseContent, "rendered", property(lambda self: ""))
+
+    _ins, kw = _prepare_run_kwargs(branch, "a real, current prompt", param)
+    messages = kw["messages"]
+    assert any("a real, current prompt" in m["content"] for m in messages)
 
 
 def test_prepare_run_kwargs_allows_empty_render_when_no_instruction_text(monkeypatch):

@@ -194,8 +194,17 @@ def _prepare_run_kwargs(
 
     kw = (param.imodel_kw or {}).copy()
 
+    # The current turn's content is always the last entry appended to
+    # `_contents` above (guidance-merge branch, action-context branch, and
+    # plain-append branch all push it last). The guard below needs that
+    # entry's rendered output specifically, so it is captured explicitly by
+    # index rather than left to whatever value the loop happens to hold
+    # after its final iteration.
+    _last_index = len(_contents) - 1
+    _current_turn_rendered = None
+
     chat_msgs = []
-    for entry in _contents:
+    for i, entry in enumerate(_contents):
         if _use_render_cache and entry.source is not None and entry.cache_variant is not None:
             source = entry.source
             if entry.cache_variant == "prepared_instruction":
@@ -211,22 +220,21 @@ def _prepare_run_kwargs(
                 )
         else:
             rendered = entry.materialize().rendered
+        if i == _last_index:
+            _current_turn_rendered = rendered
         if not rendered:
             continue
         role = entry.role
         role_str = role.value if isinstance(role, MessageRole) else str(role)
         chat_msgs.append({"role": role_str, "content": rendered})
 
-    # The current turn's content is always the last entry appended to
-    # `_contents` above (guidance-merge branch, action-context branch, and
-    # plain-append branch all push it last). If the caller supplied real
-    # instruction text/media but that entry rendered empty and got filtered
-    # out of `chat_msgs` by `if not rendered: continue` above, the model call
-    # would silently go out carrying only scaffolding (system/guidance) and
-    # no user content — worse than a loud failure, since the run "completes"
-    # with a useless reply. `rendered` here still holds the last loop
-    # iteration's value even when that iteration hit `continue`.
-    if _contents and _has_real_instruction_text(ins.content) and not rendered:
+    # If the caller supplied real instruction text/media but the current
+    # turn's entry rendered empty and got filtered out of `chat_msgs` by
+    # `if not rendered: continue` above, the model call would silently go
+    # out carrying only scaffolding (system/guidance) and no user content —
+    # worse than a loud failure, since the run "completes" with a useless
+    # reply.
+    if _contents and _has_real_instruction_text(ins.content) and not _current_turn_rendered:
         _instruction_text = getattr(ins.content, "instruction", None)
         _plain_content = getattr(ins.content, "plain_content", None)
         _instruction_len = len(_instruction_text) if _instruction_text else 0
