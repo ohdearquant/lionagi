@@ -35,6 +35,7 @@ worker.
 | `li casts [NAME]` | Inspect built-in roles or modes |
 | `li skill {NAME,list,show}` | Read installed static skill instructions |
 | `li plugin {list,info,trust,enable,disable}` | Inspect and activate trusted plugin bundles |
+| `li hooks {import,trust}` | Import Claude Code / Codex hook configs and trust the imported commands |
 | `li invoke {start,end,list}` | Group sessions under one higher-level invocation |
 | `li studio [start]` | Start the Studio backend and selected frontend mode |
 | `li schedule {list,get,limits,create,enable,disable,trigger,delete,runs}` | Manage schedules through the Studio API |
@@ -561,6 +562,28 @@ li invoke end "$INV" --status completed
 | `start` | `--skill` (required), `--plugin`, `--prompt`, `--metadata` | Opens an invocation; prints its id to stdout |
 | `end ID` | `--status` (default `completed`), `--metadata` | Closes it with a canonical terminal status |
 | `list` | `--skill`, `--status`, `--limit` (default 20) | Lists recent invocations |
+
+---
+
+## `li hooks`
+
+Import an existing Claude Code or Codex hooks configuration into this project's
+`.lionagi/settings.yaml` `hooks_external:` block, then record trust for the imported
+commands so they are allowed to execute. Trust is hash-pinned: approval is recorded
+against the content-hashed argv, so a command that changes after import must be
+re-approved before it runs. Source: `cli/hooks.py`.
+
+```bash
+li hooks import claude                   # reads .claude/settings.json
+li hooks import codex .codex/hooks.json  # explicit config path
+li hooks trust                           # review and approve pending commands
+li hooks trust --yes                     # record trust without the prompt
+```
+
+| Subcommand | Flags | Notes |
+|------------|-------|-------|
+| `import SOURCE [PATH]` | `--cwd` | `SOURCE` is `claude` or `codex`; `PATH` defaults to `.claude/settings.json` or `.codex/hooks.json` |
+| `trust` | `--cwd`, `--yes` | Lists pending imported hook commands and records approval (content-hashed argv) |
 
 ---
 
