@@ -789,8 +789,9 @@ async def test_read_capped_truncates_and_logs(caplog):
     oversized = b"x" * (_MAX_STDOUT_BYTES + 1000)
     with caplog.at_level(logging.WARNING, logger="lionagi.hooks.external"):
         result = await _read_capped(_FakeStream(oversized), _MAX_STDOUT_BYTES, "stdout")
-    assert len(result) == _MAX_STDOUT_BYTES
-    assert result == oversized[:_MAX_STDOUT_BYTES]
+    assert len(result.data) == _MAX_STDOUT_BYTES
+    assert result.data == oversized[:_MAX_STDOUT_BYTES]
+    assert result.truncated is True
     assert any("exceeded" in rec.message for rec in caplog.records)
 
 
@@ -799,13 +800,79 @@ async def test_read_capped_under_cap_returns_everything_untruncated():
 
     data = b"hello hook output"
     result = await _read_capped(_FakeStream(data), 1_048_576, "stdout")
-    assert result == data
+    assert result.data == data
+    assert result.truncated is False
 
 
 async def test_read_capped_none_stream_returns_empty():
     from lionagi.hooks.external import _read_capped
 
-    assert await _read_capped(None, 1_048_576, "stdout") == b""
+    result = await _read_capped(None, 1_048_576, "stdout")
+    assert result.data == b""
+    assert result.truncated is False
+
+
+# ---------------------------------------------------------------------------
+# Truncation-to-allow (Issue 3): a hook response cut off at the cap must
+# never be parsed as a decision -- a truncated exit-0 stdout is a hook
+# failure (deny on a blocking seam), not "whatever the retained prefix
+# happened to say."
+# ---------------------------------------------------------------------------
+
+
+async def test_truncated_stdout_on_blocking_seam_denies_even_with_a_complete_allow_prefix(
+    monkeypatch,
+):
+    """The exact attack in the verdict: a hook emits a complete
+    `{"decision":"allow"}` as the first cap bytes, then arbitrary trailing
+    data. Before the fix, the cap silently dropped the trailing bytes and
+    the retained prefix parsed clean -- allow. Truncation must now deny
+    regardless of what the retained prefix says."""
+    from lionagi.hooks.external import _MAX_STDOUT_BYTES
+
+    allow_json = json.dumps({"decision": "allow"}).encode()
+    padding = b" " * (_MAX_STDOUT_BYTES - len(allow_json) + 1)  # pushes total past the cap
+    stdout = allow_json + padding
+    monkeypatch.setattr(
+        asyncio, "create_subprocess_exec", AsyncMock(return_value=_mock_proc(0, stdout=stdout))
+    )
+    hook = external_hook_adapter(event="PreToolUse", command=["guard"])
+    result = await hook("bash", {"command": ["ls"]})
+    assert result.decision == "deny"
+    assert "truncat" in result.reason.lower()
+
+
+async def test_truncated_stderr_on_exit_two_does_not_change_deny_decision(monkeypatch):
+    """Stderr truncation only shortens the displayed reason on an exit-2
+    block -- the decision was already deny, so this must not error or
+    silently allow."""
+    from lionagi.hooks.external import _MAX_STDERR_BYTES
+
+    oversized_stderr = b"e" * (_MAX_STDERR_BYTES + 500)
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        AsyncMock(return_value=_mock_proc(2, stderr=oversized_stderr)),
+    )
+    hook = external_hook_adapter(event="PreToolUse", command=["guard"])
+    result = await hook("bash", {"command": ["ls"]})
+    assert result.decision == "deny"
+    assert len(result.reason.encode()) <= _MAX_STDERR_BYTES
+
+
+async def test_truncated_stdout_on_advisory_seam_is_error_not_allow(monkeypatch):
+    from lionagi.hooks.external import _MAX_STDOUT_BYTES
+
+    allow_json = json.dumps({"decision": "allow"}).encode()
+    padding = b" " * (_MAX_STDOUT_BYTES - len(allow_json) + 1)
+    stdout = allow_json + padding
+    monkeypatch.setattr(
+        asyncio, "create_subprocess_exec", AsyncMock(return_value=_mock_proc(0, stdout=stdout))
+    )
+    hook = external_hook_adapter(event="PostToolUse", command=["notify"])
+    result = await hook("bash", {"command": ["ls"]}, {"stdout": "ok"}, None)
+    assert isinstance(result, ToolPostDecision)
+    assert "truncat" in result.reason.lower()
 
 
 async def test_stderr_is_capped_independently_of_stdout(monkeypatch):
@@ -832,7 +899,13 @@ async def test_real_subprocess_large_dual_pipe_output_does_not_hang():
     cap to BOTH stdout and stderr before ever reading stdin -- the classic
     write-fills-the-pipe-before-read deadlock shape -- must still complete
     promptly, proving the stdin write and the stdout/stderr drains run
-    concurrently rather than sequentially."""
+    concurrently rather than sequentially.
+
+    stdout genuinely exceeds the cap here, so the decision is `deny` (a
+    truncated exit-0 stdout is a hook failure, never parsed -- see the
+    truncation-to-allow tests above); this test's own point is that the
+    dual-pipe drain completes promptly, not what the truncated decision is.
+    """
     script = (
         "import sys\n"
         "sys.stdout.buffer.write(b'o' * (2 * 1024 * 1024))\n"
@@ -848,7 +921,8 @@ async def test_real_subprocess_large_dual_pipe_output_does_not_hang():
     started = time.monotonic()
     result = await asyncio.wait_for(hook("bash", {"command": ["ls"]}), timeout=20)
     elapsed = time.monotonic() - started
-    assert result.decision == "allow"
+    assert result.decision == "deny"
+    assert "truncat" in result.reason.lower()
     assert elapsed < 15, "hook should complete well within its own timeout, not hang"
 
 

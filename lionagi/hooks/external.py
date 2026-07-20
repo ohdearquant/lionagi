@@ -459,7 +459,20 @@ class HookVerdict:
     updated_input: dict[str, Any] | None = None
 
 
-async def _read_capped(stream: Any, cap: int, label: str) -> bytes:
+@dataclass(frozen=True, slots=True)
+class _CappedRead:
+    """The retained bytes from one pipe drain, plus whether the pipe
+    exceeded its cap. ``truncated`` must survive alongside ``data`` all the
+    way to the decision point -- a caller that only sees the (silently
+    shortened) bytes cannot tell a complete short response from the first
+    N bytes of a longer one, and exit-0 stdout parsing must never treat the
+    latter as the former (see ``_execute_hook``)."""
+
+    data: bytes
+    truncated: bool
+
+
+async def _read_capped(stream: Any, cap: int, label: str) -> _CappedRead:
     """Read *stream* to EOF, keeping at most the first *cap* bytes. Bytes
     beyond the cap are still read off the pipe (so the child never blocks
     writing into a full, un-drained pipe) but discarded immediately rather
@@ -467,7 +480,7 @@ async def _read_capped(stream: Any, cap: int, label: str) -> bytes:
     either stdout or stderr. *label* names the stream in the truncation log.
     """
     if stream is None:
-        return b""
+        return _CappedRead(data=b"", truncated=False)
     chunks: list[bytes] = []
     total = 0
     truncated = False
@@ -486,7 +499,7 @@ async def _read_capped(stream: Any, cap: int, label: str) -> bytes:
             truncated = True
     if truncated:
         logger.warning("hook %s exceeded %d bytes; truncating", label, cap)
-    return b"".join(chunks)
+    return _CappedRead(data=b"".join(chunks), truncated=truncated)
 
 
 async def _write_stdin(proc: Any, data: bytes) -> None:
@@ -500,18 +513,18 @@ async def _write_stdin(proc: Any, data: bytes) -> None:
         await stdin.wait_closed()
 
 
-async def _drain(proc: Any, envelope_bytes: bytes) -> tuple[bytes, bytes]:
+async def _drain(proc: Any, envelope_bytes: bytes) -> tuple[_CappedRead, _CappedRead]:
     """Write the envelope and read both pipes concurrently -- never stdin
     fully before stdout/stderr -- so a hook that writes output before
     consuming all of stdin cannot deadlock on a full pipe in either
     direction. Reaps the process once both streams hit EOF."""
-    _, stdout_bytes, stderr_bytes = await asyncio.gather(
+    _, stdout, stderr = await asyncio.gather(
         _write_stdin(proc, envelope_bytes),
         _read_capped(proc.stdout, _MAX_STDOUT_BYTES, "stdout"),
         _read_capped(proc.stderr, _MAX_STDERR_BYTES, "stderr"),
     )
     await proc.wait()
-    return stdout_bytes, stderr_bytes
+    return stdout, stderr
 
 
 async def _spawn(argv: list[str], bound: _BoundExecutable | None, cwd: str) -> Any:
@@ -564,10 +577,10 @@ async def _run_hook_process(
     cwd: str,
     envelope_bytes: bytes,
     timeout: float,
-) -> tuple[int, bytes, bytes]:
+) -> tuple[int, _CappedRead, _CappedRead]:
     proc = await _spawn(argv, bound, cwd)
     try:
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+        stdout, stderr = await asyncio.wait_for(
             _drain(proc, envelope_bytes),
             timeout=timeout,
         )
@@ -583,7 +596,7 @@ async def _run_hook_process(
             await asyncio.wait_for(proc.wait(), timeout=_TERMINATE_GRACE)
         raise _HookTimeoutError(f"hook timed out after {timeout}s: {argv[0]!r}") from err
 
-    return proc.returncode, stdout_bytes, stderr_bytes
+    return proc.returncode, stdout, stderr
 
 
 def _parse_stdout_decision(
@@ -661,10 +674,16 @@ async def _execute_hook(
     that fails closed before spawning (i.e. the serialization-error case
     below never reaches ``_spawn`` at all).
 
-    Exit 0 -- stdout parsed as JSON if non-empty. Exit 2 -- block; stderr is
-    the reason. Any other exit, or a spawn/IO error -- hook failure (deny on
-    a blocking seam, error/log-and-continue on an advisory one). A timeout is
-    treated the same way after the process group is torn down.
+    Exit 0 -- stdout parsed as JSON if non-empty, UNLESS stdout hit the
+    read cap: a truncated response is never parsed (the retained prefix
+    could coincidentally read as a complete, benign decision while the
+    discarded remainder said something else entirely) -- it is a hook
+    failure like any other, deny on a blocking seam. Exit 2 -- block;
+    stderr is the reason (truncation there only shortens the displayed
+    reason, since the decision is already deny). Any other exit, or a
+    spawn/IO error -- hook failure (deny on a blocking seam,
+    error/log-and-continue on an advisory one). A timeout is treated the
+    same way after the process group is torn down.
     """
     try:
         envelope_bytes = json.dumps(envelope).encode()
@@ -674,7 +693,7 @@ async def _execute_hook(
             reason=f"hook envelope is not JSON-serializable: {exc}",
         )
     try:
-        returncode, stdout_bytes, stderr_bytes = await _run_hook_process(
+        returncode, stdout, stderr = await _run_hook_process(
             argv, bound, cwd, envelope_bytes, timeout
         )
     except _HookTimeoutError as exc:
@@ -686,17 +705,26 @@ async def _execute_hook(
         )
 
     if returncode == 2:
-        reason = stderr_bytes.decode(errors="replace").strip() or f"hook blocked: {argv[0]!r}"
+        reason = stderr.data.decode(errors="replace").strip() or f"hook blocked: {argv[0]!r}"
         return HookVerdict(outcome="deny", reason=reason)
 
     if returncode != 0:
         reason = (
-            stderr_bytes.decode(errors="replace").strip()
+            stderr.data.decode(errors="replace").strip()
             or f"hook failed (exit {returncode}): {argv[0]!r}"
         )
         return HookVerdict(outcome="deny" if blocking else "error", reason=reason)
 
-    decision, reason, updated_input = _parse_stdout_decision(stdout_bytes)
+    if stdout.truncated:
+        return HookVerdict(
+            outcome="deny" if blocking else "error",
+            reason=(
+                f"hook stdout exceeded {_MAX_STDOUT_BYTES} bytes and was "
+                "truncated; a truncated response is never parsed as a decision"
+            ),
+        )
+
+    decision, reason, updated_input = _parse_stdout_decision(stdout.data)
     if decision is None or decision == "allow":
         return HookVerdict(outcome="allow", reason=reason, updated_input=updated_input)
     if decision == "deny":
