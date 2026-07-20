@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shlex
 from pathlib import Path
@@ -217,6 +218,12 @@ def _run_import(source: str, path: str | None, cwd: str | None) -> int:
     external, report = _translate_config(data, source_label=source)
 
     settings_path = project_dir / ".lionagi" / "settings.yaml"
+    if settings_path.is_symlink():
+        log_error(
+            f"refusing to write through a symlinked settings file: "
+            f"{settings_path} -> {os.path.realpath(settings_path)}"
+        )
+        return 1
     existing: dict[str, Any] = {}
     if settings_path.is_file():
         loaded = yaml.safe_load(settings_path.read_text()) or {}
@@ -236,7 +243,25 @@ def _run_import(source: str, path: str | None, cwd: str | None) -> int:
 
     if imported_count:
         settings_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(settings_path, "w") as f:
+        # O_NOFOLLOW is the atomic guard against a symlink swapped in after
+        # the is_symlink() check above; that earlier check just gives a
+        # clearer error message for the common (non-race) case.
+        try:
+            fd = os.open(
+                str(settings_path),
+                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+                0o644,
+            )
+        except OSError as exc:
+            if settings_path.is_symlink():
+                log_error(
+                    f"refusing to write through a symlinked settings file: "
+                    f"{settings_path} -> {os.path.realpath(settings_path)}"
+                )
+                return 1
+            log_error(f"could not open {settings_path} for writing: {exc}")
+            return 1
+        with os.fdopen(fd, "w") as f:
             yaml.safe_dump(existing, f, sort_keys=False, allow_unicode=True)
 
     for line in report:

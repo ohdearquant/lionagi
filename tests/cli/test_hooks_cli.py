@@ -131,6 +131,32 @@ def test_import_merges_with_existing_hooks_external_block(tmp_path):
     assert "PreToolUse" in data["hooks_external"]
 
 
+def test_import_refuses_to_write_through_a_symlinked_settings_file(capsys, tmp_path):
+    """A project-controlled `.lionagi/settings.yaml` that is a symlink to a
+    file outside the project must never be written through -- following it
+    would truncate whatever the symlink points at, using the importing
+    user's own write permissions."""
+    outside_target = tmp_path / "outside" / "victim.txt"
+    outside_target.parent.mkdir(parents=True, exist_ok=True)
+    outside_target.write_text("do-not-touch")
+
+    project_dir = tmp_path / "project"
+    (project_dir / ".lionagi").mkdir(parents=True, exist_ok=True)
+    settings_path = project_dir / ".lionagi" / "settings.yaml"
+    settings_path.symlink_to(outside_target)
+
+    _write_claude_settings(project_dir, CLAUDE_SETTINGS)
+
+    code = cli_main(["hooks", "import", "claude", "--cwd", str(project_dir)])
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "symlink" in err.lower()
+    assert str(outside_target) in err
+
+    assert outside_target.read_text() == "do-not-touch"
+    assert settings_path.is_symlink()
+
+
 # ---------------------------------------------------------------------------
 # `li hooks trust`
 # ---------------------------------------------------------------------------
