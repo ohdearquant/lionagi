@@ -12,6 +12,7 @@ UNCHANGED / DISABLE -- atomically: any invalid member means zero writes.
 
 from __future__ import annotations
 
+import collections.abc
 import hashlib
 import json
 import re
@@ -245,9 +246,42 @@ class ScheduleSetError(ValueError):
         super().__init__("; ".join(f"{name}: {message}" for name, message in errors))
 
 
+class _ScheduleSetLoader(yaml.SafeLoader):
+    """SafeLoader variant scoped to this parse boundary only: a mapping key
+    that YAML 1.1's implicit-bool resolver would collapse (bare on/off/
+    yes/no/true/false) keeps its original text instead. Values are
+    untouched -- only keys, so `enabled: yes` still resolves to `True`.
+
+    Without this, a hand-authored `notify:\n  on: [...]` parses its own
+    `on` key as the bool `True`, and the closed-schema (extra="forbid")
+    rejection then names `True` instead of the quoting workaround.
+    """
+
+    def construct_mapping(self, node, deep=False):
+        if isinstance(node, yaml.MappingNode):
+            self.flatten_mapping(node)
+        mapping: dict[Any, Any] = {}
+        for key_node, value_node in node.value:
+            if key_node.tag == "tag:yaml.org,2002:bool":
+                key = key_node.value
+            else:
+                key = self.construct_object(key_node, deep=deep)
+                if not isinstance(key, collections.abc.Hashable):
+                    raise yaml.constructor.ConstructorError(
+                        "while constructing a mapping",
+                        node.start_mark,
+                        "found unhashable key",
+                        key_node.start_mark,
+                    )
+            mapping[key] = self.construct_object(value_node, deep=deep)
+        return mapping
+
+
 def parse_schedule_set(text: str, *, source: str = "<string>") -> ScheduleSetDocument:
     try:
-        data = yaml.safe_load(text)
+        # _ScheduleSetLoader subclasses SafeLoader and only overrides key
+        # construction -- no unsafe tag resolution is added.
+        data = yaml.load(text, Loader=_ScheduleSetLoader)  # noqa: S506
     except yaml.YAMLError as exc:
         raise ValueError(f"{source}: not valid YAML: {exc}") from exc
     if not isinstance(data, dict):
