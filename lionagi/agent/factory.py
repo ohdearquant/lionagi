@@ -5,13 +5,16 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from lionagi._errors import ConfigurationError
 from lionagi.ln.concurrency import is_coro_func
 from lionagi.session.branch import Branch
 
 from .spec import AgentSpec
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 __all__ = (
     "create_agent",
@@ -610,11 +613,15 @@ def _forward_mcp_to_cli_request(
     # ConfigurationError. Server shapes lacking both `command` and `url`
     # aren't a real MCP server transport at all and are skipped outright.
     overrides = dict(branch.chat_model.endpoint.config.kwargs.get("config_overrides") or {})
-    # `env` carries arbitrary secret-bearing values (API keys/tokens) and
-    # must never land on argv (visible via `ps`, request logs, etc). Every
-    # other supported field is a name, path, flag, or timeout -- safe to
-    # pass as a `-c` override.
-    secret_env: dict[str, dict] = {}
+    # `env` and `http_headers` can carry arbitrary secret-bearing literal
+    # values (API keys/tokens, an `Authorization: Bearer ...` header) and
+    # must never land on argv (visible via `ps`, request logs, etc).
+    # `env_http_headers` values are env-var *names*, not secrets -- the
+    # actual header values are resolved by codex from its own environment at
+    # runtime, so those stay on the `-c` override path. Every other
+    # supported field is a name, path, flag, or timeout -- safe as a
+    # `-c` override.
+    secret_fields: dict[str, dict[str, Any]] = {}
     for server_name, server_cfg in servers.items():
         if not isinstance(server_cfg, dict) or not ("command" in server_cfg or "url" in server_cfg):
             continue
@@ -629,8 +636,8 @@ def _forward_mcp_to_cli_request(
             value = server_cfg.get(field_key)
             if value is None:
                 continue
-            if field_key == "env":
-                secret_env[server_name] = value
+            if field_key in _SECRET_CODEX_MCP_FIELDS:
+                secret_fields.setdefault(server_name, {})[field_key] = value
             else:
                 overrides[f"mcp_servers.{server_name}.{field_key}"] = value
 
@@ -641,20 +648,26 @@ def _forward_mcp_to_cli_request(
         # no wholesale "clear mcp_servers" override -- `-c mcp_servers={}`
         # merges onto, rather than replaces, the existing table (verified
         # against the installed CLI) -- so each excluded server is disabled
-        # by name instead.
-        for excluded_name in resolved_servers:
-            if excluded_name not in servers:
+        # by name instead. "Discovered" must include ambient/profile servers
+        # codex would load on its own, not just the ones lionagi's own MCP
+        # config resolved -- otherwise an allowlist enforced against an empty
+        # `resolved_servers` (no lionagi MCP config file resolved) is a
+        # no-op, leaving every ambient server enabled.
+        discovered_names = set(resolved_servers) | _discover_ambient_codex_mcp_server_names()
+        for excluded_name in discovered_names:
+            if excluded_name not in spec.mcp_servers:
                 overrides[f"mcp_servers.{excluded_name}.enabled"] = False
 
-    if secret_env:
-        _write_codex_mcp_env_profile(branch, secret_env)
+    if secret_fields:
+        _write_codex_mcp_secret_profile(branch, secret_fields)
     if overrides:
         branch.chat_model.endpoint.config.kwargs["config_overrides"] = overrides
 
 
 # Fields the codex CLI's MCP server config schema accepts, verified against
 # the installed `codex` CLI (`codex mcp list --json` output field names).
-# `env` is handled separately -- see `_write_codex_mcp_env_profile`.
+# `env` and `http_headers` are handled separately -- see
+# `_write_codex_mcp_secret_profile`.
 _CODEX_MCP_SERVER_FIELDS = frozenset(
     {
         "command",
@@ -672,17 +685,114 @@ _CODEX_MCP_SERVER_FIELDS = frozenset(
     }
 )
 
+# Fields whose values may themselves be secrets (API keys, tokens, a static
+# `Authorization: Bearer ...` header) rather than names/paths/flags -- routed
+# to the on-disk profile file instead of the `-c` command line.
+_SECRET_CODEX_MCP_FIELDS = frozenset({"env", "http_headers"})
 
-def _write_codex_mcp_env_profile(branch: Branch, secret_env: dict[str, dict]) -> None:
-    """Route MCP server `env` maps (may carry secrets) to codex via a
-    private, on-disk config profile instead of the `-c` command line.
+
+def _discover_ambient_codex_mcp_server_names() -> set[str]:
+    """Discover the names of ambient/profile-configured codex MCP servers,
+    i.e. servers codex would load on its own even if lionagi resolves no MCP
+    config file for this run. An explicit lionagi allowlist has to know
+    about these to disable the ones it excludes -- otherwise `mcp_servers=[]`
+    leaves codex's own configured servers running untouched.
+
+    Two discovery paths, in order:
+    1. Parse ``$CODEX_HOME/config.toml``'s ``[mcp_servers.*]`` tables
+       directly -- this is where ambient servers live.
+    2. Fall back to ``codex mcp list --json`` (verified against the
+       installed CLI: emits a JSON array of ``{"name": ..., ...}`` objects)
+       if that file is missing, unreadable, or unparseable.
+
+    Raises ``ConfigurationError`` if both paths fail -- an allowlist that
+    cannot be enforced must fail closed, never silently pass every ambient
+    server through.
+    """
+    import json
+    import subprocess
+    from pathlib import Path
+
+    import toml
+
+    codex_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    config_path = codex_home / "config.toml"
+    try:
+        data = toml.loads(config_path.read_text())
+    except (OSError, toml.TomlDecodeError):
+        pass
+    else:
+        mcp_servers = data.get("mcp_servers") if isinstance(data, dict) else None
+        if isinstance(mcp_servers, dict):
+            return set(mcp_servers)
+        return set()
+
+    try:
+        result = subprocess.run(
+            ["codex", "mcp", "list", "--json"],  # noqa: S607 — relies on PATH resolution for "codex", intentional
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        )
+        listed = json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+        raise ConfigurationError(
+            "Cannot enforce the explicit codex MCP server allowlist: failed "
+            f"to discover ambient/profile-configured servers via both "
+            f"{str(config_path)!r} and `codex mcp list --json` "
+            f"({type(exc).__name__}: {exc}). An allowlist that cannot be "
+            "enforced must fail closed rather than silently leaving "
+            "unlisted servers enabled."
+        ) from exc
+
+    if not isinstance(listed, list):
+        raise ConfigurationError(
+            "Cannot enforce the explicit codex MCP server allowlist: "
+            f"`codex mcp list --json` returned unexpected output "
+            f"(expected a JSON array, got {type(listed).__name__})."
+        )
+    return {entry["name"] for entry in listed if isinstance(entry, dict) and "name" in entry}
+
+
+# Profile files older than this are considered abandoned (the process that
+# wrote them was killed before its `atexit` cleanup ran, e.g. SIGKILL/crash)
+# and safe to reap on the next write.
+_STALE_PROFILE_MAX_AGE_SECONDS = 24 * 60 * 60
+
+
+def _reap_stale_codex_mcp_profiles(codex_home: Path) -> None:
+    """Delete `lionagi-mcp-*.config.toml` profile files older than 24h.
+
+    `_write_codex_mcp_secret_profile`'s own cleanup is `atexit`-based, so a
+    killed-not-terminated process (SIGKILL, crash) leaves its profile file
+    on disk indefinitely. Reaping stale files on the next write bounds how
+    long an abandoned credential file can sit under `$CODEX_HOME`.
+    """
+    import time
+
+    cutoff = time.time() - _STALE_PROFILE_MAX_AGE_SECONDS
+    for stale in codex_home.glob("lionagi-mcp-*.config.toml"):
+        try:
+            if stale.stat().st_mtime < cutoff:
+                stale.unlink(missing_ok=True)
+        except OSError:
+            continue
+
+
+def _write_codex_mcp_secret_profile(
+    branch: Branch, secret_fields: dict[str, dict[str, Any]]
+) -> None:
+    """Route MCP server fields that may carry secret values (`env`,
+    `http_headers`) to codex via a private, on-disk config profile instead
+    of the `-c` command line.
 
     codex layers ``$CODEX_HOME/<name>.config.toml`` on top of its base
     config for any invocation given ``-p <name>`` (confirmed against the
     installed CLI: a `sandbox_mode` set only in such a profile file took
-    effect on a real `codex exec` run). Writing the env map there, rather
-    than putting it on argv, keeps it out of process listings (`ps`) and
-    serialized request records.
+    effect on a real `codex exec` run). Writing these fields there, rather
+    than putting them on argv, keeps them out of process listings (`ps`)
+    and serialized request records.
     """
     import atexit
     import uuid
@@ -693,18 +803,20 @@ def _write_codex_mcp_env_profile(branch: Branch, secret_env: dict[str, dict]) ->
     existing_profile = branch.chat_model.endpoint.config.kwargs.get("profile")
     if existing_profile:
         raise ConfigurationError(
-            "Cannot forward MCP server `env` secrets for codex: the request "
+            "Cannot forward MCP server secret fields for codex: the request "
             f"already has an explicit profile={existing_profile!r}, and codex "
             "accepts only one `-p` profile per invocation. Remove the "
-            "explicit profile or drop `env` from the MCP server config."
+            "explicit profile or drop `env`/`http_headers` from the MCP "
+            "server config."
         )
 
     codex_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
     codex_home.mkdir(parents=True, exist_ok=True)
+    _reap_stale_codex_mcp_profiles(codex_home)
     profile_name = f"lionagi-mcp-{uuid.uuid4().hex}"
     profile_path = codex_home / f"{profile_name}.config.toml"
 
-    profile_doc = {"mcp_servers": {name: {"env": env} for name, env in secret_env.items()}}
+    profile_doc = {"mcp_servers": {name: dict(fields) for name, fields in secret_fields.items()}}
     profile_path.write_text(toml.dumps(profile_doc))
     os.chmod(profile_path, 0o600)
     atexit.register(lambda: profile_path.unlink(missing_ok=True))

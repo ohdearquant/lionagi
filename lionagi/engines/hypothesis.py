@@ -591,26 +591,32 @@ def _result_question_gen(run: HypothesisRun, r: ResultRecorded) -> int:
     return _experiment_question_gen(run, x) if isinstance(x, ExperimentDesigned) else 0
 
 
-def _derive_finding_gen(run: HypothesisRun, parent_ref: str) -> int:
+def _derive_finding_gen(run: HypothesisRun, parent_ref: str) -> int | None:
     """The generation a FindingPosted must carry, derived from its indexed
     parent rather than trusted from the emission — closes the bypass where an
     omitted, stale, or forged ``gen`` field defeats the recursion bound. Seeds
     (``parent_ref`` empty) and findings raised off validation (``parent_ref``
-    an ExperimentDesigned id) are the only two legitimate routes."""
+    an ExperimentDesigned id) are the only two legitimate routes. Returns
+    ``None`` when a non-empty ``parent_ref`` does not resolve to a legitimate
+    parent — the caller must reject the emission rather than default to
+    gen 0, which would restart the depth budget for a forged reference."""
     if not parent_ref:
         return 0
     parent = run.find(parent_ref)
     if isinstance(parent, ExperimentDesigned):
         return _experiment_question_gen(run, parent) + 1
-    return 0
+    return None
 
 
-def _derive_question_gen(run: HypothesisRun, parent_ref: str) -> int:
+def _derive_question_gen(run: HypothesisRun, parent_ref: str) -> int | None:
     """The generation a QuestionRaised must carry, derived from its indexed
     parent rather than trusted from the emission. A question raised directly
     off a finding (extraction) shares that finding's cycle; a question raised
     off another question (research) or off a result (validate -> conclude)
-    starts the next cycle."""
+    starts the next cycle. Returns ``None`` for a non-empty ``parent_ref``
+    that does not resolve — see ``_derive_finding_gen``."""
+    if not parent_ref:
+        return 0
     parent = run.find(parent_ref)
     if isinstance(parent, FindingPosted):
         return parent.gen
@@ -618,7 +624,7 @@ def _derive_question_gen(run: HypothesisRun, parent_ref: str) -> int:
         return parent.gen + 1
     if isinstance(parent, ResultRecorded):
         return _result_question_gen(run, parent) + 1
-    return 0
+    return None
 
 
 # --- Engine ---
@@ -841,7 +847,16 @@ class HypothesisEngine(Engine):
     def _on_finding(self, run: HypothesisRun, f: FindingPosted) -> None:
         # Never trust the emitted gen — derive it from the indexed parent so
         # an omitted, stale, or forged value cannot bypass the recursion bound.
-        f.gen = _derive_finding_gen(run, f.parent_ref)
+        gen = _derive_finding_gen(run, f.parent_ref)
+        if gen is None:
+            # Non-empty parent_ref that doesn't resolve to a real parent: a
+            # forged/unroutable reference must never be treated as a fresh
+            # gen-0 seed, since that would restart the depth budget.
+            run.notify(
+                "unroutable_parent_ref", eid=f.eid, parent_ref=f.parent_ref, event="FindingPosted"
+            )
+            return
+        f.gen = gen
         if f.gen > self.max_depth:
             run.notify("cycle_capped", eid=f.eid, gen=f.gen)
             return
@@ -875,7 +890,13 @@ class HypothesisEngine(Engine):
 
     def _on_question(self, run: HypothesisRun, q: QuestionRaised) -> None:
         # Same untrusted-gen closure as _on_finding.
-        q.gen = _derive_question_gen(run, q.parent_ref)
+        gen = _derive_question_gen(run, q.parent_ref)
+        if gen is None:
+            run.notify(
+                "unroutable_parent_ref", eid=q.eid, parent_ref=q.parent_ref, event="QuestionRaised"
+            )
+            return
+        q.gen = gen
         if q.gen > self.max_depth:
             run.notify("cycle_capped", eid=q.eid, gen=q.gen)
             return

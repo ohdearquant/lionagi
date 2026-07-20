@@ -493,6 +493,75 @@ async def test_finding_gen_at_normal_boundary_is_admitted():
 
 
 @pytest.mark.asyncio
+async def test_finding_forged_unroutable_parent_ref_is_dropped_not_seeded():
+    """A non-empty parent_ref that doesn't resolve to any indexed event (a
+    forged id, or a reference to the wrong event type) must be rejected
+    outright — never defaulted to gen 0, which would hand a forged emission
+    a fresh depth budget instead of capping it."""
+    eng = HypothesisEngine(max_depth=0)
+    run = eng.new_run()
+    calls = _mute(eng, "extract")
+    _wire(eng, run)
+    events: list[dict] = []
+    run.on_event = lambda e: events.append(e)
+
+    await run.emit(FindingPosted(description="forged parent", parent_ref="does-not-exist"))
+    await run.wait_quiescence()
+
+    assert calls == []  # never reached extraction
+    assert not run.events_of(DedupChecked)
+    assert any(e["type"] == "unroutable_parent_ref" for e in events)
+    assert not any(e["type"] == "cycle_capped" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_finding_empty_parent_ref_still_seeds_gen_zero():
+    eng = HypothesisEngine(max_depth=0)
+    run = eng.new_run()
+    calls = _mute(eng, "extract")
+    _wire(eng, run)
+
+    await run.emit(FindingPosted(description="a real seed"))
+    await run.wait_quiescence()
+
+    assert len(calls) == 1
+    assert run.events_of(FindingPosted)[-1].gen == 0
+
+
+@pytest.mark.asyncio
+async def test_question_forged_unroutable_parent_ref_is_dropped_not_seeded():
+    eng = HypothesisEngine(max_depth=0)
+    run = eng.new_run()
+    calls = _mute(eng, "research")
+    _wire(eng, run)
+    events: list[dict] = []
+    run.on_event = lambda e: events.append(e)
+
+    await run.emit(
+        QuestionRaised(area="a", what_is_unknown="from nowhere", parent_ref="forged-ref")
+    )
+    await run.wait_quiescence()
+
+    assert calls == []
+    assert any(e["type"] == "unroutable_parent_ref" for e in events)
+    assert not any(e["type"] == "cycle_capped" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_question_empty_parent_ref_still_seeds_gen_zero():
+    eng = HypothesisEngine(max_depth=0)
+    run = eng.new_run()
+    calls = _mute(eng, "research")
+    _wire(eng, run)
+
+    await run.emit(QuestionRaised(area="a", what_is_unknown="root question"))
+    await run.wait_quiescence()
+
+    assert len(calls) == 1
+    assert run.events_of(QuestionRaised)[-1].gen == 0
+
+
+@pytest.mark.asyncio
 async def test_question_gen_stale_value_from_research_leg_is_overwritten():
     """A research leg's sub-question copies a stale gen (e.g. left over from a
     retry) instead of parent.gen + 1 — the engine must still derive the real
