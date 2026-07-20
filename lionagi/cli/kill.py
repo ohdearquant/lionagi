@@ -702,7 +702,8 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
         nargs="?",
         help=(
             "Entity id to kill: run_id / session_id / invocation_id / play_id / "
-            "show_id. Accepts full UUID or a unique prefix (≥6 chars)."
+            "show_id. Accepts a full UUID, or an id prefix (resolved to the "
+            "first matching row)."
         ),
     )
     kill.add_argument(
