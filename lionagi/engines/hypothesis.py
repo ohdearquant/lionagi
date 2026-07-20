@@ -646,11 +646,13 @@ class HypothesisEngine(Engine):
         # and are opt-in via max_depth.
         kwargs.setdefault("max_depth", 2)
         kwargs.setdefault("judge_model", self.DEFAULT_JUDGE_MODEL)
-        # Context injection defaults ON for stage agents (judge legs stay
-        # exempt): recalled prior lessons keep stages from re-deriving known
-        # ground, and the provider degrades to no-op when no khive server is
-        # reachable. Pass khive_injection=False to run cold.
-        kwargs.setdefault("khive_injection", True)
+        # Context injection is opt-in (pass khive_injection=True, a policy
+        # mapping, or a KhiveInjectionPolicy to the engine constructor): a
+        # default-on gate would writeback and recall raw content across
+        # runs/projects with no isolation. Leaving this unset here means
+        # each stage falls through to its role's agent profile (see
+        # EngineRun.make_agent / role_profile_injection), same as any other
+        # Engine subclass.
         super().__init__(**kwargs)
         self.question_role = question_role
         self.research_role = research_role

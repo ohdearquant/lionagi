@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
+import uuid
 from collections import deque
 from collections.abc import Callable
 from time import monotonic
@@ -75,7 +77,15 @@ def _is_all_budget_error(exc: BaseException) -> bool:
     return False
 
 
-_ROLE_PROFILE_CACHE: dict[str, tuple[str | None, str | None]] = {}
+_ROLE_PROFILE_CACHE: dict[tuple[str, str], tuple[str | None, str | None]] = {}
+
+
+def _profile_cache_key(role: str) -> tuple[str, str]:
+    # Profile resolution is project-local (load_agent_profile searches from
+    # Path.cwd() outward), so the cache key must include the resolved project
+    # dir — a role-only key lets a long-lived process retain the first
+    # project's routing after a cwd change.
+    return (role, os.getcwd())
 
 
 def role_profile_route(role: str) -> tuple[str | None, str | None]:
@@ -84,20 +94,31 @@ def role_profile_route(role: str) -> tuple[str | None, str | None]:
     engine stage that uses the role; explicit engine/stage settings still win."""
     if not isinstance(role, str) or not role:
         return (None, None)
-    if role in _ROLE_PROFILE_CACHE:
-        return _ROLE_PROFILE_CACHE[role]
+    key = _profile_cache_key(role)
+    if key in _ROLE_PROFILE_CACHE:
+        return _ROLE_PROFILE_CACHE[key]
     try:
         from lionagi.cli._providers import load_agent_profile  # noqa: PLC0415
 
         prof = load_agent_profile(role)
-        route = (prof.model, prof.effort)
-    except Exception:
-        route = (None, None)
-    _ROLE_PROFILE_CACHE[role] = route
+    except FileNotFoundError:
+        # No profile configured for this role. Do not cache: a profile added
+        # later (or a cwd change back to a project that has one) must be
+        # picked up on the very next call, not masked by a stale (None, None).
+        logger.debug("role_profile_route(%r): no agent profile found", role)
+        return (None, None)
+    except Exception as exc:
+        # Malformed profile or a transient filesystem error — same
+        # do-not-cache rule, distinguished only in the log line so a parse
+        # failure isn't confused with "no profile configured".
+        logger.warning("role_profile_route(%r): profile failed to parse: %s", role, exc)
+        return (None, None)
+    route = (prof.model, prof.effort)
+    _ROLE_PROFILE_CACHE[key] = route
     return route
 
 
-_ROLE_INJECTION_CACHE: dict[str, Any] = {}
+_ROLE_INJECTION_CACHE: dict[tuple[str, str], Any] = {}
 
 
 def role_profile_injection(role: str) -> Any:
@@ -107,15 +128,21 @@ def role_profile_injection(role: str) -> Any:
     overridable."""
     if not isinstance(role, str) or not role:
         return None
-    if role in _ROLE_INJECTION_CACHE:
-        return _ROLE_INJECTION_CACHE[role]
+    key = _profile_cache_key(role)
+    if key in _ROLE_INJECTION_CACHE:
+        return _ROLE_INJECTION_CACHE[key]
     try:
         from lionagi.cli._providers import load_agent_profile  # noqa: PLC0415
 
         value = getattr(load_agent_profile(role), "khive_injection", None)
-    except Exception:
-        value = None
-    _ROLE_INJECTION_CACHE[role] = value
+    except FileNotFoundError:
+        # Do not cache — see role_profile_route's identical rule.
+        logger.debug("role_profile_injection(%r): no agent profile found", role)
+        return None
+    except Exception as exc:
+        logger.warning("role_profile_injection(%r): profile failed to parse: %s", role, exc)
+        return None
+    _ROLE_INJECTION_CACHE[key] = value
     return value
 
 
@@ -235,6 +262,28 @@ def emission_keys(emits: tuple[type, ...]) -> str:
     return f"Expected top-level key(s): {names}." if names else ""
 
 
+def _namespaced_injection(injection: Any, namespace: str) -> Any:
+    """Stamp a run-derived namespace onto a khive_injection config unless the
+    caller already pinned one — closes the cross-run/cross-project memory
+    exposure a default (or profile-level) opt-in would otherwise have."""
+    if injection is True:
+        return {"namespace": namespace}
+    if isinstance(injection, dict):
+        if injection.get("namespace"):
+            return injection
+        return {**injection, "namespace": namespace}
+
+    from lionagi.tools.khive_injection import KhiveInjectionPolicy  # noqa: PLC0415
+
+    if isinstance(injection, KhiveInjectionPolicy):
+        if injection.namespace:
+            return injection
+        import dataclasses
+
+        return dataclasses.replace(injection, namespace=namespace)
+    return injection
+
+
 class EngineRun:
     """Per-run context: session, dedup set, in-flight tasks, semaphore, and hard budget (agents + deadline)."""
 
@@ -251,6 +300,9 @@ class EngineRun:
         self.on_event = on_event
         self._on_branch_created = on_branch_created
         self.root: str = ""
+        # Unique per run: stamped into every stage agent's khive-injection
+        # namespace so recall/writeback never crosses runs or projects.
+        self.run_id: str = uuid.uuid4().hex[:12]
         self.agents_made: int = 0
         self._sem = Semaphore(engine.max_concurrent)
         self._active: set[asyncio.Task] = set()
@@ -353,9 +405,18 @@ class EngineRun:
         if extra_prompt is None:
             extra_prompt = self.engine.agent_extra_prompt
         # Resolution order: explicit call > engine-wide > the role's agent
-        # profile. An effort baked into the model spec's suffix survives an
-        # unset effort here (the factory falls back to it).
+        # profile. An effort baked into the model spec's suffix outranks the
+        # profile default too — only apply prof_effort when the resolved
+        # model has no suffix of its own, so a profile can't silently
+        # override an explicit `codex/gpt-5.6-luna-high`-style effort.
         prof_model, prof_effort = role_profile_route(role)
+        resolved_model = model or self.engine.model or prof_model
+        resolved_effort = effort or self.engine.effort
+        if not resolved_effort and resolved_model:
+            from lionagi.service.providers import parse_model_spec  # noqa: PLC0415
+
+            if not parse_model_spec(resolved_model).effort:
+                resolved_effort = prof_effort
         # Same precedence for khive injection; an explicit False at any level
         # disables and stops the profile fallback.
         injection = khive_injection
@@ -363,11 +424,14 @@ class EngineRun:
             injection = self.engine.khive_injection
         if injection is None:
             injection = role_profile_injection(role)
+        if injection is not None and injection is not False:
+            namespace = f"{type(self.engine).__name__.lower()}:{self.run_id}"
+            injection = _namespaced_injection(injection, namespace)
         spec = AgentSpec.compose(
             role,
             modes=modes,
-            model=model or self.engine.model or prof_model,
-            effort=effort or self.engine.effort or prof_effort,
+            model=resolved_model,
+            effort=resolved_effort,
             tools=tuple(tools),
             permissions=permissions,
             emits=tuple(emits) if emits else None,
@@ -399,8 +463,16 @@ class EngineRun:
         arrived: Callable[[], bool],
         emits: tuple[type, ...] = (),
         retries: int = 1,
+        actions: bool = False,
     ) -> Any:
-        """Operate then re-prompt up to *retries* times while *arrived*() is false; CLI workers get a full fenced-JSON example, API workers get key hints."""
+        """Operate then re-prompt up to *retries* times while *arrived*() is false; CLI workers get a full fenced-JSON example, API workers get key hints.
+
+        ``actions`` must be True when the branch was given tools (e.g. bash)
+        that the stage instruction requires it to actually call — CLI
+        providers execute their own tools regardless, but a non-CLI (API)
+        model only gets lionagi's registered tool schemas, and therefore only
+        invokes them, when ``branch.operate(actions=True)``.
+        """
         # CLI workers emit prose, not fenced JSON — they need the full example form.
         is_cli = bool(getattr(getattr(branch, "chat_model", None), "is_cli", False))
         hint = emission_keys(emits)
@@ -408,7 +480,11 @@ class EngineRun:
             # Front-load the contract: waiting for the repair pass costs a whole
             # extra CLI process per worker that defaults to prose.
             instruction = f"{instruction}{_cli_emission_primer(hint, emits)}"
-        res = await branch.operate(instruction=instruction)
+        # actions=False is branch.operate()'s own default: omit the kwarg
+        # entirely in that (common) case rather than passing it explicitly,
+        # so a minimal test double's operate(self, *, instruction) still works.
+        operate_kwargs: dict[str, Any] = {"actions": True} if actions else {}
+        res = await branch.operate(instruction=instruction, **operate_kwargs)
         attempt = 0
         while not arrived() and attempt < retries:
             attempt += 1
@@ -422,7 +498,7 @@ class EngineRun:
                 repair_msg = _cli_repair_instruction(hint, emits)
             else:
                 repair_msg = _repair_instruction(hint)
-            res = await branch.operate(instruction=repair_msg)
+            res = await branch.operate(instruction=repair_msg, **operate_kwargs)
         if retries and not arrived():
             _agent_name = getattr(branch, "name", "") or ""
             _attempts = attempt + 1

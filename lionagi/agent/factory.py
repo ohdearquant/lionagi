@@ -331,36 +331,52 @@ def _register_providers(branch: Branch, spec: AgentSpec) -> None:
         WritebackPolicy,
     )
 
-    if isinstance(configured, KhiveInjectionPolicy):
-        policy = configured
-    elif isinstance(configured, dict):
-        policy_kwargs = dict(configured)
-        nested_policy_types = {
-            "recall": RecallPolicy,
-            "compose": ComposePolicy,
-            "writeback": WritebackPolicy,
-        }
-        for field_name, policy_type in nested_policy_types.items():
-            value = policy_kwargs.get(field_name)
-            if isinstance(value, dict):
-                policy_kwargs[field_name] = policy_type(**value)
-        defaults = {}
-        if "profile_id" not in policy_kwargs:
-            defaults["profile_id"] = f"{spec.profile.role.name}-recall-v1"
-        if "writeback" not in policy_kwargs:
-            defaults["writeback"] = WritebackPolicy(enabled=True)
-        policy = KhiveInjectionPolicy(**{**defaults, **policy_kwargs})
-    elif configured is True:
-        policy = KhiveInjectionPolicy(
-            profile_id=f"{spec.profile.role.name}-recall-v1",
-            writeback=WritebackPolicy(enabled=True),
-        )
-    else:
-        raise TypeError(
-            "khive_injection must be None, a bool, a mapping, or a KhiveInjectionPolicy"
-        )
+    # Provider construction can fail on a bad policy (e.g. an unsupported
+    # snapshot_id) — that must degrade to "no injection this turn", matching
+    # KhiveInjectionProvider.provide()'s own transport-failure fail-open, not
+    # abort the whole agent/run.
+    try:
+        if isinstance(configured, KhiveInjectionPolicy):
+            policy = configured
+        elif isinstance(configured, dict):
+            policy_kwargs = dict(configured)
+            nested_policy_types = {
+                "recall": RecallPolicy,
+                "compose": ComposePolicy,
+                "writeback": WritebackPolicy,
+            }
+            for field_name, policy_type in nested_policy_types.items():
+                value = policy_kwargs.get(field_name)
+                if isinstance(value, dict):
+                    policy_kwargs[field_name] = policy_type(**value)
+            defaults = {}
+            if "profile_id" not in policy_kwargs:
+                defaults["profile_id"] = f"{spec.profile.role.name}-recall-v1"
+            if "writeback" not in policy_kwargs:
+                defaults["writeback"] = WritebackPolicy(enabled=True)
+            policy = KhiveInjectionPolicy(**{**defaults, **policy_kwargs})
+        elif configured is True:
+            policy = KhiveInjectionPolicy(
+                profile_id=f"{spec.profile.role.name}-recall-v1",
+                writeback=WritebackPolicy(enabled=True),
+            )
+        else:
+            raise TypeError(
+                "khive_injection must be None, a bool, a mapping, or a KhiveInjectionPolicy"
+            )
+        provider = KhiveInjectionProvider(policy)
+    except Exception as exc:
+        import logging
 
-    branch.providers.register(KhiveInjectionProvider(policy))
+        logging.getLogger(__name__).warning(
+            "khive injection provider construction failed (%s: %s); continuing "
+            "without context injection for this agent",
+            type(exc).__name__,
+            exc,
+        )
+        return
+
+    branch.providers.register(provider)
 
 
 def register_profile_injection(branch: Branch, role_name: str, profile: Any) -> None:
