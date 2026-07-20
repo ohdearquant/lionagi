@@ -10,7 +10,16 @@ from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path as StdPath
 from types import UnionType
-from typing import Annotated, Any, ParamSpec, TypeVar, Union, get_args, get_origin
+from typing import (
+    Annotated,
+    Any,
+    NamedTuple,
+    ParamSpec,
+    TypeVar,
+    Union,
+    get_args,
+    get_origin,
+)
 from uuid import UUID
 
 from anyio import Path as AsyncPath
@@ -44,6 +53,19 @@ def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class _SafePath(NamedTuple):
+    """Caller-facing spelling paired with the validated resolved candidate.
+
+    Filesystem side effects (mkdir, existence checks) must act on
+    ``resolved``, the symlink-safe candidate that was actually validated —
+    never on ``caller_facing``, which can still be redirected by a symlink
+    swapped in after validation but before use.
+    """
+
+    caller_facing: StdPath
+    resolved: StdPath
+
+
 def _build_safe_path(
     directory: StdPath | str,
     filename: str,
@@ -52,7 +74,7 @@ def _build_safe_path(
     time_prefix: bool,
     timestamp_format: str | None,
     random_hash_digits: int,
-) -> StdPath:
+) -> _SafePath:
     """Shared, symlink-safe path construction for create_path/acreate_path.
 
     Validates the filename and resolves the final target without touching the
@@ -61,9 +83,11 @@ def _build_safe_path(
     once, here, rather than per-variant.
 
     Containment is always checked against the resolved (symlink-safe)
-    candidate, but the returned path preserves the caller's own
-    representation: a relative ``directory`` yields a relative return value,
-    an absolute one yields an absolute return value.
+    candidate. The returned pair carries that resolved candidate — the only
+    path callers may use for mkdir/existence side effects — alongside the
+    caller-facing spelling to return to the caller: a relative ``directory``
+    yields a relative caller-facing path, an absolute one yields an absolute
+    caller-facing path.
     """
     from lionagi.libs.path_safety import contain_and_resolve
 
@@ -132,10 +156,10 @@ def _build_safe_path(
     resolved_full_path = _contained(full_path.resolve())
 
     if is_absolute:
-        return resolved_full_path
+        return _SafePath(resolved_full_path, resolved_full_path)
     # directory (possibly extended with a slash-separated filename's subdir
     # component above) still carries the caller's relative representation.
-    return directory / full_name
+    return _SafePath(directory / full_name, resolved_full_path)
 
 
 async def acreate_path(
@@ -159,24 +183,28 @@ async def acreate_path(
     from .concurrency import move_on_after
 
     async def _impl() -> AsyncPath:
-        full_path = AsyncPath(
-            _build_safe_path(
-                StdPath(str(directory)),
-                filename,
-                extension,
-                timestamp,
-                time_prefix,
-                timestamp_format,
-                random_hash_digits,
-            )
+        safe_path = _build_safe_path(
+            StdPath(str(directory)),
+            filename,
+            extension,
+            timestamp,
+            time_prefix,
+            timestamp_format,
+            random_hash_digits,
         )
+        resolved_path = AsyncPath(safe_path.resolved)
 
-        await full_path.parent.mkdir(parents=True, exist_ok=dir_exist_ok)
+        # mkdir and the existence check act on the validated resolved
+        # candidate, never on the caller-facing (possibly relative,
+        # symlink-redirectable) spelling — see _SafePath.
+        await resolved_path.parent.mkdir(parents=True, exist_ok=dir_exist_ok)
 
-        if await full_path.exists() and not file_exist_ok:
-            raise FileExistsError(f"File {full_path} already exists and file_exist_ok is False.")
+        if await resolved_path.exists() and not file_exist_ok:
+            raise FileExistsError(
+                f"File {safe_path.caller_facing} already exists and file_exist_ok is False."
+            )
 
-        return full_path
+        return AsyncPath(safe_path.caller_facing)
 
     if timeout is None:
         return await _impl()
@@ -498,7 +526,7 @@ def create_path(
     out; absolute in, absolute out. Containment/traversal checks always run
     against the fully resolved (symlink-safe) candidate regardless.
     """
-    full_path = _build_safe_path(
+    safe_path = _build_safe_path(
         StdPath(directory),
         filename,
         extension,
@@ -508,8 +536,13 @@ def create_path(
         random_hash_digits,
     )
 
-    full_path.parent.mkdir(parents=True, exist_ok=dir_exist_ok)
-    if full_path.exists() and not file_exist_ok:
-        raise FileExistsError(f"File {full_path} already exists and file_exist_ok is False.")
+    # mkdir and the existence check act on the validated resolved candidate,
+    # never on the caller-facing (possibly relative, symlink-redirectable)
+    # spelling — see _SafePath.
+    safe_path.resolved.parent.mkdir(parents=True, exist_ok=dir_exist_ok)
+    if safe_path.resolved.exists() and not file_exist_ok:
+        raise FileExistsError(
+            f"File {safe_path.caller_facing} already exists and file_exist_ok is False."
+        )
 
-    return full_path
+    return safe_path.caller_facing
