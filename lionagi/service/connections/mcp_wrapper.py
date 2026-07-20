@@ -1578,7 +1578,17 @@ class MCPConnectionPool:
 
     @classmethod
     def set_security_config(cls, config: MCPSecurityConfig) -> None:
-        """Set security config for new connections. Existing ones unaffected."""
+        """Set the process-global default security policy for new connections.
+
+        Existing connected clients are unaffected. Once set, every later
+        `get_client()`/`_create_client()` call that omits its own policy uses
+        this one instead of the wrapper's fail-closed `MCPSecurityConfig()`
+        default -- this is a deliberate, explicit, process-owner-level trust
+        decision (there is no production caller of this method today), and
+        is a different act from one caller silently inheriting a policy
+        another caller authorized for the same server identity, which
+        `get_client()`/`_get_reconnect_client()` handle separately.
+        """
         cls._security = config
 
     async def __aenter__(self):
@@ -1678,10 +1688,14 @@ class MCPConnectionPool:
 
         `security` accepts only an explicit `MCPSecurityConfig` or `None`.
         `None` means exactly one thing -- the caller made no trust decision
-        -- and always falls through to `_create_client`'s fail-closed
-        default; it never recovers a policy some other caller authorized.
-        Recovering a remembered policy is not reachable through this public
-        method at all -- see `_get_reconnect_client`.
+        -- and it never recovers a policy some other caller authorized for
+        this identity; recovering a remembered policy is not reachable
+        through this public method at all (see `_get_reconnect_client`).
+        `None` reaches `_create_client`'s fail-closed default only when no
+        process-global policy has been set via `set_security_config()`; a
+        process-global policy, once set, is used for every omitted-policy
+        call until changed, by design -- that is a deliberate process-owner
+        decision, not implicit inheritance between callers.
         """
         if security is not None and not isinstance(security, MCPSecurityConfig):
             raise TypeError(

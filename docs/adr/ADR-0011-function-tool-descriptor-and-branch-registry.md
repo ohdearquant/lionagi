@@ -42,10 +42,12 @@ not ordinary.** The registry currently accepts a one-entry MCP configuration, di
 remote schemas, builds a local async proxy, remembers transport policy, and reaches a
 process-global client pool. Command and URL transports are fail-closed under direct pool
 use, and the two explicit config-loading helpers no longer upgrade an omitted policy to a
-permissive one: it stays unset and is passed through unchanged, and reaches the pool's
-fail-closed default with no possibility of substituting a remembered authorization from
-an earlier caller (see Policy recovery below). So loading a config file is no longer an
-implicit trust act at all. Discovered tools
+permissive one: it stays unset and is passed through unchanged, reaching the pool's own
+fail-closed default (unless the process owner has separately called
+`set_security_config()`, an explicit process-wide decision documented under Loader trust
+below) with no possibility of substituting a remembered authorization from an earlier
+caller (see Policy recovery below). So loading a config file is no longer an implicit
+trust act on its own. Discovered tools
 use the remote tool's unqualified name in the branch registry, so remote servers can
 collide with each other or with local tools (`lionagi/protocols/action/manager.py`;
 `lionagi/service/connections/mcp_wrapper.py`).
@@ -473,13 +475,15 @@ tool:
   only. URLs require `allow_urls=True`, an `https` or `wss` scheme, and an optional host
   allowlist.
 - **Loader trust:** `load_mcp_config()` and top-level `load_mcp_tools()` leave an
-  omitted policy unset and thread it through to registration unchanged. In a process
-  where that transport has not already been authorized, it reaches the pool's own
-  fail-closed default and a command or URL transport is denied exactly as it is under
-  direct pool use. A caller that wants both transport classes allowed passes
-  `MCPSecurityConfig.trusted()` explicitly, and that choice is threaded per load without
-  mutating the process-global default. A transport `PermissionError` is logged and
-  re-raised; other server failures become an empty registered-name list or a warning.
+  omitted policy unset and thread it through to registration unchanged, so it reaches
+  the pool's own fail-closed default and a command or URL transport is denied exactly as
+  it is under direct pool use -- unless the process owner has separately called
+  `MCPConnectionPool.set_security_config()`, an explicit process-wide policy that then
+  applies to every omitted-policy call in the process until changed. A caller that wants
+  both transport classes allowed for its own load passes `MCPSecurityConfig.trusted()`
+  explicitly, and that choice is threaded per load without mutating the process-global
+  default. A transport `PermissionError` is logged and re-raised; other server failures
+  become an empty registered-name list or a warning.
 - **Policy recovery is process-scoped and proxy-only.** An explicit policy is
   remembered against the resolved transport so the proxy's stored callable can recover
   the same authorization on a later reconnect with no policy of its own. That recovery
@@ -488,9 +492,12 @@ tool:
   but it is reachable only through `MCPConnectionPool._get_reconnect_client()`, a
   private method whose only caller is the proxy built by `create_mcp_tool`. The public
   `get_client()` accepts only an explicit `MCPSecurityConfig` or `None` for its
-  `security` argument (anything else raises `TypeError`) and never recovers a
-  remembered policy, so a fresh loader call that omits a policy is denied even when an
-  earlier caller already authorized the identical resolved transport.
+  `security` argument (anything else raises `TypeError`) and never recovers a policy a
+  DIFFERENT caller authorized for the same identity, so a fresh loader call that omits a
+  policy is denied even when an earlier caller already authorized the identical resolved
+  transport -- unless, as under Loader trust above, the process owner has set a
+  process-global policy, which is a distinct, explicit, process-wide decision rather than
+  one caller inheriting another's.
 - **Loader input failure:** config-file existence, JSON shape, and parsing errors occur
   before the per-server recovery loop and propagate. Top-level `load_mcp_tools()` also
   raises `ValueError` when neither `server_names` nor a config path supplies a server

@@ -987,3 +987,95 @@ class TestFreshLoadDoesNotInheritEarlierCallerTrust:
             assert observed[-1] is policy
         finally:
             self._reset()
+
+
+class TestProcessGlobalPolicyIsExplicitNotInherited:
+    """`set_security_config()` sets a process-wide default that an omitted
+    per-call policy falls back to (`_create_client`'s precedence: explicit >
+    process-global > fail-closed default). This is a deliberate,
+    process-owner-level trust decision -- the reviewed real ordering
+    (`set_security_config(trusted)` then a bare `get_client()`) is admitted
+    by design. It is NOT the same defect as issue #2356: that bug was one
+    caller silently inheriting a policy a DIFFERENT caller explicitly
+    authorized only for a specific server identity via `get_client(security=...)`
+    or the loader path. A process-global policy applies uniformly to every
+    server identity in the process once set, regardless of whether any
+    per-server policy was ever recorded, and is set through a distinct,
+    dedicated API that has no production caller today."""
+
+    def _reset(self):
+        MCPConnectionPool._security = None
+        MCPConnectionPool._server_security.clear()
+        MCPConnectionPool._clients.clear()
+        MCPConnectionPool._configs.clear()
+
+    async def test_bare_call_after_set_security_config_is_admitted(self, monkeypatch):
+        """The real ordering: process owner sets a global trusted policy,
+        then a caller that makes no per-call trust decision of its own is
+        admitted under it. Fail-closed default is skipped only because a
+        process-global policy was explicitly set -- not because of any
+        per-server recovery."""
+        self._reset()
+        seen = []
+
+        async def fake_create(config, security=None):
+            effective = security or MCPConnectionPool._security or MCPSecurityConfig()
+            seen.append(effective)
+            _validate_command(config["command"], effective)
+            return object()
+
+        monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+        try:
+            MCPConnectionPool.set_security_config(MCPSecurityConfig.trusted())
+            await MCPConnectionPool.get_client({"command": "echo", "args": ["a"]})
+            assert seen[-1] == MCPSecurityConfig.trusted()
+        finally:
+            self._reset()
+
+    async def test_global_policy_applies_uniformly_not_per_server_recovery(self, monkeypatch):
+        """A process-global policy is not scoped to any one server identity
+        the way `_server_security` recovery is: it admits an omitted-policy
+        call for a server identity that was NEVER individually authorized,
+        which distinguishes it from the per-caller-inheritance bug this PR
+        closes."""
+        self._reset()
+        seen = []
+
+        async def fake_create(config, security=None):
+            effective = security or MCPConnectionPool._security or MCPSecurityConfig()
+            seen.append(effective)
+            _validate_command(config["command"], effective)
+            return object()
+
+        monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+        try:
+            MCPConnectionPool.set_security_config(MCPSecurityConfig.trusted())
+            # Never authorized individually, no remembered per-server policy at all.
+            assert (
+                MCPConnectionPool._policy_key({"command": "never-seen", "args": []})
+                not in MCPConnectionPool._server_security
+            )
+            await MCPConnectionPool.get_client({"command": "never-seen", "args": []})
+            assert seen[-1] == MCPSecurityConfig.trusted()
+        finally:
+            self._reset()
+
+    async def test_without_global_policy_bare_call_stays_fail_closed(self, monkeypatch):
+        """Control: with no process-global policy set, the same bare call
+        stays fail-closed, confirming the admission above comes from the
+        explicit global policy and not from some other implicit default."""
+        self._reset()
+        seen = []
+
+        async def fake_create(config, security=None):
+            effective = security or MCPConnectionPool._security or MCPSecurityConfig()
+            seen.append(effective)
+            _validate_command(config["command"], effective)
+            return object()
+
+        monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+        try:
+            with pytest.raises(PermissionError, match="allow_commands=False"):
+                await MCPConnectionPool.get_client({"command": "echo", "args": ["a"]})
+        finally:
+            self._reset()
