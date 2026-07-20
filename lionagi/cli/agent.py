@@ -491,31 +491,16 @@ async def _run_agent(
     # (or, on a brand-new leg, would carry) a create_agent-composed system message
     # (role header + policy block) — full rationale in docs/internals/cli.md.
     # Brand-new branch: `took_create_agent_path` is authoritative (preset can't
-    # combine with resume). Resumed branch: never re-derive from the current
-    # profile (it describes only THIS leg and would clobber a persisted role/policy
-    # message) — consult the immutable CREATE_AGENT_BRANCH_ORIGIN_KEY in metadata.
+    # combine with resume). Resumed branch: only the immutable
+    # CREATE_AGENT_BRANCH_ORIGIN_KEY marker counts as create_agent provenance —
+    # never re-derive it from persisted system-message content (Markdown
+    # headings are user-authored prompt text, not proof of origin, and a
+    # markerless branch with an explicitly requested role must get that role's
+    # system prompt rather than have it silently dropped).
     if is_resumed_branch:
         from lionagi.agent.factory import CREATE_AGENT_BRANCH_ORIGIN_KEY
 
         composed_via_create_agent = bool(branch.metadata.get(CREATE_AGENT_BRANCH_ORIGIN_KEY))
-        if CREATE_AGENT_BRANCH_ORIGIN_KEY not in branch.metadata and has_role_key:
-            from lionagi.agent.spec import looks_create_agent_composed
-            from lionagi.protocols.messages.system import System
-
-            persisted_system = branch.msgs.system or next(
-                (m for m in branch.msgs.messages if isinstance(m, System)), None
-            )
-            # "Has any System message" is a false-positive magnet: an ordinary
-            # plain (non-role) profile also persists one via add_message, and
-            # that must NOT be mistaken for a legacy markerless create_agent
-            # branch — doing so silently swallows a newly requested role's
-            # system prompt on resume. Require the create_agent-specific
-            # policy-block shape instead (see looks_create_agent_composed).
-            if persisted_system is not None and looks_create_agent_composed(
-                persisted_system.rendered
-            ):
-                branch.metadata[CREATE_AGENT_BRANCH_ORIGIN_KEY] = True
-                composed_via_create_agent = True
     else:
         composed_via_create_agent = took_create_agent_path
     if profile and profile.system_prompt and not composed_via_create_agent:
