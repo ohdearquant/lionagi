@@ -46,7 +46,7 @@ permissive one: it stays unset and is passed through unchanged, reaching the poo
 fail-closed default (unless the process owner has separately called
 `set_security_config()`, an explicit process-wide decision documented under Loader trust
 below) with no possibility of substituting a remembered authorization from an earlier
-caller (see Policy recovery below). So loading a config file is no longer an implicit
+caller, connected client cache notwithstanding (see Policy recovery below). So loading a config file is no longer an implicit
 trust act on its own. Discovered tools
 use the remote tool's unqualified name in the branch registry, so remote servers can
 collide with each other or with local tools (`lionagi/protocols/action/manager.py`;
@@ -412,7 +412,9 @@ class MCPConnectionPool:
     _clients: dict[str, Any] = {}
     _configs: dict[str, dict] = {}
     _security: MCPSecurityConfig | None = None
-    _server_security: dict[str, MCPSecurityConfig] = {}
+    # No config-keyed policy map: recovery authority is an opaque
+    # `_MCPRecoveryCapability` object minted per authorized proxy and held
+    # only in that proxy's own closure -- see Policy recovery below.
 
     @classmethod
     async def get_client(
@@ -484,39 +486,55 @@ tool:
   explicitly, and that choice is threaded per load without mutating the process-global
   default. A transport `PermissionError` is logged and re-raised; other server failures
   become an empty registered-name list or a warning.
-- **Policy recovery is process-scoped and proxy-only.** An explicit policy is
-  remembered against the resolved transport so the proxy's stored callable can recover
-  the same authorization on a later reconnect with no policy of its own. That recovery
-  is keyed by the same policy identity described under Policy reuse — server name plus
-  resolved transport content for a named server, content alone for an inline config —
-  but it is reachable only through `MCPConnectionPool._get_reconnect_client()`, a
-  private method whose only caller is the proxy built by `create_mcp_tool`. The public
-  `get_client()` accepts only an explicit `MCPSecurityConfig` or `None` for its
-  `security` argument (anything else raises `TypeError`) and never recovers a policy a
-  DIFFERENT caller authorized for the same identity, so a fresh loader call that omits a
-  policy is denied even when an earlier caller already authorized the identical resolved
-  transport -- unless, as under Loader trust above, the process owner has set a
-  process-global policy, which is a distinct, explicit, process-wide decision rather than
-  one caller inheriting another's.
+- **Policy recovery is capability-bound, not config-keyed.** `register_mcp_server()`
+  mints one opaque `_MCPRecoveryCapability` per call, bound to that call's effective
+  security (explicit argument, else the process-global policy, else the fail-closed
+  default), and passes it into `create_mcp_tool()` for every `Tool` it builds from that
+  call. The capability lives only in `create_mcp_tool`'s closure and in `Tool`'s
+  `mcp_capability` field, which is `exclude=True` -- it is never part of `mcp_config`,
+  never returned by `to_dict()`/`to_json()`, and `Tool.from_dict()` remains
+  unimplemented, so no persisted or reconstructed `Tool` carries one. Recovery happens
+  only through `MCPConnectionPool._get_reconnect_client(config, capability)`, which
+  requires that exact capability object by IDENTITY (`isinstance` plus object identity
+  inside the pool, not a content match) and raises `PermissionError` when it is absent or
+  the wrong instance -- so a direct call, a stored bound method, a subclass exposing the
+  method under a public alias, or a `Tool` rebuilt from a serialized `mcp_config` (e.g.
+  `Tool(**serialized_dict)`) all fail closed with no recovery. There is no way to obtain a
+  valid capability except by being the proxy `register_mcp_server()` built it for. The
+  public `get_client()` accepts only an explicit `MCPSecurityConfig` or `None` for its
+  `security` argument (anything else raises `TypeError`), has no parameter that accepts a
+  capability, and its cache key folds in the fingerprint of ITS OWN effective security
+  (see Pool identity below) -- so a fresh, policy-omitting call is denied even when an
+  earlier caller already authorized the identical resolved transport and that caller's
+  client is still connected, and even when a live capability for that transport exists
+  elsewhere in the process -- unless, as under Loader trust above, the process owner has
+  set a process-global policy, which is a distinct, explicit, process-wide decision rather
+  than one caller inheriting another's.
 - **Loader input failure:** config-file existence, JSON shape, and parsing errors occur
   before the per-server recovery loop and propagate. Top-level `load_mcp_tools()` also
   raises `ValueError` when neither `server_names` nor a config path supplies a server
   set.
-- **Policy reuse:** an explicit policy is remembered so the proxy's later `get_client()`
-  call can recover the same authorization. For a named server the key binds the server's
-  name together with its resolved transport content, so an authorization granted for one
-  named server is never recovered for a different one that happens to resolve to the same
-  transport. An anonymous inline configuration has no name to bind, so its key is derived
-  from content alone.
-- **Pool identity:** a named config's cache identity contains the server name together
-  with its resolved transport content, with `server:<name>` only its prefix, so a
-  connected client is reused only when both match. Reloading a different command or URL
-  under the same name yields a different identity and the stale client is dropped rather
-  than reused. Inline configs use the command plus the Python dictionary's
-  object identity, so reuse occurs only when the same dictionary object is passed again;
-  the MCP proxy creates a fresh metadata-stripped dictionary for each call and has no
-  stable inline reuse key. A disconnected cached client is dropped, and `cleanup()`
-  attempts every client exit before clearing the map.
+- **Policy reuse:** each `create_mcp_tool`-built proxy carries its own capability (see
+  Policy recovery above), minted per `register_mcp_server()` call, so recovery is scoped
+  to the specific authorized call that created that proxy rather than to any server-name
+  or transport-content key.
+- **Pool identity:** the client-cache key folds together the resolved transport identity
+  (server name plus resolved transport content for a named server, content plus Python
+  object identity for an inline config) AND a fingerprint of the CALLER'S OWN effective
+  security (`MCPConnectionPool._security_fingerprint`), so two calls to the identical
+  transport with different effective security -- e.g. one explicitly trusted, one
+  omitted -- always resolve to different cache entries and a cache hit can only ever
+  return a client whose key already encodes the caller's own effective security. This is
+  the primary fix for cross-caller trust inheritance, not a secondary check: an
+  omitted-policy call cannot be satisfied by a cache entry a differently-authorized
+  caller created, connected or not, and always re-validates through `_create_client`'s
+  fail-closed path when it misses. Reloading a different command or URL under the same
+  name yields a different transport-content component and the stale client is dropped
+  (`load_config`'s cache-prefix eviction) rather than reused. Inline configs additionally
+  key on the Python dictionary's object identity, so reuse occurs only when the same
+  dictionary object is passed again; the MCP proxy creates a fresh metadata-stripped
+  dictionary for each call and has no stable inline reuse key. A disconnected cached
+  client is dropped, and `cleanup()` attempts every client exit before clearing the map.
 - **Environment:** command transport starts with the parent environment plus configured
   values, removes variables whose names contain sensitive patterns by default, and adds
   quiet logging defaults unless debug mode is active.
@@ -564,7 +582,7 @@ unqualified names make collision handling a branch-registration concern.
 |---|-------|------|-------|
 | 1 | Version and narrow raw-callable schema derivation so Python defaults remain optional, positional-only and `*args` signatures require an explicit adapter, open `**kwargs` callables require an explicit schema, schemas without `required` are accepted, and tests prove provider schema and runtime validation agree. | M | (filled at issue-open time) |
 | 2 | Move MCP configuration, discovery, namespacing, and pool lifecycle into a service-owned factory that returns ready `Tool` descriptors; acceptance requires `protocols.action` to have no service-layer import, remote identities to be collision-free, and per-tool request models to resolve by that canonical identity without key mutation or silent fallback. | M | (filled at issue-open time) |
-| 3 | Require the MCP-loading caller to make an explicit transport-trust decision; acceptance requires omitted policy to preserve the wrapper's fail-closed command and URL defaults and an explicit trusted-config mode to be observable. | S | delivered — an omitted policy is denied on every load, not only the first, because policy recovery is reachable only through the proxy's private reconnect path and never through the loader-facing `get_client()` call (see Policy recovery above) |
+| 3 | Require the MCP-loading caller to make an explicit transport-trust decision; acceptance requires omitted policy to preserve the wrapper's fail-closed command and URL defaults and an explicit trusted-config mode to be observable. | S | delivered — an omitted policy is denied on every load, including a second load of an already-trusted, still-connected server, because the client-cache key folds in the caller's own effective security and recovery requires a capability the loader-facing `get_client()` call can neither produce nor accept (see Policy recovery above) |
 
 ## Alternatives considered
 
@@ -628,10 +646,11 @@ file was itself a trust decision. That convenience created a semantic split: the
 omitted policy meant "deny" through the pool and "allow" through a loader, and nothing
 in the calling code made the difference visible. Delta 3 replaced it with the behavior
 now described under Loader trust, where an omitted policy denies through every loader
-call, first or later, and trust is a named, observable choice. The remembered-policy
-recovery described above is scoped to the proxy's own reconnect and is not reachable
-through a loader call at all, so the original convenience does not survive even in
-narrower form.
+call, first or later -- even a still-connected, already-trusted server -- and trust is a
+named, observable choice. The capability-bound recovery described above is scoped to the
+specific proxy `register_mcp_server()` minted it for and is not reachable through a
+loader call, a config, or any other proxy at all, so the original convenience does not
+survive even in narrower form.
 
 ## Notes
 

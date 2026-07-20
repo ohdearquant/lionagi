@@ -80,6 +80,24 @@ class MCPSecurityConfig:
         return cls(allow_commands=True, allow_urls=True)
 
 
+class _MCPRecoveryCapability:
+    """Opaque, unforgeable proof that a proxy is authorized to recover the
+    security policy it was created under.
+
+    Minted once per authorization (`MCPConnectionPool._mint_capability`) and
+    checked by IDENTITY, never by content -- an equal-content instance is not
+    accepted. Only the closure `create_mcp_tool` builds holds a reference;
+    it is never assigned into `Tool.mcp_config`, returned by `to_dict()`, or
+    otherwise persisted, so it cannot survive serialization or be forged from
+    a config dict.
+    """
+
+    __slots__ = ("security",)
+
+    def __init__(self, security: MCPSecurityConfig) -> None:
+        self.security = security
+
+
 # --- Generic-executor admission rule -----------------------------------
 # Registration-time admission control, independent of MCPSecurityConfig
 # (transport auth) and PermissionPolicy (invocation-time) — see docs/internals/runtime.md.
@@ -1510,25 +1528,17 @@ class MCPConnectionPool:
     _lock: Lock | None = None
     _lock_guard: threading.Lock = threading.Lock()
     _security: MCPSecurityConfig | None = None
-    # Per-server policy keyed by server name + content signature so
-    # reconnects re-apply the same authorization instead of falling back to
-    # fail-closed, while trust entries stay scoped per server: two servers
-    # never share a decision just because their resolved transports match.
-    _server_security: dict[str, MCPSecurityConfig] = {}
 
     @staticmethod
     def _policy_key(config: dict[str, Any], server_name: str | None = None) -> str:
-        """Key for the per-server policy registry, scoped to the identity a
-        trust decision is actually about.
+        """Content fingerprint of a resolved transport config, folded into
+        the client-cache key so two distinct transports never collide there.
 
         Callers MUST pass an already-*resolved* transport config (see
-        `_resolve_config`) -- never a bare `{"server": name}` reference. When
-        the config was resolved from a named server reference, `server_name`
-        must be supplied so the key binds to that server's name as well as
-        its transport content: two servers with different names must never
-        share a trust decision even if their resolved transports happen to
-        be identical, and a name reloaded with a different transport must
-        never recover the policy authorized for its prior transport.
+        `_resolve_config`) -- never a bare `{"server": name}` reference. This
+        is NOT a security/authorization key: it is derived purely from the
+        (forgeable, serializable) config, so it must never gate recovery --
+        see `_MCPRecoveryCapability` for the actual recovery authority.
         """
         material = {k: v for k, v in config.items() if not k.startswith("_")}
         blob = json.dumps(material, sort_keys=True, default=str)
@@ -1536,6 +1546,46 @@ class MCPConnectionPool:
         if server_name is not None:
             return f"{server_name}:{content_hash}"
         return content_hash
+
+    @staticmethod
+    def _security_fingerprint(security: MCPSecurityConfig) -> str:
+        """Content fingerprint of an effective security decision, folded
+        into the client-cache key so a trusted client and a fail-closed
+        client for the same transport are never the same cache entry."""
+        material = {
+            "allow_commands": security.allow_commands,
+            "command_allowlist": sorted(security.command_allowlist)
+            if security.command_allowlist is not None
+            else None,
+            "allow_urls": security.allow_urls,
+            "url_allowlist": sorted(security.url_allowlist)
+            if security.url_allowlist is not None
+            else None,
+            "env_denylist_patterns": sorted(security.env_denylist_patterns),
+            "filter_sensitive_env": security.filter_sensitive_env,
+            "max_connections_per_server": security.max_connections_per_server,
+        }
+        blob = json.dumps(material, sort_keys=True, default=str)
+        return compute_hash(blob)
+
+    @classmethod
+    def _effective_security(cls, security: MCPSecurityConfig | None) -> MCPSecurityConfig:
+        """Precedence: explicit > process-global (`set_security_config`) >
+        fail-closed default. Same precedence `_create_client` validates
+        against; callers use this to derive cache keys and capabilities
+        BEFORE `_create_client` runs, so a cache hit can only ever return a
+        client whose key already encodes this same effective security."""
+        if security is not None:
+            return security
+        if cls._security is not None:
+            return cls._security
+        return MCPSecurityConfig()
+
+    @classmethod
+    def _mint_capability(cls, security: MCPSecurityConfig | None) -> _MCPRecoveryCapability:
+        """Mint the recovery authorization for a newly authorized proxy,
+        bound to the effective security in force at authorization time."""
+        return _MCPRecoveryCapability(cls._effective_security(security))
 
     @classmethod
     def _resolve_config(cls, server_config: dict[str, Any]) -> dict[str, Any]:
@@ -1554,18 +1604,6 @@ class MCPConnectionPool:
                 raise ValueError(f"Unknown MCP server: {server_name}")
             return cls._configs[server_name]
         return server_config
-
-    @classmethod
-    def remember_security(
-        cls, server_config: dict[str, Any], security: MCPSecurityConfig | None
-    ) -> None:
-        """Record the policy a server was authorized under, keyed by its
-        resolved transport config and (for named refs) the server name.
-        No-op if None."""
-        if security is not None:
-            server_name = server_config.get("server")
-            config = cls._resolve_config(server_config)
-            cls._server_security[cls._policy_key(config, server_name=server_name)] = security
 
     @classmethod
     def _get_lock(cls) -> Lock:
@@ -1624,12 +1662,11 @@ class MCPConnectionPool:
         for name, new_server_config in servers.items():
             old_server_config = cls._configs.get(name)
             if old_server_config is not None and old_server_config != new_server_config:
-                # This name now resolves to a different transport. Drop the
-                # policy and any pooled client keyed off the OLD transport's
-                # fingerprint so a subsequent omitted-policy get_client()
-                # cannot recover a trust decision that was never made for
-                # the new one.
-                cls._server_security.pop(cls._policy_key(old_server_config, server_name=name), None)
+                # This name now resolves to a different transport. Drop any
+                # pooled client keyed off the OLD transport's fingerprint so
+                # a stale connection cannot linger; recovery capabilities
+                # already can't cross this boundary since each is bound to
+                # the transport it was minted for.
                 stale_prefix = f"server:{name}:"
                 for cache_key in [k for k in cls._clients if k.startswith(stale_prefix)]:
                     cls._clients.pop(cache_key, None)
@@ -1638,25 +1675,42 @@ class MCPConnectionPool:
         return list(servers.keys())
 
     @classmethod
-    def _resolve_identity(cls, server_config: dict[str, Any]) -> tuple[dict[str, Any], str, str]:
+    def _resolve_identity(
+        cls,
+        server_config: dict[str, Any],
+        security: MCPSecurityConfig | None = None,
+    ) -> tuple[dict[str, Any], str, str]:
         """Resolve a server config to `(config, policy_key, cache_key)`.
 
         Resolving `{"server": name}` references to their concrete transport
-        config happens FIRST: policy recovery and cache identity must bind
-        to the RESOLVED transport, not the bare logical name. Otherwise
-        reloading a different command/URL under the same name would let an
-        omitted-policy call recover (and reconnect using) a policy that was
-        only ever authorized for the prior transport.
+        config happens FIRST: cache identity must bind to the RESOLVED
+        transport, not the bare logical name -- otherwise reloading a
+        different command/URL under the same name could reconnect using a
+        client that was never authorized for the new one.
+
+        `cache_key` also folds in the FINGERPRINT OF THE EFFECTIVE SECURITY
+        (`security` if given, else the process-global policy, else the
+        fail-closed default -- see `_effective_security`), not just the
+        config. This is the primary fix for cross-caller trust inheritance:
+        a trusted call and a later omitted-policy call to the identical
+        server can never resolve to the same cache entry, because their
+        effective security differs and so does their key. A cache hit can
+        then only ever return a client whose key already encodes the
+        caller's own effective security -- an omitted-policy call misses
+        and goes through `_create_client`'s fail-closed validation instead
+        of silently reusing another caller's connection.
         """
+        effective_security = cls._effective_security(security)
+        security_fp = cls._security_fingerprint(effective_security)
         if "server" in server_config:
             server_name = server_config["server"]
             config = cls._resolve_config(server_config)
             policy_key = cls._policy_key(config, server_name=server_name)
-            cache_key = f"server:{server_name}:{policy_key}"
+            cache_key = f"server:{server_name}:{policy_key}:sec:{security_fp}"
         else:
             config = server_config
             policy_key = cls._policy_key(config)
-            cache_key = f"inline:{config.get('command')}:{id(config)}"
+            cache_key = f"inline:{config.get('command')}:{id(config)}:sec:{security_fp}"
         return config, policy_key, cache_key
 
     @classmethod
@@ -1690,12 +1744,17 @@ class MCPConnectionPool:
         `None` means exactly one thing -- the caller made no trust decision
         -- and it never recovers a policy some other caller authorized for
         this identity; recovering a remembered policy is not reachable
-        through this public method at all (see `_get_reconnect_client`).
-        `None` reaches `_create_client`'s fail-closed default only when no
-        process-global policy has been set via `set_security_config()`; a
-        process-global policy, once set, is used for every omitted-policy
-        call until changed, by design -- that is a deliberate process-owner
-        decision, not implicit inheritance between callers.
+        through this public method at all, by any argument value (see
+        `_get_reconnect_client`, which requires a capability that this
+        method cannot produce or accept). `None` reaches `_create_client`'s
+        fail-closed default only when no process-global policy has been set
+        via `set_security_config()`; a process-global policy, once set, is
+        used for every omitted-policy call until changed, by design -- that
+        is a deliberate process-owner decision, not implicit inheritance
+        between callers. The cache key folds in this call's own effective
+        security (see `_resolve_identity`), so an omitted-policy call can
+        never be satisfied by a cache entry a differently-authorized caller
+        created; it always re-validates through `_create_client`.
         """
         if security is not None and not isinstance(security, MCPSecurityConfig):
             raise TypeError(
@@ -1704,25 +1763,36 @@ class MCPConnectionPool:
                 "is not available through this parameter"
             )
 
-        config, policy_key, cache_key = cls._resolve_identity(server_config)
-
-        if security is not None:
-            cls._server_security[policy_key] = security
-
+        config, _policy_key, cache_key = cls._resolve_identity(server_config, security)
         return await cls._get_or_create_client(config, cache_key, security)
 
     @classmethod
-    async def _get_reconnect_client(cls, server_config: dict[str, Any]) -> Any:
-        """Proxy-only: reconnect a transport under whatever policy it was
-        already authorized under, keyed by the same resolved identity used
-        for recording that policy. This is deliberately not part of
-        `get_client`'s public contract -- `create_mcp_tool`'s stored
-        callable is the only caller, re-entering a transport it already
-        holds. It never records a new policy of its own.
+    async def _get_reconnect_client(
+        cls,
+        server_config: dict[str, Any],
+        capability: _MCPRecoveryCapability | None = None,
+    ) -> Any:
+        """Capability-gated reconnect: re-enters a transport under the
+        policy a proxy was minted for at authorization time.
+
+        Requires the exact `_MCPRecoveryCapability` instance minted for that
+        proxy (`MCPConnectionPool._mint_capability`) -- not a config, not a
+        server name, not an equal-content capability. A direct call, a
+        stored bound method, a subclass alias, or a proxy rehydrated from
+        persisted `mcp_config` all lack a live reference to that instance
+        and fail closed here with no recovery. This is deliberately not
+        part of `get_client`'s public contract: `create_mcp_tool`'s stored
+        callable is the only caller, re-entering a transport its own
+        closure already holds the capability for.
         """
-        config, policy_key, cache_key = cls._resolve_identity(server_config)
-        security = cls._server_security.get(policy_key)
-        return await cls._get_or_create_client(config, cache_key, security)
+        if not isinstance(capability, _MCPRecoveryCapability):
+            raise PermissionError(
+                "MCP client recovery requires the authorization capability "
+                "minted for this proxy at registration time; none was "
+                "presented, so no policy can be recovered."
+            )
+        config, _policy_key, cache_key = cls._resolve_identity(server_config, capability.security)
+        return await cls._get_or_create_client(config, cache_key, capability.security)
 
     @classmethod
     async def _create_client(
@@ -1737,13 +1807,7 @@ class MCPConnectionPool:
         if not any(k in config for k in ["url", "command"]):
             raise ValueError("Config must have either 'url' or 'command' key")
 
-        # Precedence: explicit > process-global > fail-closed default.
-        if security is not None:
-            effective_security = security
-        elif cls._security is not None:
-            effective_security = cls._security
-        else:
-            effective_security = MCPSecurityConfig()
+        effective_security = cls._effective_security(security)
 
         # Validate BEFORE any import or transport construction.
         if "url" in config:
@@ -1802,8 +1866,21 @@ class MCPConnectionPool:
             cls._clients.clear()
 
 
-def create_mcp_tool(mcp_config: dict[str, Any], tool_name: str) -> Any:
-    """Create an async callable wrapping MCP tool execution."""
+def create_mcp_tool(
+    mcp_config: dict[str, Any],
+    tool_name: str,
+    capability: _MCPRecoveryCapability | None = None,
+) -> Any:
+    """Create an async callable wrapping MCP tool execution.
+
+    `capability` is the recovery authorization minted for this specific
+    proxy at registration time (`MCPConnectionPool._mint_capability`). It is
+    captured only in this closure -- never assigned to a `Tool` field that
+    gets serialized -- so a proxy rehydrated from persisted `mcp_config` has
+    no capability and its calls fail closed instead of recovering a prior
+    policy. Omitting it (the default) means this proxy was never authorized
+    and can never recover a policy either.
+    """
 
     async def mcp_callable(**kwargs):
         actual_tool_name = mcp_config.get("_original_tool_name", tool_name)
@@ -1813,9 +1890,10 @@ def create_mcp_tool(mcp_config: dict[str, Any], tool_name: str) -> Any:
         # This is the proxy re-entering a transport it already holds (the
         # metadata stripped above is the only thing distinguishing this call
         # from a fresh load) -- recover whatever policy that transport was
-        # already authorized under, via the proxy-only reconnect path. This
-        # is not reachable through the public `get_client` API.
-        client = await MCPConnectionPool._get_reconnect_client(config_for_client)
+        # already authorized under, via the capability-gated reconnect path.
+        # This is not reachable through the public `get_client` API, and not
+        # reachable at all without the capability this closure holds.
+        client = await MCPConnectionPool._get_reconnect_client(config_for_client, capability)
 
         result = await client.call_tool(actual_tool_name, kwargs)
 

@@ -348,10 +348,13 @@ class ActionManager(Manager):
     ) -> list[str]:
         registered_tools = []
 
-        if security is not None:
-            from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+        from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
 
-            MCPConnectionPool.remember_security(server_config, security)
+        # Mint the recovery authorization once, bound to this call's
+        # effective security, and thread it into every Tool created below.
+        # It never touches `_server_security`/config-keyed state: each Tool
+        # holds the capability only in its own excluded, non-serialized slot.
+        capability = MCPConnectionPool._mint_capability(security)
 
         server_name = None
         if isinstance(server_config, dict) and "server" in server_config:
@@ -389,12 +392,15 @@ class ActionManager(Manager):
                 if request_options and tool_name in request_options:
                     tool_request_options = request_options[tool_name]
 
-                tool = Tool(mcp_config=mcp_config, request_options=tool_request_options)
+                tool = Tool(
+                    mcp_config=mcp_config,
+                    request_options=tool_request_options,
+                    mcp_capability=capability,
+                )
                 self.register_tool(tool, update=update)
                 registered_tools.append(tool_name)
         else:
             from lionagi.service.connections.mcp_wrapper import (
-                MCPConnectionPool,
                 validate_mcp_tool_admission,
             )
 
@@ -444,6 +450,7 @@ class ActionManager(Manager):
                         mcp_config=mcp_config,
                         request_options=tool_request_options,
                         tool_schema=tool_schema,
+                        mcp_capability=capability,
                     )
                     self.register_tool(tool_obj, update=update)
                     registered_tools.append(tool_name)

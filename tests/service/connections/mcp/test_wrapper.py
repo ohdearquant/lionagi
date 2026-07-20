@@ -143,7 +143,10 @@ class TestMCPConnectionPoolGetClient:
         # Pre-populate pool with connected client
         mock_client = MagicMock()
         mock_client.is_connected.return_value = True
-        cache_key = f"inline:{inline_config.get('command')}:{id(inline_config)}"
+        sec_fp = MCPConnectionPool._security_fingerprint(
+            MCPConnectionPool._effective_security(None)
+        )
+        cache_key = f"inline:{inline_config.get('command')}:{id(inline_config)}:sec:{sec_fp}"
         MCPConnectionPool._clients[cache_key] = mock_client
 
         with patch.object(MCPConnectionPool, "_create_client") as mock_create:
@@ -158,7 +161,10 @@ class TestMCPConnectionPoolGetClient:
         # Pre-populate pool with disconnected client
         stale_client = MagicMock()
         stale_client.is_connected.return_value = False
-        cache_key = f"inline:{inline_config.get('command')}:{id(inline_config)}"
+        sec_fp = MCPConnectionPool._security_fingerprint(
+            MCPConnectionPool._effective_security(None)
+        )
+        cache_key = f"inline:{inline_config.get('command')}:{id(inline_config)}:sec:{sec_fp}"
         MCPConnectionPool._clients[cache_key] = stale_client
 
         new_client = AsyncMock()
