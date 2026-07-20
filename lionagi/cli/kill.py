@@ -679,6 +679,12 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
             "entities whose underlying OS process is dead.\n\n"
             "The entity's status is set to 'cancelled' (sessions/invocations) "
             "or 'aborted' (shows) with reason tracking per ADR-0028.\n\n"
+            "Recursion boundary: --recursive walks play -> session -> invocation "
+            "and always reaches the PID-bearing workers. SHOW rows cannot be "
+            "killed by id today: shows persist as 'active' (never 'running'), "
+            "so a show id is rejected as already-terminal. To stop a show's "
+            "work, kill its play ids or session ids directly; --all-stale "
+            "cancels play and show rows once their workers are gone.\n\n"
             "Examples:\n"
             "  li kill abc123                        # kill by id prefix\n"
             "  li kill <play-id>                     # also reap linked workers\n"
@@ -696,7 +702,8 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
         nargs="?",
         help=(
             "Entity id to kill: run_id / session_id / invocation_id / play_id / "
-            "show_id. Accepts full UUID or a unique prefix (≥6 chars)."
+            "show_id. Accepts a full UUID, or an id prefix (resolved to the "
+            "first matching row)."
         ),
     )
     kill.add_argument(
@@ -709,7 +716,10 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help=(
             "Also kill direct child entities (e.g. invocations spawned by a session). "
-            "Play kills always reap their linked workers."
+            "Play kills always reap their linked workers. Does NOT extend to shows: "
+            "show rows are rejected as already-terminal (they persist as 'active', "
+            "never 'running') -- kill the play or session id directly to stop a "
+            "show's workers."
         ),
     )
     kill.add_argument(
@@ -717,8 +727,9 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help=(
             "Sweep stale sessions and invocations with dead PIDs older than --threshold. "
-            "Plays and shows are not swept (they are orchestrators without direct PIDs; "
-            "use an explicit ID instead; play kills reap linked workers automatically)."
+            "A play whose swept session was its worker is cancelled with it; a show is "
+            "cancelled only once it is older than --threshold and ALL of its plays are "
+            "terminal."
         ),
     )
     kill.add_argument(
