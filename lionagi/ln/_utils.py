@@ -364,13 +364,36 @@ def synchronized(func: Callable[P, R]) -> Callable[P, R]:
 def async_synchronized(
     func: Callable[P, Awaitable[R]],
 ) -> Callable[P, Awaitable[R]]:
-    """Async-safe method decorator; requires ``self._async_lock``."""
+    """Async-safe method decorator; requires ``self._async_lock``.
+
+    When the instance also carries a ``self._lock`` (threading lock), the
+    wrapper acquires BOTH — the async lock first, then the threading lock via
+    a non-blocking spin — so async-decorated methods mutually exclude
+    ``@synchronized`` sync callers running in other threads. The async lock
+    serializes async callers, so at most one task ever contends for the
+    threading lock per instance, which keeps RLock thread-ownership semantics
+    intact and lets the decorated body reenter ``@synchronized`` methods.
+    Lock order is strictly async-then-sync; sync holders never await, so the
+    spin is bounded by a sync critical section and never deadlocks.
+    """
 
     @wraps(func)
     async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        from lionagi.ln.concurrency import sleep
+
         self = args[0]
         async with self._async_lock:  # type: ignore[attr-defined]
-            return await func(*args, **kwargs)
+            sync_lock = getattr(self, "_lock", None)
+            if sync_lock is None:
+                return await func(*args, **kwargs)
+            # Spin instead of a blocking acquire so a contended lock held by
+            # another thread never stalls the event loop itself.
+            while not sync_lock.acquire(blocking=False):
+                await sleep(0.0005)
+            try:
+                return await func(*args, **kwargs)
+            finally:
+                sync_lock.release()
 
     return wrapper
 
