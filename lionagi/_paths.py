@@ -39,10 +39,8 @@ def _find_git_root(cwd: Path) -> Path | None:
 def find_lionagi_dirs() -> list[Path]:
     """Find `.lionagi/` dirs: git root, then cwd and its parents, then `~/.lionagi/`.
 
-    Uncached -- every call re-runs the git-root lookup and the `.is_dir()`
-    checks, so it always reflects current topology and current git context
-    (`GIT_DIR`, `GIT_WORK_TREE`, or any other env var that redirects
-    `git rev-parse`) with no invalidation to get right.
+    Uncached: every call re-resolves the git root and re-checks the paths, so
+    the result always reflects the current cwd and git context.
     """
     cwd = Path.cwd()
     home = Path.home()
