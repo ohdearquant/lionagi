@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import JsonValue
 
+from lionagi._errors import EmptyOutgoingContentError
 from lionagi.ln._to_list import to_list
 from lionagi.protocols.messages import (
     ActionResponse,
@@ -216,6 +217,25 @@ def _prepare_run_kwargs(
         role_str = role.value if isinstance(role, MessageRole) else str(role)
         chat_msgs.append({"role": role_str, "content": rendered})
 
+    # The current turn's content is always the last entry appended to
+    # `_contents` above (guidance-merge branch, action-context branch, and
+    # plain-append branch all push it last). If the caller supplied real
+    # instruction text/media but that entry rendered empty and got filtered
+    # out of `chat_msgs` by `if not rendered: continue` above, the model call
+    # would silently go out carrying only scaffolding (system/guidance) and
+    # no user content — worse than a loud failure, since the run "completes"
+    # with a useless reply. `rendered` here still holds the last loop
+    # iteration's value even when that iteration hit `continue`.
+    if _contents and _has_real_instruction_text(ins.content) and not rendered:
+        raise EmptyOutgoingContentError(
+            "Refusing to call the model: the assembled outgoing message list "
+            "is empty for the current turn despite a non-empty instruction "
+            f"being supplied (instruction={ins.content.instruction!r}, "
+            f"plain_content={ins.content.plain_content!r}). The instruction "
+            "content was lost or filtered during message assembly — this is "
+            "a bug, not a valid empty-prompt call."
+        )
+
     kw["messages"] = chat_msgs
     return ins, kw
 
@@ -255,6 +275,22 @@ async def _apply_context_providers(
     branch._last_context_report.set(report)
     branch._last_context_report_fallback = report
     return ins, report
+
+
+def _has_real_instruction_text(content) -> bool:
+    """True if an InstructionContent carries caller-supplied text/media.
+
+    Deliberately ignores ``guidance``/``prompt_context`` (scaffolding this
+    module injects itself) so the check reflects only what the caller asked
+    for, not what the system/context providers added around it.
+    """
+    if content is None:
+        return False
+    return bool(
+        getattr(content, "instruction", None)
+        or getattr(content, "plain_content", None)
+        or getattr(content, "images", None)
+    )
 
 
 def _collect_action_dicts(act_res_msgs):

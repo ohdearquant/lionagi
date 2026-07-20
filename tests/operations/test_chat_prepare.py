@@ -3,8 +3,12 @@
 
 """Tests for lionagi/operations/chat/_prepare.py::_prepare_run_kwargs."""
 
+import pytest
+
+from lionagi._errors import EmptyOutgoingContentError
 from lionagi.operations.chat._prepare import _prepare_run_kwargs
 from lionagi.operations.types import ChatParam
+from lionagi.protocols.messages.instruction import InstructionContent
 from lionagi.session.branch import Branch
 
 # ---------------------------------------------------------------------------
@@ -54,3 +58,37 @@ def test_prepare_run_kwargs_kw_contains_messages_key():
 
     assert "messages" in kw
     assert isinstance(kw["messages"], list)
+
+
+# ---------------------------------------------------------------------------
+# Fail-loud guard (issue #2308): a non-empty instruction must never silently
+# vanish from the outgoing message list.
+# ---------------------------------------------------------------------------
+
+
+def test_prepare_run_kwargs_raises_when_real_instruction_renders_empty(monkeypatch):
+    """If the current turn carries real instruction text but its rendered
+    form comes out empty (an assembly bug of any kind — this guard doesn't
+    care which), the call must fail loudly instead of silently sending the
+    model scaffolding-only content and completing with a useless reply."""
+    branch = Branch()
+    param = ChatParam()
+
+    monkeypatch.setattr(InstructionContent, "rendered", property(lambda self: ""))
+
+    with pytest.raises(EmptyOutgoingContentError, match="a real, non-empty prompt"):
+        _prepare_run_kwargs(branch, "a real, non-empty prompt", param)
+
+
+def test_prepare_run_kwargs_allows_empty_render_when_no_instruction_text(monkeypatch):
+    """The guard is scoped to *real* instruction text — a turn with no
+    instruction at all (e.g. a bare action-response continuation) that
+    happens to render empty must not be treated as the bug this guards."""
+    branch = Branch()
+    param = ChatParam()
+
+    monkeypatch.setattr(InstructionContent, "rendered", property(lambda self: ""))
+
+    # No instruction text/plain_content/images supplied -> guard must not fire.
+    _ins, kw = _prepare_run_kwargs(branch, None, param)
+    assert kw["messages"] == []
