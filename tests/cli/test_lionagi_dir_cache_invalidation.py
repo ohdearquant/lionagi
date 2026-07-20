@@ -214,3 +214,46 @@ def test_git_root_lookup_not_rerun_for_repeated_calls_at_same_cwd(monkeypatch, t
         assert len(calls) == 1
     finally:
         paths.clear_lionagi_dirs_cache()
+
+
+def test_git_root_cache_keyed_by_git_context_not_cwd_alone(monkeypatch, tmp_path):
+    """A process can point git at a different worktree without changing cwd by
+    setting GIT_DIR/GIT_WORK_TREE. The git-root cache must key on that context,
+    not cwd alone, or the first worktree's `.lionagi/` root is handed to every
+    later discovery call until an unrelated caller clears the cache."""
+    import subprocess
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+
+    # Two independently initialized repos, each with its own `.lionagi/`.
+    repo_a = tmp_path / "repo_a"
+    repo_b = tmp_path / "repo_b"
+    for repo in (repo_a, repo_b):
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / ".lionagi").mkdir()
+
+    # Stay in a neutral cwd for every call so cwd never distinguishes the two.
+    neutral = tmp_path / "neutral"
+    neutral.mkdir()
+    monkeypatch.chdir(neutral)
+
+    paths.clear_lionagi_dirs_cache()
+    try:
+        monkeypatch.setenv("GIT_DIR", str(repo_a / ".git"))
+        monkeypatch.setenv("GIT_WORK_TREE", str(repo_a))
+        first = paths.find_lionagi_dirs()
+        assert (repo_a / ".lionagi") in first
+
+        # Redirect git at repo_b, same cwd, no cache clear. Keying on cwd alone
+        # would still return repo_a's root here; keying on git context returns
+        # repo_b's.
+        monkeypatch.setenv("GIT_DIR", str(repo_b / ".git"))
+        monkeypatch.setenv("GIT_WORK_TREE", str(repo_b))
+        second = paths.find_lionagi_dirs()
+        assert (repo_b / ".lionagi") in second
+        assert (repo_a / ".lionagi") not in second
+    finally:
+        paths.clear_lionagi_dirs_cache()

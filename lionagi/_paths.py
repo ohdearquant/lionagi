@@ -38,30 +38,46 @@ def _find_git_root(cwd: Path) -> Path | None:
     return None
 
 
+# Environment variables that redirect `git rev-parse --show-toplevel` away from
+# the directory it is run in. A process can point itself at an entirely
+# different worktree without changing cwd by setting these, so they belong in
+# the cache key alongside cwd -- keying on cwd alone hands the old worktree's
+# discovery root to every later caller.
+_GIT_CONTEXT_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR")
+
+
 @lru_cache(maxsize=32)
-def _find_git_root_cached(cwd: Path) -> Path | None:
-    """Memoized `_find_git_root`: the git-root fact is stable for a given
-    cwd, and resolving it shells out to `git` under a timeout, which is the
+def _find_git_root_cached(cwd: Path, git_context: tuple[str | None, ...]) -> Path | None:
+    """Memoized `_find_git_root`, keyed by everything that can change its answer.
+
+    Resolving the git root shells out to `git` under a timeout, which is the
     only part of directory discovery expensive enough to be worth caching.
+    `git_context` is unused in the body on purpose: it is there so a process
+    that redirects git at a different worktree gets a different cache entry
+    rather than the previous worktree's root.
     """
     return _find_git_root(cwd)
+
+
+def _git_context() -> tuple[str | None, ...]:
+    return tuple(os.environ.get(name) for name in _GIT_CONTEXT_VARS)
 
 
 def find_lionagi_dirs() -> list[Path]:
     """Find .lionagi/ directories, project-local first then global ~/.lionagi/.
 
-    Only the git-root lookup is cached (per cwd, for the life of the
-    process) -- the `.lionagi/` existence checks themselves are cheap
-    `Path.is_dir()` stats and are re-evaluated on every call. A caller
-    always sees current `.lionagi/` topology; nothing needs to invalidate
-    anything after creating or removing a `.lionagi/` directory.
+    Only the git-root lookup is cached, keyed by cwd plus the environment
+    that can redirect git elsewhere -- the `.lionagi/` existence checks
+    themselves are cheap `Path.is_dir()` stats and are re-evaluated on every
+    call. A caller always sees current `.lionagi/` topology; nothing needs to
+    invalidate anything after creating or removing a `.lionagi/` directory.
     """
     cwd = Path.cwd()
     home = Path.home()
     dirs: list[Path] = []
 
     # 1. Git root (cached lookup, live existence check)
-    git_root = _find_git_root_cached(cwd)
+    git_root = _find_git_root_cached(cwd, _git_context())
     if git_root is not None:
         candidate = git_root / ".lionagi"
         if candidate.is_dir():
@@ -99,13 +115,14 @@ def ensure_lionagi_dir(path: Path) -> Path:
     project-local or the global `~/.lionagi` -- into existence for the
     first time should still create it through this helper rather than a
     bare `Path.mkdir`: it is the explicit creation boundary for that
-    topology change. `find_lionagi_dirs()` re-checks `.lionagi/` existence
-    on every call, so callers that bypass this helper (e.g. a generic path
-    utility that happens to create a `.lionagi/*` path) no longer produce
-    stale discovery results either.
+    topology change. It does not clear the git-root cache, because creating
+    a `.lionagi/` directory never changes a cwd's git root, and
+    `find_lionagi_dirs()` re-checks `.lionagi/` existence on every call, so
+    callers that bypass this helper (e.g. a generic path utility that happens
+    to create a `.lionagi/*` path) no longer produce stale discovery results
+    either.
     """
     path.mkdir(parents=True, exist_ok=True)
-    clear_lionagi_dirs_cache()
     return path
 
 
