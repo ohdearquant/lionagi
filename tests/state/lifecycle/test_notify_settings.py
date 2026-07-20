@@ -389,6 +389,21 @@ def test_build_handler_python_ref_missing_callable_returns_none_not_raises(caplo
     assert any("failed to import" in r.message for r in caplog.records)
 
 
+def test_build_handler_non_callable_python_ref_returns_none_not_raises(caplog):
+    # os.pathsep is a real, importable module attribute -- just not callable.
+    resolved = ResolvedNotifyHandler(python_ref="os:pathsep")
+    with caplog.at_level(logging.WARNING):
+        handler = build_handler(resolved)
+    assert handler is None
+    assert any("non-callable" in r.message for r in caplog.records)
+
+
+def test_build_handler_callable_python_ref_still_resolves():
+    resolved = ResolvedNotifyHandler(python_ref="os.path:join")
+    handler = build_handler(resolved)
+    assert handler is os.path.join
+
+
 def test_register_settings_terminal_callback_bad_python_ref_never_raises(monkeypatch):
     # The exact regression this guards: a typo'd notify.on_terminal python
     # adapter must resolve to disabled at the bootstrap call site (CLI
@@ -410,6 +425,29 @@ def test_register_settings_terminal_callback_bad_python_ref_never_raises(monkeyp
     )  # must not raise
     assert installed is False
     assert "test.bad-python" not in registry
+
+
+def test_register_settings_terminal_callback_non_callable_python_ref_disabled(monkeypatch, caplog):
+    # A well-formed, importable ref that just isn't callable (e.g. a data
+    # attribute) must be rejected at bootstrap, not registered and left to
+    # blow up every terminal-callback delivery downstream.
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.load_settings",
+        lambda project_dir=None: {
+            "notify": {
+                "on_terminal": {
+                    "enabled": True,
+                    "adapter": {"kind": "python", "ref": "os:pathsep"},
+                }
+            }
+        },
+    )
+    registry = TerminalCallbackRegistry()
+    with caplog.at_level(logging.WARNING):
+        installed = register_settings_terminal_callback(registry, name="test.non-callable")
+    assert installed is False
+    assert "test.non-callable" not in registry
+    assert any("non-callable" in r.message for r in caplog.records)
 
 
 def test_register_settings_terminal_callback_malformed_filter_never_raises(monkeypatch, caplog):
