@@ -268,6 +268,49 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> ResolvedNotifyHandle
     return None
 
 
+def _record_notify_outcome(
+    *, ok: bool, exit_code: int | None, stderr_first_line: str | None
+) -> None:
+    """Best-effort: record the exec adapter's outcome onto the active run's
+    manifest (additive field, never overwrites anything else) so a CLI user
+    inspecting run.json can see why a notification didn't fire. Never raises
+    -- this must never affect the run itself.
+    """
+    try:
+        from lionagi.cli._runs import active_run
+
+        run = active_run()
+        if run is None:
+            return
+        run.write_manifest(
+            {
+                "notify_outcome": {
+                    "ok": ok,
+                    "exit_code": exit_code,
+                    "stderr_first_line": stderr_first_line,
+                }
+            }
+        )
+    except Exception:  # noqa: BLE001 -- outcome bookkeeping must never affect the run
+        logger.debug("failed to record notify.on_terminal outcome in run manifest", exc_info=True)
+
+
+def _warn_adapter_failure(msg: str) -> None:
+    try:
+        from lionagi.cli._logging import warn
+
+        warn(msg)
+    except Exception:  # noqa: BLE001 -- surfacing the failure must never affect the run
+        logger.debug("failed to emit notify.on_terminal warn-channel line", exc_info=True)
+
+
+def _first_line(text: str) -> str | None:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    return stripped.splitlines()[0]
+
+
 async def _await_proc_dead(proc: asyncio.subprocess.Process, grace: float = 2.0) -> None:
     try:
         await asyncio.wait_for(proc.wait(), timeout=grace)
@@ -319,6 +362,8 @@ def _make_exec_handler(
                 await aterminate_process_group(proc, grace=None)
                 await _await_proc_dead(proc)
             logger.warning("notify.on_terminal exec adapter %r timed out", launch_argv)
+            _record_notify_outcome(ok=False, exit_code=None, stderr_first_line=None)
+            _warn_adapter_failure(f"notify.on_terminal adapter {launch_argv!r} timed out")
             return
         except get_cancelled_exc_class():
             # The registry's shared deadline races this call's own timeout and
@@ -331,6 +376,12 @@ def _make_exec_handler(
             raise
         except Exception as exc:  # noqa: BLE001 -- an adapter failure must never affect the run
             logger.warning("notify.on_terminal exec adapter %r failed to run: %s", launch_argv, exc)
+            _record_notify_outcome(
+                ok=False, exit_code=None, stderr_first_line=_first_line(str(exc))
+            )
+            _warn_adapter_failure(
+                f"notify.on_terminal adapter {launch_argv!r} failed to run: {exc}"
+            )
             return
         if proc.returncode != 0:
             detail = stderr_bytes.decode(errors="replace").strip()
@@ -341,6 +392,14 @@ def _make_exec_handler(
                 proc.returncode,
                 suffix,
             )
+            _record_notify_outcome(
+                ok=False, exit_code=proc.returncode, stderr_first_line=_first_line(detail)
+            )
+            _warn_adapter_failure(
+                f"notify.on_terminal adapter {launch_argv!r} exited {proc.returncode}{suffix}"
+            )
+        else:
+            _record_notify_outcome(ok=True, exit_code=0, stderr_first_line=None)
 
     return _exec_handler
 

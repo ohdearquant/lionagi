@@ -313,6 +313,183 @@ async def test_exec_handler_swallows_nonzero_exit_and_timeout(monkeypatch, caplo
     assert any("exited 1" in r.message for r in caplog.records)
 
 
+# ── Adapter outcome visibility: run.json + the CLI warn() channel ──────────
+
+
+@pytest.mark.asyncio
+async def test_exec_handler_records_nonzero_exit_outcome_and_warns(monkeypatch, tmp_path):
+    import lionagi.cli._runs as runs_mod
+    from lionagi.cli._runs import allocate_run
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="notify-fail-run")
+    run.write_manifest({"status": "completed", "ended_at": 123.0})
+
+    warn_calls: list[str] = []
+    monkeypatch.setattr("lionagi.cli._logging.warn", warn_calls.append)
+
+    class _FakeProc:
+        pid = 123
+        returncode = 1
+
+        async def communicate(self, data=None):
+            return (b"", b"boom\nsecond line")
+
+    async def _fake_exec(*argv, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    handler = build_handler(ResolvedNotifyHandler(argv=("notify-hook",)))
+    await handler(_envelope())  # must not raise
+
+    manifest = json.loads(run.manifest_path.read_text())
+    assert manifest["notify_outcome"] == {
+        "ok": False,
+        "exit_code": 1,
+        "stderr_first_line": "boom",
+    }
+    # Recording the notify outcome is additive -- it must never disturb the
+    # run's own terminal status already on disk.
+    assert manifest["status"] == "completed"
+    assert manifest["ended_at"] == 123.0
+
+    assert len(warn_calls) == 1
+    assert "exited 1" in warn_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_exec_handler_records_timeout_outcome_and_warns(monkeypatch, tmp_path):
+    import lionagi.cli._runs as runs_mod
+    from lionagi.cli._runs import allocate_run
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="notify-timeout-run")
+
+    warn_calls: list[str] = []
+    monkeypatch.setattr("lionagi.cli._logging.warn", warn_calls.append)
+
+    class _FakeProc:
+        pid = 456
+
+        async def communicate(self, data=None):
+            raise asyncio.TimeoutError()
+
+    async def _fake_exec(*argv, **kwargs):
+        return _FakeProc()
+
+    async def _fake_terminate(proc, grace=None):
+        return None
+
+    async def _fake_await_dead(proc, grace=2.0):
+        return None
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.aterminate_process_group", _fake_terminate
+    )
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings._await_proc_dead", _fake_await_dead
+    )
+
+    handler = build_handler(ResolvedNotifyHandler(argv=("notify-hook",)))
+    await handler(_envelope())  # must not raise
+
+    manifest = json.loads(run.manifest_path.read_text())
+    assert manifest["notify_outcome"] == {
+        "ok": False,
+        "exit_code": None,
+        "stderr_first_line": None,
+    }
+    assert len(warn_calls) == 1
+    assert "timed out" in warn_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_exec_handler_records_spawn_error_outcome_and_warns(monkeypatch, tmp_path):
+    import lionagi.cli._runs as runs_mod
+    from lionagi.cli._runs import allocate_run
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="notify-spawn-error-run")
+
+    warn_calls: list[str] = []
+    monkeypatch.setattr("lionagi.cli._logging.warn", warn_calls.append)
+
+    async def _fake_exec(*argv, **kwargs):
+        raise FileNotFoundError("no such file: notify-hook")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    handler = build_handler(ResolvedNotifyHandler(argv=("notify-hook",)))
+    await handler(_envelope())  # must not raise
+
+    manifest = json.loads(run.manifest_path.read_text())
+    outcome = manifest["notify_outcome"]
+    assert outcome["ok"] is False
+    assert outcome["exit_code"] is None
+    assert "no such file" in outcome["stderr_first_line"]
+    assert len(warn_calls) == 1
+    assert "failed to run" in warn_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_exec_handler_records_success_outcome_without_warn(monkeypatch, tmp_path):
+    import lionagi.cli._runs as runs_mod
+    from lionagi.cli._runs import allocate_run
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="notify-ok-run")
+
+    warn_calls: list[str] = []
+    monkeypatch.setattr("lionagi.cli._logging.warn", warn_calls.append)
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self, data=None):
+            return (b"", b"")
+
+    async def _fake_exec(*argv, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    handler = build_handler(ResolvedNotifyHandler(argv=("notify-hook",)))
+    await handler(_envelope())
+
+    manifest = json.loads(run.manifest_path.read_text())
+    assert manifest["notify_outcome"] == {
+        "ok": True,
+        "exit_code": 0,
+        "stderr_first_line": None,
+    }
+    assert warn_calls == []
+
+
+@pytest.mark.asyncio
+async def test_exec_handler_outcome_recording_is_a_noop_without_an_active_run(monkeypatch):
+    """No RunDir has been allocated in this process (e.g. a bare handler unit
+    test) -- outcome recording must silently skip rather than raise."""
+    import lionagi.cli._runs as runs_mod
+
+    monkeypatch.setattr(runs_mod, "_active_run", None)
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self, data=None):
+            return (b"", b"")
+
+    async def _fake_exec(*argv, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    handler = build_handler(ResolvedNotifyHandler(argv=("notify-hook",)))
+    await handler(_envelope())  # must not raise
+
+
 # ── Cancellation (the registry's outer deadline winning the race against
 # the handler's own identical wait_for) must still reap the child ──────────
 
