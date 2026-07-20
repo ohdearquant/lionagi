@@ -747,9 +747,9 @@ unlike callables.
   behavior, and Tool guards retain argument transformation.
 - Maintainers must identify the operation and owner before registering a “hook.” Import path alone
   is not cosmetic: it determines lifetime, handler signature, and failure semantics.
-- `HookPoint` catalog consumers must distinguish enum availability from production wiring. Three
-  values currently describe reserved vocabulary only, while `ARTIFACT_CREATED` is deprecated
-  compatibility vocabulary.
+- `HookPoint` catalog consumers must distinguish enum availability from production wiring.
+  `ARTIFACT_CREATED` alone currently describes reserved, deprecated compatibility vocabulary with no
+  production emit site; every other catalog value now has one.
 - A `TOOL_PRE` denial records a denial `HookSignal` before the original exception propagates. Audit
   consumers can identify the denied attempt without changing the blocking result.
 - Session bus attachment currently depends on access order. A Branch can have an observer and no
