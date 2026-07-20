@@ -13,6 +13,11 @@ li studio start          # backend on 127.0.0.1:8765
 curl -s 127.0.0.1:8765/api/admin/health   # verify it is up
 ```
 
+`li studio start` runs the server in the **foreground** — it does not daemonize.
+Run it under your init system (launchd/systemd) or detach it yourself
+(`setsid`/`start_new_session`) for anything long-lived; a terminal or task
+runner that later reaps its children takes every schedule down with it.
+
 ## One-off schedules: typed quick-create
 
 The fastest way to schedule a single thing. Each action kind is a subcommand with
@@ -108,6 +113,93 @@ Notes:
 - Target kinds: `agent`, `command`, `playbook`, `flow`. A schedule this set created
   that later disappears from the file is disabled on the next apply (not deleted —
   its run history stays queryable).
+
+## Event-driven recipe: review every PR change
+
+A github trigger polls a repository and fires once per pull request that changed
+since the last poll — new PRs and new pushes to open PRs both count. The event's
+fields are available to the agent prompt as `{{var}}` templates: `pr_number`,
+`pr_title`, `pr_url`, `pr_author`, `head_sha`, `draft`, `is_same_repo`.
+
+```bash
+li schedule create agent pr-review \
+  --profile reviewer \
+  --prompt 'Review PR #{{pr_number}} ("{{pr_title}}") at {{pr_url}}, head {{head_sha}}.
+Read the full diff, then post one review comment: verdict, the head SHA you
+reviewed, and any findings with file:line anchors.' \
+  --github myorg/myrepo \
+  --github-filter '{"draft": false, "same_repo_only": true}'
+```
+
+Two filter notes that are really safety notes:
+
+- `"same_repo_only": true` excludes PRs from forks. Fork PRs carry untrusted content —
+  code, PR bodies, and comments can all embed instructions aimed at your reviewing
+  agent — so keep automated agents off them and route fork PRs to a human instead.
+- `"draft": false` skips drafts, so authors can push work-in-progress without
+  burning review runs.
+
+Pinning the reviewed `head_sha` into the review output is what makes automated
+reviews trustworthy: a verdict is only meaningful for the exact commit it read,
+and the next push fires a fresh run with a fresh SHA.
+
+## One-shots and bounded schedules
+
+Three ways to bound how often a schedule fires, and when each fits:
+
+- `--at <instant>` — a point-in-time trigger. Fires exactly once at that instant
+  (it implies max-runs 1). The right tool when you know the wall-clock time.
+- `--every ... --once` (sugar for `--max-runs 1`) — "fire once, as soon as the
+  scheduler picks it up." The idiom for launching a long job detached from your
+  terminal: create it with a short interval and `--once`, and the first tick runs
+  it.
+- `--max-runs N` — a lifetime cap. The schedule auto-disables once N runs have
+  fired; re-enabling it later does not reset the counter.
+
+How the budget is counted, because it matters for long-running actions:
+
+- A run consumes budget when it **fires**, not when it finishes. In-flight
+  (`running`) and reaped (`timed_out`) runs count, so a one-shot whose action is
+  still executing — or whose action timed out — never fires a second time.
+- Overlap `skip` rows do not count: while a long one-shot is still executing, an
+  interval trigger keeps ticking and records a `skipped` row per tick (visible in
+  `li schedule runs`). That is bookkeeping noise, not extra work — the action ran
+  once. If the rows bother you, `--at` a real instant instead of polling with an
+  interval.
+
+## Measuring schedules: cost, time, and model fit
+
+Every scheduled spawn records what it used: the spawned session rows in
+`~/.lionagi/state.db` carry `model`, `effort`, `input_tokens`, `output_tokens`,
+`total_cost_usd`, and start/end timestamps, and each `schedule_runs` row links to
+its invocation. That makes a schedule a **measurable recipe**: a pinned
+combination of task, prompt, model, and effort whose cost and outcome accumulate
+run over run.
+
+Read it back with a read-only query:
+
+```bash
+sqlite3 "file:$HOME/.lionagi/state.db?mode=ro" "
+  SELECT sc.name,
+         COUNT(*)                              AS runs,
+         ROUND(SUM(s.total_cost_usd), 2)       AS usd,
+         SUM(s.output_tokens)                  AS out_tokens,
+         ROUND(AVG(s.ended_at - s.started_at)) AS avg_secs
+  FROM schedule_runs r
+  JOIN schedules  sc ON sc.id = r.schedule_id
+  JOIN sessions   s  ON s.invocation_id = r.invocation_id
+  WHERE r.fired_at > strftime('%s','now','-7 days')
+  GROUP BY sc.name ORDER BY usd DESC;"
+```
+
+What to do with the numbers: for each recurring task, start with the cheapest
+model tier you believe could do it, and let the run history argue. If a recipe
+succeeds consistently, try the next tier down; if it fails or needs rework,
+escalate one tier and re-measure. Model routing decided by accumulated per-recipe
+evidence beats a static "always use the big model" rule — most recurring
+automation (report generation, triage, polling probes, draft passes) is exactly
+where smaller models earn their keep, and the schedule is the natural unit to
+prove it per task rather than argue it in general.
 
 ## Did it work?
 

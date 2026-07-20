@@ -617,7 +617,7 @@ async def test_count_schedule_runs_excludes_skipped_and_running():
             "action_kind": "agent",
         }
     )
-    statuses = ["completed", "failed", "cancelled", "skipped", "running"]
+    statuses = ["completed", "failed", "cancelled", "timed_out", "skipped", "running"]
     for i, status in enumerate(statuses):
         await state.create_schedule_run(
             {
@@ -632,8 +632,13 @@ async def test_count_schedule_runs_excludes_skipped_and_running():
             }
         )
 
+    # timed_out counts: a reaped run fired and did real work, so a one-shot
+    # schedule whose only run timed out must not become eligible to re-fire.
     count = await state.count_schedule_runs("sched-count-1", chain_depth=0)
-    assert count == 3  # completed, failed, cancelled — not skipped, not running
+    assert count == 4  # completed, failed, cancelled, timed_out — not skipped/running
+
+    batch = await state.count_schedule_runs_batch(["sched-count-1"], chain_depth=0)
+    assert batch == {"sched-count-1": 4}
 
     await state.close()
 

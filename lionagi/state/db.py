@@ -114,6 +114,15 @@ def _default_reason_code_for_entity_status(entity_type: str, status: str) -> str
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
 
+# The single definition of which schedule_run statuses count as "fired and
+# resolved" for budget bookkeeping (max_runs, one-shot auto-disable). The
+# scheduler service layer must observe the same set — both its defaults and
+# this one point here so they cannot drift. 'timed_out' counts: a reaped run
+# fired and consumed real work. 'skipped' (never ran) and 'running' (not yet
+# resolved) do not; admission paths that need in-flight rows opt in
+# explicitly with ("running", *TERMINAL_RUN_STATUSES).
+TERMINAL_RUN_STATUSES: tuple[str, ...] = ("completed", "failed", "cancelled", "timed_out")
+
 _VALID_STATUS_SOURCES: frozenset[str] = frozenset({"executor", "agent", "admin", "system"})
 
 _SESSION_COLUMNS = frozenset(
@@ -2935,7 +2944,7 @@ class StateDB:
         schedule_id: str,
         *,
         chain_depth: int = 0,
-        statuses: tuple[str, ...] = ("completed", "failed", "cancelled"),
+        statuses: tuple[str, ...] = TERMINAL_RUN_STATUSES,
         fired_after: float | None = None,
     ) -> int:
         """Count runs that actually fired and reached a terminal status.
@@ -2943,7 +2952,10 @@ class StateDB:
         Used for max_runs bookkeeping: chain_depth=0 excludes on_success/
         on_fail chain children (they don't consume the parent's budget), and
         the default status set excludes 'skipped' (missed-fire/overlap skips
-        never ran) and 'running' (not yet terminal).
+        never ran) and 'running' (not yet terminal). 'timed_out' counts: a
+        reaped run fired and consumed real work — a bounded (max_runs) or
+        one-shot schedule must not silently re-fire because its only run
+        timed out instead of completing.
         """
         placeholders = ", ".join(f":status{i}" for i in range(len(statuses)))
         params: dict[str, Any] = {"schedule_id": schedule_id, "chain_depth": chain_depth}
@@ -2961,7 +2973,7 @@ class StateDB:
         schedule_ids: list[str],
         *,
         chain_depth: int = 0,
-        statuses: tuple[str, ...] = ("completed", "failed", "cancelled"),
+        statuses: tuple[str, ...] = TERMINAL_RUN_STATUSES,
     ) -> dict[str, int]:
         """Batched form of count_schedule_runs — one query for many schedule_ids."""
         if not schedule_ids:

@@ -13,7 +13,7 @@ import json
 import logging
 from typing import Any, Protocol
 
-from lionagi.state.db import StateDB
+from lionagi.state.db import TERMINAL_RUN_STATUSES, StateDB
 from lionagi.state.reasons import RunReasons
 from lionagi.studio.scheduler import coordination as _coordination
 
@@ -34,7 +34,7 @@ class SchedulerStateService(Protocol):
         schedule_id: str,
         *,
         chain_depth: int = 0,
-        statuses: tuple[str, ...] = ("completed", "failed", "cancelled"),
+        statuses: tuple[str, ...] = TERMINAL_RUN_STATUSES,
         fired_after: float | None = None,
     ) -> int: ...
 
@@ -114,7 +114,7 @@ class _DBSchedulerStateService:
         schedule_id: str,
         *,
         chain_depth: int = 0,
-        statuses: tuple[str, ...] = ("completed", "failed", "cancelled"),
+        statuses: tuple[str, ...] = TERMINAL_RUN_STATUSES,
         fired_after: float | None = None,
     ) -> int:
         async with StateDB() as db:
