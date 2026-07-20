@@ -244,8 +244,13 @@ def _mock_proc(returncode: int, stdout: bytes = b"", stderr: bytes = b""):
 
 
 async def test_user_prompt_submit_hook_fires_after_create_agent_and_session_inclusion(
-    monkeypatch,
+    monkeypatch, tmp_path
 ):
+    # Isolate HOME so `create_agent`'s MCP auto-load (it always checks
+    # ~/.lionagi/.mcp.json, see `_resolve_mcp_path`) can't pick up a real
+    # operator config and consume the single mocked subprocess below before
+    # the external hook itself gets to invoke it.
+    monkeypatch.setenv("HOME", str(tmp_path))
     stdout = json.dumps({"decision": "block", "reason": "hygiene check failed"}).encode()
     monkeypatch.setattr(
         asyncio, "create_subprocess_exec", AsyncMock(return_value=_mock_proc(0, stdout=stdout))
@@ -278,14 +283,14 @@ async def test_user_prompt_submit_hook_fires_after_create_agent_and_session_incl
         )
 
 
-async def test_user_prompt_submit_hook_survives_reparent_to_another_session(
-    monkeypatch,
-):
+async def test_user_prompt_submit_hook_survives_reparent_to_another_session(monkeypatch, tmp_path):
     """A blocking external hook must not silently vanish when its branch is
     moved between sessions (`Session.remove_branch` then `include_branches`
     on another session, a supported reparenting op). The handler was queued
     onto `_pending_hook_bus_entries` while the branch was standalone, then
     flushed onto session A's bus; it must also flush onto session B's bus."""
+    # Isolate HOME -- see the sibling test above for why.
+    monkeypatch.setenv("HOME", str(tmp_path))
     stdout = json.dumps({"decision": "block", "reason": "hygiene check failed"}).encode()
     monkeypatch.setattr(
         asyncio, "create_subprocess_exec", AsyncMock(return_value=_mock_proc(0, stdout=stdout))
