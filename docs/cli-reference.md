@@ -25,7 +25,7 @@ worker.
 | `li monitor run ID...` | Wait for scheduled runs and their chains; optionally keep watching |
 | `li agent status [ID]` | Read stable session/invocation status, optionally as JSON |
 | `li o ctl {status,pause,resume,msg}` | Inspect or steer a live flow by ID |
-| `li kill ID` | Terminate one running entity or sweep stale processes; play kills also reap the linked worker chain; a show kill does not reach its plays' workers ([details](#li-kill)) |
+| `li kill ID` | Terminate one running entity or sweep stale processes; play kills also reap the linked worker chain; show ids are not directly killable ([details](#li-kill)) |
 
 ### Reuse, coordination, and operation
 
@@ -559,7 +559,7 @@ li kill --all-stale --dry-run
 
 | Arg/Flag | Default | Notes |
 |----------|---------|-------|
-| `id` | none | Entity ID or prefix (≥6 chars): run/session/invocation/play/show |
+| `id` | none | Entity ID or prefix: run/session/invocation/play |
 | `--reason` | `""` | Recorded in `status_transitions` |
 | `--recursive` | false | Also kill direct child entities |
 | `--all-stale` | false | Sweep stale sessions/invocations (and their child-derived plays/shows) |
@@ -573,15 +573,16 @@ and it stops at the play level:
 - Killing a **play** always reaps its linked worker session (and that
   session's invocation), with or without `--recursive`.
 - Killing a **session** with `--recursive` also cancels its linked invocation.
-- Killing a **show** — with or without `--recursive` — only aborts the show
-  row and cancels its own running plays' status. It does **not** reach those
-  plays' worker sessions or invocations; the underlying processes keep
-  running.
+- A **show** id cannot be killed directly today: only `running` rows are
+  killable, and show rows persist as `active` (never `running`), so
+  `li kill <show-id>` is rejected as already-terminal, with or without
+  `--recursive`.
 
 To stop everything under a show, kill the play id or session id directly
 (`li monitor <show-id>` lists its plays). `--all-stale` covers the abandoned
-case: once a play's worker session is stale, sweeping cancels the play and
-show rows too.
+case: a play whose stale worker session is swept is cancelled with it, and a
+show row is cancelled only once it is older than `--threshold` **and** all of
+its plays are terminal.
 
 ---
 
