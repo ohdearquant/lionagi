@@ -118,6 +118,18 @@ class TestMatchEndpoint:
         assert endpoint.config.provider == "unknown_provider"
         assert endpoint.config.openai_compatible is True
 
+    def test_registered_provider_with_unmatched_endpoint_does_not_raise(self):
+        # 'openai' is registered (chat, embeddings, batch, ...) but has no
+        # 'query_cli' endpoint. The provider itself is known, so this must
+        # never surface as ProviderNotFoundError -- only a genuinely
+        # unrecognized *provider* string does that. No openai_compatible
+        # opt-in should be required either: the provider identity was never
+        # in question.
+        endpoint = match_endpoint(provider="openai", endpoint="query_cli", model="gpt-4o-mini")
+
+        assert endpoint.config.provider == "openai"
+        assert endpoint.is_cli is False
+
     def test_unknown_provider_with_base_url_falls_back_with_deprecation_warning(self):
         with pytest.warns(DeprecationWarning, match="unknown_provider"):
             endpoint = match_endpoint(

@@ -207,13 +207,22 @@ class EndpointRegistry:
         miss, consults the plugin registry (ADR-0088 D3) before falling back
         to the generic OpenAI-compatible endpoint; see docs/internals/runtime.md.
 
-        An unrecognized ``provider`` never silently mis-routes: the generic
-        OpenAI-compatible fallback only builds when ``openai_compatible=True``
-        is passed explicitly, or (deprecated migration path, warns) when a
-        ``base_url`` kwarg is given -- the same signal a caller already needs
-        to point the fallback at a real custom host. Anything else raises
-        ``ProviderNotFoundError`` naming the requested provider and every
-        provider currently registered.
+        A *registered* provider is never rejected: if ``provider`` names a
+        canonical provider or provider-alias that some entry already claimed
+        (via ``register()``/``_claim_provider_identity``), a request for an
+        endpoint that provider doesn't happen to expose falls through to the
+        generic construction below same as an explicit opt-in would -- the
+        provider identity is not in question, only the specific endpoint
+        name, so there is nothing to reject. ``ProviderNotFoundError`` is
+        reserved for a ``provider`` string matching no registered provider or
+        alias at all: the generic OpenAI-compatible fallback then only builds
+        when ``openai_compatible=True`` is passed explicitly, or (deprecated
+        migration path, warns) when a ``base_url`` kwarg is given -- the same
+        signal a caller already needs to point the fallback at a real custom
+        host. Anything else raises ``ProviderNotFoundError`` naming the
+        requested provider and every provider currently registered -- a
+        provider that error names as unregistered is, by construction, never
+        also in the registered list it prints.
         """
         cls._ensure_loaded()
 
@@ -226,7 +235,7 @@ class EndpointRegistry:
             if matched is not None:
                 return matched
 
-        if not openai_compatible:
+        if not openai_compatible and not cls._is_known_provider(provider):
             if kwargs.get("base_url"):
                 warnings.warn(
                     f"provider {provider!r} is not registered; routing to the "
@@ -254,6 +263,14 @@ class EndpointRegistry:
             openai_compatible=True,
         )
         return Endpoint(config, **kwargs)
+
+    @classmethod
+    def _is_known_provider(cls, provider: str) -> bool:
+        """Whether ``provider`` (case-insensitive) is a canonical provider
+        name or provider-alias that some registered entry already claimed --
+        i.e. whether rejecting it as unrecognized would be wrong regardless
+        of which specific endpoint was requested for it."""
+        return provider.strip().lower() in cls._alias_owners
 
     @classmethod
     def _provider_not_found_error(cls, provider: str) -> ProviderNotFoundError:
