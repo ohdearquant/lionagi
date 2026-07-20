@@ -9,6 +9,7 @@ from lionagi._errors import ExecutionError
 from lionagi.protocols.generic import EventStatus
 from lionagi.protocols.messages import AssistantResponse, Instruction
 
+from .._api_hooks import emit_api_post_call, emit_api_pre_call
 from .._turn_origin import consume_turn_origin
 from ..types import ChatParam
 from ._prepare import _apply_context_providers, _build_instruction, _prepare_run_kwargs
@@ -69,7 +70,14 @@ async def chat(
 
     if not chat_param._is_sentinel(chat_param.include_token_usage_to_model):
         kw["include_token_usage_to_model"] = chat_param.include_token_usage_to_model
-    api_call = await imodel.invoke(**kw)
+
+    await emit_api_pre_call(branch, imodel)
+    try:
+        api_call = await imodel.invoke(**kw)
+    except Exception as exc:
+        await emit_api_post_call(branch, imodel, error=exc)
+        raise
+    await emit_api_post_call(branch, imodel, api_call)
 
     await branch.emit_and_log(api_call)
 
