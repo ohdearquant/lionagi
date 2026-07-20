@@ -459,3 +459,72 @@ async def test_drop_legacy_invocations_status_check_swallows_operational_error(t
         assert "'completed_empty'" in row["sql"]
     finally:
         await state.close()
+
+
+async def test_invocations_rebuild_crash_mid_sequence_rolls_back_atomically(tmp_path):
+    """The raw-driver rebuild must be one BEGIN IMMEDIATE transaction. A crash
+    injected between DROP and RENAME must roll the whole rebuild back —
+    leaving the legacy table intact with its rows and no stray
+    ``invocations_new`` — so a later open() can heal the DB. Under
+    per-statement autocommit the same crash strands the data in
+    ``invocations_new`` with ``invocations`` gone, an unrecoverable state."""
+    import aiosqlite
+
+    db_path = tmp_path / "legacy-invocations-crash.db"
+    _create_legacy_invocations_status_db(db_path)
+    with sqlite3.connect(db_path) as seed:
+        seed.execute(
+            "INSERT INTO invocations (id, skill, started_at, created_at, updated_at, status)"
+            " VALUES ('inv-1', 'demo', 0, 0, 0, 'running')"
+        )
+        seed.commit()
+
+    real_execute = aiosqlite.Connection.execute
+    crash = {"armed": True}
+
+    def _crashing_execute(self, sql, *args, **kwargs):
+        if crash["armed"] and "RENAME TO invocations" in str(sql):
+            raise sqlite3.OperationalError("disk I/O error")
+        return real_execute(self, sql, *args, **kwargs)
+
+    aiosqlite.Connection.execute = _crashing_execute
+    try:
+        state = StateDB(db_path)
+        with pytest.raises(sqlite3.OperationalError):
+            await state.open()
+        await state.close()
+    finally:
+        aiosqlite.Connection.execute = real_execute
+
+    # Atomic rollback: legacy table intact with its row, no stray _new table.
+    with sqlite3.connect(db_path) as check:
+        tables = {
+            r[0]
+            for r in check.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'invocations%'"
+            )
+        }
+        assert tables == {"invocations"}, tables
+        rows = list(check.execute("SELECT id FROM invocations"))
+        assert rows == [("inv-1",)]
+
+    # And the DB is healable: a clean re-open completes the rebuild.
+    crash["armed"] = False
+    state = StateDB(db_path)
+    await state.open()
+    try:
+        async with state._read() as conn:
+            sql = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT sql FROM sqlite_master WHERE type='table' AND name='invocations'"
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )["sql"]
+        assert "completed_empty" in sql
+    finally:
+        await state.close()
