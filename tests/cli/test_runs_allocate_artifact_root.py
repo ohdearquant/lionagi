@@ -102,11 +102,11 @@ def test_write_notify_outcome_replaces_and_is_atomic(tmp_path, monkeypatch):
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
     run = allocate_run(run_id="outcome-run")
 
-    run.write_notify_outcome({"ok": False, "exit_code": 1, "stderr_first_line": "boom"})
-    run.write_notify_outcome({"ok": True, "exit_code": 0, "stderr_first_line": None})
+    run.write_notify_outcome({"ok": False, "exit_code": 1, "stderr_path": "boom"})
+    run.write_notify_outcome({"ok": True, "exit_code": 0, "stderr_path": None})
 
     outcome = json.loads(run.notify_outcome_path.read_text())
-    assert outcome == {"ok": True, "exit_code": 0, "stderr_first_line": None}
+    assert outcome == {"ok": True, "exit_code": 0, "stderr_path": None}
     assert not run.notify_outcome_path.with_suffix(".json.tmp").exists()
 
     manifest = json.loads(run.manifest_path.read_text())

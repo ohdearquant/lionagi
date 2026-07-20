@@ -174,6 +174,25 @@ class RunDir:
         self.state_root.mkdir(parents=True, exist_ok=True)
         _atomic_write_json(self.notify_outcome_path, data)
 
+    @property
+    def notify_stderr_path(self) -> Path:
+        return self.state_root / "notify_stderr.log"
+
+    def write_notify_stderr(self, text: str) -> Path:
+        """Capture a notify adapter's stderr to an owner-only file (0600).
+
+        Adapter output is free text that may carry a credential from any
+        source, so it is written once, readable only by the user running
+        the process, and referenced by path everywhere else instead of
+        being copied into records or log lines.
+        """
+        self.state_root.mkdir(parents=True, exist_ok=True)
+        path = self.notify_stderr_path
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        return path
+
     # ── Directory setup ─────────────────────────────────────────────
 
     def ensure_state_dirs(self) -> None:

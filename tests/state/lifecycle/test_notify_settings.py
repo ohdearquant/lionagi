@@ -326,9 +326,9 @@ async def test_exec_handler_swallows_nonzero_exit_and_timeout(monkeypatch, caplo
 def _outcome_fn_for(run):
     from lionagi.state.lifecycle.notify_settings import _record_notify_outcome_to_run
 
-    def _fn(*, ok, exit_code, stderr_first_line):
-        _record_notify_outcome_to_run(
-            run, ok=ok, exit_code=exit_code, stderr_first_line=stderr_first_line
+    def _fn(*, ok, exit_code, stderr_text):
+        return _record_notify_outcome_to_run(
+            run, ok=ok, exit_code=exit_code, stderr_text=stderr_text
         )
 
     return _fn
@@ -367,8 +367,11 @@ async def test_exec_handler_records_nonzero_exit_outcome_and_warns(monkeypatch, 
     assert outcome == {
         "ok": False,
         "exit_code": 1,
-        "stderr_first_line": "boom",
+        "stderr_path": str(run.notify_stderr_path),
     }
+    # The stderr text lives only in the captured file, never in the record --
+    # and the capture is the whole output, not just its first line.
+    assert run.notify_stderr_path.read_text() == "boom\nsecond line"
     # The outcome lands in its own file -- run.json's own terminal status is
     # never touched by notify bookkeeping.
     manifest = json.loads(run.manifest_path.read_text())
@@ -434,8 +437,9 @@ async def test_exec_handler_redacts_argv_and_bounds_stderr_in_warn_and_outcome(
     assert "--token" not in warn_calls[0]
     assert "notify" in warn_calls[0]
 
-    # Stderr is bounded, not left as arbitrary-length free text.
-    assert len(outcome["stderr_first_line"]) <= STDERR_SNIPPET_LIMIT + 1  # +1 for the ellipsis
+    # The adapter's stderr is not in the record at all -- only a path to the
+    # owner-only file that holds it.
+    assert outcome["stderr_path"] == str(run.notify_stderr_path)
     assert len(warn_calls[0]) < len(long_detail)
 
 
@@ -482,7 +486,7 @@ async def test_exec_handler_records_timeout_outcome_and_warns(monkeypatch, tmp_p
     assert outcome == {
         "ok": False,
         "exit_code": None,
-        "stderr_first_line": None,
+        "stderr_path": None,
     }
     assert len(warn_calls) == 1
     assert "timed out" in warn_calls[0]
@@ -512,7 +516,9 @@ async def test_exec_handler_records_spawn_error_outcome_and_warns(monkeypatch, t
     outcome = json.loads(run.notify_outcome_path.read_text())
     assert outcome["ok"] is False
     assert outcome["exit_code"] is None
-    assert "no such file" in outcome["stderr_first_line"]
+    # A spawn failure produces no adapter output to capture; the reason is
+    # Python's own message and stays on the warning channel.
+    assert outcome["stderr_path"] is None
     assert len(warn_calls) == 1
     assert "failed to run" in warn_calls[0]
     assert "notify-hook" in warn_calls[0]
@@ -550,7 +556,7 @@ async def test_exec_handler_records_success_outcome_without_warn(monkeypatch, tm
     assert outcome == {
         "ok": True,
         "exit_code": 0,
-        "stderr_first_line": None,
+        "stderr_path": None,
     }
     assert warn_calls == []
 
@@ -649,7 +655,7 @@ async def test_run_scoped_outcome_survives_a_later_run_allocation(monkeypatch, t
     assert json.loads(run_a.notify_outcome_path.read_text()) == {
         "ok": True,
         "exit_code": 0,
-        "stderr_first_line": None,
+        "stderr_path": None,
     }
     assert not run_b.notify_outcome_path.exists()
 
@@ -1028,7 +1034,7 @@ async def test_adapter_argument_values_echoed_on_stderr_are_redacted(monkeypatch
 
     outcome_text = run.notify_outcome_path.read_text()
     assert secret not in outcome_text
-    assert "***" in json.loads(outcome_text)["stderr_first_line"]
+    assert json.loads(outcome_text)["stderr_path"] == str(run.notify_stderr_path)
 
     assert len(warn_calls) == 1
     assert secret not in warn_calls[0]
@@ -1037,3 +1043,93 @@ async def test_adapter_argument_values_echoed_on_stderr_are_redacted(monkeypatch
     logged = "\n".join(record.getMessage() for record in caplog.records)
     assert secret not in logged
     assert "--token" not in logged
+
+
+@pytest.mark.asyncio
+async def test_env_sourced_credential_in_adapter_stderr_reaches_no_shared_surface(
+    monkeypatch, tmp_path, caplog
+):
+    """An adapter can print a credential it got from anywhere -- an inherited
+    environment variable, a file it read -- and no value-matching redaction
+    can recognize it. So the adapter's stderr goes to an owner-only file and
+    every shared surface (warn channel, log, outcome record) carries only the
+    path to it."""
+    import stat
+
+    import lionagi.cli._runs as runs_mod
+    from lionagi.cli._runs import allocate_run
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="env-secret-run")
+
+    warn_calls: list[str] = []
+    monkeypatch.setattr("lionagi.cli._logging.warn", warn_calls.append)
+
+    # The secret is NOT an argv element -- the adapter inherited it.
+    env_secret = "env-cred-9f8e7d6c5b4a"
+    monkeypatch.setenv("NOTIFY_WEBHOOK_TOKEN", env_secret)
+    echoed = f"hook failed: POST rejected for token {env_secret}"
+
+    class _FakeProc:
+        returncode = 1
+
+        async def communicate(self, data=None):
+            return (b"", echoed.encode())
+
+    async def _fake_exec(*args, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=("notify-hook",)), outcome_fn=_outcome_fn_for(run)
+    )
+    with caplog.at_level(logging.DEBUG):
+        await handler(_envelope())
+
+    outcome_text = run.notify_outcome_path.read_text()
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+
+    assert env_secret not in outcome_text
+    assert env_secret not in logged
+    assert len(warn_calls) == 1
+    assert env_secret not in warn_calls[0]
+
+    # The operator can still diagnose: the path is named, and the file holds
+    # the full stderr, readable only by them.
+    captured = run.notify_stderr_path
+    assert str(captured) in warn_calls[0]
+    assert captured.read_text() == echoed
+    assert stat.S_IMODE(captured.stat().st_mode) == 0o600
+    assert json.loads(outcome_text)["stderr_path"] == str(captured)
+
+
+@pytest.mark.asyncio
+async def test_unbound_handler_drops_adapter_stderr_rather_than_sharing_it(monkeypatch, caplog):
+    """With no run bound there is nowhere owner-only to put the stderr, so it
+    is dropped -- never rerouted onto the log or the warning channel."""
+    warn_calls: list[str] = []
+    monkeypatch.setattr("lionagi.cli._logging.warn", warn_calls.append)
+
+    secret = "unbound-secret-abc123"
+
+    class _FakeProc:
+        returncode = 3
+
+        async def communicate(self, data=None):
+            return (b"", f"failed with {secret}".encode())
+
+    async def _fake_exec(*args, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    handler = build_handler(ResolvedNotifyHandler(argv=("notify-hook",)))
+    with caplog.at_level(logging.DEBUG):
+        await handler(_envelope())
+
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert secret not in logged
+    assert len(warn_calls) == 1
+    assert secret not in warn_calls[0]
+    assert "not captured" in warn_calls[0]

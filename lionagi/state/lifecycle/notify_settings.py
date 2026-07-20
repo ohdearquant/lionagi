@@ -273,27 +273,45 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> ResolvedNotifyHandle
     return None
 
 
-OutcomeFn = Callable[..., None]
+# Returns the path the adapter's stderr was captured to, or None.
+OutcomeFn = Callable[..., "str | None"]
 
 
 def _record_notify_outcome_to_run(
-    run: RunDir, *, ok: bool, exit_code: int | None, stderr_first_line: str | None
-) -> None:
+    run: RunDir, *, ok: bool, exit_code: int | None, stderr_text: str | None
+) -> str | None:
     """Best-effort: record the exec adapter's outcome into *run*'s own
     notify_outcome.json (a single file, replacement semantics, never merged
-    with -- or written into -- run.json). Never raises: this must never
-    affect the run itself.
+    with -- or written into -- run.json), and capture the adapter's stderr
+    to an owner-readable file beside it. Returns that file's path, or None
+    if there was no stderr to capture. Never raises: this must never affect
+    the run itself.
+
+    The stderr text itself is never placed in the outcome record. Adapter
+    output is free text that can contain a credential from any source --
+    an inherited environment variable, a file the adapter read -- so it
+    cannot be scrubbed by matching against values we know. Keeping it in
+    one owner-only file, referenced by path, is what bounds the exposure:
+    the aggregated surfaces (this record, the log, the warning channel)
+    carry the path instead of the content.
     """
+    stderr_path: str | None = None
+    try:
+        if stderr_text:
+            stderr_path = str(run.write_notify_stderr(stderr_text))
+    except Exception:  # noqa: BLE001 -- outcome bookkeeping must never affect the run
+        logger.debug("failed to capture notify.on_terminal adapter stderr", exc_info=True)
     try:
         run.write_notify_outcome(
             {
                 "ok": ok,
                 "exit_code": exit_code,
-                "stderr_first_line": stderr_first_line,
+                "stderr_path": stderr_path,
             }
         )
     except Exception:  # noqa: BLE001 -- outcome bookkeeping must never affect the run
         logger.debug("failed to record notify.on_terminal outcome", exc_info=True)
+    return stderr_path
 
 
 def _warn_adapter_failure(msg: str) -> None:
@@ -384,9 +402,12 @@ def _default_payload(envelope: RunTerminalEnvelope) -> dict[str, Any]:
     return envelope.to_dict()
 
 
-def _noop_outcome_fn(*, ok: bool, exit_code: int | None, stderr_first_line: str | None) -> None:
+def _noop_outcome_fn(*, ok: bool, exit_code: int | None, stderr_text: str | None) -> str | None:
     """No run is bound to this handler -- outcome recording is skipped
-    rather than guessing at a target (see register_run_notify_outcome_scope)."""
+    rather than guessing at a target (see register_run_notify_outcome_scope).
+    With no run directory there is nowhere owner-only to put the adapter's
+    stderr, so it is dropped rather than routed to a shared surface."""
+    return None
 
 
 def _make_exec_handler(
@@ -423,7 +444,7 @@ def _make_exec_handler(
             logger.warning(
                 "notify.on_terminal exec adapter %s timed out", _adapter_label(launch_argv)
             )
-            outcome_fn(ok=False, exit_code=None, stderr_first_line=None)
+            outcome_fn(ok=False, exit_code=None, stderr_text=None)
             _warn_adapter_failure(
                 f"notify.on_terminal adapter {_adapter_label(launch_argv)} timed out"
             )
@@ -444,30 +465,41 @@ def _make_exec_handler(
                 _adapter_label(launch_argv),
                 detail,
             )
-            outcome_fn(ok=False, exit_code=None, stderr_first_line=detail)
+            outcome_fn(ok=False, exit_code=None, stderr_text=None)
             warn_suffix = f": {detail}" if detail else ""
             _warn_adapter_failure(
                 f"notify.on_terminal adapter {_adapter_label(launch_argv)} failed to run{warn_suffix}"
             )
             return
         if proc.returncode != 0:
-            detail = stderr_bytes.decode(errors="replace").strip()
-            bounded_detail = _first_line(detail, launch_argv)
-            suffix = f": {bounded_detail}" if bounded_detail else ""
+            # The adapter's own stderr never reaches the log, the warning
+            # channel, or the outcome record: it is free text that can carry
+            # a credential the adapter obtained anywhere (an inherited env
+            # var, a file it read), which no value-matching redaction can
+            # recognize. It is captured to an owner-only file and referenced
+            # by path instead.
+            stderr_text = stderr_bytes.decode(errors="replace").strip()
+            stderr_path = outcome_fn(
+                ok=False, exit_code=proc.returncode, stderr_text=stderr_text or None
+            )
+            if stderr_path:
+                where = f"; stderr captured at {stderr_path}"
+            elif stderr_text:
+                where = "; stderr not captured (no run directory bound to this handler)"
+            else:
+                where = ""
             logger.warning(
                 "notify.on_terminal exec adapter %s exited %s%s",
                 _adapter_label(launch_argv),
                 proc.returncode,
-                suffix,
+                where,
             )
-            outcome_fn(ok=False, exit_code=proc.returncode, stderr_first_line=bounded_detail)
-            warn_suffix = f": {bounded_detail}" if bounded_detail else ""
             _warn_adapter_failure(
                 f"notify.on_terminal adapter {_adapter_label(launch_argv)} exited "
-                f"{proc.returncode}{warn_suffix}"
+                f"{proc.returncode}{where}"
             )
         else:
-            outcome_fn(ok=True, exit_code=0, stderr_first_line=None)
+            outcome_fn(ok=True, exit_code=0, stderr_text=None)
 
     return _exec_handler
 
@@ -491,7 +523,8 @@ def build_handler(
     is imported eagerly here so a bad ref resolves to disabled, not a crash.
 
     *outcome_fn*, if given, is called with the exec adapter's outcome
-    (``ok``, ``exit_code``, ``stderr_first_line``) -- omit it (the default)
+    (``ok``, ``exit_code``, ``stderr_text``) and returns the path its stderr
+    was captured to, if any -- omit it (the default)
     when no specific run is bound to this handler; outcome recording is then
     skipped rather than guessing at a target run. Never applies to a python
     adapter (only the exec adapter's process outcome is tracked).
@@ -573,9 +606,9 @@ def register_run_notify_outcome_scope(
     if resolved.filter_ids is not None and entity_id not in resolved.filter_ids:
         return None
 
-    def _outcome_fn(*, ok: bool, exit_code: int | None, stderr_first_line: str | None) -> None:
-        _record_notify_outcome_to_run(
-            run, ok=ok, exit_code=exit_code, stderr_first_line=stderr_first_line
+    def _outcome_fn(*, ok: bool, exit_code: int | None, stderr_text: str | None) -> str | None:
+        return _record_notify_outcome_to_run(
+            run, ok=ok, exit_code=exit_code, stderr_text=stderr_text
         )
 
     handler = build_handler(resolved, outcome_fn=_outcome_fn)
