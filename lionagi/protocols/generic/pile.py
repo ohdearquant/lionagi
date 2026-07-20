@@ -353,9 +353,11 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
     def items(self) -> Sequence[tuple[UUID, T]]:
         return [(key, self.collections[key]) for key in self.progression]
 
+    @synchronized
     def is_empty(self) -> bool:
         return len(self.progression) == 0
 
+    @synchronized
     def size(self) -> int:
         return len(self.progression)
 
@@ -383,10 +385,12 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
     def __contains__(self, item: ID.RefSeq | ID.Ref) -> bool:
         return item in self.progression
 
+    @synchronized
     def __len__(self) -> int:
         return len(self.collections)
 
     @override
+    @synchronized
     def __bool__(self) -> bool:
         return not self.is_empty()
 
