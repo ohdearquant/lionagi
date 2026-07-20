@@ -566,6 +566,11 @@ def _forward_mcp_to_cli_request(
             return
         servers = data.get("mcpServers", {}) if isinstance(data, dict) else {}
 
+    # Keep the pre-filter server set: an explicit (possibly empty) allowlist
+    # needs to know which discovered servers it excluded, not just which it
+    # kept (see the codex disabling block below).
+    resolved_servers = servers
+
     if spec.mcp_servers is not None:
         # Explicit filter set (possibly empty): mirrors _load_mcp's
         # server_names semantics, where an empty list loads nothing.
@@ -581,15 +586,111 @@ def _forward_mcp_to_cli_request(
 
     # codex: the CLI takes no JSON MCP-config input; each server is forwarded
     # as `-c mcp_servers.<name>.<field>=<value>` config overrides, which the
-    # request model already serializes onto the command line. Only the fields
-    # the codex CLI understands are forwarded; unknown server shapes are
-    # skipped rather than emitted as unparseable overrides.
+    # request model already serializes onto the command line as TOML. Only
+    # the fields the codex CLI's own McpServerConfig schema understands are
+    # forwarded (verified against the installed codex CLI: `codex mcp list
+    # --json` echoes back exactly this field set); a field outside that set
+    # is a caller mistake, not a value to silently drop, so it's a loud
+    # ConfigurationError. Server shapes lacking both `command` and `url`
+    # aren't a real MCP server transport at all and are skipped outright.
     overrides = dict(branch.chat_model.endpoint.config.kwargs.get("config_overrides") or {})
+    # `env` carries arbitrary secret-bearing values (API keys/tokens) and
+    # must never land on argv (visible via `ps`, request logs, etc). Every
+    # other supported field is a name, path, flag, or timeout -- safe to
+    # pass as a `-c` override.
+    secret_env: dict[str, dict] = {}
     for server_name, server_cfg in servers.items():
         if not isinstance(server_cfg, dict) or not ("command" in server_cfg or "url" in server_cfg):
             continue
-        for field_key in ("command", "args", "env", "url"):
-            if server_cfg.get(field_key) is not None:
-                overrides[f"mcp_servers.{server_name}.{field_key}"] = server_cfg[field_key]
+        unsupported = [k for k in server_cfg if k not in _CODEX_MCP_SERVER_FIELDS]
+        if unsupported:
+            raise ConfigurationError(
+                f"MCP server {server_name!r} sets field(s) {unsupported!r} that "
+                "the codex CLI's `-c mcp_servers.<name>.<field>` passthrough "
+                f"does not support. Supported fields: {sorted(_CODEX_MCP_SERVER_FIELDS)!r}."
+            )
+        for field_key in _CODEX_MCP_SERVER_FIELDS:
+            value = server_cfg.get(field_key)
+            if value is None:
+                continue
+            if field_key == "env":
+                secret_env[server_name] = value
+            else:
+                overrides[f"mcp_servers.{server_name}.{field_key}"] = value
+
+    if spec.mcp_servers is not None:
+        # Explicit allowlist (including an explicit empty one): every
+        # discovered server it excluded must be actively disabled, or codex
+        # keeps loading it from ambient/profile config regardless. codex has
+        # no wholesale "clear mcp_servers" override -- `-c mcp_servers={}`
+        # merges onto, rather than replaces, the existing table (verified
+        # against the installed CLI) -- so each excluded server is disabled
+        # by name instead.
+        for excluded_name in resolved_servers:
+            if excluded_name not in servers:
+                overrides[f"mcp_servers.{excluded_name}.enabled"] = False
+
+    if secret_env:
+        _write_codex_mcp_env_profile(branch, secret_env)
     if overrides:
         branch.chat_model.endpoint.config.kwargs["config_overrides"] = overrides
+
+
+# Fields the codex CLI's MCP server config schema accepts, verified against
+# the installed `codex` CLI (`codex mcp list --json` output field names).
+# `env` is handled separately -- see `_write_codex_mcp_env_profile`.
+_CODEX_MCP_SERVER_FIELDS = frozenset(
+    {
+        "command",
+        "args",
+        "env",
+        "url",
+        "cwd",
+        "env_vars",
+        "startup_timeout_ms",
+        "enabled",
+        "required",
+        "bearer_token_env_var",
+        "http_headers",
+        "env_http_headers",
+    }
+)
+
+
+def _write_codex_mcp_env_profile(branch: Branch, secret_env: dict[str, dict]) -> None:
+    """Route MCP server `env` maps (may carry secrets) to codex via a
+    private, on-disk config profile instead of the `-c` command line.
+
+    codex layers ``$CODEX_HOME/<name>.config.toml`` on top of its base
+    config for any invocation given ``-p <name>`` (confirmed against the
+    installed CLI: a `sandbox_mode` set only in such a profile file took
+    effect on a real `codex exec` run). Writing the env map there, rather
+    than putting it on argv, keeps it out of process listings (`ps`) and
+    serialized request records.
+    """
+    import atexit
+    import uuid
+    from pathlib import Path
+
+    import toml
+
+    existing_profile = branch.chat_model.endpoint.config.kwargs.get("profile")
+    if existing_profile:
+        raise ConfigurationError(
+            "Cannot forward MCP server `env` secrets for codex: the request "
+            f"already has an explicit profile={existing_profile!r}, and codex "
+            "accepts only one `-p` profile per invocation. Remove the "
+            "explicit profile or drop `env` from the MCP server config."
+        )
+
+    codex_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    codex_home.mkdir(parents=True, exist_ok=True)
+    profile_name = f"lionagi-mcp-{uuid.uuid4().hex}"
+    profile_path = codex_home / f"{profile_name}.config.toml"
+
+    profile_doc = {"mcp_servers": {name: {"env": env} for name, env in secret_env.items()}}
+    profile_path.write_text(toml.dumps(profile_doc))
+    os.chmod(profile_path, 0o600)
+    atexit.register(lambda: profile_path.unlink(missing_ok=True))
+
+    branch.chat_model.endpoint.config.kwargs["profile"] = profile_name
