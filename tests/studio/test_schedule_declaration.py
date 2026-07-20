@@ -270,6 +270,57 @@ def test_notify_valid_accepted():
     assert doc.schedules["m"].notify.on == ["failed", "timed_out"]
 
 
+def _notify_yaml_manifest(notify_body: str) -> str:
+    return f"""
+apiVersion: lionagi.io/v1alpha1
+kind: ScheduleSet
+metadata:
+  name: a
+  project: demo
+schedules:
+  m:
+    trigger:
+      every: 1h
+    target:
+      kind: command
+      executable: notify-run
+    notify:
+{notify_body}
+"""
+
+
+def test_notify_bare_on_key_parses_as_string_not_bool():
+    """PyYAML's SafeLoader resolves a bare `on` key to the bool True (YAML
+    1.1 implicit booleans). A hand-authored notify block with an unquoted
+    `on:` must still parse and validate, not fail extra="forbid" naming
+    `True`."""
+    manifest = _notify_yaml_manifest("      on: [failed]\n      command: notify-run\n")
+    doc = parse_schedule_set(manifest)
+    assert doc.schedules["m"].notify.on == ["failed"]
+
+
+def test_notify_quoted_on_key_still_works():
+    manifest = _notify_yaml_manifest('      "on": [failed]\n      command: notify-run\n')
+    doc = parse_schedule_set(manifest)
+    assert doc.schedules["m"].notify.on == ["failed"]
+
+
+def test_notify_genuinely_unknown_key_still_rejected():
+    manifest = _notify_yaml_manifest(
+        "      on: [failed]\n      command: notify-run\n      bogus: 1\n"
+    )
+    with pytest.raises(ValidationError, match="bogus"):
+        parse_schedule_set(manifest)
+
+
+def test_sequence_mapping_key_raises_value_error_not_type_error():
+    """A sequence used as a mapping key is unhashable. SafeLoader rejects
+    this with ConstructorError; the custom key-construction override must
+    preserve that check instead of raising an uncaught TypeError."""
+    with pytest.raises(ValueError, match="invalid.yaml"):
+        parse_schedule_set("[a, b]: value\n", source="invalid.yaml")
+
+
 def _policies_manifest(policies_yaml: str, cwd: Path) -> str:
     return f"""
 apiVersion: lionagi.io/v1alpha1
