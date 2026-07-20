@@ -296,6 +296,7 @@ export function buildRunSteps(
     branchSegments.forEach((segment, index) => {
       const segmentMessages = branch.messages.filter((message) => {
         const timestamp = message.timestamp;
+        if (timestamp == null) return false;
         const after = segment.started_at == null || timestamp >= segment.started_at;
         const before = segment.ended_at == null || timestamp <= segment.ended_at + 1;
         return after && before;
