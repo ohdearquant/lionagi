@@ -1,23 +1,26 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression: every production call site that can bring a `.lionagi`
-directory into existence must invalidate `find_lionagi_dirs()`'s
-process-lifetime cache, not just `li hooks import`.
+"""Regression: `find_lionagi_dirs()` must always reflect current `.lionagi/`
+topology, regardless of which code path created or removed a directory.
 
-`find_lionagi_dirs()` is memoized per `(cwd, home)` for the life of the
-process (see `lionagi/_paths.py`). A prior fix invalidated that cache after
-`li hooks import` creates a project-local `.lionagi/`, but other production
-paths create the same discovered directory -- notably `li agent`'s
-last-branch pointer and the plugin settings writers -- without clearing the
-cache. A long-lived process (an embedding host, or any code path that calls
-`find_lionagi_dirs()` before and after one of these writers runs) kept
-seeing the pre-creation `[]` result even after the directory had been
-created in-process.
+The original design memoized the whole discovery result per `(cwd, home)`
+for the life of the process, and relied on every production creator calling
+`ensure_lionagi_dir()` to invalidate that cache. That kept regressing: a
+prior fix invalidated the cache after `li hooks import` creates a
+project-local `.lionagi/`, then further writers (the last-branch pointer,
+the plugin settings writers) needed the same treatment, and then stream
+persistence (`Branch.run(..., stream_persist=True)`) was found writing
+`.lionagi/logs/runs/` through the generic `acreate_path()` utility, which
+has no idea it just created lionagi topology and cannot call the helper.
 
-Both writers below now create their directory via the shared
-`lionagi._paths.ensure_lionagi_dir` helper, which invalidates the cache as
-part of directory creation.
+`lionagi/_paths.py` now only caches the expensive part of discovery -- the
+`git rev-parse --show-toplevel` subprocess call, keyed by cwd -- and
+re-evaluates the cheap `Path.is_dir()` existence checks on every call. A
+caller always sees current topology with no invalidation required from any
+writer; `ensure_lionagi_dir()` remains the recommended creation boundary,
+but a writer that bypasses it (like `acreate_path()`) no longer produces
+stale discovery results.
 """
 
 from __future__ import annotations
@@ -121,5 +124,93 @@ def test_locked_user_settings_invalidates_lionagi_dir_cache(monkeypatch, tmp_pat
 
         assert lionagi_home.is_dir()
         assert paths.find_lionagi_dirs() == [lionagi_home]
+    finally:
+        paths.clear_lionagi_dirs_cache()
+
+
+async def test_stream_persist_default_dir_visible_to_discovery(monkeypatch, tmp_path):
+    """`Branch.run(..., stream_persist=True)` writes its snapshot and buffer
+    under the default `LIONAGI_HOME / "logs" / "runs"` directory through the
+    generic `acreate_path()` path utility (`lionagi/ln/_utils.py`), not
+    through `ensure_lionagi_dir()`. A caller that primed discovery before
+    that write must still see the directory afterward -- not because the
+    writer invalidated anything, but because discovery re-checks existence
+    on every call.
+    """
+    import types
+    from unittest.mock import AsyncMock
+
+    from lionagi.operations.run.run import RunParam, run
+    from lionagi.service.imodel import iModel
+    from lionagi.service.types.stream_chunk import StreamChunk
+    from lionagi.session.branch import Branch
+
+    lionagi_home = tmp_path / ".lionagi"
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+    default_persist_dir = lionagi_home / "logs" / "runs"
+
+    model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
+    model.endpoint = types.SimpleNamespace(
+        is_cli=True,
+        session_id=None,
+        to_dict=lambda: {"type": "fake_cli", "session_id": None},
+    )
+    model.streaming_process_func = None
+
+    async def create_event(**kw):
+        return object()
+
+    model.create_event = create_event
+    model.executor = types.SimpleNamespace(append=AsyncMock(), config={})
+
+    async def stream(api_call=None):
+        yield StreamChunk(type="text", content="done")
+
+    model.stream = stream
+
+    branch = Branch()
+    branch.chat_model = model
+
+    paths.clear_lionagi_dirs_cache()
+    try:
+        # Prime the cache for this (cwd, home) before `.lionagi/` exists.
+        assert paths.find_lionagi_dirs() == []
+        assert not lionagi_home.is_dir()
+
+        param = RunParam(stream_persist=True, persist_dir=default_persist_dir)
+        async for _ in run(branch, "persist-me", param):
+            pass
+
+        assert default_persist_dir.is_dir()
+        assert paths.find_lionagi_dirs() == [lionagi_home]
+    finally:
+        paths.clear_lionagi_dirs_cache()
+
+
+def test_git_root_lookup_not_rerun_for_repeated_calls_at_same_cwd(monkeypatch, tmp_path):
+    """The git-root subprocess call is the only expensive part of discovery;
+    repeated `find_lionagi_dirs()` calls at the same cwd must not re-invoke
+    `git rev-parse --show-toplevel`, proving the remaining cache still does
+    its job now that `.lionagi/` existence is no longer memoized."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+    real_run = paths.subprocess.run
+    calls = []
+
+    def counting_run(*args, **kwargs):
+        calls.append(args)
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(paths.subprocess, "run", counting_run)
+
+    paths.clear_lionagi_dirs_cache()
+    try:
+        paths.find_lionagi_dirs()
+        paths.find_lionagi_dirs()
+        paths.find_lionagi_dirs()
+        assert len(calls) == 1
     finally:
         paths.clear_lionagi_dirs_cache()

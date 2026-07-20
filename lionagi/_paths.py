@@ -39,12 +39,29 @@ def _find_git_root(cwd: Path) -> Path | None:
 
 
 @lru_cache(maxsize=32)
-def _find_lionagi_dirs_cached(cwd: Path, home: Path) -> tuple[Path, ...]:
-    """Find .lionagi/ directories for a stable cwd/home pair."""
+def _find_git_root_cached(cwd: Path) -> Path | None:
+    """Memoized `_find_git_root`: the git-root fact is stable for a given
+    cwd, and resolving it shells out to `git` under a timeout, which is the
+    only part of directory discovery expensive enough to be worth caching.
+    """
+    return _find_git_root(cwd)
+
+
+def find_lionagi_dirs() -> list[Path]:
+    """Find .lionagi/ directories, project-local first then global ~/.lionagi/.
+
+    Only the git-root lookup is cached (per cwd, for the life of the
+    process) -- the `.lionagi/` existence checks themselves are cheap
+    `Path.is_dir()` stats and are re-evaluated on every call. A caller
+    always sees current `.lionagi/` topology; nothing needs to invalidate
+    anything after creating or removing a `.lionagi/` directory.
+    """
+    cwd = Path.cwd()
+    home = Path.home()
     dirs: list[Path] = []
 
-    # 1. Git root
-    git_root = _find_git_root(cwd)
+    # 1. Git root (cached lookup, live existence check)
+    git_root = _find_git_root_cached(cwd)
     if git_root is not None:
         candidate = git_root / ".lionagi"
         if candidate.is_dir():
@@ -61,47 +78,40 @@ def _find_lionagi_dirs_cached(cwd: Path, home: Path) -> tuple[Path, ...]:
     if home_candidate.is_dir() and home_candidate not in dirs:
         dirs.append(home_candidate)
 
-    return tuple(dirs)
-
-
-def find_lionagi_dirs() -> list[Path]:
-    """Find .lionagi/ directories, project-local first then global ~/.lionagi/.
-
-    Cached per (cwd, home) for the lifetime of the process: two calls at the
-    same location return the same result without re-probing the filesystem,
-    even if a `.lionagi/` directory is created or removed in between. A
-    caller that mutates `.lionagi/` topology at a stable (cwd, home) --
-    e.g. an embedding long-lived process, not a one-shot CLI invocation --
-    must call `clear_lionagi_dirs_cache()` afterward, or its own later
-    lookups (and any library code it calls) will keep seeing the pre-mutation
-    result until the process exits.
-    """
-    return list(_find_lionagi_dirs_cached(Path.cwd(), Path.home()))
+    return dirs
 
 
 def clear_lionagi_dirs_cache() -> None:
-    """Clear cached directory discovery after filesystem topology changes."""
-    _find_lionagi_dirs_cached.cache_clear()
+    """Clear the cached git-root resolution.
+
+    `find_lionagi_dirs()` no longer caches `.lionagi/` existence, so this
+    only matters if the git root for a cwd itself changes in-process (e.g.
+    a test re-inits a repo at the same path); it is not required after
+    creating or removing a `.lionagi/` directory.
+    """
+    _find_git_root_cached.cache_clear()
 
 
 def ensure_lionagi_dir(path: Path) -> Path:
-    """Create *path* (with parents) if missing, then invalidate discovery cache.
+    """Create *path* (with parents) if missing.
 
-    Every production call site that may bring a `.lionagi` directory --
-    project-local or the global `~/.lionagi` -- into existence for the first
-    time must create it through this helper instead of calling `Path.mkdir`
-    directly, so a later `find_lionagi_dirs()` call in the same process sees
-    the new topology instead of the pre-creation result cached by an earlier
-    call.
+    Production call sites that may bring a `.lionagi` directory --
+    project-local or the global `~/.lionagi` -- into existence for the
+    first time should still create it through this helper rather than a
+    bare `Path.mkdir`: it is the explicit creation boundary for that
+    topology change. `find_lionagi_dirs()` re-checks `.lionagi/` existence
+    on every call, so callers that bypass this helper (e.g. a generic path
+    utility that happens to create a `.lionagi/*` path) no longer produce
+    stale discovery results either.
     """
     path.mkdir(parents=True, exist_ok=True)
     clear_lionagi_dirs_cache()
     return path
 
 
-# Keep the conventional lru_cache hook available on the public finder while
-# caching by cwd/home internally so in-process directory changes cannot reuse
-# stale discovery results.
+# Keep the conventional lru_cache hook available on the public finder, even
+# though the finder itself is no longer memoized -- it now only clears the
+# git-root cache the finder depends on.
 find_lionagi_dirs.cache_clear = clear_lionagi_dirs_cache
 
 

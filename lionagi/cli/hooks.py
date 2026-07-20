@@ -30,8 +30,6 @@ import shlex
 from pathlib import Path
 from typing import Any
 
-from lionagi._paths import clear_lionagi_dirs_cache
-
 from ._logging import log_error
 
 __all__ = ("add_hooks_subparser", "run_hooks")
@@ -337,14 +335,6 @@ def _run_import(source: str, path: str | None, cwd: str | None) -> int:
         except OSError as exc:
             log_error(f"could not open {settings_path} for writing: {exc}")
             return 1
-
-    if imported_count:
-        # This command is the one place lionagi creates `.lionagi/` at
-        # runtime, so it's the lifecycle boundary where a process-lifetime
-        # cached find_lionagi_dirs() result can go stale: invalidate it here
-        # rather than leaving newly-created directories invisible to any
-        # discovery call made later in this process.
-        clear_lionagi_dirs_cache()
 
     for line in report:
         print(line)
