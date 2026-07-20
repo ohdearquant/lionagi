@@ -104,15 +104,24 @@ export function appendStreamedMessage(
       if (branch.id !== branchId) return branch;
       const firstMessageAt = branch.first_message_at ?? branch.started_at;
       const lastMessageAt = branch.last_message_at ?? branch.ended_at;
+      const timestamp = message.timestamp;
       return {
         ...branch,
         messages: [...branch.messages, message],
         message_total:
           Math.max(branch.message_total ?? branch.messages.length, branch.messages.length) + 1,
         first_message_at:
-          firstMessageAt == null ? message.timestamp : Math.min(firstMessageAt, message.timestamp),
+          timestamp == null
+            ? firstMessageAt
+            : firstMessageAt == null
+              ? timestamp
+              : Math.min(firstMessageAt, timestamp),
         last_message_at:
-          lastMessageAt == null ? message.timestamp : Math.max(lastMessageAt, message.timestamp),
+          timestamp == null
+            ? lastMessageAt
+            : lastMessageAt == null
+              ? timestamp
+              : Math.max(lastMessageAt, timestamp),
       };
     }),
   };
