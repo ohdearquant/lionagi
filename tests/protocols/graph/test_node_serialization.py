@@ -17,6 +17,27 @@ def _content_hash(content):
     return compute_hash(content, none_as_valid=True)
 
 
+@pytest.fixture(autouse=True)
+def _registry_snapshot():
+    """Snapshot LION_CLASS_REGISTRY before each test; restore on teardown.
+
+    Every ``create_node(...)`` call in this module registers a Node subclass
+    into the process-global registry via ``Node.__pydantic_init_subclass__``
+    and never unregisters it. Left unguarded, those entries (including one
+    created with an empty name, whose key ends in a bare ".") outlive this
+    module's tests and can be picked up by an unrelated later test on the
+    same worker/process (e.g. ``get_class("")``'s short-name suffix match).
+    """
+    from lionagi._class_registry import LION_CLASS_REGISTRY
+
+    registry_snapshot = LION_CLASS_REGISTRY.copy()
+    try:
+        yield
+    finally:
+        LION_CLASS_REGISTRY.clear()
+        LION_CLASS_REGISTRY.update(registry_snapshot)
+
+
 class TestBackwardsCompatibility:
     """Ensure base Node and unaware subclasses remain unaffected."""
 

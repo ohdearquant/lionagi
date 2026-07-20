@@ -60,17 +60,43 @@ if _RSS_LOG_DIR:
 
     @pytest.hookimpl(hookwrapper=True)
     def pytest_runtest_protocol(item, nextitem):
+        worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
+        log_path = os.path.join(_RSS_LOG_DIR, f"rss-{worker}.jsonl")
         before = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
+        # Write a "start" row before running the test: if the worker is killed
+        # mid-test (the exact OOM/SIGKILL crash this log exists for), the
+        # crashing test never reaches the "end" row below, so a plain
+        # after-only log would silently omit it. The start row is the only
+        # trace of which test the worker was actually executing when it died.
+        with open(log_path, "a") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "worker": worker,
+                        "test": item.nodeid,
+                        "phase": "start",
+                        "peak_kb": before // _RSS_DIV,
+                    }
+                )
+                + "\n"
+            )
         yield
         after = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
         delta_kb = (after - before) // _RSS_DIV
         peak_kb = after // _RSS_DIV
-        worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
-        line = json.dumps(
-            {"worker": worker, "test": item.nodeid, "peak_kb": peak_kb, "delta_kb": delta_kb}
-        )
-        with open(os.path.join(_RSS_LOG_DIR, f"rss-{worker}.jsonl"), "a") as f:
-            f.write(line + "\n")
+        with open(log_path, "a") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "worker": worker,
+                        "test": item.nodeid,
+                        "phase": "end",
+                        "peak_kb": peak_kb,
+                        "delta_kb": delta_kb,
+                    }
+                )
+                + "\n"
+            )
 
 
 def pytest_addoption(parser):

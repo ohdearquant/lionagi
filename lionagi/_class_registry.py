@@ -45,6 +45,14 @@ def get_class(class_name: str) -> type:
     name), then dotted-path import, then legacy short-name lookup among the
     built-in modules. Raises ValueError if not found.
     """
+    if not class_name:
+        # An empty name can never be a legitimate class name; the short-name
+        # suffix-match fallback below (``key.endswith(f".{name}")``) would
+        # otherwise match ANY registry key ending in a bare ".", including
+        # keys accidentally left by a Node subclass created with an empty
+        # name (e.g. a dynamic factory called with name="").
+        raise ValueError(f"Unable to find class {class_name!r}")
+
     if class_name in LION_CLASS_REGISTRY:
         return LION_CLASS_REGISTRY[class_name]
 
