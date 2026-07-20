@@ -74,7 +74,12 @@ async def chat(
     await emit_api_pre_call(branch, imodel)
     try:
         api_call = await imodel.invoke(**kw)
-    except Exception as exc:
+    except BaseException as exc:
+        # BaseException, not Exception: asyncio.CancelledError is a
+        # BaseException, and cancellation mid-invoke must still pair with a
+        # post emission -- an unpaired pre-call leaves an open span for any
+        # observer of the hook bus. The original exception always propagates
+        # unchanged.
         await emit_api_post_call(branch, imodel, error=exc)
         raise
     await emit_api_post_call(branch, imodel, api_call)

@@ -123,6 +123,35 @@ async def test_chat_emits_api_post_call_with_error_status_when_invoke_raises():
     assert "provider is down" in post["error"]
 
 
+async def test_chat_emits_paired_post_call_on_cancellation_during_invoke():
+    """asyncio.CancelledError is a BaseException, not an Exception -- a bare
+    ``except Exception`` around ``imodel.invoke()`` lets cancellation mid-call
+    skip the post emission entirely, leaving an unpaired open span."""
+    import asyncio
+
+    branch = LionAGIMockFactory.create_mocked_branch(response="hello")
+    calls = _wire(branch, HookPoint.API_PRE_CALL, HookPoint.API_POST_CALL)
+
+    invoke_started = asyncio.Event()
+
+    async def _blocking_invoke(**kwargs):
+        invoke_started.set()
+        await asyncio.Event().wait()  # never resolves; only cancellation ends this
+
+    branch.chat_model.invoke = _blocking_invoke
+
+    task = asyncio.ensure_future(branch.chat("hi there"))
+    await invoke_started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert len(calls[HookPoint.API_PRE_CALL]) == 1
+    assert len(calls[HookPoint.API_POST_CALL]) == 1
+    assert calls[HookPoint.API_POST_CALL][0]["status"] == "error"
+
+
 async def test_chat_without_session_bus_does_not_crash():
     """A Branch with no HookBus attached (branch._hooks is None, the default)
     must behave exactly as before -- the adapter is a strict no-op."""
