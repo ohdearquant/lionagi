@@ -213,6 +213,43 @@ def test_resolve_hook_executable_bare_name_not_on_path_raises(tmp_path, monkeypa
         resolve_hook_executable(["myguard"], str(tmp_path))
 
 
+def test_open_executable_fd_non_posix_fallback_opens_regular_file(tmp_path, monkeypatch):
+    """Simulate a platform without `os.O_NOFOLLOW` (e.g. Windows) by forcing
+    the module's `_POSIX_NOFOLLOW_OPEN` flag off: a normal, non-symlink
+    executable must still open successfully via the fallback."""
+    import os as os_mod
+
+    import lionagi.hooks.external as ext_mod
+
+    monkeypatch.setattr(ext_mod, "_POSIX_NOFOLLOW_OPEN", False)
+    script = tmp_path / "guard"
+    script.write_text("#!/bin/sh\nexit 0\n")
+    script.chmod(0o755)
+
+    fd = ext_mod._open_executable_fd(script)
+    try:
+        assert os_mod.fstat(fd).st_size == len(script.read_bytes())
+    finally:
+        os_mod.close(fd)
+
+
+def test_open_executable_fd_non_posix_fallback_refuses_symlink(tmp_path, monkeypatch):
+    """Same fallback, but the resolved path is a symlink -- the non-atomic
+    pre-check must refuse it since `O_NOFOLLOW` isn't available to enforce
+    this atomically."""
+    import lionagi.hooks.external as ext_mod
+
+    monkeypatch.setattr(ext_mod, "_POSIX_NOFOLLOW_OPEN", False)
+    target = tmp_path / "real-guard"
+    target.write_text("#!/bin/sh\nexit 0\n")
+    target.chmod(0o755)
+    link = tmp_path / "guard"
+    link.symlink_to(target)
+
+    with pytest.raises(ExternalHookConfigError, match="symlink"):
+        ext_mod._open_executable_fd(link)
+
+
 def test_compute_trust_record_content_pinning_detects_digest_change(tmp_path):
     script = tmp_path / "guard"
     script.write_text("#!/bin/sh\nexit 0\n")
@@ -842,6 +879,58 @@ async def test_content_pinned_trust_survives_symlink_swap_after_prepare(monkeypa
         "the private copy made before the symlink swap must be what "
         "executed -- an attacker exit-2/'ATTACKER-RAN' run would have "
         "flipped this to deny"
+    )
+
+
+async def test_content_pinned_trust_survives_overwrite_between_copy_and_hash(monkeypatch, tmp_path):
+    """An open fd pins the INODE, not the CONTENT: hashing the source fd and
+    then separately re-reading that same fd to build the private copy
+    leaves a window in which an in-place overwrite between the hash read
+    and the copy read poisons the copy with attacker bytes while the
+    (already-read) digest still matches the trust record -- so the
+    attacker's bytes run as trusted. Fixed: the private copy is made
+    FIRST, from whatever bytes are at the fd at that instant, and the
+    trust digest is computed by re-hashing that copy afterward -- never
+    the source fd or path again. This test injects the overwrite right
+    after ``_hash_fd`` (the shared hash primitive) returns, reproducing
+    that attack window exactly: on the fixed code this call only ever
+    hashes the already-frozen private copy, so the source overwrite lands
+    too late to matter and the original (exit 0) approved bytes are what
+    execute -- the attacker's exit-2/'ATTACKER-RAN' must never appear."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    import lionagi.hooks.external as ext_mod
+    from lionagi.plugins._user_settings import write_user_settings
+
+    approved_dir = tmp_path / "approved"
+    approved_dir.mkdir()
+    script = approved_dir / "guard"
+    script.write_text("#!/bin/sh\ncat >/dev/null\nexit 0\n")
+    script.chmod(0o755)
+
+    record = compute_trust_record(["./guard"], str(approved_dir))
+    write_user_settings({"trusted_hook_commands": [record]})
+
+    original_hash_fd = ext_mod._hash_fd
+
+    def _hash_fd_then_overwrite_source(fd):
+        digest = original_hash_fd(fd)
+        # Attacker wins the race right after a hash read completes -- the
+        # exact gap between hashing the source fd and re-reading that
+        # same fd to build the copy.
+        script.write_text("#!/bin/sh\ncat >/dev/null\necho ATTACKER-RAN 1>&2\nexit 2\n")
+        script.chmod(0o755)
+        return digest
+
+    monkeypatch.setattr(ext_mod, "_hash_fd", _hash_fd_then_overwrite_source)
+
+    hook = external_hook_adapter(
+        event="PreToolUse", command=["./guard"], source="imported:claude", cwd=str(approved_dir)
+    )
+    result = await hook("bash", {"command": ["ls"]})
+    assert result == ToolPreDecision(decision="allow", updated_input=None), (
+        "the private copy must have been made from the pre-overwrite bytes "
+        "and hashed afterward -- an attacker exit-2/'ATTACKER-RAN' run "
+        "would mean the copy was poisoned by the source overwrite"
     )
 
 

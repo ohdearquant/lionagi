@@ -193,35 +193,58 @@ def compute_trust_record(command: list[str], cwd: str) -> dict[str, str]:
 
 @dataclass(frozen=True, slots=True)
 class _BoundExecutable:
-    """A private copy of the exact bytes that were hash-verified against
-    the trust record, made by :func:`_materialize_private_copy` from the
-    SAME open fd the digest was read from -- never a fresh read of the
-    resolved path. ``path`` (inside ``private_dir``) is what actually gets
-    exec'd; the configured/approved path is never spawned. Because the
-    copy already exists in a directory nothing but this process has a
-    handle on, there is no window in which a swap at the configured path
-    -- an in-place overwrite or a symlink retarget -- can change what
-    runs: by the time exec happens, the executed bytes are already
-    physically separate from that path.
+    """A private copy of *some* snapshot of the resolved executable's
+    bytes, made by :func:`_materialize_private_copy` directly from the
+    open fd -- never a fresh read of the resolved path. The trust digest
+    is computed AFTER this copy exists, by re-hashing the copy itself
+    (see :func:`_hash_private_copy`), never the source fd or path again --
+    so the bytes that get compared against the trust record and the bytes
+    that get exec'd on a match are always the exact same physical file.
+    ``path`` (inside ``private_dir``) is what actually gets exec'd; the
+    configured/approved path is never spawned. Because the copy already
+    exists in a directory nothing but this process has a handle on, there
+    is no window in which a swap at the configured path -- an in-place
+    overwrite or a symlink retarget -- can change what runs: by the time
+    exec happens, the executed bytes are already physically separate from
+    that path.
 
     ``private_dir`` is removed by the caller once the hook process has
-    exited (see :func:`external_hook_adapter`'s ``_guarded_execute``)."""
+    exited (see :func:`external_hook_adapter`'s ``_guarded_execute``), or
+    immediately by :func:`_prepare_trusted_execution` itself if the copy's
+    digest turns out not to match the trust record."""
 
     path: Path
     private_dir: str
+
+
+_POSIX_NOFOLLOW_OPEN = hasattr(os, "O_NOFOLLOW")
 
 
 def _open_executable_fd(path: Path) -> int:
     """Open *path* for execution without following a symlink at its final
     path component, and verify what was opened is a regular file.
 
+    ``os.O_NOFOLLOW`` is POSIX-only and does not exist on Windows -- on a
+    platform without it, this falls back to a non-atomic pre-check
+    (``path.is_symlink()``) before a plain open; weaker than the atomic
+    POSIX flag (a race between the check and the open is not closed there),
+    but the strongest enforcement available without it.
+
     Raises :class:`ExternalHookConfigError` (never lets a bare ``OSError``
     escape) if *path* cannot be opened this way or is not a regular file --
     the caller is expected to treat this exactly like an unresolvable
     command. The returned fd is the caller's to close.
     """
+    if _POSIX_NOFOLLOW_OPEN:
+        open_flags = os.O_RDONLY | os.O_NOFOLLOW
+    else:
+        if path.is_symlink():
+            raise ExternalHookConfigError(
+                f"hooks_external: cannot open resolved executable {path}: refusing to follow a symlink"
+            )
+        open_flags = os.O_RDONLY
     try:
-        fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(str(path), open_flags)
     except OSError as exc:
         raise ExternalHookConfigError(
             f"hooks_external: cannot open resolved executable {path}: {exc}"
@@ -241,9 +264,10 @@ def _open_executable_fd(path: Path) -> int:
 def _hash_fd(fd: int) -> str:
     """``sha256`` over an open fd's full content, read from offset 0 --
     the same bytes :func:`compute_executable_digest` would hash from a
-    path, but read from the exact descriptor that will later be exec'd
-    (see :func:`_open_executable_fd`) rather than a fresh path lookup that
-    could resolve to a different file by the time it runs."""
+    path, but read from an already-open descriptor rather than a fresh
+    path lookup that could resolve to a different file by the time it
+    runs. Used both by :func:`_hash_private_copy` (the trust-gating call)
+    and internally wherever a caller already holds an fd it wants hashed."""
     os.lseek(fd, 0, os.SEEK_SET)
     digest = hashlib.sha256()
     while True:
@@ -256,17 +280,26 @@ def _hash_fd(fd: int) -> str:
 
 
 def _materialize_private_copy(fd: int, basename: str) -> _BoundExecutable:
-    """Copy the exact bytes at *fd* (already hash-verified by the caller
-    against the trust record, read from this same fd) into a fresh file in
-    a private directory nothing but this process holds a handle on.
+    """Copy the bytes at *fd*, read from offset 0 of *fd* itself -- never a
+    fresh path lookup -- into a fresh file in a private directory nothing
+    but this process holds a handle on.
 
-    Reads from offset 0 of *fd* itself -- never a fresh path lookup -- so
-    the copy is provably the hashed bytes. *basename* matches the original
-    executable's name so a shebang-interpreted script's argv[0]/error
-    messages stay readable. The private directory is ``mkdtemp``'d (mode
-    0700, single-user-readable) and the copy is written ``O_EXCL`` into a
-    fresh path inside it, so no other process can have raced onto the same
-    name."""
+    This runs BEFORE any trust digest is computed: an open fd pins the
+    INODE, not the content, so hashing *fd* and then separately re-reading
+    *fd* to build the copy would leave a window in which an in-place
+    overwrite between those two reads poisons the copy with unverified
+    bytes while the (already-read) digest still matches the trust record.
+    Copying first and hashing the resulting private copy afterward (see
+    :func:`_hash_private_copy`) closes that window: whatever bytes existed
+    at *fd* at the moment of THIS call are what get frozen, hashed, and
+    (on a match) exec'd -- a source overwrite after this call can only
+    ever affect the source, never the copy.
+
+    *basename* matches the original executable's name so a shebang-
+    interpreted script's argv[0]/error messages stay readable. The private
+    directory is ``mkdtemp``'d (mode 0700, single-user-readable) and the
+    copy is written ``O_EXCL`` into a fresh path inside it, so no other
+    process can have raced onto the same name."""
     private_dir = tempfile.mkdtemp(prefix="lionagi-hook-")
     private_path = Path(private_dir) / basename
     os.lseek(fd, 0, os.SEEK_SET)
@@ -283,20 +316,46 @@ def _materialize_private_copy(fd: int, basename: str) -> _BoundExecutable:
     return _BoundExecutable(path=private_path, private_dir=private_dir)
 
 
+def _hash_private_copy(path: Path) -> str:
+    """``sha256`` over the private copy at *path* -- opened fresh,
+    read-only, from the private directory nothing but this process can
+    write into. The trust digest is always computed over this copy, never
+    the source path or fd again: by the time this runs, whatever bytes
+    existed at the source at copy time (see :func:`_materialize_private_copy`)
+    are already frozen inside *path*, so a source overwrite before,
+    during, or after this call cannot change what gets compared or, on a
+    match, exec'd."""
+    fd = os.open(str(path), os.O_RDONLY)
+    try:
+        return _hash_fd(fd)
+    finally:
+        os.close(fd)
+
+
 def _prepare_trusted_execution(
     command: list[str], *, source: str, cwd: str
 ) -> tuple[_BoundExecutable | None, str]:
-    """Resolve, open, content-verify, and (on a match) privately copy
-    *command* for a source-having (imported) entry in one pass, so the fd
-    whose bytes get hash-compared against the trust record is the SAME fd
-    later read to build the executed copy -- never a separate
-    re-resolution of ``argv[0]`` that a swap could win a race against (see
-    :func:`_BoundExecutable`, :func:`_materialize_private_copy`).
+    """Resolve, open, privately copy, and THEN content-verify *command*
+    for a source-having (imported) entry.
+
+    An open fd pins the INODE, not the content -- hashing the fd and
+    separately re-reading it to build the executed copy leaves a window in
+    which an in-place overwrite between those two reads is copied and
+    executed as trusted, even though the digest read earlier still
+    matches. Closing that window means never hashing
+    the mutable source at all: the private copy is made first, from
+    whatever bytes are at the fd right now (:func:`_materialize_private_copy`),
+    and the trust digest is computed by re-hashing that immutable,
+    single-process-owned copy (:func:`_hash_private_copy`) -- never the
+    source fd or path again. A source overwrite at any point relative to
+    this call can therefore only ever affect the source, never the copy
+    that gets compared or exec'd.
 
     Returns ``(bound, "")`` on a match, or ``(None, reason)`` when the
     command cannot be resolved/opened or does not match an approved trust
-    record; the caller must never fall back to spawning the raw argv in
-    the failure case.
+    record (the private copy, if one was made, is removed before
+    returning); the caller must never fall back to spawning the raw argv
+    in the failure case.
     """
     try:
         resolved_path = resolve_hook_executable(command, cwd)
@@ -308,13 +367,18 @@ def _prepare_trusted_execution(
         return None, f"untrusted hook command {command!r} (source={source!r}): {exc}"
 
     try:
+        bound = _materialize_private_copy(fd, resolved_path.name)
+    finally:
+        os.close(fd)
+
+    try:
         from lionagi.plugins._user_settings import read_user_settings
 
         trusted = read_user_settings().get("trusted_hook_commands", [])
         if not isinstance(trusted, list):
             trusted = []
         argv_hash = compute_command_hash(command)
-        content_digest = _hash_fd(fd)
+        content_digest = _hash_private_copy(bound.path)
         argv_matches = [
             record
             for record in trusted
@@ -325,18 +389,20 @@ def _prepare_trusted_execution(
                 record.get("resolved_path") == str(resolved_path)
                 and record.get("content_digest") == content_digest
             ):
-                return _materialize_private_copy(fd, resolved_path.name), ""
+                return bound, ""
+    except BaseException:
+        shutil.rmtree(bound.private_dir, ignore_errors=True)
+        raise
 
-        if argv_matches:
-            return None, (
-                f"hook command {command!r} (source={source!r}) resolves to a different "
-                f"executable than was approved (now: {str(resolved_path)!r}); the "
-                "approved path or its contents changed since `li hooks trust` -- fails "
-                "closed, this is not the executable that was reviewed"
-            )
-        return None, f"untrusted hook command {command!r} (source={source!r})"
-    finally:
-        os.close(fd)
+    shutil.rmtree(bound.private_dir, ignore_errors=True)
+    if argv_matches:
+        return None, (
+            f"hook command {command!r} (source={source!r}) resolves to a different "
+            f"executable than was approved (now: {str(resolved_path)!r}); the "
+            "approved path or its contents changed since `li hooks trust` -- fails "
+            "closed, this is not the executable that was reviewed"
+        )
+    return None, f"untrusted hook command {command!r} (source={source!r})"
 
 
 def _trust_status(command: list[str], *, source: str | None, cwd: str) -> tuple[bool, str]:
