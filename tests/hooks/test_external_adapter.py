@@ -12,6 +12,7 @@ import logging
 import sys
 import time
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -754,19 +755,20 @@ async def test_approved_relative_command_runs_from_approval_cwd_not_process_cwd(
     )
 
 
-async def test_content_pinned_trust_survives_same_path_replacement_after_digest_read(
+async def test_content_pinned_trust_survives_same_path_replacement_after_prepare(
     monkeypatch, tmp_path
 ):
-    """The approved path is overwritten with different content in
-    the window between the digest read and the actual spawn. The old code
-    re-resolved and re-executed ``argv[0]`` with no further check, silently
-    running the substituted (attacker) bytes. Fixed: the fd opened before
-    the digest was read is the exec target on platforms that support
-    exec-by-fd; where that is unsupported (this suite's CI/dev platform
-    included, see ``_spawn``'s ``/dev/fd`` fallback), the resolved-path
-    fallback re-verifies the content immediately beforehand and must fail
-    closed rather than silently running the substituted file -- it must
-    never come back as an unqualified allow."""
+    """The approved path is overwritten with different content in the
+    window AFTER ``_prepare_trusted_execution`` has already returned its
+    bound executable but BEFORE the process is spawned. The old code
+    re-resolved and re-executed ``argv[0]`` at spawn time, so a swap in
+    this window could run the substituted (attacker) bytes. Fixed:
+    ``_prepare_trusted_execution`` materializes a private copy of the
+    hash-verified bytes before returning, and ``_spawn`` execs that copy,
+    never the configured path -- so a swap at the configured path after
+    that point has nothing left to affect. The exit-0 approved script's
+    behavior (not the attacker's exit-2/``ATTACKER-RAN``) must be what
+    executed."""
     monkeypatch.setenv("HOME", str(tmp_path))
     import lionagi.hooks.external as ext_mod
     from lionagi.plugins._user_settings import write_user_settings
@@ -780,34 +782,31 @@ async def test_content_pinned_trust_survives_same_path_replacement_after_digest_
     record = compute_trust_record(["./guard"], str(approved_dir))
     write_user_settings({"trusted_hook_commands": [record]})
 
-    original_hash_fd = ext_mod._hash_fd
+    original_prepare = ext_mod._prepare_trusted_execution
 
-    def _swap_after_hash(fd):
-        digest = original_hash_fd(fd)
-        # Attacker wins the race right after the digest was read but before
-        # the process is spawned.
+    def _prepare_then_swap(command, *, source, cwd):
+        bound, reason = original_prepare(command, source=source, cwd=cwd)
+        # Attacker wins the race right after `_prepare_trusted_execution`
+        # returns (private copy already materialized) but before spawn.
         script.write_text("#!/bin/sh\ncat >/dev/null\necho ATTACKER-RAN 1>&2\nexit 2\n")
         script.chmod(0o755)
-        return digest
+        return bound, reason
 
-    monkeypatch.setattr(ext_mod, "_hash_fd", _swap_after_hash)
+    monkeypatch.setattr(ext_mod, "_prepare_trusted_execution", _prepare_then_swap)
 
     hook = external_hook_adapter(
         event="PreToolUse", command=["./guard"], source="imported:claude", cwd=str(approved_dir)
     )
     result = await hook("bash", {"command": ["ls"]})
-    assert result.decision == "deny", (
-        "a same-path substitution in the digest-to-exec window must never "
-        "resolve to allow -- either the fd-bound exec ignores it entirely, "
-        "or the resolved-path fallback's re-verify must catch and deny it"
+    assert result == ToolPreDecision(decision="allow", updated_input=None), (
+        "the private copy made before the swap must be what executed -- an "
+        "attacker exit-2/'ATTACKER-RAN' run would have flipped this to deny"
     )
-    assert "ATTACKER-RAN" not in (result.reason or ""), "the attacker script must never have run"
 
 
-async def test_content_pinned_trust_survives_symlink_swap_after_digest_read(monkeypatch, tmp_path):
-    """Same race as above, via a symlink swap instead of an in-place
-    overwrite: the approved regular file is replaced by a symlink pointing
-    at an attacker script after its digest was read."""
+async def test_content_pinned_trust_survives_symlink_swap_after_prepare(monkeypatch, tmp_path):
+    """Same race as above, via a symlink retarget instead of an in-place
+    overwrite, swapped after ``_prepare_trusted_execution`` returns."""
     monkeypatch.setenv("HOME", str(tmp_path))
     import lionagi.hooks.external as ext_mod
     from lionagi.plugins._user_settings import write_user_settings
@@ -825,26 +824,67 @@ async def test_content_pinned_trust_survives_symlink_swap_after_digest_read(monk
     record = compute_trust_record(["./guard"], str(approved_dir))
     write_user_settings({"trusted_hook_commands": [record]})
 
-    original_hash_fd = ext_mod._hash_fd
+    original_prepare = ext_mod._prepare_trusted_execution
 
-    def _swap_symlink_after_hash(fd):
-        digest = original_hash_fd(fd)
+    def _prepare_then_swap_symlink(command, *, source, cwd):
+        bound, reason = original_prepare(command, source=source, cwd=cwd)
         script.unlink()
         script.symlink_to(attacker_script)
-        return digest
+        return bound, reason
 
-    monkeypatch.setattr(ext_mod, "_hash_fd", _swap_symlink_after_hash)
+    monkeypatch.setattr(ext_mod, "_prepare_trusted_execution", _prepare_then_swap_symlink)
 
     hook = external_hook_adapter(
         event="PreToolUse", command=["./guard"], source="imported:claude", cwd=str(approved_dir)
     )
     result = await hook("bash", {"command": ["ls"]})
-    assert result.decision == "deny", (
-        "a symlink swap in the digest-to-exec window must never resolve to "
-        "allow -- either the fd-bound exec ignores it entirely, or the "
-        "resolved-path fallback's re-verify must catch and deny it"
+    assert result == ToolPreDecision(decision="allow", updated_input=None), (
+        "the private copy made before the symlink swap must be what "
+        "executed -- an attacker exit-2/'ATTACKER-RAN' run would have "
+        "flipped this to deny"
     )
-    assert "ATTACKER-RAN" not in (result.reason or ""), "the attacker script must never have run"
+
+
+async def test_trusted_exec_spawns_a_private_copy_not_the_configured_path(monkeypatch, tmp_path):
+    """The process actually spawned for a source-having (imported) command
+    must live in a private directory distinct from the configured/approved
+    path -- proving the mutable configured path is never itself spawned --
+    and that private directory must be cleaned up once the hook process
+    has exited."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from lionagi.plugins._user_settings import write_user_settings
+
+    approved_dir = tmp_path / "approved"
+    approved_dir.mkdir()
+    script = approved_dir / "guard"
+    script.write_text("#!/bin/sh\ncat >/dev/null\nexit 0\n")
+    script.chmod(0o755)
+
+    record = compute_trust_record(["./guard"], str(approved_dir))
+    write_user_settings({"trusted_hook_commands": [record]})
+
+    original_exec = asyncio.create_subprocess_exec
+    captured: dict[str, Any] = {}
+
+    async def _capture(*args, **kwargs):
+        captured["executable"] = kwargs.get("executable")
+        return await original_exec(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _capture)
+
+    hook = external_hook_adapter(
+        event="PreToolUse", command=["./guard"], source="imported:claude", cwd=str(approved_dir)
+    )
+    result = await hook("bash", {"command": ["ls"]})
+    assert result == ToolPreDecision(decision="allow", updated_input=None)
+
+    executed_path = Path(captured["executable"])
+    assert executed_path != script
+    assert executed_path.parent != approved_dir
+    assert str(approved_dir) not in str(executed_path)
+    assert executed_path.name == "guard"
+    assert not executed_path.exists(), "the private directory must be removed after exit"
+    assert not executed_path.parent.exists(), "the private directory must be removed after exit"
 
 
 # ---------------------------------------------------------------------------
