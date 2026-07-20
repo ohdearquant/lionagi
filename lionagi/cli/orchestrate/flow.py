@@ -290,6 +290,33 @@ async def _resolve_invocation_terminal_flow(
                     metadata,
                 )
             if all(s == "completed" for s in child_statuses):
+                # A child can be "completed" (its DAG produced its result) yet
+                # carry COMPLETED_FINALIZE_ERROR because a guarded best-effort
+                # teardown step (team post, snapshot, resume pointer, graph)
+                # failed. Collapsing that into plain COMPLETED_OK here would
+                # make the invocation report clean success while the child's
+                # own record says a finalize step failed -- surface the same
+                # degraded reason at the invocation level instead of hiding it.
+                degraded = [
+                    s
+                    for s in sessions
+                    if str(s.get("status_reason_code") or "") == RunReasons.COMPLETED_FINALIZE_ERROR
+                ]
+                if degraded:
+                    degraded_metadata = dict(metadata)
+                    degraded_metadata["finalize_error_session_ids"] = [
+                        s["id"] for s in degraded if s.get("id")
+                    ]
+                    return (
+                        "completed",
+                        RunReasons.COMPLETED_FINALIZE_ERROR,
+                        "Flow completed successfully, but at least one child "
+                        "session recorded a non-output finalize error (a "
+                        "best-effort teardown step failed after that "
+                        "child's own DAG already produced its result).",
+                        [{"kind": "session", "id": s["id"]} for s in degraded if s.get("id")],
+                        degraded_metadata,
+                    )
                 return (
                     "completed",
                     RunReasons.COMPLETED_OK,
@@ -1507,10 +1534,35 @@ def _finalize_flow(
             )
             env._artifact_write_error = {"error_class": type(exc).__name__, "error": str(exc)}
 
-    try:
-        if env.team_data:
-            _post_results_to_team(env.team_data, agent_results, agent_ids, synthesis_result)
+    # Each best-effort side effect below is guarded independently: one
+    # raising (e.g. a stuck team-inbox file lock) must not skip the ones
+    # after it (snapshot, resume pointer, graph image).
+    finalize_errors: list[dict] = []
 
+    def _guard_finalize_step(label: str, fn) -> None:
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "flow finalize step (%s) failed after the DAG already "
+                "completed; DAG result is unaffected: %s",
+                label,
+                exc,
+                exc_info=True,
+            )
+            finalize_errors.append(
+                {"step": label, "error_class": type(exc).__name__, "error": str(exc)}
+            )
+
+    if env.team_data:
+        _guard_finalize_step(
+            "team_post",
+            lambda: _post_results_to_team(
+                env.team_data, agent_results, agent_ids, synthesis_result
+            ),
+        )
+
+    def _snapshot_and_resume_pointer() -> None:
         # "agents" must cover every id "operations" (below) references, so it
         # walks agent_results (which includes spawned nodes), not just the
         # fixed-size plan-time assignments, or a spawned id resolves to nothing.
@@ -1555,23 +1607,31 @@ def _finalize_flow(
             },
         )
 
-        if show_graph:
+    _guard_finalize_step("snapshot", _snapshot_and_resume_pointer)
+
+    if show_graph:
+
+        def _write_graph_image() -> None:
             from lionagi.operations._visualize_graph import visualize_graph
 
-            with contextlib.suppress(Exception):
-                visualize_graph(
-                    env.builder,
-                    title=f"Flow DAG — {len(assignments)} assignments (+{n_spawned} spawned)",
-                    save_path=str(env.run.dag_image_path),
-                )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "flow finalize step failed after the DAG already completed; "
-            "DAG result is unaffected: %s",
-            exc,
-            exc_info=True,
-        )
-        env._finalize_error = {"error_class": type(exc).__name__, "error": str(exc)}
+            visualize_graph(
+                env.builder,
+                title=f"Flow DAG — {len(assignments)} assignments (+{n_spawned} spawned)",
+                save_path=str(env.run.dag_image_path),
+            )
+
+        _guard_finalize_step("graph", _write_graph_image)
+
+    if finalize_errors:
+        if len(finalize_errors) == 1:
+            env._finalize_error = {k: v for k, v in finalize_errors[0].items() if k != "step"}
+        else:
+            env._finalize_error = {
+                "error_class": "MultipleFinalizeErrors",
+                "error": "; ".join(
+                    f"{e['step']}: {e['error_class']}: {e['error']}" for e in finalize_errors
+                ),
+            }
 
     return output
 

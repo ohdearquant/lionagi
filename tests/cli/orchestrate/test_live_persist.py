@@ -1953,6 +1953,184 @@ async def test_all_legs_completed_resolves_invocation_completed(
     assert inv_status == "completed"
 
 
+async def test_child_finalize_error_surfaces_at_invocation_not_flattened_to_ok(
+    temp_db_path: Path,
+):
+    """issue #2053, seam 2: a child session can be "completed" (its own DAG
+    produced its result) while carrying a COMPLETED_FINALIZE_ERROR reason
+    (a guarded best-effort teardown step -- team post, snapshot, resume
+    pointer, graph -- failed). _resolve_invocation_terminal_flow must not
+    flatten that into plain COMPLETED_OK: a reader of the invocation record
+    needs to see the same degraded-but-not-failed distinction the child
+    record already carries, not a false "all clean" signal.
+
+    This must FAIL against the pre-fix resolver, which only inspects
+    child_statuses (all "completed") and returns RunReasons.COMPLETED_OK
+    regardless of status_reason_code.
+    """
+    from lionagi.cli.orchestrate.flow import _resolve_invocation_terminal_flow
+    from lionagi.state.reasons import RunReasons
+
+    invocation_id = "inv-child-finalize-error"
+
+    async with StateDB() as db:
+        await db.create_invocation({"id": invocation_id, "skill": "flow", "started_at": 0.0})
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow", invocation_id=invocation_id)
+    ctx = env._live_persist
+    assert ctx is not None
+
+    # Mirrors what _finalize_flow stashes on the env when a post-DAG,
+    # non-output finalize step (e.g. the team-inbox post) raises after the
+    # DAG already produced its result.
+    env._finalize_error = {"error_class": "TimeoutError", "error": "team lock timed out"}
+
+    final_status = await stop_live_persist(env, status="completed")
+    assert final_status == "completed"
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "completed"
+    assert s["status_reason_code"] == RunReasons.COMPLETED_FINALIZE_ERROR
+
+    (
+        inv_status,
+        inv_reason_code,
+        inv_summary,
+        inv_evidence,
+        _inv_metadata,
+    ) = await _resolve_invocation_terminal_flow(invocation_id, fallback_status="completed")
+
+    # The DAG's own work succeeded -- do not fail the run for a best-effort
+    # teardown step.
+    assert inv_status == "completed"
+    # But the degraded reason must survive the child->invocation hop, not
+    # collapse into indistinguishable clean success.
+    assert inv_reason_code == RunReasons.COMPLETED_FINALIZE_ERROR
+    assert inv_reason_code != RunReasons.COMPLETED_OK
+    assert any(e.get("id") == ctx["session_id"] for e in inv_evidence)
+
+    # Persist and read back exactly as _run_flow's finally block does --
+    # "the record a status-reader sees" for the invocation itself.
+    async with StateDB() as db:
+        await db.update_status(
+            "invocation",
+            invocation_id,
+            new_status=inv_status,
+            reason_code=inv_reason_code,
+            reason_summary=inv_summary,
+            evidence_refs=inv_evidence,
+            source="executor",
+            actor=invocation_id,
+            metadata=_inv_metadata,
+        )
+        inv_row = await db.get_invocation(invocation_id)
+    assert inv_row is not None
+    assert inv_row["status"] == "completed"
+    assert inv_row["status_reason_code"] == RunReasons.COMPLETED_FINALIZE_ERROR
+
+
+async def test_finalize_side_effects_guarded_independently(
+    temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """issue #2053, secondary: the best-effort finalize side effects (team
+    post, snapshot/resume-pointer, graph image) must each be guarded on
+    their own -- a raising team post must not skip the snapshot/resume
+    pointer step that runs after it.
+
+    This must FAIL against the pre-fix code, where all three shared one
+    try/except: the first raise (team post) skipped `finalize_orchestration`
+    entirely, so no session snapshot/resume pointer was ever written.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    import lionagi.cli.orchestrate._orchestration as orch_mod
+    from lionagi.cli.orchestrate.flow import (
+        _DagState,
+        _ExecResult,
+        _finalize_flow,
+        _PlanResult,
+    )
+
+    monkeypatch.setattr(orch_mod, "save_last_branch_pointer", lambda run_id, bid: None)
+
+    env = _minimal_env()
+    env.team_data = {"id": "team-x", "name": "team-x"}
+    configure_run_for_finalize(env, tmp_path)
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    plan_result = _PlanResult(
+        assignments=[SimpleNamespace(assignee="worker")],
+        agent_ids=["op1"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["op1"],
+        known_nodes={"op1"},
+        deps_by_node={"op1": []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["claude"],
+    )
+    exec_result = _ExecResult(
+        agent_results=[
+            {
+                "id": "op1",
+                "agent_id": "op1",
+                "name": "worker",
+                "assignee": "worker",
+                "response": "done",
+                "model": "claude",
+                "spawned": False,
+                "time_ms": 100.0,
+            }
+        ],
+        n_spawned=0,
+        t_exec_elapsed=0.1,
+    )
+
+    with patch(
+        "lionagi.cli.orchestrate.flow._post_results_to_team",
+        side_effect=RuntimeError("team lock timed out"),
+    ):
+        _finalize_flow(
+            env,
+            "do the thing",
+            plan_result,
+            dag_state,
+            exec_result,
+            None,
+            output_format="text",
+            show_graph=False,
+        )
+
+    assert env._finalize_error is not None
+    assert env._finalize_error["error_class"] == "RuntimeError"
+
+    final_status = await stop_live_persist(env, status="completed")
+    assert final_status == "completed"
+
+    async with StateDB() as db:
+        session = await db.get_session(ctx["session_id"])
+    assert session is not None
+    assert session["status_reason_code"] == "run.completed.finalize_error"
+    node_metadata = session["node_metadata"]
+    assert isinstance(node_metadata, dict)
+    # The snapshot/resume-pointer step (finalize_orchestration) ran despite
+    # the earlier team-post failure -- proven by its extras landing in
+    # node_metadata.
+    assert node_metadata.get("agents") is not None
+    assert node_metadata["agents"][0]["id"] == "op1"
+
+
 # ── bench545 regressions: plan-time per-leg wiring + escalation backstop ──────
 #
 # Both tests below reproduce the actual production gap (play fe9a23ac,
