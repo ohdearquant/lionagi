@@ -117,6 +117,99 @@ class TestProviderAliasCollision:
                 pass
 
 
+class TestConcurrentRegistrationAndRemoval:
+    """Alias ownership must be atomic across concurrent registrations, and
+    released when the owning entry is removed (plugin revalidation
+    failure), so a legitimate replacement isn't rejected by a ledger
+    entry with no backing registration."""
+
+    def test_concurrent_distinct_providers_claiming_same_alias_only_one_wins(self):
+        import threading
+
+        start = threading.Barrier(2)
+        errors: list[BaseException] = []
+        registered: list[str] = []
+        lock = threading.Lock()
+
+        def _register(provider_name):
+            start.wait(timeout=5)
+            try:
+
+                @EndpointRegistry.register(
+                    provider=provider_name,
+                    endpoint="chat",
+                    provider_aliases=["shared-concurrent-alias"],
+                )
+                class _Stub(Endpoint):
+                    pass
+
+            except ProviderAliasCollisionError as exc:
+                with lock:
+                    errors.append(exc)
+            else:
+                with lock:
+                    registered.append(provider_name)
+
+        threads = [
+            threading.Thread(target=_register, args=("concurrent-alpha",)),
+            threading.Thread(target=_register, args=("concurrent-beta",)),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        # Exactly one registration wins; the other observes the collision.
+        assert len(registered) == 1
+        assert len(errors) == 1
+        owner = EndpointRegistry._alias_owners["shared-concurrent-alias"]
+        assert owner == registered[0]
+        # No entry exists for the loser under that alias.
+        entries_for_alias = [
+            e
+            for e in EndpointRegistry._entries
+            if "shared-concurrent-alias" in e.meta.provider_aliases
+        ]
+        assert {e.meta.provider for e in entries_for_alias} == {registered[0]}
+
+    def test_plugin_removal_releases_alias_for_legitimate_replacement(self):
+        from lionagi.plugins.registry import PluginActivationError
+
+        @EndpointRegistry.register(provider="old-plugin-provider", endpoint="chat")
+        class _OldPluginEndpoint(Endpoint):
+            pass
+
+        entry = next(e for e in EndpointRegistry._entries if e.cls is _OldPluginEndpoint)
+        # Mark it as plugin-owned so _revalidate_plugin_entry's removal path
+        # is reachable without standing up a real plugin manifest.
+        entry.plugin_name = "old-plugin"
+        entry.plugin_target = "old-plugin:_OldPluginEndpoint"
+
+        def _boom(*_args, **_kwargs):
+            raise PluginActivationError(
+                "old-plugin", "old-plugin:_OldPluginEndpoint", "simulated activation failure"
+            )
+
+        import lionagi.plugins as plugins_mod
+
+        original_activate = plugins_mod.PluginRegistry.activate_target
+        plugins_mod.PluginRegistry.activate_target = staticmethod(_boom)
+        try:
+            assert EndpointRegistry._revalidate_plugin_entry(entry) is False
+        finally:
+            plugins_mod.PluginRegistry.activate_target = original_activate
+
+        assert entry not in EndpointRegistry._entries
+        assert "old-plugin-provider" not in EndpointRegistry._alias_owners
+
+        # A brand-new provider can now legitimately claim that freed name.
+        @EndpointRegistry.register(provider="old-plugin-provider", endpoint="chat")
+        class _NewPluginEndpoint(Endpoint):
+            pass
+
+        assert EndpointRegistry._alias_owners["old-plugin-provider"] == "old-plugin-provider"
+
+
 class TestOptionalDependencyClassification:
     """``_is_missing_optional_dependency`` distinguishes a genuinely-absent
     third-party dependency (quiet) from a broken bundled module (loud)."""

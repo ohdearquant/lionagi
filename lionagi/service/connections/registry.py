@@ -150,7 +150,6 @@ class EndpointRegistry:
         canonical_provider_aliases = tuple(
             dict.fromkeys(a.strip().lower() for a in (provider_aliases or ()))
         )
-        cls._claim_provider_identity(canonical_provider, canonical_provider_aliases)
 
         def decorator(endpoint_cls: type) -> type:
             meta = EndpointMeta(
@@ -170,7 +169,16 @@ class EndpointRegistry:
             provenance = getattr(cls._plugin_registration, "provenance", None)
             if provenance is not None:
                 entry.plugin_name, entry.plugin_target = provenance
-            cls._entries.append(entry)
+            # Validation (does anyone else already own this alias?) and the
+            # claim itself must be one atomic transaction: check-then-claim
+            # split across the lock lets two concurrent registrations both
+            # pass the check before either publishes. Entry publication is
+            # folded into the same critical section, since an alias claimed
+            # with no corresponding entry (or vice versa) is its own
+            # inconsistency.
+            with cls._lock:
+                cls._claim_provider_identity(canonical_provider, canonical_provider_aliases)
+                cls._entries.append(entry)
             return endpoint_cls
 
         return decorator
@@ -183,6 +191,10 @@ class EndpointRegistry:
         batch, ... endpoints) is expected and always allowed. A collision is
         two different canonical providers claiming the same string, either as
         one's canonical name or as either one's alias.
+
+        Callers must hold ``cls._lock`` -- this is check-then-claim and is
+        only atomic across concurrent registrations when the lock spans both
+        the check and the claim (and, in ``register()``, entry publication).
         """
         for key in (provider, *provider_aliases):
             owner = cls._alias_owners.get(key)
@@ -193,6 +205,23 @@ class EndpointRegistry:
                 )
         for key in (provider, *provider_aliases):
             cls._alias_owners.setdefault(key, provider)
+
+    @classmethod
+    def _rebuild_alias_owners(cls) -> None:
+        """Recompute ``_alias_owners`` from the surviving ``_entries``.
+
+        Must run under ``cls._lock``, after any entry removal (e.g. a plugin
+        entry failing revalidation). ``_alias_owners`` is otherwise tracked
+        independently of ``_entries``, so a removed entry's alias would keep
+        naming an owner with no remaining registration -- rejecting a
+        legitimate replacement registration for an alias nothing owns
+        anymore. First-registration-wins, same as ``_claim_provider_identity``.
+        """
+        owners: dict[str, str] = {}
+        for entry in cls._entries:
+            for key in (entry.meta.provider, *entry.meta.provider_aliases):
+                owners.setdefault(key, entry.meta.provider)
+        cls._alias_owners = owners
 
     @classmethod
     def match(
@@ -361,10 +390,13 @@ class EndpointRegistry:
         try:
             PluginRegistry.activate_target(entry.plugin_name, entry.plugin_target)
         except PluginActivationError:
-            try:
-                cls._entries.remove(entry)
-            except ValueError:
-                pass
+            with cls._lock:
+                try:
+                    cls._entries.remove(entry)
+                except ValueError:
+                    pass
+                else:
+                    cls._rebuild_alias_owners()
             return False
 
         entry._validated_generation = generation
