@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any
 
@@ -17,6 +18,7 @@ from .engine import Engine, EngineEvent, EngineRun
 
 __all__ = (
     "IssueFound",
+    "DimensionClean",
     "VerifyResult",
     "ReviewVerdict",
     "ReviewEngine",
@@ -34,10 +36,29 @@ class IssueFound(Finding):
     severity: str = Field(default="minor", description="Impact: critical | major | minor.")
 
 
+class DimensionClean(EngineEvent):
+    """Reviewer's affirmative all-clear for one dimension; no casts twin.
+
+    A separate type rather than a sentinel IssueFound: IssueFound extends
+    Finding, so a severity="none" sentinel would surface as a phantom finding
+    to every by_type(Finding) consumer. With this event, a dimension that
+    emits nothing is a transport failure, never a verdict — silence and
+    "reviewed, clean" are distinguishable downstream.
+    """
+
+    dimension: str = Field(description="The review lens that found no concrete problems.")
+    rationale: str = Field(
+        default="", description="One sentence on what was checked and found clean."
+    )
+
+
 class VerifyResult(EngineEvent):
     """Adversarial verifier's call on whether an issue survives refutation; no casts twin."""
 
     issue: str = Field(description="The issue description being verified.")
+    ref: str = Field(
+        default="", description="Echo of the engine-assigned claim ref, exactly as given."
+    )
     holds: bool = Field(
         default=True, description="True only if the issue survives the strongest refutation."
     )
@@ -83,34 +104,55 @@ def _verify_key(issue: IssueFound) -> str:
     return f"verify:{issue.description}"
 
 
+def _verify_ref(issue: IssueFound) -> str:
+    """Short engine-assigned token the verifier echoes back (``ref='V-1a2b3c4d'``).
+
+    Arrival detection keys on this instead of a verbatim echo of the issue
+    description: the description is long free text the model routinely
+    paraphrases, and every paraphrase failed the old exact match and burned
+    repair rounds on emissions that had in fact arrived. A fixed short token
+    is echoable exactly — the same shape as the judge's ``subject='{eid}'``.
+    """
+    return f"V-{hashlib.sha256(_verify_key(issue).encode()).hexdigest()[:8]}"
+
+
 def _dimension_instruction(artifact: str, dimension: str) -> str:
     return (
         f"Review the artifact below for **{dimension}** only. For each concrete "
         "problem, emit an issue_found with: dimension, description, severity "
-        "(critical|major|minor), location, confidence (0-1). Do not comment on "
-        "other dimensions; do not pad with praise.\n\n"
+        "(critical|major|minor), location, confidence (0-1). If you find no "
+        f"concrete problem, emit a dimension_clean with dimension='{dimension}' "
+        "and a one-sentence rationale — never finish without emitting. Do not "
+        "comment on other dimensions; do not pad with praise.\n\n"
         f"# Artifact\n{artifact}"
     )
 
 
-def _verify_instruction(issue: IssueFound) -> str:
+def _verify_instruction(issue: IssueFound, ref: str) -> str:
     return (
         "Adversarially verify this review issue — try to REFUTE it with the "
-        "strongest counter-argument. Emit a verify_result with holds (true only "
+        "strongest counter-argument. Emit a verify_result with issue (the claim "
+        f"being verified), ref='{ref}' exactly as given, holds (true only "
         "if it survives refutation) and rationale.\n\n"
-        f"- dimension: {issue.dimension}\n- severity: {issue.severity}\n"
+        f"- ref: {ref}\n- dimension: {issue.dimension}\n- severity: {issue.severity}\n"
         f"- location: {issue.location}\n- claim: {issue.description}"
     )
 
 
 def _verdict_instruction(
-    artifact: str, dimensions: tuple[str, ...], issues: list, verifications: list
+    artifact: str,
+    dimensions: tuple[str, ...],
+    issues: list,
+    verifications: list,
+    clean: list[str] | None = None,
 ) -> str:
     parts = [
         "Issue a single ReviewVerdict over the artifact from the issues below.\n",
         f"Dimensions reviewed: {', '.join(dimensions)}\n",
-        f"\n# Issues ({len(issues)})",
     ]
+    if clean:
+        parts.append(f"Affirmed clean: {', '.join(dict.fromkeys(clean))}\n")
+    parts.append(f"\n# Issues ({len(issues)})")
     for i, it in enumerate(issues, 1):
         parts.append(
             f"\n## {i}. [{it.dimension}/{it.severity}] {it.description}"
@@ -211,7 +253,7 @@ class ReviewEngine(Engine):
     # -- stages ---------------------------------------------------------------
 
     async def _review_dimension(self, run: EngineRun, artifact: str, dimension: str) -> None:
-        emits = (IssueFound,)
+        emits = (IssueFound, DimensionClean)
         async with run._sem:
             mode = _DIM_MODE.get(dimension)
             agent = await run.make_agent(
@@ -221,18 +263,24 @@ class ReviewEngine(Engine):
                 model=self.model_for("review"),
                 emits=emits,
             )
-            # Repair re-prompts a reviewer that emitted prose instead of fenced
-            # issues; it never fabricates one, so a clean dimension emits nothing again.
+            # Repair re-prompts a reviewer that emitted prose instead of a
+            # fenced emission. A clean dimension arrives as an affirmative
+            # dimension_clean, so reaching the repair path means transport
+            # failed — not that the dimension was clean.
             await run.operate_with_repair(
                 agent,
                 _dimension_instruction(artifact, dimension),
-                arrived=lambda: any(i.dimension == dimension for i in run.by_type(IssueFound)),
+                arrived=lambda: (
+                    any(i.dimension == dimension for i in run.by_type(IssueFound))
+                    or any(c.dimension == dimension for c in run.by_type(DimensionClean))
+                ),
                 emits=emits,
                 retries=self.repair_retries,
             )
 
     async def _verify(self, run: EngineRun, issue: IssueFound) -> None:
         emits = (VerifyResult,)
+        ref = _verify_ref(issue)
         async with run._sem:
             verifier = await run.make_agent(
                 self.verifier_role,
@@ -241,11 +289,14 @@ class ReviewEngine(Engine):
                 model=self.model_for("verify"),
                 emits=emits,
             )
+            # Arrival keys on the echoed ref token; the verbatim-description
+            # match stays only as a fallback for a verifier that filled issue
+            # exactly but dropped the ref.
             await run.operate_with_repair(
                 verifier,
-                _verify_instruction(issue),
+                _verify_instruction(issue, ref),
                 arrived=lambda: any(
-                    v.issue == issue.description for v in run.by_type(VerifyResult)
+                    v.ref == ref or v.issue == issue.description for v in run.by_type(VerifyResult)
                 ),
                 emits=emits,
                 retries=self.repair_retries,
@@ -254,7 +305,10 @@ class ReviewEngine(Engine):
     async def _verdict(self, run: EngineRun, artifact: str, dimensions: tuple[str, ...]) -> str:
         issues = run.by_type(IssueFound)
         verifications = run.by_type(VerifyResult)
-        run.notify("verdict", issues=len(issues), verifications=len(verifications))
+        clean = [c.dimension for c in run.by_type(DimensionClean)]
+        run.notify(
+            "verdict", issues=len(issues), verifications=len(verifications), clean=len(clean)
+        )
         synth = await run.make_agent(
             self.synthesis_role,
             name="verdict",
@@ -263,6 +317,6 @@ class ReviewEngine(Engine):
             exempt=True,
         )
         res = await synth.operate(
-            instruction=_verdict_instruction(artifact, dimensions, issues, verifications)
+            instruction=_verdict_instruction(artifact, dimensions, issues, verifications, clean)
         )
         return str(res) if res is not None else ""

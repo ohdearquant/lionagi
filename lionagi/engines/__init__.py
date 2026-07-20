@@ -50,6 +50,7 @@ from .research import (
 )
 from .review import (
     DEFAULT_DIMENSIONS,
+    DimensionClean,
     IssueFound,
     ReviewEngine,
     ReviewVerdict,
@@ -75,6 +76,7 @@ __all__ = (
     # review (Dimensional shape)
     "ReviewEngine",
     "IssueFound",
+    "DimensionClean",
     "VerifyResult",
     "ReviewVerdict",
     "DEFAULT_DIMENSIONS",
