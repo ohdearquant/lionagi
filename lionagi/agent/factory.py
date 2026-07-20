@@ -887,8 +887,12 @@ def _write_codex_mcp_secret_profile(
     profile_path = codex_home / f"{profile_name}.config.toml"
 
     profile_doc = {"mcp_servers": {name: dict(fields) for name, fields in secret_fields.items()}}
-    profile_path.write_text(toml.dumps(profile_doc))
-    os.chmod(profile_path, 0o600)
+    # The profile carries secrets: create it 0600 from the first byte instead
+    # of write-then-chmod, which leaves a umask-permission window where the
+    # contents are readable (and a wrong-mode file if the write is interrupted).
+    fd = os.open(profile_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(toml.dumps(profile_doc))
     atexit.register(lambda: profile_path.unlink(missing_ok=True))
 
     branch.chat_model.endpoint.config.kwargs["profile"] = profile_name
