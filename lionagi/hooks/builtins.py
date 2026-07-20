@@ -272,10 +272,11 @@ async def log_api_metrics(
     """Structured log line for API call observability."""
     if tokens:
         logger.info(
-            "api.post_call model=%s provider=%s tokens=%s latency_ms=%s",
+            "api.post_call model=%s provider=%s input_tokens=%s output_tokens=%s latency_ms=%s",
             model,
             provider,
-            tokens.get("total"),
+            tokens.get("input_tokens"),
+            tokens.get("output_tokens"),
             latency_ms,
         )
     else:

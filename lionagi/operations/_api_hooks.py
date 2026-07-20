@@ -14,6 +14,7 @@ unaffected. Emission is purely observational: it wraps the existing
 
 from __future__ import annotations
 
+import math
 import re
 from typing import TYPE_CHECKING, Any
 
@@ -48,13 +49,42 @@ _STATUS_VOCAB = frozenset(
 # local iModel/endpoint configuration rather than provider response text.
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_.:/-]{1,128}$")
 
+# A credential can satisfy the identifier allowlist above (API keys are
+# typically ``[A-Za-z0-9_-]``), so a well-formed value carrying a known secret
+# prefix is redacted anyway. Defense-in-depth: model/provider come from local
+# config, but a misconfiguration that lands a key here must not reach telemetry
+# verbatim. No real model/provider identifier starts with these prefixes.
+_CREDENTIAL_RE = re.compile(
+    r"(?i)^(?:bearer[\s_-]|basic[\s_-]|sk-|sk_|pk-|pk_|rk_|ak_|api[_-]?key|"
+    r"token[_-]|secret[_-]|ghp_|gho_|ghs_|ghr_|github_pat_|xox[baprs]-)"
+)
+
 
 def _safe_status(value: Any) -> str:
     return value if isinstance(value, str) and value in _STATUS_VOCAB else "unknown"
 
 
 def _safe_identifier(value: Any) -> str:
-    return value if isinstance(value, str) and _IDENTIFIER_RE.match(value) else "unknown"
+    if not (isinstance(value, str) and _IDENTIFIER_RE.match(value)):
+        return "unknown"
+    if _CREDENTIAL_RE.search(value):
+        return "unknown"
+    return value
+
+
+# Closed chunk-type vocabulary — the normalized ``StreamChunk.type`` values
+# (``service/types/stream_chunk.py``). Unlike model/provider, ``chunk.type``
+# reaches this adapter from a provider stream (``operations/run/run.py``), so a
+# malformed or compromised adapter could set it to an arbitrary string,
+# including a prefixless credential the identifier allowlist would admit. Only
+# the closed vocabulary is forwarded; anything else is redacted.
+_CHUNK_TYPE_VOCAB = frozenset(
+    {"system", "thinking", "text", "tool_use", "tool_result", "result", "error"}
+)
+
+
+def _safe_chunk_type(value: Any) -> str:
+    return value if isinstance(value, str) and value in _CHUNK_TYPE_VOCAB else "unknown"
 
 
 def _model_and_provider(imodel: Any) -> tuple[str, str]:
@@ -99,7 +129,9 @@ def _typed_usage(tokens: dict | None) -> dict[str, int] | None:
     def _num(*keys: str) -> int | None:
         for key in keys:
             val = tokens.get(key)
-            if isinstance(val, (int, float)) and not isinstance(val, bool):
+            if isinstance(val, int | float) and not isinstance(val, bool):
+                if isinstance(val, float) and not math.isfinite(val):
+                    continue  # NaN/inf can't coerce to int; treat as absent
                 return int(val)
         return None
 
@@ -223,7 +255,7 @@ async def emit_api_stream_chunk(branch: Branch, imodel: Any, chunk: Any) -> None
     from lionagi.hooks.bus import HookPoint
 
     model, provider = _model_and_provider(imodel)
-    chunk_type = _safe_identifier(getattr(chunk, "type", None) or type(chunk).__name__)
+    chunk_type = _safe_chunk_type(getattr(chunk, "type", None))
     await hooks.emit(
         HookPoint.API_STREAM_CHUNK,
         session_id=str(branch._owning_session_id or branch.id),

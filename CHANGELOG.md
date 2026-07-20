@@ -24,6 +24,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - `PileItem` (`lionagi.protocols._concepts`, `lionagi.protocols.types`): the nominal Pile-item
   admission contract, renamed from `Observable`.
 
+### Fixed
+
+- API hook emit sites (`API_PRE_CALL`/`API_POST_CALL`/`API_STREAM_CHUNK`, `operations/_api_hooks.py`)
+  hardened: a non-finite provider usage count (`NaN`/`inf`) is dropped from the typed usage
+  summary instead of raising on `int()` coercion and aborting an otherwise-successful call; the
+  `log_api_metrics` built-in reports the real `input_tokens`/`output_tokens` instead of an
+  always-`None` `total`; `_safe_identifier` now redacts credential-shaped model/provider values
+  that satisfy the identifier allowlist; and the stream `chunk_type` (provider-sourced, unlike
+  model/provider) is validated against the closed `StreamChunk` vocabulary so a prefixless
+  credential cannot reach telemetry.
+
 ## [0.29.1] - 2026-07-15
 
 ### Added
