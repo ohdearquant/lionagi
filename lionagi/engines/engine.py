@@ -863,11 +863,18 @@ class Engine:
         """Wrap a str _run()/_partial_export() result into EngineResult; pass through anything else unchanged (e.g. CodingEngine's structured CodeResultRecorded)."""
         if not isinstance(result, str) or isinstance(result, EngineResult):
             return result
+        skipped = list(run._emission_failures)
+        # A dimension/agent whose emission never arrived is a skipped part of
+        # the result regardless of whether a deadline/budget also fired — a
+        # result blind to a skipped agent is degraded by construction, so
+        # this must never depend solely on degrade_reason being set.
+        if not degrade_reason and skipped:
+            degrade_reason = "emission_failure: " + "; ".join(skipped)
         return EngineResult(
             result,
             events_by_type=run.by_type,
-            skipped=list(run._emission_failures),
-            degraded=bool(degrade_reason),
+            skipped=skipped,
+            degraded=bool(degrade_reason) or bool(skipped),
             degrade_reason=degrade_reason,
             run=run,
         )
