@@ -286,8 +286,10 @@ _hygiene_rg_scan() {
 # Same contract as _hygiene_rg_scan (0=pass, 1=match found, 2=scanner error).
 # Public credits are allowlisted only as complete, known lines; sharing a line
 # with a public name must not hide separate process narration. Of the remaining
-# mentions, retain only actor/action, possessive-directive, role-level, and
-# passive-attribution forms so geographic or common-noun uses do not fire.
+# mentions, the possessive form ("Ocean's <anything>") is always narration and
+# stays a catch-all; bare-name mentions are narrowed to actor/action,
+# role-level, and passive-attribution forms so geographic or common-noun uses
+# do not fire.
 _hygiene_founder_name_scan() {
   local rg_bin="$1"
   local label="$2"
@@ -306,7 +308,7 @@ _hygiene_founder_name_scan() {
   local public_credit_re
   public_credit_re='^[^:]+:[0-9]+:(lionagi: author Haiyang \(Ocean\) Li|Author: Haiyang Li - Ocean|copyright: Copyright &copy; 2024-2026 Ocean Li and LionAGI Contributors)$'
   local process_re
-  process_re="(^|[^[:alnum:]_])Ocean('s[[:space:]]+(directive|direction|decision|request|approval|instruction|guidance|review|feedback|plan|preference|mandate)|[[:space:]]+(approved|confirmed|said|says|wants|wanted|decided|directed|reviewed|requested|instructed|asked|agreed|rejected|preferred|mandated)|-level)([^[:alnum:]_]|$)|(^|[^[:alnum:]_])(approved|confirmed|directed|reviewed|requested|instructed)([[:space:]]+[[:alnum:]_-]+){0,3}[[:space:]]+by[[:space:]]+Ocean([^[:alnum:]_]|$)"
+  process_re="(^|[^[:alnum:]_])Ocean's([^[:alnum:]_]|$)|(^|[^[:alnum:]_])Ocean([[:space:]]+(approved|confirmed|said|says|wants|wanted|decided|directed|reviewed|requested|instructed|asked|agreed|rejected|preferred|mandated)|-level)([^[:alnum:]_]|$)|(^|[^[:alnum:]_])(approved|confirmed|directed|reviewed|requested|instructed)([[:space:]]+[[:alnum:]_-]+){0,3}[[:space:]]+by[[:space:]]+Ocean([^[:alnum:]_]|$)"
 
   local leaked
   leaked="$(printf '%s\n' "$output" | grep -vE "$public_credit_re" | grep -E "$process_re" || true)"

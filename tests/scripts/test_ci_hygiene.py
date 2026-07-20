@@ -236,6 +236,29 @@ def test_possessive_founder_name_mention_is_still_rejected(public_repo: Path) ->
     assert "founder-name process narration" in result.stdout
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        "documented in Ocean's notes on the matter\n",
+        "this reflects Ocean's opinion\n",
+        "captures Ocean's take on the design\n",
+    ],
+)
+def test_possessive_founder_name_mention_with_non_whitelisted_noun_is_rejected(
+    public_repo: Path, content: str
+) -> None:
+    # Regression for #2268: #2185 narrowed the possessive branch to a 12-word
+    # noun whitelist (directive/direction/decision/.../mandate), so leaks like
+    # "Ocean's notes"/"Ocean's opinion" silently passed. The possessive form
+    # must stay a catch-all regardless of the noun that follows.
+    (public_repo / "docs" / "example.md").write_text(content)
+
+    result = _run_hygiene(public_repo)
+
+    assert result.returncode != 0
+    assert "founder-name process narration" in result.stdout
+
+
 def test_founder_actor_narration_with_public_name_on_same_line_is_rejected(
     public_repo: Path,
 ) -> None:
