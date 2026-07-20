@@ -186,6 +186,61 @@ def test_import_refuses_to_write_through_a_symlinked_lionagi_directory(capsys, t
     assert (project_dir / ".lionagi").is_symlink()
 
 
+def test_import_non_posix_fallback_writes_correctly(capsys, tmp_path, monkeypatch):
+    """Simulate a platform without `os.O_DIRECTORY`/`os.O_NOFOLLOW` (e.g.
+    Windows) by forcing the module's `_POSIX_FD_WALK` flag off, rather than
+    faking the os module's actual attributes -- a valid import must still
+    succeed and write the expected content via the fallback path."""
+    import lionagi.cli.hooks as hooks_mod
+
+    monkeypatch.setattr(hooks_mod, "_POSIX_FD_WALK", False)
+    _write_claude_settings(tmp_path, CLAUDE_SETTINGS)
+
+    code = cli_main(["hooks", "import", "claude", "--cwd", str(tmp_path)])
+    assert code == 0
+
+    settings_path = tmp_path / ".lionagi" / "settings.yaml"
+    assert settings_path.is_file()
+    data = yaml.safe_load(settings_path.read_text())
+    external = data["hooks_external"]
+
+    assert "PreToolUse" in external
+    pre_entry = external["PreToolUse"][0]["hooks"][0]
+    assert pre_entry["command"] == ["uv", "run", "guards/check.py"]
+    assert pre_entry["source"] == "imported:claude"
+
+
+def test_import_non_posix_fallback_refuses_symlinked_lionagi_directory(
+    capsys, tmp_path, monkeypatch
+):
+    """Same attack as `test_import_refuses_to_write_through_a_symlinked_lionagi_directory`,
+    but on the non-POSIX fallback path (`_POSIX_FD_WALK` forced off): there is
+    no fd-anchored walk available there, so the realpath containment check
+    must catch a symlinked `.lionagi` directory instead."""
+    import lionagi.cli.hooks as hooks_mod
+
+    monkeypatch.setattr(hooks_mod, "_POSIX_FD_WALK", False)
+
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    outside_settings = outside_dir / "settings.yaml"
+    outside_settings.write_text("do-not-touch: true\n")
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    (project_dir / ".lionagi").symlink_to(outside_dir, target_is_directory=True)
+
+    _write_claude_settings(project_dir, CLAUDE_SETTINGS)
+
+    code = cli_main(["hooks", "import", "claude", "--cwd", str(project_dir)])
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "symlink" in err.lower()
+
+    assert outside_settings.read_text() == "do-not-touch: true\n"
+    assert (project_dir / ".lionagi").is_symlink()
+
+
 # ---------------------------------------------------------------------------
 # `li hooks trust`
 # ---------------------------------------------------------------------------

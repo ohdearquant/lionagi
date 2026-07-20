@@ -40,6 +40,12 @@ __all__ = ("add_hooks_subparser", "run_hooks")
 # argv vectors only, never a shell).
 _SHELL_METACHARACTERS = re.compile(r"""[|&;<>$`\\"'*?\[\]{}~#!\n]""")
 
+# `os.O_DIRECTORY`/`os.O_NOFOLLOW` are POSIX-only and do not exist on Windows'
+# `os` module -- referencing either raises `AttributeError` there. Gate the
+# fd-anchored symlink-proof directory walk on this and fall back to a weaker
+# (but still fail-closed) check on platforms without them.
+_POSIX_FD_WALK = hasattr(os, "O_DIRECTORY") and hasattr(os, "O_NOFOLLOW")
+
 _DEFAULT_CONFIG_PATH = {
     "claude": ".claude/settings.json",
     "codex": ".codex/hooks.json",
@@ -242,7 +248,7 @@ def _run_import(source: str, path: str | None, cwd: str | None) -> int:
         hooks_external[event].extend(groups)
         imported_count += sum(len(g["hooks"]) for g in groups)
 
-    if imported_count:
+    if imported_count and _POSIX_FD_WALK:
         # fd-anchored component walk: the up-front is_symlink() check above
         # only covers the final component and only at check time, not
         # write time -- it gives a clearer error for the common case but
@@ -293,6 +299,42 @@ def _run_import(source: str, path: str | None, cwd: str | None) -> int:
             if lion_fd is not None:
                 os.close(lion_fd)
             os.close(root_fd)
+    elif imported_count:
+        # Non-POSIX fallback (no O_DIRECTORY/O_NOFOLLOW, e.g. Windows): the
+        # atomic fd-anchored walk above isn't available there, so this
+        # enforces the strongest check available without it -- refuse
+        # outright if either path component is a symlink, and require the
+        # resolved `.lionagi` directory's realpath to still be directly
+        # under the project root's realpath (catches a directory
+        # junction/reparse point redirecting it elsewhere; `realpath`
+        # resolves Windows junctions too) -- then a normal open+write.
+        # This is weaker than the POSIX walk (the check and the write are
+        # not atomic), but it is the correct enforcement available on a
+        # platform without O_NOFOLLOW.
+        if lionagi_dir.is_symlink() or settings_path.is_symlink():
+            log_error(
+                f"refusing to write through a symlinked .lionagi path: "
+                f"{lionagi_dir} -> {os.path.realpath(lionagi_dir)}"
+            )
+            return 1
+        expected_lionagi_dir = os.path.join(os.path.realpath(project_dir), ".lionagi")
+        if os.path.realpath(lionagi_dir) != expected_lionagi_dir:
+            log_error(
+                f"refusing to write through a redirected .lionagi directory: "
+                f"{lionagi_dir} -> {os.path.realpath(lionagi_dir)}"
+            )
+            return 1
+        try:
+            lionagi_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            log_error(f"could not create {lionagi_dir}: {exc}")
+            return 1
+        try:
+            with open(settings_path, "w") as f:
+                yaml.safe_dump(existing, f, sort_keys=False, allow_unicode=True)
+        except OSError as exc:
+            log_error(f"could not open {settings_path} for writing: {exc}")
+            return 1
 
     for line in report:
         print(line)
