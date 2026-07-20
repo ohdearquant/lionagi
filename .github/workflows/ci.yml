@@ -1,13 +1,15 @@
 name: Continuous Integration
 
 on:
+  # No paths-ignore on push: a notebook-only push previously skipped the whole
+  # workflow (GitHub Actions skips a run when every changed path matches
+  # paths-ignore), including the publication-hygiene lint job, which itself
+  # scans notebooks. A leak introduced only in a notebook must still be gated.
   push:
     branches: [ main, develop ]
-    paths-ignore:
-      - '**/*.ipynb'
-  # No paths-ignore on pull_request: ci-gate is a required status check, so the
-  # workflow must report on every PR — a filtered-out PR would block on a check
-  # that never runs.
+  # No paths-ignore on pull_request either: ci-gate is a required status check,
+  # so the workflow must report on every PR — a filtered-out PR would block on
+  # a check that never runs.
   pull_request:
     branches: [ main, develop ]
   workflow_dispatch:
@@ -48,7 +50,14 @@ jobs:
 
   docs:
     needs: changes
-    if: ${{ always() && needs.changes.result == 'success' }}
+    # The `needs: changes` edge exists only so the ADR steps below can read
+    # needs.changes.outputs.adr; the rest of this job (docs contracts, strict
+    # build, markdownlint, link check) does not depend on that output. Gating
+    # the whole job on the changes job succeeding would skip all of it when
+    # changes fails or is skipped, which is how those checks silently stopped
+    # running. The ADR steps stay output-gated and simply skip when the output
+    # is absent.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7

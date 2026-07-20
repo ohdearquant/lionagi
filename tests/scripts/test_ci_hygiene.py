@@ -70,6 +70,19 @@ def test_ci_lint_job_runs_publication_hygiene() -> None:
     assert "run: scripts/ci.sh lint-hygiene" in workflow
 
 
+def test_push_trigger_has_no_notebook_paths_ignore() -> None:
+    # Regression: GitHub Actions skips an entire workflow run when
+    # every changed path matches paths-ignore. A push trigger that ignores
+    # notebooks would bypass the lint job (and its publication-hygiene scan)
+    # for a notebook-only push to main/develop.
+    workflow = CI_WORKFLOW.read_text()
+    push_block = workflow.split("  push:", 1)[1].split("  pull_request:", 1)[0]
+    push_keys = {line.strip() for line in push_block.splitlines()}
+
+    assert not any(key.startswith("paths-ignore:") for key in push_keys)
+    assert "*.ipynb" not in push_block
+
+
 @pytest.mark.parametrize(
     "source",
     [
@@ -216,6 +229,29 @@ def test_bare_founder_name_mention_is_rejected(public_repo: Path, content: str) 
 
 def test_possessive_founder_name_mention_is_still_rejected(public_repo: Path) -> None:
     (public_repo / "docs" / "example.md").write_text("per Ocean's direction\n")
+
+    result = _run_hygiene(public_repo)
+
+    assert result.returncode != 0
+    assert "founder-name process narration" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "documented in Ocean's notes on the matter\n",
+        "this reflects Ocean's opinion\n",
+        "captures Ocean's take on the design\n",
+    ],
+)
+def test_possessive_founder_name_mention_with_non_whitelisted_noun_is_rejected(
+    public_repo: Path, content: str
+) -> None:
+    # Regression: an earlier change narrowed the possessive branch to a 12-word
+    # noun whitelist (directive/direction/decision/.../mandate), so leaks like
+    # "Ocean's notes"/"Ocean's opinion" silently passed. The possessive form
+    # must stay a catch-all regardless of the noun that follows.
+    (public_repo / "docs" / "example.md").write_text(content)
 
     result = _run_hygiene(public_repo)
 
