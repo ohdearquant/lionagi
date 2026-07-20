@@ -256,15 +256,22 @@ class _ScheduleSetLoader(yaml.SafeLoader):
     `on` key as the bool `True`, and the closed-schema (extra="forbid")
     rejection then names `True` instead of the quoting workaround.
 
-    A key that is *explicitly* tagged (`!!bool on:`) is left alone and
-    still constructs as the real bool `True` -- the leniency here is only
-    for the surprising implicit YAML 1.1 resolution, not for an author who
-    asked for a bool key on purpose. Explicitness is detected from the key
-    node's mark span: PyYAML's composer sets a scalar node's start mark to
-    the position of its tag handle (if any), so the raw source slice
-    between start and end mark includes the `!!bool` text for an explicit
-    tag but is just `on`/`off`/... for an implicit one.
+    A key that is *explicitly* tagged (`!!bool on:`, in any property order,
+    e.g. `&a !!bool on:`) is left alone and still constructs as the real
+    bool `True` -- the leniency here is only for the surprising implicit
+    YAML 1.1 resolution, not for an author who asked for a bool key on
+    purpose. Explicitness is recorded while composing: the parser's scalar
+    event carries a non-None ``tag`` exactly when the source wrote one, so
+    the composer override below stamps that fact onto the node before the
+    resolver fills in the implicit tag. Aliases reuse the anchored node and
+    therefore inherit its explicitness.
     """
+
+    def compose_scalar_node(self, anchor):
+        explicit_tag = self.peek_event().tag is not None
+        node = super().compose_scalar_node(anchor)
+        node.lionagi_explicit_tag = explicit_tag
+        return node
 
     def construct_mapping(self, node, deep=False):
         if isinstance(node, yaml.MappingNode):
@@ -289,10 +296,9 @@ class _ScheduleSetLoader(yaml.SafeLoader):
 
     @staticmethod
     def _is_explicitly_tagged(node: yaml.Node) -> bool:
-        """True if the node's source span starts with a `!` tag handle
-        rather than the bare scalar text (see class docstring)."""
-        span = node.start_mark.buffer[node.start_mark.index : node.end_mark.index]
-        return span.startswith("!")
+        """True if the source wrote a tag for this node (recorded at compose
+        time; see class docstring)."""
+        return getattr(node, "lionagi_explicit_tag", False)
 
 
 def parse_schedule_set(text: str, *, source: str = "<string>") -> ScheduleSetDocument:
