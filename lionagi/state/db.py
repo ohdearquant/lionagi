@@ -1373,7 +1373,15 @@ class StateDB:
             async with self._engine.connect() as conn:
                 driver = (await conn.get_raw_connection()).driver_connection
                 await driver.execute("PRAGMA foreign_keys = OFF")
+                # Everything after the OFF pragma sits inside the outer try so
+                # ANY failure path restores enforcement in the finally block.
+                # The flush commit makes the pragma effective, then BEGIN
+                # IMMEDIATE makes the whole rebuild one atomic transaction —
+                # DDL autocommits per-statement otherwise, so a crash between
+                # DROP and RENAME would strand the data in invocations_new.
                 try:
+                    await driver.commit()
+                    await driver.execute("BEGIN IMMEDIATE")
                     await driver.execute(
                         """
                         CREATE TABLE invocations_new (
@@ -1407,6 +1415,9 @@ class StateDB:
                     for idx_sql in index_sqls:
                         await driver.execute(idx_sql)
                     await driver.commit()
+                except BaseException:
+                    await driver.rollback()
+                    raise
                 finally:
                     await driver.execute("PRAGMA foreign_keys = ON")
                     await driver.commit()
@@ -1529,7 +1540,13 @@ class StateDB:
             async with self._engine.connect() as conn:
                 driver = (await conn.get_raw_connection()).driver_connection
                 await driver.execute("PRAGMA foreign_keys = OFF")
+                # Same shape as the invocations rebuild above: flush commit so
+                # the pragma takes effect, then one BEGIN IMMEDIATE transaction
+                # around the whole rebuild so a crash mid-sequence cannot
+                # strand the data in schedule_runs_new.
                 try:
+                    await driver.commit()
+                    await driver.execute("BEGIN IMMEDIATE")
                     await driver.execute(
                         """
                         CREATE TABLE schedule_runs_new (
@@ -1595,6 +1612,9 @@ class StateDB:
                         "WHERE status IN ('queued', 'running', 'retry_wait')"
                     )
                     await driver.commit()
+                except BaseException:
+                    await driver.rollback()
+                    raise
                 finally:
                     await driver.execute("PRAGMA foreign_keys = ON")
                     await driver.commit()
