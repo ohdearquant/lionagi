@@ -40,10 +40,13 @@ and constructs the invocation event without making tools process-global
 **P4 — Remote MCP tools must look ordinary after discovery, but their transport is
 not ordinary.** The registry currently accepts a one-entry MCP configuration, discovers
 remote schemas, builds a local async proxy, remembers transport policy, and reaches a
-process-global client pool. Command and URL transports are fail-closed, and that now
-holds through the two explicit config-loading helpers as well: an omitted policy stays
-unset and reaches the pool's own fail-closed default, so loading a config file is no
-longer an implicit trust act. Discovered tools
+process-global client pool. Command and URL transports are fail-closed under direct pool
+use, and the two explicit config-loading helpers no longer upgrade an omitted policy to a
+permissive one: it stays unset and is passed through unchanged. It then reaches the pool's
+fail-closed default only when no policy has already been recorded for the same identity;
+where one has, that remembered authorization is substituted first (see Policy recovery
+below). So loading a config file is no longer an implicit trust act on its own, but it is
+not yet an independent one either. Discovered tools
 use the remote tool's unqualified name in the branch registry, so remote servers can
 collide with each other or with local tools (`lionagi/protocols/action/manager.py`;
 `lionagi/service/connections/mcp_wrapper.py`).
@@ -481,8 +484,10 @@ tool:
 - **Policy recovery is process-scoped, and it is wider than the loader contract
   intends.** An explicit policy is remembered against the resolved transport so the
   proxy's own later `get_client()` call, which carries no policy, recovers the same
-  authorization. That recovery is keyed only by transport identity, so a *different*
-  caller that later loads the same transport with no policy also inherits the earlier
+  authorization. That recovery is keyed by the same policy identity described under
+  Policy reuse — server name plus resolved transport content for a named server, content
+  alone for an inline config — and by nothing narrower, so a *different* caller that
+  later loads a transport matching that identity with no policy also inherits the earlier
   authorization rather than being denied. Delta 3 is therefore delivered for a first
   load in a process and not yet for a subsequent one; closing that gap requires
   distinguishing the proxy's re-entry from a fresh loader call, which is tracked
