@@ -313,6 +313,17 @@ def test_notify_genuinely_unknown_key_still_rejected():
         parse_schedule_set(manifest)
 
 
+def test_notify_explicit_bool_tagged_on_key_still_rejected():
+    """The bare/implicit `on:` leniency is scoped to YAML 1.1's *implicit*
+    bool resolution. A key explicitly tagged `!!bool on:` is an author
+    asking for a real bool key on purpose, so it must still construct as
+    `True` and trip the closed schema, not silently parse as the string
+    "on"."""
+    manifest = _notify_yaml_manifest("      !!bool on: [failed]\n      command: notify-run\n")
+    with pytest.raises(ValidationError, match="True"):
+        parse_schedule_set(manifest)
+
+
 def test_sequence_mapping_key_raises_value_error_not_type_error():
     """A sequence used as a mapping key is unhashable. SafeLoader rejects
     this with ConstructorError; the custom key-construction override must

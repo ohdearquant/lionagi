@@ -248,13 +248,22 @@ class ScheduleSetError(ValueError):
 
 class _ScheduleSetLoader(yaml.SafeLoader):
     """SafeLoader variant scoped to this parse boundary only: a mapping key
-    that YAML 1.1's implicit-bool resolver would collapse (bare on/off/
+    that YAML 1.1's *implicit* bool resolver would collapse (bare on/off/
     yes/no/true/false) keeps its original text instead. Values are
     untouched -- only keys, so `enabled: yes` still resolves to `True`.
 
     Without this, a hand-authored `notify:\n  on: [...]` parses its own
     `on` key as the bool `True`, and the closed-schema (extra="forbid")
     rejection then names `True` instead of the quoting workaround.
+
+    A key that is *explicitly* tagged (`!!bool on:`) is left alone and
+    still constructs as the real bool `True` -- the leniency here is only
+    for the surprising implicit YAML 1.1 resolution, not for an author who
+    asked for a bool key on purpose. Explicitness is detected from the key
+    node's mark span: PyYAML's composer sets a scalar node's start mark to
+    the position of its tag handle (if any), so the raw source slice
+    between start and end mark includes the `!!bool` text for an explicit
+    tag but is just `on`/`off`/... for an implicit one.
     """
 
     def construct_mapping(self, node, deep=False):
@@ -262,7 +271,9 @@ class _ScheduleSetLoader(yaml.SafeLoader):
             self.flatten_mapping(node)
         mapping: dict[Any, Any] = {}
         for key_node, value_node in node.value:
-            if key_node.tag == "tag:yaml.org,2002:bool":
+            if key_node.tag == "tag:yaml.org,2002:bool" and not self._is_explicitly_tagged(
+                key_node
+            ):
                 key = key_node.value
             else:
                 key = self.construct_object(key_node, deep=deep)
@@ -275,6 +286,13 @@ class _ScheduleSetLoader(yaml.SafeLoader):
                     )
             mapping[key] = self.construct_object(value_node, deep=deep)
         return mapping
+
+    @staticmethod
+    def _is_explicitly_tagged(node: yaml.Node) -> bool:
+        """True if the node's source span starts with a `!` tag handle
+        rather than the bare scalar text (see class docstring)."""
+        span = node.start_mark.buffer[node.start_mark.index : node.end_mark.index]
+        return span.startswith("!")
 
 
 def parse_schedule_set(text: str, *, source: str = "<string>") -> ScheduleSetDocument:
