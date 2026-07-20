@@ -416,6 +416,7 @@ async def _teardown_common(
     identity_markers: dict | None = None,
     escalated_evidence: list[dict] | None = None,
     finalize_error: dict | None = None,
+    artifact_write_error: dict | None = None,
     cwd: str | None = None,
     engine_session_uid: str | None = None,
     defer_terminal: bool = False,
@@ -579,6 +580,32 @@ async def _teardown_common(
         )
         final_evidence_refs = escalated_evidence
 
+    # The synthesis artifact IS the run's output. A DAG that completed but
+    # whose output write raised has not delivered anything -- that is a real
+    # failure of the run, not a best-effort finalize hiccup, so this flips
+    # "completed" to "failed" instead of only annotating the reason code the
+    # way COMPLETED_FINALIZE_ERROR below does.
+    if artifact_write_error:
+        from lionagi.state.reasons import RunReasons
+
+        metadata = dict(metadata or {})
+        metadata["artifact_write_error"] = artifact_write_error
+        if final_status == "completed":
+            final_status = "failed"
+            final_reason_code = RunReasons.FAILED_ARTIFACT_WRITE
+            final_reason_summary = (
+                "DAG completed successfully but writing its output artifact raised "
+                f"{artifact_write_error.get('error_class', 'an error')}: "
+                f"{artifact_write_error.get('error', '')}"
+            )
+            final_evidence_refs = [
+                {
+                    "kind": "artifact_write_error",
+                    "id": artifact_write_error.get("error_class", "error"),
+                    "label": artifact_write_error.get("error", ""),
+                }
+            ]
+
     # A post-completion finalize step (persistence/team-teardown) raised after
     # the DAG itself already produced its result. That failure is real and must
     # not be silently dropped, but it is not a DAG failure either — surface it
@@ -704,6 +731,7 @@ async def teardown_persist(
     extras: dict | None = None,
     escalated_evidence: list[dict] | None = None,
     finalize_error: dict | None = None,
+    artifact_write_error: dict | None = None,
     cwd: str | None = None,
     engine_session_uid: str | None = None,
     defer_terminal: bool = False,
@@ -726,6 +754,7 @@ async def teardown_persist(
             identity_markers=ctx.get("identity_markers"),
             escalated_evidence=escalated_evidence,
             finalize_error=finalize_error,
+            artifact_write_error=artifact_write_error,
             cwd=cwd,
             engine_session_uid=engine_session_uid,
             defer_terminal=defer_terminal,

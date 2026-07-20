@@ -1414,6 +1414,65 @@ async def test_stop_finalize_error_does_not_override_real_dag_failure_reason(
     assert s["status_reason_code"] == "run.failed.exception"
 
 
+# ── output-write failure is a real failure, not a finalize hiccup ─────────────
+
+
+async def test_stop_artifact_write_error_flips_completed_to_failed_with_distinct_reason(
+    temp_db_path: Path,
+):
+    """Unlike a finalize hiccup (team post, snapshots), the synthesis artifact
+    IS the run's output. A DAG that completed but whose output write raised
+    must be reported as failed (exit 1), not completed — exit 0 with no
+    artifact is a success claim for a run that produced nothing. This must
+    fail against the pre-split code, where the write shared the same
+    `env._finalize_error` field as best-effort side effects and never
+    flipped `final_status`."""
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    # Mirrors what _finalize_flow (lionagi/cli/orchestrate/flow.py) stashes on
+    # the env when writing the synthesis artifact itself raises.
+    env._artifact_write_error = {"error_class": "OSError", "error": "disk full"}
+
+    final_status = await stop_live_persist(env, status="completed")
+    assert final_status == "failed"
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed"
+    assert s["status_reason_code"] == "run.failed.artifact_write"
+    assert s["status_reason_code"] not in ("run.completed.ok", "run.completed.finalize_error")
+    assert "OSError" in s["status_reason_summary"]
+
+
+async def test_stop_artifact_write_error_does_not_override_real_dag_failure_reason(
+    temp_db_path: Path,
+):
+    """When the DAG itself failed for an unrelated reason, an artifact-write
+    error found alongside it must not mask the real failure reason — the
+    original exception's reason code stays, with the write error recorded
+    only in metadata."""
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    env._artifact_write_error = {"error_class": "OSError", "error": "disk full"}
+    dag_exc = RuntimeError("planner blew up")
+
+    final_status = await stop_live_persist(env, status="failed", exception=dag_exc)
+    assert final_status == "failed"
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed"
+    assert s["status_reason_code"] == "run.failed.exception"
+
+
 # ── ADR-0064 + ADR-0057: session→invocation propagation on missing artifact ──
 #
 # The tests above prove the *session* row flips to failed/FAILED_MISSING_ARTIFACT.

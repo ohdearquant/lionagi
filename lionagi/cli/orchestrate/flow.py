@@ -1462,15 +1462,27 @@ def _finalize_flow(
     output_format: str,
     show_graph: bool,
 ) -> str:
-    """Format output, write synthesis artifact, post team messages, and finalize run.
+    """Format output, write the synthesis artifact, then run best-effort teardown.
 
     The DAG already has its result by the time this runs, so ``output`` is
-    computed first and always returned. Everything below it is post-completion
-    persistence/teardown (synthesis file, team inbox post, branch snapshots,
-    run pointer) — best-effort. A failure there is a real defect but not a DAG
-    failure: it's caught and stashed on ``env._finalize_error`` for the run's
-    teardown to surface via its own reason code, rather than raising and
-    letting the caller conflate it with the DAG's own outcome.
+    computed first and always returned. The synthesis artifact write happens
+    next, ahead of everything else and outside any guard: it IS the run's
+    output, so a failure there is a real failure of the run, not a finalize
+    hiccup — it's stashed on ``env._artifact_write_error`` for the run's
+    teardown to flip the terminal status to "failed" over, rather than being
+    swallowed alongside best-effort side effects.
+
+    Everything after that — team inbox post, branch snapshots, resume
+    pointer, the DAG graph image — is post-completion persistence/telemetry
+    whose failure should never fail the run. It's caught and stashed on
+    ``env._finalize_error`` for the run's teardown to surface via its own
+    reason code, rather than raising and letting the caller conflate it with
+    the DAG's own outcome.
+
+    Ordering matters: the output write runs first and unguarded, so a
+    telemetry failure below can never prevent the output from being written,
+    and an output failure is recorded on its own field so a later guarded
+    failure can never mask it.
     """
     agent_results = exec_result.agent_results
     n_spawned = exec_result.n_spawned
@@ -1483,10 +1495,19 @@ def _finalize_flow(
     else:
         output = _format_result_text(agent_results, synthesis_result, header_fn=_flow_header_fn)
 
-    try:
-        if synthesis_result:
+    if synthesis_result:
+        try:
             env.run.synthesis_path.write_text(synthesis_result["response"])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "flow finalize: writing the synthesis artifact failed; the run "
+                "produced no output and cannot be reported as completed: %s",
+                exc,
+                exc_info=True,
+            )
+            env._artifact_write_error = {"error_class": type(exc).__name__, "error": str(exc)}
 
+    try:
         if env.team_data:
             _post_results_to_team(env.team_data, agent_results, agent_ids, synthesis_result)
 
