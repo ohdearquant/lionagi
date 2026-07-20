@@ -313,6 +313,35 @@ def test_notify_genuinely_unknown_key_still_rejected():
         parse_schedule_set(manifest)
 
 
+def test_notify_explicit_bool_tagged_on_key_still_rejected():
+    """The bare/implicit `on:` leniency is scoped to YAML 1.1's *implicit*
+    bool resolution. A key explicitly tagged `!!bool on:` is an author
+    asking for a real bool key on purpose, so it must still construct as
+    `True` and trip the closed schema, not silently parse as the string
+    "on"."""
+    manifest = _notify_yaml_manifest("      !!bool on: [failed]\n      command: notify-run\n")
+    with pytest.raises(ValidationError, match="True"):
+        parse_schedule_set(manifest)
+
+
+def test_notify_anchor_then_explicit_bool_tagged_key_still_rejected():
+    """YAML node properties may appear in either order; `&a !!bool on:` is
+    just as explicit as `!!bool on:` and must also construct as `True` and
+    trip the closed schema."""
+    manifest = _notify_yaml_manifest("      &a !!bool on: [failed]\n      command: notify-run\n")
+    with pytest.raises(ValidationError, match="True"):
+        parse_schedule_set(manifest)
+
+
+def test_notify_alias_of_implicit_anchored_key_stays_text():
+    """An anchored-but-untagged key (`&a on:`) is still implicit resolution,
+    so it keeps the text leniency; an alias reusing it inherits the same
+    node and therefore the same outcome."""
+    manifest = _notify_yaml_manifest("      &a on: [failed]\n      command: notify-run\n")
+    doc = parse_schedule_set(manifest)
+    assert doc.schedules["m"].notify.on == ["failed"]
+
+
 def test_sequence_mapping_key_raises_value_error_not_type_error():
     """A sequence used as a mapping key is unhashable. SafeLoader rejects
     this with ConstructorError; the custom key-construction override must

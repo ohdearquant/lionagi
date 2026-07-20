@@ -88,6 +88,11 @@ def _build_safe_path(
     caller-facing spelling to return to the caller: a relative ``directory``
     yields a relative caller-facing path, an absolute one yields an absolute
     caller-facing path.
+
+    Validation happens once, here, at call time — nothing is reserved
+    against later filesystem changes, so a relative ``directory`` is only
+    race-safe against concurrent mutation for as long as the caller resolves
+    it the same way create_path/acreate_path did.
     """
     from lionagi.libs.path_safety import contain_and_resolve
 
@@ -179,6 +184,11 @@ async def acreate_path(
     Returns a path in the caller's own representation: relative in, relative
     out; absolute in, absolute out. Containment/traversal checks always run
     against the fully resolved (symlink-safe) candidate regardless.
+
+    The returned path is validated at creation time only — it is not reserved
+    against filesystem changes that happen afterward. Callers that need
+    race-safety against a concurrently mutating relative `directory` should
+    pass an absolute directory instead.
     """
     from .concurrency import move_on_after
 
@@ -525,6 +535,11 @@ def create_path(
     Returns a path in the caller's own representation: relative in, relative
     out; absolute in, absolute out. Containment/traversal checks always run
     against the fully resolved (symlink-safe) candidate regardless.
+
+    The returned path is validated at creation time only — it is not reserved
+    against filesystem changes that happen afterward. Callers that need
+    race-safety against a concurrently mutating relative `directory` should
+    pass an absolute directory instead.
     """
     safe_path = _build_safe_path(
         StdPath(directory),

@@ -248,21 +248,39 @@ class ScheduleSetError(ValueError):
 
 class _ScheduleSetLoader(yaml.SafeLoader):
     """SafeLoader variant scoped to this parse boundary only: a mapping key
-    that YAML 1.1's implicit-bool resolver would collapse (bare on/off/
+    that YAML 1.1's *implicit* bool resolver would collapse (bare on/off/
     yes/no/true/false) keeps its original text instead. Values are
     untouched -- only keys, so `enabled: yes` still resolves to `True`.
 
     Without this, a hand-authored `notify:\n  on: [...]` parses its own
     `on` key as the bool `True`, and the closed-schema (extra="forbid")
     rejection then names `True` instead of the quoting workaround.
+
+    A key that is *explicitly* tagged (`!!bool on:`, in any property order,
+    e.g. `&a !!bool on:`) is left alone and still constructs as the real
+    bool `True` -- the leniency here is only for the surprising implicit
+    YAML 1.1 resolution, not for an author who asked for a bool key on
+    purpose. Explicitness is recorded while composing: the parser's scalar
+    event carries a non-None ``tag`` exactly when the source wrote one, so
+    the composer override below stamps that fact onto the node before the
+    resolver fills in the implicit tag. Aliases reuse the anchored node and
+    therefore inherit its explicitness.
     """
+
+    def compose_scalar_node(self, anchor):
+        explicit_tag = self.peek_event().tag is not None
+        node = super().compose_scalar_node(anchor)
+        node.lionagi_explicit_tag = explicit_tag
+        return node
 
     def construct_mapping(self, node, deep=False):
         if isinstance(node, yaml.MappingNode):
             self.flatten_mapping(node)
         mapping: dict[Any, Any] = {}
         for key_node, value_node in node.value:
-            if key_node.tag == "tag:yaml.org,2002:bool":
+            if key_node.tag == "tag:yaml.org,2002:bool" and not self._is_explicitly_tagged(
+                key_node
+            ):
                 key = key_node.value
             else:
                 key = self.construct_object(key_node, deep=deep)
@@ -275,6 +293,12 @@ class _ScheduleSetLoader(yaml.SafeLoader):
                     )
             mapping[key] = self.construct_object(value_node, deep=deep)
         return mapping
+
+    @staticmethod
+    def _is_explicitly_tagged(node: yaml.Node) -> bool:
+        """True if the source wrote a tag for this node (recorded at compose
+        time; see class docstring)."""
+        return getattr(node, "lionagi_explicit_tag", False)
 
 
 def parse_schedule_set(text: str, *, source: str = "<string>") -> ScheduleSetDocument:
