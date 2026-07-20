@@ -6,6 +6,7 @@ from __future__ import annotations
 import threading
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Generator, Iterator, Sequence
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, ClassVar, Generic, Literal, TypeVar
 from uuid import UUID
@@ -137,7 +138,30 @@ def _validate_collections(value: Any, item_type: set | None, strict_type: bool, 
 
 
 class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
-    """Thread-safe, async-compatible, ordered collection of Observable elements."""
+    """Ordered collection of Observable elements with a two-lock concurrency contract.
+
+    Concurrency contract:
+
+    - The sync API (``@synchronized`` methods, subscripting, iteration
+      snapshots) is thread-safe under ``_lock``.
+    - The async API (``a``-prefixed ``@async_synchronized`` methods) is
+      task-safe under ``_async_lock`` AND excludes sync callers in other
+      threads: the async wrapper holds both locks (async lock first, then a
+      non-blocking spin on the threading lock) for the duration of the call.
+    - Iteration (``__iter__`` / ``__aiter__``) captures a point-in-time
+      snapshot of the *order* under the lock; item lookup stays live, so
+      removing a not-yet-visited item raises ``KeyError`` at that step
+      (fail-loud) instead of silently yielding a stale object. ``keys`` /
+      ``values`` / ``items`` return fully materialized snapshots.
+    - The exclusion boundary is CROSS-THREAD, not cross-task. On the event
+      loop's own thread, a sync call made by a different task while an async
+      operation is mid-await re-enters the RLock (thread-owned) and proceeds.
+      Same-thread callers are cooperative by design; enforcing task-level
+      exclusion for sync calls on the loop thread would deadlock the loop.
+      Async-side critical regions (``async with pile``, ``adump``,
+      ``adapt_to_async``, ``__aiter__``) all use the ordered both-lock
+      protocol, so they exclude sync callers running in other threads.
+    """
 
     collections: dict[UUID, T] = Field(default_factory=dict)
     item_type: set | None = Field(
@@ -162,6 +186,11 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         "strict_type",
     }
 
+    # Two locks, one ordered protocol: sync methods hold _lock; async methods
+    # hold _async_lock THEN _lock (via @async_synchronized), so the two API
+    # families mutually exclude. _lock is an RLock because sync methods
+    # reenter each other (update -> include, exclude -> pop) and async bodies
+    # may call @synchronized siblings while the wrapper already holds it.
     _lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
     _async_lock: ConcurrencyLock = PrivateAttr(default_factory=ConcurrencyLock)
 
@@ -228,6 +257,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
     ) -> Pile:
         return cls(**data)
 
+    @synchronized
     def __setitem__(
         self,
         key: ID.Ref | ID.RefSeq | int | slice,
@@ -311,12 +341,15 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
     ) -> T | Pile | D:
         return self._get(key, default)
 
+    @synchronized
     def keys(self) -> Sequence[str]:
         return list(self.progression)
 
+    @synchronized
     def values(self) -> Sequence[T]:
         return [self.collections[key] for key in self.progression]
 
+    @synchronized
     def items(self) -> Sequence[tuple[UUID, T]]:
         return [(key, self.collections[key]) for key in self.progression]
 
@@ -327,9 +360,13 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         return len(self.progression)
 
     def __iter__(self) -> Iterator[T]:
-        current_order = list(self.progression)
+        with self._lock:
+            order = list(self.progression)
 
-        for key in current_order:
+        # Order is a point-in-time snapshot, but item lookup stays live:
+        # removing a not-yet-visited item makes the traversal raise KeyError
+        # (fail-loud) rather than silently yielding a stale object.
+        for key in order:
             yield self.collections[key]
 
     def __next__(self) -> T:
@@ -338,9 +375,11 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         except StopIteration:
             raise StopIteration("End of pile") from None
 
+    @synchronized
     def __getitem__(self, key: ID.Ref | ID.RefSeq | int | slice) -> Any | list | T:
         return self._getitem(key)
 
+    @synchronized
     def __contains__(self, item: ID.RefSeq | ID.Ref) -> bool:
         return item in self.progression
 
@@ -484,7 +523,27 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
 
     @property
     def async_lock(self):
+        # Task-level serialization only: holding this lock alone does NOT
+        # exclude sync callers in other threads. Use `async with pile:` for
+        # the full cross-thread boundary.
         return self._async_lock
+
+    async def _spin_acquire_sync_lock(self) -> None:
+        # Non-blocking spin so the event loop keeps running while a sync
+        # thread holds _lock. Callers must already hold _async_lock.
+        while not self._lock.acquire(blocking=False):
+            await _concurrency_sleep(0.0005)
+
+    @asynccontextmanager
+    async def _both_locks(self) -> AsyncIterator[None]:
+        # Ordered both-lock protocol shared by every async critical region:
+        # _async_lock serializes tasks, then the spin excludes sync threads.
+        async with self._async_lock:
+            await self._spin_acquire_sync_lock()
+            try:
+                yield
+            finally:
+                self._lock.release()
 
     @async_synchronized
     async def asetitem(
@@ -552,10 +611,11 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         return self._get(key, default)
 
     async def __aiter__(self) -> AsyncIterator[T]:
-        async with self.async_lock:
-            current_order = list(self.progression)
+        async with self._both_locks():
+            order = list(self.progression)
 
-        for key in current_order:
+        # Same contract as __iter__: snapshotted order, live item lookup.
+        for key in order:
             yield self.collections[key]
 
     async def __anext__(self) -> T:
@@ -564,6 +624,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         except StopAsyncIteration:
             raise StopAsyncIteration("End of pile") from None
 
+    @synchronized
     def filter(self, predicate: Callable[[T], bool]) -> Pile[T]:
         return self._filter_by_function(predicate)
 
@@ -760,21 +821,32 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
     class AsyncPileIterator:
         def __init__(self, pile: Pile):
             self.pile = pile
-            self.index = 0
+            self._agen: AsyncIterator[T] | None = None
 
         def __aiter__(self) -> AsyncIterator[T]:
             return self
 
         async def __anext__(self) -> T:
-            if self.index >= len(self.pile):
-                raise StopAsyncIteration
-            item = self.pile[self.pile.progression[self.index]]
-            self.index += 1
+            # Delegate to Pile.__aiter__ so this legacy iterator shares the
+            # both-lock snapshot contract and never takes the blocking sync
+            # subscript path on the event loop.
+            if self._agen is None:
+                self._agen = self.pile.__aiter__()
+            item = await anext(self._agen)
+            # Cooperative checkpoint between elements so bulk iteration over a
+            # large pile cannot monopolize the event loop.
             await _concurrency_sleep(0)
             return item
 
     async def __aenter__(self) -> Self:
+        # Ordered both-lock acquisition held for the whole `async with pile:`
+        # block, so sync callers in other threads are excluded until exit.
         await self.async_lock.__aenter__()
+        try:
+            await self._spin_acquire_sync_lock()
+        except BaseException:
+            await self.async_lock.__aexit__(None, None, None)
+            raise
         return self
 
     async def __aexit__(
@@ -783,6 +855,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         exc_val: BaseException | None,
         exc_tb: Any,
     ) -> None:
+        self._lock.release()
         await self.async_lock.__aexit__(exc_type, exc_val, exc_tb)
 
     def is_homogenous(self) -> bool:
@@ -805,7 +878,10 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
 
     async def adapt_to_async(self, obj_key: str, many=False, **kw: Any) -> Any:
         kw["adapt_meth"] = "to_dict"
-        return await super().adapt_to_async(obj_key=obj_key, many=many, **kw)
+        # Serialize under the both-lock protocol so a sync-thread mutation
+        # cannot race the adapter's snapshot of the pile.
+        async with self._both_locks():
+            return await super().adapt_to_async(obj_key=obj_key, many=many, **kw)
 
     @classmethod
     async def adapt_from_async(cls, obj: Any, obj_key: str, many=False, **kw: Any):
@@ -864,7 +940,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
     ) -> None:
         from lionagi.ln.concurrency import run_sync
 
-        async with self.async_lock:
+        async with self._both_locks():
             snapshot_ids = set(self.collections.keys())
             df = self.to_df()
 
@@ -885,7 +961,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         await run_sync(_write)
 
         if clear:
-            async with self.async_lock:
+            async with self._both_locks():
                 self.progression.exclude(list(snapshot_ids))
                 for uid in snapshot_ids:
                     self.collections.pop(uid, None)
