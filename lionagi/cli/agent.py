@@ -377,15 +377,16 @@ async def _run_agent(
         )
 
     if branch is None:
-        # Codex sandbox blocks tool calls without bypass. Surface this even
-        # without verbose output; CLI or profile approval flags suppress it.
+        # Codex blocks tool calls until file access is enabled. Surface this
+        # even without verbose output; CLI or profile approval flags suppress it.
         if provider == "codex" and not yolo and not bypass:
             from lionagi.cli._logging import warn
 
             warn(
-                "codex models require --bypass or --yolo for local file access. "
-                "Without one of these flags the agent may hang silently. "
-                "Re-run with --bypass or use an agent profile (-a)."
+                "codex models need file access enabled or the agent may hang "
+                "silently on its first tool call. Re-run with --yolo for the "
+                "sandboxed default, or use an agent profile (-a). --bypass also "
+                "works but disables the sandbox."
             )
         chat_model = build_chat_model(provider, model, yolo, verbose, theme, effort, fast, bypass)
         effort = resolve_persisted_effort(provider, chat_model, effort)
