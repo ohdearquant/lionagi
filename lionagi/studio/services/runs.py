@@ -769,7 +769,7 @@ def _open_regular_file_no_follow(root: Path, resolved: Path) -> int:
         raise
 
 
-def _decode_capped_utf8(raw_slice: bytes) -> str | None:
+def _decode_capped_utf8(raw: bytes, cap: int) -> str | None:
     """Decode a byte-capped file read, tolerating only a multibyte UTF-8
     sequence that was split by the cap boundary itself.
 
@@ -778,6 +778,7 @@ def _decode_capped_utf8(raw_slice: bytes) -> str | None:
     the content is genuinely non-text/binary and should still 415,
     regardless of whether it happens to exceed the read cap.
     """
+    raw_slice = raw[:cap]
     try:
         return raw_slice.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -791,6 +792,16 @@ def _decode_capped_utf8(raw_slice: bytes) -> str | None:
             raw_slice[: exc.start].decode("utf-8")
         except UnicodeDecodeError:
             return None
+
+        # Validate that the byte(s) immediately after the cap continue a valid
+        # UTF-8 sequence, rejecting cases where the sequence is already invalid.
+        try:
+            if len(raw) > cap:
+                raw[: cap + 1].decode("utf-8")
+        except UnicodeDecodeError as exc_plus1:
+            if exc_plus1.reason != "unexpected end of data":
+                return None
+
         # Everything before the cut-off tail is confirmed valid UTF-8, so the
         # only thing being masked here is the boundary-truncated trailing
         # character itself -- safe to render it as a replacement character.
@@ -844,7 +855,7 @@ async def get_run_file(run_id: str, path: str) -> dict[str, Any]:
         # A split multibyte UTF-8 sequence at the cap boundary must read as
         # truncation, not a binary file -- but a genuinely non-text file that
         # happens to exceed the cap must still 415, the same as a small one.
-        content = _decode_capped_utf8(raw[:_MAX_FILE_READ_BYTES])
+        content = _decode_capped_utf8(raw, _MAX_FILE_READ_BYTES)
         if content is None:
             raise HTTPException(status_code=415, detail="File is not text/UTF-8") from None
     else:
