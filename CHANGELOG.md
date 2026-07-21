@@ -21,6 +21,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   caller (`Element`, `Pile`, `Communicatable`, `SessionObserver`, `validate_sender_recipient`)
   and the public `lionagi.protocols.types` facade use `Observable`.
 
+### Fixed
+
+- The `li agent` codex file-access hint now recommends `--yolo` (the sandboxed default) rather
+  than `--bypass` (which disables the sandbox) when a codex leg would otherwise hang on its first
+  tool call. `--bypass` is still noted as the sandbox-disabling escape hatch.
+
 ## [0.30.0] - 2026-07-20
 
 ### Removed
