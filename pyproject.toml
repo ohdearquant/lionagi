@@ -312,7 +312,7 @@ constraint-dependencies = [
     "authlib>=1.6.11",      # CVE: CSRF when using cache
     "python-multipart>=0.0.31",  # CVE: DoS via unbounded multipart part headers; quadratic querystring parsing; param smuggling
     "pytest>=9.0.3",        # CVE: vulnerable tmpdir handling
-    "pillow>=12.2.0",       # CVE: FITS GZIP decompression bomb
+    "pillow>=12.3.0",       # CVE: FITS GZIP decompression bomb + additional image-parsing advisories fixed in 12.3.0
     "pyjwt>=2.13.0",        # CVE: PyJWK HMAC/alg-allowlist bypass, PyJWKClient SSRF + DoS
     "tornado>=6.5.7",       # CVE: gzip bomb, auth-header redirect leak, curl credential leak
     "cairosvg>=2.9.0",      # CVE: recursive <use> exponential DoS
@@ -321,4 +321,5 @@ constraint-dependencies = [
     "pygments>=2.20.0",     # CVE: ReDoS in GUID regex
     "lxml>=6.1.0",          # CVE-2026-41066: XXE via default iterparse / ETCompatXMLParser config
     "gitpython>=3.1.49",    # CVE: RCE via config_writer + path traversal in reference APIs
+    "torch>=2.13.0",        # CVE: vulnerability affecting torch <= 2.12.1 (transitive via docling/torchvision)
 ]
