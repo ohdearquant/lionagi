@@ -19,6 +19,19 @@ The fix stamps every create_agent-built branch with an immutable origin
 marker in `branch.metadata` (`CREATE_AGENT_BRANCH_ORIGIN_KEY`) that
 round-trips through save/resume, and consults that marker — not the current
 profile — on any resumed/continued leg.
+
+A later guard additionally treated the *content* of a persisted system
+message as a provenance signal: if it contained one of the three headings
+`_render_policy_block` emits (`## Authority`, `## Operational Boundaries`,
+`## Escalation Conditions`), it was inferred to be create_agent-composed and
+the marker was backfilled. Those headings are ordinary user-authored prompt
+text and are not exclusive to create_agent, so a hand-written plain profile
+using e.g. `## Authority` was misclassified and a newly requested role's
+system prompt was silently dropped on resume. That content heuristic (and
+the backfill it drove) has been removed entirely: only the immutable
+`CREATE_AGENT_BRANCH_ORIGIN_KEY` marker counts as create_agent provenance. A
+markerless branch always gets the newly requested role's system prompt
+applied, regardless of what its persisted system message happens to contain.
 """
 
 from __future__ import annotations
@@ -144,16 +157,17 @@ async def _make_persisted_role_branch(tmp_path: Path) -> tuple[str, str]:
     return branch_id, rendered
 
 
-def _make_markerless_role_branch(tmp_path: Path) -> tuple[str, str]:
-    """Persist a role-composed-looking branch without using the factory marker."""
+def _make_plain_markerless_branch(tmp_path: Path, rendered: str) -> tuple[str, str]:
+    """Persist a branch the way the non-role `-a` path builds one today: a
+    bare Branch with `add_message(system=...)` from a plain profile's system
+    prompt, and no CREATE_AGENT_BRANCH_ORIGIN_KEY marker. *rendered* may or
+    may not happen to contain one of the policy-block-looking headings —
+    either way it is genuinely plain, never create_agent-composed, and must
+    not be mistaken for a legacy create_agent branch."""
     from lionagi import Branch
 
-    rendered = (
-        "# Reviewer\n\nReview the requested work critically.\n\n"
-        "## Authority\n- Inspect and report on the supplied implementation."
-    )
     branch = Branch(chat_model="claude_code/sonnet")
-    branch.msgs.set_system(branch.msgs.create_system(system=rendered))
+    branch.msgs.add_message(system=rendered)
 
     branch_dir = tmp_path / "branches"
     branch_dir.mkdir(parents=True, exist_ok=True)
@@ -246,19 +260,48 @@ async def test_continue_last_with_different_plain_profile_preserves_composed_sys
     )
 
 
+_PLAIN_RENDERED_NO_HEADING = "Summarize the supplied text concisely. No other commentary."
+_PLAIN_RENDERED_AUTHORITY_HEADING = (
+    "## Authority\n- Summarize the supplied text and flag anything ambiguous."
+)
+_PLAIN_RENDERED_BOUNDARIES_HEADING = (
+    "## Operational Boundaries\n- Do not fabricate figures not present in the source text."
+)
+_PLAIN_RENDERED_ESCALATION_HEADING = (
+    "## Escalation Conditions\n- If the source text is empty, say so instead of guessing."
+)
+
+
 @pytest.mark.asyncio
-async def test_resume_markerless_role_branch_backfills_origin_and_preserves_system(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize(
+    "plain_rendered",
+    [
+        pytest.param(_PLAIN_RENDERED_NO_HEADING, id="no-heading"),
+        pytest.param(_PLAIN_RENDERED_AUTHORITY_HEADING, id="authority-heading"),
+        pytest.param(_PLAIN_RENDERED_BOUNDARIES_HEADING, id="boundaries-heading"),
+        pytest.param(_PLAIN_RENDERED_ESCALATION_HEADING, id="escalation-heading"),
+    ],
+)
+async def test_resume_markerless_plain_branch_applies_newly_requested_role(
+    monkeypatch, tmp_path, plain_rendered
 ):
-    """Older role branches with a System message are protected and upgraded on resume."""
+    """False-positive guard: a markerless branch that is legitimately
+    plain — e.g. built by an earlier non-role `-a summarizer` leg, never
+    create_agent-composed — must NOT be mistaken for a legacy create_agent
+    branch just because its persisted system message happens to contain one
+    of the policy-block-looking headings (`## Authority`,
+    `## Operational Boundaries`, `## Escalation Conditions`) or a System
+    message at all. Resuming it under a NEW role profile (`-a reviewer`)
+    must apply that role's system prompt, not silently keep operating under
+    the stale plain one."""
     from lionagi.agent.factory import CREATE_AGENT_BRANCH_ORIGIN_KEY
 
-    branch_id, original_rendered = _make_markerless_role_branch(tmp_path)
+    branch_id, original_rendered = _make_plain_markerless_branch(tmp_path, plain_rendered)
     branches_created = _wire_agent_stubs(monkeypatch, tmp_path)
     _stub_profile(
         monkeypatch,
         "reviewer",
-        "---\nmodel: claude_code/sonnet\nrole: reviewer\n---\nUpdated reviewer body.",
+        "---\nmodel: claude_code/sonnet\nrole: reviewer\n---\nReview the requested work critically.",
     )
 
     import lionagi.cli.agent as agent_mod
@@ -269,8 +312,15 @@ async def test_resume_markerless_role_branch_backfills_origin_and_preserves_syst
 
     from lionagi.cli.agent import _run_agent
 
-    await _run_agent(None, "keep going", resume=branch_id, agent_name="reviewer")
+    await _run_agent(None, "now review it", resume=branch_id, agent_name="reviewer")
 
     branch = branches_created[-1]
-    assert _rendered_system(branch) == original_rendered
-    assert branch.metadata[CREATE_AGENT_BRANCH_ORIGIN_KEY] is True
+    rendered = _rendered_system(branch)
+    assert rendered != original_rendered, (
+        "resuming a legitimately-plain markerless branch under a newly "
+        "requested role profile must switch its system prompt, not silently "
+        "keep operating under the stale plain-profile one, regardless of "
+        "whether the stale prompt happens to contain a policy-looking heading"
+    )
+    assert "Review the requested work critically." in rendered
+    assert CREATE_AGENT_BRANCH_ORIGIN_KEY not in branch.metadata

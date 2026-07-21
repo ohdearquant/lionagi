@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from lionagi._paths import ensure_lionagi_dir
 from lionagi.ln._utils import now_utc
 from lionagi.utils import LIONAGI_HOME
 
@@ -32,8 +33,7 @@ WAKEUP_KIND = "wakeup"
 
 
 def _teams_dir() -> Path:
-    TEAMS_DIR.mkdir(parents=True, exist_ok=True)
-    return TEAMS_DIR
+    return ensure_lionagi_dir(TEAMS_DIR)
 
 
 def read_team_json(path: Path) -> dict[str, Any] | None:

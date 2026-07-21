@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from lionagi._paths import RUNS_ROOT
+from lionagi._paths import RUNS_ROOT, ensure_lionagi_dir
 from lionagi.libs.path_safety import validate_path_component
 from lionagi.ln._utils import now_utc
 from lionagi.providers._provider_errors import ProviderError
@@ -148,7 +148,7 @@ class RunDir:
         manifest contents, and two writers racing on one run still resolve
         last-writer-wins.
         """
-        self.state_root.mkdir(parents=True, exist_ok=True)
+        ensure_lionagi_dir(self.state_root)
         payload = {
             "run_id": self.run_id,
             "state_root": str(self.state_root),
@@ -196,11 +196,11 @@ class RunDir:
     # ── Directory setup ─────────────────────────────────────────────
 
     def ensure_state_dirs(self) -> None:
-        self.branches_dir.mkdir(parents=True, exist_ok=True)
-        self.stream_dir.mkdir(parents=True, exist_ok=True)
+        ensure_lionagi_dir(self.branches_dir)
+        ensure_lionagi_dir(self.stream_dir)
 
     def ensure_artifact_root(self) -> None:
-        self.artifact_root.mkdir(parents=True, exist_ok=True)
+        ensure_lionagi_dir(self.artifact_root)
 
 
 def allocate_run(
@@ -283,7 +283,7 @@ def load_last_branch() -> tuple[str | None, str]:
 
 
 def save_last_branch_pointer(run_id: str, branch_id: str) -> None:
-    LIONAGI_HOME.mkdir(parents=True, exist_ok=True)
+    ensure_lionagi_dir(LIONAGI_HOME)
     _LAST_BRANCH_POINTER.write_text(json.dumps({"run_id": run_id, "branch_id": branch_id}))
 
 

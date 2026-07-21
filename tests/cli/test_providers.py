@@ -444,23 +444,20 @@ def test_gemini_ultra_folds_to_high():
     assert "High" in chat_model
 
 
-def test_find_lionagi_dirs_memoizes_git_probe_per_location(monkeypatch, tmp_path):
+def test_find_lionagi_dirs_reruns_git_probe_every_call(monkeypatch, tmp_path):
+    """No memoization: each call re-invokes the git-root probe."""
     import lionagi._paths as paths
 
     calls: list = []
-    paths.clear_lionagi_dirs_cache()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setattr(paths, "_find_git_root", lambda cwd: calls.append(cwd) or None)
 
-    try:
-        first = paths.find_lionagi_dirs()
-        second = paths.find_lionagi_dirs()
-    finally:
-        paths.clear_lionagi_dirs_cache()
+    first = paths.find_lionagi_dirs()
+    second = paths.find_lionagi_dirs()
 
     assert first == second
-    assert calls == [tmp_path]
+    assert calls == [tmp_path, tmp_path]
 
 
 def test_slash_profile_miss_skips_directory_scan(monkeypatch, tmp_path):

@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from lionagi._paths import ensure_lionagi_dir
 from lionagi.cli._logging import log_error, warn
 from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES
 
@@ -266,7 +267,7 @@ def _start_backend_only(host: str, port: int) -> int:
 
 def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
     lionagi_home = Path.home() / ".lionagi"
-    lionagi_home.mkdir(parents=True, exist_ok=True)
+    ensure_lionagi_dir(lionagi_home)
 
     print(f"Pulling {_STUDIO_IMAGE}...")
     pull = subprocess.run(  # noqa: S603

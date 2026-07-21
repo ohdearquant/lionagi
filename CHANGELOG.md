@@ -8,6 +8,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Removed
 
+- `lionagi._paths.clear_lionagi_dirs_cache` — `find_lionagi_dirs()` no longer caches the git-root lookup (it now calls `git rev-parse --show-toplevel` directly on every call), so there is no cache to clear. `_paths` is a private module (never re-exported from `lionagi/__init__.py` or any public package); this removal is internal-only, no consumer alias needed.
 - `ObservableProto` and `LegacyObservable` (`lionagi.protocols.contracts`, previously
   re-exported from `lionagi.protocols.types`). Neither had an in-tree caller. Removed outright
   per the own-use scope in `docs/governance/standards/deprecation-policy.md` section 0, with no
