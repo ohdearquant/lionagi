@@ -103,7 +103,7 @@ Every run: `~/.lionagi/runs/{run_id}/` (`YYYYMMDDTHHMMSS-{uuid6}`).
 - **Lazy imports**: `__init__.py` uses `__getattr__` — import time O(1).
 - **Manager facade**: Branch thin; logic in MessageManager, ActionManager, iModelManager, DataLogger.
 - **Pile + Progression**: Storage (dict) and ordering (deque) are independent. Multiple orderings over same Pile.
-- **PileItem** (`protocols/_concepts.py`, renamed from `Observable`): Nominal ABC — Pile admission requires `isinstance(item, PileItem)`, i.e. inheritance, not just an `id` attribute. `Element` inherits it directly.
+- **Observable** (`protocols/_concepts.py`): Nominal ABC — Pile admission requires `isinstance(item, Observable)`, i.e. inheritance, not just an `id` attribute. `Element` inherits it directly. (The structural `ObservableProto` split was removed; admission is nominal-only.)
 - **Serialization**: `element.to_dict(mode="python"|"json"|"db")`.
 
 ## Code Conventions

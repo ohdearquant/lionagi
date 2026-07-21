@@ -377,15 +377,16 @@ async def _run_agent(
         )
 
     if branch is None:
-        # Codex sandbox blocks tool calls without bypass. Surface this even
-        # without verbose output; CLI or profile approval flags suppress it.
+        # Codex blocks tool calls until file access is enabled. Surface this
+        # even without verbose output; CLI or profile approval flags suppress it.
         if provider == "codex" and not yolo and not bypass:
             from lionagi.cli._logging import warn
 
             warn(
-                "codex models require --bypass or --yolo for local file access. "
-                "Without one of these flags the agent may hang silently. "
-                "Re-run with --bypass or use an agent profile (-a)."
+                "codex models need file access enabled or the agent may hang "
+                "silently on its first tool call. Re-run with --yolo for the "
+                "sandboxed default, or use an agent profile (-a). --bypass also "
+                "works but disables the sandbox."
             )
         chat_model = build_chat_model(provider, model, yolo, verbose, theme, effort, fast, bypass)
         effort = resolve_persisted_effort(provider, chat_model, effort)
@@ -491,22 +492,16 @@ async def _run_agent(
     # (or, on a brand-new leg, would carry) a create_agent-composed system message
     # (role header + policy block) — full rationale in docs/internals/cli.md.
     # Brand-new branch: `took_create_agent_path` is authoritative (preset can't
-    # combine with resume). Resumed branch: never re-derive from the current
-    # profile (it describes only THIS leg and would clobber a persisted role/policy
-    # message) — consult the immutable CREATE_AGENT_BRANCH_ORIGIN_KEY in metadata.
+    # combine with resume). Resumed branch: only the immutable
+    # CREATE_AGENT_BRANCH_ORIGIN_KEY marker counts as create_agent provenance —
+    # never re-derive it from persisted system-message content (Markdown
+    # headings are user-authored prompt text, not proof of origin, and a
+    # markerless branch with an explicitly requested role must get that role's
+    # system prompt rather than have it silently dropped).
     if is_resumed_branch:
         from lionagi.agent.factory import CREATE_AGENT_BRANCH_ORIGIN_KEY
 
         composed_via_create_agent = bool(branch.metadata.get(CREATE_AGENT_BRANCH_ORIGIN_KEY))
-        if CREATE_AGENT_BRANCH_ORIGIN_KEY not in branch.metadata and has_role_key:
-            from lionagi.protocols.messages.system import System
-
-            has_persisted_system = branch.msgs.system is not None or any(
-                isinstance(message, System) for message in branch.msgs.messages
-            )
-            if has_persisted_system:
-                branch.metadata[CREATE_AGENT_BRANCH_ORIGIN_KEY] = True
-                composed_via_create_agent = True
     else:
         composed_via_create_agent = took_create_agent_path
     if profile and profile.system_prompt and not composed_via_create_agent:

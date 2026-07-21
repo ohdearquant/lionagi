@@ -43,6 +43,7 @@ def _legacy_payload_builder(
             "kind": kind,
             "playbook": playbook,
             "status": envelope.terminal_status,
+            "reason_code": envelope.reason_code,
             "save_dir": save_dir,
             "cwd": cwd,
             "exit_class": exit_class,

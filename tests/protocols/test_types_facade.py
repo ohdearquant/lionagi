@@ -38,9 +38,9 @@ def test_pile_facade_import_works():
     assert isinstance(types.Pile(), Pile)
 
 
-def test_public_pileitem_is_the_exact_abc_pile_imports():
-    """types.PileItem must be the same object Pile's admission checks import, not a copy."""
-    from lionagi.protocols.generic.pile import PileItem as pile_source
+def test_public_observable_is_the_exact_abc_pile_imports():
+    """types.Observable must be the same object Pile's admission checks import, not a copy."""
+    from lionagi.protocols.generic.pile import Observable as pile_source
 
-    assert types.PileItem is _concepts.PileItem
-    assert types.PileItem is pile_source
+    assert types.Observable is _concepts.Observable
+    assert types.Observable is pile_source

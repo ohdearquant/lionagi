@@ -141,3 +141,77 @@ def test_prepare_run_kwargs_allows_empty_render_when_no_instruction_text(monkeyp
     # No instruction text/plain_content/images supplied -> guard must not fire.
     _ins, kw = _prepare_run_kwargs(branch, None, param)
     assert kw["messages"] == []
+
+
+# ---------------------------------------------------------------------------
+# The premise the guard rests on: the current turn is the LAST assembled entry.
+#
+# The guard reads the current turn's render by index, which is only the current
+# turn's render because every assembly branch appends the current turn last. The
+# tests above cannot see a violation of that premise: they patch renders and
+# observe the guard, and both the by-index read and a bare after-the-loop read
+# agree as long as the premise holds. So a future edit that appends anything
+# after the current turn would leave those tests green while the guard silently
+# started inspecting the wrong entry — and in the direction that matters, a
+# genuinely dropped instruction going unnoticed.
+#
+# These pin the premise itself, one per assembly branch, through the public
+# return: with every entry rendering normally, the last outgoing message is the
+# current turn's.
+# ---------------------------------------------------------------------------
+
+
+def test_current_turn_is_last_message_without_system():
+    """Plain-append branch: no system message, so the current turn is appended
+    directly onto whatever history produced."""
+    branch = Branch()
+    param = ChatParam()
+
+    branch.msgs.add_message(instruction="an earlier question")
+    branch.msgs.add_message(assistant_response="an earlier answer")
+
+    _ins, kw = _prepare_run_kwargs(branch, "the current prompt", param)
+
+    assert "the current prompt" in kw["messages"][-1]["content"]
+
+
+def test_current_turn_is_last_message_with_system():
+    """Guidance-merge branch: a system message rewrites the first entry's
+    guidance and then appends the current turn, which must still end up last."""
+    branch = Branch(system="you are a helpful assistant")
+    param = ChatParam()
+
+    branch.msgs.add_message(instruction="an earlier question")
+    branch.msgs.add_message(assistant_response="an earlier answer")
+
+    _ins, kw = _prepare_run_kwargs(branch, "the current prompt", param)
+
+    assert "the current prompt" in kw["messages"][-1]["content"]
+
+
+def test_current_turn_is_last_message_with_trailing_action_context():
+    """Action-context branch: trailing action responses are folded into the
+    current turn's prompt context rather than appended as their own entry, so
+    the current turn must still be last and must carry the action output."""
+    from lionagi.protocols.messages import ActionRequest
+
+    branch = Branch()
+    param = ChatParam()
+
+    branch.msgs.add_message(instruction="an earlier question")
+    request = ActionRequest(
+        content={"function": "lookup", "arguments": {"key": "k"}},
+        sender="x",
+        recipient="user",
+    )
+    branch.msgs.add_message(action_request=request)
+    branch.msgs.add_message(
+        action_request=request,
+        action_output={"value": "a distinctive action result"},
+    )
+
+    _ins, kw = _prepare_run_kwargs(branch, "the current prompt", param)
+
+    last = kw["messages"][-1]["content"]
+    assert "the current prompt" in last
+    assert "a distinctive action result" in last

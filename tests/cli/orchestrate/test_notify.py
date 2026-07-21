@@ -25,6 +25,7 @@ from lionagi.state.lifecycle.callbacks import (
     TerminalCallbackRegistry,
 )
 from lionagi.state.lifecycle.notify_settings import ResolvedNotifyHandler, build_handler
+from lionagi.state.reasons import RunReasons
 
 
 def _capture_command(out_file: Path) -> str:
@@ -75,6 +76,7 @@ async def test_registered_scope_fires_with_legacy_payload_shape(tmp_path: Path):
         "kind": "flow",
         "playbook": None,
         "status": "completed",
+        "reason_code": "run.completed.ok",
         "save_dir": "/tmp/saves",
         "cwd": "/repo",
         "exit_class": "success",
@@ -84,6 +86,64 @@ async def test_registered_scope_fires_with_legacy_payload_shape(tmp_path: Path):
 
     unregister_flow_notify_scope(name, registry)
     assert name not in registry
+
+
+async def test_payload_carries_reason_code_for_degraded_finalize(tmp_path: Path):
+    """A `completed` run whose finalize step degraded must still notify
+    `status="completed", exit_class="success"` (the primary work did
+    complete) but distinguish itself from a clean run via `reason_code` --
+    otherwise a --notify consumer can't tell the two apart."""
+    degraded_out = tmp_path / "degraded.json"
+    ok_out = tmp_path / "ok.json"
+    registry = TerminalCallbackRegistry()
+
+    name = register_flow_notify_scope(
+        registry,
+        override=_capture_command(degraded_out),
+        entity_kind="invocation",
+        entity_id="inv-degraded",
+        invocation_id="inv-degraded",
+        flow_kind="flow",
+        playbook=None,
+        save_dir=None,
+        cwd="/repo",
+        started_at=1.0,
+    )
+    assert name is not None
+    await registry.emit(
+        RunTerminalEnvelope(
+            event_id="ev-degraded",
+            entity=EntityRef(kind="invocation", id="inv-degraded"),
+            previous_status="running",
+            terminal_status="completed",
+            reason_code=RunReasons.COMPLETED_FINALIZE_ERROR,
+            occurred_at=2.0,
+        )
+    )
+    degraded_payload = json.loads(degraded_out.read_text())
+    assert degraded_payload["reason_code"] == RunReasons.COMPLETED_FINALIZE_ERROR
+    # The primary work did complete -- status/exit_class stay success.
+    assert degraded_payload["status"] == "completed"
+    assert degraded_payload["exit_class"] == "success"
+
+    registry2 = TerminalCallbackRegistry()
+    register_flow_notify_scope(
+        registry2,
+        override=_capture_command(ok_out),
+        entity_kind="invocation",
+        entity_id="inv-ok",
+        invocation_id="inv-ok",
+        flow_kind="flow",
+        playbook=None,
+        save_dir=None,
+        cwd="/repo",
+        started_at=1.0,
+    )
+    await registry2.emit(_envelope(eid="inv-ok", status="completed"))
+    ok_payload = json.loads(ok_out.read_text())
+    assert ok_payload["reason_code"] == RunReasons.COMPLETED_OK
+
+    assert degraded_payload["reason_code"] != ok_payload["reason_code"]
 
 
 async def test_scope_only_fires_for_its_own_entity(tmp_path: Path):

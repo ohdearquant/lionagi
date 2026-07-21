@@ -177,9 +177,9 @@ def append(self, item, /) -> None: ...
 > **Current-state note (2026-07-20)**: The code block and delta 2 below describe the state
 > before issue #2017. `lionagi/protocols/contracts.py` (`ObservableProto`, the structural
 > `Observable`/`LegacyObservable` aliases) is deleted; there is no exported structural
-> convenience protocol anymore. The nominal ABC is the sole public Pile-item contract and is
-> now named `PileItem` (renamed from `Observable`, so that the public `Observable` name's
-> `isinstance` meaning never inverted under existing callers). Delta 2 is resolved; the block
+> convenience protocol anymore. The nominal ABC is the sole public Pile-item contract and
+> keeps the name `Observable`: with the structural protocol deleted, the `Observable` name's
+> `isinstance` meaning is unambiguously the nominal admission contract. Delta 2 is resolved; the block
 > below is kept as the historical record of the state it decided against.
 
 Pile imports `Observable` from `lionagi/protocols/_concepts.py`, an empty nominal ABC. This is
@@ -393,7 +393,7 @@ reentrancy, async scheduling, and snapshot guarantees.
 | # | Delta | Size | Issue |
 |---|---|---|---|
 | 1 | Fix Pile UUID-string reference normalization in `to_list_type`; acceptance requires valid UUID strings to work as one-item references on the paths that fail today — `__getitem__`, `__setitem__`, `exclude`, and `order=` at construction — with regression coverage (`get` and `pop` already route through `validate_order` and work). | S | #2012 |
-| 2 | ~~Define one public Pile-item contract and align the exported Observable protocol with it~~ — **Resolved 2026-07-20**: the structural protocol is deleted, the nominal ABC is the sole contract, renamed `PileItem`, enforced by item-type validation, with extension tests in `tests/protocols/test_observable_protocol.py`. | M | #2017 |
+| 2 | ~~Define one public Pile-item contract and align the exported Observable protocol with it~~ — **Resolved 2026-07-20**: the structural protocol is deleted, the nominal ABC is the sole contract, exported as `Observable`, enforced by item-type validation, with extension tests in `tests/protocols/test_observable_protocol.py`. | M | #2017 |
 | 3 | Decide and enforce Progression multiplicity semantics for standalone Progressions, Pile default order, and Flow named views; acceptance requires append, extend, insert, serialization, and membership behavior to match the documented rule. | M | (filled at issue-open time) |
 | 4 | Publish and enforce Pile synchronization and snapshot semantics; acceptance requires every public mutator and read API to be audited against a stated sync, async, and mixed-context contract, with stable snapshot APIs where live traversal is unsafe. | M | (filled at issue-open time) |
 | 5 | Define and enforce Progression ownership in `Flow.add_item`; acceptance requires instance, UUID, and name references to follow one documented residency rule, reject invalid ownership before item insertion, and never mutate an external view accidentally. | S | (filled at issue-open time) |

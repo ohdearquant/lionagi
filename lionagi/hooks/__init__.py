@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from .bus import HookBus, HookPoint, HookSignal, StopHook, hook
+from .bus import DORMANT_POINTS, HookBus, HookPoint, HookSignal, StopHook, hook
 from .loader import (
     DEFAULT_HOOKS,
     build_session_bus,
@@ -20,6 +20,7 @@ __all__ = [
     "HookSignal",
     "StopHook",
     "hook",
+    "DORMANT_POINTS",
     "DEFAULT_HOOKS",
     "build_session_bus",
     "load_hooks_for_agent",

@@ -11,7 +11,14 @@ from .header_factory import HeaderFactory
 from .match_endpoint import match_endpoint
 from .mcp_wrapper import MCPConnectionPool, MCPSecurityConfig, create_mcp_tool
 from .provider_config import LazyType, ProviderConfig
-from .registry import EndpointMeta, EndpointRegistry, EndpointType, register_endpoint
+from .registry import (
+    EndpointMeta,
+    EndpointRegistry,
+    EndpointType,
+    ProviderAliasCollisionError,
+    ProviderNotFoundError,
+    register_endpoint,
+)
 
 __all__ = (
     "AgenticEndpoint",
@@ -28,7 +35,9 @@ __all__ = (
     "EndpointRegistry",
     "EndpointType",
     "LazyType",
+    "ProviderAliasCollisionError",
     "ProviderConfig",
+    "ProviderNotFoundError",
     "register_endpoint",
 )
 

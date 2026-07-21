@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from lionagi._paths import RUNS_ROOT
+from lionagi._paths import RUNS_ROOT, ensure_lionagi_dir
 from lionagi.libs.path_safety import validate_path_component
 from lionagi.ln._utils import now_utc
 from lionagi.providers._provider_errors import ProviderError
@@ -148,7 +148,7 @@ class RunDir:
         manifest contents, and two writers racing on one run still resolve
         last-writer-wins.
         """
-        self.state_root.mkdir(parents=True, exist_ok=True)
+        ensure_lionagi_dir(self.state_root)
         payload = {
             "run_id": self.run_id,
             "state_root": str(self.state_root),
@@ -196,11 +196,11 @@ class RunDir:
     # ── Directory setup ─────────────────────────────────────────────
 
     def ensure_state_dirs(self) -> None:
-        self.branches_dir.mkdir(parents=True, exist_ok=True)
-        self.stream_dir.mkdir(parents=True, exist_ok=True)
+        ensure_lionagi_dir(self.branches_dir)
+        ensure_lionagi_dir(self.stream_dir)
 
     def ensure_artifact_root(self) -> None:
-        self.artifact_root.mkdir(parents=True, exist_ok=True)
+        ensure_lionagi_dir(self.artifact_root)
 
 
 def allocate_run(
@@ -283,7 +283,7 @@ def load_last_branch() -> tuple[str | None, str]:
 
 
 def save_last_branch_pointer(run_id: str, branch_id: str) -> None:
-    LIONAGI_HOME.mkdir(parents=True, exist_ok=True)
+    ensure_lionagi_dir(LIONAGI_HOME)
     _LAST_BRANCH_POINTER.write_text(json.dumps({"run_id": run_id, "branch_id": branch_id}))
 
 
@@ -415,6 +415,8 @@ async def _teardown_common(
     extras: dict | None = None,
     identity_markers: dict | None = None,
     escalated_evidence: list[dict] | None = None,
+    finalize_error: dict | None = None,
+    artifact_write_error: dict | None = None,
     cwd: str | None = None,
     engine_session_uid: str | None = None,
     defer_terminal: bool = False,
@@ -578,6 +580,56 @@ async def _teardown_common(
         )
         final_evidence_refs = escalated_evidence
 
+    # The synthesis artifact IS the run's output. A DAG that completed but
+    # whose output write raised has not delivered anything -- that is a real
+    # failure of the run, not a best-effort finalize hiccup, so this flips
+    # "completed" to "failed" instead of only annotating the reason code the
+    # way COMPLETED_FINALIZE_ERROR below does.
+    if artifact_write_error:
+        from lionagi.state.reasons import RunReasons
+
+        metadata = dict(metadata or {})
+        metadata["artifact_write_error"] = artifact_write_error
+        if final_status == "completed":
+            final_status = "failed"
+            final_reason_code = RunReasons.FAILED_ARTIFACT_WRITE
+            final_reason_summary = (
+                "DAG completed successfully but writing its output artifact raised "
+                f"{artifact_write_error.get('error_class', 'an error')}: "
+                f"{artifact_write_error.get('error', '')}"
+            )
+            final_evidence_refs = [
+                {
+                    "kind": "artifact_write_error",
+                    "id": artifact_write_error.get("error_class", "error"),
+                    "label": artifact_write_error.get("error", ""),
+                }
+            ]
+
+    # A post-completion finalize step (persistence/team-teardown) raised after
+    # the DAG itself already produced its result. That failure is real and must
+    # not be silently dropped, but it is not a DAG failure either — surface it
+    # via reason_code/metadata only, never by overwriting a "completed" status.
+    if finalize_error:
+        from lionagi.state.reasons import RunReasons
+
+        metadata = dict(metadata or {})
+        metadata["finalize_error"] = finalize_error
+        if final_status == "completed":
+            final_reason_code = RunReasons.COMPLETED_FINALIZE_ERROR
+            final_reason_summary = (
+                "DAG completed successfully; a post-completion finalize step raised "
+                f"{finalize_error.get('error_class', 'an error')}: "
+                f"{finalize_error.get('error', '')}"
+            )
+            final_evidence_refs = [
+                {
+                    "kind": "finalize_error",
+                    "id": finalize_error.get("error_class", "error"),
+                    "label": finalize_error.get("error", ""),
+                }
+            ]
+
     from lionagi.state.db import SESSION_TERMINAL_STATUSES, TransitionRejectedError
 
     # Snapshot of status observed at the start of this teardown; used only as the
@@ -678,6 +730,8 @@ async def teardown_persist(
     exception: BaseException | None = None,
     extras: dict | None = None,
     escalated_evidence: list[dict] | None = None,
+    finalize_error: dict | None = None,
+    artifact_write_error: dict | None = None,
     cwd: str | None = None,
     engine_session_uid: str | None = None,
     defer_terminal: bool = False,
@@ -699,6 +753,8 @@ async def teardown_persist(
             extras=extras,
             identity_markers=ctx.get("identity_markers"),
             escalated_evidence=escalated_evidence,
+            finalize_error=finalize_error,
+            artifact_write_error=artifact_write_error,
             cwd=cwd,
             engine_session_uid=engine_session_uid,
             defer_terminal=defer_terminal,

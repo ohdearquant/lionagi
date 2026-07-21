@@ -16,7 +16,7 @@ from sqlalchemy import JSON, MetaData, bindparam, event, inspect, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.schema import CreateTable
 
-from lionagi._paths import LIONAGI_HOME
+from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
 from lionagi.config import settings
 from lionagi.libs.path_safety import check_path_safe as _check_path_safe
 from lionagi.ln import json_dumps as _json_dumps
@@ -530,7 +530,7 @@ class StateDB:
                             "existing database file (it will never be created)"
                         )
                 else:
-                    p.parent.mkdir(parents=True, exist_ok=True)
+                    ensure_lionagi_dir(p.parent)
         if self.readonly:
             # No make_engine(), no _install_begin_immediate(), no _apply_schema():
             # every one of those mutates the file (PRAGMAs persisted into the

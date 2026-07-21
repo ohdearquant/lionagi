@@ -237,8 +237,7 @@ def _create_fanout_team(
 
     team_id = uuid4().hex[:12]
     members = ["orchestrator"] + worker_names
-    teams_dir = _team_module.TEAMS_DIR
-    teams_dir.mkdir(parents=True, exist_ok=True)
+    teams_dir = _team_module._teams_dir()
     path = teams_dir / f"{team_id}.json"
     team_dict = {
         "id": team_id,

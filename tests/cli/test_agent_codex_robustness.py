@@ -185,8 +185,10 @@ async def test_run_agent_codex_no_bypass_emits_warning(monkeypatch, tmp_path):
 
     await _run_agent("codex/gpt-5.3-codex-spark", "do stuff", bypass=False, yolo=False)
 
-    assert any("--bypass" in w or "bypass" in w.lower() for w in warnings_emitted), (
-        f"Expected a bypass warning, got: {warnings_emitted}"
+    # The hint must steer users to --yolo (the sandboxed default) as the
+    # primary remedy, not --bypass (which disables the sandbox).
+    assert any("--yolo" in w for w in warnings_emitted), (
+        f"Expected the warning to recommend --yolo, got: {warnings_emitted}"
     )
 
 

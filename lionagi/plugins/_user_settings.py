@@ -30,6 +30,8 @@ from typing import Any
 
 import yaml
 
+from lionagi._paths import ensure_lionagi_dir
+
 if sys.platform == "win32":
     _fcntl = None
     try:
@@ -107,7 +109,7 @@ def write_user_settings(data: dict[str, Any]) -> None:
     pairs can still race each other.
     """
     path = user_settings_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_lionagi_dir(path.parent)
     mode = "r+" if path.is_file() else "w+"
     with open(path, mode) as fp:
         _lock_file(fp, exclusive=True)
@@ -141,7 +143,7 @@ def locked_user_settings():
     read.
     """
     path = user_settings_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_lionagi_dir(path.parent)
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     with os.fdopen(fd, "r+") as fp:
         _lock_file(fp, exclusive=True)

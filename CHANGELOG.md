@@ -6,8 +6,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.30.1] - 2026-07-21
+
+### Changed
+
+- Restored the foundational name `Observable` for the nominal Pile-admission ABC that
+  0.30.0 had briefly renamed to `PileItem`. `Observable` is core lionagi ontology — the
+  observer/observable concept the `Session`, `SessionObserver`, `Communicatable`, and event
+  layers are built on — and names a thing with durable identity that a `Pile` can hold, not a
+  container-membership role. The nominal-only admission behavior introduced in 0.30.0 is
+  unchanged: `isinstance(item, Observable)` still requires inheritance rather than a bare `id`
+  attribute, the structural `ObservableProto` split stays deleted, and `Pile` admission remains
+  nominal. `PileItem` is removed with no compatibility alias (own-use scope). Every in-tree
+  caller (`Element`, `Pile`, `Communicatable`, `SessionObserver`, `validate_sender_recipient`)
+  and the public `lionagi.protocols.types` facade use `Observable`.
+
+### Fixed
+
+- The `li agent` codex file-access hint now recommends `--yolo` (the sandboxed default) rather
+  than `--bypass` (which disables the sandbox) when a codex leg would otherwise hang on its first
+  tool call. `--bypass` is still noted as the sandbox-disabling escape hatch.
+
+## [0.30.0] - 2026-07-20
+
 ### Removed
 
+- `lionagi._paths.clear_lionagi_dirs_cache` — `find_lionagi_dirs()` no longer caches the git-root lookup (it now calls `git rev-parse --show-toplevel` directly on every call), so there is no cache to clear. `_paths` is a private module (never re-exported from `lionagi/__init__.py` or any public package); this removal is internal-only, no consumer alias needed.
 - `ObservableProto` and `LegacyObservable` (`lionagi.protocols.contracts`, previously
   re-exported from `lionagi.protocols.types`). Neither had an in-tree caller. Removed outright
   per the own-use scope in `docs/governance/standards/deprecation-policy.md` section 0, with no
@@ -23,6 +47,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 - `PileItem` (`lionagi.protocols._concepts`, `lionagi.protocols.types`): the nominal Pile-item
   admission contract, renamed from `Observable`.
+
+### Fixed
+
+- API hook emit sites (`API_PRE_CALL`/`API_POST_CALL`/`API_STREAM_CHUNK`, `operations/_api_hooks.py`)
+  hardened: a non-finite provider usage count (`NaN`/`inf`) is dropped from the typed usage
+  summary instead of raising on `int()` coercion and aborting an otherwise-successful call; the
+  `log_api_metrics` built-in reports the real `input_tokens`/`output_tokens` instead of an
+  always-`None` `total`; `_safe_identifier` now redacts credential-shaped model/provider values
+  that satisfy the identifier allowlist; and the stream `chunk_type` (provider-sourced, unlike
+  model/provider) is validated against the closed `StreamChunk` vocabulary so a prefixless
+  credential cannot reach telemetry.
+- Endpoint provider registry no longer swallows bundled-module import errors or mis-routes
+  unknown providers: a genuinely-absent optional dependency is now distinguished from a broken
+  bundled module (the latter surfaces its `ImportError` instead of masquerading as "not
+  installed"), and an unknown provider name is refused rather than silently mis-resolved.
+- A failure in the post-DAG finalize step (synthesis-artifact write, team-inbox post, run-metadata
+  build, branch-snapshot and resume-pointer writes) is no longer reported as a DAG failure. The DAG
+  result is already complete when finalize runs, so a finalize side-effect error is surfaced
+  distinctly instead of masking an otherwise-successful run.
+- MCP client recovery no longer lets a policy-omitted re-entrant `get_client` inherit an earlier
+  caller's trust: the transport-recovery path (which must recover the policy the transport was
+  already authorized with) and the genuine no-policy path are disambiguated, so an omitted policy
+  cannot silently reuse a prior caller's security capability.
+- Agent `--resume`/`--continue-last` no longer silently drops an explicitly requested role.
+  create_agent provenance is read only from the immutable branch-origin marker, never re-derived
+  from persisted system-message content, so a markerless branch given a role gets that role's
+  system prompt rather than having it skipped.
 
 ## [0.29.1] - 2026-07-15
 
