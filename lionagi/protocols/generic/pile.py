@@ -22,7 +22,7 @@ from lionagi.ln.concurrency import Lock as ConcurrencyLock
 from lionagi.ln.concurrency import sleep as _concurrency_sleep
 from lionagi.utils import UNDEFINED, to_list
 
-from .._concepts import PileItem
+from .._concepts import Observable
 from .element import ID, Collective, E, Element, validate_order
 from .progression import Progression
 
@@ -50,22 +50,22 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
             except Exception as e:
                 raise ValidationError.from_value(
                     i,
-                    expected="A subclass of PileItem.",
+                    expected="A subclass of Observable.",
                     cause=e,
                 ) from e
         if isinstance(subcls, type):
             if is_union_type(subcls):
                 members = union_members(subcls)
                 for m in members:
-                    if not issubclass(m, PileItem):
-                        raise ValidationError.from_value(m, expected="A subclass of PileItem.")
+                    if not issubclass(m, Observable):
+                        raise ValidationError.from_value(m, expected="A subclass of Observable.")
                     out.add(m)
-            elif not issubclass(subcls, PileItem):
-                raise ValidationError.from_value(subcls, expected="A subclass of PileItem.")
+            elif not issubclass(subcls, Observable):
+                raise ValidationError.from_value(subcls, expected="A subclass of Observable.")
             else:
                 out.add(subcls)
         else:
-            raise ValidationError.from_value(i, expected="A subclass of PileItem.")
+            raise ValidationError.from_value(i, expected="A subclass of Observable.")
 
     if len(value) != len(set(value)):
         raise ValidationError("Detected duplicated item types in item_type.")
@@ -104,8 +104,8 @@ def _validate_progression(value: Any, collections: dict[UUID, T], /) -> Progress
 
 
 def _validate_collections(value: Any, item_type: set | None, strict_type: bool, /) -> dict[str, T]:
-    # Don't drop falsy PileItems (e.g. empty Progression/Pile with len()==0).
-    if not value and not isinstance(value, PileItem):
+    # Don't drop falsy Observables (e.g. empty Progression/Pile with len()==0).
+    if not value and not isinstance(value, Observable):
         return {}
 
     value = to_list_type(value)
@@ -129,7 +129,7 @@ def _validate_collections(value: Any, item_type: set | None, strict_type: bool, 
                         expected=f"One of {item_type} or the subclasses",
                     )
         else:
-            if not isinstance(i, PileItem):
+            if not isinstance(i, Observable):
                 raise ValueError(f"Invalid pile item {i}")
 
         result[i.id] = i
@@ -138,7 +138,7 @@ def _validate_collections(value: Any, item_type: set | None, strict_type: bool, 
 
 
 class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
-    """Ordered collection of PileItem elements with a two-lock concurrency contract.
+    """Ordered collection of Observable elements with a two-lock concurrency contract.
 
     Concurrency contract:
 
