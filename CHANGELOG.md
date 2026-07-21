@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-07-20
+
 ### Removed
 
 - `lionagi._paths.clear_lionagi_dirs_cache` — `find_lionagi_dirs()` no longer caches the git-root lookup (it now calls `git rev-parse --show-toplevel` directly on every call), so there is no cache to clear. `_paths` is a private module (never re-exported from `lionagi/__init__.py` or any public package); this removal is internal-only, no consumer alias needed.
@@ -35,6 +37,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   that satisfy the identifier allowlist; and the stream `chunk_type` (provider-sourced, unlike
   model/provider) is validated against the closed `StreamChunk` vocabulary so a prefixless
   credential cannot reach telemetry.
+- Endpoint provider registry no longer swallows bundled-module import errors or mis-routes
+  unknown providers: a genuinely-absent optional dependency is now distinguished from a broken
+  bundled module (the latter surfaces its `ImportError` instead of masquerading as "not
+  installed"), and an unknown provider name is refused rather than silently mis-resolved.
+- A failure in the post-DAG finalize step (synthesis-artifact write, team-inbox post, run-metadata
+  build, branch-snapshot and resume-pointer writes) is no longer reported as a DAG failure. The DAG
+  result is already complete when finalize runs, so a finalize side-effect error is surfaced
+  distinctly instead of masking an otherwise-successful run.
+- MCP client recovery no longer lets a policy-omitted re-entrant `get_client` inherit an earlier
+  caller's trust: the transport-recovery path (which must recover the policy the transport was
+  already authorized with) and the genuine no-policy path are disambiguated, so an omitted policy
+  cannot silently reuse a prior caller's security capability.
+- Agent `--resume`/`--continue-last` no longer silently drops an explicitly requested role.
+  create_agent provenance is read only from the immutable branch-origin marker, never re-derived
+  from persisted system-message content, so a markerless branch given a role gets that role's
+  system prompt rather than having it skipped.
 
 ## [0.29.1] - 2026-07-15
 
