@@ -62,14 +62,14 @@ and ordering are independent — multiple `Progression` objects can reference th
 same item set. Index with `pile[uuid]`, not `pile[0]` (integer indexing goes
 through `Progression`, which is O(n)).
 
-## PileItem — Pile admission contract
+## Observable — Pile admission contract
 
-`PileItem` (`lionagi.protocols._concepts.PileItem`, renamed from `Observable`)
-is a nominal ABC, not a structural protocol: `isinstance(item, PileItem)`
+`Observable` (`lionagi.protocols._concepts.Observable`)
+is a nominal ABC, not a structural protocol: `isinstance(item, Observable)`
 requires the item's class to inherit from it, not merely expose an `id`
 attribute. `Pile` enforces this directly — an object with an `id` property
-that does not inherit `PileItem` is rejected on admission. `Element` inherits
-`PileItem` directly, so every `Element` subclass (and therefore every V0
+that does not inherit `Observable` is rejected on admission. `Element` inherits
+`Observable` directly, so every `Element` subclass (and therefore every V0
 model type) satisfies the contract automatically. There is no separate
 structural `ObservableProto` — a bare `id` property is not sufficient because
 `Pile` also relies on `Element`'s `to_dict`/`from_dict` reconstruction, which

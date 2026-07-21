@@ -6,6 +6,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.30.1] - 2026-07-21
+
+### Changed
+
+- Restored the foundational name `Observable` for the nominal Pile-admission ABC that
+  0.30.0 had briefly renamed to `PileItem`. `Observable` is core lionagi ontology — the
+  observer/observable concept the `Session`, `SessionObserver`, `Communicatable`, and event
+  layers are built on — and names a thing with durable identity that a `Pile` can hold, not a
+  container-membership role. The nominal-only admission behavior introduced in 0.30.0 is
+  unchanged: `isinstance(item, Observable)` still requires inheritance rather than a bare `id`
+  attribute, the structural `ObservableProto` split stays deleted, and `Pile` admission remains
+  nominal. `PileItem` is removed with no compatibility alias (own-use scope). Every in-tree
+  caller (`Element`, `Pile`, `Communicatable`, `SessionObserver`, `validate_sender_recipient`)
+  and the public `lionagi.protocols.types` facade use `Observable`.
+
 ## [0.30.0] - 2026-07-20
 
 ### Removed
