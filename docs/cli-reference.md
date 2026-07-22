@@ -223,8 +223,8 @@ li o fanout [model] prompt [flags]
 | Flag | Default | Notes |
 |------|---------|-------|
 | `-a, --agent NAME` | none | Orchestrator profile. |
-| `-n, --num-workers N` | 3 | Worker count; ignored when `--workers` set |
-| `--workers M1,M2,...` | none | Per-worker model specs (each can include effort suffix) |
+| `-n, --num-workers N` | 3 | Maximum number of assignments generated |
+| `--workers M1,M2,...` | none | Worker model pool, assigned round-robin; excess specs warn when the pool is larger than `-n` |
 | `--max-concurrent N` | 0 | Max concurrent (0 = all) |
 | `--with-synthesis [MODEL]` | false | Enable synthesis; bare = orchestrator model |
 | `--synthesis-prompt TEXT` | none | Override synthesis instruction |
