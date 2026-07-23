@@ -253,3 +253,14 @@ def test_to_spec_does_not_flatten_json_schema_extra():
     spec = FieldModel(base_type=int, default=5, json_schema_extra={"default": 999}).to_spec()
     assert spec.default == 5
     assert spec.get("json_schema_extra") == {"default": 999}
+
+
+@pytest.mark.parametrize("key", ["self", "base_type", "metadata"])
+def test_to_spec_forwards_reserved_metadata_keys(key):
+    """Metadata keys that collide with Spec.__init__ parameters still round-trip.
+
+    Passing metadata as **kwargs would raise (multiple-values / str-iteration);
+    forwarding it as a Meta tuple keeps these keys intact.
+    """
+    spec = FieldModel(base_type=int).with_metadata(key, "kept").to_spec()
+    assert spec.get(key) == "kept"

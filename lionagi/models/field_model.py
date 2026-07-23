@@ -414,18 +414,21 @@ class FieldModel(Params):
         return t_
 
     def to_spec(self) -> Spec:
-        from ..ln.types import Spec
+        # Forward every metadata entry as-is so unknown keys survive, an explicit
+        # default=None is preserved (not gated on `is not None`), and
+        # json_schema_extra stays a nested value rather than being flattened into
+        # field-level kwargs (a "default" key inside it must never become the
+        # runtime default). Metadata is passed as a Meta tuple, not **kwargs, so a
+        # key that collides with a Spec.__init__ parameter (self / base_type /
+        # metadata) survives instead of raising. nullable/listable are derived
+        # flags: supply them explicitly and drop any stored duplicates so
+        # CommonMeta.prepare() sees each key exactly once.
+        existing = () if self._is_sentinel(self.metadata) else self.metadata
+        metas = [m for m in existing if m.key not in ("nullable", "listable")]
+        metas.append(Meta("nullable", self.is_nullable))
+        metas.append(Meta("listable", self.is_listable))
 
-        # Forward every metadata entry as-is: Spec turns each **kw into a Meta, so
-        # unknown keys survive, an explicit default=None is preserved (not gated on
-        # `is not None`), and json_schema_extra stays a nested value rather than
-        # being flattened into field-level kwargs (a "default" key inside it must
-        # never become the runtime default).
-        kwargs = self.metadata_dict()
-        kwargs["nullable"] = self.is_nullable
-        kwargs["listable"] = self.is_listable
-
-        return Spec(self.base_type, **kwargs)
+        return Spec(self.base_type, metadata=tuple(metas))
 
     def metadata_dict(self, exclude: list[str] | None = None) -> dict[str, Any]:
         result = {}
