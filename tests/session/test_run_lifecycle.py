@@ -153,6 +153,26 @@ async def test_react_emits_exactly_one_run_start():
     assert len(ends) == 1, f"expected 1 RunEnd, got {len(ends)}"
 
 
+async def test_cli_operate_emits_exactly_one_lifecycle_pair():
+    """A CLI-backed Branch.operate() must emit one RunStart/RunEnd, not two.
+
+    _observed_run owns the outer pair; the nested run() generator must suppress
+    its own so observers do not double-count the operation (or its usage).
+    """
+    s = Session()
+    model = _make_fake_cli_model([StreamChunk(type="text", content="hello")])
+    s.default_branch.chat_model = model
+
+    starts, ends = [], []
+    s.observe(RunStart, lambda sig, _: starts.append(sig))
+    s.observe(RunEnd, lambda sig, _: ends.append(sig))
+
+    await s.default_branch.operate(instruction="go", skip_validation=True)
+
+    assert len(starts) == 1, f"expected 1 RunStart, got {len(starts)}: nested run() not suppressed"
+    assert len(ends) == 1, f"expected 1 RunEnd, got {len(ends)}"
+
+
 async def test_react_emits_run_failed_on_exception():
     """Branch.ReAct() must emit RunFailed when the inner call raises."""
     s = Session()

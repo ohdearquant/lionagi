@@ -468,15 +468,23 @@ class Branch(Element, Relational):
 
             await self._safe_emit(RunStart())
         _t0 = _time.monotonic()
+        # This wrapper owns the lifecycle pair for the operation; suppress the
+        # nested run() generator's own pair so one CLI-backed operate() emits
+        # exactly one RunStart/RunEnd (same task-scoped mechanism ReAct uses).
+        from ._lifecycle_ctx import suppress_lifecycle_var
+
+        _lc_token = suppress_lifecycle_var.set(True)
         try:
             result = await coro
         except BaseException as exc:
+            suppress_lifecycle_var.reset(_lc_token)
             await self.drain_signals()
             if has_observer:
                 from .signal import RunFailed
 
                 await self._safe_emit(RunFailed(data=exc))
             raise
+        suppress_lifecycle_var.reset(_lc_token)
         await self.drain_signals()
         if has_observer:
             from .signal import build_run_end
@@ -653,8 +661,12 @@ class Branch(Element, Relational):
     def _serialize_metadata_if_clone(self, v):
         if "clone_from" not in v:
             return v
-        v = dict(v)
         source = v["clone_from"]
+        # A clone restored via from_dict keeps clone_from as the already-serialized
+        # dict; re-serializing must be idempotent, not dereference source.id on a dict.
+        if isinstance(source, dict):
+            return v
+        v = dict(v)
         v["clone_from"] = {
             "id": str(source.id),
             "user": str(source.user),
@@ -698,6 +710,10 @@ class Branch(Element, Relational):
 
     @classmethod
     def from_dict(cls, data: dict):
+        # Copy first: the pops below would otherwise strip messages, chat_model,
+        # and log_config out of the caller's snapshot, so it could not be reused
+        # for a retry, comparison, or a second restoration.
+        data = dict(data)
         dict_ = {
             "messages": data.pop("messages", Unset),
             "logs": data.pop("logs", Unset),

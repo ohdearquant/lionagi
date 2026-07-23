@@ -297,3 +297,73 @@ class TestObserveByRole:
         obs = SessionObserver()
         with pytest.raises(TypeError):
             obs.observe(None, lambda e, ctx: None)
+
+
+# ---------------------------------------------------------------------------
+# Branch / Session serialization and split regressions
+# ---------------------------------------------------------------------------
+
+
+class TestBranchStateRegressions:
+    def test_restored_clone_can_be_reserialized(self):
+        """A clone restored via from_dict must serialize again.
+
+        The metadata serializer wrote clone_from as a dict; a restored clone
+        keeps that dict, so re-serializing must be idempotent instead of
+        dereferencing source.id on a dict.
+        """
+        import copy
+
+        from lionagi.session.branch import Branch
+
+        s = Session()
+        b = s.new_branch()
+        b.msgs.add_message(instruction="hi")
+        clone = s.split(b.id)
+
+        d1 = clone.to_dict()
+        restored = Branch.from_dict(copy.deepcopy(d1))
+        # Previously raised AttributeError: 'dict' object has no attribute 'id'.
+        d2 = restored.to_dict()
+        assert d2["metadata"]["clone_from"] == d1["metadata"]["clone_from"]
+
+    def test_from_dict_does_not_mutate_snapshot(self):
+        """Branch.from_dict must not strip fields out of the caller's snapshot."""
+        import copy
+
+        from lionagi.session.branch import Branch
+
+        s = Session()
+        b = s.new_branch()
+        b.msgs.add_message(instruction="hello")
+        snap = b.to_dict(include_log_config=True)
+        before = copy.deepcopy(snap)
+
+        Branch.from_dict(snap)
+
+        assert snap == before  # reusable for a retry / second restoration
+        assert "messages" in snap and "chat_model" in snap
+
+    async def test_asplit_clones_under_message_lock(self, monkeypatch):
+        """asplit must clone via aclone (holds the message snapshot lock), not
+        the bare sync clone path that can race a concurrent message removal."""
+        from lionagi.session.branch import Branch
+
+        s = Session()
+        b = s.new_branch()
+        b.msgs.add_message(instruction="hi")
+
+        aclone_calls = 0
+        real_aclone = Branch.aclone
+
+        async def spy_aclone(self, sender=None):
+            nonlocal aclone_calls
+            aclone_calls += 1
+            return await real_aclone(self, sender)
+
+        monkeypatch.setattr(Branch, "aclone", spy_aclone)
+
+        clone = await s.asplit(b.id)
+        assert aclone_calls == 1
+        assert clone.id != b.id
+        assert len(clone.messages) == len(b.messages)
