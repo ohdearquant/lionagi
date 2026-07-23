@@ -72,7 +72,10 @@ def _normalize_input(
     flatten_tuple_set: bool,
 ) -> list:
     """Convert input to a flat list, treating model instances as single items."""
-    if flatten or dropna:
+    if flatten or dropna or unique:
+        # Route through to_list when unique is requested too, so unique without
+        # flatten raises the documented "unique=True requires flatten=True"
+        # instead of being silently ignored.
         return to_list(
             input_,
             flatten=flatten,

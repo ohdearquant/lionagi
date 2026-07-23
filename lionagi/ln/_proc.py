@@ -3,11 +3,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import os
 import signal
 from typing import Any
+
+from .concurrency import move_on_after
 
 
 def _safe_pgid(proc: Any) -> int | None:
@@ -74,9 +75,12 @@ async def aterminate_process_group(
             os.killpg(pgid, sig_first)
     with contextlib.suppress(ProcessLookupError):
         proc.terminate()
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=grace)
-    except (asyncio.TimeoutError, TimeoutError):
+    # Bound the grace wait with an anyio cancel scope, not asyncio.wait_for:
+    # wait_for raises "no running event loop" on an AnyIO/Trio task before the
+    # timeout policy can apply, so the forced-kill escalation never fires.
+    with move_on_after(grace) as scope:
+        await proc.wait()
+    if scope.cancelled_caught:
         if pgid is not None:
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(pgid, signal.SIGKILL)

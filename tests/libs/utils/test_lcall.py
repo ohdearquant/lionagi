@@ -293,5 +293,20 @@ class TestLCallSyncFunction:
         assert len(result) == 4
 
 
+def _identity(x):
+    return x
+
+
+def test_lcall_input_use_values_extracts_mapping_values():
+    """input_use_values yields a mapping's values even without flatten/dropna."""
+    assert lcall({"first": 1, "second": 2}, _identity, input_use_values=True) == [1, 2]
+
+
+def test_lcall_input_unique_without_flatten_raises():
+    """input_unique without flatten/dropna raises the documented validation error."""
+    with pytest.raises(ValueError, match="unique=True requires flatten=True"):
+        lcall([1, 1], _identity, input_unique=True)
+
+
 if __name__ == "__main__":
     unittest.main()

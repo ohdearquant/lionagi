@@ -631,3 +631,13 @@ class TestReturnExceptions:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert child_cancelled.is_set()
+
+
+def test_alcall_input_unique_without_flatten_raises():
+    """alcall input_unique without flatten raises the documented validation error."""
+
+    async def _run():
+        return await alcall([1, 1], lambda x: x, input_unique=True)
+
+    with pytest.raises(ValueError, match="unique=True requires flatten=True"):
+        anyio.run(_run)
