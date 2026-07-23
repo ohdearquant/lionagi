@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, Literal
@@ -131,10 +132,17 @@ _MODEL_ALIASES: dict[str, str] = {
 }
 
 
+# A delimited 3.6 version token, not a bare substring: matches the "3.6" in
+# "gemini-3.6-flash" but not the "3.6" inside "gemini-13.6-flash" or
+# "gemini-3.60-flash", where a neighbouring digit means it is a different number.
+_GEMINI_36_TOKEN = re.compile(r"(?<!\d)3\.6(?!\d)")
+
+
 def _gemini_flash_family(key: str) -> str:
-    """The flash-family display prefix for a free-form model key. Version-aware so
-    an explicit newer id (e.g. gemini-3.6-flash) never silently downgrades to 3.5."""
-    return "Gemini 3.6 Flash" if "3.6" in key else "Gemini 3.5 Flash"
+    """The flash-family display prefix for a free-form model key. Version-aware:
+    an explicit 3.6 id never silently downgrades to 3.5, and an unrelated number
+    that merely contains "3.6" (13.6, 3.60) never falsely upgrades to 3.6."""
+    return "Gemini 3.6 Flash" if _GEMINI_36_TOKEN.search(key) else "Gemini 3.5 Flash"
 
 
 def resolve_agy_model(

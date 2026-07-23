@@ -429,6 +429,10 @@ async def test_on_text_loop_closed_error_propagates():
         # A free-form 3.6 name not in the alias table still stays on the 3.6
         # family via the version-aware heuristic — no downgrade to 3.5.
         ("gemini-3.6-flash-preview", "Gemini 3.6 Flash (Medium)"),
+        # ...but a number that merely CONTAINS "3.6" is not version 3.6: the
+        # version match is a delimited token, so 13.6 / 3.60 do not upgrade.
+        ("gemini-13.6-flash", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-3.60-flash", "Gemini 3.5 Flash (Medium)"),
     ],
 )
 def test_resolve_agy_model(spec, expected):
@@ -496,6 +500,9 @@ def test_resolve_agy_model_36_flash_defaults_high_never_downgrades():
         assert got.startswith("Gemini 3.6 Flash"), (spec, got)
     # explicit effort folds onto the 3.6 family, not a 3.5 downgrade
     assert resolve_agy_model("gemini-3.6-flash", effort="low") == "Gemini 3.6 Flash (Low)"
+    # a number that merely contains "3.6" is NOT version 3.6 — no false upgrade
+    for spec in ("gemini-13.6-flash", "gemini-3.60-flash"):
+        assert not resolve_agy_model(spec).startswith("Gemini 3.6 Flash"), spec
 
 
 # ---------------------------------------------------------------------------
