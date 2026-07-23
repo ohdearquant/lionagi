@@ -184,6 +184,18 @@ class TestFlowRoundTrip:
             for uid in prog:
                 assert uid in item_ids
 
+    def test_from_dict_does_not_mutate_caller_metadata(self):
+        """from_dict must not strip lion_class from the caller's own payload."""
+        flow, _, _ = _flow_with_progression(2)
+        d = flow.to_dict()
+        assert d["metadata"].get("lion_class")  # present before deserialization
+        Flow.from_dict(d)
+        # The caller's dict is untouched: the payload stays reusable for a second
+        # reconstruction, logging, or comparison.
+        assert d["metadata"].get("lion_class")
+        flow2 = Flow.from_dict(d)
+        assert flow2.name == flow.name
+
 
 # ---------------------------------------------------------------------------
 # _progression_names index rebuild
