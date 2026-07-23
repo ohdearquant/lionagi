@@ -279,7 +279,13 @@ class Session(Node, Relational):
 
     async def asplit(self, branch: ID.Ref) -> Branch:
         async with self.branches:
-            return self.split(branch)
+            branch: Branch = self.branches[branch]
+            # Use aclone, not the sync split path: aclone holds the message
+            # snapshot lock across the clone, so a concurrent sync-thread message
+            # removal cannot race the copy and raise KeyError mid-clone.
+            branch_clone = await branch.aclone(sender=self.id)
+            self.include_branches(branch_clone)
+            return branch_clone
 
     def split(self, branch: ID.Ref) -> Branch:
         branch: Branch = self.branches[branch]
