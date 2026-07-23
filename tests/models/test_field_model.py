@@ -205,3 +205,62 @@ def test_type_mismatch_between_annotation_and_default(annotation, default_value)
     info = field.create_field()
     assert info.annotation == annotation
     assert info.default == default_value
+
+
+class _SpoofUnionMeta(type):
+    """A metaclass whose str() mimics types.UnionType without being one."""
+
+    def __repr__(cls):
+        return "<class 'types.UnionType'>"
+
+    __str__ = __repr__
+
+
+class _SpoofUnion(metaclass=_SpoofUnionMeta):
+    pass
+
+
+def test_base_type_rejects_spoofed_union():
+    """A non-type object whose str(type(...)) mimics types.UnionType is rejected."""
+    spoof = _SpoofUnion()  # str(type(spoof)) == "<class 'types.UnionType'>"
+    assert str(type(spoof)) == "<class 'types.UnionType'>"
+    with pytest.raises(ValueError, match="base_type must be"):
+        FieldModel(base_type=spoof)
+
+
+def test_base_type_accepts_real_unions():
+    """Genuine PEP 604 and Optional-style unions remain valid base_types."""
+    from typing import Optional, Union
+
+    for tp in (int | None, int | str, Union[int, str], Optional[int]):
+        FieldModel(base_type=tp)  # must not raise
+
+
+def test_to_spec_retains_unknown_metadata():
+    """Metadata keys outside the known set survive to_spec()."""
+    spec = FieldModel(base_type=int, custom_meta="kept").to_spec()
+    assert spec.get("custom_meta") == "kept"
+
+
+def test_to_spec_preserves_explicit_none_default():
+    """An explicit default=None must survive to_spec() (not treated as absent)."""
+    spec = FieldModel(base_type=int, default=None).to_spec()
+    assert spec.default is None
+
+
+def test_to_spec_does_not_flatten_json_schema_extra():
+    """A 'default' key inside json_schema_extra must not become the runtime default."""
+    spec = FieldModel(base_type=int, default=5, json_schema_extra={"default": 999}).to_spec()
+    assert spec.default == 5
+    assert spec.get("json_schema_extra") == {"default": 999}
+
+
+@pytest.mark.parametrize("key", ["self", "base_type", "metadata"])
+def test_to_spec_forwards_reserved_metadata_keys(key):
+    """Metadata keys that collide with Spec.__init__ parameters still round-trip.
+
+    Passing metadata as **kwargs would raise (multiple-values / str-iteration);
+    forwarding it as a Meta tuple keeps these keys intact.
+    """
+    spec = FieldModel(base_type=int).with_metadata(key, "kept").to_spec()
+    assert spec.get(key) == "kept"
