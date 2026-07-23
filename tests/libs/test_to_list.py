@@ -415,3 +415,24 @@ def test_unique_keeps_hash_colliding_unequal_mappings():
     """
     result = to_list([{"x": -1}, {"x": -2}, {"x": -1}], flatten=True, unique=True)
     assert result == [{"x": -1}, {"x": -2}]
+
+
+def test_unique_dedups_same_instance_nan_across_fallback():
+    """A repeated same-instance NaN stays a duplicate once fallback activates.
+
+    NaN is not equal to itself, so set membership relies on the identity shortcut
+    to deduplicate a repeated same object. An intervening unhashable mapping pushes
+    the later NaN through the collision-bucket path, which must apply the same
+    identity check rather than equality alone.
+    """
+    nan = float("nan")
+    result = to_list([nan, {"unhashable": 1}, nan], flatten=True, unique=True)
+    assert result == [nan, {"unhashable": 1}]
+
+
+def test_unique_keeps_distinct_nans_across_fallback():
+    """Two different NaN instances are both kept (neither identical nor equal)."""
+    nan_a, nan_b = float("nan"), float("nan")
+    result = to_list([nan_a, {"unhashable": 1}, nan_b], flatten=True, unique=True)
+    assert result == [nan_a, {"unhashable": 1}, nan_b]
+    assert result[0] is nan_a and result[2] is nan_b
