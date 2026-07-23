@@ -381,6 +381,7 @@ async def stream_gemini_cli(
                 saw_object = True
                 status = str(obj.get("status", "")).upper()
                 response = (obj.get("response") or "").strip()
+                cli_error = str(obj.get("error") or "").strip()
 
                 session.session_id = obj.get("conversation_id") or session.session_id
                 session.model = resolve_agy_model(request.model)
@@ -391,6 +392,16 @@ async def stream_gemini_cli(
                 if duration is not None:
                     session.duration_ms = int(float(duration) * 1000)
                 session.is_error = status not in ("SUCCESS", "")
+
+                # A success carrying no content cannot be distinguished from a
+                # turn whose tool calls were all denied: headless print mode has
+                # no way to prompt for a tool permission, so it auto-denies and
+                # still reports SUCCESS. Passing that through as an empty answer
+                # fails open, which is the worst direction here — a caller using
+                # this engine for verification reads silence as assent.
+                empty_success = not session.is_error and not response
+                if empty_success:
+                    session.is_error = True
 
                 # Session id must be captured before the error branch — a failed
                 # turn can still report a live conversation id to resume into.
@@ -403,10 +414,26 @@ async def stream_gemini_cli(
                     yield sys_sc
 
                 if session.is_error:
-                    # Error chunk leads with status, not delivered content — a degraded
-                    # termination after a complete response would otherwise impersonate it.
-                    detail = f": {response[:500]}" if response else ""
-                    msg = f"agy returned status={status or 'UNKNOWN'}{detail}"
+                    if empty_success:
+                        msg = (
+                            "agy reported status=SUCCESS with no response content. "
+                            "A tool call was most likely auto-denied, because headless "
+                            "print mode cannot prompt for a tool permission. Re-run with "
+                            "yolo to auto-approve tools, or add an allow-rule under "
+                            "permissions.allow in the agy settings."
+                        )
+                        if cli_error:
+                            msg = f"{msg} CLI error: {cli_error}"
+                        session.result = msg
+                    else:
+                        # Error chunk leads with status, not delivered content — a degraded
+                        # termination after a complete response would otherwise impersonate it.
+                        # `error` is preferred over `response`: agy reports the cause there
+                        # and commonly leaves `response` empty on a failed turn.
+                        detail = cli_error or response[:500]
+                        msg = f"agy returned status={status or 'UNKNOWN'}"
+                        if detail:
+                            msg = f"{msg}: {detail}"
                     sc = StreamChunk(type="error", content=msg, is_error=True, metadata=obj)
                     session.chunks.append(sc)
                     yield sc
