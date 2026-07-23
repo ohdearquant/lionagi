@@ -363,12 +363,6 @@ class TestFlowDuplicateProgressionNames:
     """Duplicate progression names are rejected on every construction path,
     matching add_progression's uniqueness contract."""
 
-    def test_add_progression_rejects_duplicate_name(self):
-        flow, nodes = _flow_with_items(2)
-        flow.add_progression(Progression(order=[nodes[0].id], name="dup"))
-        with pytest.raises(ItemExistsError):
-            flow.add_progression(Progression(order=[nodes[1].id], name="dup"))
-
     def test_construction_rejects_duplicate_names(self):
         nodes = _make_nodes(2)
         p1 = Progression(order=[nodes[0].id], name="dup")

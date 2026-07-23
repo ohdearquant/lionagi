@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from lionagi.protocols.generic.element import Element
@@ -45,10 +47,6 @@ class TestLogManagerConfig:
 
         config = LogManagerConfig(extension=".json")
         assert config.extension == ".json"
-
-    def test_extension_jsonl_accepted(self):
-        # .jsonl is on the allowlist and must be a valid config value.
-        assert LogManagerConfig(extension=".jsonl").extension == ".jsonl"
 
     def test_extension_undotted_honors_allowlist(self):
         # An undotted extension is normalized then validated, so a value the
@@ -159,15 +157,17 @@ class TestLogManager:
         assert file.stat().st_size > 0
 
     def test_file_persistence_jsonl(self, temp_dir):
-        # A config-valid .jsonl extension must actually dump, not raise
-        # "Unsupported file extension".
+        # A config-valid .jsonl extension must dump valid line-delimited JSON,
+        # not raise "Unsupported file extension".
         manager = LogManager(persist_dir=temp_dir, extension=".jsonl")
         manager.log(Log(content={"key": "value"}))
         manager.dump()
 
         file = next(temp_dir.glob("*.jsonl"))
-        assert file.exists()
-        assert file.stat().st_size > 0
+        lines = [ln for ln in file.read_text().splitlines() if ln.strip()]
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["content"] == {"key": "value"}
 
     @pytest.mark.asyncio
     async def test_async_file_persistence_jsonl(self, temp_dir):
@@ -176,8 +176,10 @@ class TestLogManager:
         await manager.adump()
 
         file = next(temp_dir.glob("*.jsonl"))
-        assert file.exists()
-        assert file.stat().st_size > 0
+        lines = [ln for ln in file.read_text().splitlines() if ln.strip()]
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["content"] == {"key": "value"}
 
     def test_capacity_auto_dump(self, temp_dir):
         manager = LogManager(persist_dir=temp_dir, capacity=1)
