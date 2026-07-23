@@ -110,7 +110,6 @@ class Spec:
                 isinstance(base_type, type)
                 or hasattr(base_type, "__origin__")
                 or isinstance(base_type, types.UnionType)
-                or str(type(base_type)) == "<class 'types.UnionType'>"
             )
             if not is_valid_type:
                 raise ValueError(f"base_type must be a type or type annotation, got {base_type}")

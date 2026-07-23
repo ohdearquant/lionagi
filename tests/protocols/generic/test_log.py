@@ -46,6 +46,17 @@ class TestLogManagerConfig:
         config = LogManagerConfig(extension=".json")
         assert config.extension == ".json"
 
+    def test_extension_jsonl_accepted(self):
+        # .jsonl is on the allowlist and must be a valid config value.
+        assert LogManagerConfig(extension=".jsonl").extension == ".jsonl"
+
+    def test_extension_undotted_honors_allowlist(self):
+        # An undotted extension is normalized then validated, so a value the
+        # dotted form would reject is rejected here too.
+        assert LogManagerConfig(extension="jsonl").extension == ".jsonl"
+        with pytest.raises(ValueError):
+            LogManagerConfig(extension="txt")
+
     def test_edge_cases(self):
         config = LogManagerConfig(capacity=0)
         assert config.capacity == 0
@@ -144,6 +155,27 @@ class TestLogManager:
         manager.dump()
 
         file = next(temp_dir.glob("*.csv"))
+        assert file.exists()
+        assert file.stat().st_size > 0
+
+    def test_file_persistence_jsonl(self, temp_dir):
+        # A config-valid .jsonl extension must actually dump, not raise
+        # "Unsupported file extension".
+        manager = LogManager(persist_dir=temp_dir, extension=".jsonl")
+        manager.log(Log(content={"key": "value"}))
+        manager.dump()
+
+        file = next(temp_dir.glob("*.jsonl"))
+        assert file.exists()
+        assert file.stat().st_size > 0
+
+    @pytest.mark.asyncio
+    async def test_async_file_persistence_jsonl(self, temp_dir):
+        manager = LogManager(persist_dir=temp_dir, extension=".jsonl")
+        manager.log(Log(content={"key": "value"}))
+        await manager.adump()
+
+        file = next(temp_dir.glob("*.jsonl"))
         assert file.exists()
         assert file.stat().st_size > 0
 

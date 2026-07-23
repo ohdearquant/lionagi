@@ -9,6 +9,7 @@ import pytest
 
 from lionagi._errors import ItemExistsError, ItemNotFoundError
 from lionagi.protocols.generic.flow import Flow
+from lionagi.protocols.generic.pile import Pile
 from lionagi.protocols.generic.progression import Progression
 from lionagi.protocols.graph.node import Node
 
@@ -356,3 +357,46 @@ class TestReferentialIntegrityOnInit:
                 items={"collections": []},
                 progressions={"collections": [prog]},
             )
+
+
+class TestFlowDuplicateProgressionNames:
+    """Duplicate progression names are rejected on every construction path,
+    matching add_progression's uniqueness contract."""
+
+    def test_add_progression_rejects_duplicate_name(self):
+        flow, nodes = _flow_with_items(2)
+        flow.add_progression(Progression(order=[nodes[0].id], name="dup"))
+        with pytest.raises(ItemExistsError):
+            flow.add_progression(Progression(order=[nodes[1].id], name="dup"))
+
+    def test_construction_rejects_duplicate_names(self):
+        nodes = _make_nodes(2)
+        p1 = Progression(order=[nodes[0].id], name="dup")
+        p2 = Progression(order=[nodes[1].id], name="dup")
+        with pytest.raises(ItemExistsError):
+            Flow(
+                items={"collections": nodes},
+                progressions={"collections": [p1, p2]},
+            )
+
+    def test_from_dict_rejects_duplicate_names(self):
+        nodes = _make_nodes(2)
+        p1 = Progression(order=[nodes[0].id], name="dup")
+        p2 = Progression(order=[nodes[1].id], name="dup")
+        with pytest.raises(ItemExistsError):
+            Flow.from_dict(
+                {
+                    "items": Pile(collections=nodes),
+                    "progressions": Pile(collections=[p1, p2]),
+                }
+            )
+
+    def test_distinct_names_still_allowed(self):
+        nodes = _make_nodes(2)
+        p1 = Progression(order=[nodes[0].id], name="a")
+        p2 = Progression(order=[nodes[1].id], name="b")
+        flow = Flow(
+            items={"collections": nodes},
+            progressions={"collections": [p1, p2]},
+        )
+        assert len(flow.progressions) == 2
