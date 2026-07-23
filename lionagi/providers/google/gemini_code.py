@@ -66,6 +66,7 @@ __all__ = (
 
 # agy models expose ~1M-token context (verified against `agy models`).
 CONTEXT_WINDOWS: dict[str, int] = {
+    "gemini-3.6-flash": 1_048_576,
     "gemini-3.5-flash": 1_048_576,
     "gemini-3.1-pro": 1_048_576,
     "gemini-3-flash-preview": 1_048_576,
@@ -81,6 +82,9 @@ CONTEXT_WINDOWS: dict[str, int] = {
 # through so agy surfaces a clear error rather than us silently forcing a default.
 _AGY_MODELS: frozenset[str] = frozenset(
     {
+        "Gemini 3.6 Flash (Medium)",
+        "Gemini 3.6 Flash (High)",
+        "Gemini 3.6 Flash (Low)",
         "Gemini 3.5 Flash (Medium)",
         "Gemini 3.5 Flash (High)",
         "Gemini 3.5 Flash (Low)",
@@ -93,6 +97,14 @@ _AGY_MODELS: frozenset[str] = frozenset(
 )
 
 _MODEL_ALIASES: dict[str, str] = {
+    # 3.6 flash: newest flagship. Gemini carries effort as the model-id suffix
+    # (no separate --effort), so a bare id resolves to the strong tier by default
+    # (`gemini-3.6-flash` -> High). Suffixed forms map to their exact tier.
+    "gemini-3.6-flash": "Gemini 3.6 Flash (High)",
+    "gemini-3.6-flash-high": "Gemini 3.6 Flash (High)",
+    "gemini-3.6-flash-medium": "Gemini 3.6 Flash (Medium)",
+    "gemini-3.6-flash-low": "Gemini 3.6 Flash (Low)",
+    "gemini-3.6": "Gemini 3.6 Flash (High)",
     # flash family -> default medium effort
     "gemini-3-flash-preview": "Gemini 3.5 Flash (Medium)",
     "gemini-3-flash": "Gemini 3.5 Flash (Medium)",
@@ -119,6 +131,12 @@ _MODEL_ALIASES: dict[str, str] = {
 }
 
 
+def _gemini_flash_family(key: str) -> str:
+    """The flash-family display prefix for a free-form model key. Version-aware so
+    an explicit newer id (e.g. gemini-3.6-flash) never silently downgrades to 3.5."""
+    return "Gemini 3.6 Flash" if "3.6" in key else "Gemini 3.5 Flash"
+
+
 def resolve_agy_model(
     model: str | None,
     effort: str | None = None,
@@ -131,6 +149,8 @@ def resolve_agy_model(
         model = "gemini-3.5-flash"
     if model in _AGY_MODELS:
         if reapply_effort and effort is not None:
+            if model.startswith("Gemini 3.6 Flash"):
+                return f"Gemini 3.6 Flash ({_clamp_gemini_effort(effort, False)})"
             if model.startswith("Gemini 3.5 Flash"):
                 return f"Gemini 3.5 Flash ({_clamp_gemini_effort(effort, False)})"
             if model.startswith("Gemini 3.1 Pro"):
@@ -141,6 +161,8 @@ def resolve_agy_model(
         target = _MODEL_ALIASES[key]
         if effort is None:
             return target
+        if target.startswith("Gemini 3.6 Flash"):
+            return f"Gemini 3.6 Flash ({_clamp_gemini_effort(effort, False)})"
         if target.startswith("Gemini 3.5 Flash"):
             return f"Gemini 3.5 Flash ({_clamp_gemini_effort(effort, False)})"
         if target.startswith("Gemini 3.1 Pro"):
@@ -151,7 +173,7 @@ def resolve_agy_model(
     # from it so --effort works on forward-compatible model names.
     is_pro = "pro" in key
     if effort is not None and (is_pro or "flash" in key or "gemini" in key):
-        family = "Gemini 3.1 Pro" if is_pro else "Gemini 3.5 Flash"
+        family = "Gemini 3.1 Pro" if is_pro else _gemini_flash_family(key)
         return f"{family} ({_clamp_gemini_effort(effort, is_pro)})"
 
     # Heuristic fallback: derive (family, effort) from a free-form string so
@@ -165,7 +187,7 @@ def resolve_agy_model(
     if is_pro:
         return f"Gemini 3.1 Pro ({'High' if heuristic == 'Medium' else heuristic})"
     if "flash" in key or "gemini" in key:
-        return f"Gemini 3.5 Flash ({heuristic})"
+        return f"{_gemini_flash_family(key)} ({heuristic})"
 
     # Not recognizable — pass through; agy rejects an invalid name clearly.
     return model
@@ -194,9 +216,10 @@ class GeminiCodeRequest(BaseModel):
         default="gemini-3.5-flash",
         description=(
             "Model spec; mapped onto an `agy --model` name by resolve_agy_model. "
-            "Accepts gemini-3.5-flash, gemini-3.1-pro, legacy Gemini CLI names "
-            "(gemini-3-flash-preview, gemini-3-pro-preview), bare family names "
-            "(flash/pro), or an exact agy display name."
+            "Accepts gemini-3.6-flash (defaults to the High tier), gemini-3.5-flash, "
+            "gemini-3.1-pro, legacy Gemini CLI names (gemini-3-flash-preview, "
+            "gemini-3-pro-preview), bare family names (flash/pro), or an exact agy "
+            "display name."
         ),
     )
     yolo: bool = Field(
