@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 from pydantic import Field
+from pydantic.fields import FieldInfo
 
 from lionagi.models import FieldModel, OperableModel, SchemaModel
 
@@ -286,6 +287,40 @@ def test_update_field_with_new_default_factory():
     # If we remove the current value to trigger a re-init
     delattr(model, "dynamic_list")
     assert model.dynamic_list == ["a", "b", "c"]
+
+
+def test_constructor_extra_fields_captures_field_models():
+    """FieldModels passed via the constructor are captured in extra_field_models.
+
+    The field validator converts them to FieldInfos, but the after-validator must
+    still capture the originals so their validators are enforced on assignment.
+    """
+
+    def positive(v: int) -> bool:
+        return v > 0
+
+    fm = FieldModel(base_type=int, name="qty", validator=positive)
+    model = OperableModel(extra_fields={"qty": fm})
+
+    # captured, not silently dropped
+    assert "qty" in model.extra_field_models
+    assert model.extra_field_models["qty"] is fm
+    # and extra_fields is materialized to a FieldInfo
+    assert isinstance(model.extra_fields["qty"], FieldInfo)
+
+    # the validator is enforced on assignment
+    with pytest.raises(Exception):
+        model.qty = -1
+
+
+def test_constructor_extra_fields_list_captures_field_models():
+    """A list of FieldModels via the constructor is also captured by name."""
+
+    fm = FieldModel(base_type=int, name="count", validator=lambda v: v >= 0)
+    model = OperableModel(extra_fields=[fm])
+
+    assert "count" in model.extra_field_models
+    assert isinstance(model.extra_fields["count"], FieldInfo)
 
 
 def test_update_non_existent_field_creates_new():

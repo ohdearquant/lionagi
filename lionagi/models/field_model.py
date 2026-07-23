@@ -74,7 +74,6 @@ class FieldModel(Params):
                 or isinstance(
                     self.base_type, types.UnionType
                 )  # Python 3.10+ union types (str | None)
-                or str(type(self.base_type)) == "<class 'types.UnionType'>"
             )
             if not is_valid_type:
                 raise ValueError(
@@ -417,39 +416,14 @@ class FieldModel(Params):
     def to_spec(self) -> Spec:
         from ..ln.types import Spec
 
-        kwargs = {}
-        name = self.extract_metadata("name")
-        if name:
-            kwargs["name"] = name
-
+        # Forward every metadata entry as-is: Spec turns each **kw into a Meta, so
+        # unknown keys survive, an explicit default=None is preserved (not gated on
+        # `is not None`), and json_schema_extra stays a nested value rather than
+        # being flattened into field-level kwargs (a "default" key inside it must
+        # never become the runtime default).
+        kwargs = self.metadata_dict()
         kwargs["nullable"] = self.is_nullable
         kwargs["listable"] = self.is_listable
-
-        default = self.extract_metadata("default")
-        if default is not None:
-            kwargs["default"] = default
-
-        default_factory = self.extract_metadata("default_factory")
-        if default_factory is not None:
-            kwargs["default_factory"] = default_factory
-
-        validator = self.extract_metadata("validator")
-        if validator is not None:
-            kwargs["validator"] = validator
-
-        description = self.extract_metadata("description")
-        if description:
-            kwargs["description"] = description
-
-        for key in ["title", "alias", "frozen", "exclude"]:
-            val = self.extract_metadata(key)
-            if val is not None:
-                kwargs[key] = val
-
-        json_schema_extra = self.extract_metadata("json_schema_extra")
-        if json_schema_extra:
-            for k, v in json_schema_extra.items():
-                kwargs[k] = v
 
         return Spec(self.base_type, **kwargs)
 
