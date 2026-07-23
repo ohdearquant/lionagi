@@ -553,3 +553,27 @@ def _run_async(coro):
         return loop.run_until_complete(coro)
     finally:
         loop.close()
+
+
+async def test_malformed_utf8_at_cap_boundary_still_returns_415(
+    patched_runs_svc, tmp_path, monkeypatch
+):
+    """A multibyte lead byte landing exactly on the cap is not, by itself,
+    evidence of a boundary-split character. If the byte after the cap does not
+    continue the sequence, the content is genuinely not text and must still 415
+    rather than being served as truncated text with a replacement character.
+    """
+    svc, db_path = patched_runs_svc
+    monkeypatch.setattr(svc, "_MAX_FILE_READ_BYTES", 10)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    target = artifact_root / "fake_text.bin"
+    # 9 ASCII bytes, then the lead byte of a 4-byte sequence sitting exactly on
+    # the 10-byte cap, followed by 'A' -- not a valid continuation, so the
+    # sequence is malformed rather than merely cut short by the cap.
+    target.write_bytes(b"a" * 9 + b"\xf0" + b"A" + b"more-bytes-past-the-cap")
+    await seed_session(db_path, session_id="run-2369", artifacts_path=str(artifact_root))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await svc.get_run_file("run-2369", str(target))
+    assert exc_info.value.status_code == 415
