@@ -131,10 +131,55 @@ async def test_no_object_flagged_error():
 
 
 @pytest.mark.asyncio
-async def test_empty_success_response_not_error():
+async def test_empty_success_response_is_an_error():
+    """A SUCCESS carrying no content must not read as a successful empty answer.
+
+    Headless print mode cannot prompt for a tool permission, so it auto-denies
+    the call and still reports SUCCESS with an empty response. Passing that
+    through as a completed-but-empty turn fails open: a caller using this engine
+    for a second opinion receives silence stamped success and reads it as assent.
+    """
     session = await _run_objects([_success_obj(response="")])
-    assert session.is_error is False
-    assert session.result == ""
+    assert session.is_error is True
+    assert session.result
+
+
+@pytest.mark.asyncio
+async def test_empty_success_error_names_the_permission_remedy():
+    """The error has to be actionable — the operator needs the remedy, not just a flag."""
+    chunks = await _run_chunks([_success_obj(response="")])
+    error_chunks = [c for c in chunks if c.type == "error"]
+    assert len(error_chunks) == 1
+    content = error_chunks[0].content.lower()
+    assert "no response content" in content
+    assert "permission" in content
+
+
+@pytest.mark.asyncio
+async def test_empty_success_emits_no_text_or_result_chunk():
+    """An empty text chunk downstream is exactly what made this look like a real answer."""
+    chunks = await _run_chunks([_success_obj(response="")])
+    types = [c.type for c in chunks]
+    assert "text" not in types
+    assert "result" not in types
+
+
+@pytest.mark.asyncio
+async def test_error_object_surfaces_its_error_field():
+    """agy reports failures in `error` while leaving `response` empty; a bare
+    status line drops the only text that says what actually went wrong."""
+    chunks = await _run_chunks(
+        [
+            _success_obj(
+                status="ERROR",
+                response="",
+                error='invalid model selection (--model "gemini-3.9-flash")',
+            )
+        ]
+    )
+    error_chunks = [c for c in chunks if c.type == "error"]
+    assert len(error_chunks) == 1
+    assert "invalid model selection" in error_chunks[0].content
 
 
 @pytest.mark.asyncio
