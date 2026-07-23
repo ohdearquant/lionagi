@@ -131,9 +131,12 @@ def to_list(
                     out.append(i)
             except TypeError:
                 if not use_hash_fallback:
-                    # Restart with hash-based deduplication
+                    # Restart with hash-based deduplication. Bucket by hash and
+                    # confirm actual equality within the bucket: a hash collision
+                    # between unequal items is not a duplicate (hash_dict can
+                    # collide for distinct mappings).
                     use_hash_fallback = True
-                    seen = set()
+                    hash_buckets: dict[Any, list] = {}
                     out = []
                     for j in processed:
                         try:
@@ -145,8 +148,9 @@ def to_list(
                                 raise ValueError(
                                     "Unhashable type encountered in list unique value processing."
                                 ) from None
-                        if hash_value not in seen:
-                            seen.add(hash_value)
+                        bucket = hash_buckets.setdefault(hash_value, [])
+                        if not any(existing == j for existing in bucket):
+                            bucket.append(j)
                             out.append(j)
                     break
         return out

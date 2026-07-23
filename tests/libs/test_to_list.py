@@ -405,3 +405,13 @@ class TestEdgeCases:
         data = [[1, 2], (3, 4), {5, 6}, [7, 8]]
         result = to_list(data, flatten=True, flatten_tuple_set=True)
         assert set(result) == {1, 2, 3, 4, 5, 6, 7, 8}
+
+
+def test_unique_keeps_hash_colliding_unequal_mappings():
+    """A hash collision between unequal mappings is not a duplicate.
+
+    The unique fallback hashes unhashable items; in CPython hash(-1) == hash(-2),
+    so these two mappings collide structurally while being unequal.
+    """
+    result = to_list([{"x": -1}, {"x": -2}, {"x": -1}], flatten=True, unique=True)
+    assert result == [{"x": -1}, {"x": -2}]
