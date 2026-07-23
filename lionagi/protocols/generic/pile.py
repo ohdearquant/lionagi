@@ -901,7 +901,10 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
                 "Please install it via: pip install pandas  or  uv add pandas"
             ) from e
 
-        df = DataFrameAdapter.to_obj(list(self.collections.values()), adapt_meth="to_dict", **kw)
+        # Serialize in progression (logical) order, not dict insertion order,
+        # so the frame matches iteration and every ordered dump/adump path.
+        ordered = [self.collections[key] for key in self.progression]
+        df = DataFrameAdapter.to_obj(ordered, adapt_meth="to_dict", **kw)
         if columns:
             return df[columns]
         return df
@@ -914,24 +917,26 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         mode: Literal["w", "a"] = "w",
         clear=False,
         **kw,
-    ) -> None:
+    ) -> str | None:
         df = self.to_df()
+        out = None
         match obj_key:
             case "parquet":
                 df.to_parquet(fp, engine="pyarrow", index=False, **kw)
             case "json":
                 out = df.to_json(fp, orient="records", lines=True, mode=mode, **kw)
-                return out if out is not None else None
             case "csv":
                 out = df.to_csv(fp, index=False, mode=mode, **kw)
-                return out if out is not None else None
             case _:
                 raise ValueError(
                     f"Unsupported obj_key: {obj_key}. Supported keys are 'json', 'csv', 'parquet'."
                 )
 
+        # Clear only after a successful write, and for every format: the json/csv
+        # branches previously returned early and skipped this.
         if clear:
             self.clear()
+        return out
 
     async def adump(
         self,

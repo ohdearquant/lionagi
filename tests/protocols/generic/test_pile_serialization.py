@@ -85,6 +85,15 @@ class TestToDataFrame:
         df = p.to_df()
         assert sorted(df["value"].tolist()) == list(range(5))
 
+    def test_to_df_preserves_progression_order(self, three_items):
+        """to_df must follow logical (progression) order, not dict insertion order."""
+        p = Pile(collections=three_items)
+        head = Item(value=99)
+        p.insert(0, head)  # logical order is now head, *three_items
+        logical = [str(x.id) for x in p]
+        df = p.to_df()
+        assert [str(x) for x in df["id"].tolist()] == logical
+
 
 @pytest.mark.skipif(pandas_missing, reason="pandas not installed")
 class TestDump:
@@ -131,6 +140,36 @@ class TestDump:
         p.dump(fp, obj_key="parquet", clear=True)
         assert len(p) == 0
         fp.unlink()
+
+    def test_dump_json_clear_empties_pile(self, pile_3):
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            fp = Path(f.name)
+        assert len(pile_3) == 3
+        pile_3.dump(fp, obj_key="json", clear=True)
+        assert len(pile_3) == 0
+        # data was written to the file before clearing
+        assert len(fp.read_text().strip().splitlines()) == 3
+        fp.unlink()
+
+    def test_dump_csv_clear_empties_pile(self, pile_3):
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
+            fp = Path(f.name)
+        pile_3.dump(fp, obj_key="csv", clear=True)
+        assert len(pile_3) == 0
+        assert len(fp.read_text().strip().splitlines()) == 4  # header + 3 rows
+        fp.unlink()
+
+    def test_dump_json_no_clear_preserves_pile(self, pile_3):
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            fp = Path(f.name)
+        pile_3.dump(fp, obj_key="json", clear=False)
+        assert len(pile_3) == 3
+        fp.unlink()
+
+    def test_dump_fp_none_returns_serialized_string(self, pile_3):
+        out = pile_3.dump(None, obj_key="json")
+        assert isinstance(out, str) and out.strip()
+        assert len(pile_3) == 3  # default clear=False leaves the pile intact
 
     @pytest.mark.asyncio
     async def test_adump_json(self, pile_3):

@@ -226,6 +226,18 @@ class TestAddItem:
         with pytest.raises(ItemNotFoundError):
             flow.add_item(node, progressions="ghost")
 
+    def test_add_item_unowned_progression_instance_rejected(self):
+        """A Progression the flow does not own must not be silently mutated."""
+        flow = Flow()
+        node = Node(content="x")
+        external = Progression(name="external")
+        with pytest.raises(ItemNotFoundError):
+            flow.add_item(node, progressions=external)
+        # The operation fails atomically: neither the flow nor the external
+        # progression is touched.
+        assert node.id not in flow.items
+        assert node.id not in external
+
 
 # ---------------------------------------------------------------------------
 # remove_item
