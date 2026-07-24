@@ -337,3 +337,37 @@ def test_run_wait_unknown_id_returns_exit_unknown(temp_db_path: Path) -> None:
 def test_run_wait_requires_at_least_one_id(temp_db_path: Path) -> None:
     with pytest.raises(SystemExit):
         run_wait([])
+
+
+def test_run_wait_ambiguous_schedule_run_prefix_reports_error_not_crash(
+    temp_db_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`li wait <prefix>` where the prefix matches two schedule_runs must
+    report a clean error and EXIT_UNKNOWN — the schedule-run resolver raises
+    AmbiguousIdError, and this CLI entry point must catch it rather than crash
+    with an uncaught traceback (it previously caught only signal interrupts)."""
+    import asyncio
+    import logging
+
+    async def _setup() -> None:
+        async with StateDB() as db:
+            sched_id = await _make_schedule(db)
+            rid1 = await _make_schedule_run(db, sched_id)
+            rid2 = await _make_schedule_run(db, sched_id)
+            # Force a shared short prefix that resolves to neither a session,
+            # invocation, nor play — so resolution reaches _resolve_schedule_run
+            # and its LIKE query matches both rows.
+            await db.execute(
+                "UPDATE schedule_runs SET id = ? WHERE id = ?", ("abc" + rid1[3:], rid1)
+            )
+            await db.execute(
+                "UPDATE schedule_runs SET id = ? WHERE id = ?", ("abc" + rid2[3:], rid2)
+            )
+
+    asyncio.run(_setup())
+
+    with caplog.at_level(logging.ERROR, logger="lionagi.cli.error"):
+        exit_code = run_wait(["abc"])
+    assert exit_code == EXIT_UNKNOWN
+    assert "matches" in caplog.text.lower()
+    assert "abc" in caplog.text.lower()
