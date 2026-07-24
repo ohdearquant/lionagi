@@ -72,7 +72,9 @@ def register_flow_notify_scope(
     ``unregister_flow_notify_scope`` in a ``finally`` block), or ``None`` if
     *override* resolved to disabled (never raised).
     """
-    resolved = resolve_notify_config(override=override)
+    # A rejected override is already reported through the resolver's warning;
+    # this registration only needs to know whether there is something to launch.
+    resolved = resolve_notify_config(override=override).handler
     if resolved is None:
         return None
     payload_fn = _legacy_payload_builder(

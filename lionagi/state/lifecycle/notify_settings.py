@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 __all__ = (
+    "NotifyConfigResolution",
     "PayloadBuilder",
     "ResolvedNotifyHandler",
     "build_handler",
@@ -88,15 +89,47 @@ class ResolvedNotifyHandler:
     filter_ids: tuple[str, ...] | None = None
 
 
+@dataclass(frozen=True)
+class NotifyConfigResolution:
+    """The outcome of resolving ``notify.on_terminal``: a handler, or why not.
+
+    ``reason`` is set if and only if a notifier was asked for and rejected.
+    Chosen silence -- nothing configured, or notification explicitly turned
+    off -- carries no reason, because nothing was rejected. Collapsing the two
+    into a bare None is what makes a misconfigured notifier indistinguishable
+    from an absent one, and a detached caller then waits on a notice that will
+    never arrive with nothing anywhere saying so.
+
+    Reasons are short stable identifiers, never interpolated user data: they
+    are persisted and read back, so they are a contract. The offending value
+    goes in the matching warning instead.
+    """
+
+    handler: ResolvedNotifyHandler | None = None
+    reason: str | None = None
+
+
+# Nothing was configured, so there is nothing to report -- silence by choice.
+_NOT_CONFIGURED = NotifyConfigResolution()
+
+
+def _rejected(reason: str) -> NotifyConfigResolution:
+    """A notifier was configured and this resolution refused it."""
+    return NotifyConfigResolution(reason=reason)
+
+
 def resolve_notify_config(
     *,
     settings: dict[str, Any] | None = None,
     override: str | dict[str, Any] | None = None,
     project_dir: str | None = None,
-) -> ResolvedNotifyHandler | None:
-    """Resolve ``notify.on_terminal`` to a handler spec, or ``None`` (disabled).
+) -> NotifyConfigResolution:
+    """Resolve ``notify.on_terminal`` to a handler spec, or to why there is none.
     *override* wins outright when supplied; otherwise settings are loaded
     once (snapshot semantics) via the project-then-global merge.
+
+    Always returns a :class:`NotifyConfigResolution`; see it for how a rejected
+    notifier is distinguished from an unconfigured one.
     """
     if override is not None:
         return _resolve_shape(override, scope="override")
@@ -106,15 +139,15 @@ def resolve_notify_config(
             settings = load_settings(project_dir=project_dir)
         except Exception as exc:  # noqa: BLE001 -- malformed settings must never affect the run
             logger.warning("notify.on_terminal settings resolution failed: %s", exc)
-            return None
+            return _rejected("settings_load_failed")
     notify_cfg = settings.get("notify") if isinstance(settings, dict) else None
     source = notify_cfg.get("on_terminal") if isinstance(notify_cfg, dict) else None
     if source is None:
-        return None
+        return _NOT_CONFIGURED  # no notifier configured -- the documented default
     return _resolve_shape(source, scope="settings")
 
 
-def _resolve_shape(source: Any, *, scope: str) -> ResolvedNotifyHandler | None:
+def _resolve_shape(source: Any, *, scope: str) -> NotifyConfigResolution:
     if isinstance(source, str):
         return _resolve_string(source, scope=scope)
     if isinstance(source, dict):
@@ -125,16 +158,16 @@ def _resolve_shape(source: Any, *, scope: str) -> ResolvedNotifyHandler | None:
         type(source).__name__,
         source,
     )
-    return None
+    return _rejected("on_terminal_not_string_or_mapping")
 
 
-def _resolve_string(command: str, *, scope: str) -> ResolvedNotifyHandler | None:
+def _resolve_string(command: str, *, scope: str) -> NotifyConfigResolution:
     if not command.strip():
         _warn_empty_argv(scope)
-        return None
+        return _rejected("on_terminal_command_is_empty")
     if _looks_like_shell(command):
         _warn_shell_feature(command, scope)
-        return None
+        return _rejected("on_terminal_command_requires_shell_features")
     try:
         argv = shlex.split(command)
     except ValueError as exc:
@@ -146,16 +179,18 @@ def _resolve_string(command: str, *, scope: str) -> ResolvedNotifyHandler | None
             command,
             exc,
         )
-        return None
+        return _rejected("on_terminal_command_not_parseable")
     if not argv:
         _warn_empty_argv(scope)
-        return None
-    return ResolvedNotifyHandler(argv=tuple(argv))
+        return _rejected("on_terminal_command_is_empty")
+    return NotifyConfigResolution(handler=ResolvedNotifyHandler(argv=tuple(argv)))
 
 
-def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> ResolvedNotifyHandler | None:
+def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> NotifyConfigResolution:
     if cfg.get("enabled") is False:
-        return None
+        # Notification was configured off. Nothing was rejected, so this is the
+        # chosen silence, not a failure to report back to the operator.
+        return _NOT_CONFIGURED
 
     filter_kinds: tuple[str, ...] | None = None
     filter_ids: tuple[str, ...] | None = None
@@ -168,7 +203,7 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> ResolvedNotifyHandle
                 scope,
                 filt,
             )
-            return None
+            return _rejected("filter_not_a_mapping")
 
         unknown_keys = tuple(key for key in filt if key not in {"kinds", "ids"})
         if unknown_keys:
@@ -178,7 +213,7 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> ResolvedNotifyHandle
                 scope,
                 unknown_keys,
             )
-            return None
+            return _rejected("filter_has_unknown_keys")
 
         if "kinds" in filt:
             kinds = filt["kinds"]
@@ -193,7 +228,7 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> ResolvedNotifyHandle
                     scope,
                     kinds,
                 )
-                return None
+                return _rejected("filter_kinds_not_a_list_of_strings")
             unsupported_kinds = tuple(kind for kind in kinds if kind not in EXECUTION_ENTITY_KINDS)
             if unsupported_kinds:
                 logger.warning(
@@ -203,7 +238,7 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> ResolvedNotifyHandle
                     unsupported_kinds,
                     tuple(sorted(EXECUTION_ENTITY_KINDS)),
                 )
-                return None
+                return _rejected("filter_kinds_unsupported")
             filter_kinds = tuple(kinds)
 
         if "ids" in filt:
@@ -219,7 +254,7 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> ResolvedNotifyHandle
                     scope,
                     ids,
                 )
-                return None
+                return _rejected("filter_ids_not_a_list_of_strings")
             filter_ids = tuple(ids)
 
     adapter = cfg.get("adapter")
@@ -230,7 +265,10 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> ResolvedNotifyHandle
                 "adapter configured; resolving to disabled.",
                 scope,
             )
-        return None
+            return _rejected("enabled_without_adapter")
+        # A mapping that never asked to be enabled and names no adapter asked
+        # for nothing; that is the chosen silence, not a rejected notifier.
+        return _NOT_CONFIGURED
 
     kind = adapter.get("kind")
     if kind == "exec":
@@ -242,12 +280,14 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> ResolvedNotifyHandle
                 scope,
                 argv,
             )
-            return None
+            return _rejected("exec_adapter_argv_not_a_list_of_strings")
         if not argv:
             _warn_empty_argv(scope)
-            return None
-        return ResolvedNotifyHandler(
-            argv=tuple(argv), filter_kinds=filter_kinds, filter_ids=filter_ids
+            return _rejected("on_terminal_command_is_empty")
+        return NotifyConfigResolution(
+            handler=ResolvedNotifyHandler(
+                argv=tuple(argv), filter_kinds=filter_kinds, filter_ids=filter_ids
+            )
         )
 
     if kind == "python":
@@ -259,9 +299,11 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> ResolvedNotifyHandle
                 scope,
                 ref,
             )
-            return None
-        return ResolvedNotifyHandler(
-            python_ref=ref, filter_kinds=filter_kinds, filter_ids=filter_ids
+            return _rejected("python_adapter_ref_invalid")
+        return NotifyConfigResolution(
+            handler=ResolvedNotifyHandler(
+                python_ref=ref, filter_kinds=filter_kinds, filter_ids=filter_ids
+            )
         )
 
     logger.warning(
@@ -270,7 +312,7 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> ResolvedNotifyHandle
         scope,
         kind,
     )
-    return None
+    return _rejected("adapter_kind_unsupported")
 
 
 # Returns the path the adapter's stderr was captured to, or None.
@@ -565,7 +607,7 @@ def register_settings_terminal_callback(
     CLI entry point and Studio service startup each call this once per
     process). Returns ``True`` iff a handler was installed.
     """
-    resolved = resolve_notify_config(project_dir=project_dir)
+    resolved = resolve_notify_config(project_dir=project_dir).handler
     if resolved is None:
         registry.unregister(name)
         return False
@@ -602,7 +644,7 @@ def register_run_notify_outcome_scope(
     ``None`` if notify.on_terminal resolved to disabled or if this entity is
     excluded by the configured filter (never raises).
     """
-    resolved = resolve_notify_config(project_dir=project_dir)
+    resolved = resolve_notify_config(project_dir=project_dir).handler
     if resolved is None:
         return None
     # The scoped registration is an override, so it dispatches on its own

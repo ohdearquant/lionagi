@@ -79,9 +79,16 @@ def _resolve_command(
     try:
         from lionagi.state.lifecycle.notify_settings import resolve_notify_config
 
-        resolved = resolve_notify_config(project_dir=cwd)
+        resolution = resolve_notify_config(project_dir=cwd)
+        # Read inside the guard too: a settings problem must never break the
+        # terminal path, whichever step of the resolution it surfaces from.
+        reason, resolved = resolution.reason, resolution.handler
     except Exception as exc:  # noqa: BLE001 — a settings problem must never break the terminal path
         return None, f"notify_settings_unreadable:{type(exc).__name__}"
+    if reason is not None:
+        # Settings named a notifier and the resolver refused it — a misconfigured
+        # notifier, not an absent one. The reason is what tells the two apart.
+        return None, reason
     if resolved is None:
         return None, None  # no notifier configured — silence by choice
     if resolved.argv is None:
