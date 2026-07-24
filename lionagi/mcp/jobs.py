@@ -55,9 +55,17 @@ def new_run_id() -> str:
 
 
 def _write_job(record: dict[str, Any]) -> None:
+    # Publish atomically: write a unique temp file in the same directory, then
+    # os.replace() it into place. os.replace is atomic on the same filesystem, so
+    # a concurrent reader (status / list_jobs) never observes a torn file — and a
+    # failed write leaves the previous record intact instead of a partial one. The
+    # temp name is per-write-unique so two writers to the same run (the pid-attach
+    # write in submit() and the terminal hook) never collide on the temp itself.
     d = config.job_dir(record["run_id"])
     d.mkdir(parents=True, exist_ok=True)
-    (d / "job.json").write_text(json.dumps(record, indent=2))
+    tmp = d / f".job.json.{os.getpid()}.{uuid4().hex[:8]}.tmp"
+    tmp.write_text(json.dumps(record, indent=2))
+    os.replace(tmp, d / "job.json")
 
 
 def _read_job(run_id: str) -> dict[str, Any] | None:

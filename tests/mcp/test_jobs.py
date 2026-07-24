@@ -235,3 +235,29 @@ def test_mark_terminal_and_list(sandbox, monkeypatch):
     assert listed and listed[0]["run_id"] == rid
     assert jobs.list_jobs(status_filter="failed")[0]["run_id"] == rid
     assert jobs.list_jobs(status_filter="running") == []
+
+
+def test_write_job_publishes_atomically(sandbox, monkeypatch):
+    """A failed write leaves the prior record intact, and a success leaves no temp.
+
+    _write_job stages a temp file then os.replace()s it into place, so a reader
+    never sees a torn file and a crash mid-write does not corrupt the existing
+    record.
+    """
+    rid = jobs.new_run_id()
+    jobs._write_job({"run_id": rid, "status": "running", "pid": 7, "kind": "agent", "log": None})
+    good = jobs._read_job(rid)
+
+    # a successful publish renames the temp away — nothing lingers
+    assert not list(config.job_dir(rid).glob(".job.json.*.tmp"))
+
+    # simulate a crash during publish: the rename raises after the temp is written
+    def boom(_src, _dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(jobs.os, "replace", boom)
+    with pytest.raises(OSError):
+        jobs._write_job({"run_id": rid, "status": "failed", "pid": 7, "kind": "agent", "log": None})
+
+    # the previously published record is untouched — no partial write reached it
+    assert jobs._read_job(rid) == good
