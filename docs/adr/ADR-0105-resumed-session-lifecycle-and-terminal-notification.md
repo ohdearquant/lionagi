@@ -122,6 +122,9 @@ if existing_branch:
             reason_summary="branch resumed by a new leg",
             expected_statuses=SESSION_TERMINAL_STATUSES,
             extra_fields={"ended_at": None},
+            override=True,
+            override_actor="cli.resume",
+            override_justification="branch resumed by a new leg; the session is executing again",
         )
 ```
 
@@ -130,6 +133,28 @@ if existing_branch:
 `SESSION_TERMINAL_STATUSES` is derived from the lifecycle policy registry rather than
 hand-maintained, and currently holds `aborted`, `cancelled`, `completed`,
 `completed_empty`, `failed`, `timed_out`.
+
+The override is load-bearing and was missing from this ADR's first draft. The session
+policy declares exactly one edge, `running → {terminal}`, and the transition service
+rejects any move out of a terminal status unless an override is supplied
+(`lionagi/state/lifecycle/policy.py`, whose own comment states "No exit from a terminal
+status without override"; enforced at `lionagi/state/lifecycle/service.py` in the
+`previous_status in policy.terminal_statuses` branch). Without it this write does not
+land: it returns `rejected`, writes a `status_transition_rejected` audit row, and the
+resume proceeds with the session still marked terminal, which is the exact defect this
+ADR exists to fix. On the `enforce_edges=True` path it raises instead.
+
+Override rather than a new declared edge, deliberately. Declaring `terminal → running`
+in `session_edges` would legalize terminal-exit for every session writer in the system,
+and the finality of a terminal session is the property the reaper, the teardown guard,
+and `li wait` all rest on. The override keeps the exception scoped to the one caller
+that has earned it and, because `override` requires a non-empty actor and justification
+and emits a `status_transition_override` admin event, it makes each reopening
+attributable. A reopened session is a real event and should leave a record saying who
+reopened it and why; the declared-edge version would leave none.
+
+`extra_fields={"ended_at": None}` is legal without further change: `ended_at` is in the
+session policy's `patch_fields`.
 
 Exact semantics:
 
@@ -177,9 +202,10 @@ whichever leg last closed, status terminal throughout. A reader cannot tell from
 row whether the session ran once or four times.
 
 Consequence a consumer must know: a session's `ended_at` may move later, and its
-status may go `completed` → `running` → `completed`. Anything that treats a terminal
-session as permanently final is wrong under resume and was already wrong, since
-resume legs were mutating `ended_at` on terminal sessions before this ADR.
+status may go `completed` → `running` → `completed`. The first of those was already
+true in production, since resume legs were mutating `ended_at` on terminal sessions
+before this ADR. The second is genuinely new, so it is not asserted here on the
+strength of the first. The enumeration is in "Consumers of session finality" below.
 
 ### D4 — The job record needs no separate repair
 
@@ -193,6 +219,50 @@ having lionmcp reconcile pid-gone jobs itself — is a real option that is being
 declined. Declined because it would paper over a missing notification with an
 inferred one: lionmcp would report `completed` for a leg it never heard from,
 which is a worse failure than reporting `exited` honestly.
+
+## Consumers of session finality
+
+D1 makes a session's status go terminal → `running` → terminal, which no consumer has
+seen before. Every live reader of session terminal-status and `ended_at` was enumerated
+by grep across `lionagi/` and read at its call site, rather than reasoned about from the
+decision. Results:
+
+| Consumer | Under terminal → running → terminal | Verdict |
+| --- | --- | --- |
+| `studio/services/sessions.py` `is_session_stream_done` (callers in the same file) | Re-evaluated each poll; a closed stream stays closed, a stream opened during the window stays open | unaffected |
+| `studio/services/run_view.py` `build_outcome` | Falls through to invocation/occurrence while running, self-corrects when the leg closes | transient only |
+| `studio/services/run_view.py` `exit_code_for_view` | Returns the running exit code during the window, which is what is true | unaffected |
+| `cli/_runs.py` linked-engine phantom-failure suppression | Does not fire mid-window; falls back to today's behaviour | unaffected |
+| `cli/_runs.py` teardown terminal-skip guard | **Changes**: see below | intended |
+| `cli/_runs.py` `BRANCH_END` emission | Reads a local `final_status`, not the row | unaffected |
+| `cli/monitor.py` `_effective_session_status` | Early-returns on terminal, reconciles while running | unaffected |
+| `cli/monitor.py` `_poll_pending_sessions_once` | Completed sessions leave the pending set and are never re-added | unaffected |
+| `cli/wait.py` terminal-status waits | A waiter started mid-window waits for the resume leg, which is the leg it cares about | unaffected |
+| Duration/`ended_at` arithmetic in `studio/cli.py`, `services/sessions.py`, `services/run_view.py` | All guard `is not None`; a null `ended_at` is already handled | unaffected |
+| `studio/services/lifecycle.py` `reap_null_status_sessions` | Selects `status IS NULL` only | unaffected |
+| `studio/services/admin.py` `list_phantom_sessions` → `lifecycle.py` `reap_phantom_sessions` | **Newly reachable**: see below | disclosed |
+| `studio/services/admin.py` health sweep (`UPDATE ... WHERE status='running'`) | Same class, additionally guarded on `last_message_at`/`updated_at` equality | disclosed |
+
+No consumer breaks. Two findings need stating rather than a fix.
+
+**The teardown terminal-skip guard starts working.** `cli/_runs.py` skips its status
+write when the session was already terminal at teardown start, logging that the earlier
+terminal record is protected. Before D1 that meant a resumed leg's outcome was silently
+dropped. After D1 the session is `running` at teardown, so the write lands and the
+resume leg's outcome is recorded. This is correct and is a second defect D1 fixes, but
+it is a real semantic change: the resume leg's terminal status now replaces the original
+leg's on the row. The earlier one is not lost — every applied transition appends to
+`status_transitions` — but the row itself shows the latest leg.
+
+**A resumed session becomes eligible for phantom reaping.** Both sweeps above select
+`status = 'running'`, so a terminal session is invisible to them today. A reopened one
+is not. If a resume leg dies without writing a terminal status and the session then sits
+stale for `PHANTOM_STALE_HOURS`, the reaper transitions it to `failed`, and a session
+that had previously completed now reads `failed`. This is judged acceptable rather than
+handled: the session genuinely was re-run and the re-run genuinely died, `running →
+failed` is a declared edge that applies normally, and the earlier `completed` survives
+in `status_transitions`. It is recorded here because the derived row no longer shows it,
+and a reader of the row alone would draw the wrong conclusion about the first leg.
 
 ## Alternatives considered
 
@@ -230,9 +300,10 @@ rounds stop requiring polling, and the job record closes on its own. Session sta
 becomes trustworthy as a description of whether the session is executing.
 
 Harder: session status is no longer monotonic. A consumer that latched "terminal
-means finished forever" must tolerate reopening. In practice this was already true
-and merely unobserved, since resume legs already rewrote `ended_at` on terminal
-sessions, but it becomes an explicit contract here.
+means finished forever" must tolerate reopening. The enumeration above found no such
+consumer, and the two that change behaviour do so in ways stated there. Reopening is
+also the system's only sanctioned exit from a terminal status, so it carries an
+override audit row rather than passing as an ordinary write.
 
 New failure mode: a crashed resume leg leaves the session `running` with a null
 `ended_at` where previously it would have kept a stale terminal status. That is
@@ -250,3 +321,10 @@ registration: run a resume leg with a `--notify` command that writes a file, and
 assert the file exists and the session's transition log records a real
 `running` → `completed` change. Asserting only that a callback was registered would
 pass against today's broken behaviour, since registration was never the problem.
+
+A second regression covers the reopen write itself: assert that reopening a terminal
+session applies rather than returning `rejected`. Without the override this write is
+refused, and the notice regression above would fail for a reason unrelated to what it
+is testing — a silent rejection reads from the outside exactly like the defect. Pin
+them separately so a future change to the override path fails at the write, not at the
+notice three steps downstream.
