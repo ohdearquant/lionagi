@@ -502,6 +502,37 @@ class TestChatParamStripping:
         assert calls[0].tool_names == []
 
 
+class TestTurnOriginSingleFire:
+    """A repair round is an internal retry within one operate() call, not a
+    fresh user-prompt submission — USER_PROMPT_SUBMIT must fire at most once
+    per lndl_middle() invocation, no matter how many rounds it takes."""
+
+    @pytest.mark.asyncio
+    async def test_retry_round_does_not_refire_user_prompt_submit(self):
+        branch = TestBranch.from_text(
+            [
+                "```lndl\nOUT{answer: [missing]}\n```",
+                "```lndl\n<lvar a>fixed</lvar>\nOUT{answer: [a]}\n```",
+            ]
+        )
+
+        bus = HookBus()
+        submits: list[dict] = []
+
+        async def on_submit(**kw):
+            submits.append(kw)
+
+        bus.on(HookPoint.USER_PROMPT_SUBMIT, on_submit)
+        branch._hooks = bus
+
+        chat_param = ChatParam(response_format=AnswerModel)
+        result = await lndl_middle(branch, "answer", chat_param)
+
+        assert result.answer == "fixed"
+        assert len(TestBranch.calls(branch)) == 2
+        assert len(submits) == 1
+
+
 class TestRoundBudget:
     @pytest.mark.asyncio
     async def test_custom_round_budget_respected(self):

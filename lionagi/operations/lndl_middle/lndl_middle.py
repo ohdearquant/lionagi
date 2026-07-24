@@ -29,6 +29,7 @@ from lionagi.lndl import (
 )
 
 from .._defaults import get_default_action_call
+from .._turn_origin import TurnOrigin
 from ..types import ActionParam, ChatParam, ParseParam, RunParam
 
 if TYPE_CHECKING:
@@ -203,6 +204,13 @@ def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET):
         # LNDL uses a free-text <lact>/OUT{} protocol, not native
         # function-calling, so strip tool schemas and response_format here.
         stripped_chat_param = chat_param.with_updates(tool_schemas=[], response_format=None)
+        # Round 1 carries the caller's own turn origin (it is the genuine
+        # user-prompt submission); every repair round after it is an
+        # internal retry within the same operate() call and must not
+        # re-mint/re-fire USER_PROMPT_SUBMIT.
+        continuation_chat_param = stripped_chat_param.with_updates(
+            turn_origin=TurnOrigin.no_origin()
+        )
 
         action_results: dict[str, Any] = {}
         last_error: str | None = None
@@ -211,7 +219,7 @@ def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET):
             round_chat_param = (
                 stripped_chat_param.with_updates(guidance=lndl_guidance)
                 if round_num == 1
-                else stripped_chat_param
+                else continuation_chat_param
             )
             round_instruction = _round_instruction(instruction, round_num, round_budget, last_error)
 
