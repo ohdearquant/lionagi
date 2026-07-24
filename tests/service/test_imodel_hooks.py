@@ -647,3 +647,54 @@ class TestiModelStreamFailurePropagation:
                     pass
         # confirm this run actually exercised the semaphore branch
         assert imodel.executor.processor._concurrency_sem is not None
+
+
+class TestPreEventCreateReplacement:
+    """A PreEventCreate hook may return a fully prepared event to be used in
+    place of the one create_event() would otherwise construct. Only a value of
+    the requested event type is accepted; None and any other value fall through
+    to normal construction."""
+
+    def _imodel(self, hook):
+        return iModel(
+            provider="openai",
+            model="gpt-4.1-mini",
+            api_key="test-key",
+            hook_registry=HookRegistry(hooks={HookEventTypes.PreEventCreate: hook}),
+        )
+
+    @pytest.mark.asyncio
+    async def test_prepared_event_returned_by_hook_replaces_the_constructed_one(self):
+        prepared_holder = {}
+
+        async def pre_create_hook(event_type, **kwargs):
+            return prepared_holder["prepared"]
+
+        imodel = self._imodel(pre_create_hook)
+        prepared_holder["prepared"] = imodel.create_api_calling(
+            messages=[{"role": "user", "content": "prepared"}]
+        )
+
+        api_call = await imodel.create_event(messages=[{"role": "user", "content": "constructed"}])
+
+        assert api_call is prepared_holder["prepared"]
+
+    @pytest.mark.asyncio
+    async def test_hook_returning_none_falls_through_to_construction(self):
+        async def pre_create_hook(event_type, **kwargs):
+            return None
+
+        imodel = self._imodel(pre_create_hook)
+        api_call = await imodel.create_event(messages=[{"role": "user", "content": "hi"}])
+
+        assert isinstance(api_call, APICalling)
+
+    @pytest.mark.asyncio
+    async def test_hook_returning_wrong_type_falls_through_to_construction(self):
+        async def pre_create_hook(event_type, **kwargs):
+            return "not an event"
+
+        imodel = self._imodel(pre_create_hook)
+        api_call = await imodel.create_event(messages=[{"role": "user", "content": "hi"}])
+
+        assert isinstance(api_call, APICalling)

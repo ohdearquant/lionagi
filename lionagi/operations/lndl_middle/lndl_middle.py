@@ -29,6 +29,7 @@ from lionagi.lndl import (
 )
 
 from .._defaults import get_default_action_call
+from .._turn_origin import TurnOrigin
 from ..types import ActionParam, ChatParam, ParseParam, RunParam
 
 if TYPE_CHECKING:
@@ -207,11 +208,21 @@ def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET):
         action_results: dict[str, Any] = {}
         last_error: str | None = None
 
+        # Rounds 2..N continue the caller's single turn rather than starting a
+        # new one, so they carry a no-origin disposition: without it each round
+        # reaching the model-submission boundary with the caller's default
+        # (unset) disposition would mint a fresh token and re-fire
+        # USER_PROMPT_SUBMIT, letting a blocking prompt guard admit round one
+        # and then reject a repair round mid-turn.
+        continuation_chat_param = stripped_chat_param.with_updates(
+            turn_origin=TurnOrigin.no_origin()
+        )
+
         for round_num in range(1, round_budget + 1):
             round_chat_param = (
                 stripped_chat_param.with_updates(guidance=lndl_guidance)
                 if round_num == 1
-                else stripped_chat_param
+                else continuation_chat_param
             )
             round_instruction = _round_instruction(instruction, round_num, round_budget, last_error)
 

@@ -267,3 +267,104 @@ async def test_stream_post_hook_failure_silenced():
     # Should NOT raise — stream data already sent
     chunks = [c async for c in h._stream()]
     assert chunks == ["chunk1", "chunk2"]
+
+
+@pytest.mark.asyncio
+async def test_stream_post_hook_recorded_failure_is_logged_at_warning(caplog):
+    """A post-stream hook that fails is captured into the hook event's status
+    rather than raised, so the failure must be surfaced by an explicit status
+    check — otherwise it is invisible."""
+    h = SimpleHooked()
+
+    class RecordedFailurePostHook:
+        def __init__(self):
+            self.execution = SimpleNamespace(status=EventStatus.PENDING, error="post hook raised")
+            self._should_exit = False
+            self._exit_cause = None
+
+        async def invoke(self):
+            self.execution.status = EventStatus.ABORTED
+
+    h._post_invoke_hook_event = RecordedFailurePostHook()
+    with caplog.at_level("WARNING", logger="lionagi.service.hooks.hooked_event"):
+        chunks = [c async for c in h._stream()]
+
+    assert chunks == ["chunk1", "chunk2"]
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("post hook raised" in m for m in warnings), warnings
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [EventStatus.FAILED, EventStatus.CANCELLED, EventStatus.ABORTED])
+async def test_stream_post_hook_warns_for_every_recorded_failure_status(status, caplog):
+    h = SimpleHooked()
+    h._post_invoke_hook_event = _fake_hook(status)
+    h._post_invoke_hook_event.execution.error = f"hook ended {status.value}"
+
+    with caplog.at_level("WARNING", logger="lionagi.service.hooks.hooked_event"):
+        chunks = [c async for c in h._stream()]
+
+    assert chunks == ["chunk1", "chunk2"]
+    assert any(r.levelname == "WARNING" for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_stream_post_hook_success_logs_no_warning(caplog):
+    h = SimpleHooked()
+    h._post_invoke_hook_event = _fake_hook(EventStatus.COMPLETED)
+
+    with caplog.at_level("WARNING", logger="lionagi.service.hooks.hooked_event"):
+        chunks = [c async for c in h._stream()]
+
+    assert chunks == ["chunk1", "chunk2"]
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+@pytest.mark.asyncio
+async def test_invoke_post_hook_aborted_is_logged_at_warning(caplog):
+    """The non-streaming path must surface a recorded post-hook failure too.
+
+    ``_invoke`` and ``_stream`` run the same post-hook through the same registry,
+    and an ordinary hook exception is recorded there as ABORTED. On this path
+    ABORTED matches neither the failure check that raises nor the exit-request
+    branch, so it reached the fall-through and was written as event data only.
+    The core result has already been produced by then, so the failure is not
+    fatal here, but a caller watching warnings had no way to learn of it.
+    """
+    h = SimpleHooked()
+    h._post_invoke_hook_event = _fake_hook(EventStatus.ABORTED)
+    h._post_invoke_hook_event.execution.error = "post hook raised"
+
+    with caplog.at_level("WARNING", logger="lionagi.service.hooks.hooked_event"):
+        result = await h._invoke()
+
+    assert result == "core_result"  # the core result still comes back
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("post hook raised" in m for m in warnings), warnings
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [EventStatus.FAILED, EventStatus.CANCELLED])
+async def test_invoke_post_hook_failed_and_cancelled_still_raise(status):
+    """Warning on ABORTED must not soften the statuses that already raise.
+
+    This is the half of the contract a logging change is most likely to break:
+    FAILED and CANCELLED are fatal on this path and must stay fatal.
+    """
+    h = SimpleHooked()
+    h._post_invoke_hook_event = _fake_hook(status)
+
+    with pytest.raises(RuntimeError, match=status.value):
+        await h._invoke()
+
+
+@pytest.mark.asyncio
+async def test_invoke_post_hook_success_logs_no_warning(caplog):
+    h = SimpleHooked()
+    h._post_invoke_hook_event = _fake_hook(EventStatus.COMPLETED)
+
+    with caplog.at_level("WARNING", logger="lionagi.service.hooks.hooked_event"):
+        result = await h._invoke()
+
+    assert result == "core_result"
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []

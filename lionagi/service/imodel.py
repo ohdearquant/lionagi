@@ -172,6 +172,7 @@ class iModel:  # noqa: N801
         **kwargs,
     ) -> APICalling:
         h_ev = None
+        replacement = None
         if self.hook_registry._can_handle(ht_=HookEventTypes.PreEventCreate):
             h_ev = HookEvent(
                 hook_type=HookEventTypes.PreEventCreate,
@@ -186,10 +187,19 @@ class iModel:  # noqa: N801
                 raise h_ev._exit_cause or RuntimeError(
                     "PreEventCreate hook requested exit without a cause"
                 )
+            # A hook may return a fully prepared event of the requested type to
+            # be used instead of the one constructed below. Anything else —
+            # None, or a value of some other type — falls through to normal
+            # construction.
+            hook_result = h_ev.execution.response
+            if isinstance(hook_result, create_event_type):
+                replacement = hook_result
 
         if issubclass(create_event_type, HookedEvent):
             api_call = None
-            if create_event_type is APICalling:
+            if replacement is not None:
+                api_call = replacement
+            elif create_event_type is APICalling:
                 api_call = self.create_api_calling(**kwargs)
             else:
                 api_call = create_event_type(**kwargs)

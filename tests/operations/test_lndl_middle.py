@@ -5,6 +5,7 @@
 Middle: round-outcome classification, the ActionCall -> ActionRequest bridge,
 prompt injection, and repair semantics."""
 
+import importlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -32,6 +33,10 @@ from lionagi.operations.lndl_middle.lndl_middle import (
 )
 from lionagi.operations.types import ChatParam, RunParam
 from lionagi.testing import TestBranch
+
+# The package re-exports the `lndl_middle` function under the same name as the
+# submodule, so the submodule object itself is only reachable via importlib.
+_lndl_middle_module = importlib.import_module("lionagi.operations.lndl_middle.lndl_middle")
 
 
 class AnswerModel(BaseModel):
@@ -529,3 +534,59 @@ class TestPackageImportSurface:
 
     def test_package_level_default_round_budget(self):
         assert PACKAGE_DEFAULT_ROUND_BUDGET == 3
+
+
+class TestContinuationTurnOrigin:
+    """A single caller turn must reach the USER_PROMPT_SUBMIT boundary once.
+    Rounds 2..N of an LNDL repair/continuation loop are internal calls that
+    continue the same turn, so they must carry a no-origin disposition rather
+    than the caller's default (unset) one, which the boundary would mint a
+    fresh token from on every round."""
+
+    @pytest.mark.asyncio
+    async def test_continuation_rounds_do_not_refire_the_prompt_submit_hook(self):
+        from lionagi.operations._turn_origin import consume_turn_origin
+
+        boundary_tokens: list[str | None] = []
+        texts = iter(
+            [
+                "```lndl\nOUT{answer: [missing]}\n```",
+                "```lndl\n<lvar a>fixed</lvar>\nOUT{answer: [a]}\n```",
+            ]
+        )
+
+        async def _record_round(branch, instruction, chat_param):
+            boundary_tokens.append(consume_turn_origin(chat_param.turn_origin))
+            return next(texts)
+
+        branch = TestBranch.from_text("unused")
+        with patch.object(_lndl_middle_module, "_run_round_chat", new=_record_round):
+            result = await lndl_middle(branch, "answer", ChatParam(response_format=AnswerModel))
+
+        assert result.answer == "fixed"
+        assert len(boundary_tokens) == 2
+        assert boundary_tokens[0] is not None
+        assert boundary_tokens[1] is None
+
+    @pytest.mark.asyncio
+    async def test_caller_supplied_no_origin_keeps_every_round_silent(self):
+        from lionagi.operations._turn_origin import TurnOrigin, consume_turn_origin
+
+        boundary_tokens: list[str | None] = []
+        texts = iter(
+            [
+                "```lndl\nOUT{answer: [missing]}\n```",
+                "```lndl\n<lvar a>fixed</lvar>\nOUT{answer: [a]}\n```",
+            ]
+        )
+
+        async def _record_round(branch, instruction, chat_param):
+            boundary_tokens.append(consume_turn_origin(chat_param.turn_origin))
+            return next(texts)
+
+        branch = TestBranch.from_text("unused")
+        chat_param = ChatParam(response_format=AnswerModel, turn_origin=TurnOrigin.no_origin())
+        with patch.object(_lndl_middle_module, "_run_round_chat", new=_record_round):
+            await lndl_middle(branch, "answer", chat_param)
+
+        assert boundary_tokens == [None, None]

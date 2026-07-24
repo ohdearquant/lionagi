@@ -69,6 +69,21 @@ class HookedEvent(Event):
                             "Post-invocation hook requested exit without a cause"
                         )
                 else:
+                    # An ordinary post-hook exception is recorded as ABORTED, not
+                    # FAILED, so it does not match the check above and does not
+                    # request exit. The core call has already produced its result
+                    # by this point, so the failure is not fatal here — but it
+                    # must not be silent either.
+                    if h_ev.execution.status in (
+                        EventStatus.FAILED,
+                        EventStatus.CANCELLED,
+                        EventStatus.ABORTED,
+                    ):
+                        _logger.warning(
+                            "Post-invoke hook %s (result already produced): %s",
+                            h_ev.execution.status.value,
+                            h_ev.execution.error,
+                        )
                     await global_hook_logger.alog(h_ev)
             except BaseException:
                 if core_error is not None:
@@ -108,6 +123,20 @@ class HookedEvent(Event):
                     _hook_exc,
                     exc_info=True,
                 )
+            else:
+                # An ordinary hook exception never escapes invoke(): it is
+                # captured into the hook event's status, so the status is the
+                # only signal that the hook failed.
+                if h_ev.execution.status in (
+                    EventStatus.FAILED,
+                    EventStatus.CANCELLED,
+                    EventStatus.ABORTED,
+                ):
+                    _logger.warning(
+                        "Post-stream hook %s (data already sent): %s",
+                        h_ev.execution.status.value,
+                        h_ev.execution.error,
+                    )
             await global_hook_logger.alog(h_ev)
 
     def create_pre_invoke_hook(
