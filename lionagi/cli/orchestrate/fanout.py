@@ -132,6 +132,28 @@ async def _run_fanout(
             started_at=_started_at,
         )
 
+    # notify.on_terminal (settings-driven, independent of --notify) outcome
+    # attribution: bind this run into the handler at registration time so a
+    # late-arriving outcome for this entity lands here or nowhere -- never
+    # on a different run this process later allocates. Skipped when --notify
+    # already owns this same entity as an exclusive override (registering a
+    # second override for the same entity would fire the adapter twice).
+    from lionagi.state.lifecycle.notify_settings import (
+        register_run_notify_outcome_scope,
+        unregister_run_notify_outcome_scope,
+    )
+
+    _notify_outcome_scope_name = (
+        None
+        if notify
+        else register_run_notify_outcome_scope(
+            env.run,
+            entity_kind="session",
+            entity_id=str(env.session.id),
+            project_dir=cwd,
+        )
+    )
+
     inner_kw = dict(
         env=env,
         num_workers=num_workers,
@@ -174,6 +196,7 @@ async def _run_fanout(
                 _terminal_status = effective_status
             # Unregister after stop_live_persist fires the terminal transition.
             unregister_flow_notify_scope(_notify_scope_name)
+            unregister_run_notify_outcome_scope(_notify_outcome_scope_name)
             for _br in env.session.branches:
                 await _br.mdls.shutdown()
 
