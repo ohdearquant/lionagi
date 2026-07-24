@@ -24,6 +24,91 @@ __all__ = (
 )
 
 
+class _SyncedDeque(deque):
+    """deque that keeps its owning Progression's `_members` cache in sync.
+
+    `Progression.order` is a public field, so callers can mutate the deque
+    object directly (`progression.order.append(x)`, `.clear()`, ...) instead
+    of going through Progression's own methods. Every mutating method is
+    overridden here so `_members`, which `__contains__` actually checks,
+    never drifts from `order` regardless of how it was mutated.
+    """
+
+    def __init__(self, iterable=(), owner: Progression | None = None):
+        super().__init__(iterable)
+        self._owner = owner
+
+    def append(self, item) -> None:
+        super().append(item)
+        if self._owner is not None:
+            self._owner._members.add(item)
+
+    def appendleft(self, item) -> None:
+        super().appendleft(item)
+        if self._owner is not None:
+            self._owner._members.add(item)
+
+    def extend(self, iterable) -> None:
+        items = list(iterable)
+        super().extend(items)
+        if self._owner is not None:
+            self._owner._members.update(items)
+
+    def extendleft(self, iterable) -> None:
+        items = list(iterable)
+        super().extendleft(items)
+        if self._owner is not None:
+            self._owner._members.update(items)
+
+    def insert(self, index, item) -> None:
+        super().insert(index, item)
+        if self._owner is not None:
+            self._owner._members.add(item)
+
+    def pop(self):
+        item = super().pop()
+        if self._owner is not None and item not in self:
+            self._owner._members.discard(item)
+        return item
+
+    def popleft(self):
+        item = super().popleft()
+        if self._owner is not None and item not in self:
+            self._owner._members.discard(item)
+        return item
+
+    def remove(self, value) -> None:
+        super().remove(value)
+        if self._owner is not None and value not in self:
+            self._owner._members.discard(value)
+
+    def clear(self) -> None:
+        super().clear()
+        if self._owner is not None:
+            self._owner._members.clear()
+
+    def __delitem__(self, index) -> None:
+        # deque itself only supports integer indices here (slicing raises
+        # TypeError natively); Progression's own slice handling never calls
+        # this directly, it rebuilds the whole deque via `_replace_order`.
+        item = self[index]
+        super().__delitem__(index)
+        if self._owner is not None and item not in self:
+            self._owner._members.discard(item)
+
+    def __setitem__(self, index, value) -> None:
+        old = self[index]
+        super().__setitem__(index, value)
+        if self._owner is not None:
+            if old not in self:
+                self._owner._members.discard(old)
+            self._owner._members.add(value)
+
+    def __iadd__(self, other):
+        self.extend(other)
+        return self
+
+
 class Progression(Element, Ordering[T], Generic[T]):
     """Ordered sequence of item UUIDs with set-backed O(1) membership checks."""
 
@@ -41,10 +126,20 @@ class Progression(Element, Ordering[T], Generic[T]):
 
     def model_post_init(self, __context: Any) -> None:
         super().model_post_init(__context)
+        self.order = _SyncedDeque(self.order, owner=self)
         self._members = set(self.order)
 
     def _rebuild_members(self) -> None:
         self._members = set(self.order)
+
+    def _replace_order(self, items) -> None:
+        """Reconstruct `order` from `items`, preserving the `_SyncedDeque` wrapper.
+
+        A bare `self.order = deque(items)` would swap in a plain deque and
+        silently drop future membership syncing for direct mutations.
+        """
+        self.order = _SyncedDeque(items, owner=self)
+        self._rebuild_members()
 
     @field_validator("order", mode="before")
     def _validate_ordering(cls, value: Any) -> deque[UUID]:
@@ -88,8 +183,7 @@ class Progression(Element, Ordering[T], Generic[T]):
         if isinstance(key, slice):
             as_list = list(self.order)
             as_list[key] = refs
-            self.order = deque(as_list)
-            self._rebuild_members()
+            self._replace_order(as_list)
         else:
             try:
                 old = self.order[key]
@@ -105,10 +199,10 @@ class Progression(Element, Ordering[T], Generic[T]):
         if isinstance(key, slice):
             as_list = list(self.order)
             del as_list[key]
-            self.order = deque(as_list)
+            self._replace_order(as_list)
         else:
             del self.order[key]
-        self._rebuild_members()
+            self._rebuild_members()
 
     def __iter__(self):
         return iter(self.order)
@@ -152,8 +246,7 @@ class Progression(Element, Ordering[T], Generic[T]):
 
         before = len(self.order)
         rset = set(refs)
-        self.order = deque(x for x in self.order if x not in rset)
-        self._rebuild_members()
+        self._replace_order(x for x in self.order if x not in rset)
         return len(self.order) < before
 
     def append(self, item: Any, /) -> None:
@@ -199,8 +292,7 @@ class Progression(Element, Ordering[T], Generic[T]):
         if missing:
             raise ItemNotFoundError(str(missing))
         rset = set(refs)
-        self.order = deque(x for x in self.order if x not in rset)
-        self._rebuild_members()
+        self._replace_order(x for x in self.order if x not in rset)
 
     def count(self, item: Any, /) -> int:
         ref = ID.get_id(item)

@@ -224,11 +224,11 @@ class TestRebuildMembers:
     """_rebuild_members reconstructs _members from order."""
 
     def test_rebuild_after_manual_order_mutation(self, prog, elems):
-        # Directly mutate order (bypassing normal API) to test _rebuild
+        # Directly mutating order (bypassing normal API) keeps _members in
+        # sync automatically; _rebuild_members() stays a correct no-op.
         new_id = uuid4()
         prog.order.append(new_id)
-        # _members is now stale
-        assert new_id not in prog._members
+        assert new_id in prog._members
         prog._rebuild_members()
         assert new_id in prog._members
         assert prog._members == set(prog.order)
