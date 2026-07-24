@@ -202,6 +202,66 @@ def test_prune_removes_old_terminal_sessions_only(tmp_path, monkeypatch):
     assert recent_completed in rem
 
 
+def _reopen_before_call(monkeypatch, maint, session_id: str, *, call: int) -> None:
+    """Return *session_id* to running just before the *call*-th chunked read.
+
+    Resuming a branch puts a terminal session back to running, so a session
+    selected for pruning can stop being prunable while the prune is still
+    assembling the batch. The seam lets that happen at a chosen point instead
+    of waiting for the interleaving to occur on its own.
+    """
+    from sqlalchemy import text
+
+    real = maint._fetch_chunked
+    seen = {"n": 0}
+
+    async def wrapper(conn, sql_prefix, ids, extra_params=()):
+        seen["n"] += 1
+        if seen["n"] == call:
+            await conn.execute(
+                text("UPDATE sessions SET status = 'running' WHERE id = :sid"),
+                {"sid": session_id},
+            )
+        return await real(conn, sql_prefix, ids, extra_params)
+
+    monkeypatch.setattr(maint, "_fetch_chunked", wrapper)
+
+
+@pytest.mark.parametrize(
+    ("call", "what_it_pins"),
+    [(1, "the re-read before anything destructive"), (2, "the predicate on the delete itself")],
+)
+def test_prune_leaves_a_session_that_stopped_being_terminal(
+    tmp_path, monkeypatch, call, what_it_pins
+):
+    """A session picked up by a resume mid-prune must survive it. Deleting one
+    would take a live leg's session, branches and messages out from under it,
+    and the leg would keep running against state that no longer exists."""
+    from lionagi.studio.services import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    old_ts = time.time() - 40 * 86400
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            return await _make_session(db, status="completed", started_at=old_ts)
+
+    sid = run_async(seed())
+    _reopen_before_call(monkeypatch, maint, sid, call=call)
+
+    result = run_async(maint.prune_old_data(keep_days=30, actor="test"))
+
+    async def remaining():
+        async with StateDB(db_path) as db:
+            return await db.fetch_one("SELECT id, status FROM sessions WHERE id = ?", (sid,))
+
+    row = run_async(remaining())
+    assert row is not None, what_it_pins
+    assert row["status"] == "running"
+    assert result["sessions_pruned"] == 0
+
+
 def test_prune_respects_fk_branches_cascade(tmp_path, monkeypatch):
     """Branches attached to pruned sessions are removed via CASCADE."""
     from lionagi.studio.services import db_maintenance as maint

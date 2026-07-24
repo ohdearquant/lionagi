@@ -169,6 +169,20 @@ async def prune_old_data(
             if session_ids:
                 session_ids = sorted(set(session_ids))
 
+                # A session can leave a terminal status after this selection:
+                # resuming a branch returns its session to running. Re-read the
+                # status immediately before anything destructive and drop any
+                # row that came back to life, so the batch is never assembled
+                # around a session with a live leg on it.
+                rows = await _fetch_chunked(
+                    conn,
+                    f"SELECT id FROM sessions WHERE status IN ({sess_ph}) AND id",  # noqa: S608
+                    session_ids,
+                    _TERMINAL_SESSION_STATUSES,
+                )
+                session_ids = sorted({r[0] for r in rows})
+
+            if session_ids:
                 # Capture child ids BEFORE deleting anything.
                 rows = await _fetch_chunked(
                     conn,
@@ -247,8 +261,15 @@ async def prune_old_data(
                     session_ids,
                 )
                 # branches cascade automatically via FK ON DELETE CASCADE
+                # The status predicate rides the delete itself, not only the
+                # read above it: on a backend where concurrent transactions can
+                # commit between the two, the statement that removes the row is
+                # the only place the condition is guaranteed to still hold.
                 sessions_pruned = await _exec_chunked(
-                    conn, "DELETE FROM sessions WHERE id", session_ids
+                    conn,
+                    f"DELETE FROM sessions WHERE status IN ({sess_ph}) AND id",  # noqa: S608
+                    session_ids,
+                    _TERMINAL_SESSION_STATUSES,
                 )
 
                 # Targeted orphan cleanup scoped to pruned lineage only — avoids a
