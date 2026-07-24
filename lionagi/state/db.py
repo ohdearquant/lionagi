@@ -901,18 +901,26 @@ class StateDB:
             cols = [r["name"] for r in cols_rows]
         col_list = ", ".join(cols)
 
+        # sessions is now an FK source with references that may not exist yet
+        # in a minimal legacy DB (messages, invocations) -- same complication
+        # documented at ``_drop_legacy_invocations_status_check``, so this
+        # rebuild uses the same raw-driver-autocommit-pragma technique rather
+        # than a plain ``engine.begin()`` transaction: SQLite treats
+        # `PRAGMA foreign_keys` as a no-op inside a pending transaction, and
+        # `engine.begin()` opens its transaction before our first statement
+        # runs, so the OFF pragma below would silently never take effect
+        # through a normal SQLAlchemy connection -- verified: the INSERT ...
+        # SELECT step then fails with "no such table: invocations" because
+        # enforcement stayed on while the FK's target table didn't exist yet.
         async def _rebuild() -> None:
-            async with self._engine.begin() as conn:
-                await conn.execute(text("PRAGMA foreign_keys = OFF"))
+            async with self._engine.connect() as conn:
+                driver = (await conn.get_raw_connection()).driver_connection
+                await driver.execute("PRAGMA foreign_keys = OFF")
                 try:
-                    # Create without FK references: the referenced tables (messages,
-                    # invocations) may not exist yet in a minimal legacy DB.
-                    # metadata.create_all() runs AFTER this rebuild and will not
-                    # re-create sessions (table already exists after rename).
-                    # FK enforcement relies on the PRAGMA which is already set up
-                    # by make_engine and applies to all DML after schema init.
-                    await conn.execute(
-                        text(
+                    await driver.commit()
+                    await driver.execute("BEGIN IMMEDIATE")
+                    try:
+                        await driver.execute(
                             """
                             CREATE TABLE sessions_new (
                               id              TEXT    PRIMARY KEY,
@@ -921,9 +929,9 @@ class StateDB:
                               node_metadata   JSON,
                               name            TEXT,
                               user            TEXT,
-                              progression_id  TEXT    NOT NULL,
-                              first_msg_id    TEXT,
-                              last_msg_id     TEXT,
+                              progression_id  TEXT    NOT NULL REFERENCES progressions(id),
+                              first_msg_id    TEXT    REFERENCES messages(id),
+                              last_msg_id     TEXT    REFERENCES messages(id),
                               updated_at      REAL    NOT NULL,
                               playbook_name   TEXT,
                               agent_name      TEXT,
@@ -944,7 +952,7 @@ class StateDB:
                               ended_at        REAL,
                               last_message_at REAL,
                               current_phase   TEXT,
-                              invocation_id   TEXT,
+                              invocation_id   TEXT    REFERENCES invocations(id),
                               model           TEXT,
                               provider        TEXT,
                               effort          TEXT,
@@ -964,26 +972,32 @@ class StateDB:
                             )
                             """
                         )
-                    )
-                    select_cols = []
-                    for c in cols:
-                        if c == "updated_at":
-                            select_cols.append(
-                                "COALESCE(updated_at, created_at, strftime('%s','now')) AS updated_at"
-                            )
-                        else:
-                            select_cols.append(c)
-                    select_list = ", ".join(select_cols)
-                    insert_sql = (
-                        f"INSERT INTO sessions_new ({col_list}) SELECT {select_list} FROM sessions"  # noqa: S608
-                    )
-                    await conn.execute(text(insert_sql))
-                    await conn.execute(text("DROP TABLE sessions"))
-                    await conn.execute(text("ALTER TABLE sessions_new RENAME TO sessions"))
-                    for idx_sql in index_sqls:
-                        await conn.execute(text(idx_sql))
+                        select_cols = []
+                        for c in cols:
+                            if c == "updated_at":
+                                select_cols.append(
+                                    "COALESCE(updated_at, created_at, strftime('%s','now')) "
+                                    "AS updated_at"
+                                )
+                            else:
+                                select_cols.append(c)
+                        select_list = ", ".join(select_cols)
+                        insert_sql = (
+                            f"INSERT INTO sessions_new ({col_list}) "  # noqa: S608
+                            f"SELECT {select_list} FROM sessions"
+                        )
+                        await driver.execute(insert_sql)
+                        await driver.execute("DROP TABLE sessions")
+                        await driver.execute("ALTER TABLE sessions_new RENAME TO sessions")
+                        for idx_sql in index_sqls:
+                            await driver.execute(idx_sql)
+                        await driver.commit()
+                    except BaseException:
+                        await driver.rollback()
+                        raise
                 finally:
-                    await conn.execute(text("PRAGMA foreign_keys = ON"))
+                    await driver.execute("PRAGMA foreign_keys = ON")
+                    await driver.commit()
 
         await self._rebuild_check_constraint(
             "sessions",
