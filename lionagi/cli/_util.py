@@ -90,21 +90,45 @@ _TABLE_TO_ENTITY_TYPE = {
 }
 
 
+class AmbiguousIdError(ValueError):
+    """A short id prefix matched more than one row in a single table."""
+
+    def __init__(self, table: str, prefix: str, count: int):
+        self.table = table
+        self.prefix = prefix
+        self.count = count
+        super().__init__(
+            f"id prefix {prefix!r} is ambiguous — matches {count} rows in {table}; use a longer id"
+        )
+
+
+async def fetch_one_by_id_or_prefix(db: Any, table: str, id_or_short: str) -> dict[str, Any] | None:
+    """Exact-id fetch for full (36+ char) ids; prefix (LIKE) fetch otherwise.
+
+    Raises ``AmbiguousIdError`` when a short prefix matches more than one row
+    in *table*, rather than silently picking whichever row the query planner
+    happens to return first.
+    """
+    id_or_short = id_or_short.strip()
+    if len(id_or_short) >= 36:
+        return await db.fetch_one(
+            f"SELECT * FROM {table} WHERE id = ?",  # noqa: S608
+            (id_or_short,),
+        )
+    rows = await db.fetch_all(
+        f"SELECT * FROM {table} WHERE id LIKE ? ORDER BY id",  # noqa: S608
+        (id_or_short + "%",),
+    )
+    if len(rows) > 1:
+        raise AmbiguousIdError(table, id_or_short, len(rows))
+    return rows[0] if rows else None
+
+
 async def resolve_entity(db: Any, id_or_short: str) -> tuple[str, str, dict[str, Any]] | None:
     id_or_short = id_or_short.strip()
-    is_prefix = len(id_or_short) < 36
 
     for table in _SEARCH_ORDER:
-        if is_prefix:
-            row = await db.fetch_one(
-                f"SELECT * FROM {table} WHERE id LIKE ?",  # noqa: S608
-                (id_or_short + "%",),
-            )
-        else:
-            row = await db.fetch_one(
-                f"SELECT * FROM {table} WHERE id = ?",  # noqa: S608
-                (id_or_short,),
-            )
+        row = await fetch_one_by_id_or_prefix(db, table, id_or_short)
         if row is not None:
             entity_type = _TABLE_TO_ENTITY_TYPE[table]
             return table, entity_type, db._row_to_dict(row)

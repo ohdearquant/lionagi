@@ -306,6 +306,27 @@ async def test_resolve_agent_target_prefix_match(temp_db_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_resolve_agent_target_raises_on_ambiguous_prefix(temp_db_path: Path):
+    """Two sessions sharing a short id prefix must not silently resolve to
+    whichever row the query planner returns first."""
+    from lionagi.cli._util import AmbiguousIdError
+
+    async with StateDB() as db:
+        pid1 = uuid.uuid4().hex
+        pid2 = uuid.uuid4().hex
+        await db.create_progression(pid1)
+        await db.create_progression(pid2)
+        await db.create_session(
+            {"id": "abc111111111", "progression_id": pid1, "started_at": time.time()}
+        )
+        await db.create_session(
+            {"id": "abc222222222", "progression_id": pid2, "started_at": time.time()}
+        )
+        with pytest.raises(AmbiguousIdError):
+            await _resolve_agent_target(db, "abc", None)
+
+
+@pytest.mark.asyncio
 async def test_resolve_agent_target_falls_back_to_invocation(temp_db_path: Path):
     async with StateDB() as db:
         inv_id = await _make_invocation(db)

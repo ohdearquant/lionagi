@@ -6,16 +6,37 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+import sqlite3
 import uuid
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
 from lionagi._paths import LIONAGI_HOME
 
+logger = logging.getLogger(__name__)
+
 # sqlite busy_timeout (ms) applied to every connection. Tunable so tests that
 # deliberately hold a write lock fail fast instead of waiting the full default.
 _SQLITE_BUSY_TIMEOUT_MS = 5000
+
+# Oldest linked SQLite confirmed to have the WAL-mode crash-recovery fix (a
+# regression introduced in 3.7.9 that could corrupt a WAL-mode database on a
+# power loss or crash during a checkpoint, fixed in 3.7.13). aiosqlite/pysqlite
+# both bind the same C library exposed as sqlite3.sqlite_version_info, so this
+# reflects what's actually linked, not just what Python ships.
+_MIN_WAL_SAFE_SQLITE_VERSION = (3, 7, 13)
+
+
+def _wal_mode_is_safe() -> bool:
+    return sqlite3.sqlite_version_info >= _MIN_WAL_SAFE_SQLITE_VERSION
+
+
+# Set once the first connection on an unsafe SQLite version has logged the
+# downgrade notice, so a pooled engine opening many connections doesn't repeat
+# it on every connect.
+_wal_downgrade_warned = False
 
 
 def _json_serializer(obj):
@@ -111,9 +132,21 @@ def make_engine(url: str, **overrides):
         engine = create_async_engine(url, **kwargs)
 
         def _apply_pragmas(dbapi_conn, _connection_record):
+            global _wal_downgrade_warned
             cursor = dbapi_conn.cursor()
             cursor.execute(f"PRAGMA busy_timeout = {_SQLITE_BUSY_TIMEOUT_MS}")
-            cursor.execute("PRAGMA journal_mode = WAL")
+            if _wal_mode_is_safe():
+                cursor.execute("PRAGMA journal_mode = WAL")
+            elif not _wal_downgrade_warned:
+                _wal_downgrade_warned = True
+                logger.warning(
+                    "Linked SQLite %s is older than %s, which first shipped the fix for a "
+                    "WAL-mode crash-recovery corruption bug — staying on the default "
+                    "journal mode instead of enabling WAL. Upgrade libsqlite3 to restore "
+                    "WAL's concurrent-reader throughput.",
+                    sqlite3.sqlite_version,
+                    ".".join(str(p) for p in _MIN_WAL_SAFE_SQLITE_VERSION),
+                )
             cursor.execute("PRAGMA synchronous = NORMAL")
             cursor.execute("PRAGMA foreign_keys = ON")
             cursor.execute("PRAGMA cache_size = -64000")
