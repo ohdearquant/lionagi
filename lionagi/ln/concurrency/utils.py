@@ -131,19 +131,31 @@ def run_async(coro: Awaitable[T]) -> T:
 
         return _handler
 
+    # Take over a signal only when the previous handler can be given back.
+    # getsignal() reports None for a handler installed outside Python, and
+    # signal.signal(signum, None) raises, so restoring one is impossible:
+    # taking it over would leave this runner's handler installed for the rest
+    # of the process. Abstaining per signal costs the caller's own cancellation
+    # wiring for that signal and keeps whatever was already there working.
+    installed: list[tuple[int, Any]] = []
     if in_main_thread:
-        old_sigint_handler = signal.getsignal(signal.SIGINT)
-        old_sigterm_handler = signal.getsignal(signal.SIGTERM)
-        signal.signal(signal.SIGINT, _make_handler(_cancel_requested, old_sigint_handler))
-        signal.signal(signal.SIGTERM, _make_handler(_term_requested, old_sigterm_handler))
+        for signum, requested in (
+            (signal.SIGINT, _cancel_requested),
+            (signal.SIGTERM, _term_requested),
+        ):
+            prior = signal.getsignal(signum)
+            if prior is None:
+                continue
+            signal.signal(signum, _make_handler(requested, prior))
+            installed.append((signum, prior))
 
     thread.start()
     try:
         thread.join()
     finally:
-        if in_main_thread:
-            signal.signal(signal.SIGINT, old_sigint_handler)
-            signal.signal(signal.SIGTERM, old_sigterm_handler)
+        # Restore only what was installed above.
+        for signum, prior in installed:
+            signal.signal(signum, prior)
 
     if _cancel_requested.is_set():
         raise KeyboardInterrupt
