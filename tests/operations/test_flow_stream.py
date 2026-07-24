@@ -105,6 +105,40 @@ async def test_early_break_does_not_hang():
     assert seen == 1
 
 
+def test_stream_runs_its_driver_under_trio():
+    """Regression: execute_stream's driver must actually run on every anyio
+    backend. It used to schedule itself with asyncio.ensure_future, which
+    silently never runs under Trio (no ambient asyncio loop to post onto),
+    so the stream produced no events and callers hung until their own
+    timeout fired.
+
+    Uses a bare `anyio.run(..., backend="trio")` rather than
+    `@pytest.mark.anyio` — this repo's `asyncio_mode = "auto"` pytest-asyncio
+    setting hijacks any `async def` test regardless of markers, so a
+    `[trio]`-parametrized anyio test still silently executes on asyncio.
+    Only a synchronous test driving its own `anyio.run` is guaranteed to
+    actually exercise the Trio backend.
+    """
+
+    async def quick(**kw):
+        return "done"
+
+    async def _body():
+        session = _session(quick=quick)
+        g = Graph()
+        g.add_node(create_operation("quick", parameters={}))
+
+        events = []
+        with anyio.fail_after(2):
+            async for ev in session.flow_stream(g):
+                events.append(ev)
+
+        assert len(events) == 1
+        assert events[0].result == "done"
+
+    anyio.run(_body, backend="trio")
+
+
 @pytest.mark.asyncio
 async def test_dependent_op_streams_after_predecessor():
     order = []
