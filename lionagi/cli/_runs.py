@@ -1018,7 +1018,26 @@ async def _reopen_session_for_resume(db, session_id: str, existing_session: dict
             "first, so this leg will close without emitting a terminal notice",
             session_id,
         )
-    return applied
+        return False
+
+    # Liveness is judged from the process markers on the row, and until now a
+    # reopened session carried the markers of the leg that already exited. A
+    # terminal session is never checked for liveness, so those markers were
+    # harmless while they were stale; a running one is, so leaving them would
+    # describe this live leg by a dead process and invite the phantom reaper to
+    # take a working session to failed. Written after the reopen wins, never
+    # before: on a lost race the row belongs to another leg, and stamping our
+    # markers on it would make that leg's liveness answer for our process.
+    from lionagi.cli.kill import current_pid_markers
+
+    node_metadata = existing_session.get("node_metadata") or {}
+    if isinstance(node_metadata, str):
+        node_metadata = json.loads(node_metadata)
+    await db.update_session(
+        session_id,
+        node_metadata=json.dumps({**node_metadata, **current_pid_markers()}),
+    )
+    return True
 
 
 async def setup_agent_persist(

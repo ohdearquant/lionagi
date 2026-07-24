@@ -16,6 +16,8 @@ it is pinned here separately from the notice it enables.
 
 from __future__ import annotations
 
+import json
+import os
 import uuid
 from pathlib import Path
 
@@ -108,13 +110,19 @@ async def test_the_close_after_a_reopen_is_a_real_change(temp_db_path):
     """The payoff. Closing a session that was never reopened writes the same
     status it already held, which is not a change, so no terminal event is
     emitted and nothing downstream hears the leg finish."""
-    emitted: list[str] = []
+    emitted: list = []
     DEFAULT_TERMINAL_CALLBACKS.register(
-        "test-observer", lambda env: emitted.append(env.entity.id), kinds=["session"]
+        "test-observer", lambda env: emitted.append(env), kinds=["session"]
     )
     try:
         async with StateDB() as db:
             sid = await _finished_session(db)
+            # The first leg's own close emits. Asserting on the accumulated list
+            # would then pass with the reopen removed, which is the vacuous
+            # version of this test: only what happens AFTER this point is
+            # evidence about the reopen.
+            emitted.clear()
+
             await _reopen_session_for_resume(db, sid, await db.get_session(sid))
 
             await db.update_status(
@@ -126,7 +134,9 @@ async def test_the_close_after_a_reopen_is_a_real_change(temp_db_path):
                 actor=sid,
             )
 
-        assert sid in emitted
+        assert [(e.entity.id, e.previous_status, e.terminal_status) for e in emitted] == [
+            (sid, "running", "completed")
+        ]
     finally:
         DEFAULT_TERMINAL_CALLBACKS.unregister("test-observer")
 
@@ -173,6 +183,57 @@ async def test_a_reopen_leaves_a_record_of_what_did_it(temp_db_path):
         )
 
     assert any(r["action"] == "status_transition_override" for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_reopening_takes_over_the_liveness_markers(temp_db_path):
+    """Liveness is judged from the process markers on the row. A terminal
+    session is never checked for liveness, so markers left by the leg that
+    already exited were harmless; a running one is checked, so keeping them
+    would describe this live leg by a dead process and let the phantom reaper
+    take a working session to failed."""
+    async with StateDB() as db:
+        sid = await _running_session(db)
+        await db.update_session(sid, node_metadata=json.dumps({"pid": 999999, "keep": "me"}))
+        await db.update_status(
+            "session",
+            sid,
+            new_status="completed",
+            reason_code=RunReasons.COMPLETED_OK,
+            source="executor",
+            actor=sid,
+        )
+
+        await _reopen_session_for_resume(db, sid, await db.get_session(sid))
+
+        meta = (await db.get_session(sid))["node_metadata"]
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+
+    assert meta["pid"] == os.getpid()
+    assert meta["keep"] == "me"  # unrelated metadata is merged, not replaced
+
+
+@pytest.mark.asyncio
+async def test_a_lost_reopen_race_does_not_take_over_another_leg_s_markers(temp_db_path):
+    """On a lost race the row belongs to a different leg. Stamping our markers
+    on it would make that leg's liveness answer for our process, which is the
+    same defect one owner over."""
+    async with StateDB() as db:
+        sid = await _running_session(db)
+        await db.update_session(sid, node_metadata=json.dumps({"pid": 999999}))
+        stale = await db.get_session(sid)  # snapshot taken while terminal...
+        stale = {**stale, "status": "completed"}  # ...as this leg believed it to be
+
+        # The row is actually running (another leg owns it), so the guarded
+        # reopen finds nothing to move.
+        assert await _reopen_session_for_resume(db, sid, stale) is False
+
+        meta = (await db.get_session(sid))["node_metadata"]
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+
+    assert meta["pid"] == 999999
 
 
 @pytest.mark.asyncio
