@@ -181,7 +181,7 @@ inbound references stay valid.
 - [ADR-0066](ADR-0066-li-mcp-v2-verb-surface.md) — `li mcp` v2 verb surface (discrete core
   plus one parser-generated dispatch verb)
 - 0067 — unused (intentional gap)
-- [ADR-0104](ADR-0104-li-kill-play-reaping-and-terminal-notify.md) — `li kill` reaping of
+- [ADR-0104](ADR-0104-li-kill-detached-play-reaping-and-terminal-notify.md) — `li kill` reaping of
   detached-play workers and terminal-notify on kill (numbering exception; see Numbering)
 
 ### scheduling-control-plane (0068-0075)
