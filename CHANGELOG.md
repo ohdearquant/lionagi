@@ -20,6 +20,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- The built-in provider collision filter no longer misses a plugin entry whose endpoint class
+  comes from a helper module. `_reject_builtin_collisions` identified an activation's entries by
+  requiring the class to be defined in the activated provider module, but a provider module may
+  register a class supplied by a helper or generated module. Such an entry carries the same
+  provenance `register` already records while its `__module__` differs, so it stayed registered
+  and silently took over a provider name a built-in serves, with no rejection diagnostic. The
+  filter now identifies activation entries by that recorded provenance alone.
+
+## [0.30.2] - 2026-07-23
+
+### Fixed
+
 - `to_list(..., unique=True)` no longer drops unequal items whose structural hashes collide.
   When the input holds an unhashable value, deduplication falls back to hashing; that fallback
   compared by hash alone, so two unequal mappings with colliding hashes (e.g. `{"x": -1}` and
