@@ -217,6 +217,22 @@ def _terminate_pid(
     if not _pid_alive(pid):
         return "sigterm"
 
+    # Re-check identity before escalating. The check above this function's
+    # SIGTERM ran up to grace_seconds ago, and the whole reason we are here is
+    # that the process did not exit when asked -- which is indistinguishable
+    # from it having exited early and the OS having handed its pid to something
+    # else in the meantime. SIGKILL is not survivable and gives the target no
+    # chance to identify itself, so the one thing this must not do is escalate
+    # onto a stranger. A pid that now belongs to a different process is
+    # reported the same way a mismatch at entry is.
+    if expected_cmd is not None and not _check_pid_identity(
+        pid,
+        expected_cmd,
+        expected_session_id=expected_session_id,
+        expected_create_time=expected_create_time,
+    ):
+        return "identity_mismatch"
+
     try:
         os.kill(pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
