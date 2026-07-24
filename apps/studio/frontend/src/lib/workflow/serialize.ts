@@ -8,7 +8,6 @@ const NODE_KINDS: readonly WorkflowNodeKind[] = [
   "parse",
   "fanout",
   "engine",
-  "gate",
 ];
 
 export interface ParseResult {

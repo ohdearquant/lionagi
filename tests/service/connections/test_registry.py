@@ -233,7 +233,6 @@ class TestConcurrentRegistrationAndRemoval:
         EndpointRegistry._reject_builtin_collisions(
             "rejected-plugin",
             "rejected-plugin:_RejectedPluginEndpoint",
-            _RejectedPluginEndpoint.__module__,
         )
 
         assert entry not in EndpointRegistry._entries
@@ -251,6 +250,31 @@ class TestConcurrentRegistrationAndRemoval:
             pass
 
         assert EndpointRegistry._alias_owners["orphan-alias-f2359"] == "replacement-provider-f2359"
+
+    def test_builtin_collision_rejection_covers_helper_module_registration(self):
+        """A provider module may register an endpoint class that a helper or
+        generated module supplies. The entry carries the activation's
+        provenance but a different ``__module__``, and the built-in must
+        still win."""
+
+        class _HelperSuppliedEndpoint(Endpoint):
+            pass
+
+        _HelperSuppliedEndpoint.__module__ = "helper_plugin._generated_endpoints"
+        EndpointRegistry.register(
+            provider="openai",
+            endpoint="chat",
+            provider_aliases=["orphan-alias-a71c4"],
+        )(_HelperSuppliedEndpoint)
+
+        entry = next(e for e in EndpointRegistry._entries if e.cls is _HelperSuppliedEndpoint)
+        entry.plugin_name = "helper-plugin"
+        entry.plugin_target = "helper_plugin.providers"
+
+        EndpointRegistry._reject_builtin_collisions("helper-plugin", "helper_plugin.providers")
+
+        assert entry not in EndpointRegistry._entries
+        assert "orphan-alias-a71c4" not in EndpointRegistry._alias_owners
 
 
 class TestOptionalDependencyPreflight:

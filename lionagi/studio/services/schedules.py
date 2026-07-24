@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import math
+import sqlite3
 import time
 import uuid
 from pathlib import Path
@@ -13,6 +14,7 @@ from typing import Any
 
 from fastapi import HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
 from lionagi.service.providers import EFFORT_LEVELS as _VALID_EFFORT_LEVELS
 from lionagi.state.db import DEFAULT_DB_PATH, StateDB
@@ -21,6 +23,11 @@ from ..registry import studio_route
 from . import run_view
 
 _log = logging.getLogger(__name__)
+
+
+class NameConflictError(Exception):
+    """Raised when a schedule name already exists."""
+
 
 _PRESERVE_DASHED: frozenset[str] = frozenset({"argument-hint"})
 
@@ -271,6 +278,10 @@ def _validate_flow_yaml_spec(yaml_text: str) -> str | None:
     if not isinstance(data, dict):
         return f"flow_yaml spec must be a YAML mapping (dict), got {type(data).__name__}"
 
+    for key in data:
+        if not isinstance(key, str):
+            return f"flow_yaml spec keys must be strings, got {type(key).__name__}"
+
     # Normalize hyphenated keys (e.g. max-ops → max_ops) before field checks.
     spec: dict[str, Any] = {}
     for key, value in data.items():
@@ -311,6 +322,41 @@ def _validate_flow_yaml_spec(yaml_text: str) -> str | None:
                 f"spec field 'with_synthesis' must be bool or str (model spec), "
                 f"got {type(val).__name__}"
             )
+
+    for bool_field in ("bare", "dry_run", "show_graph"):
+        if bool_field in spec:
+            val = spec[bool_field]
+            if not isinstance(val, bool):
+                return f"spec field {bool_field!r} must be a bool, got {type(val).__name__}"
+
+    if "prompt" in spec:
+        prompt = spec["prompt"]
+        if not isinstance(prompt, str):
+            return f"spec field 'prompt' must be a string, got {type(prompt).__name__}"
+        if len(prompt) > 8192:
+            return "spec field 'prompt' exceeds maximum length of 8192 characters"
+
+    if "save" in spec:
+        save = spec["save"]
+        if not isinstance(save, str):
+            return f"spec field 'save' must be a string, got {type(save).__name__}"
+
+    for str_field in ("model", "agent", "team_mode", "team_attach", "reactive"):
+        if str_field in spec:
+            val = spec[str_field]
+            if not isinstance(val, str):
+                return f"spec field {str_field!r} must be a string, got {type(val).__name__}"
+
+    if "artifacts" in spec:
+        artifacts = spec["artifacts"]
+        if artifacts is None:
+            return "spec field 'artifacts' must be a dict, got NoneType"
+        try:
+            from lionagi.state.artifact_verifier import validate_artifact_contract
+
+            validate_artifact_contract(artifacts)
+        except Exception as exc:
+            return f"spec field 'artifacts' is invalid: {exc}"
 
     return None
 
@@ -499,7 +545,10 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
         "action_cwd": action_cwd,
     }
     async with StateDB() as db:
-        await db.create_schedule(schedule)
+        try:
+            await db.create_schedule(schedule)
+        except (sqlite3.IntegrityError, SAIntegrityError) as exc:
+            raise NameConflictError(f"Schedule name {data['name']!r} already exists") from exc
     return {"id": schedule_id, "name": data["name"], "created_at": now}
 
 
@@ -812,7 +861,7 @@ async def create_schedule_route(body: CreateScheduleRequest) -> dict[str, Any]:
         return await create_schedule(body.model_dump(exclude_none=True))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
+    except NameConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 

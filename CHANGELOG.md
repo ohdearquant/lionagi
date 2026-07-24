@@ -20,6 +20,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- The built-in provider collision filter no longer misses a plugin entry whose endpoint class
+  comes from a helper module. `_reject_builtin_collisions` identified an activation's entries by
+  requiring the class to be defined in the activated provider module, but a provider module may
+  register a class supplied by a helper or generated module. Such an entry carries the same
+  provenance `register` already records while its `__module__` differs, so it stayed registered
+  and silently took over a provider name a built-in serves, with no rejection diagnostic. The
+  filter now identifies activation entries by that recorded provenance alone.
 - The studio scheduler no longer silently runs a scheduled action in the daemon's own working
   directory when the schedule's configured execution root is unavailable. A subprocess started
   without an explicit `cwd` inherits the daemon's directory, and `_resolve_action_cwd` fell through

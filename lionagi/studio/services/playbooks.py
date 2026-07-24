@@ -71,6 +71,41 @@ def _check_spec_fields(spec: dict[str, Any]) -> str | None:
                 f"got {type(val).__name__}"
             )
 
+    for bool_field in ("bare", "dry_run", "show_graph"):
+        if bool_field in spec:
+            val = spec[bool_field]
+            if not isinstance(val, bool):
+                return f"spec field {bool_field!r} must be a bool, got {type(val).__name__}"
+
+    if "prompt" in spec:
+        prompt = spec["prompt"]
+        if not isinstance(prompt, str):
+            return f"spec field 'prompt' must be a string, got {type(prompt).__name__}"
+        if len(prompt) > 8192:
+            return "spec field 'prompt' exceeds maximum length of 8192 characters"
+
+    if "save" in spec:
+        save = spec["save"]
+        if not isinstance(save, str):
+            return f"spec field 'save' must be a string, got {type(save).__name__}"
+
+    for str_field in ("model", "agent", "team_mode", "team_attach", "reactive"):
+        if str_field in spec:
+            val = spec[str_field]
+            if not isinstance(val, str):
+                return f"spec field {str_field!r} must be a string, got {type(val).__name__}"
+
+    if "artifacts" in spec:
+        artifacts = spec["artifacts"]
+        if artifacts is None:
+            return "spec field 'artifacts' must be a dict, got NoneType"
+        try:
+            from lionagi.state.artifact_verifier import validate_artifact_contract
+
+            validate_artifact_contract(artifacts)
+        except Exception as exc:
+            return f"spec field 'artifacts' is invalid: {exc}"
+
     return None
 
 
@@ -217,6 +252,65 @@ _DECLARATIVE_KEYS: tuple[str, ...] = (
 )
 
 
+def create_playbook(name: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Write a brand-new playbook YAML to disk. Raises FileExistsError if one already exists for *name*, ValueError if the spec fields or step/link references are invalid."""
+    stem = name.removesuffix(".playbook.yaml").removesuffix(".yaml")
+    safe_path_join(_PLAYBOOKS_ROOT, f"{stem}.playbook.yaml")
+    path = _PLAYBOOKS_ROOT / f"{stem}.playbook.yaml"
+    if path.exists():
+        raise FileExistsError(f"Playbook '{stem}' already exists")
+
+    data = data or {}
+    spec_err = _check_spec_fields(_normalize_spec_keys(data))
+    if spec_err:
+        raise ValueError(spec_err)
+
+    content: dict[str, Any] = {"description": data.get("description") or ""}
+
+    for key in _DECLARATIVE_KEYS:
+        value = data.get(key)
+        if value not in (None, ""):
+            content[key] = value
+
+    use = data.get("use")
+    if isinstance(use, dict) and use.get("models"):
+        content["use"] = use
+
+    steps = data.get("steps")
+    if isinstance(steps, dict) and len(steps) > 0:
+        content["steps"] = steps
+
+    links = data.get("links")
+    if isinstance(links, list) and len(links) > 0:
+        content["links"] = links
+
+    validation = validate_playbook(stem, content)
+    if not validation["ok"]:
+        raise ValueError("; ".join(validation["errors"] or ["invalid playbook"]))
+
+    ensure_lionagi_dir(_PLAYBOOKS_ROOT)
+    new_text = yaml.dump(
+        content,
+        Dumper=_PlaybookDumper,
+        sort_keys=False,
+        allow_unicode=True,
+        width=120,
+    )
+    # Exclusive create closes the check-then-write TOCTOU: two concurrent
+    # create requests (FastAPI runs sync routes in a threadpool) could both
+    # pass the path.exists() guard above, and a plain write_text would let the
+    # second silently clobber the first. "x" mode makes the write itself the
+    # exclusion; re-raise with the same clean message the guard uses so the
+    # route's 409 detail never leaks the absolute path.
+    try:
+        with open(path, "x", encoding="utf-8") as f:
+            f.write(new_text)
+    except FileExistsError:
+        raise FileExistsError(f"Playbook '{stem}' already exists") from None
+
+    return get_playbook(stem)
+
+
 def update_playbook(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
     """Write a playbook YAML back to disk with a conservative merge: description overwrites when present, graph keys (use/steps/links) only when non-empty, declarative keys overwrite or clear on None/"", all other disk keys preserved."""
     stem = name.removesuffix(".playbook.yaml").removesuffix(".yaml")
@@ -324,10 +418,17 @@ async def get_playbook_route(name: str) -> dict[str, Any]:
     return pb
 
 
-@studio_route("/playbooks/{name}", method="POST", area="playbooks")
-async def create_playbook(name: str) -> dict[str, Any]:
-    # TODO(lift-backend-writes)
-    raise HTTPException(status_code=501, detail="Not implemented")
+@studio_route("/playbooks/{name}", method="POST", area="playbooks", name="create_playbook")
+async def create_playbook_route(
+    name: str, body: Annotated[dict[str, Any], Body(default_factory=dict)]
+) -> dict[str, Any]:
+    try:
+        created = await anyio.to_thread.run_sync(partial(create_playbook, name, body))
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return created
 
 
 @studio_route("/playbooks/{name}", method="PUT", area="playbooks", name="update_playbook")

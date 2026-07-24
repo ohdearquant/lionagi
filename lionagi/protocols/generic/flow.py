@@ -52,12 +52,29 @@ class Flow(Element, Generic[E, P]):
                 )
         return self
 
+    @staticmethod
+    def _index_progression_names(progressions: Any) -> dict[str, UUID]:
+        """Map each named progression to its id, rejecting duplicate names.
+
+        add_progression enforces name uniqueness; construction and
+        deserialization must enforce the same invariant, otherwise a
+        later-listed progression silently shadows an earlier one in the name
+        index and the earlier one becomes unreachable by name.
+        """
+        names: dict[str, UUID] = {}
+        for progression in progressions:
+            if progression.name:
+                if progression.name in names:
+                    raise ItemExistsError(
+                        f"Progression with name '{progression.name}' already exists."
+                    )
+                names[progression.name] = progression.id
+        return names
+
     def model_post_init(self, __context: Any) -> None:
         """Rebuild _progression_names index from progressions."""
         super().model_post_init(__context)
-        for progression in self.progressions:
-            if progression.name:
-                self._progression_names[progression.name] = progression.id
+        self._progression_names = self._index_progression_names(self.progressions)
 
     # ==================== Serialization ====================
 
@@ -112,11 +129,8 @@ class Flow(Element, Generic[E, P]):
             **data,
         )
         # Rebuild private attrs that model_construct skips
-        flow._progression_names = {}
         flow._lock = threading.RLock()
-        for prog in flow.progressions:
-            if prog.name:
-                flow._progression_names[prog.name] = prog.id
+        flow._progression_names = cls._index_progression_names(flow.progressions)
         return flow
 
     # ==================== Progression Management ====================

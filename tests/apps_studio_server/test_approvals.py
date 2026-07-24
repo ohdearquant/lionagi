@@ -497,6 +497,7 @@ def test_genesis_previous_hash_is_64_zero_chars(tmp_path, monkeypatch):
     expected_content = approvals_mod._compute_content_hash(
         {
             "id": rows[0]["id"],
+            "sequence": rows[0]["sequence"],
             "event_type": rows[0]["event_type"],
             "approval_id": rows[0]["approval_id"],
             "action_kind": rows[0]["action_kind"],
@@ -615,6 +616,7 @@ def test_hmac_stripped_signature_fails_verification(tmp_path, monkeypatch):
 
     forged_payload = {
         "id": row["id"],
+        "sequence": row["sequence"],
         "event_type": row["event_type"],
         "approval_id": row["approval_id"],
         "action_kind": "evil_action",
@@ -642,6 +644,45 @@ def test_hmac_stripped_signature_fails_verification(tmp_path, monkeypatch):
     verdict = _run(approvals_mod.verify_evidence_chain())
     assert verdict["valid"] is False
     assert any("hmac signature missing" in e for e in verdict["errors"])
+
+
+def test_renumbered_sequence_detected_by_verify(tmp_path, monkeypatch):
+    """Renumbering every row by the same offset must break verification.
+
+    Before the fix, the evidence hash/signature did not cover `sequence` and
+    verification never checked sequence contiguity, so shifting every row's
+    sequence by a constant offset (e.g. 1,2 -> 101,102) left the chain
+    reporting valid=True even though the ledger numbering had changed.
+    """
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    _run(_init_db(db_path))
+
+    from lionagi.studio.services import approvals as approvals_mod
+    from lionagi.studio.services._db import open_db
+
+    row = _run(
+        approvals_mod.create_approval(action_kind="launch_playbook", params={"name": "demo"})
+    )
+    _run(approvals_mod.grant_approval(row["id"]))
+
+    rows = _evidence_rows(db_path)
+    assert [r["sequence"] for r in rows] == [1, 2]
+
+    before = _run(approvals_mod.verify_evidence_chain())
+    assert before["valid"] is True
+
+    async def _renumber():
+        async with open_db(str(db_path)) as db:
+            # Shift high->low to avoid a transient UNIQUE collision on sequence.
+            await db.execute("UPDATE approval_evidence SET sequence = 102 WHERE sequence = 2")
+            await db.execute("UPDATE approval_evidence SET sequence = 101 WHERE sequence = 1")
+            await db.commit()
+
+    _run(_renumber())
+
+    after = _run(approvals_mod.verify_evidence_chain())
+    assert after["valid"] is False
 
 
 def test_deny_with_justification_lands_in_evidence(tmp_path, monkeypatch):
@@ -918,3 +959,26 @@ def test_double_expire_read_race_writes_only_one_evidence_row(tmp_path, monkeypa
     verdict = _run(approvals_mod.verify_evidence_chain())
     assert verdict["valid"] is True
     assert verdict["errors"] == []
+
+
+def test_fallback_ensure_table_creates_status_and_session_indexes(tmp_path):
+    """The defensive `_ensure_table` fallback (used by direct module callers
+    outside the studio lifespan, which never applies the full StateDB schema)
+    must create the same partial indexes the canonical schema defines, so the
+    ledger is not left un-indexed on the status/session read paths."""
+    from lionagi.studio.services import approvals as approvals_mod
+    from lionagi.studio.services._db import open_db
+
+    db_path = tmp_path / "bare.db"
+
+    async def _indexes() -> set[str]:
+        async with open_db(str(db_path)) as db:
+            await approvals_mod._ensure_table(db)
+            cur = await db.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'approvals'"
+            )
+            return {r["name"] for r in await cur.fetchall()}
+
+    names = _run(_indexes())
+    assert "idx_approvals_status" in names
+    assert "idx_approvals_session" in names

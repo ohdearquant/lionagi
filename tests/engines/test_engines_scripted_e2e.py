@@ -182,7 +182,9 @@ async def test_hypothesis_repair_recovers_weak_model_e2e(tmp_path, monkeypatch):
         [
             _when("Extract the architectural questions", text="Let me think about this..."),
             _when(
-                "produced no valid emission",
+                # The scripted provider is a CLI worker, so the repair turn carries
+                # the CLI re-prompt, not the API one.
+                "no fenced JSON block",
                 {
                     "question_raised": {
                         "area": "ql",
@@ -228,6 +230,9 @@ async def test_hypothesis_repair_recovers_weak_model_e2e(tmp_path, monkeypatch):
     )
     assert "taste conclusion" in report
     assert any(e["type"] == "emission_repair" for e in notified)
+    # emission_repair only records that a repair was attempted; without this the
+    # test passes even when the repair turn never produced a valid emission.
+    assert not any(e["type"] == "emission_missing" for e in notified)
 
 
 @pytest.mark.asyncio
@@ -327,7 +332,9 @@ async def test_review_repair_recovers_prose_reviewer_e2e(tmp_path, monkeypatch):
         [
             _when("for **correctness** only", text="The cursor logic looks suspicious..."),
             _when(
-                "produced no valid emission",
+                # The scripted provider is a CLI worker, so the repair turn carries
+                # the CLI re-prompt, not the API one.
+                "no fenced JSON block",
                 {
                     "issue_found": {
                         "dimension": "correctness",
@@ -335,6 +342,17 @@ async def test_review_repair_recovers_prose_reviewer_e2e(tmp_path, monkeypatch):
                         "severity": "major",
                         "location": "store.rs:41",
                         "confidence": 0.7,
+                    }
+                },
+            ),
+            # A recovered repair emits a real issue, which spawns the verifier.
+            _when(
+                "Adversarially verify",
+                {
+                    "verify_result": {
+                        "issue": "off-by-one in cursor advance",
+                        "holds": True,
+                        "rationale": "boundary test confirms skip of last row",
                     }
                 },
             ),
@@ -350,6 +368,9 @@ async def test_review_repair_recovers_prose_reviewer_e2e(tmp_path, monkeypatch):
     )
     assert "REQUEST-CHANGES" in out
     assert any(e["type"] == "emission_repair" for e in notified)
+    # emission_repair only records that a repair was attempted; without this the
+    # test passes even when the repair turn never produced a valid emission.
+    assert not any(e["type"] == "emission_missing" for e in notified)
 
 
 @pytest.mark.asyncio
