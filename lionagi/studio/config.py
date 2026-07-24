@@ -1,29 +1,75 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+_logger = logging.getLogger(__name__)
+
+SYSTEM_LOCALTIME_LINK = Path("/etc/localtime")
+
+
+def _zone_name_from_path(path: Path) -> str | None:
+    """Extract an IANA zone name from a path pointing into a zoneinfo tree.
+
+    The tree's directory is conventionally named ``zoneinfo``, but some hosts
+    use a suffixed variant — macOS resolves through ``zoneinfo.default`` — so
+    the directory is matched on its prefix rather than by equality. Matching
+    on equality alone silently yields no zone on those hosts.
+    """
+    parts = path.parts
+    for idx, part in enumerate(parts):
+        if part == "zoneinfo" or part.startswith("zoneinfo."):
+            return "/".join(parts[idx + 1 :]) or None
+    return None
 
 
 def _system_local_tz_name() -> str:
     """Best-effort resolution of the system's IANA timezone name.
 
-    Checks ``$TZ`` first, then falls back to reading the ``/etc/localtime``
-    symlink (the standard way Unix hosts point at their zoneinfo entry).
-    Returns "UTC" if neither resolves — the daemon still runs correctly,
-    just without local-time cron semantics until LIONAGI_SCHEDULER_TZ or the
-    host's timezone is configured.
+    Checks ``$TZ`` first, then reads the ``/etc/localtime`` symlink (the
+    standard way Unix hosts point at their zoneinfo entry). Both the raw link
+    target and the fully resolved path are considered: a host may chain
+    through a second symlink into a directory whose name no longer identifies
+    the zoneinfo tree, and either form alone can be the one that carries the
+    zone name.
+
+    Returns "UTC" if nothing resolves to a loadable zone. The daemon still
+    runs correctly in that case, but cron expressions are interpreted in UTC
+    rather than local time, so the fallback is logged — an unrequested UTC is
+    otherwise indistinguishable from a configured one.
     """
     tz_env = os.environ.get("TZ")
     if tz_env:
         return tz_env
+
+    candidates: list[Path] = []
     try:
-        localtime = Path("/etc/localtime").resolve()
+        candidates.append(Path(os.readlink(SYSTEM_LOCALTIME_LINK)))
     except OSError:
-        return "UTC"
-    parts = localtime.parts
-    if "zoneinfo" in parts:
-        idx = parts.index("zoneinfo")
-        return "/".join(parts[idx + 1 :])
+        pass
+    try:
+        candidates.append(SYSTEM_LOCALTIME_LINK.resolve())
+    except OSError:
+        pass
+
+    for candidate in candidates:
+        name = _zone_name_from_path(candidate)
+        if not name:
+            continue
+        try:
+            ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError):
+            continue
+        return name
+
+    _logger.warning(
+        "Could not determine the system timezone from %s; scheduler times will "
+        "be interpreted as UTC. Set LIONAGI_SCHEDULER_TZ to an IANA zone name "
+        "(for example America/New_York) to choose one explicitly.",
+        SYSTEM_LOCALTIME_LINK,
+    )
     return "UTC"
 
 
