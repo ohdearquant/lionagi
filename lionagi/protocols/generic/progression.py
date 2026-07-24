@@ -38,6 +38,7 @@ class Progression(Element, Ordering[T], Generic[T]):
         description="A human-readable identifier for the progression.",
     )
     _members: set[UUID] = PrivateAttr(default_factory=set)
+    _next_cursor: Any = PrivateAttr(default=None)
 
     def model_post_init(self, __context: Any) -> None:
         super().model_post_init(__context)
@@ -63,7 +64,12 @@ class Progression(Element, Ordering[T], Generic[T]):
     def __contains__(self, item: Any) -> bool:
         try:
             refs = validate_order(item)
-            return all(ref in self._members for ref in refs)
+            # Recomputed from `order` rather than the `_members` cache: `order`
+            # is a public mutable deque, so direct external mutation (e.g.
+            # `progression.order.append(x)`) can desync a cached set without
+            # this method ever knowing.
+            members = set(self.order)
+            return all(ref in members for ref in refs)
         except (ValueError, TypeError):
             return False
 
@@ -114,9 +120,12 @@ class Progression(Element, Ordering[T], Generic[T]):
         return iter(self.order)
 
     def __next__(self) -> UUID:
+        if self._next_cursor is None:
+            self._next_cursor = iter(self.order)
         try:
-            return next(iter(self.order))
+            return next(self._next_cursor)
         except StopIteration:
+            self._next_cursor = None
             raise StopIteration("No more items in the progression") from None
 
     def __list__(self) -> list[UUID]:

@@ -574,6 +574,24 @@ class Branch(Element, Relational):
             message.sender = sender or self.id
             message.recipient = branch_clone.id
 
+        current_progression = self.metadata.get("current_progression")
+        if current_progression is not None:
+            # Messages get new IDs on clone (Message.clone), but each carries
+            # metadata["clone_from"] = str(original_id); use that to map the
+            # source's active-context subset onto the clone's messages so
+            # messages evicted from view are not fed back into the clone.
+            id_map = {
+                clone_from: msg.id
+                for msg in branch_clone.msgs.messages
+                if (clone_from := msg.metadata.get("clone_from")) is not None
+            }
+            cloned_progression = Progression(
+                order=[
+                    id_map[str(old_id)] for old_id in current_progression if str(old_id) in id_map
+                ]
+            )
+            branch_clone.metadata["current_progression"] = cloned_progression
+
         return branch_clone
 
     def _register_tool(self, tools: FuncTool | LionTool, update: bool = False):
