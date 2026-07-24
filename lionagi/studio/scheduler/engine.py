@@ -407,9 +407,12 @@ class SchedulerEngine:
         a directory that still exists on disk, snapshot that path into
         ``action_cwd`` -- the same derivation `create_schedule()` performs
         for newly created schedules. A row with no resolvable
-        ``action_project`` is left with ``action_cwd`` unset; it keeps using
-        the pre-existing ``LIONAGI_SCHEDULER_CWD`` / daemon-cwd-inherit
-        fallback in ``_resolve_action_cwd()`` until it is explicitly updated.
+        ``action_project`` is left with ``action_cwd`` unset. Note that such a
+        row still *carries* an execution root, so it does not fall through to
+        the ownerless ``LIONAGI_SCHEDULER_CWD`` path: ``_resolve_action_cwd()``
+        fails closed for it when the schedule fires, until its project is
+        registered at an existing path or it is given an explicit
+        ``action_cwd``.
 
         Idempotent: only rows where ``action_cwd`` is still ``None`` are
         touched, so re-running this on every daemon startup is a no-op once
