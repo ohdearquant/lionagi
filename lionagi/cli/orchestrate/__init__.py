@@ -540,13 +540,13 @@ def add_orchestrate_subparser(
         "--num-workers",
         type=int,
         default=3,
-        help="Number of workers (default: 3). Ignored if --workers set.",
+        help="Maximum assignments generated (default: 3).",
     )
     fo.add_argument(
         "--workers",
         metavar="M1,M2,...",
         default=None,
-        help="Comma-separated worker model specs (each can include effort).",
+        help="Worker model pool, assigned round-robin (each spec can include effort).",
     )
     fo.add_argument(
         "--pack",
