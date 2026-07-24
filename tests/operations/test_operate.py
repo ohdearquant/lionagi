@@ -555,3 +555,97 @@ async def test_operate_reason_only_constructs_operative_with_reason_field():
         f"'reason' field missing from generated response_format {fmt}; "
         "Operative was not constructed or reason spec was dropped"
     )
+
+
+# ---------------------------------------------------------------------------
+# Default transport selection (middle=None) must key off the effective
+# ChatParam.imodel override, not branch.chat_model.
+# ---------------------------------------------------------------------------
+
+
+class _FakeCliModel:
+    is_cli = True
+
+
+class _FakeApiModel:
+    is_cli = False
+
+
+@pytest.mark.asyncio
+async def test_operate_default_transport_honours_chat_param_imodel_cli_override(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """An API-backed branch with a CLI ChatParam.imodel override must select
+    run_and_collect, not communicate (operate.py:230)."""
+    import lionagi.operations.communicate.communicate as communicate_mod
+    import lionagi.operations.run.run as run_mod
+
+    branch = Branch()
+    assert branch.chat_model.is_cli is False
+
+    calls = []
+
+    async def fake_run_and_collect(b, ins, cctx, pctx, clear, **kw):
+        calls.append("run_and_collect")
+        return "cli-result"
+
+    async def fake_communicate(b, ins, cctx, pctx, clear, **kw):
+        calls.append("communicate")
+        return "api-result"
+
+    monkeypatch.setattr(run_mod, "run_and_collect", fake_run_and_collect)
+    monkeypatch.setattr(communicate_mod, "communicate", fake_communicate)
+
+    chat_param = ChatParam(imodel=_FakeCliModel())
+    result = await operate(
+        branch,
+        "test",
+        chat_param,
+        skip_validation=True,
+        invoke_actions=False,
+    )
+
+    assert calls == ["run_and_collect"]
+    assert result == "cli-result"
+
+
+@pytest.mark.asyncio
+async def test_operate_default_transport_honours_chat_param_imodel_api_override(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A CLI-backed branch with an API ChatParam.imodel override must select
+    communicate, not run_and_collect (operate.py:230)."""
+    import lionagi.operations.communicate.communicate as communicate_mod
+    import lionagi.operations.run.run as run_mod
+
+    branch = Branch()
+    # branch.chat_model must report is_cli=True — its setter only accepts a
+    # real iModel, so flip the property on its concrete class instead of
+    # swapping in a fake object.
+    monkeypatch.setattr(type(branch.chat_model), "is_cli", property(lambda self: True))
+    assert branch.chat_model.is_cli is True
+
+    calls = []
+
+    async def fake_run_and_collect(b, ins, cctx, pctx, clear, **kw):
+        calls.append("run_and_collect")
+        return "cli-result"
+
+    async def fake_communicate(b, ins, cctx, pctx, clear, **kw):
+        calls.append("communicate")
+        return "api-result"
+
+    monkeypatch.setattr(run_mod, "run_and_collect", fake_run_and_collect)
+    monkeypatch.setattr(communicate_mod, "communicate", fake_communicate)
+
+    chat_param = ChatParam(imodel=_FakeApiModel())
+    result = await operate(
+        branch,
+        "test",
+        chat_param,
+        skip_validation=True,
+        invoke_actions=False,
+    )
+
+    assert calls == ["communicate"]
+    assert result == "api-result"

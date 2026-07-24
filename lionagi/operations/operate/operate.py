@@ -228,7 +228,8 @@ async def operate(
             _pctx = _pctx.with_updates(response_format=response_fmt)
 
     if middle is None:
-        if isinstance(_cctx, RunParam) or getattr(branch.chat_model, "is_cli", False):
+        effective_imodel = _cctx.imodel or branch.chat_model
+        if isinstance(_cctx, RunParam) or getattr(effective_imodel, "is_cli", False):
             from ..run.run import run_and_collect
 
             middle = run_and_collect
