@@ -865,8 +865,6 @@ class ReactiveExecutor(DependencyAwareExecutor):
                     await driver_done.wait()
         if driver_errors:
             raise driver_errors[0]
-        if driver_errors:
-            raise driver_errors[0]
 
     async def _run_tracked(self, node: Operation) -> None:
         token = _CURRENT_OP.set(node)
