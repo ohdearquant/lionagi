@@ -112,10 +112,17 @@ async def test_resolve_action_cwd_uses_registered_project_path(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_resolve_action_cwd_falls_back_to_env_when_project_unresolved(tmp_path, monkeypatch):
-    """No project match (or none set) but LIONAGI_SCHEDULER_CWD points at a
-    real directory -> that directory is used."""
-    from lionagi.studio.scheduler.engine import _resolve_action_cwd
+async def test_resolve_action_cwd_refuses_env_fallback_when_project_unresolved(
+    tmp_path, monkeypatch
+):
+    """A schedule that names a project which does not resolve carries an
+    explicit execution root, so it fails closed even though
+    LIONAGI_SCHEDULER_CWD names a real directory: that directory is not the
+    root this schedule configured, and running there would substitute it."""
+    from lionagi.studio.scheduler.engine import (
+        SchedulerCwdInheritRefusedError,
+        _resolve_action_cwd,
+    )
 
     fake_get_project = AsyncMock(return_value=None)
     monkeypatch.setattr(
@@ -127,9 +134,11 @@ async def test_resolve_action_cwd_falls_back_to_env_when_project_unresolved(tmp_
     monkeypatch.setenv("LIONAGI_SCHEDULER_CWD", str(env_dir))
 
     schedule = {"id": "sched-2", "action_project": "unknown-project"}
-    result = await _resolve_action_cwd(schedule)
+    with pytest.raises(SchedulerCwdInheritRefusedError) as excinfo:
+        await _resolve_action_cwd(schedule)
 
-    assert result == str(env_dir)
+    assert excinfo.value.configured_root == "unknown-project"
+    assert str(env_dir) not in str(excinfo.value)
 
 
 @pytest.mark.asyncio
@@ -226,13 +235,18 @@ async def test_resolve_action_cwd_stale_project_path_logs_specific_warning(monke
 
 
 @pytest.mark.asyncio
-async def test_resolve_action_cwd_stale_project_path_overridden_by_env_fallback(
+async def test_resolve_action_cwd_stale_project_path_refuses_despite_env_fallback(
     monkeypatch, tmp_path
 ):
-    """A stale project path is not reported as the failure attribution when
-    LIONAGI_SCHEDULER_CWD resolves a usable directory anyway -- the run isn't
-    actually at risk of the missing-cwd failure mode in that case."""
-    from lionagi.studio.scheduler.engine import _resolve_action_cwd
+    """A registered-but-stale project path still fails closed when
+    LIONAGI_SCHEDULER_CWD names a usable directory. The env directory does not
+    rescue the run: it is a different directory than the one the schedule
+    configured, and spawning there succeeds silently rather than failing, which
+    is the substitution this refusal exists to prevent."""
+    from lionagi.studio.scheduler.engine import (
+        SchedulerCwdInheritRefusedError,
+        _resolve_action_cwd,
+    )
 
     fake_get_project = AsyncMock(
         return_value={"name": "stale", "path": "/no/such/directory/at/all", "source": "studio"}
@@ -240,14 +254,30 @@ async def test_resolve_action_cwd_stale_project_path_overridden_by_env_fallback(
     monkeypatch.setattr(
         "lionagi.studio.services.projects.get_project", fake_get_project, raising=False
     )
-    env_dir = tmp_path / "env-saves-the-day"
+    env_dir = tmp_path / "env-does-not-save-the-day"
     env_dir.mkdir()
     monkeypatch.setenv("LIONAGI_SCHEDULER_CWD", str(env_dir))
 
     schedule = {"id": "sched-7", "action_project": "stale"}
-    result = await _resolve_action_cwd(schedule)
+    with pytest.raises(SchedulerCwdInheritRefusedError) as excinfo:
+        await _resolve_action_cwd(schedule)
 
-    assert result == str(env_dir)
+    assert excinfo.value.schedule_id == "sched-7"
+
+
+@pytest.mark.asyncio
+async def test_resolve_action_cwd_env_fallback_still_serves_ownerless_rows(monkeypatch, tmp_path):
+    """The refusal must not swallow the env fallback for pre-migration rows:
+    with no execution root configured at all there is nothing to substitute,
+    so an operator-set directory is still honored."""
+    from lionagi.studio.scheduler.engine import _resolve_action_cwd
+
+    env_dir = tmp_path / "ownerless-env"
+    env_dir.mkdir()
+    monkeypatch.setenv("LIONAGI_SCHEDULER_CWD", str(env_dir))
+
+    schedule = {"id": "sched-ownerless", "action_cwd": None, "action_project": None}
+    assert await _resolve_action_cwd(schedule) == str(env_dir)
 
 
 # ---------------------------------------------------------------------------
