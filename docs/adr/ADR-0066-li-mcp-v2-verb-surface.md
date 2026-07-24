@@ -132,7 +132,13 @@ therefore cannot have one static schema:
 2. Help naming the playbook resolves it, performs the same injection the CLI performs, and
    returns the resulting schema plus a fingerprint of the resolved playbook.
 3. Execution repeats the resolution and validates against the playbook as it is *then*. A
-   fingerprint that changed between discovery and execution is reported, not ignored.
+   fingerprint that changed between discovery and execution is surfaced **in the result the
+   caller receives**, not written to a log the caller never reads.
+
+That last point carries more weight than its size suggests. The failure it prevents is an
+artifact on disk changing after the step that validated it, leaving the executor unable to
+tell that what it ran is not what was checked. A caller that validated against one version
+of a playbook and executed against another must be told so where it will actually see it.
 
 A static union over every installed playbook is rejected: it is stale the moment a playbook
 is edited, and it reintroduces exactly the schema-size problem D2 exists to prevent.
