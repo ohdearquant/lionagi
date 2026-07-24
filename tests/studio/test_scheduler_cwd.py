@@ -997,3 +997,40 @@ async def test_refusal_names_an_empty_execution_root_as_empty_not_as_the_project
         await _resolve_action_cwd(schedule)
 
     assert excinfo.value.configured_root == ""
+
+
+# ---------------------------------------------------------------------------
+# declarative manifest path: relative in, absolute out
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("raw", [".", "sub", "../", "sub/..", "./sub"])
+def test_manifest_paths_always_resolve_to_an_absolute_root(tmp_path, raw):
+    """The declarative path is the one place a relative execution root is
+    legitimate: in a manifest it means "relative to this manifest", a location
+    that exists, rather than "relative to wherever the daemon started". It is
+    therefore converted here instead of being refused, and what reaches storage
+    is already absolute. This pins that conversion, because the site writes
+    action_cwd without consulting the usability predicate."""
+    from lionagi.studio.services.schedule_declaration import _resolve_path
+
+    (tmp_path / "sub").mkdir(exist_ok=True)
+
+    resolved = _resolve_path(raw, tmp_path)
+
+    assert resolved.is_absolute()
+
+
+def test_manifest_paths_are_absolute_even_when_the_manifest_dir_is_relative(tmp_path, monkeypatch):
+    """``Path.resolve()`` carries the guarantee, so it holds for a relative
+    manifest_dir too."""
+    from pathlib import Path
+
+    from lionagi.studio.services.schedule_declaration import _resolve_path
+
+    (tmp_path / "sub").mkdir(exist_ok=True)
+    monkeypatch.chdir(tmp_path)
+
+    resolved = _resolve_path("sub", Path("."))
+
+    assert resolved.is_absolute()
