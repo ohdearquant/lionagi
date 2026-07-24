@@ -121,34 +121,34 @@ def to_list(
     processed = _process_list(initial_list, flatten=flatten, dropna=dropna, skip_types=skip_types)
 
     if unique:
-        seen = set()
-        out = []
-        use_hash_fallback = False
+        seen: set = set()
+        unhashable_buckets: dict[Any, list] = {}
+        out: list = []
         for i in processed:
             try:
-                if not use_hash_fallback and i not in seen:
+                if i not in seen:
                     seen.add(i)
                     out.append(i)
             except TypeError:
-                if not use_hash_fallback:
-                    # Restart with hash-based deduplication
-                    use_hash_fallback = True
-                    seen = set()
-                    out = []
-                    for j in processed:
-                        try:
-                            hash_value = hash(j)
-                        except TypeError:
-                            if isinstance(j, _MAP_LIKE):
-                                hash_value = hash_dict(j)
-                            else:
-                                raise ValueError(
-                                    "Unhashable type encountered in list unique value processing."
-                                ) from None
-                        if hash_value not in seen:
-                            seen.add(hash_value)
-                            out.append(j)
-                    break
+                # Unhashable item (e.g. a dict): bucket by structural hash, then
+                # confirm identity-or-equality within the bucket. This mirrors the
+                # identity-first check that set membership gives the fast path, so a
+                # repeated same instance is still a duplicate while two unequal items
+                # whose structural hashes collide are both kept. Hashable items stay
+                # on the native set above rather than rehashing every element.
+                if isinstance(i, _MAP_LIKE):
+                    hash_value = hash_dict(i)
+                else:
+                    raise ValueError(
+                        "Unhashable type encountered in list unique value processing."
+                    ) from None
+                bucket = unhashable_buckets.get(hash_value)
+                if bucket is None:
+                    unhashable_buckets[hash_value] = [i]
+                    out.append(i)
+                elif not any(existing is i or existing == i for existing in bucket):
+                    bucket.append(i)
+                    out.append(i)
         return out
 
     return processed

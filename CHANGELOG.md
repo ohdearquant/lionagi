@@ -6,6 +6,59 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.30.2] - 2026-07-23
+
+### Fixed
+
+- `to_list(..., unique=True)` no longer drops unequal items whose structural hashes collide.
+  When the input holds an unhashable value, deduplication falls back to hashing; that fallback
+  compared by hash alone, so two unequal mappings with colliding hashes (e.g. `{"x": -1}` and
+  `{"x": -2}`, since `hash(-1) == hash(-2)`) were treated as duplicates and the second was lost.
+  Hashable items now stay on the native set, and only genuinely unhashable values are bucketed by
+  structural hash and confirmed by identity-or-equality, so a collision keeps both items while a
+  repeated same instance (such as `NaN`, which is unequal to itself) still collapses to one.
+
+- `lcall` / `alcall` no longer ignore input transforms when `flatten`/`dropna` are unset.
+  `input_use_values` now extracts a mapping's values, and `input_unique` without flatten raises the
+  documented `unique=True requires flatten=True` instead of being silently dropped. The
+  no-transform path is unchanged, so ordinary calls behave exactly as before.
+
+- `aterminate_process_group` enforces its grace timeout on the Trio backend. The post-`terminate`
+  wait was bounded with `asyncio.wait_for`, which raises `RuntimeError: no running event loop` on
+  an AnyIO/Trio task before the timeout policy could apply, so a process that ignored `terminate`
+  was never force-killed. The wait now uses an AnyIO cancel scope, preserving the `SIGKILL`
+  escalation on both the asyncio and Trio backends.
+
+- `FieldModel` metadata survives `to_spec()`, and spoofed union types are rejected. Unknown
+  metadata keys and an explicit `None` default are no longer dropped when a field model is
+  converted to a `Spec`, and a type that merely imitates `types.UnionType` (for instance by
+  stringifying to the same repr) no longer passes the base-type validity check that real unions
+  satisfy.
+
+- `OperableModel` captures `FieldModel`s supplied as constructor extra fields. The extra-field
+  validator discarded them before the after-validator could record them in `extra_field_models`,
+  so a model built with field-model extras lost that structure.
+
+- `Session` mail is no longer dropped when a delivery fails. Both the async and sync exchange
+  collect paths cleared in-flight state even when the inbox write raised, losing the message from
+  every recovery surface; a failed delivery now stays recoverable via `drain_pending()`. A cloned
+  branch also re-serializes idempotently, so a branch restored from a clone can be saved again.
+
+- `Flow` and `Pile` no longer mutate caller-owned state or disagree on ordering. `Flow.from_dict`
+  copies caller metadata before popping `lion_class` rather than mutating a reusable snapshot;
+  `Flow.add_item` resolves progressions through the owned pile so an unowned `Progression` raises
+  before any mutation (the operation fails atomically); and `Pile.to_df` serializes in progression
+  order, matching iteration and every other ordered dump path.
+
+- Provider and reader fixes: reading `OllamaConfigs.CHAT.options` no longer eagerly registers the
+  Ollama chat endpoint (the request schema resolves off the decorator-free schema module, restoring
+  the lazy-import contract); `gemini-3.6-flash` resolves to its High-effort model id by default with
+  a version-aware fallback that neither silently downgrades an explicit `3.6` id nor false-upgrades
+  an unrelated number containing `3.6`; an Antigravity CLI turn that reports `SUCCESS` with empty
+  content is now surfaced as an error instead of silence stamped success; and `get_run_file` rejects
+  a file whose bytes are malformed UTF-8 at the read-cap boundary instead of serving it as truncated
+  text.
+
 ## [0.30.1] - 2026-07-21
 
 ### Changed

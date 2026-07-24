@@ -131,10 +131,55 @@ async def test_no_object_flagged_error():
 
 
 @pytest.mark.asyncio
-async def test_empty_success_response_not_error():
+async def test_empty_success_response_is_an_error():
+    """A SUCCESS carrying no content must not read as a successful empty answer.
+
+    Headless print mode cannot prompt for a tool permission, so it auto-denies
+    the call and still reports SUCCESS with an empty response. Passing that
+    through as a completed-but-empty turn fails open: a caller using this engine
+    for a second opinion receives silence stamped success and reads it as assent.
+    """
     session = await _run_objects([_success_obj(response="")])
-    assert session.is_error is False
-    assert session.result == ""
+    assert session.is_error is True
+    assert session.result
+
+
+@pytest.mark.asyncio
+async def test_empty_success_error_names_the_permission_remedy():
+    """The error has to be actionable — the operator needs the remedy, not just a flag."""
+    chunks = await _run_chunks([_success_obj(response="")])
+    error_chunks = [c for c in chunks if c.type == "error"]
+    assert len(error_chunks) == 1
+    content = error_chunks[0].content.lower()
+    assert "no response content" in content
+    assert "permission" in content
+
+
+@pytest.mark.asyncio
+async def test_empty_success_emits_no_text_or_result_chunk():
+    """An empty text chunk downstream is exactly what made this look like a real answer."""
+    chunks = await _run_chunks([_success_obj(response="")])
+    types = [c.type for c in chunks]
+    assert "text" not in types
+    assert "result" not in types
+
+
+@pytest.mark.asyncio
+async def test_error_object_surfaces_its_error_field():
+    """agy reports failures in `error` while leaving `response` empty; a bare
+    status line drops the only text that says what actually went wrong."""
+    chunks = await _run_chunks(
+        [
+            _success_obj(
+                status="ERROR",
+                response="",
+                error='invalid model selection (--model "gemini-3.9-flash")',
+            )
+        ]
+    )
+    error_chunks = [c for c in chunks if c.type == "error"]
+    assert len(error_chunks) == 1
+    assert "invalid model selection" in error_chunks[0].content
 
 
 @pytest.mark.asyncio
@@ -375,6 +420,19 @@ async def test_on_text_loop_closed_error_propagates():
         ("pro", "Gemini 3.1 Pro (High)"),
         ("Gemini 3.5 Flash (High)", "Gemini 3.5 Flash (High)"),  # exact passthrough
         (None, "Gemini 3.5 Flash (Medium)"),
+        # gemini-3.6-flash defaults to High and must never silently resolve to a
+        # 3.5 display name.
+        ("gemini-3.6-flash", "Gemini 3.6 Flash (High)"),
+        ("gemini-3.6", "Gemini 3.6 Flash (High)"),
+        ("gemini-3.6-flash-medium", "Gemini 3.6 Flash (Medium)"),
+        ("Gemini 3.6 Flash (Low)", "Gemini 3.6 Flash (Low)"),  # exact passthrough
+        # A free-form 3.6 name not in the alias table still stays on the 3.6
+        # family via the version-aware heuristic — no downgrade to 3.5.
+        ("gemini-3.6-flash-preview", "Gemini 3.6 Flash (Medium)"),
+        # ...but a number that merely CONTAINS "3.6" is not version 3.6: the
+        # version match is a delimited token, so 13.6 / 3.60 do not upgrade.
+        ("gemini-13.6-flash", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-3.60-flash", "Gemini 3.5 Flash (Medium)"),
     ],
 )
 def test_resolve_agy_model(spec, expected):
@@ -413,6 +471,12 @@ def test_resolve_agy_model(spec, expected):
         # No effort given: family default from _MODEL_ALIASES, unaffected.
         ("gemini-3.5-flash", None, "Gemini 3.5 Flash (Medium)"),
         ("gemini-3.1-pro", None, "Gemini 3.1 Pro (High)"),
+        # gemini-3.6-flash: effort folds onto the 3.6 family (not a 3.5
+        # downgrade); bare default is High per the alias.
+        ("gemini-3.6-flash", "low", "Gemini 3.6 Flash (Low)"),
+        ("gemini-3.6-flash", "high", "Gemini 3.6 Flash (High)"),
+        ("gemini-3.6-flash", "xhigh", "Gemini 3.6 Flash (High)"),
+        ("gemini-3.6-flash", None, "Gemini 3.6 Flash (High)"),
     ],
 )
 def test_resolve_agy_model_effort_folding(spec, effort, expected):
@@ -423,6 +487,22 @@ def test_resolve_agy_model_effort_ignored_for_cross_family_alias():
     """Claude/GPT-OSS routed through agy have no Low/Medium/High tiers —
     effort is accepted but has no suffix to fold into."""
     assert resolve_agy_model("opus", effort="high") == "Claude Opus 4.6 (Thinking)"
+
+
+def test_resolve_agy_model_36_flash_defaults_high_never_downgrades():
+    """gemini-3.6-flash defaults to the High tier: gemini bakes effort into the
+    model id, so a bare 3.6 spec must land on the High variant, and no 3.6 spec
+    may ever silently resolve to a 3.5 name."""
+    assert resolve_agy_model("gemini-3.6-flash") == "Gemini 3.6 Flash (High)"
+    # every 3.6 form stays on the 3.6 family, aliased or free-form
+    for spec in ("gemini-3.6-flash", "gemini-3.6", "gemini-3.6-flash-preview"):
+        got = resolve_agy_model(spec)
+        assert got.startswith("Gemini 3.6 Flash"), (spec, got)
+    # explicit effort folds onto the 3.6 family, not a 3.5 downgrade
+    assert resolve_agy_model("gemini-3.6-flash", effort="low") == "Gemini 3.6 Flash (Low)"
+    # a number that merely contains "3.6" is NOT version 3.6 — no false upgrade
+    for spec in ("gemini-13.6-flash", "gemini-3.60-flash"):
+        assert not resolve_agy_model(spec).startswith("Gemini 3.6 Flash"), spec
 
 
 # ---------------------------------------------------------------------------
@@ -439,6 +519,9 @@ def test_resolve_agy_model_effort_ignored_for_cross_family_alias():
         ("Gemini 3.1 Pro (Low)", "high", "Gemini 3.1 Pro (High)"),
         # medium clamps to High for the Pro family, same as fresh resolution.
         ("Gemini 3.1 Pro (Low)", "medium", "Gemini 3.1 Pro (High)"),
+        # reapply on a persisted 3.6 model stays on the 3.6 family.
+        ("Gemini 3.6 Flash (Low)", "high", "Gemini 3.6 Flash (High)"),
+        ("Gemini 3.6 Flash (High)", "low", "Gemini 3.6 Flash (Low)"),
     ],
 )
 def test_resolve_agy_model_reapply_effort_overrides_persisted_suffix(spec, effort, expected):

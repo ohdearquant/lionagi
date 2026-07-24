@@ -12,7 +12,7 @@ class OllamaConfigs(ProviderConfig, Enum):
         "chat/completions",
         ["chat"],
         EndpointType.API,
-        LazyType("lionagi.providers.ollama.chat:OpenAIChatCompletionsRequest"),
+        LazyType("lionagi.providers.openai._chat_schemas:OpenAIChatCompletionsRequest"),
         "http://localhost:11434/v1",
         "none",
     )

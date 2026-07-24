@@ -63,18 +63,20 @@ class OperableModel(HashableModel):
     def _validate_extra_fields(
         cls,
         value: list[FieldModel] | dict[str, FieldModel | FieldInfo],
-    ) -> dict[str, FieldInfo]:
+    ) -> dict[str, FieldModel | FieldInfo]:
+        # Preserve FieldModels here (the `| Any` on the field permits it). The
+        # after-validator below converts them to FieldInfos AND captures the
+        # originals into extra_field_models; converting them up front would leave
+        # that mapping empty and silently drop their validators.
         out = {}
         if isinstance(value, dict):
             for k, v in value.items():
-                if isinstance(v, FieldModel):
-                    out[k] = v.create_field()
-                elif isinstance(v, FieldInfo):
+                if isinstance(v, FieldModel | FieldInfo):
                     out[k] = v
             return out
 
         elif isinstance(value, list) and is_same_dtype(value, FieldModel):
-            return {v.name: v.create_field() for v in value}
+            return {v.name: v for v in value}
 
         raise ValueError("Invalid extra_fields value")
 

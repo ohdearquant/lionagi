@@ -405,3 +405,34 @@ class TestEdgeCases:
         data = [[1, 2], (3, 4), {5, 6}, [7, 8]]
         result = to_list(data, flatten=True, flatten_tuple_set=True)
         assert set(result) == {1, 2, 3, 4, 5, 6, 7, 8}
+
+
+def test_unique_keeps_hash_colliding_unequal_mappings():
+    """A hash collision between unequal mappings is not a duplicate.
+
+    The unique fallback hashes unhashable items; in CPython hash(-1) == hash(-2),
+    so these two mappings collide structurally while being unequal.
+    """
+    result = to_list([{"x": -1}, {"x": -2}, {"x": -1}], flatten=True, unique=True)
+    assert result == [{"x": -1}, {"x": -2}]
+
+
+def test_unique_dedups_same_instance_nan_across_fallback():
+    """A repeated same-instance NaN stays a duplicate once fallback activates.
+
+    NaN is not equal to itself, so set membership relies on the identity shortcut
+    to deduplicate a repeated same object. An intervening unhashable mapping pushes
+    the later NaN through the collision-bucket path, which must apply the same
+    identity check rather than equality alone.
+    """
+    nan = float("nan")
+    result = to_list([nan, {"unhashable": 1}, nan], flatten=True, unique=True)
+    assert result == [nan, {"unhashable": 1}]
+
+
+def test_unique_keeps_distinct_nans_across_fallback():
+    """Two different NaN instances are both kept (neither identical nor equal)."""
+    nan_a, nan_b = float("nan"), float("nan")
+    result = to_list([nan_a, {"unhashable": 1}, nan_b], flatten=True, unique=True)
+    assert result == [nan_a, {"unhashable": 1}, nan_b]
+    assert result[0] is nan_a and result[2] is nan_b

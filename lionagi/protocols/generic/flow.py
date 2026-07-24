@@ -85,7 +85,9 @@ class Flow(Element, Generic[E, P]):
     def from_dict(cls, data: dict) -> Flow:
         """Deserialize from dict; reconstructs Pile fields explicitly (model_validate can't round-trip them)."""
         data = data.copy()
-        metadata = data.pop("metadata", {})
+        # Copy the nested metadata dict: data.copy() is shallow, so popping
+        # lion_class off the original would mutate the caller's snapshot.
+        metadata = dict(data.pop("metadata", None) or {})
         metadata.pop("lion_class", None)
 
         # Coerce scalar fields that model_construct won't validate
@@ -181,11 +183,11 @@ class Flow(Element, Generic[E, P]):
                 else:
                     progs_list = list(progressions)
 
+                # Resolve every reference through the owned progression pile,
+                # including bare Progression instances: appending to an unowned
+                # progression would mutate an ordering the flow does not track.
                 for p in progs_list:
-                    if isinstance(p, Progression):
-                        resolved.append(p)
-                    else:
-                        resolved.append(self.get_progression(p))
+                    resolved.append(self.get_progression(p))
 
             self.items.include(item)
 

@@ -305,3 +305,43 @@ def test_terminate_custom_sig_first():
     with patch.object(proc_mod.os, "killpg") as mock_killpg:
         terminate_process_group(proc, grace=5.0, sig_first=signal.SIGHUP)
         mock_killpg.assert_called_once_with(8888, signal.SIGHUP)
+
+
+@pytest.mark.parametrize("backend", ["asyncio", "trio"])
+def test_aterminate_grace_escalates_to_kill_on_backend(backend):
+    """A process that ignores terminate is SIGKILLed after grace on both backends.
+
+    The grace wait uses an anyio cancel scope; asyncio.wait_for previously raised
+    'no running event loop' on a Trio task before the timeout policy could apply,
+    so the forced-kill escalation never ran.
+    """
+    import anyio
+
+    if backend == "trio":
+        pytest.importorskip("trio")
+
+    class _Proc:
+        def __init__(self):
+            self.pid = -1  # _safe_pgid -> None: no real killpg on a fake pid
+            self.terminated = False
+            self.killed = False
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+        async def wait(self):
+            while not self.killed:
+                await anyio.sleep(0.001)
+            return 0
+
+    proc = _Proc()
+
+    async def _run():
+        await aterminate_process_group(proc, grace=0.01)
+
+    anyio.run(_run, backend=backend)
+    assert proc.terminated is True
+    assert proc.killed is True

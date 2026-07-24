@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, Literal
@@ -66,6 +67,7 @@ __all__ = (
 
 # agy models expose ~1M-token context (verified against `agy models`).
 CONTEXT_WINDOWS: dict[str, int] = {
+    "gemini-3.6-flash": 1_048_576,
     "gemini-3.5-flash": 1_048_576,
     "gemini-3.1-pro": 1_048_576,
     "gemini-3-flash-preview": 1_048_576,
@@ -81,6 +83,9 @@ CONTEXT_WINDOWS: dict[str, int] = {
 # through so agy surfaces a clear error rather than us silently forcing a default.
 _AGY_MODELS: frozenset[str] = frozenset(
     {
+        "Gemini 3.6 Flash (Medium)",
+        "Gemini 3.6 Flash (High)",
+        "Gemini 3.6 Flash (Low)",
         "Gemini 3.5 Flash (Medium)",
         "Gemini 3.5 Flash (High)",
         "Gemini 3.5 Flash (Low)",
@@ -93,6 +98,14 @@ _AGY_MODELS: frozenset[str] = frozenset(
 )
 
 _MODEL_ALIASES: dict[str, str] = {
+    # 3.6 flash: newest flagship. Gemini carries effort as the model-id suffix
+    # (no separate --effort), so a bare id resolves to the strong tier by default
+    # (`gemini-3.6-flash` -> High). Suffixed forms map to their exact tier.
+    "gemini-3.6-flash": "Gemini 3.6 Flash (High)",
+    "gemini-3.6-flash-high": "Gemini 3.6 Flash (High)",
+    "gemini-3.6-flash-medium": "Gemini 3.6 Flash (Medium)",
+    "gemini-3.6-flash-low": "Gemini 3.6 Flash (Low)",
+    "gemini-3.6": "Gemini 3.6 Flash (High)",
     # flash family -> default medium effort
     "gemini-3-flash-preview": "Gemini 3.5 Flash (Medium)",
     "gemini-3-flash": "Gemini 3.5 Flash (Medium)",
@@ -119,6 +132,19 @@ _MODEL_ALIASES: dict[str, str] = {
 }
 
 
+# A delimited 3.6 version token, not a bare substring: matches the "3.6" in
+# "gemini-3.6-flash" but not the "3.6" inside "gemini-13.6-flash" or
+# "gemini-3.60-flash", where a neighbouring digit means it is a different number.
+_GEMINI_36_TOKEN = re.compile(r"(?<!\d)3\.6(?!\d)")
+
+
+def _gemini_flash_family(key: str) -> str:
+    """The flash-family display prefix for a free-form model key. Version-aware:
+    an explicit 3.6 id never silently downgrades to 3.5, and an unrelated number
+    that merely contains "3.6" (13.6, 3.60) never falsely upgrades to 3.6."""
+    return "Gemini 3.6 Flash" if _GEMINI_36_TOKEN.search(key) else "Gemini 3.5 Flash"
+
+
 def resolve_agy_model(
     model: str | None,
     effort: str | None = None,
@@ -131,6 +157,8 @@ def resolve_agy_model(
         model = "gemini-3.5-flash"
     if model in _AGY_MODELS:
         if reapply_effort and effort is not None:
+            if model.startswith("Gemini 3.6 Flash"):
+                return f"Gemini 3.6 Flash ({_clamp_gemini_effort(effort, False)})"
             if model.startswith("Gemini 3.5 Flash"):
                 return f"Gemini 3.5 Flash ({_clamp_gemini_effort(effort, False)})"
             if model.startswith("Gemini 3.1 Pro"):
@@ -141,6 +169,8 @@ def resolve_agy_model(
         target = _MODEL_ALIASES[key]
         if effort is None:
             return target
+        if target.startswith("Gemini 3.6 Flash"):
+            return f"Gemini 3.6 Flash ({_clamp_gemini_effort(effort, False)})"
         if target.startswith("Gemini 3.5 Flash"):
             return f"Gemini 3.5 Flash ({_clamp_gemini_effort(effort, False)})"
         if target.startswith("Gemini 3.1 Pro"):
@@ -151,7 +181,7 @@ def resolve_agy_model(
     # from it so --effort works on forward-compatible model names.
     is_pro = "pro" in key
     if effort is not None and (is_pro or "flash" in key or "gemini" in key):
-        family = "Gemini 3.1 Pro" if is_pro else "Gemini 3.5 Flash"
+        family = "Gemini 3.1 Pro" if is_pro else _gemini_flash_family(key)
         return f"{family} ({_clamp_gemini_effort(effort, is_pro)})"
 
     # Heuristic fallback: derive (family, effort) from a free-form string so
@@ -165,7 +195,7 @@ def resolve_agy_model(
     if is_pro:
         return f"Gemini 3.1 Pro ({'High' if heuristic == 'Medium' else heuristic})"
     if "flash" in key or "gemini" in key:
-        return f"Gemini 3.5 Flash ({heuristic})"
+        return f"{_gemini_flash_family(key)} ({heuristic})"
 
     # Not recognizable — pass through; agy rejects an invalid name clearly.
     return model
@@ -194,9 +224,10 @@ class GeminiCodeRequest(BaseModel):
         default="gemini-3.5-flash",
         description=(
             "Model spec; mapped onto an `agy --model` name by resolve_agy_model. "
-            "Accepts gemini-3.5-flash, gemini-3.1-pro, legacy Gemini CLI names "
-            "(gemini-3-flash-preview, gemini-3-pro-preview), bare family names "
-            "(flash/pro), or an exact agy display name."
+            "Accepts gemini-3.6-flash (defaults to the High tier), gemini-3.5-flash, "
+            "gemini-3.1-pro, legacy Gemini CLI names (gemini-3-flash-preview, "
+            "gemini-3-pro-preview), bare family names (flash/pro), or an exact agy "
+            "display name."
         ),
     )
     yolo: bool = Field(
@@ -381,6 +412,7 @@ async def stream_gemini_cli(
                 saw_object = True
                 status = str(obj.get("status", "")).upper()
                 response = (obj.get("response") or "").strip()
+                cli_error = str(obj.get("error") or "").strip()
 
                 session.session_id = obj.get("conversation_id") or session.session_id
                 session.model = resolve_agy_model(request.model)
@@ -391,6 +423,16 @@ async def stream_gemini_cli(
                 if duration is not None:
                     session.duration_ms = int(float(duration) * 1000)
                 session.is_error = status not in ("SUCCESS", "")
+
+                # A success carrying no content cannot be distinguished from a
+                # turn whose tool calls were all denied: headless print mode has
+                # no way to prompt for a tool permission, so it auto-denies and
+                # still reports SUCCESS. Passing that through as an empty answer
+                # fails open, which is the worst direction here — a caller using
+                # this engine for verification reads silence as assent.
+                empty_success = not session.is_error and not response
+                if empty_success:
+                    session.is_error = True
 
                 # Session id must be captured before the error branch — a failed
                 # turn can still report a live conversation id to resume into.
@@ -403,10 +445,26 @@ async def stream_gemini_cli(
                     yield sys_sc
 
                 if session.is_error:
-                    # Error chunk leads with status, not delivered content — a degraded
-                    # termination after a complete response would otherwise impersonate it.
-                    detail = f": {response[:500]}" if response else ""
-                    msg = f"agy returned status={status or 'UNKNOWN'}{detail}"
+                    if empty_success:
+                        msg = (
+                            "agy reported status=SUCCESS with no response content. "
+                            "A tool call was most likely auto-denied, because headless "
+                            "print mode cannot prompt for a tool permission. Re-run with "
+                            "yolo to auto-approve tools, or add an allow-rule under "
+                            "permissions.allow in the agy settings."
+                        )
+                        if cli_error:
+                            msg = f"{msg} CLI error: {cli_error}"
+                        session.result = msg
+                    else:
+                        # Error chunk leads with status, not delivered content — a degraded
+                        # termination after a complete response would otherwise impersonate it.
+                        # `error` is preferred over `response`: agy reports the cause there
+                        # and commonly leaves `response` empty on a failed turn.
+                        detail = cli_error or response[:500]
+                        msg = f"agy returned status={status or 'UNKNOWN'}"
+                        if detail:
+                            msg = f"{msg}: {detail}"
                     sc = StreamChunk(type="error", content=msg, is_error=True, metadata=obj)
                     session.chunks.append(sc)
                     yield sc

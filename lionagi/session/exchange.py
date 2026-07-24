@@ -109,16 +109,16 @@ class Exchange(Element):
                     deliveries.append((message.recipient, message))
             self._mark_in_flight(deliveries, increment=True)
         if deliveries:
-            try:
-                await gather(
-                    *[
-                        self._deliver_to(recipient_id, message)
-                        for recipient_id, message in deliveries
-                    ],
-                    return_exceptions=True,
-                )
-            finally:
-                self._mark_in_flight(deliveries, increment=False)
+            # _deliver_to removes each entry from in-flight on a successful
+            # delivery and leaves it in place if the inbox write raises. Do not
+            # unconditionally clear in-flight afterwards: that dropped a failed
+            # delivery from every recovery surface (outbox and items are already
+            # emptied), silently losing the message. Leaving it in-flight keeps
+            # it recoverable via drain_pending().
+            await gather(
+                *[self._deliver_to(recipient_id, message) for recipient_id, message in deliveries],
+                return_exceptions=True,
+            )
 
         unique_messages = {message.id for _, message in deliveries}
         return len(unique_messages)
@@ -223,16 +223,19 @@ class Exchange(Element):
             elif message.recipient is not None and message.recipient in self._owner_index:
                 deliveries.append((message.recipient, message))
 
+        # Track in-flight before delivering (as the async path does) so a raising
+        # inbox write leaves the message recoverable via drain_pending() rather
+        # than dropping it; the outbox and items entries are already gone.
+        self._mark_in_flight(deliveries, increment=True)
         for recipient_id, message in deliveries:
-            recipient_flow = self.get(recipient_id)
-            if recipient_flow is None:
-                continue
-            inbox_name = _inbox_name(message.sender)
-            try:
-                recipient_flow.add_progression(Progression(name=inbox_name))
-            except ItemExistsError:
-                pass
-            recipient_flow.add_item(message, progressions=inbox_name)
+            with self._in_flight_lock:
+                pending = self._in_flight.get(recipient_id, [])
+                if not any(candidate is message for candidate in pending):
+                    continue
+                # Deliver first, then drop from in-flight: if add_item raises the
+                # entry stays in place and remains recoverable.
+                self._deliver_locked(recipient_id, message)
+                self._remove_in_flight_locked(recipient_id, message)
 
         return len({m.id for _, m in deliveries})
 

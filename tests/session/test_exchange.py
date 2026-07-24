@@ -466,3 +466,56 @@ class TestExchangeEdgeCases:
         count = await exchange.collect(owner_id)
 
         assert count == 0
+
+
+class TestExchangeDeliveryFailureRecovery:
+    """A failed inbox delivery must leave the message recoverable, not dropped.
+
+    The outbox and items entries are consumed before delivery, so in-flight is
+    the only recovery surface; a failed delivery must stay there.
+    """
+
+    @staticmethod
+    def _patch_inbox_write_to_fail(monkeypatch):
+        from lionagi.protocols.generic.flow import Flow
+
+        def _boom(self, *args, **kwargs):
+            raise RuntimeError("inbox write failed")
+
+        monkeypatch.setattr(Flow, "add_item", _boom)
+
+    @pytest.mark.anyio
+    async def test_async_collect_retains_message_on_delivery_failure(self, monkeypatch):
+        exchange = Exchange()
+        sender, recipient = uuid4(), uuid4()
+        exchange.register(sender)
+        exchange.register(recipient)
+        exchange.send(sender, recipient, content={"text": "keep me"})
+
+        self._patch_inbox_write_to_fail(monkeypatch)
+        # return_exceptions=True swallows the failure; collect returns normally.
+        await exchange.collect(sender)
+
+        assert exchange.receive(recipient, sender=sender) == []
+        assert exchange._in_flight.get(recipient)  # retained -> recoverable
+
+        monkeypatch.undo()
+        drained = exchange.drain_pending(recipient)
+        assert len(drained) == 1
+
+    def test_sync_collect_retains_message_on_delivery_failure(self, monkeypatch):
+        exchange = Exchange()
+        sender, recipient = uuid4(), uuid4()
+        exchange.register(sender)
+        exchange.register(recipient)
+        exchange.send(sender, recipient, content={"text": "keep me"})
+
+        self._patch_inbox_write_to_fail(monkeypatch)
+        with pytest.raises(RuntimeError):
+            exchange.collect_sync(sender)
+
+        assert exchange._in_flight.get(recipient)  # retained -> recoverable
+
+        monkeypatch.undo()
+        drained = exchange.drain_pending(recipient)
+        assert len(drained) == 1
