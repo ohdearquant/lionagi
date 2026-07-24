@@ -319,10 +319,22 @@ def _find_definition_file(base: Path, name: str) -> Path | None:
             return candidate
 
     # Fast path 2: nested subdir (base/<name>/<name><ext>)
+    subdir = base / name
     for ext in _EXTENSIONS:
-        candidate = base / name / f"{name}{ext}"
+        candidate = subdir / f"{name}{ext}"
         if candidate.exists():
             return candidate
+
+    # Fast path 3: nested subdir whose definition file doesn't share the
+    # directory's name. list_definitions() names such a definition after its
+    # containing directory, so fetching must resolve the same way: fall back
+    # to the file that listing would have picked (same extension priority,
+    # alphabetical tiebreak).
+    if subdir.is_dir():
+        for ext in _EXTENSIONS:
+            matches = sorted(p for p in subdir.iterdir() if p.is_file() and p.name.endswith(ext))
+            if matches:
+                return matches[0]
 
     # Slow path: scan one level of subdirectories with literal candidates —
     # NOT Path.glob() with untrusted input so no metacharacter expansion occurs.
