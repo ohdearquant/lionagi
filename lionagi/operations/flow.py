@@ -145,6 +145,11 @@ class DependencyAwareExecutor:
         # NodeSpawned), retained until each finishes so a weakly referenced
         # task can't disappear before it runs. See _emit_best_effort().
         self._signal_tasks: set[asyncio.Task[Any]] = set()
+        # AnyIO task group open for the duration of execute()/execute_stream(),
+        # used by _emit_best_effort() to schedule signals on any backend
+        # (including Trio, which has no ambient "current loop" to post a
+        # detached task onto). None outside of a running execute*() call.
+        self._tg: Any = None
         # Out-of-band handle for a control poller running alongside this flow
         # to reach pause()/resume()/context/graph; set synchronously before
         # any awaiting so it's available the instant execute() starts.
@@ -175,7 +180,12 @@ class DependencyAwareExecutor:
             for node in nodes:
                 _name = node.metadata.get("reference_id", str(node.id)[:8])
                 self.on_progress(str(node.id), _name, "queued", 0.0)
-        await self._alcall(nodes, self._execute_operation, limiter=limiter)
+        async with create_task_group() as tg:
+            self._tg = tg
+            try:
+                await self._alcall(nodes, self._execute_operation, limiter=limiter)
+            finally:
+                self._tg = None
 
         completed_ops = [
             op_id for op_id in self.results.keys() if op_id not in self.skipped_operations
@@ -277,16 +287,27 @@ class DependencyAwareExecutor:
             logger.warning("flow signal construction failed: %s", e)
             return
 
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return  # no running loop — tests / sync contexts, not a failure
-
         async def _emit() -> None:
             try:
                 await self.session.emit(sig)
             except Exception as e:  # noqa: BLE001
                 logger.warning("flow signal emission failed for %s: %s", type(sig).__name__, e)
+
+        if self._tg is not None:
+            # Backend-agnostic path: an execute()/execute_stream() task
+            # group is open, so schedule directly on it. This is the only
+            # way to fire-and-forget under Trio, which has no ambient loop
+            # to post a detached task onto outside of a task group.
+            try:
+                self._tg.start_soon(_emit)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("flow signal scheduling failed for %s: %s", type(sig).__name__, e)
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no running loop — tests / sync contexts, not a failure
 
         coro = _emit()
         try:
@@ -716,7 +737,6 @@ class ReactiveExecutor(DependencyAwareExecutor):
         self._spawn_count = 0
         self._dropped_spawns: list[dict[str, Any]] = []
         self._running = False
-        self._tg: Any = None
         self._graph_lock = threading.Lock()
         self._seen_reqs: set[int] = set()
         self._spawned_ids: set[Any] = set()
