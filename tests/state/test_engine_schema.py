@@ -141,6 +141,48 @@ def test_make_engine_sqlite_creates_engine():
     asyncio.run(engine.dispose())
 
 
+async def test_make_engine_enables_wal_on_safe_sqlite_version(tmp_path, monkeypatch):
+    import lionagi.state.engine as engine_mod
+
+    monkeypatch.setattr(engine_mod, "_wal_downgrade_warned", False)
+    monkeypatch.setattr(engine_mod.sqlite3, "sqlite_version_info", (3, 46, 0))
+    monkeypatch.setattr(engine_mod.sqlite3, "sqlite_version", "3.46.0")
+
+    db_file = tmp_path / "wal_safe.db"
+    engine = engine_mod.make_engine(f"sqlite+aiosqlite:///{db_file}")
+    try:
+        async with engine.connect() as conn:
+            mode = (await conn.execute(sa.text("PRAGMA journal_mode"))).scalar()
+        assert mode.lower() == "wal"
+    finally:
+        await engine.dispose()
+
+
+async def test_make_engine_skips_wal_on_unsafe_sqlite_version(tmp_path, monkeypatch, caplog):
+    """A linked SQLite older than the WAL-recovery fix must not get WAL —
+    the connection should stay on the default journal mode and log a
+    warning instead of silently exposing the corruption-prone config."""
+    import logging
+
+    import lionagi.state.engine as engine_mod
+
+    monkeypatch.setattr(engine_mod, "_wal_downgrade_warned", False)
+    monkeypatch.setattr(engine_mod.sqlite3, "sqlite_version_info", (3, 7, 9))
+    monkeypatch.setattr(engine_mod.sqlite3, "sqlite_version", "3.7.9")
+
+    db_file = tmp_path / "wal_unsafe.db"
+    with caplog.at_level(logging.WARNING, logger="lionagi.state.engine"):
+        engine = engine_mod.make_engine(f"sqlite+aiosqlite:///{db_file}")
+        try:
+            async with engine.connect() as conn:
+                mode = (await conn.execute(sa.text("PRAGMA journal_mode"))).scalar()
+            assert mode.lower() != "wal"
+        finally:
+            await engine.dispose()
+
+    assert any("WAL-mode crash-recovery" in rec.message for rec in caplog.records)
+
+
 # ── make_readonly_engine ──────────────────────────────────────────────────────
 
 
