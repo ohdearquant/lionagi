@@ -53,8 +53,14 @@ def _svc_validate_identifier(value: str | None, field_name: str) -> None:
 
 def _svc_validate_action_cwd(cwd: str | None) -> None:
     """Service-boundary check: an explicit action_cwd (ADR-0070 delta 1's persisted
-    execution root) must be an existing absolute directory."""
-    if not cwd:
+    execution root) must be an existing absolute directory.
+
+    ``None`` means "no execution root configured" and is allowed. A supplied
+    but empty/whitespace value is rejected rather than persisted: it is neither
+    a usable directory nor a clear, and the scheduler now fails closed on any
+    non-``None`` root it cannot resolve, so an empty root would only ever
+    surface later as a refused run."""
+    if cwd is None:
         return
     p = Path(cwd)
     if not p.is_absolute():

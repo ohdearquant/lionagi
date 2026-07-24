@@ -263,11 +263,11 @@ async def _resolve_action_cwd(schedule: dict) -> str | None:
              directory (and whatever a tool derives from it) for the one the
              schedule asked for. That substitution is refused rather than
              performed.
-           * If the schedule carries no execution root at all (a pre-migration
-             row, ``action_cwd`` never set and no ``action_project``), it
-             returns ``None`` to inherit the daemon's cwd with a loud
-             deprecation warning. Such rows configured no execution root to
-             honor and are expected to be backfilled on daemon restart.
+           * Only if the schedule carries no execution root at all (a
+             pre-migration row: both ``action_cwd`` and ``action_project`` are
+             ``None``) does it return ``None`` to inherit the daemon's cwd,
+             with a loud deprecation warning. Such rows configured no execution
+             root to honor and are expected to be backfilled on daemon restart.
 
     Returns the resolved cwd (str) for tiers 1-3, or ``None`` for the
     ownerless pre-migration fall-through. Raises
@@ -315,9 +315,12 @@ async def _resolve_action_cwd(schedule: dict) -> str | None:
     if env_cwd and Path(env_cwd).is_dir():
         return env_cwd
 
-    if action_cwd or action_project:
-        # The schedule carries an explicit execution root but none of its
-        # configured directories resolved. Inheriting the daemon's cwd would
+    if action_cwd is not None or action_project is not None:
+        # The schedule carries an explicit execution root (any supplied value,
+        # not just a truthy one) but none of its configured directories
+        # resolved. Gate on ``is not None`` rather than truthiness so a
+        # present-but-empty root (``""``) fails closed too instead of slipping
+        # into the ownerless branch below. Inheriting the daemon's cwd would
         # run the action in the daemon's directory instead of the schedule's
         # configured root, so fail closed rather than substitute it.
         raise SchedulerCwdInheritRefusedError(

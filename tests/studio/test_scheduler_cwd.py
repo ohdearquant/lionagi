@@ -358,6 +358,46 @@ async def test_resolve_action_cwd_refuses_when_stale_persisted_root_and_nothing_
 
 
 @pytest.mark.asyncio
+async def test_resolve_action_cwd_refuses_empty_string_action_cwd(monkeypatch):
+    """A present-but-empty action_cwd is an execution root that carries no
+    usable value; it must fail closed, not slip into the ownerless inherit
+    branch. The refusal gate keys on ``is not None``, not truthiness."""
+    from lionagi.studio.scheduler.engine import (
+        SchedulerCwdInheritRefusedError,
+        _resolve_action_cwd,
+    )
+
+    monkeypatch.delenv("LIONAGI_SCHEDULER_CWD", raising=False)
+
+    schedule = {"id": "sched-empty-cwd", "action_cwd": "", "action_project": None}
+    with pytest.raises(SchedulerCwdInheritRefusedError):
+        await _resolve_action_cwd(schedule)
+
+
+@pytest.mark.asyncio
+async def test_resolve_action_cwd_refuses_empty_string_action_project(monkeypatch):
+    """A present-but-empty action_project fails closed for the same reason: a
+    supplied (non-None) execution-root field that resolves to nothing must not
+    inherit the daemon's cwd. get_project is never consulted for an empty id."""
+    from lionagi.studio.scheduler.engine import (
+        SchedulerCwdInheritRefusedError,
+        _resolve_action_cwd,
+    )
+
+    fake_get_project = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "lionagi.studio.services.projects.get_project", fake_get_project, raising=False
+    )
+    monkeypatch.delenv("LIONAGI_SCHEDULER_CWD", raising=False)
+
+    schedule = {"id": "sched-empty-proj", "action_cwd": None, "action_project": ""}
+    with pytest.raises(SchedulerCwdInheritRefusedError):
+        await _resolve_action_cwd(schedule)
+
+    fake_get_project.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_resolve_action_cwd_pre_migration_row_warns_deprecated(monkeypatch, caplog):
     """A pre-migration row (action_cwd never set) still falls through to the
     legacy daemon-cwd-inherit behavior, but the warning names it explicitly
