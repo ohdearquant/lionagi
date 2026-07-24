@@ -24,6 +24,23 @@ from .hooks import (
 from .rate_limited_processor import RateLimitedAPIExecutor
 
 
+def _terminal_stream_error(api_call: APICalling) -> BaseException | None:
+    """The captured cause when a streamed call ended FAILED, else None.
+
+    ``Event.stream()`` records a transport/provider failure as ``FAILED`` and
+    stops yielding rather than re-raising, so the shared processor can run
+    events concurrently without one failure cancelling the batch. Always
+    returns a ``BaseException`` (never a bare string) so it is safe to chain
+    with ``raise ... from``.
+    """
+    if api_call.status != EventStatus.FAILED:
+        return None
+    err = api_call.execution.error
+    if isinstance(err, BaseException):
+        return err
+    return RuntimeError(str(err) if err is not None else "stream failed without a recorded cause")
+
+
 class iModel:  # noqa: N801
     """Provider endpoint wrapper with rate-limiting, hooks, and streaming."""
 
@@ -285,25 +302,38 @@ class iModel:  # noqa: N801
 
         if self.executor.processor._concurrency_sem:
             async with self.executor.processor._concurrency_sem:
+                stream_error = None
                 try:
                     async for i in api_call.stream():
                         result = await self.process_chunk(i)
                         yield result if result is not None else i
+                    # api_call.stream() captures a transport/provider failure as
+                    # FAILED instead of raising (so the shared processor can fire
+                    # events concurrently without one failure cancelling the batch).
+                    # This public boundary must not report that as a clean end —
+                    # surface it after iteration so the caller sees the error.
+                    stream_error = _terminal_stream_error(api_call)
                 except Exception as e:
                     raise ValueError(f"Failed to stream API call: {e}") from e
                 finally:
                     # Pop without yielding — yield-in-finally would swallow CancelledError
                     # during generator cleanup, breaking anyio.fail_after timeout enforcement.
                     self.executor.pile.pop(api_call.id, None)
+                if stream_error is not None:
+                    raise ValueError(f"Failed to stream API call: {stream_error}") from stream_error
         else:
+            stream_error = None
             try:
                 async for i in api_call.stream():
                     result = await self.process_chunk(i)
                     yield result if result is not None else i
+                stream_error = _terminal_stream_error(api_call)
             except Exception as e:
                 raise ValueError(f"Failed to stream API call: {e}") from e
             finally:
                 self.executor.pile.pop(api_call.id, None)
+            if stream_error is not None:
+                raise ValueError(f"Failed to stream API call: {stream_error}") from stream_error
 
     async def invoke(self, api_call: APICalling = None, **kw) -> APICalling:
         try:
