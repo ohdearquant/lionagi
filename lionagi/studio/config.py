@@ -43,15 +43,37 @@ def _resolved(path: Path) -> Path | None:
         return None
 
 
+def _zone_file_for_name(name: str) -> Path | None:
+    """The tzfile the stdlib will actually open for *name*.
+
+    ``ZoneInfo`` takes the first match in ``TZPATH`` order, so this walks the
+    roots in that same order rather than guessing.
+    """
+    for entry in zoneinfo.TZPATH:
+        candidate = Path(entry) / name
+        if candidate.is_file():
+            return _resolved(candidate)
+    return None
+
+
 def _zone_name_from_path(path: Path, roots: list[Path]) -> str | None:
-    """Express *path* as a zone name relative to whichever root contains it."""
+    """Express *path* as a zone name that reopens *path*.
+
+    Containment alone is not enough. When several roots are configured, an
+    earlier one holding the same key shadows a later one, so a name derived
+    from the root that happens to contain the file can load a different
+    tzfile with different rules — the same silent-wrong-zone failure this
+    resolver exists to prevent, one level in. A candidate is therefore
+    accepted only if resolving it the way the stdlib will arrives back at the
+    file we started from.
+    """
     for root in roots:
         try:
             relative = path.relative_to(root)
         except ValueError:
             continue
         name = "/".join(relative.parts)
-        if name:
+        if name and _zone_file_for_name(name) == path:
             return name
     return None
 
@@ -64,10 +86,13 @@ def _system_local_tz_name() -> str:
     relative to the zoneinfo roots the stdlib searches.
 
     Deriving the name from the search roots rather than from a directory name
-    is what makes this reliable: the tree is called ``zoneinfo`` on most hosts
-    and something else on others, so any test against the name either misses
-    real trees or accepts directories that merely look like one and yields a
-    loadable but wrong zone. Containment in a search root has neither failure.
+    removes a whole class of guessing: the tree is called ``zoneinfo`` on most
+    hosts and something else on others, so any test against the name either
+    misses real trees or accepts directories that merely look like one.
+    Containment has neither failure, but it is not sufficient on its own —
+    with several roots configured, a name the containing root justifies can
+    still reopen an earlier root's file, so the name is additionally required
+    to round-trip back to the same tzfile.
 
     Returns "UTC" if nothing resolves to a loadable zone. The daemon still
     runs correctly then, but cron expressions are interpreted in UTC rather
