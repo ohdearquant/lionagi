@@ -49,6 +49,10 @@ CREATE TABLE IF NOT EXISTS approvals (
   consumed_at   REAL,
   expires_at    REAL    NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_approvals_status
+  ON approvals(status) WHERE status IN ('pending', 'granted');
+CREATE INDEX IF NOT EXISTS idx_approvals_session
+  ON approvals(session_id) WHERE session_id IS NOT NULL;
 """
 
 EVIDENCE_EVENT_TYPES = frozenset({"proposed", "granted", "denied", "consumed", "expired"})
@@ -265,8 +269,19 @@ async def verify_evidence_chain() -> dict[str, Any]:
 
     key = os.getenv("LIONAGI_STUDIO_EVIDENCE_HMAC_KEY")
     expected_previous = GENESIS_HASH
+    expected_sequence = 1
     for row in rows:
         total += 1
+        # The sequence column is untrusted metadata: the true order is fixed by the
+        # previous_hash -> chain_hash linkage below. A legitimate chain is always
+        # 1, 2, ..., N (each row takes tail+1, starting at 1), so pin sequence to its
+        # cryptographically-enforced position. Without this, renumbering every row by a
+        # uniform offset (1, 2 -> 101, 102) leaves all hash columns intact and slips
+        # past chain-continuity, forging a valid-looking but relabelled audit trail.
+        if row["sequence"] != expected_sequence:
+            errors.append(
+                f"sequence {row['sequence']}: expected contiguous sequence {expected_sequence}"
+            )
         payload = {
             "id": row["id"],
             "event_type": row["event_type"],
@@ -297,6 +312,7 @@ async def verify_evidence_chain() -> dict[str, Any]:
                 if not hmac.compare_digest(expected_sig, row["hmac_sig"]):
                     errors.append(f"sequence {row['sequence']}: hmac signature mismatch")
         expected_previous = row["chain_hash"]
+        expected_sequence += 1
 
     return {
         "valid": not errors,
