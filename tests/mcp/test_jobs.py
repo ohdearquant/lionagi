@@ -179,6 +179,50 @@ def test_kill_unknown_job(sandbox):
     assert out["killed"] is False and out["reason"] == "no such job"
 
 
+@pytest.mark.parametrize("cli_status", ["timed_out", "cancelled", "aborted", "completed_empty"])
+def test_mark_terminal_records_cli_status_verbatim(sandbox, monkeypatch, cli_status):
+    """The CLI's terminal status is authoritative and recorded verbatim.
+
+    The CLI spells a timeout ``timed_out`` (agent/flow) and also emits
+    ``cancelled`` / ``aborted`` / ``completed_empty`` — none of which mean
+    success. A prior version matched against a local set and fell through to
+    ``completed`` on a miss, so a timed-out run reported success. Each real
+    terminal status must round-trip unchanged.
+    """
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **k: _FakeProc())
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+
+    rid = jobs.submit("agent", [], prompt="x")["run_id"]
+    jobs.mark_terminal(rid, cli_status)
+
+    assert jobs._read_job(rid)["status"] == cli_status
+    assert jobs.status(rid)["status"] == cli_status
+
+
+def test_submit_preserves_terminal_recorded_during_spawn(sandbox, monkeypatch):
+    """A terminal recorded in the spawn window is not clobbered back to running.
+
+    submit() persists the record before spawning, so the child's --notify hook
+    can mark it terminal immediately; the post-spawn write must only attach the
+    pid, never reset the status the hook set.
+    """
+
+    def racing_popen(argv, **kw):
+        # The child fires its terminal hook the instant it starts. The record
+        # already exists (persisted before spawn), so mark_terminal succeeds.
+        rid = kw["env"][config.RUN_ID_ENV_VAR]
+        jobs.mark_terminal(rid, "failed")
+        return _FakeProc(4321)
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", racing_popen)
+
+    res = jobs.submit("agent", [], prompt="x")
+    rec = jobs._read_job(res["run_id"])
+    assert rec["status"] == "failed"  # terminal survived the pid-attach write
+    assert rec["pid"] == 4321  # pid still attached
+    assert rec["finished_at"] is not None
+
+
 def test_mark_terminal_and_list(sandbox, monkeypatch):
     monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **k: _FakeProc(4242))
     rid = jobs.submit("agent", [], prompt="x")["run_id"]

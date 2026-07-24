@@ -36,8 +36,6 @@ _KIND_ARGV: dict[str, list[str]] = {
     "fanout": ["orchestrate", "fanout"],
 }
 
-_TERMINAL_STATES = {"completed", "failed", "killed", "timeout", "exited"}
-
 # The terminal hook module, invoked by the CLI's --notify by absolute
 # interpreter path so it runs regardless of PATH in the CLI's environment.
 _NOTIFY_MODULE = "lionagi.mcp._notify_hook"
@@ -210,6 +208,28 @@ def submit(
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
     env[config.RUN_ID_ENV_VAR] = run_id
 
+    # Persist the record BEFORE spawning, so the child's terminal --notify hook
+    # always finds a record to mark. mark_terminal no-ops on a missing record, so
+    # a child that reaches a terminal in the window between spawn and this write
+    # would otherwise lose its status and delivery outcome. pid is filled in right
+    # after the spawn; that follow-up write only attaches the pid and never
+    # rewrites status, so a terminal the hook may already have recorded survives.
+    record = {
+        "run_id": run_id,
+        "pid": None,
+        "kind": kind,
+        "argv": argv,
+        "cwd": cwd,
+        "label": label,
+        "notify_command": notify_command,
+        "notify_target": notify_target,
+        "submitted_at": _now_iso(),
+        "finished_at": None,
+        "status": "running",
+        "log": str(log_path),
+    }
+    _write_job(record)
+
     log_f = open(log_path, "wb")
     try:
         proc = subprocess.Popen(  # noqa: S603 — argv is the resolved li_command + CLI flags, no shell
@@ -224,23 +244,13 @@ def submit(
     finally:
         log_f.close()  # child holds its own fd; parent drops its copy
 
-    record = {
-        "run_id": run_id,
-        "pid": proc.pid,
-        "kind": kind,
-        "argv": argv,
-        "cwd": cwd,
-        "label": label,
-        "notify_command": notify_command,
-        "notify_target": notify_target,
-        "submitted_at": _now_iso(),
-        "finished_at": None,
-        "status": "running",
-        "log": str(log_path),
-    }
-    _write_job(record)
+    # Attach the pid without rewriting status: if the hook already recorded a
+    # terminal in the (tiny) spawn window, re-reading here preserves it.
+    latest = _read_job(run_id) or record
+    latest["pid"] = proc.pid
+    _write_job(latest)
 
-    return {"run_id": run_id, "pid": proc.pid, "status": "running", "log": str(log_path)}
+    return {"run_id": run_id, "pid": proc.pid, "status": latest["status"], "log": str(log_path)}
 
 
 def status(run_id: str) -> dict[str, Any]:
@@ -258,10 +268,15 @@ def status(run_id: str) -> dict[str, Any]:
     alive = _pid_alive(pid)
 
     recorded = (job or {}).get("status", "unknown")
+    finished = job is not None and job.get("finished_at") is not None
     if alive:
         state = "running"
-    elif recorded in _TERMINAL_STATES:
-        state = recorded  # authoritative terminal from the notify hook
+    elif finished:
+        # A terminal was recorded (notify hook or kill()). The CLI's own status
+        # string is authoritative and reported verbatim — never re-classified
+        # against a local vocabulary here, which is how "timed_out" once became
+        # a false "completed".
+        state = recorded
     elif job is not None:
         state = "exited"  # pid gone, no terminal record captured
     else:
@@ -354,11 +369,20 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
 
 
 def mark_terminal(run_id: str, cli_status: str) -> dict[str, Any] | None:
-    """Record a terminal status for *run_id* (called by the CLI notify hook)."""
+    """Record a terminal status for *run_id* (called by the CLI notify hook).
+
+    The CLI's terminal status string is authoritative and recorded verbatim. An
+    earlier version matched it against a local set and fell through to
+    ``"completed"`` on any miss, which silently turned every status the set did
+    not list — ``timed_out`` (the CLI's spelling for a timeout), ``cancelled``,
+    ``aborted``, ``completed_empty`` — into a false success. The hook fires only
+    on a genuine terminal, so the incoming status is trusted as-is and
+    ``finished_at`` marks the record terminal.
+    """
     job = _read_job(run_id)
     if job is None:
         return None
-    job["status"] = cli_status if cli_status in _TERMINAL_STATES else "completed"
+    job["status"] = cli_status
     job["cli_status"] = cli_status
     job["finished_at"] = _now_iso()
     _write_job(job)
