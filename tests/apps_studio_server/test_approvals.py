@@ -959,3 +959,26 @@ def test_double_expire_read_race_writes_only_one_evidence_row(tmp_path, monkeypa
     verdict = _run(approvals_mod.verify_evidence_chain())
     assert verdict["valid"] is True
     assert verdict["errors"] == []
+
+
+def test_fallback_ensure_table_creates_status_and_session_indexes(tmp_path):
+    """The defensive `_ensure_table` fallback (used by direct module callers
+    outside the studio lifespan, which never applies the full StateDB schema)
+    must create the same partial indexes the canonical schema defines, so the
+    ledger is not left un-indexed on the status/session read paths."""
+    from lionagi.studio.services import approvals as approvals_mod
+    from lionagi.studio.services._db import open_db
+
+    db_path = tmp_path / "bare.db"
+
+    async def _indexes() -> set[str]:
+        async with open_db(str(db_path)) as db:
+            await approvals_mod._ensure_table(db)
+            cur = await db.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'approvals'"
+            )
+            return {r["name"] for r in await cur.fetchall()}
+
+    names = _run(_indexes())
+    assert "idx_approvals_status" in names
+    assert "idx_approvals_session" in names

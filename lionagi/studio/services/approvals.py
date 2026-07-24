@@ -49,6 +49,10 @@ CREATE TABLE IF NOT EXISTS approvals (
   consumed_at   REAL,
   expires_at    REAL    NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_approvals_status
+  ON approvals(status) WHERE status IN ('pending', 'granted');
+CREATE INDEX IF NOT EXISTS idx_approvals_session
+  ON approvals(session_id) WHERE session_id IS NOT NULL;
 """
 
 EVIDENCE_EVENT_TYPES = frozenset({"proposed", "granted", "denied", "consumed", "expired"})
