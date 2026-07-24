@@ -968,6 +968,59 @@ async def _flush_pending_message_events(ctx: dict) -> None:
         await retry_queue.flush()
 
 
+async def _reopen_session_for_resume(db, session_id: str, existing_session: dict | None) -> bool:
+    """Return a resumed session to ``running`` so its next close is a real change.
+
+    A session's closing transition only announces itself when the status
+    actually changes. A resume adopts a session an earlier leg already took
+    terminal, so writing that same terminal status at the end is not a change:
+    the leg finishes without announcing anything, the completion notice never
+    arrives, and the job record never closes. Reopening first restores the
+    invariant the rest of the system reads off this column, which is that a
+    session marked terminal is not currently executing.
+
+    Reopening is the only sanctioned exit from a terminal status, so it carries
+    an override. That is not a formality to satisfy the guard: it is what makes
+    each reopening attributable. Declaring a terminal-to-running edge in the
+    session policy would have satisfied the guard too, and would have permitted
+    terminal exit for every writer in the system, while finality is exactly what
+    the reapers, the teardown guard and ``li wait`` all rest on.
+    """
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+    from lionagi.state.reasons import SessionReasons
+
+    if not existing_session or existing_session.get("status") not in SESSION_TERMINAL_STATUSES:
+        # Not terminal: a resume racing a live leg on the same branch. The row
+        # already describes the session correctly, so there is nothing to reopen.
+        return False
+
+    applied = await db.update_status(
+        "session",
+        session_id,
+        new_status="running",
+        reason_code=SessionReasons.REOPENED_BY_RESUME,
+        reason_summary="branch resumed by a new leg",
+        source="executor",
+        actor=session_id,
+        expected_statuses=SESSION_TERMINAL_STATUSES,
+        extra_fields={"ended_at": None},
+        override=True,
+        override_actor="cli.resume",
+        override_justification="branch resumed by a new leg; the session is executing again",
+    )
+    if not applied:
+        # A resumed leg must not fail because its bookkeeping lost a race, but
+        # the consequence is worth saying out loud: this leg will finish without
+        # announcing itself, and from the outside that is indistinguishable from
+        # a leg that is still running.
+        _log.warning(
+            "session %s was not reopened for resume; another writer moved it "
+            "first, so this leg will close without emitting a terminal notice",
+            session_id,
+        )
+    return applied
+
+
 async def setup_agent_persist(
     branch: Branch,
     *,
@@ -998,6 +1051,7 @@ async def setup_agent_persist(
         if existing_branch:
             session_id = existing_branch["session_id"]
             existing_session = await db.get_session(session_id)
+            await _reopen_session_for_resume(db, session_id, existing_session)
             session_prog_id = existing_session["progression_id"]
             branch_prog_id = existing_branch["progression_id"]
 

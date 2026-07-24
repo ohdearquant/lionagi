@@ -138,6 +138,11 @@ class SessionReasons:
     HEALTH_PHANTOM_PROCESS_DEAD = "session.phantom.process_dead"
     HEALTH_PHANTOM_MISSING_ARTIFACTS = "session.phantom.missing_artifacts"
 
+    # A resumed branch puts its session back into execution. This is the only
+    # sanctioned exit from a terminal status, and it carries an override so the
+    # reopening is attributable rather than an ordinary write.
+    REOPENED_BY_RESUME = "session.reopened.by_resume"
+
 
 class PlayReasons:
     """Show-play lifecycle reasons (ADR-0057 play vocabulary)."""
