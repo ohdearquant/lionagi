@@ -46,6 +46,11 @@ substrates block (0090-0095) despite declaring `scheduling-control-plane` as the
 They landed in that range before the area mismatch was identified; retaining the numbers
 avoids collisions with other ADR work and preserves existing inbound references.
 
+ADR-0104 is a documented numbering exception for the same reason: it declares `cli-surface`
+but carries a number far outside that block (0062-0067), which was allocated before the
+per-area scheme was applied to it. It is indexed under cli-surface and keeps its number, so
+inbound references stay valid.
+
 ## Index
 
 ### core-data-model (0001-0005)
@@ -173,7 +178,11 @@ avoids collisions with other ADR work and preserves existing inbound references.
   completion record
 - [ADR-0065](ADR-0065-marketplace-catalog-and-directory-discovery.md) — Marketplace catalog and
   directory discovery
-- 0066-0067 — unused (intentional gaps)
+- [ADR-0066](ADR-0066-li-mcp-v2-verb-surface.md) — `li mcp` v2 verb surface (discrete core
+  plus one parser-generated dispatch verb)
+- 0067 — unused (intentional gap)
+- [ADR-0104](ADR-0104-li-kill-detached-play-reaping-and-terminal-notify.md) — `li kill` reaping of
+  detached-play workers and terminal-notify on kill (numbering exception; see Numbering)
 
 ### scheduling-control-plane (0068-0075)
 
