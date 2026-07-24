@@ -74,6 +74,32 @@ def test_the_signal_it_does_take_over_is_handed_back(signal_probe):
     assert signal_module.getsignal(signal_module.SIGTERM) is before
 
 
+def test_a_failed_restore_does_not_strand_the_other_signal(monkeypatch):
+    """Restores run in a finally, often while an exception is already
+    propagating. One of them failing must not leave the other signal still
+    overridden for the rest of the process."""
+    real_signal = signal_module.signal
+    original_sigint = signal_module.getsignal(signal_module.SIGINT)
+    restored: list[int] = []
+    calls = {"n": 0}
+
+    def flaky_signal(signum, handler):
+        calls["n"] += 1
+        if calls["n"] <= 2:  # the two installs
+            return real_signal(signum, handler)
+        if signum == signal_module.SIGINT:  # first restore fails
+            raise OSError("cannot restore")
+        restored.append(signum)
+        return real_signal(signum, handler)
+
+    monkeypatch.setattr(signal_module, "signal", flaky_signal)
+    try:
+        assert run_async(_work()) == 42
+        assert signal_module.SIGTERM in restored
+    finally:
+        real_signal(signal_module.SIGINT, original_sigint)
+
+
 def test_both_signals_unrestorable_still_runs_the_work(signal_probe):
     """Nothing about signal wiring is load-bearing for producing a result."""
     probe, installed = signal_probe

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import inspect
+import logging
 import signal
 import threading
 from collections.abc import Awaitable, Callable
@@ -153,9 +154,21 @@ def run_async(coro: Awaitable[T]) -> T:
     try:
         thread.join()
     finally:
-        # Restore only what was installed above.
+        # Restore only what was installed above. Each restore stands alone: this
+        # runs in a finally, often while an exception is already propagating, and
+        # a failure on one signal must not strand the others with this runner's
+        # handler still installed. Failures are logged rather than raised, since
+        # raising here would replace whatever the caller was actually failing on.
         for signum, prior in installed:
-            signal.signal(signum, prior)
+            try:
+                signal.signal(signum, prior)
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "could not restore the previous handler for signal %s; it "
+                    "remains overridden for the rest of this process",
+                    signum,
+                    exc_info=True,
+                )
 
     if _cancel_requested.is_set():
         raise KeyboardInterrupt
