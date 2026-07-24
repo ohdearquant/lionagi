@@ -313,3 +313,43 @@ class TestSpecDefaultValueEdgeCases:
 
         result = await spec.acreate_default_value()
         assert result == "x"
+
+
+class TestSpecBaseTypeValidation:
+    """base_type must be a real type/annotation, not merely something whose
+    type repr looks like UnionType."""
+
+    def test_accepts_real_type_forms(self):
+        import typing
+
+        Spec(int)  # plain type
+        Spec(int | str)  # PEP 604 UnionType
+        Spec(typing.Union[int, str])  # typing.Union
+        Spec(list[int])  # generic alias
+        Spec(typing.Optional[int])
+        Spec(typing.Annotated[int, "meta"])
+        Spec(typing.Callable[[int], str])
+        Spec(dict[str, int])
+
+    def test_rejects_origin_attribute_spoof(self):
+        # Any object can define __origin__, so attribute presence cannot stand
+        # in for being a type annotation. Rejection must happen at construction,
+        # before the value is observable on the instance.
+        class _OriginSpoof:
+            __origin__ = int
+
+        with pytest.raises(ValueError, match="base_type must be a type"):
+            Spec(_OriginSpoof())
+
+    def test_rejects_uniontype_string_spoof(self):
+        # An instance is not a valid type just because its type's repr equals
+        # UnionType's; validation must not be fooled by the string form.
+        class _FakeUnion:
+            pass
+
+        _FakeUnion.__module__ = "types"
+        _FakeUnion.__qualname__ = "UnionType"
+        spoof = _FakeUnion()
+        assert str(type(spoof)) == "<class 'types.UnionType'>"
+        with pytest.raises(ValueError, match="base_type must be a type"):
+            Spec(spoof)
