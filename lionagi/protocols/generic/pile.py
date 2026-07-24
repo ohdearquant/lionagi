@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import csv
+import io
+import json
 import threading
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Generator, Iterator, Sequence
@@ -30,6 +33,38 @@ D = TypeVar("D")
 T = TypeVar("T", bound=E)
 
 _ADAPTER_REGISTERED = False
+
+
+def _serialize_records(records: list[dict], obj_key: str) -> str:
+    """Serialize row dicts to a JSONL or CSV string using only the standard
+    library, so the common serialization paths carry no pandas dependency.
+
+    - ``json`` → one compact JSON object per line (JSONL), matching the prior
+      ``DataFrame.to_json(orient="records", lines=True)`` output.
+    - ``csv`` → a header of every key seen (in first-appearance order) followed
+      by one row per record; missing keys render empty, as pandas did.
+
+    ``parquet`` is intentionally unsupported here — it stays on the pandas /
+    ``to_df`` path in ``dump``/``adump`` since it needs a columnar engine.
+    """
+    if obj_key == "json":
+        return "\n".join(json.dumps(r, ensure_ascii=False, separators=(",", ":")) for r in records)
+    if obj_key == "csv":
+        fieldnames: list[str] = []
+        seen: set[str] = set()
+        for r in records:
+            for key in r:
+                if key not in seen:
+                    seen.add(key)
+                    fieldnames.append(key)
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=fieldnames, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(records)
+        return buf.getvalue()
+    raise ValueError(
+        f"Unsupported obj_key: {obj_key}. Supported keys are 'json', 'csv', 'parquet'."
+    )
 
 
 def _validate_item_type(value, /) -> set[type[T]] | None:
@@ -909,6 +944,12 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
             return df[columns]
         return df
 
+    def _ordered_records(self) -> list[dict]:
+        """Row dicts in progression (logical) order, JSON-mode serialized so
+        every value is a JSON primitive — the shared snapshot behind the
+        pandas-free json/csv dump paths (parquet still goes via ``to_df``)."""
+        return [self.collections[key].to_dict(mode="json") for key in self.progression]
+
     def dump(
         self,
         fp: str | Path | None,
@@ -918,15 +959,20 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         clear=False,
         **kw,
     ) -> str | None:
-        df = self.to_df()
         out = None
         match obj_key:
             case "parquet":
-                df.to_parquet(fp, engine="pyarrow", index=False, **kw)
-            case "json":
-                out = df.to_json(fp, orient="records", lines=True, mode=mode, **kw)
-            case "csv":
-                out = df.to_csv(fp, index=False, mode=mode, **kw)
+                # Parquet needs a columnar engine; keep it on the pandas path.
+                self.to_df().to_parquet(fp, engine="pyarrow", index=False, **kw)
+            case "json" | "csv":
+                text = _serialize_records(self._ordered_records(), obj_key)
+                if fp is None:
+                    # fp=None returns the serialized string, as the old
+                    # DataFrame.to_json/to_csv(path_or_buf=None) did.
+                    out = text
+                else:
+                    with open(fp, mode, encoding="utf-8", newline="") as f:
+                        f.write(text)
             case _:
                 raise ValueError(
                     f"Unsupported obj_key: {obj_key}. Supported keys are 'json', 'csv', 'parquet'."
@@ -949,23 +995,24 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
     ) -> None:
         from lionagi.ln.concurrency import run_sync
 
+        if obj_key not in ("json", "csv", "parquet"):
+            raise ValueError(
+                f"Unsupported obj_key: {obj_key}. Supported keys are 'json', 'csv', 'parquet'."
+            )
+
+        # Snapshot under the lock so a concurrent mutation cannot race the write.
         async with self._both_locks():
             snapshot_ids = set(self.collections.keys())
-            df = self.to_df()
+            df = self.to_df() if obj_key == "parquet" else None
+            records = None if obj_key == "parquet" else self._ordered_records()
 
         def _write() -> None:
-            match obj_key:
-                case "parquet":
-                    df.to_parquet(fp, engine="pyarrow", index=False, **kw)
-                case "json":
-                    df.to_json(fp, orient="records", lines=True, mode=mode, **kw)
-                case "csv":
-                    df.to_csv(fp, index=False, mode=mode, **kw)
-                case _:
-                    raise ValueError(
-                        f"Unsupported obj_key: {obj_key}. "
-                        "Supported keys are 'json', 'csv', 'parquet'."
-                    )
+            if obj_key == "parquet":
+                df.to_parquet(fp, engine="pyarrow", index=False, **kw)
+            else:
+                text = _serialize_records(records, obj_key)
+                with open(fp, mode, encoding="utf-8", newline="") as f:
+                    f.write(text)
 
         await run_sync(_write)
 

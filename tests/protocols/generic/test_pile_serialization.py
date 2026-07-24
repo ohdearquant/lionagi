@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import importlib
+import json
+import sys
 import tempfile
 from pathlib import Path
 
@@ -95,8 +97,9 @@ class TestToDataFrame:
         assert [str(x) for x in df["id"].tolist()] == logical
 
 
-@pytest.mark.skipif(pandas_missing, reason="pandas not installed")
 class TestDump:
+    """json/csv dump is pandas-free; only the parquet cases still need pandas."""
+
     def test_dump_json(self, pile_3):
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
             fp = Path(f.name)
@@ -124,6 +127,7 @@ class TestDump:
         fp.unlink()
 
     def test_dump_parquet(self, pile_3):
+        pytest.importorskip("pandas")
         pytest.importorskip("pyarrow")
         with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as f:
             fp = Path(f.name)
@@ -136,6 +140,7 @@ class TestDump:
         p = Pile(collections=items)
         with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as f:
             fp = Path(f.name)
+        pytest.importorskip("pandas")
         pytest.importorskip("pyarrow")
         p.dump(fp, obj_key="parquet", clear=True)
         assert len(p) == 0
@@ -179,6 +184,61 @@ class TestDump:
         content = fp.read_text()
         assert len(content) > 0
         fp.unlink()
+
+
+class TestDumpWithoutPandas:
+    """Regression: json/csv serialization must not import pandas. Blocking
+    ``import pandas`` here would break the old to_df-backed dump path, so these
+    guard the whole point of the stdlib serializer."""
+
+    @staticmethod
+    def _block_pandas(monkeypatch):
+        # A None entry makes `import pandas` raise ImportError, leaving json/csv
+        # /orjson untouched — a precise stand-in for a pandas-free install.
+        monkeypatch.setitem(sys.modules, "pandas", None)
+        with pytest.raises(ImportError):
+            import pandas  # noqa: F401
+
+    def test_json_and_csv_dump_need_no_pandas(self, pile_3, tmp_path, monkeypatch):
+        self._block_pandas(monkeypatch)
+
+        jf = tmp_path / "d.json"
+        cf = tmp_path / "d.csv"
+        pile_3.dump(jf, obj_key="json")
+        pile_3.dump(cf, obj_key="csv")
+
+        ids = {str(i.id) for i in pile_3.values()}
+        json_lines = jf.read_text().strip().splitlines()
+        assert len(json_lines) == 3
+        for line in json_lines:
+            assert json.loads(line)["id"] in ids  # each line is valid JSON
+
+        csv_lines = cf.read_text().strip().splitlines()
+        assert csv_lines[0].startswith("id")
+        assert len(csv_lines) == 4  # header + 3 rows
+
+    def test_dump_fp_none_returns_string_without_pandas(self, pile_3, monkeypatch):
+        self._block_pandas(monkeypatch)
+        out = pile_3.dump(None, obj_key="json")
+        assert isinstance(out, str)
+        assert len(out.strip().splitlines()) == 3
+
+    @pytest.mark.asyncio
+    async def test_adump_needs_no_pandas(self, pile_3, tmp_path, monkeypatch):
+        self._block_pandas(monkeypatch)
+        jf = tmp_path / "a.json"
+        cf = tmp_path / "a.csv"
+        await pile_3.adump(jf, obj_key="json")
+        await pile_3.adump(cf, obj_key="csv")
+        assert len(jf.read_text().strip().splitlines()) == 3
+        assert len(cf.read_text().strip().splitlines()) == 4
+
+    def test_parquet_still_requires_pandas(self, pile_3, tmp_path, monkeypatch):
+        """Parquet stays on the pandas path — with pandas blocked it must fail,
+        not silently degrade."""
+        self._block_pandas(monkeypatch)
+        with pytest.raises(Exception):
+            pile_3.dump(tmp_path / "d.parquet", obj_key="parquet")
 
 
 # ---------------------------------------------------------------------------
