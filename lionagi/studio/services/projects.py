@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from typing import Any
 
@@ -15,6 +16,11 @@ from ..registry import studio_route
 from ._db import open_db as _open_db
 
 _DB = str(DEFAULT_DB_PATH)
+
+
+class NameConflictError(Exception):
+    """Raised when a project name already exists."""
+
 
 _ENSURE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -166,27 +172,35 @@ async def create_project(
     now = time.time()
     async with _open_db(_DB) as db:
         await _ensure_table(db)
-        await db.execute(
-            """INSERT INTO projects
-                   (name, source, path, github, description,
-                    created_at, updated_at, last_seen_at)
-               VALUES (?, 'studio', ?, ?, ?, ?, ?, ?)""",
-            (clean_name, path, github, description, now, now, now),
-        )
-        await db.commit()
+        try:
+            await db.execute(
+                """INSERT INTO projects
+                       (name, source, path, github, description,
+                        created_at, updated_at, last_seen_at)
+                   VALUES (?, 'studio', ?, ?, ?, ?, ?, ?)""",
+                (clean_name, path, github, description, now, now, now),
+            )
+            await db.commit()
+        except sqlite3.IntegrityError as exc:
+            raise NameConflictError(f"Project {clean_name!r} already exists") from exc
 
     return {"name": clean_name, "source": "studio", "created_at": now}
 
 
 async def update_project(name: str, fields: dict[str, Any]) -> bool:
-    """Patch mutable project fields. Returns True when a row was updated."""
+    """Patch mutable project fields. Returns True when the project exists --
+    either a field was updated, or no mutable fields were supplied but the
+    project is present (a no-op patch on an existing project isn't a 404)."""
     allowed = {"description", "github", "path"}
     clean = {k: v for k, v in fields.items() if k in allowed}
-    if not clean:
-        return False
 
     async with _open_db(_DB) as db:
         await _ensure_table(db)
+        if not clean:
+            cur = await db.execute("SELECT 1 FROM projects WHERE name = ?", (name,))
+            row = await cur.fetchone()
+            return row is not None
+
         clean["updated_at"] = time.time()
         sets = ", ".join(f"{k} = ?" for k in clean)
         vals = list(clean.values()) + [name]
@@ -291,7 +305,7 @@ async def create_project_route(body: CreateProjectRequest) -> dict[str, Any]:
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
+    except NameConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
@@ -302,7 +316,7 @@ async def update_project_route(name: str, body: UpdateProjectRequest) -> dict[st
     if not ok:
         raise HTTPException(
             status_code=404,
-            detail=f"Project '{name}' not found or no changes",
+            detail=f"Project '{name}' not found",
         )
     return {"ok": True}
 

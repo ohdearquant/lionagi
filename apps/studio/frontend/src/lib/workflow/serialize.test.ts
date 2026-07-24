@@ -20,7 +20,7 @@ const SPEC: WorkflowSpec = {
       pos: { x: 240, y: 120 },
       config: { engine_def_id: "def-1", model: "sonnet" },
     },
-    { id: "n3", kind: "gate", label: "Gate", pos: { x: 420, y: 120 } },
+    { id: "n3", kind: "parse", label: "Parse", pos: { x: 420, y: 120 } },
   ],
   edges: [
     { id: "e1", from: "n1", to: "n2" },
@@ -80,6 +80,16 @@ describe("workflow serialize", () => {
     const result = coerceSpec({
       version: 1,
       nodes: [{ id: "a", kind: "teleport", label: "A", pos: { x: 0, y: 0 } }],
+      edges: [],
+    });
+    expect(result.spec).toBeNull();
+    expect(result.errors.some((e) => e.includes("kind"))).toBe(true);
+  });
+
+  it("rejects 'gate' node kind (removed; the server no longer supports it)", () => {
+    const result = coerceSpec({
+      version: 1,
+      nodes: [{ id: "g", kind: "gate", label: "Gate", pos: { x: 0, y: 0 } }],
       edges: [],
     });
     expect(result.spec).toBeNull();

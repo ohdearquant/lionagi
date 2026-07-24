@@ -369,3 +369,20 @@ class TestUpdatePlaybookSpecFieldValidation:
         result = svc.validate_playbook("any", {"workers": 0})
         assert not result["ok"]
         assert any("workers" in e for e in result["errors"])
+
+    @pytest.mark.parametrize(
+        "spec",
+        [
+            {"bare": "true"},
+            {"prompt": 42},
+            {"save": 7},
+            {"model": 42},
+            {"artifacts": None},
+        ],
+    )
+    def test_validate_playbook_rejects_fields_execution_rejects(self, spec):
+        """Fields the CLI execution validator rejects must also fail Studio validation."""
+        import lionagi.studio.services.playbooks as svc
+
+        result = svc.validate_playbook("any", spec)
+        assert not result["ok"], f"{spec} should be rejected"

@@ -40,6 +40,15 @@ KIND_DIRS: dict[str, Path] = {
     "playbook": PLAYBOOKS_DIR,
 }
 
+# Extension used when creating a new definition of a given kind (i.e. no
+# existing on-disk file to infer it from). Must match what each kind's
+# catalog scans for -- playbooks.py's list_playbooks() only globs
+# *.playbook.yaml, so a new playbook has to land with that suffix.
+_DEFAULT_EXT: dict[str, str] = {
+    "agent": ".md",
+    "playbook": ".playbook.yaml",
+}
+
 
 def _relative_path(full_path: Path) -> str:
     try:
@@ -217,7 +226,7 @@ async def save_definition(
     async with lock:
         disk_file = await anyio.to_thread.run_sync(partial(_find_definition_file, base, name))
         if not disk_file:
-            disk_file = base / f"{name}.md"
+            disk_file = base / f"{name}{_DEFAULT_EXT.get(kind, '.md')}"
 
         now = time.time()
 
