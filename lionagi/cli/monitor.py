@@ -234,7 +234,11 @@ async def _query_plays_for_show(db: Any, show_id: str) -> list[dict[str, Any]]:
 
 
 async def _find_entity(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | None:
-    """Resolve entity_id across all entity tables; returns (entity_type, row) or None."""
+    """Resolve entity_id across all entity tables; returns (entity_type, row) or None.
+    Raises `AmbiguousIdError` if a short prefix matches more than one row in
+    a single table."""
+    from ._util import fetch_unique_by_id
+
     searches = [
         ("session", "sessions"),
         ("invocation", "invocations"),
@@ -248,10 +252,7 @@ async def _find_entity(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | 
         )
         if row:
             return entity_type, row
-        row = await db.fetch_one(
-            f"SELECT * FROM {table} WHERE id LIKE ?",  # noqa: S608
-            (entity_id + "%",),
-        )
+        row = await fetch_unique_by_id(db, table, entity_id)
         if row:
             return entity_type, row
     return None
@@ -866,7 +867,7 @@ def _watch_loop(
     project: str | None,
 ) -> int:
     """Repeatedly clear screen and reprint; exit cleanly on SIGINT/SIGTERM."""
-    from lionagi.ln.concurrency import run_async
+    from lionagi.ln.concurrency import SigtermInterrupt, run_async
 
     interrupted = False
 
@@ -874,29 +875,43 @@ def _watch_loop(
         nonlocal interrupted
         interrupted = True
 
+    old_sigint_handler = signal.getsignal(signal.SIGINT)
+    old_sigterm_handler = signal.getsignal(signal.SIGTERM)
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
-    while not interrupted:
-        since = _since_timestamp(since_window) if since_window else None
-        if entity_id:
-            output = run_async(_run_detail(entity_id))
-        else:
-            output = run_async(_run_table(since=since, entity_type=entity_type, project=project))
-        _clear_screen()
-        ts = time.strftime("%H:%M:%S")
-        print(f"{_dim(f'Updated: {ts}  (refresh every {refresh_seconds}s, Ctrl-C to exit)')}")
-        print()
-        print(output)
-        # Sleep in small increments so SIGINT is responsive
-        for _ in range(refresh_seconds * 10):
-            if interrupted:
+    try:
+        while not interrupted:
+            since = _since_timestamp(since_window) if since_window else None
+            try:
+                if entity_id:
+                    output = run_async(_run_detail(entity_id))
+                else:
+                    output = run_async(
+                        _run_table(since=since, entity_type=entity_type, project=project)
+                    )
+            except (KeyboardInterrupt, SigtermInterrupt):
+                # run_async raises these when a signal cancels the refresh
+                # coroutine mid-flight; the handler above already latched
+                # `interrupted`, so just stop the loop cleanly.
                 break
-            time.sleep(0.1)
+            _clear_screen()
+            ts = time.strftime("%H:%M:%S")
+            print(f"{_dim(f'Updated: {ts}  (refresh every {refresh_seconds}s, Ctrl-C to exit)')}")
+            print()
+            print(output)
+            # Sleep in small increments so SIGINT is responsive
+            for _ in range(refresh_seconds * 10):
+                if interrupted:
+                    break
+                time.sleep(0.1)
 
-    if _IS_TTY:
-        print()  # newline after Ctrl-C
-    return 0
+        if _IS_TTY:
+            print()  # newline after Ctrl-C
+        return 0
+    finally:
+        signal.signal(signal.SIGINT, old_sigint_handler)
+        signal.signal(signal.SIGTERM, old_sigterm_handler)
 
 
 # ── Wait-for-terminal primitive (li monitor run / li monitor --run) ───────────
@@ -923,25 +938,37 @@ def _split_watched_ids(raw: list[str]) -> list[str]:
 
 async def _resolve_schedule_run(db: Any, raw_id: str) -> dict[str, Any] | None:
     """Exact match then prefix match. schedule_run ids are 12-char hex, not
-    36-char UUIDs, so _util.py's length-36 prefix heuristic doesn't apply."""
+    36-char UUIDs, so _util.py's length-36 prefix heuristic doesn't apply.
+    Raises `AmbiguousIdError` if the prefix matches more than one run."""
+    from ._util import AmbiguousIdError
+
     row = await db.get_schedule_run(raw_id)
     if row:
         return row
-    return await db.fetch_one(
-        "SELECT * FROM schedule_runs WHERE id LIKE ?",
+    rows = await db.fetch_all(
+        "SELECT * FROM schedule_runs WHERE id LIKE ? ORDER BY id",
         (raw_id + "%",),
     )
+    if len(rows) > 1:
+        raise AmbiguousIdError("schedule_runs", raw_id, [r["id"] for r in rows])
+    return rows[0] if rows else None
 
 
 async def _resolve_session_run(db: Any, raw_id: str) -> dict[str, Any] | None:
-    """Exact match then prefix match against the sessions table (agent/li agent run ids)."""
+    """Exact match then prefix match against the sessions table (agent/li agent run ids).
+    Raises `AmbiguousIdError` if the prefix matches more than one session."""
+    from ._util import AmbiguousIdError
+
     row = await db.get_session(raw_id)
     if row:
         return row
-    return await db.fetch_one(
-        "SELECT * FROM sessions WHERE id LIKE ?",
+    rows = await db.fetch_all(
+        "SELECT * FROM sessions WHERE id LIKE ? ORDER BY id",
         (raw_id + "%",),
     )
+    if len(rows) > 1:
+        raise AmbiguousIdError("sessions", raw_id, [r["id"] for r in rows])
+    return rows[0] if rows else None
 
 
 def _format_session_wait_line(row: dict[str, Any]) -> str:
@@ -1279,6 +1306,7 @@ def _dispatch_wait(
     from lionagi.state.db import DEFAULT_DB_PATH, StateDB
 
     from ._logging import log_error
+    from ._util import AmbiguousIdError
     from .status import EXIT_RUNNING, EXIT_UNKNOWN
 
     if not DEFAULT_DB_PATH.exists():
@@ -1318,7 +1346,11 @@ def _dispatch_wait(
         async with StateDB() as db:
             return await _resolve_watched_runs(db, ids)
 
-    resolved = _run_tick(_resolve())
+    try:
+        resolved = _run_tick(_resolve())
+    except AmbiguousIdError as exc:
+        log_error(str(exc))
+        return EXIT_UNKNOWN
     if resolved is None:
         # Interrupted before resolving completed — "still in progress",
         # not success or failure.

@@ -35,6 +35,7 @@ from lionagi.cli.monitor import (
     _since_timestamp,
     _stdout_is_tty,
     _trunc,
+    _watch_loop,
 )
 from lionagi.state.db import StateDB
 
@@ -248,6 +249,36 @@ def test_pid_alive_nonexistent():
     # Use a very high PID unlikely to exist instead.
     result = _pid_alive(9_999_999)
     assert result is False or result is None  # platform-dependent
+
+
+def test_watch_loop_exits_cleanly_on_sigterm_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A SIGTERM arriving mid-refresh must not escape `_watch_loop` as an
+    uncaught `SigtermInterrupt`, and the pre-existing SIGTERM handler must be
+    restored once the loop exits."""
+    import lionagi.ln.concurrency as concurrency
+
+    def _fake_run_async(coro):
+        coro.close()
+        raise concurrency.SigtermInterrupt("simulated SIGTERM")
+
+    monkeypatch.setattr(concurrency, "run_async", _fake_run_async)
+
+    prior_handler = signal.getsignal(signal.SIGTERM)
+    try:
+        exit_code = _watch_loop(
+            refresh_seconds=1,
+            entity_id="some-entity-id",
+            since_window=None,
+            entity_type=None,
+            project=None,
+        )
+    finally:
+        signal.signal(signal.SIGTERM, prior_handler)
+
+    assert exit_code == 0
+    assert signal.getsignal(signal.SIGTERM) is prior_handler
 
 
 # ── Unit: table formatting ────────────────────────────────────────────────────
