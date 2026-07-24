@@ -118,7 +118,7 @@ if existing_branch:
             "session",
             session_id,
             new_status="running",
-            reason_code="session_reopened_by_resume",
+            reason_code=SessionReasons.REOPENED_BY_RESUME,
             reason_summary="branch resumed by a new leg",
             expected_statuses=SESSION_TERMINAL_STATUSES,
             extra_fields={"ended_at": None},
@@ -140,9 +140,19 @@ rejects any move out of a terminal status unless an override is supplied
 (`lionagi/state/lifecycle/policy.py`, whose own comment states "No exit from a terminal
 status without override"; enforced at `lionagi/state/lifecycle/service.py` in the
 `previous_status in policy.terminal_statuses` branch). Without it this write does not
-land: it returns `rejected`, writes a `status_transition_rejected` audit row, and the
-resume proceeds with the session still marked terminal, which is the exact defect this
-ADR exists to fix. On the `enforce_edges=True` path it raises instead.
+land. Measured rather than reasoned about: `StateDB.update_status` raises
+`TransitionRejectedError("refusing to write 'running' without override=True")`, and
+`setup_agent_persist` catches `Exception` broadly, logs a warning, and returns `None`,
+which disables persistence for the entire run. So the version of D1 without an override
+does not merely fail to fix the missing notice; it costs every resumed leg all of its
+state persistence, behind one warning line. That consequence is worse than the defect
+and is the reason this correction is stated at the contract rather than left to
+implementation.
+
+`reason_code` must also be a code registered in `lionagi/state/reasons.py`; an
+unregistered string raises before the transition is attempted. This ADR adds
+`SessionReasons.REOPENED_BY_RESUME` (`"session.reopened.by_resume"`), which satisfies the
+session policy's `reason_prefixes`.
 
 Override rather than a new declared edge, deliberately. Declaring `terminal → running`
 in `session_edges` would legalize terminal-exit for every session writer in the system,
