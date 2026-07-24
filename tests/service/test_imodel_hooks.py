@@ -623,3 +623,27 @@ class TestiModelStreamFailurePropagation:
                 if chunk and not isinstance(chunk, APICalling):
                     chunks.append(chunk)
         assert len(chunks) >= 3
+
+    @pytest.mark.asyncio
+    async def test_failure_raises_through_concurrency_sem_branch(self):
+        """concurrency_limit routes stream() through the semaphore branch; the
+        terminal failure must still surface there."""
+        # concurrency_limit routes stream() through the semaphore branch once the
+        # executor starts and builds the processor with a non-None _concurrency_sem.
+        imodel = iModel(
+            provider="openai",
+            model="gpt-4.1-mini",
+            api_key="test-key",
+            concurrency_limit=1,
+        )
+
+        async def failing_stream():
+            yield {"choices": [{"delta": {"content": "x"}}]}
+            raise RuntimeError("sem-branch transport failure")
+
+        with patch.object(imodel.endpoint, "stream", return_value=failing_stream()):
+            with pytest.raises(ValueError, match="sem-branch transport failure"):
+                async for _ in imodel.stream(messages=[{"role": "user", "content": "hi"}]):
+                    pass
+        # confirm this run actually exercised the semaphore branch
+        assert imodel.executor.processor._concurrency_sem is not None
