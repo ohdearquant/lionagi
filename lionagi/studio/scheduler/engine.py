@@ -331,7 +331,11 @@ async def _resolve_action_cwd(schedule: dict) -> str | None:
         # to a project succeeds silently -- the exact failure this refuses.
         raise SchedulerCwdInheritRefusedError(
             schedule_id=schedule.get("id"),
-            configured_root=action_cwd or action_project,
+            # ``is not None``, matching the gate above and the backfill guard:
+            # a truthiness fallback reports an empty action_cwd as whatever
+            # action_project holds, so the row that failed closed is named
+            # incorrectly in the very diagnostic meant to explain the refusal.
+            configured_root=action_cwd if action_cwd is not None else action_project,
             daemon_cwd=str(Path.cwd()),
         )
 

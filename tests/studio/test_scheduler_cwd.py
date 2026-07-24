@@ -830,3 +830,30 @@ async def test_backfill_one_bad_row_does_not_block_others(tmp_path, monkeypatch)
     await engine._backfill_action_cwd()
 
     svc.update_schedule.assert_awaited_once_with("sched-bf-good", action_cwd=str(project_dir))
+
+
+@pytest.mark.asyncio
+async def test_refusal_names_an_empty_execution_root_as_empty_not_as_the_project(
+    monkeypatch, tmp_path
+):
+    """An empty action_cwd is the root that failed closed, so the refusal must
+    name it. A truthiness fallback would report action_project instead, naming
+    the wrong root in the diagnostic meant to explain the refusal."""
+    from lionagi.studio.scheduler.engine import (
+        SchedulerCwdInheritRefusedError,
+        _resolve_action_cwd,
+    )
+
+    fake_get_project = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "lionagi.studio.services.projects.get_project", fake_get_project, raising=False
+    )
+    env_dir = tmp_path / "env"
+    env_dir.mkdir()
+    monkeypatch.setenv("LIONAGI_SCHEDULER_CWD", str(env_dir))
+
+    schedule = {"id": "sched-empty-root", "action_cwd": "", "action_project": "some-project"}
+    with pytest.raises(SchedulerCwdInheritRefusedError) as excinfo:
+        await _resolve_action_cwd(schedule)
+
+    assert excinfo.value.configured_root == ""
