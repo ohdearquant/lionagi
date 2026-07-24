@@ -9,6 +9,7 @@ import asyncio
 import importlib
 import logging
 
+import anyio
 import pytest
 
 from lionagi.ln.concurrency import CapacityLimiter
@@ -510,6 +511,29 @@ async def test_flow_reactive_without_pause_behaves_normally():
     result = await flow(session, graph, max_concurrent=5, reactive=True)
     assert len(result["completed_operations"]) == 3
     assert sorted(executed) == ["op_0", "op_1", "op_2"]
+
+
+def test_emit_best_effort_schedules_via_task_group_under_trio():
+    """A running flow's anyio task group must be used to schedule signals,
+    not asyncio.get_running_loop(), which raises RuntimeError under Trio
+    and silently drops the signal."""
+    from lionagi.ln.concurrency import create_task_group
+    from lionagi.session.signal import NodePaused
+
+    async def scenario():
+        session = Session()
+        executor = DependencyAwareExecutor(session=session, graph=Graph())
+        signals: list[NodePaused] = []
+        session.observe(NodePaused, handler=lambda s, _ctx: signals.append(s))
+
+        async with create_task_group() as tg:
+            executor._tg = tg
+            executor._emit_best_effort(lambda: NodePaused(op_id="x", name="x"))
+
+        return signals
+
+    signals = anyio.run(scenario, backend="trio")
+    assert len(signals) == 1
 
 
 if __name__ == "__main__":

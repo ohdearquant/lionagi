@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import anyio
+import sniffio
 
 from lionagi._errors import ExecutionError, OperationError
 from lionagi.ln import AlcallParams
@@ -145,6 +146,10 @@ class DependencyAwareExecutor:
         # NodeSpawned), retained until each finishes so a weakly referenced
         # task can't disappear before it runs. See _emit_best_effort().
         self._signal_tasks: set[asyncio.Task[Any]] = set()
+        # AnyIO task group backing the current execute()/execute_stream() run,
+        # if any — lets _emit_best_effort() schedule signals through anyio
+        # (Trio-safe) instead of the asyncio-only loop.create_task() fallback.
+        self._tg: Any = None
         # Out-of-band handle for a control poller running alongside this flow
         # to reach pause()/resume()/context/graph; set synchronously before
         # any awaiting so it's available the instant execute() starts.
@@ -175,7 +180,12 @@ class DependencyAwareExecutor:
             for node in nodes:
                 _name = node.metadata.get("reference_id", str(node.id)[:8])
                 self.on_progress(str(node.id), _name, "queued", 0.0)
-        await self._alcall(nodes, self._execute_operation, limiter=limiter)
+        async with create_task_group() as tg:
+            self._tg = tg
+            try:
+                await self._alcall(nodes, self._execute_operation, limiter=limiter)
+            finally:
+                self._tg = None
 
         completed_ops = [
             op_id for op_id in self.results.keys() if op_id not in self.skipped_operations
@@ -277,16 +287,26 @@ class DependencyAwareExecutor:
             logger.warning("flow signal construction failed: %s", e)
             return
 
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return  # no running loop — tests / sync contexts, not a failure
-
         async def _emit() -> None:
             try:
                 await self.session.emit(sig)
             except Exception as e:  # noqa: BLE001
                 logger.warning("flow signal emission failed for %s: %s", type(sig).__name__, e)
+
+        if self._tg is not None:
+            # A flow run is in progress: schedule through its anyio task
+            # group, which works under both asyncio and Trio (the raw
+            # asyncio loop below only ever runs under asyncio).
+            try:
+                self._tg.start_soon(_emit)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("flow signal scheduling failed for %s: %s", type(sig).__name__, e)
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no running loop — tests / sync contexts, not a failure
 
         coro = _emit()
         try:
@@ -716,7 +736,6 @@ class ReactiveExecutor(DependencyAwareExecutor):
         self._spawn_count = 0
         self._dropped_spawns: list[dict[str, Any]] = []
         self._running = False
-        self._tg: Any = None
         self._graph_lock = threading.Lock()
         self._seen_reqs: set[int] = set()
         self._spawned_ids: set[Any] = set()
@@ -788,42 +807,66 @@ class ReactiveExecutor(DependencyAwareExecutor):
         self.session.observe(EscalationRequest, self._on_bus_escalation)
         self._running = True
 
+        driver_cancel_scope = anyio.CancelScope()
+        driver_done = anyio.Event()
+        driver_errors: list[BaseException] = []
+
         async def _driver():
             # Owns its own task group (entered/exited in THIS task). The
             # generator must not span a task group across `yield` — anyio forbids
             # it — so the driver runs detached and the generator only drains the
             # channel. Closing `send` on completion ends the consumer's loop.
-            try:
-                async with create_task_group() as tg:
-                    self._tg = tg
-                    for node in initial:
-                        if self.on_progress:
-                            _name = node.metadata.get("reference_id", str(node.id)[:8])
-                            self.on_progress(str(node.id), _name, "queued", 0.0)
-                        tg.start_soon(self._run_tracked, node)
-            finally:
-                await send.aclose()
+            with driver_cancel_scope:
+                try:
+                    async with create_task_group() as tg:
+                        self._tg = tg
+                        for node in initial:
+                            if self.on_progress:
+                                _name = node.metadata.get("reference_id", str(node.id)[:8])
+                                self.on_progress(str(node.id), _name, "queued", 0.0)
+                            tg.start_soon(self._run_tracked, node)
+                except get_cancelled_exc_class():
+                    raise  # let driver_cancel_scope absorb our own cancellation
+                except BaseException as e:  # noqa: BLE001
+                    driver_errors.append(e)
+                finally:
+                    await send.aclose()
+            driver_done.set()
 
-        # asyncio-only: flow_stream needs a detached task for the driver
-        # coroutine so the generator can yield events as they arrive.
-        # anyio's create_task_group cannot be used here because the generator
-        # must outlive any single task group scope.
-        driver = asyncio.ensure_future(_driver())
+        # flow_stream needs a detached task for the driver coroutine so the
+        # generator can yield events as they arrive. anyio's create_task_group
+        # cannot be used here because the generator must outlive any single
+        # task group scope (yielding across a task group's `async with` is
+        # unsafe on Trio once the consumer can close the generator early).
+        # asyncio has no structured-concurrency requirement, so a plain task
+        # suffices there; Trio requires a system task, which is immune to
+        # any enclosing cancel scope and is stopped via driver_cancel_scope
+        # instead.
+        if sniffio.current_async_library() == "trio":
+            import trio  # noqa: PLC0415
+
+            trio.lowlevel.spawn_system_task(_driver)
+        else:
+            asyncio.ensure_future(_driver())
         try:
             async with recv:
                 async for event in recv:
                     yield event
-            await driver  # normal end: surface any driver exception
+            await driver_done.wait()  # normal end: surface any driver exception
         finally:
             self._running = False
             self._tg = None
             self._result_sink = None
             observer.unobserve(self._on_bus_spawn)
             observer.unobserve(self._on_bus_escalation)
-            if not driver.done():  # early break / consumer close: tear down
-                driver.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await driver
+            if not driver_done.is_set():  # early break / consumer close: tear down
+                driver_cancel_scope.cancel()
+                with contextlib.suppress(get_cancelled_exc_class(), Exception):
+                    await driver_done.wait()
+        if driver_errors:
+            raise driver_errors[0]
+        if driver_errors:
+            raise driver_errors[0]
 
     async def _run_tracked(self, node: Operation) -> None:
         token = _CURRENT_OP.set(node)
