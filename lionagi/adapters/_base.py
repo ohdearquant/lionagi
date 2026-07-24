@@ -488,12 +488,21 @@ class AdapterRegistry:
 class Adaptable:
     """Mixin adding synchronous adapt-from/adapt-to to any class."""
 
+    _sync_adapter_registry: ClassVar[AdapterRegistry | None] = None
+
     @classmethod
     def _registry(cls) -> AdapterRegistry:
-        registry_attr = f"__adapter_registry_{cls.__name__}_{id(cls)}"
-        if not hasattr(cls, registry_attr):
-            setattr(cls, registry_attr, AdapterRegistry())
-        return getattr(cls, registry_attr)
+        # Own-`__dict__` check (not `hasattr`) distinguishes "this class already
+        # has its registry" from "a base class does" - so a subclass lazily
+        # inherits the base's registered adapters by copying them once, then
+        # keeps registering independently without mutating the base or siblings.
+        if "_sync_adapter_registry" not in cls.__dict__:
+            parent = cls._sync_adapter_registry
+            registry = AdapterRegistry()
+            if parent is not None:
+                registry._reg.update(parent._reg)
+            cls._sync_adapter_registry = registry
+        return cls._sync_adapter_registry
 
     @classmethod
     def register_adapter(cls, adapter_cls: type[Adapter]) -> None:
@@ -629,8 +638,15 @@ class AsyncAdaptable:
 
     @classmethod
     def _areg(cls) -> AsyncAdapterRegistry:
-        if cls._async_registry is None:
-            cls._async_registry = AsyncAdapterRegistry()
+        # See Adaptable._registry(): the same own-`__dict__` copy-on-inherit
+        # pattern, so a subclass sees the base's adapters without sharing the
+        # same mutable registry object with the base or its siblings.
+        if "_async_registry" not in cls.__dict__:
+            parent = cls._async_registry
+            registry = AsyncAdapterRegistry()
+            if parent is not None:
+                registry._reg.update(parent._reg)
+            cls._async_registry = registry
         return cls._async_registry
 
     @classmethod

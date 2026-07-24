@@ -867,8 +867,8 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
 
     @classmethod
     def list_adapters(cls) -> list[str]:
-        syn_ = cls._adapter_registry._reg.keys()
-        asy_ = cls._async_registry._reg.keys()
+        syn_ = cls._registry()._reg.keys()
+        asy_ = cls._areg()._reg.keys()
         return list(set(syn_) | set(asy_))
 
     def adapt_to(self, obj_key: str, many=False, **kw: Any) -> Any:
