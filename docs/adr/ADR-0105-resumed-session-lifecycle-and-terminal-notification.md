@@ -397,4 +397,12 @@ second, which is the point: the window is the defect, not the value.
 
 A fourth covers the sweep: a session past the age threshold whose recorded process is
 alive is left alone, and one whose process is gone is swept, in the same run. Asserting
-only the first would pass against a sweep that had stopped working.
+only the first would pass against a sweep that had stopped working. A session whose
+recorded number is alive but belongs to a different process is swept too, since a live
+PID alone would otherwise protect a stuck row for as long as that number stayed in use.
+
+A fifth pins the shape of what reopening reads. `node_metadata` has held values that are
+not JSON objects, and reading one as an object raises: for a string that is not JSON at
+all, and for a JSON scalar or list when the object is merged. The resume must survive all
+of them, because the caller catches broadly and turns any raise here into a run with no
+state persistence at all — a far larger failure than the field that caused it.
