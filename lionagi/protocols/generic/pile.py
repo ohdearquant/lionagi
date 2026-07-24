@@ -32,6 +32,28 @@ T = TypeVar("T", bound=E)
 _ADAPTER_REGISTERED = False
 
 
+def _type_is_observable(cls: type, /) -> bool:
+    """Type-level counterpart to ``isinstance(obj, Observable)``.
+
+    ``isinstance(obj, Observable)`` inspects a concrete instance for an ``id``,
+    but item_type validation only has the class, so it cannot ask a live object.
+    Observable is a structural (data-member) protocol, and such protocols do not
+    support ``issubclass`` by design, so this checks the class directly: a class
+    is an admissible pile item type when ``id`` is declared anywhere in its MRO
+    -- as an attribute/descriptor, a pydantic model field, or an annotation
+    (dataclasses, typed attributes) -- i.e. its instances carry an ``id`` and
+    structurally satisfy Observable.
+    """
+    for base in getattr(cls, "__mro__", (cls,)):
+        if "id" in getattr(base, "__dict__", {}):
+            return True
+        if "id" in getattr(base, "__annotations__", {}):
+            return True
+        if "id" in getattr(base, "model_fields", {}):
+            return True
+    return False
+
+
 def _validate_item_type(value, /) -> set[type[T]] | None:
     if value is None:
         return None
@@ -50,22 +72,28 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
             except Exception as e:
                 raise ValidationError.from_value(
                     i,
-                    expected="A subclass of Observable.",
+                    expected="An importable Observable type.",
                     cause=e,
                 ) from e
         if isinstance(subcls, type):
             if is_union_type(subcls):
                 members = union_members(subcls)
                 for m in members:
-                    if not issubclass(m, Observable):
-                        raise ValidationError.from_value(m, expected="A subclass of Observable.")
+                    if not _type_is_observable(m):
+                        raise ValidationError.from_value(
+                            m, expected="An Observable type (instances expose 'id')."
+                        )
                     out.add(m)
-            elif not issubclass(subcls, Observable):
-                raise ValidationError.from_value(subcls, expected="A subclass of Observable.")
+            elif not _type_is_observable(subcls):
+                raise ValidationError.from_value(
+                    subcls, expected="An Observable type (instances expose 'id')."
+                )
             else:
                 out.add(subcls)
         else:
-            raise ValidationError.from_value(i, expected="A subclass of Observable.")
+            raise ValidationError.from_value(
+                i, expected="An Observable type (instances expose 'id')."
+            )
 
     if len(value) != len(set(value)):
         raise ValidationError("Detected duplicated item types in item_type.")
@@ -163,7 +191,11 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
       protocol, so they exclude sync callers running in other threads.
     """
 
-    collections: dict[UUID, T] = Field(default_factory=dict)
+    # Value type is Any, not T: _validate_collections is the sole admission gate
+    # (structural -- any id-bearing Observable), so pydantic must not re-reject a
+    # duck-typed item it already accepted. The class stays Generic[T] and every
+    # accessor is still typed T; only the stored-field re-validation is relaxed.
+    collections: dict[UUID, Any] = Field(default_factory=dict)
     item_type: set | None = Field(
         default=None,
         description="Set of allowed types for items in the pile.",

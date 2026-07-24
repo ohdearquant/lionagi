@@ -174,7 +174,21 @@ def append(self, item, /) -> None: ...
 
 ### D3 — Pile admission is nominal and its serialized constraint is not durable
 
-> **Current-state note (2026-07-20)**: The code block and delta 2 below describe the state
+> **Current-state note (2026-07-23) — supersedes the 2026-07-20 note below**: Admission is
+> **structural**, not nominal. `Observable` is a single runtime-checkable `Protocol` in
+> `lionagi/protocols/_concepts.py`: any object exposing an `id` satisfies
+> `isinstance(item, Observable)` and is admissible. `Element` conforms through its `id` field
+> without inheriting it (a Protocol cannot be a pydantic base). Id resolution (`ID.get_id`,
+> `validate_order`) and `item_type` validation are structural to match, so an admitted
+> duck-typed item stays reachable by identity. The two-symbol split is still gone — there is
+> one `Observable`, and it is structural, so `isinstance` and Pile admission agree.
+> Serializing a Pile remains the one Element-shaped boundary (dumping calls `to_dict()`).
+> The 2026-07-20 decision to make admission nominal was a regression and is reverted;
+> structural admission is intentional and guarded by
+> `tests/protocols/test_observable_protocol.py`. The historical blocks below are retained as
+> the record of states previously decided against.
+>
+> **Superseded — current-state note (2026-07-20)**: The code block and delta 2 below describe the state
 > before issue #2017. `lionagi/protocols/contracts.py` (`ObservableProto`, the structural
 > `Observable`/`LegacyObservable` aliases) is deleted; there is no exported structural
 > convenience protocol anymore. The nominal ABC is the sole public Pile-item contract and

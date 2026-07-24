@@ -5,7 +5,8 @@ from enum import Enum
 from typing import Any, TypeAlias
 from uuid import UUID
 
-from ..generic.element import ID, Element, Observable
+from .._concepts import Observable
+from ..generic.element import ID, Element
 
 __all__ = (
     "MessageRole",

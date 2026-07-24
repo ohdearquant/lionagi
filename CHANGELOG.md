@@ -6,6 +6,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `Observable` is a structural protocol again, restoring duck-typed Pile admission. A prior
+  change made admission nominal: `isinstance(item, Observable)` required inheriting the ABC, so
+  an object exposing an `id` was rejected by `Pile`. `Observable` is now a single
+  runtime-checkable `Protocol` — any object with an `id` conforms, and `Element` satisfies it
+  through its `id` field rather than by inheritance. Identity resolution (`ID.get_id`,
+  `validate_order`) and `item_type` validation are structural to match, so an admitted
+  duck-typed item can also be found, retrieved, and removed by identity instead of being
+  admitted but unreachable. Serializing a Pile still requires items to provide `to_dict()`.
+
 ## [0.30.2] - 2026-07-23
 
 ### Fixed

@@ -65,12 +65,22 @@ through `Progression`, which is O(n)).
 ## Observable — Pile admission contract
 
 `Observable` (`lionagi.protocols._concepts.Observable`)
-is a nominal ABC, not a structural protocol: `isinstance(item, Observable)`
-requires the item's class to inherit from it, not merely expose an `id`
-attribute. `Pile` enforces this directly — an object with an `id` property
-that does not inherit `Observable` is rejected on admission. `Element` inherits
-`Observable` directly, so every `Element` subclass (and therefore every V0
-model type) satisfies the contract automatically. There is no separate
-structural `ObservableProto` — a bare `id` property is not sufficient because
-`Pile` also relies on `Element`'s `to_dict`/`from_dict` reconstruction, which
-a duck-typed object does not provide.
+is a runtime-checkable **structural protocol**: `isinstance(item, Observable)`
+is true for any object exposing an `id`, whether or not it inherits anything.
+`Pile` admits on that contract — a duck-typed object with a UUID `id` is a
+first-class item that can be included, found, retrieved, and removed by
+identity. `Element` satisfies the protocol through its `id` field without
+inheriting it (a runtime-checkable Protocol cannot be a pydantic base), so
+every `Element` subclass conforms automatically.
+
+Id resolution (`ID.get_id`, `validate_order`) and `item_type` validation are
+structural to match, so nothing Pile admits is later unreachable by identity.
+Serializing a Pile is the one Element-shaped boundary that remains: dumping
+calls `to_dict()` on each item, which a bare duck-typed object does not
+provide.
+
+This is intentional. A 2026-07 change briefly made admission nominal
+(inheritance-only) and removed the structural contract; that was a regression
+and has been reverted. Structural admission is the designed behavior, guarded
+by `tests/protocols/test_observable_protocol.py` — it should not be "fixed"
+back toward inheritance-only admission.
