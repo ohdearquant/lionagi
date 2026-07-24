@@ -274,6 +274,109 @@ class TestUpdatePlaybookValidation:
         assert pb_path.read_text() == original_content
 
 
+class TestCreatePlaybook:
+    """POST /playbooks/{name} must actually create the playbook, not 501."""
+
+    def test_create_writes_new_file(self, tmp_path, monkeypatch):
+        import lionagi.studio.services.playbooks as svc
+
+        monkeypatch.setattr(svc, "_PLAYBOOKS_ROOT", tmp_path)
+
+        result = svc.create_playbook(
+            "new-pb", {"description": "A test playbook", "prompt": "do the thing"}
+        )
+        assert result is not None
+        assert result["name"] == "new-pb"
+        assert result["data"]["description"] == "A test playbook"
+        assert result["data"]["prompt"] == "do the thing"
+        assert (tmp_path / "new-pb.playbook.yaml").exists()
+
+    def test_create_rejects_existing_name(self, tmp_path, monkeypatch):
+        """Creating over an existing playbook must raise, not silently overwrite."""
+        import lionagi.studio.services.playbooks as svc
+
+        monkeypatch.setattr(svc, "_PLAYBOOKS_ROOT", tmp_path)
+        (tmp_path / "dup.playbook.yaml").write_text("description: original\n")
+
+        with pytest.raises(FileExistsError):
+            svc.create_playbook("dup", {"description": "clobber"})
+
+        assert (tmp_path / "dup.playbook.yaml").read_text() == "description: original\n"
+
+    def test_create_is_atomic_against_toctou_race(self, tmp_path, monkeypatch):
+        """A file that appears AFTER the path.exists() guard but before the
+        write must not be clobbered. FastAPI runs the sync route in a
+        threadpool, so two concurrent creates can both pass the guard; the
+        exclusive-create write must raise FileExistsError (mapped to 409),
+        not silently overwrite the race winner."""
+        import lionagi.studio.services.playbooks as svc
+
+        monkeypatch.setattr(svc, "_PLAYBOOKS_ROOT", tmp_path)
+        target = tmp_path / "race-pb.playbook.yaml"
+
+        # yaml.dump is the last step before the write, so plant a "winner" file
+        # there — the guard at the top of create_playbook has already passed
+        # with the path absent, reproducing the check-then-write window.
+        real_dump = svc.yaml.dump
+
+        def _dump_then_plant(*args, **kwargs):
+            text = real_dump(*args, **kwargs)
+            if not target.exists():
+                target.write_text("description: winner\n")
+            return text
+
+        monkeypatch.setattr(svc.yaml, "dump", _dump_then_plant)
+
+        with pytest.raises(FileExistsError):
+            svc.create_playbook("race-pb", {"description": "loser"})
+
+        # The racing winner survives untouched; the loser did not clobber it.
+        assert target.read_text() == "description: winner\n"
+
+    def test_create_invalid_spec_raises_and_does_not_write(self, tmp_path, monkeypatch):
+        import lionagi.studio.services.playbooks as svc
+
+        monkeypatch.setattr(svc, "_PLAYBOOKS_ROOT", tmp_path)
+
+        with pytest.raises(ValueError):
+            svc.create_playbook("bad-pb", {"workers": 999})
+
+        assert not (tmp_path / "bad-pb.playbook.yaml").exists()
+
+    def test_route_no_longer_returns_501(self, tmp_path, monkeypatch):
+        """POST /playbooks/{name} must create the playbook, not return 501."""
+        import lionagi.studio.services.playbooks as svc
+
+        monkeypatch.setattr(svc, "_PLAYBOOKS_ROOT", tmp_path)
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        import lionagi.studio.services.playbooks  # ensure routes registered
+        from lionagi.studio.registry import iter_studio_routes
+
+        app = FastAPI()
+        for route in iter_studio_routes(area="playbooks"):
+            app.add_api_route(
+                route.path,
+                route.handler,
+                methods=[route.method],
+                response_model=route.response_model,
+                status_code=route.status_code,
+                tags=list(route.tags),
+            )
+        client = TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
+
+        resp = client.post(
+            "/playbooks/demo",
+            json={"description": "from leo", "prompt": "run it"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["name"] == "demo"
+        assert (tmp_path / "demo.playbook.yaml").exists()
+
+
 class TestUpdatePlaybookSpecFieldValidation:
     """workers/max_ops/effort must be validated on PUT."""
 

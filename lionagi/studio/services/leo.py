@@ -48,8 +48,12 @@ _SESSIONS: dict[str, LeoSession] = {}
 
 
 def _evict_idle(now: float) -> None:
+    # Never evict a session whose lock is held: it is mid-turn, and dropping
+    # it from the registry would orphan the running stream.
     stale = [
-        sid for sid, sess in _SESSIONS.items() if now - sess.last_used_at > _IDLE_EXPIRY_SECONDS
+        sid
+        for sid, sess in _SESSIONS.items()
+        if now - sess.last_used_at > _IDLE_EXPIRY_SECONDS and not sess.lock.locked()
     ]
     for sid in stale:
         del _SESSIONS[sid]
@@ -58,7 +62,12 @@ def _evict_idle(now: float) -> None:
 def _evict_lru_if_full() -> None:
     if len(_SESSIONS) < _MAX_SESSIONS:
         return
-    lru_id = min(_SESSIONS, key=lambda sid: _SESSIONS[sid].last_used_at)
+    # Only consider sessions that aren't mid-turn; if every session is busy,
+    # skip eviction rather than kill an active stream.
+    candidates = [sid for sid, sess in _SESSIONS.items() if not sess.lock.locked()]
+    if not candidates:
+        return
+    lru_id = min(candidates, key=lambda sid: _SESSIONS[sid].last_used_at)
     del _SESSIONS[lru_id]
 
 
