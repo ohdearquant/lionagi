@@ -121,7 +121,10 @@ if existing_branch:
             reason_code=SessionReasons.REOPENED_BY_RESUME,
             reason_summary="branch resumed by a new leg",
             expected_statuses=SESSION_TERMINAL_STATUSES,
-            extra_fields={"ended_at": None},
+            extra_fields={
+                "ended_at": None,
+                "node_metadata": json.dumps({**node_metadata, **current_pid_markers()}),
+            },
             override=True,
             override_actor="cli.resume",
             override_justification="branch resumed by a new leg; the session is executing again",
@@ -163,8 +166,26 @@ and emits a `status_transition_override` admin event, it makes each reopening
 attributable. A reopened session is a real event and should leave a record saying who
 reopened it and why; the declared-edge version would leave none.
 
-`extra_fields={"ended_at": None}` is legal without further change: `ended_at` is in the
-session policy's `patch_fields`.
+`ended_at` is already in the session policy's `patch_fields`. `node_metadata` is added to
+it, and to `EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE` in `lionagi/state/db.py`, so that
+the process markers move in the same transaction as the status.
+
+That is not a convenience. The sweeps select rows by status and then ask the recorded
+process markers whether the row is still alive, so status and markers are read together
+and have to agree at every instant a sweep could look. Splitting the two writes leaves a
+window in which the row reads `running` while still carrying the markers of the leg that
+already exited, which is precisely the shape `li kill --all-stale` cancels
+(`lionagi/cli/kill.py`: select `status='running'`, age past the threshold, recorded PID
+not alive). The markers must also not be written on a lost race, because the row then
+belongs to a different leg and our markers would make that leg's liveness answer for our
+process. Both requirements are satisfied by the one guarded write: it either wins and
+installs status and markers together, or it loses and touches nothing. This is what the
+same-row allowlist exists for — its own comment says it keeps a caller from splitting a
+status change and a dependent column into two transactions.
+
+Markers, not liveness in general: a terminal session is never checked for liveness, so
+stale markers on one were harmless. A running one is checked, which is what makes them
+load-bearing from the reopen onward.
 
 Exact semantics:
 
@@ -252,8 +273,10 @@ decision. Results:
 | `studio/services/lifecycle.py` `reap_null_status_sessions` | Selects `status IS NULL` only | unaffected |
 | `studio/services/admin.py` `list_phantom_sessions` → `lifecycle.py` `reap_phantom_sessions` | **Newly reachable**: see below | disclosed |
 | `studio/services/admin.py` health sweep (`UPDATE ... WHERE status='running'`) | Same class, additionally guarded on `last_message_at`/`updated_at` equality | disclosed |
+| `cli/kill.py` `--all-stale` sweep | **Newly reachable**: selects `status='running'` past an age threshold, then vetoes on a live recorded PID. Safe once the markers move with the status; unsafe if they lag it | fixed in D1 |
+| `cli/state.py` `_doctor` (`li state doctor`) | **Newly reachable and not veto-guarded**: see below | fixed |
 
-No consumer breaks. Two findings need stating rather than a fix.
+No consumer breaks. Three findings need stating; one of them needed a fix.
 
 **The teardown terminal-skip guard starts working.** `cli/_runs.py` skips its status
 write when the session was already terminal at teardown start, logging that the earlier
@@ -273,6 +296,26 @@ handled: the session genuinely was re-run and the re-run genuinely died, `runnin
 failed` is a declared edge that applies normally, and the earlier `completed` survives
 in `status_transitions`. It is recorded here because the derived row no longer shows it,
 and a reader of the row alone would draw the wrong conclusion about the first leg.
+
+**`li state doctor` was measuring the wrong thing, and D1 exposed it.** The command
+sweeps sessions "stuck at `status='running'`" whose `started_at` is older than a
+threshold, and its own help text promised that "an actively-running CLI process is left
+alone". Age answers *how long since this session first started*, which equals *how long
+this process has been running* only for a session that ran once — the case that used to
+be the only one. A resumed session keeps its original `started_at` (D3) while its process
+is new, so a live resumed leg became sweepable from the moment D1 made it `running`, and
+at the default threshold a session first started more than a day ago is sweepable
+immediately and permanently, for as long as the leg runs.
+
+This one is fixed rather than disclosed, because the promise was already written down and
+D1 would have falsified it. `_doctor` now requires both conditions: the age past the
+threshold **and** the recorded process gone, the same veto `li kill --all-stale` already
+applied. Sessions with no recorded PID are unchanged, so a crash that never wrote markers
+is still reapable, and the help text now states the predicate it enforces.
+
+The general shape, worth naming because two consumers hit it in one change: a sweep that
+selects on `status` and thresholds on `started_at` is asking "is this stuck" and answering
+"is this old". Those were the same question while a session had exactly one leg.
 
 ## Alternatives considered
 
@@ -311,9 +354,15 @@ becomes trustworthy as a description of whether the session is executing.
 
 Harder: session status is no longer monotonic. A consumer that latched "terminal
 means finished forever" must tolerate reopening. The enumeration above found no such
-consumer, and the two that change behaviour do so in ways stated there. Reopening is
+consumer, and the three that change behaviour do so in ways stated there. Reopening is
 also the system's only sanctioned exit from a terminal status, so it carries an
 override audit row rather than passing as an ordinary write.
+
+Also harder, and the part most likely to bite a future change: a session's row now
+describes the *current* leg, while its start time still describes the session. Anything
+that derives "how long has this been running" from `started_at` is correct only for a
+session that ran once. Two sweeps made that assumption, both found here; a third written
+later would make it again, and the row gives no hint that the two ever differ.
 
 New failure mode: a crashed resume leg leaves the session `running` with a null
 `ended_at` where previously it would have kept a stale terminal status. That is
@@ -338,3 +387,14 @@ refused, and the notice regression above would fail for a reason unrelated to wh
 is testing — a silent rejection reads from the outside exactly like the defect. Pin
 them separately so a future change to the override path fails at the write, not at the
 notice three steps downstream.
+
+A third regression covers the markers, and it takes two cases because there are two ways
+to get them wrong. Reopening must leave the row carrying this process's markers, merged
+with whatever unrelated metadata was already there; and it must install them through the
+status write rather than a second one, which is pinned by making any separate write fail
+the test. A version that writes them separately passes the first case and fails the
+second, which is the point: the window is the defect, not the value.
+
+A fourth covers the sweep: a session past the age threshold whose recorded process is
+alive is left alone, and one whose process is gone is swept, in the same run. Asserting
+only the first would pass against a sweep that had stopped working.
