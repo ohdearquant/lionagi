@@ -261,7 +261,17 @@ def create_playbook(name: str, data: dict[str, Any] | None = None) -> dict[str, 
         allow_unicode=True,
         width=120,
     )
-    path.write_text(new_text)
+    # Exclusive create closes the check-then-write TOCTOU: two concurrent
+    # create requests (FastAPI runs sync routes in a threadpool) could both
+    # pass the path.exists() guard above, and a plain write_text would let the
+    # second silently clobber the first. "x" mode makes the write itself the
+    # exclusion; re-raise with the same clean message the guard uses so the
+    # route's 409 detail never leaks the absolute path.
+    try:
+        with open(path, "x", encoding="utf-8") as f:
+            f.write(new_text)
+    except FileExistsError:
+        raise FileExistsError(f"Playbook '{stem}' already exists") from None
 
     return get_playbook(stem)
 

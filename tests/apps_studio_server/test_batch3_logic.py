@@ -303,6 +303,36 @@ class TestCreatePlaybook:
 
         assert (tmp_path / "dup.playbook.yaml").read_text() == "description: original\n"
 
+    def test_create_is_atomic_against_toctou_race(self, tmp_path, monkeypatch):
+        """A file that appears AFTER the path.exists() guard but before the
+        write must not be clobbered. FastAPI runs the sync route in a
+        threadpool, so two concurrent creates can both pass the guard; the
+        exclusive-create write must raise FileExistsError (mapped to 409),
+        not silently overwrite the race winner."""
+        import lionagi.studio.services.playbooks as svc
+
+        monkeypatch.setattr(svc, "_PLAYBOOKS_ROOT", tmp_path)
+        target = tmp_path / "race-pb.playbook.yaml"
+
+        # yaml.dump is the last step before the write, so plant a "winner" file
+        # there — the guard at the top of create_playbook has already passed
+        # with the path absent, reproducing the check-then-write window.
+        real_dump = svc.yaml.dump
+
+        def _dump_then_plant(*args, **kwargs):
+            text = real_dump(*args, **kwargs)
+            if not target.exists():
+                target.write_text("description: winner\n")
+            return text
+
+        monkeypatch.setattr(svc.yaml, "dump", _dump_then_plant)
+
+        with pytest.raises(FileExistsError):
+            svc.create_playbook("race-pb", {"description": "loser"})
+
+        # The racing winner survives untouched; the loser did not clobber it.
+        assert target.read_text() == "description: winner\n"
+
     def test_create_invalid_spec_raises_and_does_not_write(self, tmp_path, monkeypatch):
         import lionagi.studio.services.playbooks as svc
 
