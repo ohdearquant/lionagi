@@ -12,6 +12,7 @@ no real command is spawned.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -122,15 +123,68 @@ def test_delivery_spawn_error_is_recorded(job, monkeypatch):
     assert outcome["error"] == "OSError"
 
 
-def test_malformed_command_override_delivers_nothing(job, monkeypatch):
+@pytest.mark.parametrize(
+    ("override", "reason"),
+    [
+        ("not json [", "delivery_command_is_not_valid_json"),
+        (json.dumps({"cmd": "notify"}), "delivery_command_is_not_a_list_of_strings"),
+        (json.dumps(["notify", 7]), "delivery_command_is_not_a_list_of_strings"),
+        (json.dumps([]), "delivery_command_is_empty"),
+    ],
+)
+def test_unusable_command_override_is_recorded_as_a_failure(job, monkeypatch, override, reason):
+    """A configured-but-unusable notifier must not read as an unconfigured one.
+
+    Both deliver nothing, so the record is the only thing that tells them apart.
+    A caller waiting on a completion notice that can never arrive has to be able
+    to find out why, and the named reason is where it says so.
+    """
     calls: list = []
     monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: calls.append(a))
     _no_settings_notifier(monkeypatch)
 
-    rc = _notify_hook.main(["--run-id", job, "--status", "completed", "--command", "not json ["])
+    rc = _notify_hook.main(["--run-id", job, "--status", "completed", "--command", override])
+    assert rc == 0  # the terminal path still never fails
+    assert calls == []  # and nothing is spawned
+    outcome = jobs._read_job(job)["notify_delivery"]
+    assert outcome["attempted"] is False
+    assert outcome["ok"] is False
+    assert outcome["error"] == reason
+    # The distinction that matters: this is not the shape a silent default takes.
+    assert outcome != {"attempted": False}
+
+
+def test_configured_notifier_without_a_command_is_recorded_as_a_failure(job, monkeypatch):
+    """A notifier this hook cannot run is configured, not absent."""
+    calls: list = []
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.resolve_notify_config",
+        lambda **_kw: SimpleNamespace(argv=None),
+    )
+
+    rc = _notify_hook.main(["--run-id", job, "--status", "completed"])
     assert rc == 0
     assert calls == []
-    assert jobs._read_job(job)["notify_delivery"] == {"attempted": False}
+    outcome = jobs._read_job(job)["notify_delivery"]
+    assert outcome["error"] == "configured_notifier_has_no_delivery_command"
+
+
+def test_unreadable_notify_settings_are_recorded_as_a_failure(job, monkeypatch):
+    """Settings that raise must not be reported as no notifier configured."""
+    calls: list = []
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: calls.append(a))
+
+    def _boom(**_kw):
+        raise RuntimeError("settings file is corrupt")
+
+    monkeypatch.setattr("lionagi.state.lifecycle.notify_settings.resolve_notify_config", _boom)
+
+    rc = _notify_hook.main(["--run-id", job, "--status", "completed"])
+    assert rc == 0  # a broken settings file still cannot break the terminal path
+    assert calls == []
+    outcome = jobs._read_job(job)["notify_delivery"]
+    assert outcome["error"] == "notify_settings_unreadable:RuntimeError"
 
 
 def test_unknown_run_id_is_noop(monkeypatch, tmp_path):

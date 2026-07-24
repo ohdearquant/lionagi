@@ -16,6 +16,8 @@ raise into the CLI's terminal path):
    ``{status}``, ``{label}`` and ``{target}`` are substituted into its argv and
    the same fields are also offered as a JSON payload on stdin. With nothing
    configured there is no delivery — the out-of-the-box default is silence.
+   A notifier that *is* configured but cannot be used is recorded as a delivery
+   failure with a named reason, so it never passes for that default silence.
 
 The command is run by absolute argv (never through a shell), so a caller wires
 whatever notifier they use (a webhook client, a messaging CLI) without this
@@ -40,32 +42,53 @@ from . import jobs
 _DELIVERY_TIMEOUT_S = 30
 
 
-def _resolve_command(override: str | None, *, cwd: str | None) -> list[str] | None:
-    """The delivery argv template, or None when nothing is configured.
+def _resolve_command(
+    override: str | None, *, cwd: str | None
+) -> tuple[list[str] | None, str | None]:
+    """The delivery argv template, paired with why there is none.
+
+    Returns ``(argv, None)`` when a template resolved, ``(None, None)`` when
+    nothing is configured, and ``(None, reason)`` when something *was*
+    configured but cannot be used.
+
+    That third case is why this returns a pair. "Nobody asked for a notice" and
+    "a notice was asked for and this hook cannot send it" are opposite
+    situations, and reporting both as no-delivery makes a broken notifier
+    indistinguishable from an unconfigured one — which for a detached run is the
+    worst outcome available, because the caller is waiting on a notice that will
+    never come and nothing anywhere says so. Silence is only ever correct when
+    it was chosen.
 
     *override* (a JSON argv list) wins outright. Otherwise lionagi's own
     ``notify.on_terminal`` setting is reused as the single delivery-config
-    surface — its ``exec`` adapter's argv is the template. Any resolution
-    failure yields None (no delivery), never an exception.
+    surface — its ``exec`` adapter's argv is the template. Nothing here raises:
+    the run has already finished, so a resolution failure is reported through
+    the returned reason, never thrown into the CLI's terminal path.
     """
     if override:
         try:
             parsed = json.loads(override)
         except json.JSONDecodeError:
-            return None
-        if isinstance(parsed, list) and all(isinstance(tok, str) for tok in parsed) and parsed:
-            return parsed
-        return None
+            return None, "delivery_command_is_not_valid_json"
+        if not isinstance(parsed, list) or not all(isinstance(tok, str) for tok in parsed):
+            return None, "delivery_command_is_not_a_list_of_strings"
+        if not parsed:
+            return None, "delivery_command_is_empty"
+        return parsed, None
 
     try:
         from lionagi.state.lifecycle.notify_settings import resolve_notify_config
 
         resolved = resolve_notify_config(project_dir=cwd)
-    except Exception:  # noqa: BLE001 — a settings problem must never break the terminal path
-        return None
-    if resolved is None or resolved.argv is None:
-        return None
-    return list(resolved.argv)
+    except Exception as exc:  # noqa: BLE001 — a settings problem must never break the terminal path
+        return None, f"notify_settings_unreadable:{type(exc).__name__}"
+    if resolved is None:
+        return None, None  # no notifier configured — silence by choice
+    if resolved.argv is None:
+        # A notifier is configured but is not an exec adapter, so it has no argv
+        # this hook can run. Configured-and-unusable, not unconfigured.
+        return None, "configured_notifier_has_no_delivery_command"
+    return list(resolved.argv), None
 
 
 def _substitute(argv: list[str], fields: dict[str, str]) -> list[str]:
@@ -120,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
 
     target = args.target or os.environ.get("LIONAGI_MCP_NOTIFY_TARGET") or ""
     label = (job or {}).get("label") or (job or {}).get("kind") or "run"
-    template = _resolve_command(
+    template, unusable = _resolve_command(
         args.command or os.environ.get("LIONAGI_MCP_NOTIFY_COMMAND"),
         cwd=(job or {}).get("cwd"),
     )
@@ -132,6 +155,11 @@ def main(argv: list[str] | None = None) -> int:
             "target": target,
         }
         outcome = _deliver(_substitute(template, fields), fields)
+    elif unusable:
+        # Configured but unusable. Recorded as a failure so job_status shows a
+        # notifier that cannot deliver, rather than the silence of one that was
+        # never asked to.
+        outcome = {"attempted": False, "ok": False, "exit_code": None, "error": unusable}
     else:
         outcome = {"attempted": False}  # nothing configured — not a failure
     jobs.record_notify_delivery(args.run_id, outcome)
