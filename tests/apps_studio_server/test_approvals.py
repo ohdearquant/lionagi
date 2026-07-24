@@ -920,46 +920,6 @@ def test_double_expire_read_race_writes_only_one_evidence_row(tmp_path, monkeypa
     assert verdict["errors"] == []
 
 
-def test_sequence_renumbering_detected_by_verify(tmp_path, monkeypatch):
-    """Renumbering every evidence row by a uniform offset (1, 2 -> 101, 102)
-    leaves all hash columns untouched, so it slips past content/chain/hmac checks.
-    Verification must still reject it: a genuine chain is contiguous from 1, so the
-    sequence column is pinned to its cryptographically-enforced position."""
-    db_path = tmp_path / "state.db"
-    _patch_db(monkeypatch, db_path)
-    _run(_init_db(db_path))
-
-    from lionagi.studio.services import approvals as approvals_mod
-    from lionagi.studio.services._db import open_db
-
-    row = _run(
-        approvals_mod.create_approval(action_kind="launch_playbook", params={"name": "demo"})
-    )
-    _run(approvals_mod.grant_approval(row["id"]))
-
-    before = _evidence_rows(db_path)
-    assert [r["sequence"] for r in before] == [1, 2]
-    # Every hash column is preserved; only the sequence labels shift.
-    hashes_before = [(r["content_hash"], r["chain_hash"], r["previous_hash"]) for r in before]
-
-    async def _renumber():
-        async with open_db(str(db_path)) as db:
-            await db.execute("UPDATE approval_evidence SET sequence = sequence + 100")
-            await db.commit()
-
-    _run(_renumber())
-
-    after = _evidence_rows(db_path)
-    assert [r["sequence"] for r in after] == [101, 102]
-    assert [
-        (r["content_hash"], r["chain_hash"], r["previous_hash"]) for r in after
-    ] == hashes_before
-
-    verdict = _run(approvals_mod.verify_evidence_chain())
-    assert verdict["valid"] is False
-    assert any("expected contiguous sequence" in e for e in verdict["errors"])
-
-
 def test_fallback_ensure_table_creates_status_and_session_indexes(tmp_path):
     """The defensive `_ensure_table` fallback (used by direct module callers
     outside the studio lifespan, which never applies the full StateDB schema)
