@@ -9,6 +9,7 @@ import asyncio
 import importlib
 import logging
 
+import anyio
 import pytest
 
 from lionagi.ln.concurrency import CapacityLimiter
@@ -469,6 +470,86 @@ async def test_emit_best_effort_task_set_is_empty_after_successful_emission():
     assert executor._signal_tasks == set()
     assert len(signals) == 1
     assert signals[0].op_id == "x"
+
+
+# ---------------------------------------------------------------------------
+# _emit_best_effort: must deliver signals on every anyio backend, not just
+# asyncio — the executor's own open task group (self._tg) is the scheduling
+# mechanism during a real execute()/execute_stream() run, so it works
+# identically under Trio, which has no ambient loop to post a detached task
+# onto.
+#
+# These use a bare `anyio.run(..., backend="trio")` rather than
+# `@pytest.mark.anyio` — this repo's `asyncio_mode = "auto"` pytest-asyncio
+# setting hijacks any `async def` test regardless of markers, so a
+# `[trio]`-parametrized anyio test still silently executes on asyncio. Only a
+# synchronous test driving its own `anyio.run` is guaranteed to actually
+# exercise the Trio backend.
+# ---------------------------------------------------------------------------
+
+
+def test_pause_signal_delivered_on_reactive_executor_under_trio():
+    async def op_fn(**kw):
+        return "ok"
+
+    from lionagi.session.signal import NodePaused
+
+    async def _body():
+        session = _session_with_ops(op=op_fn)
+        signals: list[NodePaused] = []
+        session.observe(NodePaused, handler=lambda s, _ctx: signals.append(s))
+
+        graph = Graph()
+        graph.add_node(Operation(operation="op"))
+
+        executor = ReactiveExecutor(session=session, graph=graph, max_concurrent=5)
+        executor.pause()
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(executor.execute)
+            with anyio.fail_after(2):
+                while not signals:
+                    await anyio.sleep(0.01)
+            executor.resume()
+
+        assert len(signals) == 1
+        assert signals[0].op_id
+
+    anyio.run(_body, backend="trio")
+
+
+def test_pause_signal_delivered_on_base_executor_under_trio():
+    """Same as above but for the plain (non-reactive) execute() path, which
+    schedules operations via _alcall rather than a task group it owns for
+    running nodes — it must still open one for signal delivery."""
+
+    async def op_fn(**kw):
+        return "ok"
+
+    from lionagi.session.signal import NodePaused
+
+    async def _body():
+        session = _session_with_ops(op=op_fn)
+        signals: list[NodePaused] = []
+        session.observe(NodePaused, handler=lambda s, _ctx: signals.append(s))
+
+        graph = Graph()
+        graph.add_node(Operation(operation="op"))
+
+        executor = DependencyAwareExecutor(session=session, graph=graph, max_concurrent=5)
+        executor.pause()
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(executor.execute)
+            with anyio.fail_after(2):
+                while not signals:
+                    await anyio.sleep(0.01)
+            executor.resume()
+
+        assert len(signals) == 1
+        assert signals[0].op_id
+
+    anyio.run(_body, backend="trio")
 
 
 # ---------------------------------------------------------------------------

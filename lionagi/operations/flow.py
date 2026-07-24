@@ -145,6 +145,11 @@ class DependencyAwareExecutor:
         # NodeSpawned), retained until each finishes so a weakly referenced
         # task can't disappear before it runs. See _emit_best_effort().
         self._signal_tasks: set[asyncio.Task[Any]] = set()
+        # AnyIO task group open for the duration of execute()/execute_stream(),
+        # used by _emit_best_effort() to schedule signals on any backend
+        # (including Trio, which has no ambient "current loop" to post a
+        # detached task onto). None outside of a running execute*() call.
+        self._tg: Any = None
         # Out-of-band handle for a control poller running alongside this flow
         # to reach pause()/resume()/context/graph; set synchronously before
         # any awaiting so it's available the instant execute() starts.
@@ -175,7 +180,12 @@ class DependencyAwareExecutor:
             for node in nodes:
                 _name = node.metadata.get("reference_id", str(node.id)[:8])
                 self.on_progress(str(node.id), _name, "queued", 0.0)
-        await self._alcall(nodes, self._execute_operation, limiter=limiter)
+        async with create_task_group() as tg:
+            self._tg = tg
+            try:
+                await self._alcall(nodes, self._execute_operation, limiter=limiter)
+            finally:
+                self._tg = None
 
         completed_ops = [
             op_id for op_id in self.results.keys() if op_id not in self.skipped_operations
@@ -277,16 +287,27 @@ class DependencyAwareExecutor:
             logger.warning("flow signal construction failed: %s", e)
             return
 
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return  # no running loop — tests / sync contexts, not a failure
-
         async def _emit() -> None:
             try:
                 await self.session.emit(sig)
             except Exception as e:  # noqa: BLE001
                 logger.warning("flow signal emission failed for %s: %s", type(sig).__name__, e)
+
+        if self._tg is not None:
+            # Backend-agnostic path: an execute()/execute_stream() task
+            # group is open, so schedule directly on it. This is the only
+            # way to fire-and-forget under Trio, which has no ambient loop
+            # to post a detached task onto outside of a task group.
+            try:
+                self._tg.start_soon(_emit)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("flow signal scheduling failed for %s: %s", type(sig).__name__, e)
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no running loop — tests / sync contexts, not a failure
 
         coro = _emit()
         try:
@@ -716,7 +737,6 @@ class ReactiveExecutor(DependencyAwareExecutor):
         self._spawn_count = 0
         self._dropped_spawns: list[dict[str, Any]] = []
         self._running = False
-        self._tg: Any = None
         self._graph_lock = threading.Lock()
         self._seen_reqs: set[int] = set()
         self._spawned_ids: set[Any] = set()
@@ -788,6 +808,8 @@ class ReactiveExecutor(DependencyAwareExecutor):
         self.session.observe(EscalationRequest, self._on_bus_escalation)
         self._running = True
 
+        driver_done = ConcurrencyEvent()
+
         async def _driver():
             # Owns its own task group (entered/exited in THIS task). The
             # generator must not span a task group across `yield` — anyio forbids
@@ -803,27 +825,65 @@ class ReactiveExecutor(DependencyAwareExecutor):
                         tg.start_soon(self._run_tracked, node)
             finally:
                 await send.aclose()
+                driver_done.set()
 
-        # asyncio-only: flow_stream needs a detached task for the driver
-        # coroutine so the generator can yield events as they arrive.
-        # anyio's create_task_group cannot be used here because the generator
-        # must outlive any single task group scope.
-        driver = asyncio.ensure_future(_driver())
+        try:
+            asyncio.get_running_loop()
+            on_asyncio = True
+        except RuntimeError:
+            on_asyncio = False
+
+        if on_asyncio:
+            # A Task posted straight onto the asyncio loop isn't tracked on
+            # any anyio cancel-scope stack, so it survives this generator
+            # being abandoned (e.g. consumer `break`s without an explicit
+            # aclose()) without corrupting anything.
+            driver = asyncio.ensure_future(_driver())
+            try:
+                async with recv:
+                    async for event in recv:
+                        yield event
+                await driver  # normal end: surface any driver exception
+            finally:
+                self._running = False
+                self._tg = None
+                self._result_sink = None
+                observer.unobserve(self._on_bus_spawn)
+                observer.unobserve(self._on_bus_escalation)
+                if not driver.done():  # early break / consumer close: tear down
+                    driver.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await driver
+            return
+
+        # Non-asyncio anyio backends (Trio) have no ambient loop to post a
+        # detached task onto, so the driver's task group is entered/exited
+        # manually, in this generator's own task, via the context-manager
+        # protocol instead of `async with` (which anyio forbids spanning a
+        # yield). Unlike the asyncio path above, a caller on these backends
+        # that abandons this generator early without closing it (e.g. `break`
+        # with no `contextlib.aclosing`) will not cleanly unwind: Trio has no
+        # way to safely exit a task group from outside the task that entered
+        # it, which is inherent to structured concurrency, not specific to
+        # this driver.
+        driver_tg = anyio.create_task_group()
+        await driver_tg.__aenter__()
+        driver_tg.start_soon(_driver)
         try:
             async with recv:
                 async for event in recv:
                     yield event
-            await driver  # normal end: surface any driver exception
+            await driver_tg.__aexit__(None, None, None)  # normal end: surface any driver exception
         finally:
             self._running = False
             self._tg = None
             self._result_sink = None
             observer.unobserve(self._on_bus_spawn)
             observer.unobserve(self._on_bus_escalation)
-            if not driver.done():  # early break / consumer close: tear down
-                driver.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await driver
+            if not driver_done.is_set():  # early break / consumer close: tear down
+                driver_tg.cancel_scope.cancel()
+                with contextlib.suppress(get_cancelled_exc_class(), Exception):
+                    await driver_tg.__aexit__(None, None, None)
 
     async def _run_tracked(self, node: Operation) -> None:
         token = _CURRENT_OP.set(node)
