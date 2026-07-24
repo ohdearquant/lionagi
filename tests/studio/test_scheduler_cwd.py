@@ -405,6 +405,60 @@ async def test_resolve_action_cwd_refuses_empty_string_action_cwd(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_resolve_action_cwd_refuses_a_relative_persisted_root(monkeypatch):
+    """A relative execution root resolves against the daemon's own cwd, so
+    honoring one performs exactly the substitution this resolver refuses.
+    "." is the case that always succeeds an existence check."""
+    from lionagi.studio.scheduler.engine import (
+        SchedulerCwdInheritRefusedError,
+        _resolve_action_cwd,
+    )
+
+    fake_get_project = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "lionagi.studio.services.projects.get_project", fake_get_project, raising=False
+    )
+    monkeypatch.delenv("LIONAGI_SCHEDULER_CWD", raising=False)
+
+    schedule = {"id": "sched-relative", "action_cwd": ".", "action_project": None}
+    with pytest.raises(SchedulerCwdInheritRefusedError):
+        await _resolve_action_cwd(schedule)
+
+
+@pytest.mark.asyncio
+async def test_resolve_action_cwd_refuses_a_relative_registered_project_path(monkeypatch):
+    """Registered project paths are not validated when they are written, so a
+    relative one reaches the resolver and must be rejected here."""
+    from lionagi.studio.scheduler.engine import (
+        SchedulerCwdInheritRefusedError,
+        _resolve_action_cwd,
+    )
+
+    fake_get_project = AsyncMock(return_value={"name": "relproj", "path": ".", "source": "studio"})
+    monkeypatch.setattr(
+        "lionagi.studio.services.projects.get_project", fake_get_project, raising=False
+    )
+    monkeypatch.delenv("LIONAGI_SCHEDULER_CWD", raising=False)
+
+    schedule = {"id": "sched-relproj", "action_cwd": None, "action_project": "relproj"}
+    with pytest.raises(SchedulerCwdInheritRefusedError):
+        await _resolve_action_cwd(schedule)
+
+
+@pytest.mark.asyncio
+async def test_resolve_action_cwd_ignores_a_relative_env_fallback(monkeypatch):
+    """The operator-set default gets the same test as everything else: a
+    relative value there is the daemon's cwd under another name."""
+    from lionagi.studio.scheduler.engine import _resolve_action_cwd
+
+    monkeypatch.setenv("LIONAGI_SCHEDULER_CWD", ".")
+
+    schedule = {"id": "sched-relenv", "action_cwd": None, "action_project": None}
+
+    assert await _resolve_action_cwd(schedule) is None
+
+
+@pytest.mark.asyncio
 async def test_resolve_action_cwd_empty_root_falls_through_to_project_and_warns(
     tmp_path, monkeypatch, caplog
 ):

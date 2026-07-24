@@ -239,6 +239,30 @@ class SchedulerCwdInheritRefusedError(RuntimeError):
         )
 
 
+def _is_usable_execution_root(root: str | None) -> bool:
+    """A usable execution root is an existing **absolute** directory.
+
+    Absoluteness is part of the test, not a stylistic preference. A relative
+    path is interpreted against the daemon's own working directory, so
+    honoring one substitutes the daemon's cwd for the root the schedule
+    configured -- the exact substitution this module refuses. ``"."`` is the
+    case that always succeeds, and ``""`` is the same bug wearing a different
+    hat, since ``Path("")`` is ``Path(".")``.
+
+    Defining it once, here, is deliberate: every site that has to decide
+    whether a root is usable asks this function, so the resolver, the refusal
+    and the persistence boundary cannot drift into disagreeing about what a
+    root means. The persistence boundary already requires an existing absolute
+    directory when a schedule is written; this is the same rule applied on the
+    read side, where legacy rows and registered project paths arrive without
+    having passed that check.
+    """
+    if not root:
+        return False
+    path = Path(root)
+    return path.is_absolute() and path.is_dir()
+
+
 async def _resolve_action_cwd(schedule: dict) -> str | None:
     """Resolve the working directory for a scheduled subprocess spawn.
 
@@ -287,11 +311,13 @@ async def _resolve_action_cwd(schedule: dict) -> str | None:
     """
     action_cwd = schedule.get("action_cwd")
     if action_cwd:
-        if Path(action_cwd).is_dir():
+        if _is_usable_execution_root(action_cwd):
             return action_cwd
         _log.warning(
-            "Schedule %s: persisted execution root %r no longer exists on "
-            "disk (e.g. a pruned worktree); trying action_project, then "
+            "Schedule %s: persisted execution root %r is not usable -- it must "
+            "be an existing absolute directory. It may be a pruned worktree, "
+            "or a relative path, which would resolve against the daemon's own "
+            "cwd rather than the configured root. Trying action_project, then "
             "refusing rather than spawning into a missing or substituted "
             "directory.",
             schedule.get("id"),
@@ -321,13 +347,17 @@ async def _resolve_action_cwd(schedule: dict) -> str | None:
         if project:
             path = project.get("path")
             if path:
-                if Path(path).is_dir():
+                if _is_usable_execution_root(path):
                     return path
                 _log.warning(
-                    "Schedule %s: action_project %r is registered at %r, but "
-                    "that path no longer exists on disk (e.g. a pruned "
-                    "worktree); refusing rather than spawning into a missing "
-                    "or substituted directory.",
+                    "Schedule %s: action_project %r is registered at %r, which "
+                    "is not a usable execution root -- it must be an existing "
+                    "absolute directory. The path may no longer exist (e.g. a "
+                    "pruned worktree), or be relative, which would resolve "
+                    "against the daemon's own cwd. Registered project paths "
+                    "are not validated on the way in, so this is checked here. "
+                    "Refusing rather than spawning into a missing or "
+                    "substituted directory.",
                     schedule.get("id"),
                     action_project,
                     path,
@@ -357,7 +387,7 @@ async def _resolve_action_cwd(schedule: dict) -> str | None:
     # Ownerless pre-migration rows only: with no configured root to honor,
     # an operator-set directory is a better default than the daemon's own.
     env_cwd = os.environ.get("LIONAGI_SCHEDULER_CWD")
-    if env_cwd and Path(env_cwd).is_dir():
+    if _is_usable_execution_root(env_cwd):
         return env_cwd
 
     _log.warning(
