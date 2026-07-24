@@ -73,8 +73,14 @@ identity. `Element` satisfies the protocol through its `id` field without
 inheriting it (a runtime-checkable Protocol cannot be a pydantic base), so
 every `Element` subclass conforms automatically.
 
-Id resolution (`ID.get_id`, `validate_order`) and `item_type` validation are
-structural to match, so nothing Pile admits is later unreachable by identity.
+Id resolution (`ID.get_id`, `validate_order`) is structural to match, so
+nothing Pile admits is later unreachable by identity. `item_type` normalizes
+the classes you pass but deliberately does not judge conformance: a class that
+only assigns `self.id` in `__init__` declares nothing at class level while its
+instances conform perfectly, so any class-level test would reject exactly the
+types the pile itself accepts. Conformance is checked per item at admission,
+where there is a real object to inspect.
+
 Serializing a Pile is the one Element-shaped boundary that remains: dumping
 calls `to_dict()` on each item, which a bare duck-typed object does not
 provide.

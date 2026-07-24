@@ -117,22 +117,34 @@ class TestPileAdmissionIsStructural:
         assert len(pile) == 0
 
     def test_item_type_accepts_an_observable_shaped_type(self):
-        """A restricted item_type is validated structurally: a class whose
-        instances expose ``id`` is accepted, whether or not it inherits."""
+        """A restricted item_type accepts a class whose instances expose
+        ``id``, whether it declares one at class level or not."""
 
-        class DuckType:
+        class DeclaredId:
             id: object
 
-        pile = Pile(item_type={DuckType})
-        assert DuckType in pile.item_type
+        assert DeclaredId in Pile(item_type={DeclaredId}).item_type
+        # _Duck only assigns self.id in __init__, so it declares nothing at
+        # class level. Its instances still conform, so the type is admissible.
+        assert _Duck in Pile(item_type={_Duck}).item_type
 
-    def test_item_type_rejects_a_type_without_id(self):
-        class NoIdType:
-            pass
+    def test_item_type_admits_instances_of_an_instance_only_duck(self):
+        """The type a pile accepts and the items it admits agree.
 
-        with pytest.raises(ValidationError) as excinfo:
-            Pile(item_type={NoIdType})
-        assert "id" in excinfo.value.details.get("expected", "")
+        A class-level check for ``id`` would reject _Duck as an item_type while
+        an unrestricted pile happily admits _Duck instances. Conformance is a
+        property of the instance, so it is enforced at admission.
+        """
+        duck = _Duck()
+        pile = Pile(item_type={_Duck})
+        pile.include(duck)
+        assert duck in pile
+        assert pile[duck.id] is duck
+
+    def test_item_type_rejects_a_non_type(self):
+        """item_type entries must be classes; conformance is not judged here."""
+        with pytest.raises(ValidationError):
+            Pile(item_type={"not-a-type-and-not-importable"})
 
 
 class TestPublicContractMatchesEnforcement:

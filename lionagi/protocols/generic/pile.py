@@ -32,29 +32,20 @@ T = TypeVar("T", bound=E)
 _ADAPTER_REGISTERED = False
 
 
-def _type_is_observable(cls: type, /) -> bool:
-    """Type-level counterpart to ``isinstance(obj, Observable)``.
-
-    ``isinstance(obj, Observable)`` inspects a concrete instance for an ``id``,
-    but item_type validation only has the class, so it cannot ask a live object.
-    Observable is a structural (data-member) protocol, and such protocols do not
-    support ``issubclass`` by design, so this checks the class directly: a class
-    is an admissible pile item type when ``id`` is declared anywhere in its MRO
-    -- as an attribute/descriptor, a pydantic model field, or an annotation
-    (dataclasses, typed attributes) -- i.e. its instances carry an ``id`` and
-    structurally satisfy Observable.
-    """
-    for base in getattr(cls, "__mro__", (cls,)):
-        if "id" in getattr(base, "__dict__", {}):
-            return True
-        if "id" in getattr(base, "__annotations__", {}):
-            return True
-        if "id" in getattr(base, "model_fields", {}):
-            return True
-    return False
-
-
 def _validate_item_type(value, /) -> set[type[T]] | None:
+    """Normalize item_type to a set of classes.
+
+    Conformance is deliberately not checked here. Observable is a structural
+    protocol, so whether something is admissible is a property of an instance
+    (does it expose an ``id``?), not of its class -- a class that only assigns
+    ``self.id`` in ``__init__`` declares nothing at class level yet its
+    instances conform perfectly. Any class-level approximation would reject
+    exactly those types while the pile itself accepts their instances.
+
+    Admission stays honest instead: every item is checked against Observable
+    as it is included, so a class that cannot produce conforming instances
+    simply never gets one past that gate.
+    """
     if value is None:
         return None
 
@@ -72,28 +63,16 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
             except Exception as e:
                 raise ValidationError.from_value(
                     i,
-                    expected="An importable Observable type.",
+                    expected="An importable type.",
                     cause=e,
                 ) from e
         if isinstance(subcls, type):
             if is_union_type(subcls):
-                members = union_members(subcls)
-                for m in members:
-                    if not _type_is_observable(m):
-                        raise ValidationError.from_value(
-                            m, expected="An Observable type (instances expose 'id')."
-                        )
-                    out.add(m)
-            elif not _type_is_observable(subcls):
-                raise ValidationError.from_value(
-                    subcls, expected="An Observable type (instances expose 'id')."
-                )
+                out.update(union_members(subcls))
             else:
                 out.add(subcls)
         else:
-            raise ValidationError.from_value(
-                i, expected="An Observable type (instances expose 'id')."
-            )
+            raise ValidationError.from_value(i, expected="A type.")
 
     if len(value) != len(set(value)):
         raise ValidationError("Detected duplicated item types in item_type.")

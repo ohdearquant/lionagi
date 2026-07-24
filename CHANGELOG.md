@@ -13,9 +13,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   an object exposing an `id` was rejected by `Pile`. `Observable` is now a single
   runtime-checkable `Protocol` — any object with an `id` conforms, and `Element` satisfies it
   through its `id` field rather than by inheritance. Identity resolution (`ID.get_id`,
-  `validate_order`) and `item_type` validation are structural to match, so an admitted
-  duck-typed item can also be found, retrieved, and removed by identity instead of being
-  admitted but unreachable. Serializing a Pile still requires items to provide `to_dict()`.
+  `validate_order`) is structural to match, so an admitted duck-typed item can also be found,
+  retrieved, and removed by identity instead of being admitted but unreachable. `item_type`
+  normalizes the classes it is given without judging conformance, since a class that assigns
+  `self.id` in `__init__` declares nothing at class level while its instances conform; the check
+  belongs at admission, where a real object can be inspected. Serializing a Pile still requires
+  items to provide `to_dict()`.
 
 ## [0.30.2] - 2026-07-23
 

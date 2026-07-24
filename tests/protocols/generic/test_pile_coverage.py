@@ -49,12 +49,20 @@ class TestValidateItemType:
         with pytest.raises(ValidationError, match="duplicated"):
             _validate_item_type([Element, Element])
 
-    def test_non_observable_type_raises_validation_error(self):
+    def test_any_class_is_accepted_conformance_is_checked_at_admission(self):
+        """item_type normalizes classes; it does not judge conformance.
+
+        Observable is structural, so conformance belongs to instances, not
+        classes: a class assigning ``self.id`` in ``__init__`` declares nothing
+        at class level yet its instances conform. Rejecting such classes here
+        would contradict the pile's own admission rule, so the check lives at
+        admission, where a real object can be inspected.
+        """
+
         class PlainClass:
             pass
 
-        with pytest.raises(ValidationError):
-            _validate_item_type(PlainClass)
+        assert _validate_item_type(PlainClass) == {PlainClass}
 
 
 # ---------------------------------------------------------------------------

@@ -179,8 +179,10 @@ def append(self, item, /) -> None: ...
 > `lionagi/protocols/_concepts.py`: any object exposing an `id` satisfies
 > `isinstance(item, Observable)` and is admissible. `Element` conforms through its `id` field
 > without inheriting it (a Protocol cannot be a pydantic base). Id resolution (`ID.get_id`,
-> `validate_order`) and `item_type` validation are structural to match, so an admitted
-> duck-typed item stays reachable by identity. The two-symbol split is still gone — there is
+> `validate_order`) is structural to match, so an admitted duck-typed item stays reachable by
+> identity. `item_type` normalizes classes without judging conformance — a class assigning
+> `self.id` in `__init__` declares nothing at class level yet its instances conform, so the
+> check belongs at admission. The two-symbol split is still gone — there is
 > one `Observable`, and it is structural, so `isinstance` and Pile admission agree.
 > Serializing a Pile remains the one Element-shaped boundary (dumping calls `to_dict()`).
 > The 2026-07-20 decision to make admission nominal was a regression and is reverted;
@@ -225,10 +227,12 @@ def _validate_collections(
 ) -> dict[UUID, T]: ...
 ```
 
-**Exact semantics**:
+**Exact semantics** (as decided at the time; the admission rule below was later
+reverted — see the current-state note above for what the code does today):
 
-- With no `item_type`, every item must be an instance of the nominal ABC. Merely exposing an `id`
-  property through the structural protocol is not sufficient.
+- ~~With no `item_type`, every item must be an instance of the nominal ABC. Merely exposing an `id`
+  property through the structural protocol is not sufficient.~~ Superseded: admission is
+  structural again, and `item_type` no longer judges class-level conformance.
 - `item_type` accepts classes and unions. A fully qualified class string is resolved when it reaches
   validation as a member of a list, tuple, or set. A scalar non-UUID string is currently discarded
   by Pile's `to_list_type` normalizer before the resolver sees it. Every resolved member must be a
