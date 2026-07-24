@@ -356,3 +356,58 @@ class TestReferentialIntegrityOnInit:
                 items={"collections": []},
                 progressions={"collections": [prog]},
             )
+
+
+# ---------------------------------------------------------------------------
+# Duplicate progression names (construction / deserialization / rename)
+# ---------------------------------------------------------------------------
+
+
+class TestDuplicateProgressionNames:
+    """A single-value name index cannot silently retain only the last
+    duplicate; construction and deserialization must reject duplicates."""
+
+    def test_init_rejects_duplicate_names(self):
+        nodes = _make_nodes(2)
+        prog1 = Progression(order=[nodes[0].id], name="duplicate")
+        prog2 = Progression(order=[nodes[1].id], name="duplicate")
+        with pytest.raises(ItemExistsError):
+            Flow(
+                items={"collections": nodes},
+                progressions={"collections": [prog1, prog2]},
+            )
+
+    def test_from_dict_rejects_duplicate_names(self):
+        flow, nodes = _flow_with_items(2)
+        prog1 = Progression(order=[nodes[0].id], name="duplicate")
+        prog2 = Progression(order=[nodes[1].id], name="duplicate")
+        flow.add_progression(prog1)
+        # Bypass add_progression's own duplicate guard to get a Flow with
+        # two same-named progressions, mirroring what a stale/hand-built
+        # payload could deserialize into.
+        flow.progressions.include(prog2)
+        data = flow.to_dict()
+        with pytest.raises(ItemExistsError):
+            Flow.from_dict(data)
+
+    def test_remove_by_uuid_purges_stale_name_after_direct_rename(self):
+        flow, nodes = _flow_with_items(1)
+        prog = _make_progression(nodes, name="before")
+        flow.add_progression(prog)
+
+        prog.name = "after"  # direct mutation; Flow has no back-reference
+        flow.remove_progression(prog.id)
+
+        assert "before" not in flow._progression_names
+        assert "after" not in flow._progression_names
+
+    def test_get_progression_resolves_new_name_after_direct_rename(self):
+        flow, nodes = _flow_with_items(1)
+        prog = _make_progression(nodes, name="before")
+        flow.add_progression(prog)
+
+        prog.name = "after"
+
+        with pytest.raises(ItemNotFoundError):
+            flow.get_progression("before")
+        assert flow.get_progression("after") is prog

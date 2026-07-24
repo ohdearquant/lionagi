@@ -193,6 +193,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
     # may call @synchronized siblings while the wrapper already holds it.
     _lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
     _async_lock: ConcurrencyLock = PrivateAttr(default_factory=ConcurrencyLock)
+    _next_cursor: Iterator[T] | None = PrivateAttr(default=None)
 
     @classmethod
     def _validate_before(cls, data: dict[str, Any]) -> dict[str, Any]:
@@ -372,9 +373,12 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
             yield self.collections[key]
 
     def __next__(self) -> T:
+        if self._next_cursor is None:
+            self._next_cursor = iter(self)
         try:
-            return next(iter(self))
+            return next(self._next_cursor)
         except StopIteration:
+            self._next_cursor = None
             raise StopIteration("End of pile") from None
 
     @synchronized
@@ -491,6 +495,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         state = self.__dict__.copy()
         state.pop("_lock", None)
         state.pop("_async_lock", None)
+        state.pop("_next_cursor", None)
         return state
 
     def __setstate__(self, state):
@@ -502,6 +507,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
             object.__setattr__(self, "__pydantic_private__", priv)
         priv["_lock"] = threading.RLock()
         priv["_async_lock"] = ConcurrencyLock()
+        priv["_next_cursor"] = None
 
     def __deepcopy__(self, memo):
         import copy
@@ -513,11 +519,12 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
             object.__setattr__(result, k, copy.deepcopy(v, memo))
         priv = {}
         for k, v in (self.__pydantic_private__ or {}).items():
-            if k in ("_lock", "_async_lock"):
+            if k in ("_lock", "_async_lock", "_next_cursor"):
                 continue
             priv[k] = copy.deepcopy(v, memo)
         priv["_lock"] = threading.RLock()
         priv["_async_lock"] = ConcurrencyLock()
+        priv["_next_cursor"] = None
         object.__setattr__(result, "__pydantic_private__", priv)
         return result
 
@@ -867,8 +874,8 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
 
     @classmethod
     def list_adapters(cls) -> list[str]:
-        syn_ = cls._adapter_registry._reg.keys()
-        asy_ = cls._async_registry._reg.keys()
+        syn_ = cls._registry()._reg.keys()
+        asy_ = cls._areg()._reg.keys()
         return list(set(syn_) | set(asy_))
 
     def adapt_to(self, obj_key: str, many=False, **kw: Any) -> Any:

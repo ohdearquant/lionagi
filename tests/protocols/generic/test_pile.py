@@ -151,6 +151,13 @@ def test_iter(sample_pile, sample_elements):
         assert item in sample_elements
 
 
+def test_next_advances_across_repeated_calls(sample_pile, sample_elements):
+    for element in sample_elements:
+        assert next(sample_pile) == element
+    with pytest.raises(StopIteration):
+        next(sample_pile)
+
+
 def test_strict_mode():
     strict_pile = Pile(
         collections=[MockElement(value=i) for i in range(3)],
