@@ -190,6 +190,7 @@ async def _write_evidence(
     created_at = time.time()
     payload = {
         "id": evidence_id,
+        "sequence": sequence,
         "event_type": event_type,
         "approval_id": approval_id,
         "action_kind": action_kind,
@@ -265,10 +266,18 @@ async def verify_evidence_chain() -> dict[str, Any]:
 
     key = os.getenv("LIONAGI_STUDIO_EVIDENCE_HMAC_KEY")
     expected_previous = GENESIS_HASH
+    expected_sequence = 1
     for row in rows:
         total += 1
+        if row["sequence"] != expected_sequence:
+            errors.append(
+                f"sequence {row['sequence']}: expected sequence {expected_sequence} "
+                "(non-contiguous)"
+            )
+        expected_sequence += 1
         payload = {
             "id": row["id"],
+            "sequence": row["sequence"],
             "event_type": row["event_type"],
             "approval_id": row["approval_id"],
             "action_kind": row["action_kind"],
