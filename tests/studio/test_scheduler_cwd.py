@@ -700,6 +700,32 @@ async def test_backfill_skips_rows_that_already_have_action_cwd(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_backfill_skips_rows_whose_action_cwd_is_an_empty_string(monkeypatch, tmp_path):
+    """An empty action_cwd is a root the schedule supplied, not an unset one.
+    The resolver fails closed on it rather than substituting a directory, so
+    the backfill must not hand that row a path by a side door either."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    project_dir = tmp_path / "resolvable"
+    project_dir.mkdir()
+    fake_get_project = AsyncMock(return_value={"name": "p1", "path": str(project_dir)})
+    monkeypatch.setattr(
+        "lionagi.studio.services.projects.get_project", fake_get_project, raising=False
+    )
+
+    svc = _make_svc()
+    svc.list_schedules = AsyncMock(
+        return_value=[_minimal_schedule(id="sched-bf-empty", action_cwd="", action_project="p1")]
+    )
+    engine = SchedulerEngine(svc=svc)
+
+    await engine._backfill_action_cwd()
+
+    svc.update_schedule.assert_not_called()
+    fake_get_project.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_backfill_skips_rows_with_no_action_project(monkeypatch):
     """A pre-migration row with no action_project at all has nothing to
     backfill from and is left with action_cwd unset."""

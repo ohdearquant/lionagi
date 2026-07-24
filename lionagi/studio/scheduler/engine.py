@@ -424,7 +424,12 @@ class SchedulerEngine:
             _log.exception("Failed to load schedules for startup action_cwd backfill")
             return
         for s in schedules:
-            if s.get("action_cwd") or not s.get("action_project"):
+            # ``is not None``, not truthiness: a present-but-empty action_cwd
+            # is an execution root the schedule supplied, which the resolver
+            # fails closed on rather than substituting. Backfilling it here
+            # would hand that row a different directory by a side door, which
+            # is the substitution the resolver refuses.
+            if s.get("action_cwd") is not None or not s.get("action_project"):
                 continue
             try:
                 from lionagi.studio.services.projects import get_project
