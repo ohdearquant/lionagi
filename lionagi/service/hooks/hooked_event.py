@@ -99,6 +99,10 @@ class HookedEvent(Event):
             yield chunk
 
         # Post-stream hook failure: data already sent, must not reraise — log at WARNING only.
+        # A hook exception is recorded on h_ev (status FAILED/CANCELLED/ABORTED,
+        # execution.error set) rather than raised out of h_ev.invoke() -- see
+        # HookRegistry.post_invocation -- so a plain try/except around the
+        # call never observes it; the recorded status must be checked instead.
         if h_ev := self._post_invoke_hook_event:
             try:
                 await h_ev.invoke()
@@ -108,6 +112,16 @@ class HookedEvent(Event):
                     _hook_exc,
                     exc_info=True,
                 )
+            else:
+                if h_ev.execution.status in (
+                    EventStatus.FAILED,
+                    EventStatus.CANCELLED,
+                    EventStatus.ABORTED,
+                ):
+                    _logger.warning(
+                        "Post-stream hook failed (data already sent): %s",
+                        h_ev.execution.error,
+                    )
             await global_hook_logger.alog(h_ev)
 
     def create_pre_invoke_hook(

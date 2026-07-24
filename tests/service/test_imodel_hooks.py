@@ -484,6 +484,95 @@ class TestiModelHooks:
 
 
 # ---------------------------------------------------------------------------
+# PreEventCreate replacement — a successful hook response must be used as
+# the created event instead of a fresh one built from kwargs.
+# ---------------------------------------------------------------------------
+
+
+class TestPreEventCreateReplacement:
+    @pytest.mark.asyncio
+    async def test_hook_replacement_event_is_used(self, mock_response):
+        imodel = iModel(
+            provider="openai",
+            model="gpt-4.1-mini",
+            api_key="test-key",
+        )
+        replacement_holder = {}
+
+        async def pre_create_hook(event_type, **kwargs):
+            replacement = imodel.create_api_calling(
+                messages=[{"role": "user", "content": "replaced"}]
+            )
+            replacement_holder["event"] = replacement
+            return replacement
+
+        imodel.hook_registry = HookRegistry(hooks={HookEventTypes.PreEventCreate: pre_create_hook})
+
+        with patch.object(
+            imodel.endpoint,
+            "call",
+            return_value=mock_response.json.return_value,
+        ):
+            result = await imodel.invoke(messages=[{"role": "user", "content": "original"}])
+
+        assert result.id == replacement_holder["event"].id
+        assert result.payload["messages"][0]["content"] == "replaced"
+        assert result.status == EventStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_hook_default_none_still_creates_from_kwargs(self, mock_response):
+        """A hook that returns None (the documented default-creation signal)
+        must leave the ordinary kwargs-built event untouched."""
+        imodel = iModel(
+            provider="openai",
+            model="gpt-4.1-mini",
+            api_key="test-key",
+        )
+
+        async def pre_create_hook(event_type, **kwargs):
+            return None
+
+        imodel.hook_registry = HookRegistry(hooks={HookEventTypes.PreEventCreate: pre_create_hook})
+
+        with patch.object(
+            imodel.endpoint,
+            "call",
+            return_value=mock_response.json.return_value,
+        ):
+            result = await imodel.invoke(messages=[{"role": "user", "content": "original"}])
+
+        assert result.payload["messages"][0]["content"] == "original"
+        assert result.status == EventStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_hook_incompatible_result_falls_back_to_default_creation(self, mock_response):
+        """A hook response that is not an instance of create_event_type is
+        not a usable replacement — fall back to the normal kwargs-built
+        event rather than propagating the incompatible value."""
+        imodel = iModel(
+            provider="openai",
+            model="gpt-4.1-mini",
+            api_key="test-key",
+        )
+
+        async def pre_create_hook(event_type, **kwargs):
+            return {"not": "an event"}
+
+        imodel.hook_registry = HookRegistry(hooks={HookEventTypes.PreEventCreate: pre_create_hook})
+
+        with patch.object(
+            imodel.endpoint,
+            "call",
+            return_value=mock_response.json.return_value,
+        ):
+            result = await imodel.invoke(messages=[{"role": "user", "content": "original"}])
+
+        assert isinstance(result, APICalling)
+        assert result.payload["messages"][0]["content"] == "original"
+        assert result.status == EventStatus.COMPLETED
+
+
+# ---------------------------------------------------------------------------
 # D12 – process_chunk raises exception from exit tuple
 # ---------------------------------------------------------------------------
 
