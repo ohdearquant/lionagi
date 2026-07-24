@@ -1075,6 +1075,23 @@ async def test_find_entity_prefix_match(temp_db_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_find_entity_raises_on_ambiguous_prefix(temp_db_path: Path) -> None:
+    """Two invocations sharing a short id prefix must raise instead of
+    silently resolving to whichever row the query planner returns first."""
+    from lionagi.cli._util import AmbiguousIdError
+
+    async with StateDB() as db:
+        await db.create_invocation(
+            {"id": "abc111111111", "skill": "test", "started_at": time.time()}
+        )
+        await db.create_invocation(
+            {"id": "abc222222222", "skill": "test", "started_at": time.time()}
+        )
+        with pytest.raises(AmbiguousIdError):
+            await _find_entity(db, "abc")
+
+
+@pytest.mark.asyncio
 async def test_find_entity_not_found(temp_db_path: Path) -> None:
     async with StateDB() as db:
         result = await _find_entity(db, "nonexistentid999")

@@ -234,7 +234,13 @@ async def _query_plays_for_show(db: Any, show_id: str) -> list[dict[str, Any]]:
 
 
 async def _find_entity(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | None:
-    """Resolve entity_id across all entity tables; returns (entity_type, row) or None."""
+    """Resolve entity_id across all entity tables; returns (entity_type, row) or None.
+
+    Raises ``AmbiguousIdError`` if a short id prefix matches more than one row
+    in a single table.
+    """
+    from ._util import AmbiguousIdError
+
     searches = [
         ("session", "sessions"),
         ("invocation", "invocations"),
@@ -248,12 +254,14 @@ async def _find_entity(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | 
         )
         if row:
             return entity_type, row
-        row = await db.fetch_one(
-            f"SELECT * FROM {table} WHERE id LIKE ?",  # noqa: S608
+        rows = await db.fetch_all(
+            f"SELECT * FROM {table} WHERE id LIKE ? ORDER BY id",  # noqa: S608
             (entity_id + "%",),
         )
-        if row:
-            return entity_type, row
+        if len(rows) > 1:
+            raise AmbiguousIdError(table, entity_id, len(rows))
+        if rows:
+            return entity_type, rows[0]
     return None
 
 

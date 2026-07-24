@@ -525,6 +525,26 @@ async def test_resolve_entity_by_short_prefix(temp_db_path: Path):
         assert row["id"] == sid
 
 
+async def test_resolve_entity_raises_on_ambiguous_prefix(temp_db_path: Path):
+    """Two sessions sharing a short id prefix must raise instead of silently
+    picking one — the caller cannot tell it targeted the wrong run."""
+    from lionagi.cli._util import AmbiguousIdError
+
+    async with StateDB() as db:
+        pid1 = str(uuid.uuid4())
+        pid2 = str(uuid.uuid4())
+        await db.create_progression(pid1)
+        await db.create_progression(pid2)
+        await db.create_session(
+            {"id": "abc111111111", "progression_id": pid1, "started_at": time.time()}
+        )
+        await db.create_session(
+            {"id": "abc222222222", "progression_id": pid2, "started_at": time.time()}
+        )
+        with pytest.raises(AmbiguousIdError):
+            await _resolve_entity(db, "abc")
+
+
 async def test_resolve_entity_returns_none_for_unknown(temp_db_path: Path):
     async with StateDB() as db:
         result = await _resolve_entity(db, "deadbeef00000000")
@@ -726,6 +746,41 @@ async def test_do_kill_unknown_id_returns_1(temp_db_path: Path):
 
     rc = await _do_kill("00000000deadbeef")
     assert rc == 1
+
+
+async def test_do_kill_ambiguous_prefix_returns_1(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A short id shared by two runs must fail closed, not kill whichever
+    run the query planner happened to return first."""
+    logged: list[str] = []
+    monkeypatch.setattr("lionagi.cli.kill.log_error", lambda msg: logged.append(msg))
+
+    async with StateDB() as db:
+        pid1 = str(uuid.uuid4())
+        pid2 = str(uuid.uuid4())
+        await db.create_progression(pid1)
+        await db.create_progression(pid2)
+        await db.create_session(
+            {
+                "id": "abc111111111",
+                "progression_id": pid1,
+                "status": "running",
+                "started_at": time.time(),
+            }
+        )
+        await db.create_session(
+            {
+                "id": "abc222222222",
+                "progression_id": pid2,
+                "status": "running",
+                "started_at": time.time(),
+            }
+        )
+
+    rc = await _do_kill("abc")
+    assert rc == 1
+    assert any("ambiguous" in msg for msg in logged)
 
 
 async def test_do_kill_non_running_returns_1(temp_db_path: Path):
