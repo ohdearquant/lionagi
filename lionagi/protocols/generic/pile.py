@@ -193,6 +193,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
     # may call @synchronized siblings while the wrapper already holds it.
     _lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
     _async_lock: ConcurrencyLock = PrivateAttr(default_factory=ConcurrencyLock)
+    _iterator: Iterator[T] | None = PrivateAttr(default=None)
 
     @classmethod
     def _validate_before(cls, data: dict[str, Any]) -> dict[str, Any]:
@@ -372,9 +373,15 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
             yield self.collections[key]
 
     def __next__(self) -> T:
+        # `iter(self)` must be the SAME generator across calls - a fresh one
+        # per call would always yield the first element instead of advancing,
+        # so the live iterator is cached on the instance.
+        if self._iterator is None:
+            self._iterator = iter(self)
         try:
-            return next(iter(self))
+            return next(self._iterator)
         except StopIteration:
+            self._iterator = None
             raise StopIteration("End of pile") from None
 
     @synchronized
@@ -867,8 +874,8 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
 
     @classmethod
     def list_adapters(cls) -> list[str]:
-        syn_ = cls._adapter_registry._reg.keys()
-        asy_ = cls._async_registry._reg.keys()
+        syn_ = cls._registry()._reg.keys()
+        asy_ = cls._areg()._reg.keys()
         return list(set(syn_) | set(asy_))
 
     def adapt_to(self, obj_key: str, many=False, **kw: Any) -> Any:

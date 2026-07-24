@@ -561,10 +561,17 @@ class Branch(Element, Relational):
             else self.parse_model
         )
 
+        cloned_messages = []
+        old_to_new_id: dict = {}
+        for msg in self.msgs.messages:
+            cloned = msg.clone()
+            old_to_new_id[msg.id] = cloned.id
+            cloned_messages.append(cloned)
+
         branch_clone = Branch(
             system=system,
             user=self.user,
-            messages=[msg.clone() for msg in self.msgs.messages],
+            messages=cloned_messages,
             tools=tools,
             chat_model=chat_model,
             parse_model=parse_model,
@@ -573,6 +580,19 @@ class Branch(Element, Relational):
         for message in branch_clone.msgs.messages:
             message.sender = sender or self.id
             message.recipient = branch_clone.id
+
+        # A source current_progression is an intentional eviction of some
+        # durable messages from the active context. Cloned messages get new
+        # IDs, so the source's evicted-subset progression has to be remapped
+        # onto them - otherwise it's silently dropped and Branch.progression
+        # falls back to the clone's complete (uninentionally un-evicted)
+        # message set.
+        source_progression = self.metadata.get("current_progression")
+        if source_progression is not None:
+            remapped_order = [
+                old_to_new_id[uid] for uid in source_progression.order if uid in old_to_new_id
+            ]
+            branch_clone.metadata["current_progression"] = Progression(order=remapped_order)
 
         return branch_clone
 

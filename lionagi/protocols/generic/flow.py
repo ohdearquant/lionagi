@@ -38,6 +38,11 @@ class Flow(Element, Generic[E, P]):
         description="Workflow stages as named progressions.",
     )
     _progression_names: dict[str, UUID] = PrivateAttr(default_factory=dict)
+    # Reverse of `_progression_names` (uuid -> indexed name). Progression.name
+    # is a plain mutable field, so a progression's live `.name` can drift from
+    # whatever name it was indexed under; this lets removal/rename find the
+    # actually-indexed name instead of trusting the (possibly stale) live one.
+    _progression_ids: dict[UUID, str] = PrivateAttr(default_factory=dict)
     _lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
 
     @model_validator(mode="after")
@@ -58,6 +63,7 @@ class Flow(Element, Generic[E, P]):
         for progression in self.progressions:
             if progression.name:
                 self._progression_names[progression.name] = progression.id
+                self._progression_ids[progression.id] = progression.name
 
     # ==================== Serialization ====================
 
@@ -113,10 +119,12 @@ class Flow(Element, Generic[E, P]):
         )
         # Rebuild private attrs that model_construct skips
         flow._progression_names = {}
+        flow._progression_ids = {}
         flow._lock = threading.RLock()
         for prog in flow.progressions:
             if prog.name:
                 flow._progression_names[prog.name] = prog.id
+                flow._progression_ids[prog.id] = prog.name
         return flow
 
     # ==================== Progression Management ====================
@@ -135,20 +143,49 @@ class Flow(Element, Generic[E, P]):
             self.progressions.include(progression)
             if progression.name:
                 self._progression_names[progression.name] = progression.id
+                self._progression_ids[progression.id] = progression.name
 
     def remove_progression(self, key: UUID | str | P) -> None:
         """Remove progression by UUID, name, or instance; raises ItemNotFoundError if absent."""
         with self._lock:
             if isinstance(key, str) and key in self._progression_names:
                 uid = self._progression_names.pop(key)
+                self._progression_ids.pop(uid, None)
                 self.progressions.pop(uid)
                 return
 
             uid = ID.get_id(key)
-            prog = self.progressions[uid]
-            if prog.name and prog.name in self._progression_names:
-                del self._progression_names[prog.name]
+            # Look up the name this uuid was actually indexed under, rather
+            # than trusting the progression's current (possibly renamed)
+            # `.name` - the two can disagree if it was renamed directly.
+            indexed_name = self._progression_ids.pop(uid, None)
+            if indexed_name is not None:
+                self._progression_names.pop(indexed_name, None)
             self.progressions.pop(uid)
+
+    def rename_progression(self, key: UUID | str | P, new_name: str | None) -> None:
+        """Rename an owned progression, keeping the Flow's name index in sync.
+
+        Raises ItemExistsError if `new_name` already names a different
+        progression, ItemNotFoundError if `key` does not resolve.
+        """
+        with self._lock:
+            progression = self.get_progression(key)
+            if (
+                new_name
+                and new_name in self._progression_names
+                and self._progression_names[new_name] != progression.id
+            ):
+                raise ItemExistsError(f"Progression with name '{new_name}' already exists.")
+
+            old_name = self._progression_ids.pop(progression.id, None)
+            if old_name is not None:
+                self._progression_names.pop(old_name, None)
+
+            progression.name = new_name
+            if new_name:
+                self._progression_names[new_name] = progression.id
+                self._progression_ids[progression.id] = new_name
 
     def get_progression(self, key: UUID | str | P) -> P:
         """Return progression by UUID, name, or instance; raises ItemNotFoundError if absent."""
@@ -211,6 +248,7 @@ class Flow(Element, Generic[E, P]):
             self.items.clear()
             self.progressions.clear()
             self._progression_names.clear()
+            self._progression_ids.clear()
 
     def __repr__(self) -> str:
         name_str = f", name='{self.name}'" if self.name else ""

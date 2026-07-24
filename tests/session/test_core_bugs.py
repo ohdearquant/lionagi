@@ -327,6 +327,49 @@ class TestBranchStateRegressions:
         d2 = restored.to_dict()
         assert d2["metadata"]["clone_from"] == d1["metadata"]["clone_from"]
 
+    def test_split_preserves_current_progression(self):
+        """A source branch's evicted-context subset must survive split().
+
+        current_progression is an intentional eviction of some durable
+        messages from the active context. Cloned messages get new IDs, so
+        the source progression has to be remapped onto the clone's messages
+        instead of being dropped (which silently un-evicts the message).
+        """
+        from lionagi.protocols.generic.progression import Progression
+
+        s = Session()
+        b = s.new_branch()
+        b.msgs.add_message(instruction="first")
+        b.msgs.add_message(instruction="second")
+        kept = list(b.msgs.messages)[-1]
+        b.metadata["current_progression"] = Progression(order=[kept.id])
+        assert len(b.progression) == 1
+
+        clone = s.split(b.id)
+
+        assert len(clone.msgs.messages) == 2
+        assert len(clone.progression) == 1
+        cloned_active_msg = clone.msgs.messages[list(clone.progression)[0]]
+        assert cloned_active_msg.metadata.get("clone_from") == str(kept.id)
+
+    async def test_asplit_preserves_current_progression(self):
+        """Async split must remap current_progression the same as sync split."""
+        from lionagi.protocols.generic.progression import Progression
+
+        s = Session()
+        b = s.new_branch()
+        b.msgs.add_message(instruction="first")
+        b.msgs.add_message(instruction="second")
+        kept = list(b.msgs.messages)[-1]
+        b.metadata["current_progression"] = Progression(order=[kept.id])
+
+        clone = await s.asplit(b.id)
+
+        assert len(clone.msgs.messages) == 2
+        assert len(clone.progression) == 1
+        cloned_active_msg = clone.msgs.messages[list(clone.progression)[0]]
+        assert cloned_active_msg.metadata.get("clone_from") == str(kept.id)
+
     def test_from_dict_does_not_mutate_snapshot(self):
         """Branch.from_dict must not strip fields out of the caller's snapshot."""
         import copy
