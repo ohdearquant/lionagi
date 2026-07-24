@@ -60,8 +60,23 @@ def _svc_validate_identifier(value: str | None, field_name: str) -> None:
 
 def _svc_validate_action_cwd(cwd: str | None) -> None:
     """Service-boundary check: an explicit action_cwd (ADR-0070 delta 1's persisted
-    execution root) must be an existing absolute directory."""
-    if not cwd:
+    execution root) must be an existing absolute directory.
+
+    ``None`` means "no execution root configured" and is allowed. A supplied
+    but empty/whitespace value is rejected rather than persisted: it is neither
+    a usable directory nor a clear, and the scheduler now fails closed on any
+    non-``None`` root it cannot resolve, so an empty root would only ever
+    surface later as a refused run.
+
+    The two conditions below are exactly
+    ``lionagi.studio.scheduler.engine._is_usable_execution_root``, spelled out
+    rather than called. That is deliberate and is the one intended exception to
+    routing every usability decision through that predicate: this is an input
+    validator whose product is the error message, and it tells a caller which
+    of the two rules they broke, where the predicate can only say "no". Keep
+    the two in step -- if the predicate gains a condition, this gains a
+    matching branch."""
+    if cwd is None:
         return
     p = Path(cwd)
     if not p.is_absolute():
@@ -524,9 +539,16 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     if not action_cwd and data.get("action_project"):
         from lionagi.studio.services.projects import get_project
 
+        from ..scheduler.engine import _is_usable_execution_root
+
         project = await get_project(data["action_project"])
         project_path = project.get("path") if project else None
-        if project_path and Path(project_path).is_dir():
+        # The same rule the resolver applies, so a root is never persisted here
+        # that the resolver would refuse to honor later. Registered project
+        # paths are not validated when the project is registered, so a relative
+        # one reaches this point; persisting it would snapshot "wherever the
+        # daemon started" as this schedule's execution root.
+        if _is_usable_execution_root(project_path):
             action_cwd = project_path
 
     schedule_id = uuid.uuid4().hex[:12]

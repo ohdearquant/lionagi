@@ -27,6 +27,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   provenance `register` already records while its `__module__` differs, so it stayed registered
   and silently took over a provider name a built-in serves, with no rejection diagnostic. The
   filter now identifies activation entries by that recorded provenance alone.
+- The studio scheduler no longer silently runs a scheduled action in the daemon's own working
+  directory when the schedule's configured execution root is unavailable. A subprocess started
+  without an explicit `cwd` inherits the daemon's directory, and `_resolve_action_cwd` fell through
+  to that inherit whenever a schedule's `action_cwd`/`action_project` could not be resolved to an
+  existing directory (e.g. after a worktree was pruned). When the daemon's own directory resolves
+  to a project, the spawn does not fail — it succeeds and runs the action in the wrong directory,
+  substituting the working directory (and anything a tool derives from it) for the one the schedule
+  configured. The resolver now fails closed for any schedule that carries an execution root, raising
+  `SchedulerCwdInheritRefusedError` (recorded as `run.failed.cwd_inherit_refused`) instead of
+  inheriting. Pre-migration rows that configured no execution root keep the legacy inherit-and-warn
+  behavior and are backfilled on daemon restart.
 
 ## [0.30.2] - 2026-07-23
 
