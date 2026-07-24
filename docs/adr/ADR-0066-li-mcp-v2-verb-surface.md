@@ -299,7 +299,9 @@ These apply uniformly to every verb, discrete and dispatched.
 - **Closed argument validation.** An unknown or misspelled parameter is rejected loudly,
   echoing the offending name back. Silently ignoring an unrecognized argument turns a typo
   into a wrong-but-successful call. `--extra-args` remains the documented escape hatch for
-  passing through flags the schema does not model, and its use is logged.
+  passing through flags the schema does not model, and its use is logged — on the submit
+  verbs that accept it, not on the generic dispatch verb, which rejects `extra_args`
+  outright per D3.
 - **Per-op error envelope.** Each op returns `{ok, tool, ...}`; a failing op returns
   `{ok: false, tool, error}`. The outer call returns an overall `status` of `success` or
   `partial` and **never throws for a per-op failure**. Callers check per-op `ok`.
