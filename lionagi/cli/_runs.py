@@ -1003,9 +1003,18 @@ async def _reopen_session_for_resume(db, session_id: str, existing_session: dict
     # transaction as the status: the sweeps select on status and then answer
     # "is it alive" from these markers, so a row that is running for even an
     # instant with the previous leg's markers is a row they can cancel.
-    node_metadata = existing_session.get("node_metadata") or {}
+    # Anything that is not a JSON object is dropped rather than raised on: every
+    # reader of this column already ignores what it cannot read as one, and a
+    # resume must not fail on its own bookkeeping. The markers are the part that
+    # has to be right.
+    node_metadata = existing_session.get("node_metadata")
     if isinstance(node_metadata, str):
-        node_metadata = json.loads(node_metadata)
+        try:
+            node_metadata = json.loads(node_metadata)
+        except ValueError:
+            node_metadata = None
+    if not isinstance(node_metadata, dict):
+        node_metadata = {}
 
     applied = await db.update_status(
         "session",

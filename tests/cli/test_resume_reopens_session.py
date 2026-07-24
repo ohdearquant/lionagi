@@ -215,6 +215,26 @@ async def test_reopening_takes_over_the_liveness_markers(temp_db_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stored", ["legacy", '"a string"', "[1, 2]", "{not json"])
+async def test_metadata_that_is_not_an_object_does_not_stop_the_resume(temp_db_path, stored):
+    """The column has held plain strings, and reading one as an object raises.
+    Every other reader of it ignores what it cannot read as an object; a resume
+    that raised here would lose the leg all of its state persistence, which is a
+    far worse outcome than dropping a value nothing else consults."""
+    async with StateDB() as db:
+        sid = await _finished_session(db)
+        await db.execute("UPDATE sessions SET node_metadata = ? WHERE id = ?", (stored, sid))
+
+        assert await _reopen_session_for_resume(db, sid, await db.get_session(sid)) is True
+
+        meta = (await db.get_session(sid))["node_metadata"]
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+
+    assert meta["pid"] == os.getpid()
+
+
+@pytest.mark.asyncio
 async def test_the_status_and_the_markers_move_together(temp_db_path):
     """Splitting them leaves a window where the row reads running while still
     carrying the previous leg's markers. The sweeps select on status and then

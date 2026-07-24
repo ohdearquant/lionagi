@@ -464,6 +464,26 @@ async def test_doctor_leaves_an_old_session_whose_process_is_still_running(
         assert (await db.get_session(dead))["status"] == "aborted"
 
 
+async def test_doctor_sweeps_a_session_whose_pid_was_recycled(temp_db_path: Path):
+    """A live PID is not proof on its own. The OS hands a dead session's number
+    to an unrelated process eventually, and a sweep that stopped there would
+    protect a genuinely stuck row for as long as that process lived."""
+    old = time.time() - (48 * 3600)
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running")
+        await db.execute(
+            "UPDATE sessions SET started_at = ?, node_metadata = ? WHERE id = ?",
+            # This process is alive, but it started at a different moment than
+            # the session recorded, so the number belongs to someone else now.
+            (old, json.dumps({"pid": os.getpid(), "pid_create_time": 1.0}), sid),
+        )
+
+    assert (await _doctor(stale_hours=24, dry_run=False))["swept"] == 1
+
+    async with StateDB() as db:
+        assert (await db.get_session(sid))["status"] == "aborted"
+
+
 async def test_doctor_handles_null_started_at_as_stale(temp_db_path: Path):
     """A 'running' row with NULL started_at is treated as stale regardless of the threshold."""
     async with StateDB() as db:
