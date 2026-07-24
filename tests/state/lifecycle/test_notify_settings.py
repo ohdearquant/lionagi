@@ -25,6 +25,7 @@ from lionagi.state.lifecycle.callbacks import (
     TerminalCallbackRegistry,
 )
 from lionagi.state.lifecycle.notify_settings import (
+    NotifyConfigResolution,
     ResolvedNotifyHandler,
     build_handler,
     register_settings_terminal_callback,
@@ -48,15 +49,16 @@ def _envelope() -> RunTerminalEnvelope:
 
 def test_string_form_resolves_to_argv():
     resolved = resolve_notify_config(override="notify-hook --flag value")
-    assert resolved == ResolvedNotifyHandler(argv=("notify-hook", "--flag", "value"))
+    assert resolved.handler == ResolvedNotifyHandler(argv=("notify-hook", "--flag", "value"))
+    assert resolved.reason is None  # nothing was rejected
 
 
 def test_string_form_preserves_quoted_shell_metacharacters_as_literal_args():
     # A quoted "|" is a literal argument character, not shell syntax -- must
     # not be flagged.
     resolved = resolve_notify_config(override='notify-hook "a|b"')
-    assert resolved is not None
-    assert resolved.argv == ("notify-hook", "a|b")
+    assert resolved.handler is not None
+    assert resolved.handler.argv == ("notify-hook", "a|b")
 
 
 @pytest.mark.parametrize(
@@ -73,14 +75,16 @@ def test_string_form_preserves_quoted_shell_metacharacters_as_literal_args():
 def test_shell_feature_string_resolves_disabled_with_diagnostic(caplog, command):
     with caplog.at_level(logging.WARNING):
         resolved = resolve_notify_config(override=command)
-    assert resolved is None
+    assert resolved.handler is None
+    assert resolved.reason == "on_terminal_command_requires_shell_features"
     assert any("shell features" in r.message for r in caplog.records)
 
 
 def test_unparseable_string_resolves_disabled_with_diagnostic(caplog):
     with caplog.at_level(logging.WARNING):
         resolved = resolve_notify_config(override='notify-hook "unbalanced')
-    assert resolved is None
+    assert resolved.handler is None
+    assert resolved.reason == "on_terminal_command_not_parseable"
     assert any("failed to parse" in r.message for r in caplog.records)
 
 
@@ -98,14 +102,16 @@ def test_unparseable_string_resolves_disabled_with_diagnostic(caplog):
 def test_empty_argv_resolves_disabled_with_diagnostic(caplog, source):
     with caplog.at_level(logging.WARNING):
         resolved = resolve_notify_config(override=source)
-    assert resolved is None
+    assert resolved.handler is None
+    assert resolved.reason == "on_terminal_command_is_empty"
     assert any("empty command" in r.message for r in caplog.records)
 
 
 def test_empty_argv_via_settings_path_also_disabled(caplog):
     with caplog.at_level(logging.WARNING):
         resolved = resolve_notify_config(settings={"notify": {"on_terminal": "   "}})
-    assert resolved is None
+    assert resolved.handler is None
+    assert resolved.reason == "on_terminal_command_is_empty"
     assert any("empty command" in r.message for r in caplog.records)
 
 
@@ -120,7 +126,7 @@ def test_mapping_form_exec_adapter():
             "filter": {"kinds": ["invocation"], "ids": ["inv-1"]},
         }
     )
-    assert resolved == ResolvedNotifyHandler(
+    assert resolved.handler == ResolvedNotifyHandler(
         argv=("notify-hook", "--x"),
         filter_kinds=("invocation",),
         filter_ids=("inv-1",),
@@ -131,36 +137,91 @@ def test_mapping_form_python_adapter():
     resolved = resolve_notify_config(
         override={"enabled": True, "adapter": {"kind": "python", "ref": "os.path:join"}}
     )
-    assert resolved == ResolvedNotifyHandler(python_ref="os.path:join")
+    assert resolved.handler == ResolvedNotifyHandler(python_ref="os.path:join")
 
 
 def test_mapping_form_explicit_enabled_false_is_disabled():
     resolved = resolve_notify_config(
         override={"enabled": False, "adapter": {"kind": "exec", "argv": ["should-not-run"]}}
     )
-    assert resolved is None
+    assert resolved.handler is None
+    # Turning notification off is a choice being honored, not a rejection, so it
+    # carries no reason -- it must not be reported to an operator as a failure.
+    assert resolved.reason is None
+
+
+def test_mapping_form_enabled_without_adapter_is_a_rejection(caplog):
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_notify_config(override={"enabled": True})
+    assert resolved.handler is None
+    assert resolved.reason == "enabled_without_adapter"
+    assert any("no adapter configured" in r.message for r in caplog.records)
+
+
+def test_mapping_form_without_enabled_or_adapter_is_silence_not_rejection(caplog):
+    # No warning today and no reason now: this mapping asked for nothing.
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_notify_config(override={"adapter": None})
+    assert resolved.handler is None
+    assert resolved.reason is None
+    assert not caplog.records
 
 
 def test_mapping_form_unknown_adapter_kind_disabled(caplog):
     with caplog.at_level(logging.WARNING):
         resolved = resolve_notify_config(override={"adapter": {"kind": "carrier-pigeon"}})
-    assert resolved is None
+    assert resolved.handler is None
+    assert resolved.reason == "adapter_kind_unsupported"
     assert any("must be 'exec' or 'python'" in r.message for r in caplog.records)
 
 
+def test_mapping_form_invalid_exec_argv_disabled(caplog):
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_notify_config(
+            override={"enabled": True, "adapter": {"kind": "exec", "argv": "notify-hook"}}
+        )
+    assert resolved.handler is None
+    assert resolved.reason == "exec_adapter_argv_not_a_list_of_strings"
+    assert any("requires an argv" in r.message for r in caplog.records)
+
+
+def test_mapping_form_invalid_python_ref_disabled(caplog):
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_notify_config(
+            override={"enabled": True, "adapter": {"kind": "python", "ref": "no-colon"}}
+        )
+    assert resolved.handler is None
+    assert resolved.reason == "python_adapter_ref_invalid"
+    assert any("'module:callable' ref" in r.message for r in caplog.records)
+
+
 @pytest.mark.parametrize(
-    ("filter_value", "diagnostic"),
+    ("filter_value", "diagnostic", "reason"),
     [
-        ("session", "filter must be a non-empty mapping"),
-        ({"unexpected": True}, "filter keys must be 'kinds' and/or 'ids'"),
-        ({"kinds": 0}, "filter.kinds must be a list of strings"),
+        ("session", "filter must be a non-empty mapping", "filter_not_a_mapping"),
+        (
+            {"unexpected": True},
+            "filter keys must be 'kinds' and/or 'ids'",
+            "filter_has_unknown_keys",
+        ),
+        (
+            {"kinds": 0},
+            "filter.kinds must be a list of strings",
+            "filter_kinds_not_a_list_of_strings",
+        ),
         (
             {"kinds": ["not-a-terminal-entity"]},
             "filter.kinds contains unsupported terminal entity kinds",
+            "filter_kinds_unsupported",
+        ),
+        (
+            {"ids": 1},
+            "filter.ids must be a list of strings",
+            "filter_ids_not_a_list_of_strings",
         ),
     ],
 )
-def test_mapping_form_invalid_filter_disables_handler(caplog, filter_value, diagnostic):
+def test_mapping_form_invalid_filter_disables_handler(caplog, filter_value, diagnostic, reason):
     with caplog.at_level(logging.WARNING):
         resolved = resolve_notify_config(
             override={
@@ -169,7 +230,8 @@ def test_mapping_form_invalid_filter_disables_handler(caplog, filter_value, diag
                 "filter": filter_value,
             }
         )
-    assert resolved is None
+    assert resolved.handler is None
+    assert resolved.reason == reason
     assert any(diagnostic in record.message for record in caplog.records)
 
 
@@ -190,7 +252,8 @@ def test_mapping_form_malformed_filter_kinds_disabled_not_raised(caplog, filter_
                 "filter": {"kinds": filter_value},
             }
         )  # must not raise
-    assert resolved is None
+    assert resolved.handler is None
+    assert resolved.reason == "filter_kinds_not_a_list_of_strings"
     assert any("filter.kinds must be a list of strings" in r.message for r in caplog.records)
 
 
@@ -211,7 +274,8 @@ def test_mapping_form_malformed_filter_ids_disabled_not_raised(caplog, filter_va
                 "filter": {"ids": filter_value},
             }
         )  # must not raise
-    assert resolved is None
+    assert resolved.handler is None
+    assert resolved.reason == "filter_ids_not_a_list_of_strings"
     assert any("filter.ids must be a list of strings" in r.message for r in caplog.records)
 
 
@@ -222,7 +286,10 @@ def test_malformed_settings_never_raises(caplog, monkeypatch):
     monkeypatch.setattr("lionagi.state.lifecycle.notify_settings.load_settings", _boom)
     with caplog.at_level(logging.WARNING):
         resolved = resolve_notify_config()  # must not raise
-    assert resolved is None
+    assert resolved.handler is None
+    # Settings that cannot be read may well have named a notifier; that is not
+    # the same as having configured none, so it is reported as a rejection.
+    assert resolved.reason == "settings_load_failed"
     assert any("settings resolution failed" in r.message for r in caplog.records)
 
 
@@ -232,13 +299,17 @@ def test_malformed_settings_never_raises(caplog, monkeypatch):
 def test_invalid_value_type_disabled(caplog):
     with caplog.at_level(logging.WARNING):
         resolved = resolve_notify_config(override=12345)
-    assert resolved is None
+    assert resolved.handler is None
+    assert resolved.reason == "on_terminal_not_string_or_mapping"
     assert any("must be a string or mapping" in r.message for r in caplog.records)
 
 
 def test_absent_notify_key_is_disabled():
-    assert resolve_notify_config(settings={}) is None
-    assert resolve_notify_config(settings={"notify": {}}) is None
+    """The one genuinely-unconfigured path: no handler and no reason."""
+    for settings in ({}, {"notify": {}}, {"notify": {"on_terminal": None}}):
+        resolved = resolve_notify_config(settings=settings)
+        assert resolved.handler is None
+        assert resolved.reason is None
 
 
 # ── Precedence: per-run override beats settings for its own scope only ───────
@@ -247,12 +318,12 @@ def test_absent_notify_key_is_disabled():
 def test_per_run_override_replaces_settings_handler():
     settings = {"notify": {"on_terminal": "settings-cmd"}}
     resolved_no_override = resolve_notify_config(settings=settings)
-    assert resolved_no_override is not None
-    assert resolved_no_override.argv == ("settings-cmd",)
+    assert resolved_no_override.handler is not None
+    assert resolved_no_override.handler.argv == ("settings-cmd",)
 
     resolved_with_override = resolve_notify_config(settings=settings, override="override-cmd")
-    assert resolved_with_override is not None
-    assert resolved_with_override.argv == ("override-cmd",)
+    assert resolved_with_override.handler is not None
+    assert resolved_with_override.handler.argv == ("override-cmd",)
 
 
 # ── No-shell safety: the exec adapter never launches via a shell ────────────
@@ -608,7 +679,7 @@ async def test_run_scoped_outcome_survives_a_later_run_allocation(monkeypatch, t
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(
         "lionagi.state.lifecycle.notify_settings.resolve_notify_config",
-        lambda **kw: ResolvedNotifyHandler(argv=("notify-hook",)),
+        lambda **kw: NotifyConfigResolution(handler=ResolvedNotifyHandler(argv=("notify-hook",))),
     )
 
     class _FakeProc:
@@ -672,7 +743,7 @@ async def test_unscoped_entity_records_nothing_never_last_writer_wins(monkeypatc
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(
         "lionagi.state.lifecycle.notify_settings.resolve_notify_config",
-        lambda **kw: ResolvedNotifyHandler(argv=("notify-hook",)),
+        lambda **kw: NotifyConfigResolution(handler=ResolvedNotifyHandler(argv=("notify-hook",))),
     )
 
     class _FakeProc:
@@ -696,7 +767,7 @@ async def test_unscoped_entity_records_nothing_never_last_writer_wins(monkeypatc
     # entity still gets a matching, non-attributing handler.
     from lionagi.state.lifecycle.notify_settings import build_handler, resolve_notify_config
 
-    default_handler = build_handler(resolve_notify_config())
+    default_handler = build_handler(resolve_notify_config().handler)
     registry.register("notify.settings.on_terminal", default_handler)
 
     other_envelope = RunTerminalEnvelope(
@@ -734,7 +805,7 @@ async def test_cancelled_exec_handler_still_kills_its_child_process_group(tmp_pa
         'time.sleep(30)" '
         f"{shlex.quote(str(pid_file))}"
     )
-    resolved = resolve_notify_config(override=cmd)
+    resolved = resolve_notify_config(override=cmd).handler
     assert resolved is not None
     handler = build_handler(resolved)
     assert handler is not None
@@ -962,8 +1033,10 @@ async def test_run_scoped_registration_honors_configured_filter(monkeypatch, tmp
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(
         "lionagi.state.lifecycle.notify_settings.resolve_notify_config",
-        lambda **kw: ResolvedNotifyHandler(
-            argv=("notify-hook",), filter_kinds=("play",), filter_ids=("play-allowed",)
+        lambda **kw: NotifyConfigResolution(
+            handler=ResolvedNotifyHandler(
+                argv=("notify-hook",), filter_kinds=("play",), filter_ids=("play-allowed",)
+            )
         ),
     )
 

@@ -60,7 +60,10 @@ def _register_schedule_notify(
     """
     if not notify_on or not notify_command:
         return None
-    resolved = resolve_notify_config(override=notify_command)
+    # A rejected command is already reported through the resolver's warning; this
+    # registration has no run record to carry a reason onto, so it only needs to
+    # know whether there is something to launch.
+    resolved = resolve_notify_config(override=notify_command).handler
     if resolved is None:
         return None
     handler = build_handler(resolved)
