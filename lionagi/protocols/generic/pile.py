@@ -33,6 +33,19 @@ _ADAPTER_REGISTERED = False
 
 
 def _validate_item_type(value, /) -> set[type[T]] | None:
+    """Normalize item_type to a set of classes.
+
+    Conformance is deliberately not checked here. Observable is a structural
+    protocol, so whether something is admissible is a property of an instance
+    (does it expose an ``id``?), not of its class -- a class that only assigns
+    ``self.id`` in ``__init__`` declares nothing at class level yet its
+    instances conform perfectly. Any class-level approximation would reject
+    exactly those types while the pile itself accepts their instances.
+
+    Admission stays honest instead: every item is checked against Observable
+    as it is included, so a class that cannot produce conforming instances
+    simply never gets one past that gate.
+    """
     if value is None:
         return None
 
@@ -50,22 +63,16 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
             except Exception as e:
                 raise ValidationError.from_value(
                     i,
-                    expected="A subclass of Observable.",
+                    expected="An importable type.",
                     cause=e,
                 ) from e
         if isinstance(subcls, type):
             if is_union_type(subcls):
-                members = union_members(subcls)
-                for m in members:
-                    if not issubclass(m, Observable):
-                        raise ValidationError.from_value(m, expected="A subclass of Observable.")
-                    out.add(m)
-            elif not issubclass(subcls, Observable):
-                raise ValidationError.from_value(subcls, expected="A subclass of Observable.")
+                out.update(union_members(subcls))
             else:
                 out.add(subcls)
         else:
-            raise ValidationError.from_value(i, expected="A subclass of Observable.")
+            raise ValidationError.from_value(i, expected="A type.")
 
     if len(value) != len(set(value)):
         raise ValidationError("Detected duplicated item types in item_type.")
@@ -163,7 +170,11 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
       protocol, so they exclude sync callers running in other threads.
     """
 
-    collections: dict[UUID, T] = Field(default_factory=dict)
+    # Value type is Any, not T: _validate_collections is the sole admission gate
+    # (structural -- any id-bearing Observable), so pydantic must not re-reject a
+    # duck-typed item it already accepted. The class stays Generic[T] and every
+    # accessor is still typed T; only the stored-field re-validation is relaxed.
+    collections: dict[UUID, Any] = Field(default_factory=dict)
     item_type: set | None = Field(
         default=None,
         description="Set of allowed types for items in the pile.",
