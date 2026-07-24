@@ -1,29 +1,128 @@
 from __future__ import annotations
 
+import logging
 import os
+import zoneinfo
 from pathlib import Path
+
+_logger = logging.getLogger(__name__)
+
+SYSTEM_LOCALTIME_LINK = Path("/etc/localtime")
+
+
+def _tz_search_roots() -> list[Path]:
+    """The zoneinfo directories a zone name is resolved against.
+
+    ``zoneinfo.TZPATH`` is the authority here: it is where the stdlib itself
+    looks, so a name expressed relative to one of these roots is a name that
+    will actually load. Each entry is included both as written and as it
+    resolves, because these are commonly symlinks — on macOS
+    ``/usr/share/zoneinfo`` points at ``/usr/share/zoneinfo.default``, and a
+    path resolved through the link matches only the second form.
+    """
+    roots: list[Path] = []
+    for entry in zoneinfo.TZPATH:
+        candidate = Path(entry)
+        for form in (candidate, _resolved(candidate)):
+            if form is not None and form not in roots:
+                roots.append(form)
+    return roots
+
+
+def _resolved(path: Path) -> Path | None:
+    """``path.resolve()``, or None when the filesystem refuses to answer.
+
+    Symlink loops surface as RuntimeError on some Python versions and OSError
+    on others, so both are treated as "no answer". This is called while
+    computing a module constant at import, where an escaping exception makes
+    the package unimportable rather than merely mis-zoned.
+    """
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return None
+
+
+def _zone_file_for_name(name: str) -> Path | None:
+    """The tzfile the stdlib will actually open for *name*.
+
+    ``ZoneInfo`` takes the first match in ``TZPATH`` order, so this walks the
+    roots in that same order rather than guessing.
+    """
+    for entry in zoneinfo.TZPATH:
+        candidate = Path(entry) / name
+        if candidate.is_file():
+            return _resolved(candidate)
+    return None
+
+
+def _zone_name_from_path(path: Path, roots: list[Path]) -> str | None:
+    """Express *path* as a zone name that reopens *path*.
+
+    Containment alone is not enough. When several roots are configured, an
+    earlier one holding the same key shadows a later one, so a name derived
+    from the root that happens to contain the file can load a different
+    tzfile with different rules — the same silent-wrong-zone failure this
+    resolver exists to prevent, one level in. A candidate is therefore
+    accepted only if resolving it the way the stdlib will arrives back at the
+    file we started from.
+    """
+    for root in roots:
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            continue
+        name = "/".join(relative.parts)
+        if name and _zone_file_for_name(name) == path:
+            return name
+    return None
 
 
 def _system_local_tz_name() -> str:
     """Best-effort resolution of the system's IANA timezone name.
 
-    Checks ``$TZ`` first, then falls back to reading the ``/etc/localtime``
-    symlink (the standard way Unix hosts point at their zoneinfo entry).
-    Returns "UTC" if neither resolves — the daemon still runs correctly,
-    just without local-time cron semantics until LIONAGI_SCHEDULER_TZ or the
-    host's timezone is configured.
+    Checks ``$TZ`` first, then reads the ``/etc/localtime`` symlink — the
+    standard way Unix hosts point at their zoneinfo entry — and expresses it
+    relative to the zoneinfo roots the stdlib searches.
+
+    Deriving the name from the search roots rather than from a directory name
+    removes a whole class of guessing: the tree is called ``zoneinfo`` on most
+    hosts and something else on others, so any test against the name either
+    misses real trees or accepts directories that merely look like one.
+    Containment has neither failure, but it is not sufficient on its own —
+    with several roots configured, a name the containing root justifies can
+    still reopen an earlier root's file, so the name is additionally required
+    to round-trip back to the same tzfile.
+
+    Returns "UTC" if nothing resolves to a loadable zone. The daemon still
+    runs correctly then, but cron expressions are interpreted in UTC rather
+    than local time, so the fallback is logged: an unrequested UTC is
+    otherwise indistinguishable from a configured one.
     """
     tz_env = os.environ.get("TZ")
     if tz_env:
         return tz_env
-    try:
-        localtime = Path("/etc/localtime").resolve()
-    except OSError:
-        return "UTC"
-    parts = localtime.parts
-    if "zoneinfo" in parts:
-        idx = parts.index("zoneinfo")
-        return "/".join(parts[idx + 1 :])
+
+    localtime = _resolved(SYSTEM_LOCALTIME_LINK)
+    if localtime is not None:
+        name = _zone_name_from_path(localtime, _tz_search_roots())
+        if name is not None:
+            try:
+                zoneinfo.ZoneInfo(name)
+            except Exception:  # noqa: BLE001
+                # This runs at import to compute a module constant, so nothing
+                # may escape: an unreadable or malformed tzfile would otherwise
+                # make the package unimportable rather than merely mis-zoned.
+                name = None
+            if name is not None:
+                return name
+
+    _logger.warning(
+        "Could not determine the system timezone from %s; scheduler times will "
+        "be interpreted as UTC. Set LIONAGI_SCHEDULER_TZ to an IANA zone name "
+        "(for example America/New_York) to choose one explicitly.",
+        SYSTEM_LOCALTIME_LINK,
+    )
     return "UTC"
 
 
