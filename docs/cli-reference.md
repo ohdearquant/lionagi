@@ -43,6 +43,7 @@ worker.
 | `li dispatch {ls,show,ack,retry,purge}` | Operate the durable dispatch outbox |
 | `li stats runs` | Aggregate run reporting from StateDB |
 | `li mirror` | Mirror Claude Code transcripts into StateDB/Studio |
+| `li mcp` | Serve an MCP server that submits `li` runs as background jobs ([details](#li-mcp)) |
 | `li doctor` | Check installation, dependencies, Studio reachability, and writable state |
 
 `play`, `skill`, and `wait` are compatibility-friendly top-level conveniences handled
@@ -223,8 +224,8 @@ li o fanout [model] prompt [flags]
 | Flag | Default | Notes |
 |------|---------|-------|
 | `-a, --agent NAME` | none | Orchestrator profile. |
-| `-n, --num-workers N` | 3 | Worker count; ignored when `--workers` set |
-| `--workers M1,M2,...` | none | Per-worker model specs (each can include effort suffix) |
+| `-n, --num-workers N` | 3 | Maximum number of assignments generated |
+| `--workers M1,M2,...` | none | Worker model pool, assigned round-robin; excess specs warn when the pool is larger than `-n` |
 | `--max-concurrent N` | 0 | Max concurrent (0 = all) |
 | `--with-synthesis [MODEL]` | false | Enable synthesis; bare = orchestrator model |
 | `--synthesis-prompt TEXT` | none | Override synthesis instruction |
@@ -628,6 +629,73 @@ li hooks trust --yes                     # record trust without the prompt
 |------------|-------|-------|
 | `import SOURCE [PATH]` | `--cwd` | `SOURCE` is `claude` or `codex`; `PATH` defaults to `.claude/settings.json` or `.codex/hooks.json` |
 | `trust` | `--cwd`, `--yes` | Lists pending imported hook commands and records approval (content-hashed argv) |
+
+---
+
+## `li mcp`
+
+Serve an [MCP](https://modelcontextprotocol.io) server over stdio that submits
+`li` runs as **detached background jobs** and exposes tools to query, tail, and
+stop them. Each `submit_*` tool mirrors a `li` command but returns a `run_id`
+immediately instead of blocking; the run keeps going in its own process group,
+so it survives an MCP-server restart. Requires the `mcp` extra
+(`pip install 'lionagi[mcp]'`). Source: `lionagi/mcp/`.
+
+```bash
+li mcp            # serve over stdio (same as: python -m lionagi.mcp)
+```
+
+Register it with any MCP client (e.g. an `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "lionagi": { "command": "li", "args": ["mcp"] }
+  }
+}
+```
+
+| Tool | Purpose |
+|------|---------|
+| `submit_agent` | Background `li agent` — returns `{run_id, pid, status}` |
+| `submit_flow` | Background `li o flow` (DAG orchestration) |
+| `submit_fanout` | Background `li o fanout` (flat parallel workers) |
+| `job_status RUN_ID` | Liveness + authoritative terminal status + CLI manifest |
+| `job_output RUN_ID` | Console (an agent's final response) + artifacts |
+| `job_kill RUN_ID` | Signal the run's whole process group |
+| `jobs_list` | Recent jobs, newest first; optional `status` filter |
+
+Job records live under `~/.lionagi/mcp/jobs/<run_id>/`; the authoritative run
+state is the CLI's own `~/.lionagi/runs/<run_id>/`. In `job_status`, the
+top-level `status` is authoritative — the embedded `run` manifest is advisory
+and its own `status` may lag.
+
+### Terminal notices
+
+When a background run finishes, the server records its terminal status and, if a
+delivery command is configured, runs it — on **every** terminal state, including
+failure and kill. Nothing is configured out of the box, so the default is no
+notice. The command is an argv list run directly (never through a shell); the
+placeholders `{run_id}`, `{status}`, `{label}`, and `{target}` are substituted
+into its arguments, and the same fields are offered as a JSON object on stdin.
+
+Configure the command once via lionagi's own `notify.on_terminal` setting
+(`~/.lionagi/settings.yaml` or a project `.lionagi/settings.yaml`):
+
+```yaml
+notify:
+  on_terminal:
+    adapter:
+      kind: exec
+      argv: ["/usr/local/bin/notify-run", "{run_id}", "{status}", "{target}"]
+```
+
+Or per submit: `notify` overrides the delivery command for one run (a JSON argv
+list), and `notify_seat` fills the `{target}` placeholder. The environment
+variables `LIONAGI_MCP_NOTIFY_COMMAND` and `LIONAGI_MCP_NOTIFY_TARGET` set a
+process-wide default. Delivery outcome is recorded on the job and surfaced in
+`job_status` (`notify_delivery`), so a notice that failed to send is visible
+rather than silently lost.
 
 ---
 

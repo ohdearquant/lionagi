@@ -46,6 +46,19 @@ class FanoutPlanError(LionError):
     """Orchestrator failed to produce a usable plan."""
 
 
+def _parse_worker_pool(workers_str: str | None, *, num_workers: int) -> list[str]:
+    """Parse model overrides and report entries excluded by the assignment cap."""
+    pool = [spec.strip() for spec in workers_str.split(",")] if workers_str else []
+    unused = len(pool) - num_workers
+    if unused > 0:
+        noun = "spec" if unused == 1 else "specs"
+        warn(
+            f"{len(pool)} worker model specs provided, but --num-workers caps fanout at "
+            f"{num_workers} assignments; {unused} model {noun} will not be used."
+        )
+    return pool
+
+
 async def _run_fanout(
     model_spec: str,
     prompt: str,
@@ -197,6 +210,7 @@ async def _run_fanout_inner(
 ) -> str:
     """Inner fanout logic without timeout wrapper."""
     t0 = time.monotonic()
+    pool = _parse_worker_pool(workers_str, num_workers=num_workers)
 
     roster = available_roles()
     progress(f"Phase 1: Orchestrator decomposing task into ≤{num_workers} assignments...")
@@ -221,9 +235,6 @@ async def _run_fanout_inner(
     if not assignments:
         return "Orchestrator produced no assignments."
     progress(f"Phase 1 done ({t_decompose:.1f}s): {len(assignments)} assignments generated.")
-
-    # Heterogeneous models via --workers M1,M2 (assignment i uses pool[i % len]).
-    pool = [s.strip() for s in workers_str.split(",")] if workers_str else []
 
     worker_names: list[str] = [env.assign_name(ta.assignee) for ta in assignments]
 

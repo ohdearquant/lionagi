@@ -141,6 +141,7 @@ TOP_LEVEL_COMMANDS = [
     "hooks",
     "invoke",
     "kill",
+    "mcp",
     "mirror",
     "mon",
     "monitor",
