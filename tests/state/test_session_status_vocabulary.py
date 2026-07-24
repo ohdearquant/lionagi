@@ -173,6 +173,75 @@ async def test_drop_legacy_check_rebuilds_table(tmp_path: Path):
         await state.close()
 
 
+async def test_schema_version_distinguishes_fresh_from_legacy_rebuilt_db(tmp_path: Path):
+    """A fresh DB and a legacy DB that got rebuilt on open (losing declared
+    FKs on `sessions` — see _drop_legacy_session_status_check) must report
+    different schema_version values, so a caller can tell the two shapes
+    apart instead of both reading '1'."""
+    legacy_path = tmp_path / "legacy.db"
+    fresh_path = tmp_path / "fresh.db"
+
+    async with aiosqlite.connect(str(legacy_path)) as old:
+        await old.execute(
+            """
+            CREATE TABLE progressions (
+              id          TEXT    PRIMARY KEY,
+              created_at  REAL    NOT NULL,
+              collection  TEXT    NOT NULL DEFAULT '[]'
+            )
+            """
+        )
+        await old.execute(
+            """
+            CREATE TABLE sessions (
+              id              TEXT    PRIMARY KEY,
+              created_at      REAL    NOT NULL,
+              node_metadata   JSON,
+              name            TEXT,
+              user            TEXT,
+              progression_id  TEXT    NOT NULL REFERENCES progressions(id),
+              first_msg_id    TEXT,
+              last_msg_id     TEXT,
+              updated_at      REAL,
+              status          TEXT CHECK(
+                                status IS NULL
+                                OR status IN ('running', 'completed', 'failed', 'aborted')
+                              )
+            )
+            """
+        )
+        await old.commit()
+
+    legacy_db = StateDB(legacy_path)
+    await legacy_db.open()
+    try:
+        legacy_version = await legacy_db.schema_version()
+    finally:
+        await legacy_db.close()
+
+    fresh_db = StateDB(fresh_path)
+    await fresh_db.open()
+    try:
+        fresh_version = await fresh_db.schema_version()
+    finally:
+        await fresh_db.close()
+
+    assert legacy_version != fresh_version
+    assert fresh_version == "1"
+    assert legacy_version == "1-legacy-rebuild"
+
+    # Re-opening the migrated DB later must not lose the recorded shape —
+    # the rebuild marker check now finds the table already in its
+    # post-rebuild shape and no longer fires, so this proves the version is
+    # a permanent stamp, not derived fresh on every open.
+    legacy_db2 = StateDB(legacy_path)
+    await legacy_db2.open()
+    try:
+        assert await legacy_db2.schema_version() == "1-legacy-rebuild"
+    finally:
+        await legacy_db2.close()
+
+
 async def test_drop_legacy_check_is_idempotent(tmp_path: Path):
     """Re-opening a migrated DB is a no-op (no further table rebuild)."""
     path = tmp_path / "twice.db"

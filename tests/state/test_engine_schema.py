@@ -12,7 +12,9 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from lionagi.state import engine as engine_module
 from lionagi.state.engine import (
+    _sqlite_has_wal_reset_fix,
     dialect_of,
     make_engine,
     make_readonly_engine,
@@ -139,6 +141,76 @@ def test_make_engine_sqlite_creates_engine():
     import asyncio
 
     asyncio.run(engine.dispose())
+
+
+# ── WAL-reset SQLite version gate ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "version_info,expected",
+    [
+        ((3, 46, 0), False),  # affected -- no fix, no backport
+        ((3, 51, 2), False),  # last affected mainline release
+        ((3, 51, 3), True),  # first fully-fixed mainline release
+        ((3, 52, 0), True),  # later mainline release
+        ((3, 44, 5), False),  # just below the 3.44.x backport point
+        ((3, 44, 6), True),  # 3.44.x backport
+        ((3, 44, 7), True),  # later within the 3.44.x branch
+        ((3, 50, 6), False),  # just below the 3.50.x backport point
+        ((3, 50, 7), True),  # 3.50.x backport
+    ],
+)
+def test_sqlite_has_wal_reset_fix(version_info, expected):
+    assert _sqlite_has_wal_reset_fix(version_info) is expected
+
+
+def test_make_engine_warns_when_linked_sqlite_lacks_wal_reset_fix(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """An affected linked SQLite library must produce a startup warning
+    before WAL is enabled — not a silent risky configuration."""
+    monkeypatch.setattr(engine_module, "_wal_version_warning_emitted", False)
+    monkeypatch.setattr(engine_module.sqlite3, "sqlite_version_info", (3, 46, 0))
+    monkeypatch.setattr(engine_module.sqlite3, "sqlite_version", "3.46.0")
+
+    async def _connect_once():
+        engine = make_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.connect():
+                pass
+        finally:
+            await engine.dispose()
+
+    import asyncio
+
+    with caplog.at_level("WARNING", logger="lionagi.state.engine"):
+        asyncio.run(_connect_once())
+
+    assert "3.46.0" in caplog.text
+    assert "WAL-reset" in caplog.text
+
+
+def test_make_engine_does_not_warn_when_linked_sqlite_has_wal_reset_fix(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    monkeypatch.setattr(engine_module, "_wal_version_warning_emitted", False)
+    monkeypatch.setattr(engine_module.sqlite3, "sqlite_version_info", (3, 51, 3))
+    monkeypatch.setattr(engine_module.sqlite3, "sqlite_version", "3.51.3")
+
+    async def _connect_once():
+        engine = make_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.connect():
+                pass
+        finally:
+            await engine.dispose()
+
+    import asyncio
+
+    with caplog.at_level("WARNING", logger="lionagi.state.engine"):
+        asyncio.run(_connect_once())
+
+    assert "WAL-reset" not in caplog.text
 
 
 # ── make_readonly_engine ──────────────────────────────────────────────────────

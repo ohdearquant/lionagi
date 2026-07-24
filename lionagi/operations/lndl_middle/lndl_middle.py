@@ -122,7 +122,8 @@ async def _run_round_chat(
     chat_param: ChatParam,
 ) -> str:
     """Run one inner-chat turn, dispatching to communicate() (API) or run_and_collect() (CLI) — mirrors operate()'s own selection."""
-    if isinstance(chat_param, RunParam) or getattr(branch.chat_model, "is_cli", False):
+    effective_imodel = chat_param.imodel or branch.chat_model
+    if isinstance(chat_param, RunParam) or getattr(effective_imodel, "is_cli", False):
         from ..run.run import run_and_collect
 
         return await run_and_collect(branch, instruction, chat_param, skip_validation=True)

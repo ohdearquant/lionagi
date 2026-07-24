@@ -90,23 +90,58 @@ _TABLE_TO_ENTITY_TYPE = {
 }
 
 
+class AmbiguousIdError(ValueError):
+    """A short id prefix matched more than one row in a single table.
+
+    Raised instead of silently picking one match — the underlying `LIKE`
+    query has no uniqueness guarantee and no `ORDER BY`, so which row a
+    caller got back for a shared prefix was undefined.
+    """
+
+    def __init__(self, table: str, id_or_short: str, matches: list[str]) -> None:
+        self.table = table
+        self.id_or_short = id_or_short
+        self.matches = matches
+        preview = ", ".join(matches[:5])
+        if len(matches) > 5:
+            preview += ", ..."
+        super().__init__(
+            f"{id_or_short!r} matches {len(matches)} {table} ids ({preview}); "
+            "use a longer id prefix to disambiguate"
+        )
+
+
+async def fetch_unique_by_id(db: Any, table: str, id_or_short: str) -> dict[str, Any] | None:
+    """Exact-id fetch for full ids; prefix (`LIKE`) fetch for short ids.
+
+    Raises `AmbiguousIdError` when a short prefix matches more than one row
+    in *table*, instead of returning whichever row the query happened to
+    return first.
+    """
+    id_or_short = id_or_short.strip()
+    if len(id_or_short) < 36:
+        rows = await db.fetch_all(
+            f"SELECT * FROM {table} WHERE id LIKE ? ORDER BY id",  # noqa: S608
+            (id_or_short + "%",),
+        )
+        if len(rows) > 1:
+            raise AmbiguousIdError(table, id_or_short, [r["id"] for r in rows])
+        row = rows[0] if rows else None
+    else:
+        row = await db.fetch_one(
+            f"SELECT * FROM {table} WHERE id = ?",  # noqa: S608
+            (id_or_short,),
+        )
+    return db._row_to_dict(row) if row is not None else None
+
+
 async def resolve_entity(db: Any, id_or_short: str) -> tuple[str, str, dict[str, Any]] | None:
     id_or_short = id_or_short.strip()
-    is_prefix = len(id_or_short) < 36
 
     for table in _SEARCH_ORDER:
-        if is_prefix:
-            row = await db.fetch_one(
-                f"SELECT * FROM {table} WHERE id LIKE ?",  # noqa: S608
-                (id_or_short + "%",),
-            )
-        else:
-            row = await db.fetch_one(
-                f"SELECT * FROM {table} WHERE id = ?",  # noqa: S608
-                (id_or_short,),
-            )
+        row = await fetch_unique_by_id(db, table, id_or_short)
         if row is not None:
             entity_type = _TABLE_TO_ENTITY_TYPE[table]
-            return table, entity_type, db._row_to_dict(row)
+            return table, entity_type, row
 
     return None

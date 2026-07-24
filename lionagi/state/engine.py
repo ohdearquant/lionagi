@@ -6,16 +6,44 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+import sqlite3
 import uuid
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
 from lionagi._paths import LIONAGI_HOME
 
+logger = logging.getLogger(__name__)
+
 # sqlite busy_timeout (ms) applied to every connection. Tunable so tests that
 # deliberately hold a write lock fail fast instead of waiting the full default.
 _SQLITE_BUSY_TIMEOUT_MS = 5000
+
+# SQLite has a long-standing WAL-reset bug -- present in every release from
+# 3.7.0 (2010-07-21) through 3.51.2 -- where a checkpoint can skip all or
+# part of a transaction, leaving the database file corrupt. Fixed in 3.51.3
+# and later, with point-release backports for two earlier branches.
+_SQLITE_WAL_RESET_FIX_VERSION = (3, 51, 3)
+_SQLITE_WAL_RESET_FIX_BACKPORTS = ((3, 44, 6), (3, 50, 7))
+
+
+def _sqlite_has_wal_reset_fix(version_info: tuple[int, ...]) -> bool:
+    """Whether *version_info* (as from ``sqlite3.sqlite_version_info``)
+    includes the documented WAL-reset corruption fix."""
+    if version_info >= _SQLITE_WAL_RESET_FIX_VERSION:
+        return True
+    return any(
+        version_info[:2] == (major, minor) and version_info[2] >= patch
+        for major, minor, patch in _SQLITE_WAL_RESET_FIX_BACKPORTS
+    )
+
+
+# Logged at most once per process -- _apply_pragmas runs on every new
+# connection, and this is a startup-time compatibility fact, not a per-
+# connection event.
+_wal_version_warning_emitted = False
 
 
 def _json_serializer(obj):
@@ -111,6 +139,20 @@ def make_engine(url: str, **overrides):
         engine = create_async_engine(url, **kwargs)
 
         def _apply_pragmas(dbapi_conn, _connection_record):
+            global _wal_version_warning_emitted
+            if not _wal_version_warning_emitted and not _sqlite_has_wal_reset_fix(
+                sqlite3.sqlite_version_info
+            ):
+                logger.warning(
+                    "linked SQLite %s lacks the documented WAL-reset corruption fix "
+                    "(fixed in %s, backported to %s) -- enabling WAL mode on this "
+                    "library carries the documented corruption risk under concurrent "
+                    "writers and checkpoint activity; upgrade SQLite if possible.",
+                    sqlite3.sqlite_version,
+                    ".".join(map(str, _SQLITE_WAL_RESET_FIX_VERSION)),
+                    " / ".join(".".join(map(str, v)) for v in _SQLITE_WAL_RESET_FIX_BACKPORTS),
+                )
+                _wal_version_warning_emitted = True
             cursor = dbapi_conn.cursor()
             cursor.execute(f"PRAGMA busy_timeout = {_SQLITE_BUSY_TIMEOUT_MS}")
             cursor.execute("PRAGMA journal_mode = WAL")

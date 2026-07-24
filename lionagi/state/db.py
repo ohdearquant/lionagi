@@ -457,6 +457,12 @@ class StateDB:
         # algorithm to. Cheap to build; deferred only so StateDB.__init__
         # never depends on import order inside lionagi.state.lifecycle.
         self.__lifecycle_service: _LifecycleService | None = None
+        # Set by _rebuild_check_constraint when a legacy CHECK-constraint
+        # rebuild runs during _apply_schema, so schema_meta.version can
+        # distinguish a DB that went through a legacy rebuild (some tables
+        # rebuilt without declared FKs -- see _drop_legacy_session_status_check)
+        # from a database created fresh under the current schema.
+        self._legacy_rebuild_this_open: bool = False
 
     def _lifecycle_service(self) -> _LifecycleService:
         if self.__lifecycle_service is None:
@@ -699,6 +705,13 @@ class StateDB:
             # schedule_runs.status and a NOT NULL schedule_id, from before
             # schedule_runs was generalized into the task-application entity.
             await self._drop_legacy_schedule_runs_check()
+        # Written once, ever, per DB (ON CONFLICT DO NOTHING below): a legacy
+        # rebuild only ever runs on this DB's first open under this codebase,
+        # so this is the one chance to permanently record that some tables
+        # were rebuilt without declared FKs (see _drop_legacy_session_status_check)
+        # -- a shape a later open of the same DB can no longer detect, since
+        # the rebuild markers it checks for are already satisfied by then.
+        schema_version_value = "1-legacy-rebuild" if self._legacy_rebuild_this_open else "1"
         async with self._engine.begin() as conn:
             await conn.run_sync(metadata.create_all)
             await self._reconcile_indexes(conn)
@@ -706,9 +719,10 @@ class StateDB:
             # re-run on every open() because the rows are identity-stable.
             await conn.execute(
                 text(
-                    "INSERT INTO schema_meta (key, value) VALUES ('version', '1') "
+                    "INSERT INTO schema_meta (key, value) VALUES ('version', :version) "
                     "ON CONFLICT (key) DO NOTHING"
-                )
+                ),
+                {"version": schema_version_value},
             )
             await conn.execute(
                 text(
@@ -815,6 +829,12 @@ class StateDB:
     async def _rebuild_check_constraint(self, table: str, already_rebuilt, rebuild) -> None:
         """Run a legacy CHECK-constraint table rebuild, tolerant of a concurrent winner.
 
+        Reaching this call means the caller's own marker check already
+        decided *table* is still in a legacy (pre-rebuild) shape, so mark
+        this open as a legacy rebuild before attempting anything — that
+        holds regardless of whether this process or a racing one actually
+        performs the DDL (see ``_apply_schema``'s schema_meta.version stamp).
+
         Two processes cold-opening the same legacy DB can both observe the
         same stale CHECK and enter the identical DROP/CREATE/INSERT/RENAME
         rebuild. SQLite's write lock serializes the two attempts, but the
@@ -828,6 +848,7 @@ class StateDB:
         (or ``None`` if the table is now missing) and returns whether the
         table is in its post-rebuild shape.
         """
+        self._legacy_rebuild_this_open = True
         try:
             await rebuild()
         # Five of the six rebuilds execute through the raw aiosqlite driver,

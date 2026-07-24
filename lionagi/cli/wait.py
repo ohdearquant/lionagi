@@ -207,6 +207,8 @@ def run_wait(argv: list[str]) -> int:
     from lionagi.ln.concurrency import SigtermInterrupt, run_async
     from lionagi.state.db import DEFAULT_DB_PATH
 
+    from ._util import AmbiguousIdError
+
     parser = argparse.ArgumentParser(prog="li wait", add_help=True)
     parser.add_argument(
         "ids",
@@ -247,6 +249,11 @@ def run_wait(argv: list[str]) -> int:
         outcomes = run_async(
             wait_for_terminal(watched_ids, interval=args.interval, on_result=_on_result)
         )
+    except AmbiguousIdError as exc:
+        # A short prefix matched more than one schedule_runs row — an
+        # unresolvable target, reported like the monitor dispatcher does.
+        log_error(str(exc))
+        return EXIT_UNKNOWN
     except (KeyboardInterrupt, SigtermInterrupt):
         interrupted = True
 
