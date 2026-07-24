@@ -204,7 +204,41 @@ def _resolve_scheduler_tzinfo(tz_name: str) -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
-async def _resolve_action_cwd(schedule: dict) -> tuple[str | None, str | None]:
+class SchedulerCwdInheritRefusedError(RuntimeError):
+    """A schedule carrying an explicit execution root could not resolve any of
+    its configured directories, so the resolver refused to inherit the
+    daemon's own working directory instead.
+
+    A subprocess started without an explicit ``cwd`` inherits the daemon's
+    working directory. For a schedule that configured its own execution root,
+    silently running there executes the action somewhere it never asked to
+    run, and any environment a tool derives from the working directory becomes
+    the daemon's rather than the schedule's. Failing closed keeps the action
+    from running under a substituted working directory in place of its
+    configured root.
+    """
+
+    def __init__(
+        self,
+        schedule_id: str | None,
+        configured_root: str | None,
+        daemon_cwd: str,
+    ) -> None:
+        self.schedule_id = schedule_id
+        self.configured_root = configured_root
+        self.daemon_cwd = daemon_cwd
+        super().__init__(
+            f"Schedule {schedule_id}: configured execution root "
+            f"{configured_root!r} could not be resolved to an existing "
+            f"directory, and the only remaining fallback is inheriting the "
+            f"daemon working directory {daemon_cwd!r}. Refusing to run the "
+            f"scheduled action under a substituted working directory; set an "
+            f"existing action_cwd/action_project (or LIONAGI_SCHEDULER_CWD) "
+            f"for this schedule."
+        )
+
+
+async def _resolve_action_cwd(schedule: dict) -> str | None:
     """Resolve the working directory for a scheduled subprocess spawn.
 
     Layered resolution (first hit wins):
@@ -214,19 +248,30 @@ async def _resolve_action_cwd(schedule: dict) -> tuple[str | None, str | None]:
       2. ``action_project`` — the registered project's stored path, if it
          exists on disk.
       3. ``LIONAGI_SCHEDULER_CWD`` — an operator-set fallback directory.
-      4. ``None`` — inherit the daemon's own launch cwd. Only pre-migration
-         rows (``action_cwd`` never set) reach this tier; a loud deprecation
-         warning is logged since `uv run li` will fail to spawn if that
-         directory has no project (e.g. the daemon was started at ``/``).
+      4. Fall-through — nothing above resolved to an existing directory.
+         The behavior here depends on whether the schedule carries an
+         explicit execution root:
 
-    Returns ``(cwd, missing_path)``. ``missing_path`` is set only when a
-    stored path (``action_cwd`` or ``action_project``'s registered path) no
-    longer exists on disk (e.g. a pruned worktree) and nothing else resolved
-    either -- i.e. exactly the case where the eventual inherit-daemon-cwd
-    fallback risks a deep, opaque ``FileNotFoundError`` from the spawned
-    process. The caller uses it to attribute a subsequent non-zero exit to a
-    stale cwd via a specific status_reason instead of the generic "process
-    exited non-zero".
+           * If ``action_cwd`` or ``action_project`` is set (the schedule
+             configured its own execution root), the resolver **fails closed**
+             and raises ``SchedulerCwdInheritRefusedError``. Inheriting the
+             daemon's own cwd here is not merely a spawn-failure risk: at a
+             directory that *does* resolve to a project (e.g. the repo root the
+             daemon was started from) the spawn does not fail — it succeeds and
+             runs the action in the daemon's directory rather than the
+             schedule's configured root, silently substituting the working
+             directory (and whatever a tool derives from it) for the one the
+             schedule asked for. That substitution is refused rather than
+             performed.
+           * If the schedule carries no execution root at all (a pre-migration
+             row, ``action_cwd`` never set and no ``action_project``), it
+             returns ``None`` to inherit the daemon's cwd with a loud
+             deprecation warning. Such rows configured no execution root to
+             honor and are expected to be backfilled on daemon restart.
+
+    Returns the resolved cwd (str) for tiers 1-3, or ``None`` for the
+    ownerless pre-migration fall-through. Raises
+    ``SchedulerCwdInheritRefusedError`` for the owner-carrying fall-through.
 
     Imports ``lionagi.studio.services.projects`` lazily so this module (and
     ``lionagi.studio.scheduler.subprocess``) stay importable without the
@@ -234,13 +279,10 @@ async def _resolve_action_cwd(schedule: dict) -> tuple[str | None, str | None]:
     this branch when ``action_project`` is set, i.e. inside a running studio
     daemon where fastapi is already a hard dependency.
     """
-    stale_path: str | None = None
-
     action_cwd = schedule.get("action_cwd")
     if action_cwd:
         if Path(action_cwd).is_dir():
-            return action_cwd, None
-        stale_path = action_cwd
+            return action_cwd
         _log.warning(
             "Schedule %s: persisted execution root %r no longer exists on "
             "disk (e.g. a pruned worktree); falling back instead of "
@@ -258,8 +300,7 @@ async def _resolve_action_cwd(schedule: dict) -> tuple[str | None, str | None]:
             path = project.get("path")
             if path:
                 if Path(path).is_dir():
-                    return path, None
-                stale_path = stale_path or path
+                    return path
                 _log.warning(
                     "Schedule %s: action_project %r is registered at %r, but "
                     "that path no longer exists on disk (e.g. a pruned "
@@ -272,28 +313,30 @@ async def _resolve_action_cwd(schedule: dict) -> tuple[str | None, str | None]:
 
     env_cwd = os.environ.get("LIONAGI_SCHEDULER_CWD")
     if env_cwd and Path(env_cwd).is_dir():
-        return env_cwd, None
+        return env_cwd
 
-    if action_cwd is None:
-        _log.warning(
-            "Schedule %s has no persisted execution root (action_cwd) -- a "
-            "pre-migration row -- and no action_project or "
-            "LIONAGI_SCHEDULER_CWD resolved either; the scheduled action "
-            "will inherit the daemon's own working directory and may fail "
-            "to spawn (`uv run li` finds no project) if that directory has "
-            "none. DEPRECATED: this schedule should be backfilled (restart "
-            "the daemon) or updated with an explicit execution root.",
-            schedule.get("id"),
+    if action_cwd or action_project:
+        # The schedule carries an explicit execution root but none of its
+        # configured directories resolved. Inheriting the daemon's cwd would
+        # run the action in the daemon's directory instead of the schedule's
+        # configured root, so fail closed rather than substitute it.
+        raise SchedulerCwdInheritRefusedError(
+            schedule_id=schedule.get("id"),
+            configured_root=action_cwd or action_project,
+            daemon_cwd=str(Path.cwd()),
         )
-    else:
-        _log.warning(
-            "No resolvable cwd for schedule %s (action_project=%r); the scheduled "
-            "action will inherit the daemon's own working directory and may fail "
-            "to spawn (`uv run li` finds no project) if that directory has none.",
-            schedule.get("id"),
-            action_project,
-        )
-    return None, stale_path
+
+    _log.warning(
+        "Schedule %s has no persisted execution root (action_cwd) -- a "
+        "pre-migration row -- and no action_project or LIONAGI_SCHEDULER_CWD "
+        "resolved either; the scheduled action will inherit the daemon's own "
+        "working directory and may fail to spawn (`uv run li` finds no "
+        "project) if that directory has none. DEPRECATED: this schedule "
+        "should be backfilled (restart the daemon) or updated with an "
+        "explicit execution root.",
+        schedule.get("id"),
+    )
+    return None
 
 
 class SchedulerEngine:
@@ -2062,7 +2105,7 @@ class SchedulerEngine:
                 "Firing schedule %s (run %s, chain_depth=%d)", schedule["name"], run_id, chain_depth
             )
 
-            action_cwd, missing_cwd_path = await _resolve_action_cwd(schedule)
+            action_cwd = await _resolve_action_cwd(schedule)
             exit_code, stderr_tail = await _subprocess.spawn_and_wait(
                 argv,
                 inv_id,
@@ -2081,19 +2124,6 @@ class SchedulerEngine:
             if exit_code == 0:
                 reason_code = RunReasons.COMPLETED_OK
                 reason_summary = "Scheduled process completed successfully."
-            elif missing_cwd_path:
-                # The configured execution root (action_cwd) or project
-                # directory was gone at fire time (e.g. a pruned worktree);
-                # the process fell back to the daemon's own cwd instead and
-                # then failed -- attribute that plainly rather than leaving
-                # only a generic non-zero exit code.
-                reason_code = RunReasons.FAILED_MISSING_CWD
-                reason_summary = (
-                    f"Scheduled process exited non-zero ({exit_code}) after its "
-                    f"configured working directory {missing_cwd_path!r} no "
-                    "longer existed on disk; it ran with the daemon's own "
-                    "working directory instead."
-                )
             else:
                 reason_code = RunReasons.FAILED_EXIT_NONZERO
                 reason_summary = f"Scheduled process exited non-zero: {exit_code}."
@@ -2255,7 +2285,16 @@ class SchedulerEngine:
                 _log.exception("Failed to record cancellation for run %s during shutdown", run_id)
             raise
         except Exception as exc:
-            _log.exception("Error in schedule fire %s (run %s)", schedule.get("name"), run_id)
+            if isinstance(exc, SchedulerCwdInheritRefusedError):
+                # A deliberate fail-closed refusal, not an internal error: the
+                # message already names the configured root and the daemon
+                # directory that would have been substituted, so log it plainly
+                # without a stack trace.
+                _fire_exc_reason = RunReasons.FAILED_CWD_INHERIT_REFUSED
+                _log.warning("Schedule fire %s (run %s): %s", schedule.get("name"), run_id, exc)
+            else:
+                _fire_exc_reason = RunReasons.FAILED_EXCEPTION
+                _log.exception("Error in schedule fire %s (run %s)", schedule.get("name"), run_id)
             _end_time = time.time()
             await self._svc.update_schedule_run(
                 run_id,
@@ -2266,7 +2305,7 @@ class SchedulerEngine:
                 "schedule_run",
                 run_id,
                 new_status="failed",
-                reason_code=RunReasons.FAILED_EXCEPTION,
+                reason_code=_fire_exc_reason,
                 reason_summary=f"{type(exc).__name__}: {exc}",
                 evidence_refs=[{"kind": "schedule", "id": sid}],
                 source="executor",
@@ -2278,7 +2317,7 @@ class SchedulerEngine:
                     build_schedule_run_signal(
                         entity_id=run_id,
                         new_status="failed",
-                        reason_code=RunReasons.FAILED_EXCEPTION,
+                        reason_code=_fire_exc_reason,
                         schedule_id=sid,
                         action_kind=schedule.get("action_kind", ""),
                         chain_depth=chain_depth,

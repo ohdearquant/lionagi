@@ -70,11 +70,25 @@ class RunReasons:
     FAILED_PROVIDER_RETRYABLE = "run.failed.provider_retryable"
     FAILED_PROVIDER_NONRETRYABLE = "run.failed.provider_nonretryable"
     FAILED_MISSING_ARTIFACT = "run.failed.missing_artifact"  # ADR-0029
-    # The schedule's persisted execution root (action_cwd) or its
-    # action_project's registered path no longer existed at fire time (e.g.
-    # a pruned worktree), the run fell back to inheriting the daemon's own
-    # cwd, and the spawned process then exited non-zero.
+    # Historical vocabulary: prior to the fail-closed cwd resolver, a schedule
+    # whose persisted execution root (action_cwd) or action_project path no
+    # longer existed at fire time fell back to inheriting the daemon's own cwd,
+    # and the spawned process then exited non-zero. The resolver now refuses
+    # that fallback up front for any schedule that carries an execution root
+    # (see FAILED_CWD_INHERIT_REFUSED), so new runs no longer receive this
+    # code; it stays defined so runs persisted before that change remain
+    # readable.
     FAILED_MISSING_CWD = "run.failed.missing_cwd"
+    # A schedule carrying an explicit execution root (action_cwd or
+    # action_project) could not resolve any of its configured directories at
+    # fire time, and the only remaining option was inheriting the daemon's own
+    # working directory. Running the action there would execute it in the
+    # daemon's directory instead of the schedule's configured root -- silently
+    # substituting the working directory (and whatever a tool derives from it)
+    # for the one the schedule asked for -- so the resolver fails closed. The
+    # error names the configured-but-unavailable root and the daemon directory
+    # that would have been substituted.
+    FAILED_CWD_INHERIT_REFUSED = "run.failed.cwd_inherit_refused"
     FAILED_ESCALATED = "run.failed.escalated"  # undeclared-artifact backstop
     # Loop exited clean but no commits/artifacts were produced (completion-trust gate).
     COMPLETED_EMPTY_NO_EVIDENCE = "run.completed_empty.no_evidence"

@@ -3,7 +3,14 @@
 """Regression tests: scheduled subprocess spawns must not inherit the daemon's
 own launch cwd. Covers spawn_and_wait's cwd passthrough and the
 _resolve_action_cwd layered resolution (action_cwd -> action_project ->
-LIONAGI_SCHEDULER_CWD -> None+warning, ADR-0070 delta 1)."""
+LIONAGI_SCHEDULER_CWD -> fail-closed-or-inherit, ADR-0070 delta 1).
+
+The fall-through tier is identity-aware: a schedule carrying an explicit
+execution root (action_cwd or action_project) whose configured directories
+have all gone stale fails closed (SchedulerCwdInheritRefusedError) rather than
+silently inheriting the daemon's cwd and running under the daemon directory's
+identity. A schedule with no execution root at all (a pre-migration row)
+retains the legacy inherit-and-warn behavior."""
 
 from __future__ import annotations
 
@@ -100,7 +107,7 @@ async def test_resolve_action_cwd_uses_registered_project_path(tmp_path, monkeyp
     schedule = {"id": "sched-1", "action_project": "myproj"}
     result = await _resolve_action_cwd(schedule)
 
-    assert result == (str(project_dir), None)
+    assert result == str(project_dir)
     fake_get_project.assert_awaited_once_with("myproj")
 
 
@@ -122,7 +129,7 @@ async def test_resolve_action_cwd_falls_back_to_env_when_project_unresolved(tmp_
     schedule = {"id": "sched-2", "action_project": "unknown-project"}
     result = await _resolve_action_cwd(schedule)
 
-    assert result == (str(env_dir), None)
+    assert result == str(env_dir)
 
 
 @pytest.mark.asyncio
@@ -143,14 +150,15 @@ async def test_resolve_action_cwd_env_fallback_when_no_project_set(monkeypatch, 
     schedule = {"id": "sched-3", "action_project": None}
     result = await _resolve_action_cwd(schedule)
 
-    assert result == (str(env_dir), None)
+    assert result == str(env_dir)
     fake_get_project.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_resolve_action_cwd_returns_none_and_warns_when_unresolved(monkeypatch, caplog):
-    """Neither action_project nor LIONAGI_SCHEDULER_CWD resolve -> None,
-    with a warning naming the schedule id and action_project."""
+async def test_resolve_action_cwd_returns_none_and_warns_when_ownerless(monkeypatch, caplog):
+    """An ownerless row (no action_cwd, no action_project) with nothing else
+    resolvable -> None (legacy inherit), with a warning naming the schedule id.
+    No execution root was configured, so there is no identity to protect."""
     from lionagi.studio.scheduler.engine import _resolve_action_cwd
 
     monkeypatch.delenv("LIONAGI_SCHEDULER_CWD", raising=False)
@@ -159,16 +167,20 @@ async def test_resolve_action_cwd_returns_none_and_warns_when_unresolved(monkeyp
     with caplog.at_level(logging.WARNING, logger="lionagi.studio.scheduler.engine"):
         result = await _resolve_action_cwd(schedule)
 
-    assert result == (None, None)
+    assert result is None
     assert any("sched-4" in rec.getMessage() for rec in caplog.records)
 
 
 @pytest.mark.asyncio
-async def test_resolve_action_cwd_ignores_project_with_nonexistent_path(monkeypatch, tmp_path):
+async def test_resolve_action_cwd_refuses_when_project_path_nonexistent(monkeypatch, tmp_path):
     """A registered project whose stored path no longer exists on disk must
-    not be trusted; falls through to env/None, and the caller learns which
-    path was stale so it can attribute a later spawn failure to it."""
-    from lionagi.studio.scheduler.engine import _resolve_action_cwd
+    not be trusted; with nothing else resolvable the resolver fails closed
+    rather than inheriting the daemon's cwd (which would run the action under
+    the daemon directory's identity)."""
+    from lionagi.studio.scheduler.engine import (
+        SchedulerCwdInheritRefusedError,
+        _resolve_action_cwd,
+    )
 
     fake_get_project = AsyncMock(
         return_value={"name": "stale", "path": "/no/such/directory/at/all", "source": "studio"}
@@ -179,16 +191,20 @@ async def test_resolve_action_cwd_ignores_project_with_nonexistent_path(monkeypa
     monkeypatch.delenv("LIONAGI_SCHEDULER_CWD", raising=False)
 
     schedule = {"id": "sched-5", "action_project": "stale"}
-    result = await _resolve_action_cwd(schedule)
+    with pytest.raises(SchedulerCwdInheritRefusedError) as excinfo:
+        await _resolve_action_cwd(schedule)
 
-    assert result == (None, "/no/such/directory/at/all")
+    assert excinfo.value.configured_root == "stale"
 
 
 @pytest.mark.asyncio
 async def test_resolve_action_cwd_stale_project_path_logs_specific_warning(monkeypatch, caplog):
     """The stale-project-path warning names the schedule, the project, and
     the exact missing path -- not just the generic 'no resolvable cwd'."""
-    from lionagi.studio.scheduler.engine import _resolve_action_cwd
+    from lionagi.studio.scheduler.engine import (
+        SchedulerCwdInheritRefusedError,
+        _resolve_action_cwd,
+    )
 
     fake_get_project = AsyncMock(
         return_value={"name": "stale", "path": "/pruned/worktree/xyz", "source": "studio"}
@@ -200,7 +216,8 @@ async def test_resolve_action_cwd_stale_project_path_logs_specific_warning(monke
 
     schedule = {"id": "sched-6", "action_project": "stale"}
     with caplog.at_level(logging.WARNING, logger="lionagi.studio.scheduler.engine"):
-        await _resolve_action_cwd(schedule)
+        with pytest.raises(SchedulerCwdInheritRefusedError):
+            await _resolve_action_cwd(schedule)
 
     assert any(
         "sched-6" in rec.getMessage() and "/pruned/worktree/xyz" in rec.getMessage()
@@ -230,7 +247,7 @@ async def test_resolve_action_cwd_stale_project_path_overridden_by_env_fallback(
     schedule = {"id": "sched-7", "action_project": "stale"}
     result = await _resolve_action_cwd(schedule)
 
-    assert result == (str(env_dir), None)
+    assert result == str(env_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +278,7 @@ async def test_resolve_action_cwd_prefers_persisted_root_over_action_project(tmp
     schedule = {"id": "sched-root-1", "action_cwd": str(root_dir), "action_project": "myproj"}
     result = await _resolve_action_cwd(schedule)
 
-    assert result == (str(root_dir), None)
+    assert result == str(root_dir)
     fake_get_project.assert_not_awaited()
 
 
@@ -280,7 +297,7 @@ async def test_resolve_action_cwd_survives_daemon_restart_elsewhere(tmp_path, mo
     schedule = {"id": "sched-root-2", "action_cwd": str(root_dir), "action_project": None}
     result = await _resolve_action_cwd(schedule)
 
-    assert result == (str(root_dir), None)
+    assert result == str(root_dir)
 
 
 @pytest.mark.asyncio
@@ -307,16 +324,20 @@ async def test_resolve_action_cwd_falls_back_from_stale_persisted_root_to_action
     }
     result = await _resolve_action_cwd(schedule)
 
-    assert result == (str(project_dir), None)
+    assert result == str(project_dir)
 
 
 @pytest.mark.asyncio
-async def test_resolve_action_cwd_stale_persisted_root_attributed_when_nothing_else_resolves(
+async def test_resolve_action_cwd_refuses_when_stale_persisted_root_and_nothing_else(
     monkeypatch,
 ):
-    """A stale action_cwd with nothing else to fall back on reports itself as
-    the missing path for failure attribution."""
-    from lionagi.studio.scheduler.engine import _resolve_action_cwd
+    """A stale action_cwd with nothing else to fall back on fails closed: the
+    schedule carries an execution root that cannot be honored, so inheriting
+    the daemon's cwd (and its identity) is refused rather than performed."""
+    from lionagi.studio.scheduler.engine import (
+        SchedulerCwdInheritRefusedError,
+        _resolve_action_cwd,
+    )
 
     fake_get_project = AsyncMock(return_value=None)
     monkeypatch.setattr(
@@ -329,9 +350,11 @@ async def test_resolve_action_cwd_stale_persisted_root_attributed_when_nothing_e
         "action_cwd": "/pruned/execution/root",
         "action_project": None,
     }
-    result = await _resolve_action_cwd(schedule)
+    with pytest.raises(SchedulerCwdInheritRefusedError) as excinfo:
+        await _resolve_action_cwd(schedule)
 
-    assert result == (None, "/pruned/execution/root")
+    assert excinfo.value.configured_root == "/pruned/execution/root"
+    assert "/pruned/execution/root" in str(excinfo.value)
 
 
 @pytest.mark.asyncio
@@ -347,11 +370,48 @@ async def test_resolve_action_cwd_pre_migration_row_warns_deprecated(monkeypatch
     with caplog.at_level(logging.WARNING, logger="lionagi.studio.scheduler.engine"):
         result = await _resolve_action_cwd(schedule)
 
-    assert result == (None, None)
+    assert result is None
     assert any(
         "sched-root-5" in rec.getMessage() and "pre-migration" in rec.getMessage()
         for rec in caplog.records
     )
+
+
+# ---------------------------------------------------------------------------
+# The refusal names both the configured root and the daemon directory it
+# declined to substitute, so the failure is diagnosable from the message.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_refusal_names_configured_root_and_daemon_cwd(tmp_path, monkeypatch):
+    """The refusal error names the configured-but-unavailable execution root
+    and the daemon working directory it declined to inherit, so the operator
+    can see exactly which directory could not be honored and where the action
+    would otherwise have run."""
+    from lionagi.studio.scheduler.engine import (
+        SchedulerCwdInheritRefusedError,
+        _resolve_action_cwd,
+    )
+
+    daemon_dir = tmp_path / "daemon-home"
+    daemon_dir.mkdir()
+    monkeypatch.chdir(daemon_dir)
+    monkeypatch.delenv("LIONAGI_SCHEDULER_CWD", raising=False)
+
+    schedule = {
+        "id": "sched-identity",
+        "action_cwd": "/pruned/execution/root",
+        "action_project": None,
+    }
+    with pytest.raises(SchedulerCwdInheritRefusedError) as excinfo:
+        await _resolve_action_cwd(schedule)
+
+    assert excinfo.value.configured_root == "/pruned/execution/root"
+    assert excinfo.value.daemon_cwd == str(daemon_dir)
+    message = str(excinfo.value)
+    assert "/pruned/execution/root" in message
+    assert str(daemon_dir) in message
 
 
 # ---------------------------------------------------------------------------
@@ -431,18 +491,19 @@ async def test_fire_threads_resolved_cwd_into_spawn_and_wait(tmp_path, monkeypat
 
 
 # ---------------------------------------------------------------------------
-# Status-reason attribution: a stale action_project path that later fails to
-# spawn is recorded with a specific reason_code, not a generic non-zero exit.
+# Fail-closed attribution: a schedule carrying an execution root whose
+# configured directories are all gone is refused before spawn (identity
+# protection), recorded with FAILED_CWD_INHERIT_REFUSED, and never spawned.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_fire_attributes_failure_to_missing_cwd(monkeypatch):
-    """A schedule whose registered project path no longer exists, and whose
-    process then exits non-zero (the daemon-inherited cwd wasn't a fit),
-    writes RunReasons.FAILED_MISSING_CWD instead of the generic
-    FAILED_EXIT_NONZERO -- so the failure is attributable without reading a
-    stack trace."""
+async def test_fire_refuses_owner_carrying_cwd_inherit(monkeypatch):
+    """A schedule whose registered project path no longer exists (and nothing
+    else resolves) is refused before spawn: it carries an execution root, so
+    inheriting the daemon's cwd would run it under the daemon directory's
+    identity. The run is recorded with RunReasons.FAILED_CWD_INHERIT_REFUSED and
+    spawn_and_wait is never called."""
     from lionagi.state.reasons import RunReasons
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
@@ -456,17 +517,17 @@ async def test_fire_attributes_failure_to_missing_cwd(monkeypatch):
     engine = SchedulerEngine(svc=svc)
     schedule = _minimal_schedule(action_project="gone")
 
+    spawn_mock = AsyncMock(return_value=(1, "boom"))
     with (
         patch(
             "lionagi.studio.scheduler.subprocess.build_argv",
             return_value=(["uv", "run", "li", "agent", "ping"], None),
         ),
-        patch(
-            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
-            new=AsyncMock(return_value=(1, "boom")),
-        ),
+        patch("lionagi.studio.scheduler.subprocess.spawn_and_wait", new=spawn_mock),
     ):
         await engine._fire(schedule, "run-cwd-002", trigger_context={"scheduled": True})
+
+    spawn_mock.assert_not_awaited()
 
     terminal_calls = [
         c
@@ -476,8 +537,7 @@ async def test_fire_attributes_failure_to_missing_cwd(monkeypatch):
     ]
     assert terminal_calls
     (call,) = terminal_calls
-    assert call.kwargs["reason_code"] == RunReasons.FAILED_MISSING_CWD
-    assert "/no/such/directory/at/all" in call.kwargs["reason_summary"]
+    assert call.kwargs["reason_code"] == RunReasons.FAILED_CWD_INHERIT_REFUSED
 
 
 @pytest.mark.asyncio
