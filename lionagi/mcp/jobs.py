@@ -55,9 +55,26 @@ def new_run_id() -> str:
 
 
 def _write_job(record: dict[str, Any]) -> None:
+    # Publish atomically: write a unique temp file in the same directory, then
+    # os.replace() it into place. os.replace is atomic on the same filesystem, so
+    # a concurrent reader (status / list_jobs) never observes a torn file — and a
+    # failed write leaves the previous record intact instead of a partial one. The
+    # temp name is per-write-unique so two writers to the same run (the pid-attach
+    # write in submit() and the terminal hook) never collide on the temp itself.
+    # This makes each publish all-or-nothing; it does not serialize two writers,
+    # so a read-modify-write pair can still lose an update (last replace wins).
     d = config.job_dir(record["run_id"])
     d.mkdir(parents=True, exist_ok=True)
-    (d / "job.json").write_text(json.dumps(record, indent=2))
+    tmp = d / f".job.json.{os.getpid()}.{uuid4().hex[:8]}.tmp"
+    try:
+        tmp.write_text(json.dumps(record, indent=2))
+        os.replace(tmp, d / "job.json")
+    except OSError:
+        # Do not leave the staging file behind: a run whose writes keep failing
+        # would otherwise accumulate orphans in its job dir. The original error
+        # still propagates.
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _read_job(run_id: str) -> dict[str, Any] | None:
