@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from lionagi.cli._util import AmbiguousIdError
 from lionagi.cli.status import (
     EXIT_RUNNING,
     EXIT_UNKNOWN,
@@ -303,6 +304,38 @@ async def test_resolve_agent_target_prefix_match(temp_db_path: Path):
         result = await _resolve_agent_target(db, sid[:6], None)
     assert result is not None
     assert result[1]["id"] == sid
+
+
+@pytest.mark.asyncio
+async def test_resolve_agent_target_ambiguous_prefix_raises(temp_db_path: Path):
+    """Two sessions sharing a short prefix must not silently resolve to
+    whichever one the LIKE query happens to return first — it must raise."""
+    async with StateDB() as db:
+        sid1 = await _make_session(db)
+        sid2 = await _make_session(db)
+        await db.execute("UPDATE sessions SET id = ? WHERE id = ?", ("abc" + sid1[3:], sid1))
+        await db.execute("UPDATE sessions SET id = ? WHERE id = ?", ("abc" + sid2[3:], sid2))
+        with pytest.raises(AmbiguousIdError):
+            await _resolve_agent_target(db, "abc", None)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_agent_ambiguous_prefix_reports_error(
+    temp_db_path: Path, no_project, caplog: pytest.LogCaptureFixture
+):
+    """`li agent status <ambiguous-prefix>` must report a clean error and
+    EXIT_UNKNOWN instead of crashing with an uncaught exception."""
+    async with StateDB() as db:
+        sid1 = await _make_session(db)
+        sid2 = await _make_session(db)
+        await db.execute("UPDATE sessions SET id = ? WHERE id = ?", ("def" + sid1[3:], sid1))
+        await db.execute("UPDATE sessions SET id = ? WHERE id = ?", ("def" + sid2[3:], sid2))
+
+    with caplog.at_level(logging.ERROR, logger="lionagi.cli.error"):
+        exit_code = _dispatch("agent", "def", False)
+    assert exit_code == EXIT_UNKNOWN
+    assert "matches" in caplog.text.lower()
+    assert "def" in caplog.text.lower()
 
 
 @pytest.mark.asyncio

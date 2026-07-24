@@ -465,8 +465,14 @@ async def _do_kill(
     """Resolve entity, kill process, persist cancellation."""
     from lionagi.state.db import StateDB
 
+    from ._util import AmbiguousIdError
+
     async with StateDB() as db:
-        resolved = await _resolve_entity(db, id_or_short)
+        try:
+            resolved = await _resolve_entity(db, id_or_short)
+        except AmbiguousIdError as exc:
+            log_error(str(exc))
+            return 1
         if resolved is None:
             log_error(f"entity not found for id: {id_or_short!r}")
             return 1

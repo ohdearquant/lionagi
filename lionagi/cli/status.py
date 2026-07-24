@@ -46,19 +46,12 @@ _DB_BUSY_TIMEOUT_S = 10.0
 
 async def _fetch_by_id(db: Any, table: str, id_or_short: str) -> dict[str, Any] | None:
     """Exact-id fetch for full ids, prefix (LIKE) fetch for short ids, scoped
-    to one table (see _util.resolve_entity for the multi-table sweep)."""
-    id_or_short = id_or_short.strip()
-    if len(id_or_short) < 36:
-        row = await db.fetch_one(
-            f"SELECT * FROM {table} WHERE id LIKE ?",  # noqa: S608
-            (id_or_short + "%",),
-        )
-    else:
-        row = await db.fetch_one(
-            f"SELECT * FROM {table} WHERE id = ?",  # noqa: S608
-            (id_or_short,),
-        )
-    return db._row_to_dict(row) if row is not None else None
+    to one table (see _util.resolve_entity for the multi-table sweep).
+    Raises `AmbiguousIdError` (see _util.py) if a short prefix matches more
+    than one row in *table*."""
+    from ._util import fetch_unique_by_id
+
+    return await fetch_unique_by_id(db, table, id_or_short)
 
 
 async def _latest_session(
@@ -428,11 +421,15 @@ async def _run_status_inner(
 
 
 async def _run_status(*, command: str, entity_id: str | None, as_json: bool) -> tuple[str, int]:
+    from ._util import AmbiguousIdError
+
     try:
         return await asyncio.wait_for(
             _run_status_inner(command=command, entity_id=entity_id, as_json=as_json),
             timeout=_DB_BUSY_TIMEOUT_S,
         )
+    except AmbiguousIdError as exc:
+        return str(exc), EXIT_UNKNOWN
     except (TimeoutError, asyncio.TimeoutError):  # 3.10 support: not aliased until 3.11
         return (
             f"state.db busy (no read within {_DB_BUSY_TIMEOUT_S:.0f}s) — "
