@@ -66,7 +66,16 @@ def _svc_validate_action_cwd(cwd: str | None) -> None:
     but empty/whitespace value is rejected rather than persisted: it is neither
     a usable directory nor a clear, and the scheduler now fails closed on any
     non-``None`` root it cannot resolve, so an empty root would only ever
-    surface later as a refused run."""
+    surface later as a refused run.
+
+    The two conditions below are exactly
+    ``lionagi.studio.scheduler.engine._is_usable_execution_root``, spelled out
+    rather than called. That is deliberate and is the one intended exception to
+    routing every usability decision through that predicate: this is an input
+    validator whose product is the error message, and it tells a caller which
+    of the two rules they broke, where the predicate can only say "no". Keep
+    the two in step -- if the predicate gains a condition, this gains a
+    matching branch."""
     if cwd is None:
         return
     p = Path(cwd)
