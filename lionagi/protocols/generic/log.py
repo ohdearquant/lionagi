@@ -15,7 +15,7 @@ from lionagi.models.hashable_model import HashableModel
 from lionagi.utils import to_dict
 
 from .element import Element
-from .pile import Pile
+from .pile import Pile, _serialize_records
 
 __all__ = (
     "DataLoggerConfig",
@@ -175,19 +175,19 @@ class DataLogger:
                 logger.debug("No logs to dump.")
                 return
             fp = persist_path or self._create_path()
+            suffix = fp.suffix.lower()
+            if suffix not in (".csv", ".json"):
+                raise ValueError(f"Unsupported file extension: {suffix}")
             snapshot_ids = set(self.logs.collections.keys())
-            df = self.logs.to_df()
+            records = self.logs._ordered_records()
 
         do_clear = self._config.clear_after_dump if clear is None else clear
-        suffix = fp.suffix.lower()
+        obj_key = "csv" if suffix == ".csv" else "json"
 
         def _write() -> None:
-            if suffix == ".csv":
-                df.to_csv(fp, index=False)
-            elif suffix == ".json":
-                df.to_json(fp, orient="records", lines=True)
-            else:
-                raise ValueError(f"Unsupported file extension: {suffix}")
+            text = _serialize_records(records, obj_key)
+            with open(fp, "w", encoding="utf-8", newline="") as f:
+                f.write(text)
 
         try:
             await run_sync(_write)
