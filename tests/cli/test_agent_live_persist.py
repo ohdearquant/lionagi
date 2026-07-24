@@ -863,15 +863,22 @@ async def test_teardown_already_terminal_session_reports_attempted_status(
     status masquerade as this invocation's outcome: a later leg's genuine
     'failed' must not be silently reported back as the old 'completed'. The
     rejection must still protect the DB row (ADR-0035 unchanged) — only the
-    caller-visible return value differs, and it's logged at warning level."""
+    caller-visible return value differs, and it's logged at warning level.
+
+    Setup now reopens a resumed session before the leg runs, so by the time
+    this teardown reads the row it is running rather than terminal and the
+    write lands. The stale status can no longer masquerade as this leg's
+    outcome because it is no longer there to do so, and the earlier leg's
+    outcome is kept in the transition history rather than on the row.
+    """
     branch = Branch(name="b1")
     ctx1 = await _setup_live_persist(branch)
     first = await _teardown_live_persist(ctx1, status="completed")
     assert first == "completed"
 
-    # A later leg attaches to the SAME session/branch row, which is already
-    # terminal by the time this teardown even starts (mirrors a resume/
-    # follow-up reusing a branch whose session an earlier run finalized).
+    # A later leg attaches to the SAME session/branch row, which the earlier
+    # leg already took terminal (mirrors a resume/follow-up reusing a branch
+    # whose session an earlier run finalized).
     ctx2 = await _setup_live_persist(branch)
     assert ctx2 is not None
     assert ctx2["session_id"] == ctx1["session_id"]
@@ -880,15 +887,29 @@ async def test_teardown_already_terminal_session_reports_attempted_status(
         second = await _teardown_live_persist(ctx2, status="failed", exception=RuntimeError("boom"))
 
     assert second == "failed"  # this invocation's honest outcome, not "completed"
-    assert any(
-        rec.levelno >= logging.WARNING and "completed" in rec.message and "failed" in rec.message
+    assert not any(
+        rec.levelno >= logging.WARNING and "already terminal" in rec.message
         for rec in caplog.records
     )
 
-    # The DB record itself is untouched — ADR-0035 still protects it.
     async with StateDB() as db:
         s = await db.get_session(ctx1["session_id"])
-    assert s["status"] == "completed"
+        history = await db.fetch_all(
+            "SELECT previous_status, status FROM status_transitions "
+            "WHERE entity_type = 'session' AND entity_id = ? ORDER BY created_at",
+            (ctx1["session_id"],),
+        )
+
+    # The row now describes the leg that just ran.
+    assert s["status"] == "failed"
+    # And the earlier leg is not erased by that: reopening is recorded as a
+    # transition like any other, so the whole sequence stays readable.
+    assert [(r["previous_status"], r["status"]) for r in history] == [
+        (None, "running"),
+        ("running", "completed"),
+        ("completed", "running"),
+        ("running", "failed"),
+    ]
 
 
 async def test_teardown_concurrent_race_non_terminal_entry_returns_winner_status(
