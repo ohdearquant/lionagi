@@ -172,7 +172,11 @@ class iModel:  # noqa: N801
 
         if issubclass(create_event_type, HookedEvent):
             api_call = None
-            if create_event_type is APICalling:
+            if h_ev and isinstance(h_ev.execution.response, create_event_type):
+                # PreEventCreate replaced the event outright — use it as-is
+                # instead of building a fresh one from the original kwargs.
+                api_call = h_ev.execution.response
+            elif create_event_type is APICalling:
                 api_call = self.create_api_calling(**kwargs)
             else:
                 api_call = create_event_type(**kwargs)

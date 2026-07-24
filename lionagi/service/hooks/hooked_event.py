@@ -99,9 +99,21 @@ class HookedEvent(Event):
             yield chunk
 
         # Post-stream hook failure: data already sent, must not reraise — log at WARNING only.
+        # HookRegistry.post_invocation() records a handler's raised exception on the
+        # HookEvent (status FAILED/CANCELLED/ABORTED) rather than re-raising it out of
+        # invoke(), so the failure must be detected via status, not a try/except.
         if h_ev := self._post_invoke_hook_event:
             try:
                 await h_ev.invoke()
+                if h_ev.execution.status in (
+                    EventStatus.FAILED,
+                    EventStatus.CANCELLED,
+                    EventStatus.ABORTED,
+                ):
+                    _logger.warning(
+                        "Post-stream hook failed (data already sent): %s",
+                        h_ev.execution.error,
+                    )
             except Exception as _hook_exc:
                 _logger.warning(
                     "Post-stream hook failed (data already sent): %s",

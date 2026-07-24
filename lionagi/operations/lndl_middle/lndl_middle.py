@@ -29,6 +29,7 @@ from lionagi.lndl import (
 )
 
 from .._defaults import get_default_action_call
+from .._turn_origin import TurnOrigin
 from ..types import ActionParam, ChatParam, ParseParam, RunParam
 
 if TYPE_CHECKING:
@@ -208,11 +209,15 @@ def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET):
         last_error: str | None = None
 
         for round_num in range(1, round_budget + 1):
-            round_chat_param = (
-                stripped_chat_param.with_updates(guidance=lndl_guidance)
-                if round_num == 1
-                else stripped_chat_param
-            )
+            if round_num == 1:
+                round_chat_param = stripped_chat_param.with_updates(guidance=lndl_guidance)
+            else:
+                # A continuation/repair round is not a fresh user submission —
+                # the outer call's boundary already fired at most once for
+                # round 1; later rounds must never re-fire USER_PROMPT_SUBMIT.
+                round_chat_param = stripped_chat_param.with_updates(
+                    turn_origin=TurnOrigin.no_origin()
+                )
             round_instruction = _round_instruction(instruction, round_num, round_budget, last_error)
 
             text = await _run_round_chat(branch, round_instruction, round_chat_param)
