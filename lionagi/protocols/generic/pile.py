@@ -39,16 +39,25 @@ def _serialize_records(records: list[dict], obj_key: str) -> str:
     """Serialize row dicts to a JSONL or CSV string using only the standard
     library, so the common serialization paths carry no pandas dependency.
 
-    - ``json`` → one compact JSON object per line (JSONL), matching the prior
-      ``DataFrame.to_json(orient="records", lines=True)`` output.
+    - ``json`` → one compact JSON object per line (JSONL), newline-terminated
+      so ``mode="a"`` stays valid JSONL, matching the prior
+      ``DataFrame.to_json(orient="records", lines=True)`` which ended in "\n".
     - ``csv`` → a header of every key seen (in first-appearance order) followed
       by one row per record; missing keys render empty, as pandas did.
+
+    Values come from ``to_dict(mode="json")``, i.e. lionagi's canonical orjson
+    encoding (ISO datetimes, shortest round-trippable floats). That is
+    value-equal and round-trippable via ``Element.from_dict``, but its text is
+    not byte-identical to pandas for datetime/high-precision-float fields
+    (pandas rendered epoch-ms datetimes and double_precision floats).
 
     ``parquet`` is intentionally unsupported here — it stays on the pandas /
     ``to_df`` path in ``dump``/``adump`` since it needs a columnar engine.
     """
     if obj_key == "json":
-        return "\n".join(json.dumps(r, ensure_ascii=False, separators=(",", ":")) for r in records)
+        return "".join(
+            json.dumps(r, ensure_ascii=False, separators=(",", ":")) + "\n" for r in records
+        )
     if obj_key == "csv":
         fieldnames: list[str] = []
         seen: set[str] = set()
@@ -965,6 +974,13 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
                 # Parquet needs a columnar engine; keep it on the pandas path.
                 self.to_df().to_parquet(fp, engine="pyarrow", index=False, **kw)
             case "json" | "csv":
+                # json/csv use the stdlib serializer, not pandas — reject the
+                # old pandas passthrough kwargs loudly rather than dropping them.
+                if kw:
+                    raise TypeError(
+                        f"dump(obj_key={obj_key!r}) takes no extra keyword arguments "
+                        f"(got {sorted(kw)}); it serializes with the stdlib, not pandas."
+                    )
                 text = _serialize_records(self._ordered_records(), obj_key)
                 if fp is None:
                     # fp=None returns the serialized string, as the old
@@ -998,6 +1014,11 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         if obj_key not in ("json", "csv", "parquet"):
             raise ValueError(
                 f"Unsupported obj_key: {obj_key}. Supported keys are 'json', 'csv', 'parquet'."
+            )
+        if obj_key in ("json", "csv") and kw:
+            raise TypeError(
+                f"adump(obj_key={obj_key!r}) takes no extra keyword arguments "
+                f"(got {sorted(kw)}); it serializes with the stdlib, not pandas."
             )
 
         # Snapshot under the lock so a concurrent mutation cannot race the write.

@@ -241,6 +241,41 @@ class TestDumpWithoutPandas:
             pile_3.dump(tmp_path / "d.parquet", obj_key="parquet")
 
 
+class TestSerializationFormat:
+    """Format robustness the pandas path had implicitly: newline-terminated
+    JSONL (append-safe), stdlib-only kwargs rejection, and a canonical,
+    round-trippable encoding."""
+
+    def test_json_is_newline_terminated_and_append_safe(self, pile_3, tmp_path):
+        fp = tmp_path / "a.jsonl"
+        pile_3.dump(fp, obj_key="json", mode="w")
+        pile_3.dump(fp, obj_key="json", mode="a")
+        lines = fp.read_text().splitlines()
+        assert len(lines) == 6  # two writes of 3 records, never a run-together line
+        for line in lines:
+            json.loads(line)  # each line is a standalone JSON object
+
+    def test_dumped_json_is_canonical_and_reloads(self, pile_3, tmp_path):
+        fp = tmp_path / "rt.json"
+        pile_3.dump(fp, obj_key="json")
+        parsed = [json.loads(line) for line in fp.read_text().splitlines()]
+        # the file content IS each element's canonical to_dict(mode="json")
+        assert parsed == [e.to_dict(mode="json") for e in pile_3.values()]
+        # and every record reloads to the same identity
+        assert [str(Element.from_dict(p).id) for p in parsed] == [str(e.id) for e in pile_3]
+
+    def test_json_and_csv_reject_pandas_kwargs(self, pile_3, tmp_path):
+        with pytest.raises(TypeError, match="no extra keyword arguments"):
+            pile_3.dump(tmp_path / "x.json", obj_key="json", force_ascii=True)
+        with pytest.raises(TypeError, match="no extra keyword arguments"):
+            pile_3.dump(tmp_path / "x.csv", obj_key="csv", quoting=1)
+
+    @pytest.mark.asyncio
+    async def test_adump_rejects_pandas_kwargs(self, pile_3, tmp_path):
+        with pytest.raises(TypeError, match="no extra keyword arguments"):
+            await pile_3.adump(tmp_path / "x.json", obj_key="json", force_ascii=True)
+
+
 # ---------------------------------------------------------------------------
 # 2. Set operations — __ior__, __iand__, __ixor__ (in-place; these work)
 # ---------------------------------------------------------------------------
