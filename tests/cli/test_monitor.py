@@ -1925,3 +1925,28 @@ def test_watch_loop_restores_prior_signal_handlers(monkeypatch: pytest.MonkeyPat
     finally:
         signal.signal(signal.SIGINT, saved[0])
         signal.signal(signal.SIGTERM, saved[1])
+
+
+def test_watch_loop_leaves_unrestorable_handlers_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A handler installed outside Python is reported as None and cannot be
+    reinstalled, so taking it over would mean keeping it forever. The loop must
+    decline to replace it rather than install a handler it can never remove."""
+    import lionagi.cli.monitor as monitor_mod
+    import lionagi.ln.concurrency as concurrency_mod
+    from lionagi.ln.concurrency.utils import SigtermInterrupt
+
+    monkeypatch.setattr(monitor_mod, "_clear_screen", lambda: None)
+
+    def sigterm_run_async(coro: Any) -> str:
+        coro.close()
+        raise SigtermInterrupt("SIGTERM during refresh")
+
+    monkeypatch.setattr(concurrency_mod, "run_async", sigterm_run_async)
+    monkeypatch.setattr(signal, "getsignal", lambda signum: None)
+
+    installed: list[int] = []
+    monkeypatch.setattr(signal, "signal", lambda signum, handler: installed.append(signum))
+
+    monitor_mod._watch_loop(1, None, since_window=None, entity_type=None, project=None)
+
+    assert installed == []

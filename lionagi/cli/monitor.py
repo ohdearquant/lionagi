@@ -878,8 +878,22 @@ def _watch_loop(
         nonlocal interrupted
         interrupted = True
 
-    prior_sigint = signal.signal(signal.SIGINT, _handle_signal)
-    prior_sigterm = signal.signal(signal.SIGTERM, _handle_signal)
+    def _install(signum):
+        """Take over *signum* only if the handler can be given back.
+
+        A handler installed outside Python is reported as None and cannot be
+        reinstalled, so replacing one means keeping it forever. Leaving it
+        alone costs this loop its clean exit on that signal; taking it would
+        cost the whole process its handler, which is the larger harm.
+        """
+        prior = signal.getsignal(signum)
+        if prior is None:
+            return None
+        signal.signal(signum, _handle_signal)
+        return prior
+
+    prior_sigint = _install(signal.SIGINT)
+    prior_sigterm = _install(signal.SIGTERM)
     exit_code = 0
 
     try:
@@ -915,8 +929,8 @@ def _watch_loop(
                     break
                 time.sleep(0.1)
     finally:
-        # The loop's handlers must not outlive the loop — restore whatever the
-        # process had before (None means the handler wasn't a Python callable).
+        # The loop's handlers must not outlive the loop. None here means the
+        # signal was never taken over, so there is nothing to give back.
         if prior_sigint is not None:
             signal.signal(signal.SIGINT, prior_sigint)
         if prior_sigterm is not None:
