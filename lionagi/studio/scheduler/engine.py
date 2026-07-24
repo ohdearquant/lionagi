@@ -485,7 +485,11 @@ class SchedulerEngine:
 
                 project = await get_project(s["action_project"])
                 path = project.get("path") if project else None
-                if path and Path(path).is_dir():
+                # Same usability rule as the resolver. Backfill writes this
+                # value into the row as its persisted execution root, so
+                # accepting a relative path here would persist a root that
+                # means "wherever the daemon started" and can never resolve.
+                if _is_usable_execution_root(path):
                     await self._svc.update_schedule(s["id"], action_cwd=path)
                     _log.info(
                         "Backfilled execution root for schedule %s from action_project %r: %s",

@@ -530,9 +530,16 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     if not action_cwd and data.get("action_project"):
         from lionagi.studio.services.projects import get_project
 
+        from ..scheduler.engine import _is_usable_execution_root
+
         project = await get_project(data["action_project"])
         project_path = project.get("path") if project else None
-        if project_path and Path(project_path).is_dir():
+        # The same rule the resolver applies, so a root is never persisted here
+        # that the resolver would refuse to honor later. Registered project
+        # paths are not validated when the project is registered, so a relative
+        # one reaches this point; persisting it would snapshot "wherever the
+        # daemon started" as this schedule's execution root.
+        if _is_usable_execution_root(project_path):
             action_cwd = project_path
 
     schedule_id = uuid.uuid4().hex[:12]

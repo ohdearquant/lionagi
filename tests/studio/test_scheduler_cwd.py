@@ -841,6 +841,31 @@ async def test_backfill_skips_rows_whose_action_cwd_is_an_empty_string(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_backfill_does_not_persist_a_relative_project_path(monkeypatch):
+    """Backfill writes the value it derives into the row as that schedule's
+    persisted execution root. A relative path means "wherever the daemon
+    started", so persisting one snapshots a root that can never resolve."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    fake_get_project = AsyncMock(return_value={"name": "relproj", "path": "."})
+    monkeypatch.setattr(
+        "lionagi.studio.services.projects.get_project", fake_get_project, raising=False
+    )
+
+    svc = _make_svc()
+    svc.list_schedules = AsyncMock(
+        return_value=[
+            _minimal_schedule(id="sched-bf-rel", action_cwd=None, action_project="relproj")
+        ]
+    )
+    engine = SchedulerEngine(svc=svc)
+
+    await engine._backfill_action_cwd()
+
+    svc.update_schedule.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_backfill_skips_rows_with_no_action_project(monkeypatch):
     """A pre-migration row with no action_project at all has nothing to
     backfill from and is left with action_cwd unset."""
