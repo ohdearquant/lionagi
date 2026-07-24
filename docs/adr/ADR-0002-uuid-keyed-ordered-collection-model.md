@@ -235,8 +235,10 @@ reverted — see the current-state note above for what the code does today):
   structural again, and `item_type` no longer judges class-level conformance.
 - `item_type` accepts classes and unions. A fully qualified class string is resolved when it reaches
   validation as a member of a list, tuple, or set. A scalar non-UUID string is currently discarded
-  by Pile's `to_list_type` normalizer before the resolver sees it. Every resolved member must be a
-  nominal Observable subclass; duplicated declarations raise LionAGI `ValidationError`.
+  by Pile's `to_list_type` normalizer before the resolver sees it. ~~Every resolved member must be a
+  nominal Observable subclass~~ — superseded: a resolved member need only be a class, since
+  conformance is a property of instances and is established at admission. Duplicated declarations
+  raise LionAGI `ValidationError`.
 - With `strict_type=False`, an item's concrete type may be any subclass of an allowed class. With
   `strict_type=True`, `type(item)` must be exactly one allowed class.
 - Invalid item types and invalid items fail before the Pile dictionary/order is committed.
