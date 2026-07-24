@@ -2,67 +2,95 @@ from __future__ import annotations
 
 import logging
 import os
+import zoneinfo
 from pathlib import Path
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 _logger = logging.getLogger(__name__)
 
 SYSTEM_LOCALTIME_LINK = Path("/etc/localtime")
 
 
-def _zone_name_from_path(path: Path) -> str | None:
-    """Extract an IANA zone name from a path pointing into a zoneinfo tree.
+def _tz_search_roots() -> list[Path]:
+    """The zoneinfo directories a zone name is resolved against.
 
-    The tree's directory is conventionally named ``zoneinfo``, but some hosts
-    use a suffixed variant — macOS resolves through ``zoneinfo.default`` — so
-    the directory is matched on its prefix rather than by equality. Matching
-    on equality alone silently yields no zone on those hosts.
+    ``zoneinfo.TZPATH`` is the authority here: it is where the stdlib itself
+    looks, so a name expressed relative to one of these roots is a name that
+    will actually load. Each entry is included both as written and as it
+    resolves, because these are commonly symlinks — on macOS
+    ``/usr/share/zoneinfo`` points at ``/usr/share/zoneinfo.default``, and a
+    path resolved through the link matches only the second form.
     """
-    parts = path.parts
-    for idx, part in enumerate(parts):
-        if part == "zoneinfo" or part.startswith("zoneinfo."):
-            return "/".join(parts[idx + 1 :]) or None
+    roots: list[Path] = []
+    for entry in zoneinfo.TZPATH:
+        candidate = Path(entry)
+        for form in (candidate, _resolved(candidate)):
+            if form is not None and form not in roots:
+                roots.append(form)
+    return roots
+
+
+def _resolved(path: Path) -> Path | None:
+    """``path.resolve()``, or None when the filesystem refuses to answer.
+
+    Symlink loops surface as RuntimeError on some Python versions and OSError
+    on others, so both are treated as "no answer". This is called while
+    computing a module constant at import, where an escaping exception makes
+    the package unimportable rather than merely mis-zoned.
+    """
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return None
+
+
+def _zone_name_from_path(path: Path, roots: list[Path]) -> str | None:
+    """Express *path* as a zone name relative to whichever root contains it."""
+    for root in roots:
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            continue
+        name = "/".join(relative.parts)
+        if name:
+            return name
     return None
 
 
 def _system_local_tz_name() -> str:
     """Best-effort resolution of the system's IANA timezone name.
 
-    Checks ``$TZ`` first, then reads the ``/etc/localtime`` symlink (the
-    standard way Unix hosts point at their zoneinfo entry). Both the raw link
-    target and the fully resolved path are considered: a host may chain
-    through a second symlink into a directory whose name no longer identifies
-    the zoneinfo tree, and either form alone can be the one that carries the
-    zone name.
+    Checks ``$TZ`` first, then reads the ``/etc/localtime`` symlink — the
+    standard way Unix hosts point at their zoneinfo entry — and expresses it
+    relative to the zoneinfo roots the stdlib searches.
+
+    Deriving the name from the search roots rather than from a directory name
+    is what makes this reliable: the tree is called ``zoneinfo`` on most hosts
+    and something else on others, so any test against the name either misses
+    real trees or accepts directories that merely look like one and yields a
+    loadable but wrong zone. Containment in a search root has neither failure.
 
     Returns "UTC" if nothing resolves to a loadable zone. The daemon still
-    runs correctly in that case, but cron expressions are interpreted in UTC
-    rather than local time, so the fallback is logged — an unrequested UTC is
+    runs correctly then, but cron expressions are interpreted in UTC rather
+    than local time, so the fallback is logged: an unrequested UTC is
     otherwise indistinguishable from a configured one.
     """
     tz_env = os.environ.get("TZ")
     if tz_env:
         return tz_env
 
-    candidates: list[Path] = []
-    try:
-        candidates.append(Path(os.readlink(SYSTEM_LOCALTIME_LINK)))
-    except OSError:
-        pass
-    try:
-        candidates.append(SYSTEM_LOCALTIME_LINK.resolve())
-    except OSError:
-        pass
-
-    for candidate in candidates:
-        name = _zone_name_from_path(candidate)
-        if not name:
-            continue
-        try:
-            ZoneInfo(name)
-        except (ZoneInfoNotFoundError, ValueError):
-            continue
-        return name
+    localtime = _resolved(SYSTEM_LOCALTIME_LINK)
+    if localtime is not None:
+        name = _zone_name_from_path(localtime, _tz_search_roots())
+        if name is not None:
+            try:
+                zoneinfo.ZoneInfo(name)
+            except Exception:  # noqa: BLE001
+                # This runs at import to compute a module constant, so nothing
+                # may escape: an unreadable or malformed tzfile would otherwise
+                # make the package unimportable rather than merely mis-zoned.
+                name = None
+            if name is not None:
+                return name
 
     _logger.warning(
         "Could not determine the system timezone from %s; scheduler times will "
