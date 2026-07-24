@@ -215,9 +215,13 @@ async def test_reopening_takes_over_the_liveness_markers(temp_db_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stored", ["legacy", '"a string"', "[1, 2]", "{not json"])
+@pytest.mark.parametrize("stored", ["null", "legacy", '"a string"', "[1, 2]", "{not json"])
 async def test_metadata_that_is_not_an_object_does_not_stop_the_resume(temp_db_path, stored):
-    """The column has held plain strings, and reading one as an object raises.
+    """Values that are not objects do occur in this column; a JSON `null` is
+    the ordinary one, from a session that never recorded metadata, and it reads
+    back as nothing at all. The shapes that raise are text that is not JSON and
+    a JSON scalar or list, which raise in different places: the first when it is
+    read, the second when it is merged.
     Every other reader of it ignores what it cannot read as an object; a resume
     that raised here would lose the leg all of its state persistence, which is a
     far worse outcome than dropping a value nothing else consults."""
