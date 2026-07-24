@@ -217,6 +217,55 @@ _DECLARATIVE_KEYS: tuple[str, ...] = (
 )
 
 
+def create_playbook(name: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Write a brand-new playbook YAML to disk. Raises FileExistsError if one already exists for *name*, ValueError if the spec fields or step/link references are invalid."""
+    stem = name.removesuffix(".playbook.yaml").removesuffix(".yaml")
+    safe_path_join(_PLAYBOOKS_ROOT, f"{stem}.playbook.yaml")
+    path = _PLAYBOOKS_ROOT / f"{stem}.playbook.yaml"
+    if path.exists():
+        raise FileExistsError(f"Playbook '{stem}' already exists")
+
+    data = data or {}
+    spec_err = _check_spec_fields(_normalize_spec_keys(data))
+    if spec_err:
+        raise ValueError(spec_err)
+
+    content: dict[str, Any] = {"description": data.get("description") or ""}
+
+    for key in _DECLARATIVE_KEYS:
+        value = data.get(key)
+        if value not in (None, ""):
+            content[key] = value
+
+    use = data.get("use")
+    if isinstance(use, dict) and use.get("models"):
+        content["use"] = use
+
+    steps = data.get("steps")
+    if isinstance(steps, dict) and len(steps) > 0:
+        content["steps"] = steps
+
+    links = data.get("links")
+    if isinstance(links, list) and len(links) > 0:
+        content["links"] = links
+
+    validation = validate_playbook(stem, content)
+    if not validation["ok"]:
+        raise ValueError("; ".join(validation["errors"] or ["invalid playbook"]))
+
+    ensure_lionagi_dir(_PLAYBOOKS_ROOT)
+    new_text = yaml.dump(
+        content,
+        Dumper=_PlaybookDumper,
+        sort_keys=False,
+        allow_unicode=True,
+        width=120,
+    )
+    path.write_text(new_text)
+
+    return get_playbook(stem)
+
+
 def update_playbook(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
     """Write a playbook YAML back to disk with a conservative merge: description overwrites when present, graph keys (use/steps/links) only when non-empty, declarative keys overwrite or clear on None/"", all other disk keys preserved."""
     stem = name.removesuffix(".playbook.yaml").removesuffix(".yaml")
@@ -324,10 +373,17 @@ async def get_playbook_route(name: str) -> dict[str, Any]:
     return pb
 
 
-@studio_route("/playbooks/{name}", method="POST", area="playbooks")
-async def create_playbook(name: str) -> dict[str, Any]:
-    # TODO(lift-backend-writes)
-    raise HTTPException(status_code=501, detail="Not implemented")
+@studio_route("/playbooks/{name}", method="POST", area="playbooks", name="create_playbook")
+async def create_playbook_route(
+    name: str, body: Annotated[dict[str, Any], Body(default_factory=dict)]
+) -> dict[str, Any]:
+    try:
+        created = await anyio.to_thread.run_sync(partial(create_playbook, name, body))
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return created
 
 
 @studio_route("/playbooks/{name}", method="PUT", area="playbooks", name="update_playbook")
