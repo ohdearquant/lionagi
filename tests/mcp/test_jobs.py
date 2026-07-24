@@ -261,3 +261,5 @@ def test_write_job_publishes_atomically(sandbox, monkeypatch):
 
     # the previously published record is untouched — no partial write reached it
     assert jobs._read_job(rid) == good
+    # and the failed publish cleaned up its staging file rather than orphaning it
+    assert not list(config.job_dir(rid).glob(".job.json.*.tmp"))
