@@ -6,7 +6,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-## [0.30.2] - 2026-07-23
+### Added
+
+- `li mcp` serves an MCP server (over stdio) that submits `li` runs — agent, flow, and fanout —
+  as detached background jobs and exposes tools to query, tail, and stop them. Each `submit_*`
+  tool mirrors a `li` command but returns a `run_id` immediately while the run continues in its
+  own process group, so it survives an MCP-server restart. `fastmcp` stays behind the optional
+  `[mcp]` extra; importing `lionagi` never pulls it, and the job engine plus terminal notify hook
+  are standard-library only. Terminal notices are delivered through a configured command
+  (lionagi's own `notify.on_terminal` setting, a per-submit override, or an environment default),
+  never a hardcoded one, and the delivery outcome is recorded on the job and surfaced in
+  `job_status`. See `docs/cli-reference.md` for the tool list and `.mcp.json` registration.
 
 ### Fixed
 
