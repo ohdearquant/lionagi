@@ -16,7 +16,7 @@ import psutil
 from lionagi.state.db import PLAY_ACTIVE_STATUSES as _PLAY_ACTIVE_STATUSES
 
 from ._logging import log_error, warn
-from ._util import _TABLE_TO_ENTITY_TYPE
+from ._util import _TABLE_TO_ENTITY_TYPE, AmbiguousIdError
 from ._util import pid_alive as _pid_alive
 from ._util import resolve_entity as _resolve_entity
 
@@ -216,6 +216,22 @@ def _terminate_pid(
 
     if not _pid_alive(pid):
         return "sigterm"
+
+    # Re-check identity before escalating. The check above this function's
+    # SIGTERM ran up to grace_seconds ago, and the whole reason we are here is
+    # that the process did not exit when asked -- which is indistinguishable
+    # from it having exited early and the OS having handed its pid to something
+    # else in the meantime. SIGKILL is not survivable and gives the target no
+    # chance to identify itself, so the one thing this must not do is escalate
+    # onto a stranger. A pid that now belongs to a different process is
+    # reported the same way a mismatch at entry is.
+    if expected_cmd is not None and not _check_pid_identity(
+        pid,
+        expected_cmd,
+        expected_session_id=expected_session_id,
+        expected_create_time=expected_create_time,
+    ):
+        return "identity_mismatch"
 
     try:
         os.kill(pid, signal.SIGKILL)
@@ -466,7 +482,13 @@ async def _do_kill(
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
-        resolved = await _resolve_entity(db, id_or_short)
+        try:
+            resolved = await _resolve_entity(db, id_or_short)
+        except AmbiguousIdError as exc:
+            # Killing "whichever row matched first" would signal a process the
+            # caller never named — refuse and show the candidates instead.
+            log_error(str(exc))
+            return 1
         if resolved is None:
             log_error(f"entity not found for id: {id_or_short!r}")
             return 1

@@ -1481,3 +1481,108 @@ async def test_do_kill_all_stale_does_NOT_touch_play_at_all(
         assert row is not None
         # Play must remain running — the sweep must not have touched it.
         assert row["status"] == "running"
+
+
+import signal  # noqa: E402
+
+
+class TestTerminatePidIdentityRevalidation:
+    """SIGKILL is not survivable and gives the target no chance to identify
+    itself, so escalation re-checks that the pid still belongs to the process
+    we meant to kill."""
+
+    def _patch(self, monkeypatch, *, alive, identity_calls):
+        from lionagi.cli import kill as kill_mod
+
+        monkeypatch.setattr(kill_mod, "_pid_alive", lambda pid: alive(pid))
+        monkeypatch.setattr(kill_mod.time, "sleep", lambda s: None)
+
+        def _identity(pid, expected_cmd, **kw):
+            identity_calls.append(pid)
+            # first call (pre-SIGTERM) matches, later calls do not: the pid was
+            # recycled while we waited out the grace window
+            return len(identity_calls) == 1
+
+        monkeypatch.setattr(kill_mod, "_check_pid_identity", _identity)
+
+    def test_recycled_pid_is_not_sigkilled(self, monkeypatch):
+        from lionagi.cli import kill as kill_mod
+
+        sent = []
+        monkeypatch.setattr(kill_mod.os, "kill", lambda pid, sig: sent.append(sig))
+        identity_calls: list[int] = []
+        self._patch(monkeypatch, alive=lambda pid: True, identity_calls=identity_calls)
+
+        result = kill_mod._terminate_pid(4242, expected_cmd="li agent", grace_seconds=0.01)
+
+        assert result == "identity_mismatch"
+        assert len(identity_calls) == 2, "identity must be re-checked before escalating"
+        assert signal.SIGKILL not in sent, "escalated onto a recycled pid"
+        assert sent == [signal.SIGTERM]
+
+    def test_same_process_still_escalates(self, monkeypatch):
+        """The re-check must not block escalation against the real target."""
+        from lionagi.cli import kill as kill_mod
+
+        sent = []
+        monkeypatch.setattr(kill_mod.os, "kill", lambda pid, sig: sent.append(sig))
+        monkeypatch.setattr(kill_mod, "_pid_alive", lambda pid: True)
+        monkeypatch.setattr(kill_mod.time, "sleep", lambda s: None)
+        monkeypatch.setattr(kill_mod, "_check_pid_identity", lambda *a, **kw: True)
+
+        result = kill_mod._terminate_pid(4242, expected_cmd="li agent", grace_seconds=0.01)
+
+        assert result == "sigkill"
+        assert sent == [signal.SIGTERM, signal.SIGKILL]
+
+
+# ── Ambiguous short-id prefixes ────────────────────────────────────────────────
+#
+# A prefix that matches two rows must never resolve to "whichever came first":
+# `li kill` would then signal a process the caller never named.
+
+
+async def _seed_session_with_id(db: StateDB, sid: str, *, pid: int | None = None) -> str:
+    prog_id = str(uuid.uuid4())
+    await db.create_progression(prog_id)
+    await db.create_session(
+        {
+            "id": sid,
+            "progression_id": prog_id,
+            "status": "running",
+            "started_at": time.time(),
+            "node_metadata": {"pid": pid} if pid is not None else {},
+        }
+    )
+    return sid
+
+
+async def test_resolve_entity_rejects_ambiguous_prefix(temp_db_path: Path):
+    from lionagi.cli._util import AmbiguousIdError
+
+    async with StateDB() as db:
+        first = await _seed_session_with_id(db, "abcde000-0000-0000-0000-000000000001")
+        second = await _seed_session_with_id(db, "abcde111-0000-0000-0000-000000000002")
+
+        with pytest.raises(AmbiguousIdError) as excinfo:
+            await _resolve_entity(db, "abcde")
+
+    assert set(excinfo.value.candidates) == {first, second}
+    assert "abcde" in str(excinfo.value)
+
+
+async def test_do_kill_ambiguous_prefix_signals_nothing_and_fails(
+    temp_db_path: Path, caplog: pytest.LogCaptureFixture
+):
+    async with StateDB() as db:
+        first = await _seed_session_with_id(db, "abcde000-0000-0000-0000-000000000001", pid=4242)
+        second = await _seed_session_with_id(db, "abcde111-0000-0000-0000-000000000002", pid=4243)
+
+    with patch("lionagi.cli.kill._kill_one") as kill_one:
+        with caplog.at_level("ERROR"):
+            rc = await _do_kill("abcde")
+
+    assert rc == 1, "an ambiguous prefix must not be a success exit code"
+    kill_one.assert_not_called()
+    assert "ambiguous" in caplog.text
+    assert first in caplog.text and second in caplog.text

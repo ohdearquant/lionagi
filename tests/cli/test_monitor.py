@@ -1739,3 +1739,214 @@ def test_watch_mode_sigint_clean(temp_db_path: Path, monkeypatch: pytest.MonkeyP
 
     assert signal.SIGINT in handlers
     assert exit_code == 0
+
+
+# ── Ambiguous short-id prefixes ───────────────────────────────────────────────
+
+
+async def _make_session_with_id(db: StateDB, sid: str) -> str:
+    prog_id = uuid.uuid4().hex
+    await db.create_progression(prog_id)
+    await db.create_session(
+        {
+            "id": sid,
+            "progression_id": prog_id,
+            "status": "running",
+            "invocation_kind": "agent",
+            "started_at": time.time(),
+        }
+    )
+    return sid
+
+
+@pytest.mark.asyncio
+async def test_find_entity_rejects_ambiguous_prefix(temp_db_path: Path) -> None:
+    from lionagi.cli._util import AmbiguousIdError
+
+    async with StateDB() as db:
+        first = await _make_session_with_id(db, "abcde01")
+        second = await _make_session_with_id(db, "abcde02")
+
+        with pytest.raises(AmbiguousIdError) as excinfo:
+            await _find_entity(db, "abcde")
+
+    assert set(excinfo.value.candidates) == {first, second}
+
+
+@pytest.mark.asyncio
+async def test_resolve_session_run_rejects_ambiguous_prefix(temp_db_path: Path) -> None:
+    from lionagi.cli._util import AmbiguousIdError
+    from lionagi.cli.monitor import _resolve_session_run
+
+    async with StateDB() as db:
+        await _make_session_with_id(db, "abcde01")
+        await _make_session_with_id(db, "abcde02")
+
+        with pytest.raises(AmbiguousIdError):
+            await _resolve_session_run(db, "abcde")
+
+
+@pytest.mark.asyncio
+async def test_run_detail_propagates_ambiguous_prefix(temp_db_path: Path) -> None:
+    """_run_detail's broad `except Exception` must not swallow the ambiguity
+    into a rendered detail body — the caller has to set the exit code."""
+    from lionagi.cli._util import AmbiguousIdError
+
+    async with StateDB() as db:
+        await _make_session_with_id(db, "abcde01")
+        await _make_session_with_id(db, "abcde02")
+
+    with pytest.raises(AmbiguousIdError):
+        await _run_detail("abcde")
+
+
+@pytest.mark.asyncio
+async def test_monitor_detail_ambiguous_prefix_exits_unknown(temp_db_path: Path) -> None:
+    import argparse
+
+    import lionagi.cli.monitor as monitor_mod
+    from lionagi.cli.status import EXIT_UNKNOWN
+
+    async with StateDB() as db:
+        await _make_session_with_id(db, "abcde01")
+        await _make_session_with_id(db, "abcde02")
+
+    args = argparse.Namespace(
+        run_ids=None,
+        since=None,
+        id="abcde",
+        entity_type=None,
+        project=None,
+        watch=False,
+        refresh=2,
+        interval=3.0,
+        follow=False,
+        chain=True,
+        max_wait=None,
+    )
+
+    assert monitor_mod.run_monitor(args) == EXIT_UNKNOWN
+
+
+def test_watch_loop_ambiguous_prefix_exits_unknown(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Watch mode can't refresh its way out of an ambiguous id — it stops."""
+    import lionagi.cli.monitor as monitor_mod
+    from lionagi.cli._util import AmbiguousIdError
+    from lionagi.cli.status import EXIT_UNKNOWN
+
+    monkeypatch.setattr(monitor_mod, "_clear_screen", lambda: None)
+
+    def raising_run_async(coro: Any) -> str:
+        coro.close()
+        raise AmbiguousIdError("abcde", "sessions", ["abcde01", "abcde02"])
+
+    import lionagi.ln.concurrency as concurrency_mod
+
+    monkeypatch.setattr(concurrency_mod, "run_async", raising_run_async)
+
+    saved = (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM))
+    try:
+        exit_code = monitor_mod._watch_loop(
+            1, "abcde", since_window=None, entity_type=None, project=None
+        )
+    finally:
+        signal.signal(signal.SIGINT, saved[0])
+        signal.signal(signal.SIGTERM, saved[1])
+
+    assert exit_code == EXIT_UNKNOWN
+
+
+# ── Watch mode: SIGTERM during a refresh ──────────────────────────────────────
+#
+# run_async installs its own signal handlers for the duration of the call, so a
+# signal delivered inside a refresh surfaces as SigtermInterrupt/KeyboardInterrupt
+# out of run_async rather than setting the loop's own flag. Both derive from
+# BaseException, so the loop has to name them.
+
+
+def test_watch_loop_exits_cleanly_on_sigterm_during_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import lionagi.cli.monitor as monitor_mod
+    import lionagi.ln.concurrency as concurrency_mod
+    from lionagi.ln.concurrency.utils import SigtermInterrupt
+
+    monkeypatch.setattr(monitor_mod, "_clear_screen", lambda: None)
+
+    def sigterm_run_async(coro: Any) -> str:
+        coro.close()
+        raise SigtermInterrupt("SIGTERM during refresh")
+
+    monkeypatch.setattr(concurrency_mod, "run_async", sigterm_run_async)
+
+    saved = (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM))
+    try:
+        exit_code = monitor_mod._watch_loop(
+            1, None, since_window=None, entity_type=None, project=None
+        )
+    finally:
+        signal.signal(signal.SIGINT, saved[0])
+        signal.signal(signal.SIGTERM, saved[1])
+
+    assert exit_code == 0
+
+
+def test_watch_loop_restores_prior_signal_handlers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The loop's handlers must not outlive the loop, on any exit path."""
+    import lionagi.cli.monitor as monitor_mod
+    import lionagi.ln.concurrency as concurrency_mod
+    from lionagi.ln.concurrency.utils import SigtermInterrupt
+
+    monkeypatch.setattr(monitor_mod, "_clear_screen", lambda: None)
+
+    def sigterm_run_async(coro: Any) -> str:
+        coro.close()
+        raise SigtermInterrupt("SIGTERM during refresh")
+
+    monkeypatch.setattr(concurrency_mod, "run_async", sigterm_run_async)
+
+    def sentinel_sigint(signum: int, frame: Any) -> None:
+        pass
+
+    def sentinel_sigterm(signum: int, frame: Any) -> None:
+        pass
+
+    saved = (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM))
+    try:
+        signal.signal(signal.SIGINT, sentinel_sigint)
+        signal.signal(signal.SIGTERM, sentinel_sigterm)
+
+        monitor_mod._watch_loop(1, None, since_window=None, entity_type=None, project=None)
+
+        assert signal.getsignal(signal.SIGINT) is sentinel_sigint
+        assert signal.getsignal(signal.SIGTERM) is sentinel_sigterm
+    finally:
+        signal.signal(signal.SIGINT, saved[0])
+        signal.signal(signal.SIGTERM, saved[1])
+
+
+def test_watch_loop_leaves_unrestorable_handlers_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A handler installed outside Python is reported as None and cannot be
+    reinstalled, so taking it over would mean keeping it forever. The loop must
+    decline to replace it rather than install a handler it can never remove."""
+    import lionagi.cli.monitor as monitor_mod
+    import lionagi.ln.concurrency as concurrency_mod
+    from lionagi.ln.concurrency.utils import SigtermInterrupt
+
+    monkeypatch.setattr(monitor_mod, "_clear_screen", lambda: None)
+
+    def sigterm_run_async(coro: Any) -> str:
+        coro.close()
+        raise SigtermInterrupt("SIGTERM during refresh")
+
+    monkeypatch.setattr(concurrency_mod, "run_async", sigterm_run_async)
+    monkeypatch.setattr(signal, "getsignal", lambda signum: None)
+
+    installed: list[int] = []
+    monkeypatch.setattr(signal, "signal", lambda signum, handler: installed.append(signum))
+
+    monitor_mod._watch_loop(1, None, since_window=None, entity_type=None, project=None)
+
+    assert installed == []

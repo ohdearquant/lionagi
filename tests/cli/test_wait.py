@@ -337,3 +337,59 @@ def test_run_wait_unknown_id_returns_exit_unknown(temp_db_path: Path) -> None:
 def test_run_wait_requires_at_least_one_id(temp_db_path: Path) -> None:
     with pytest.raises(SystemExit):
         run_wait([])
+
+
+# ── Ambiguous short-id prefixes ─────────────────────────────────────────────
+
+
+async def _make_session_with_id(db: StateDB, sid: str, *, status: str = "running") -> str:
+    prog_id = str(uuid.uuid4())
+    await db.create_progression(prog_id)
+    await db.create_session({"id": sid, "progression_id": prog_id, "status": status})
+    return sid
+
+
+async def test_resolve_wait_target_rejects_ambiguous_prefix(temp_db_path: Path) -> None:
+    from lionagi.cli._util import AmbiguousIdError
+    from lionagi.cli.wait import _resolve_wait_target
+
+    async with StateDB() as db:
+        first = await _make_session_with_id(db, "abcde01")
+        second = await _make_session_with_id(db, "abcde02")
+
+        with pytest.raises(AmbiguousIdError) as excinfo:
+            await _resolve_wait_target(db, "abcde")
+
+    assert set(excinfo.value.candidates) == {first, second}
+
+
+async def test_wait_for_terminal_reports_ambiguous_id_without_waiting(
+    temp_db_path: Path,
+) -> None:
+    async with StateDB() as db:
+        first = await _make_session_with_id(db, "abcde01")
+        second = await _make_session_with_id(db, "abcde02")
+
+    outcomes = await wait_for_terminal(["abcde"], interval=0.01)
+
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome["status"] == "ambiguous"
+    assert outcome["success"] is False
+    assert first in outcome["detail"] and second in outcome["detail"]
+
+
+def test_run_wait_ambiguous_prefix_returns_exit_unknown(
+    temp_db_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def _seed() -> None:
+        async with StateDB() as db:
+            await _make_session_with_id(db, "abcde01")
+            await _make_session_with_id(db, "abcde02")
+
+    from lionagi.ln.concurrency import run_async
+
+    run_async(_seed())
+
+    assert run_wait(["abcde"]) == EXIT_UNKNOWN
+    assert "abcde01\tstatus=" not in capsys.readouterr().out

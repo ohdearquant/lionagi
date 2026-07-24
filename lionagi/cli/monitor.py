@@ -16,6 +16,7 @@ from typing import Any
 
 from ._project import detect_project
 from ._runs import RUNS_ROOT
+from ._util import AmbiguousIdError, fetch_unique_row
 from ._util import pid_alive as _pid_alive_int
 
 __all__ = (
@@ -234,7 +235,12 @@ async def _query_plays_for_show(db: Any, show_id: str) -> list[dict[str, Any]]:
 
 
 async def _find_entity(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | None:
-    """Resolve entity_id across all entity tables; returns (entity_type, row) or None."""
+    """Resolve entity_id across all entity tables; returns (entity_type, row) or None.
+
+    Raises `AmbiguousIdError` when a short prefix matches more than one row in
+    a table, so a detail view can never be rendered for an arbitrarily chosen
+    run.
+    """
     searches = [
         ("session", "sessions"),
         ("invocation", "invocations"),
@@ -242,16 +248,7 @@ async def _find_entity(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | 
         ("play", "plays"),
     ]
     for entity_type, table in searches:
-        row = await db.fetch_one(
-            f"SELECT * FROM {table} WHERE id = ?",  # noqa: S608
-            (entity_id,),
-        )
-        if row:
-            return entity_type, row
-        row = await db.fetch_one(
-            f"SELECT * FROM {table} WHERE id LIKE ?",  # noqa: S608
-            (entity_id + "%",),
-        )
+        row = await fetch_unique_row(db, table, entity_id)
         if row:
             return entity_type, row
     return None
@@ -844,6 +841,10 @@ async def _run_detail(entity_id: str) -> str:
             if entity_type == "play":
                 return await _detail_play(db, entity_row)
             return _red(f"unknown entity type {entity_type!r}")
+    except AmbiguousIdError:
+        # Propagate: an ambiguous id is a user-input error the caller has to
+        # turn into a non-success exit code, not a rendered detail body.
+        raise
     except Exception as exc:  # noqa: BLE001
         return _red(f"error: {exc}")
 
@@ -866,7 +867,10 @@ def _watch_loop(
     project: str | None,
 ) -> int:
     """Repeatedly clear screen and reprint; exit cleanly on SIGINT/SIGTERM."""
-    from lionagi.ln.concurrency import run_async
+    from lionagi.ln.concurrency import SigtermInterrupt, run_async
+
+    from ._logging import log_error
+    from .status import EXIT_UNKNOWN
 
     interrupted = False
 
@@ -874,29 +878,67 @@ def _watch_loop(
         nonlocal interrupted
         interrupted = True
 
-    signal.signal(signal.SIGINT, _handle_signal)
-    signal.signal(signal.SIGTERM, _handle_signal)
+    def _install(signum):
+        """Take over *signum* only if the handler can be given back.
 
-    while not interrupted:
-        since = _since_timestamp(since_window) if since_window else None
-        if entity_id:
-            output = run_async(_run_detail(entity_id))
-        else:
-            output = run_async(_run_table(since=since, entity_type=entity_type, project=project))
-        _clear_screen()
-        ts = time.strftime("%H:%M:%S")
-        print(f"{_dim(f'Updated: {ts}  (refresh every {refresh_seconds}s, Ctrl-C to exit)')}")
-        print()
-        print(output)
-        # Sleep in small increments so SIGINT is responsive
-        for _ in range(refresh_seconds * 10):
-            if interrupted:
+        A handler installed outside Python is reported as None and cannot be
+        reinstalled, so replacing one means keeping it forever. Leaving it
+        alone costs this loop its clean exit on that signal; taking it would
+        cost the whole process its handler, which is the larger harm.
+        """
+        prior = signal.getsignal(signum)
+        if prior is None:
+            return None
+        signal.signal(signum, _handle_signal)
+        return prior
+
+    prior_sigint = _install(signal.SIGINT)
+    prior_sigterm = _install(signal.SIGTERM)
+    exit_code = 0
+
+    try:
+        while not interrupted:
+            since = _since_timestamp(since_window) if since_window else None
+            try:
+                if entity_id:
+                    output = run_async(_run_detail(entity_id))
+                else:
+                    output = run_async(
+                        _run_table(since=since, entity_type=entity_type, project=project)
+                    )
+            except (KeyboardInterrupt, SigtermInterrupt):
+                # run_async installs its own signal handlers for the duration
+                # of the refresh, so a signal arriving inside that window
+                # surfaces as an exception here instead of setting the flag
+                # above. Both derive from BaseException, so they must be named.
+                interrupted = True
                 break
-            time.sleep(0.1)
+            except AmbiguousIdError as exc:
+                # A longer prefix is the only fix; refreshing cannot resolve it.
+                log_error(str(exc))
+                exit_code = EXIT_UNKNOWN
+                break
+            _clear_screen()
+            ts = time.strftime("%H:%M:%S")
+            print(f"{_dim(f'Updated: {ts}  (refresh every {refresh_seconds}s, Ctrl-C to exit)')}")
+            print()
+            print(output)
+            # Sleep in small increments so SIGINT is responsive
+            for _ in range(refresh_seconds * 10):
+                if interrupted:
+                    break
+                time.sleep(0.1)
+    finally:
+        # The loop's handlers must not outlive the loop. None here means the
+        # signal was never taken over, so there is nothing to give back.
+        if prior_sigint is not None:
+            signal.signal(signal.SIGINT, prior_sigint)
+        if prior_sigterm is not None:
+            signal.signal(signal.SIGTERM, prior_sigterm)
 
     if _IS_TTY:
         print()  # newline after Ctrl-C
-    return 0
+    return exit_code
 
 
 # ── Wait-for-terminal primitive (li monitor run / li monitor --run) ───────────
@@ -922,26 +964,21 @@ def _split_watched_ids(raw: list[str]) -> list[str]:
 
 
 async def _resolve_schedule_run(db: Any, raw_id: str) -> dict[str, Any] | None:
-    """Exact match then prefix match. schedule_run ids are 12-char hex, not
-    36-char UUIDs, so _util.py's length-36 prefix heuristic doesn't apply."""
+    """Exact match then unique-prefix match. schedule_run ids are 12-char hex,
+    not 36-char UUIDs, so any id length can be a prefix here."""
     row = await db.get_schedule_run(raw_id)
     if row:
         return row
-    return await db.fetch_one(
-        "SELECT * FROM schedule_runs WHERE id LIKE ?",
-        (raw_id + "%",),
-    )
+    return await fetch_unique_row(db, "schedule_runs", raw_id)
 
 
 async def _resolve_session_run(db: Any, raw_id: str) -> dict[str, Any] | None:
-    """Exact match then prefix match against the sessions table (agent/li agent run ids)."""
+    """Exact match then unique-prefix match against the sessions table
+    (agent/li agent run ids)."""
     row = await db.get_session(raw_id)
     if row:
         return row
-    return await db.fetch_one(
-        "SELECT * FROM sessions WHERE id LIKE ?",
-        (raw_id + "%",),
-    )
+    return await fetch_unique_row(db, "sessions", raw_id)
 
 
 def _format_session_wait_line(row: dict[str, Any]) -> str:
@@ -1318,7 +1355,12 @@ def _dispatch_wait(
         async with StateDB() as db:
             return await _resolve_watched_runs(db, ids)
 
-    resolved = _run_tick(_resolve())
+    try:
+        resolved = _run_tick(_resolve())
+    except AmbiguousIdError as exc:
+        # Nothing to wait on: the caller named a prefix, not a run.
+        log_error(str(exc))
+        return EXIT_UNKNOWN
     if resolved is None:
         # Interrupted before resolving completed — "still in progress",
         # not success or failure.
@@ -1615,7 +1657,14 @@ def run_monitor(args: argparse.Namespace) -> int:
         )
 
     if entity_id:
-        output = run_async(_run_detail(entity_id))
+        try:
+            output = run_async(_run_detail(entity_id))
+        except AmbiguousIdError as exc:
+            from ._logging import log_error
+            from .status import EXIT_UNKNOWN
+
+            log_error(str(exc))
+            return EXIT_UNKNOWN
     else:
         output = run_async(_run_table(since=since, entity_type=entity_type, project=project))
 

@@ -16,6 +16,7 @@ from typing import Any
 
 from ._logging import log_error
 from ._project import detect_project
+from ._util import AmbiguousIdError, fetch_unique_row
 
 __all__ = (
     "run_agent_status",
@@ -45,19 +46,14 @@ _DB_BUSY_TIMEOUT_S = 10.0
 
 
 async def _fetch_by_id(db: Any, table: str, id_or_short: str) -> dict[str, Any] | None:
-    """Exact-id fetch for full ids, prefix (LIKE) fetch for short ids, scoped
-    to one table (see _util.resolve_entity for the multi-table sweep)."""
-    id_or_short = id_or_short.strip()
-    if len(id_or_short) < 36:
-        row = await db.fetch_one(
-            f"SELECT * FROM {table} WHERE id LIKE ?",  # noqa: S608
-            (id_or_short + "%",),
-        )
-    else:
-        row = await db.fetch_one(
-            f"SELECT * FROM {table} WHERE id = ?",  # noqa: S608
-            (id_or_short,),
-        )
+    """Exact-id fetch, then unique-prefix fetch, scoped to one table (see
+    _util.resolve_entity for the multi-table sweep).
+
+    Raises `AmbiguousIdError` when a prefix matches more than one row; the
+    status entry points turn that into EXIT_UNKNOWN, never a status readout
+    for an arbitrarily chosen run.
+    """
+    row = await fetch_unique_row(db, table, id_or_short)
     return db._row_to_dict(row) if row is not None else None
 
 
@@ -407,12 +403,15 @@ async def _run_status_inner(
 
     async with StateDB() as db:
         project = detect_project(Path.cwd())[0]
-        if command == "agent":
-            target = await _resolve_agent_target(db, entity_id, project)
-        elif command == "play":
-            target = await _resolve_play_target(db, entity_id, project)
-        else:  # "ctl" — generic, id required (enforced by argparse), no kind scoping
-            target = await _resolve_any_target(db, entity_id) if entity_id else None
+        try:
+            if command == "agent":
+                target = await _resolve_agent_target(db, entity_id, project)
+            elif command == "play":
+                target = await _resolve_play_target(db, entity_id, project)
+            else:  # "ctl" — generic, id required (enforced by argparse), no kind scoping
+                target = await _resolve_any_target(db, entity_id) if entity_id else None
+        except AmbiguousIdError as exc:
+            return str(exc), EXIT_UNKNOWN
 
         if target is None:
             who = f"id {entity_id!r}" if entity_id else f"latest {command} run"
