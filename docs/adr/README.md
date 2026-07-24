@@ -173,7 +173,9 @@ avoids collisions with other ADR work and preserves existing inbound references.
   completion record
 - [ADR-0065](ADR-0065-marketplace-catalog-and-directory-discovery.md) — Marketplace catalog and
   directory discovery
-- 0066-0067 — unused (intentional gaps)
+- [ADR-0066](ADR-0066-li-mcp-v2-verb-surface.md) — `li mcp` v2 verb surface (discrete core
+  plus one parser-generated dispatch verb)
+- 0067 — unused (intentional gap)
 
 ### scheduling-control-plane (0068-0075)
 
