@@ -1574,6 +1574,29 @@ def test_watch_loop_recomputes_since_every_tick(monkeypatch: pytest.MonkeyPatch)
     assert captured == [100.0, 200.0], "each tick must use a freshly derived cutoff"
 
 
+def test_watch_loop_exits_cleanly_on_sigterm_interrupt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A SIGTERM delivered while run_async's inner coroutine is executing
+    surfaces as SigtermInterrupt raised *out of* run_async, not through the
+    loop's own _handle_signal flag. The loop must still exit cleanly (return
+    0) instead of letting that exception propagate and crash the process."""
+    import lionagi.cli.monitor as monitor_mod
+    from lionagi.ln.concurrency.utils import SigtermInterrupt
+
+    monkeypatch.setattr(monitor_mod.signal, "signal", lambda signum, handler: None)
+    monkeypatch.setattr(monitor_mod, "_clear_screen", lambda: None)
+
+    def fake_run_async(coro):
+        coro.close()  # avoid "coroutine was never awaited" warning
+        raise SigtermInterrupt("process received SIGTERM; inner task cancelled")
+
+    import lionagi.ln.concurrency as concurrency_mod
+
+    monkeypatch.setattr(concurrency_mod, "run_async", fake_run_async)
+
+    rc = monitor_mod._watch_loop(0, None, since_window=None, entity_type=None, project=None)
+    assert rc == 0
+
+
 # ── Regression: AGENTS column ────────────────────────────────────────────────
 
 

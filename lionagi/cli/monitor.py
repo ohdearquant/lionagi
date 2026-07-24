@@ -867,6 +867,7 @@ def _watch_loop(
 ) -> int:
     """Repeatedly clear screen and reprint; exit cleanly on SIGINT/SIGTERM."""
     from lionagi.ln.concurrency import run_async
+    from lionagi.ln.concurrency.utils import SigtermInterrupt
 
     interrupted = False
 
@@ -879,10 +880,20 @@ def _watch_loop(
 
     while not interrupted:
         since = _since_timestamp(since_window) if since_window else None
-        if entity_id:
-            output = run_async(_run_detail(entity_id))
-        else:
-            output = run_async(_run_table(since=since, entity_type=entity_type, project=project))
+        try:
+            if entity_id:
+                output = run_async(_run_detail(entity_id))
+            else:
+                output = run_async(
+                    _run_table(since=since, entity_type=entity_type, project=project)
+                )
+        except (SigtermInterrupt, KeyboardInterrupt):
+            # A signal arriving while run_async's inner coroutine is in
+            # flight is raised here rather than routed through
+            # _handle_signal (run_async installs its own handler for the
+            # duration of the call) — treat it the same as the flag-based
+            # interrupt so the loop still exits via the clean path below.
+            break
         _clear_screen()
         ts = time.strftime("%H:%M:%S")
         print(f"{_dim(f'Updated: {ts}  (refresh every {refresh_seconds}s, Ctrl-C to exit)')}")
