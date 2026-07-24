@@ -17,6 +17,7 @@ from lionagi.state.db import TERMINAL_STATUSES_BY_ENTITY_TYPE
 from lionagi.state.reasons import VALID_REASON_CODES
 
 from ._logging import log_error
+from ._util import AmbiguousIdError
 from .monitor import _resolve_schedule_run, _split_watched_ids
 from .status import EXIT_RUNNING, EXIT_UNKNOWN, _resolve_any_target, _resolve_primary_session
 
@@ -135,7 +136,26 @@ async def wait_for_terminal(
 
     async with StateDB() as db:
         for raw_id in ids:
-            hit = await _resolve_wait_target(db, raw_id)
+            try:
+                hit = await _resolve_wait_target(db, raw_id)
+            except AmbiguousIdError as exc:
+                # One bad id doesn't abort the wait — it resolves to its own
+                # non-success outcome, like a not-found id does.
+                outcome = {
+                    "run_id": raw_id,
+                    "kind": None,
+                    "status": "ambiguous",
+                    "reason": _UNKNOWN_REASON,
+                    "artifact_dir": None,
+                    "exit_code": None,
+                    "success": False,
+                    "detail": str(exc),
+                }
+                outcomes[raw_id] = outcome
+                order.append(raw_id)
+                if on_result is not None:
+                    on_result(outcome)
+                continue
             if hit is None:
                 outcome = {
                     "run_id": raw_id,
@@ -239,6 +259,9 @@ def run_wait(argv: list[str]) -> int:
         if outcome["status"] == "not_found":
             log_error(f"run {outcome['run_id']!r} not found")
             return
+        if outcome["status"] == "ambiguous":
+            log_error(outcome["detail"])
+            return
         print(format_wait_line(outcome))
 
     # A still-in-progress wait (SIGINT/SIGTERM mid-wait) is neither success nor failure.
@@ -252,6 +275,6 @@ def run_wait(argv: list[str]) -> int:
 
     if interrupted or len(outcomes) < len(watched_ids):
         return EXIT_RUNNING
-    if any(o["status"] in ("not_found", "unknown") for o in outcomes):
+    if any(o["status"] in ("not_found", "unknown", "ambiguous") for o in outcomes):
         return EXIT_UNKNOWN
     return 0 if all(o["success"] for o in outcomes) else 1

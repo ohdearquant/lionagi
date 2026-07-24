@@ -1534,3 +1534,55 @@ class TestTerminatePidIdentityRevalidation:
 
         assert result == "sigkill"
         assert sent == [signal.SIGTERM, signal.SIGKILL]
+
+
+# ── Ambiguous short-id prefixes ────────────────────────────────────────────────
+#
+# A prefix that matches two rows must never resolve to "whichever came first":
+# `li kill` would then signal a process the caller never named.
+
+
+async def _seed_session_with_id(db: StateDB, sid: str, *, pid: int | None = None) -> str:
+    prog_id = str(uuid.uuid4())
+    await db.create_progression(prog_id)
+    await db.create_session(
+        {
+            "id": sid,
+            "progression_id": prog_id,
+            "status": "running",
+            "started_at": time.time(),
+            "node_metadata": {"pid": pid} if pid is not None else {},
+        }
+    )
+    return sid
+
+
+async def test_resolve_entity_rejects_ambiguous_prefix(temp_db_path: Path):
+    from lionagi.cli._util import AmbiguousIdError
+
+    async with StateDB() as db:
+        first = await _seed_session_with_id(db, "abcde000-0000-0000-0000-000000000001")
+        second = await _seed_session_with_id(db, "abcde111-0000-0000-0000-000000000002")
+
+        with pytest.raises(AmbiguousIdError) as excinfo:
+            await _resolve_entity(db, "abcde")
+
+    assert set(excinfo.value.candidates) == {first, second}
+    assert "abcde" in str(excinfo.value)
+
+
+async def test_do_kill_ambiguous_prefix_signals_nothing_and_fails(
+    temp_db_path: Path, caplog: pytest.LogCaptureFixture
+):
+    async with StateDB() as db:
+        first = await _seed_session_with_id(db, "abcde000-0000-0000-0000-000000000001", pid=4242)
+        second = await _seed_session_with_id(db, "abcde111-0000-0000-0000-000000000002", pid=4243)
+
+    with patch("lionagi.cli.kill._kill_one") as kill_one:
+        with caplog.at_level("ERROR"):
+            rc = await _do_kill("abcde")
+
+    assert rc == 1, "an ambiguous prefix must not be a success exit code"
+    kill_one.assert_not_called()
+    assert "ambiguous" in caplog.text
+    assert first in caplog.text and second in caplog.text

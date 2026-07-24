@@ -16,7 +16,7 @@ import psutil
 from lionagi.state.db import PLAY_ACTIVE_STATUSES as _PLAY_ACTIVE_STATUSES
 
 from ._logging import log_error, warn
-from ._util import _TABLE_TO_ENTITY_TYPE
+from ._util import _TABLE_TO_ENTITY_TYPE, AmbiguousIdError
 from ._util import pid_alive as _pid_alive
 from ._util import resolve_entity as _resolve_entity
 
@@ -482,7 +482,13 @@ async def _do_kill(
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
-        resolved = await _resolve_entity(db, id_or_short)
+        try:
+            resolved = await _resolve_entity(db, id_or_short)
+        except AmbiguousIdError as exc:
+            # Killing "whichever row matched first" would signal a process the
+            # caller never named — refuse and show the candidates instead.
+            log_error(str(exc))
+            return 1
         if resolved is None:
             log_error(f"entity not found for id: {id_or_short!r}")
             return 1
