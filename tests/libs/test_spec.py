@@ -324,8 +324,22 @@ class TestSpecBaseTypeValidation:
 
         Spec(int)  # plain type
         Spec(int | str)  # PEP 604 UnionType
-        Spec(typing.Union[int, str])  # typing.Union carries __origin__
-        Spec(list[int])  # generic alias carries __origin__
+        Spec(typing.Union[int, str])  # typing.Union
+        Spec(list[int])  # generic alias
+        Spec(typing.Optional[int])
+        Spec(typing.Annotated[int, "meta"])
+        Spec(typing.Callable[[int], str])
+        Spec(dict[str, int])
+
+    def test_rejects_origin_attribute_spoof(self):
+        # Any object can define __origin__, so attribute presence cannot stand
+        # in for being a type annotation. Rejection must happen at construction,
+        # before the value is observable on the instance.
+        class _OriginSpoof:
+            __origin__ = int
+
+        with pytest.raises(ValueError, match="base_type must be a type"):
+            Spec(_OriginSpoof())
 
     def test_rejects_uniontype_string_spoof(self):
         # An instance is not a valid type just because its type's repr equals

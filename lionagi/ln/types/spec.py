@@ -105,10 +105,14 @@ class Spec:
 
         if not_sentinel(base_type, True):
             import types
+            import typing
 
+            # get_origin, not hasattr("__origin__"): any object can define that
+            # attribute, so presence alone lets an arbitrary instance pose as a
+            # type annotation. get_origin only answers for real typing forms.
             is_valid_type = (
                 isinstance(base_type, type)
-                or hasattr(base_type, "__origin__")
+                or typing.get_origin(base_type) is not None
                 or isinstance(base_type, types.UnionType)
             )
             if not is_valid_type:
