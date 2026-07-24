@@ -591,12 +591,18 @@ async def _doctor(
 
     from sqlalchemy import text
 
+    from lionagi.cli._util import pid_alive
+    from lionagi.cli.kill import _read_pid_from_entity
+
     async with StateDB() as db:
         async with db._read() as conn:
             rows = (
                 (
                     await conn.execute(
-                        text("SELECT id, started_at FROM sessions WHERE status = 'running'")
+                        text(
+                            "SELECT id, started_at, node_metadata, artifacts_path "
+                            "FROM sessions WHERE status = 'running'"
+                        )
                     )
                 )
                 .mappings()
@@ -607,10 +613,25 @@ async def _doctor(
         skipped = 0
         for row in rows:
             started = row["started_at"]
-            if started is None or started < cutoff:
-                victims.append(row["id"])
-            else:
+            if started is not None and started >= cutoff:
                 skipped += 1
+                continue
+            # Age answers "how long since this session first started", which is
+            # the same question as "how long has this process been running" only
+            # for a session that ran once. A branch picked up again keeps the
+            # start time of the session while the process is new, so the command
+            # asks the process itself before calling anything stuck.
+            entity = dict(row)
+            if isinstance(entity.get("node_metadata"), str):
+                try:
+                    entity["node_metadata"] = json.loads(entity["node_metadata"])
+                except ValueError:
+                    entity["node_metadata"] = None
+            pid = _read_pid_from_entity(entity)
+            if pid is not None and pid_alive(pid):
+                skipped += 1
+                continue
+            victims.append(row["id"])
 
         swept_count = 0
         if dry_run:
@@ -941,10 +962,11 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
             "A SIGKILL or unclean exit between session-open and teardown "
             "leaves the session row at status='running' forever. This "
             "command resets such rows (older than --stale-hours, default "
-            "24) to --new-status (default 'aborted'). Conservative: only "
-            "sessions whose started_at is older than the threshold are "
-            "swept, so an actively-running CLI process is left alone. "
-            "Use --dry-run first."
+            "24) to --new-status (default 'aborted'). Conservative: a "
+            "session is swept only if its started_at is older than the "
+            "threshold AND its recorded process is not running, so an "
+            "actively-running CLI process is left alone even when the "
+            "session it resumed started long ago. Use --dry-run first."
         ),
     )
     doctor.add_argument(

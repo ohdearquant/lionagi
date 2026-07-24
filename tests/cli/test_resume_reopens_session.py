@@ -215,6 +215,40 @@ async def test_reopening_takes_over_the_liveness_markers(temp_db_path):
 
 
 @pytest.mark.asyncio
+async def test_the_status_and_the_markers_move_together(temp_db_path):
+    """Splitting them leaves a window where the row reads running while still
+    carrying the previous leg's markers. The sweeps select on status and then
+    ask these markers whether the row is alive, so a row that is running for
+    even an instant with a dead process recorded is a row they can cancel."""
+    async with StateDB() as db:
+        sid = await _running_session(db)
+        await db.update_session(sid, node_metadata=json.dumps({"pid": 999999}))
+        await db.update_status(
+            "session",
+            sid,
+            new_status="completed",
+            reason_code=RunReasons.COMPLETED_OK,
+            source="executor",
+            actor=sid,
+        )
+
+        async def _no_second_write(*args, **kwargs):
+            raise AssertionError("markers were written outside the status transaction")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(db, "update_session", _no_second_write)
+            assert await _reopen_session_for_resume(db, sid, await db.get_session(sid)) is True
+
+        row = await db.get_session(sid)
+        meta = row["node_metadata"]
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+
+    assert row["status"] == "running"
+    assert meta["pid"] == os.getpid()
+
+
+@pytest.mark.asyncio
 async def test_a_lost_reopen_race_does_not_take_over_another_leg_s_markers(temp_db_path):
     """On a lost race the row belongs to a different leg. Stamping our markers
     on it would make that leg's liveness answer for our process, which is the

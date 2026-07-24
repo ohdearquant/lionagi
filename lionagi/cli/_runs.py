@@ -986,6 +986,7 @@ async def _reopen_session_for_resume(db, session_id: str, existing_session: dict
     terminal exit for every writer in the system, while finality is exactly what
     the reapers, the teardown guard and ``li wait`` all rest on.
     """
+    from lionagi.cli.kill import current_pid_markers
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
     from lionagi.state.reasons import SessionReasons
 
@@ -993,6 +994,18 @@ async def _reopen_session_for_resume(db, session_id: str, existing_session: dict
         # Not terminal: a resume racing a live leg on the same branch. The row
         # already describes the session correctly, so there is nothing to reopen.
         return False
+
+    # Liveness is judged from the process markers on the row, and a reopened
+    # session used to carry the markers of the leg that already exited. A
+    # terminal session is never checked for liveness, so those markers were
+    # harmless while it was terminal; a running one is checked, so leaving them
+    # would describe this live leg by a dead process. They move in the same
+    # transaction as the status: the sweeps select on status and then answer
+    # "is it alive" from these markers, so a row that is running for even an
+    # instant with the previous leg's markers is a row they can cancel.
+    node_metadata = existing_session.get("node_metadata") or {}
+    if isinstance(node_metadata, str):
+        node_metadata = json.loads(node_metadata)
 
     applied = await db.update_status(
         "session",
@@ -1003,7 +1016,10 @@ async def _reopen_session_for_resume(db, session_id: str, existing_session: dict
         source="executor",
         actor=session_id,
         expected_statuses=SESSION_TERMINAL_STATUSES,
-        extra_fields={"ended_at": None},
+        extra_fields={
+            "ended_at": None,
+            "node_metadata": json.dumps({**node_metadata, **current_pid_markers()}),
+        },
         override=True,
         override_actor="cli.resume",
         override_justification="branch resumed by a new leg; the session is executing again",
@@ -1020,23 +1036,6 @@ async def _reopen_session_for_resume(db, session_id: str, existing_session: dict
         )
         return False
 
-    # Liveness is judged from the process markers on the row, and until now a
-    # reopened session carried the markers of the leg that already exited. A
-    # terminal session is never checked for liveness, so those markers were
-    # harmless while they were stale; a running one is, so leaving them would
-    # describe this live leg by a dead process and invite the phantom reaper to
-    # take a working session to failed. Written after the reopen wins, never
-    # before: on a lost race the row belongs to another leg, and stamping our
-    # markers on it would make that leg's liveness answer for our process.
-    from lionagi.cli.kill import current_pid_markers
-
-    node_metadata = existing_session.get("node_metadata") or {}
-    if isinstance(node_metadata, str):
-        node_metadata = json.loads(node_metadata)
-    await db.update_session(
-        session_id,
-        node_metadata=json.dumps({**node_metadata, **current_pid_markers()}),
-    )
     return True
 
 
