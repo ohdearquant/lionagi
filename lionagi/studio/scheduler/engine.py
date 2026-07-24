@@ -297,6 +297,21 @@ async def _resolve_action_cwd(schedule: dict) -> str | None:
             schedule.get("id"),
             action_cwd,
         )
+    elif action_cwd is not None:
+        # A present-but-empty execution root. It must never reach the
+        # ``is_dir()`` check above, because ``Path("")`` is ``Path(".")``,
+        # which *is* a directory -- honoring it would return "" and spawn the
+        # action in the daemon's own cwd, the silent substitution this
+        # resolver exists to refuse. So the truthiness test above is
+        # deliberate, not an oversight. Warn on the way past: an empty root is
+        # malformed state, and without this it would be the one unusable root
+        # that falls through to ``action_project`` with no diagnostic at all.
+        _log.warning(
+            "Schedule %s: persisted execution root is empty, which is not a "
+            "usable directory; trying action_project, then refusing rather "
+            "than spawning into a missing or substituted directory.",
+            schedule.get("id"),
+        )
 
     action_project = schedule.get("action_project")
     if action_project:

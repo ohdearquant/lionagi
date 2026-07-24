@@ -405,6 +405,67 @@ async def test_resolve_action_cwd_refuses_empty_string_action_cwd(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_resolve_action_cwd_empty_root_falls_through_to_project_and_warns(
+    tmp_path, monkeypatch, caplog
+):
+    """An empty action_cwd is an unusable execution root, so it falls through
+    to action_project exactly like a pruned one -- and says so. Without the
+    warning it would be the only unusable root that resolves silently."""
+    from lionagi.studio.scheduler.engine import _resolve_action_cwd
+
+    project_dir = tmp_path / "registered-project"
+    project_dir.mkdir()
+    fake_get_project = AsyncMock(
+        return_value={"name": "myproj", "path": str(project_dir), "source": "studio"}
+    )
+    monkeypatch.setattr(
+        "lionagi.studio.services.projects.get_project", fake_get_project, raising=False
+    )
+    monkeypatch.delenv("LIONAGI_SCHEDULER_CWD", raising=False)
+
+    schedule = {"id": "sched-empty-root", "action_cwd": "", "action_project": "myproj"}
+    with caplog.at_level(logging.WARNING, logger="lionagi.studio.scheduler.engine"):
+        result = await _resolve_action_cwd(schedule)
+
+    assert result == str(project_dir)
+    assert any(
+        "sched-empty-root" in rec.getMessage() and "empty" in rec.getMessage()
+        for rec in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_action_cwd_never_returns_the_empty_root_itself(tmp_path, monkeypatch):
+    """``Path("")`` is ``Path(".")``, which *is* a directory. So an empty
+    action_cwd must never reach the ``is_dir()`` check: passing it would
+    return "" and spawn the action in the daemon's own cwd -- the silent
+    substitution this resolver exists to refuse. This pins that trap, because
+    the natural-looking cleanup (testing ``is not None`` there, to match the
+    refusal gate below it) reintroduces exactly that fail-open."""
+    from pathlib import Path
+
+    from lionagi.studio.scheduler.engine import _resolve_action_cwd
+
+    assert Path("").is_dir(), "premise: an empty path resolves to the cwd"
+
+    project_dir = tmp_path / "registered-project"
+    project_dir.mkdir()
+    fake_get_project = AsyncMock(
+        return_value={"name": "myproj", "path": str(project_dir), "source": "studio"}
+    )
+    monkeypatch.setattr(
+        "lionagi.studio.services.projects.get_project", fake_get_project, raising=False
+    )
+    monkeypatch.delenv("LIONAGI_SCHEDULER_CWD", raising=False)
+
+    schedule = {"id": "sched-empty-root-2", "action_cwd": "", "action_project": "myproj"}
+    result = await _resolve_action_cwd(schedule)
+
+    assert result != ""
+    assert result == str(project_dir)
+
+
+@pytest.mark.asyncio
 async def test_resolve_action_cwd_refuses_empty_string_action_project(monkeypatch):
     """A present-but-empty action_project fails closed for the same reason: a
     supplied (non-None) execution-root field that resolves to nothing must not
