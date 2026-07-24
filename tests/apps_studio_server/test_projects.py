@@ -13,7 +13,9 @@ fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
 
-def _make_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+def _make_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, raise_server_exceptions: bool = True
+) -> TestClient:
     """Wire a TestClient with a real temp state.db and patched paths."""
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.projects as projects_mod
@@ -36,7 +38,11 @@ def _make_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
     from lionagi.studio.app import app
 
-    return TestClient(app, base_url="http://127.0.0.1:8765")
+    return TestClient(
+        app,
+        base_url="http://127.0.0.1:8765",
+        raise_server_exceptions=raise_server_exceptions,
+    )
 
 
 # ── GET /api/projects/ ────────────────────────────────────────────────────────
@@ -144,6 +150,31 @@ def test_update_project_not_found_returns_404(tmp_path, monkeypatch):
     client = _make_client(tmp_path, monkeypatch)
     r = client.put("/api/projects/ghost", json={"description": "x"})
     assert r.status_code == 404
+
+
+def test_update_project_empty_body_on_existing_project_returns_200(tmp_path, monkeypatch):
+    """An empty PUT (no mutable fields) on an existing project is a no-op,
+    not a 404 -- the project is present, it's the patch that's empty."""
+    client = _make_client(tmp_path, monkeypatch)
+    client.post("/api/projects/", json={"name": "no-op-target"})
+    r = client.put("/api/projects/no-op-target", json={})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+
+
+def test_create_project_storage_failure_is_not_409(tmp_path, monkeypatch):
+    """A non-conflict exception from the storage layer (e.g. RuntimeError)
+    must not be reported to the client as a 409 name conflict."""
+    client = _make_client(tmp_path, monkeypatch, raise_server_exceptions=False)
+    import lionagi.studio.services.projects as projects_mod
+
+    async def _boom(db):
+        raise RuntimeError("storage offline")
+
+    monkeypatch.setattr(projects_mod, "_ensure_table", _boom)
+    r = client.post("/api/projects/", json={"name": "will-fail"})
+    assert r.status_code != 409
+    assert r.status_code == 500
 
 
 # ── DELETE /api/projects/{name} ───────────────────────────────────────────────

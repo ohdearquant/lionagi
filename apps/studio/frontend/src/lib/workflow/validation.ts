@@ -103,22 +103,6 @@ export function validateSpec(
     }
   }
 
-  // Rule 5 — gate nodes may have at most 2 outgoing edges
-  const outDegree = new Map<string, number>(spec.nodes.map((n) => [n.id, 0]));
-  for (const e of spec.edges) {
-    if (outDegree.has(e.from)) {
-      outDegree.set(e.from, outDegree.get(e.from)! + 1);
-    }
-  }
-  for (const n of spec.nodes) {
-    if (n.kind === "gate" && (outDegree.get(n.id) ?? 0) > 2) {
-      errors.push({
-        rule: "gate-fan-out",
-        message: `Gate node "${n.label || n.id}" has more than 2 outgoing edges.`,
-      });
-    }
-  }
-
   return errors;
 }
 

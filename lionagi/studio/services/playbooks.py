@@ -71,6 +71,41 @@ def _check_spec_fields(spec: dict[str, Any]) -> str | None:
                 f"got {type(val).__name__}"
             )
 
+    for bool_field in ("bare", "dry_run", "show_graph"):
+        if bool_field in spec:
+            val = spec[bool_field]
+            if not isinstance(val, bool):
+                return f"spec field {bool_field!r} must be a bool, got {type(val).__name__}"
+
+    if "prompt" in spec:
+        prompt = spec["prompt"]
+        if not isinstance(prompt, str):
+            return f"spec field 'prompt' must be a string, got {type(prompt).__name__}"
+        if len(prompt) > 8192:
+            return "spec field 'prompt' exceeds maximum length of 8192 characters"
+
+    if "save" in spec:
+        save = spec["save"]
+        if not isinstance(save, str):
+            return f"spec field 'save' must be a string, got {type(save).__name__}"
+
+    for str_field in ("model", "agent", "team_mode", "team_attach", "reactive"):
+        if str_field in spec:
+            val = spec[str_field]
+            if not isinstance(val, str):
+                return f"spec field {str_field!r} must be a string, got {type(val).__name__}"
+
+    if "artifacts" in spec:
+        artifacts = spec["artifacts"]
+        if artifacts is None:
+            return "spec field 'artifacts' must be a dict, got NoneType"
+        try:
+            from lionagi.state.artifact_verifier import validate_artifact_contract
+
+            validate_artifact_contract(artifacts)
+        except Exception as exc:
+            return f"spec field 'artifacts' is invalid: {exc}"
+
     return None
 
 

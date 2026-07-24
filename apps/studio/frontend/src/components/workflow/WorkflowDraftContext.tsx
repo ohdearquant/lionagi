@@ -147,7 +147,6 @@ export function WorkflowDraftProvider({
       parse: "Parse",
       fanout: "Fan Out",
       engine: "Engine",
-      gate: "Gate",
     };
     dispatch({
       type: "addNode",
