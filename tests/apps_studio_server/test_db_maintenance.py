@@ -203,46 +203,37 @@ def test_prune_removes_old_terminal_sessions_only(tmp_path, monkeypatch):
 
 
 def _reopen_before_call(monkeypatch, maint, session_id: str, *, call: int) -> None:
-    """Return *session_id* to running just before the *call*-th chunked read.
+    """Return *session_id* to running just before the *call*-th chunked write.
 
     Resuming a branch puts a terminal session back to running, so a session
-    selected for pruning can stop being prunable while the prune is still
-    assembling the batch. The seam lets that happen at a chosen point instead
-    of waiting for the interleaving to occur on its own.
+    selected for pruning can stop being prunable while the prune is running.
+    The seam lets that happen at a chosen point instead of waiting for the
+    interleaving to occur on its own. Writing on the prune's own connection is
+    how a committed write from another transaction looks to the statements that
+    follow it, which is what the backends this runs on actually allow.
+
+    Call 1 is the statement that takes the lock, so ``call=1`` is a reopen that
+    beats the lock and ``call>=2`` is one that would have to defeat it.
     """
     from sqlalchemy import text
 
-    real = maint._fetch_chunked
+    real = maint._exec_chunked
     seen = {"n": 0}
 
-    async def wrapper(conn, sql_prefix, ids, extra_params=()):
+    async def wrapper(conn, sql_prefix, ids, extra_params=(), suffix="", suffix_params=()):
         seen["n"] += 1
         if seen["n"] == call:
             await conn.execute(
                 text("UPDATE sessions SET status = 'running' WHERE id = :sid"),
                 {"sid": session_id},
             )
-        return await real(conn, sql_prefix, ids, extra_params)
+        return await real(conn, sql_prefix, ids, extra_params, suffix, suffix_params)
 
-    monkeypatch.setattr(maint, "_fetch_chunked", wrapper)
+    monkeypatch.setattr(maint, "_exec_chunked", wrapper)
 
 
-@pytest.mark.parametrize("call", [1, 2, 3, 4])
-def test_prune_leaves_a_session_that_stopped_being_terminal(tmp_path, monkeypatch, call):
-    """A session picked up by a resume mid-prune must survive it whole.
-
-    Surviving as a row is not enough. The prune nullifies associations and
-    deletes transition history before it deletes the session, so a check made
-    once at the top protects only the last statement under it: the leg keeps a
-    session whose history and links are gone. The parametrization moves the
-    reopen through those statements, and each case asserts everything, so a
-    guard that covers one statement and not the next fails here.
-    """
-    from lionagi.studio.services import db_maintenance as maint
-
-    db_path = tmp_path / "state.db"
-    _patch_db(monkeypatch, db_path)
-    old_ts = time.time() - 40 * 86400
+def _seed_session_with_history(db_path: Path, old_ts: float) -> str:
+    """One old terminal session carrying a transition record and an artifact."""
 
     async def seed():
         async with StateDB(db_path) as db:
@@ -262,12 +253,11 @@ def test_prune_leaves_a_session_that_stopped_being_terminal(tmp_path, monkeypatc
             )
         return sid
 
-    sid = run_async(seed())
-    _reopen_before_call(monkeypatch, maint, sid, call=call)
+    return run_async(seed())
 
-    result = run_async(maint.prune_old_data(keep_days=30, actor="test"))
 
-    async def survivors():
+def _session_and_its_history(db_path: Path, sid: str):
+    async def read():
         async with StateDB(db_path) as db:
             return (
                 await db.fetch_one("SELECT id, status FROM sessions WHERE id = ?", (sid,)),
@@ -275,11 +265,105 @@ def test_prune_leaves_a_session_that_stopped_being_terminal(tmp_path, monkeypatc
                 await db.fetch_all("SELECT id FROM artifacts WHERE session_id = ?", (sid,)),
             )
 
-    row, transitions, artifacts = run_async(survivors())
+    return run_async(read())
+
+
+def test_the_candidate_rows_are_held_before_their_status_is_read(tmp_path, monkeypatch):
+    """The prune must write to its candidates before it reads their status.
+
+    The read is what decides the batch, and on both backends it is a write that
+    holds a row against other transactions. Reading first and writing later
+    leaves the decision resting on a value that anyone may change in between,
+    so the order here is the whole guarantee, not a detail of it.
+    """
+    from lionagi.studio.services import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    _seed_session_with_history(db_path, time.time() - 40 * 86400)
+
+    order: list[tuple[str, str]] = []
+    real_exec, real_fetch = maint._exec_chunked, maint._fetch_chunked
+
+    async def exec_spy(conn, sql_prefix, ids, extra_params=(), suffix="", suffix_params=()):
+        order.append(("write", sql_prefix))
+        return await real_exec(conn, sql_prefix, ids, extra_params, suffix, suffix_params)
+
+    async def fetch_spy(conn, sql_prefix, ids, extra_params=()):
+        order.append(("read", sql_prefix))
+        return await real_fetch(conn, sql_prefix, ids, extra_params)
+
+    monkeypatch.setattr(maint, "_exec_chunked", exec_spy)
+    monkeypatch.setattr(maint, "_fetch_chunked", fetch_spy)
+
+    run_async(maint.prune_old_data(keep_days=30, actor="test"))
+
+    against_sessions = [step for step in order if " sessions " in f" {step[1]} "]
+    assert against_sessions, "the prune never touched the sessions table"
+    kind, sql = against_sessions[0]
+    assert kind == "write", f"the first statement against sessions was a read: {sql}"
+    assert "UPDATE sessions" in sql
+
+
+def test_prune_leaves_a_session_that_reopened_before_the_lock(tmp_path, monkeypatch):
+    """A session that comes back to life before the lock is simply not pruned.
+
+    This is the reachable case, and it has to stay quiet: resuming a branch
+    while a maintenance pass happens to be running is ordinary, so it ends in a
+    zero count rather than an error, with the session and everything attached
+    to it untouched.
+    """
+    from lionagi.studio.services import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    sid = _seed_session_with_history(db_path, time.time() - 40 * 86400)
+    _reopen_before_call(monkeypatch, maint, sid, call=1)
+
+    result = run_async(maint.prune_old_data(keep_days=30, actor="test"))
+
+    row, transitions, artifacts = _session_and_its_history(db_path, sid)
     assert row is not None and row["status"] == "running"
     assert len(transitions) == 1, "the reopened session lost its transition history"
     assert len(artifacts) == 1, "the reopened session lost its artifact association"
     assert result["sessions_pruned"] == 0
+
+
+@pytest.mark.parametrize("call", [2, 3, 4, 5, 6, 7])
+def test_a_session_that_reopens_past_the_lock_takes_the_whole_pass_down(
+    tmp_path, monkeypatch, call
+):
+    """Nothing may be committed for a session that reopened mid-sequence.
+
+    The prune clears associations and deletes transition history before it
+    deletes the session, so a per-statement condition protects each statement
+    on its own and still lets the sequence land half-applied: the earlier
+    writes are already done when the reopen arrives, and the delete then skips
+    the row, leaving a live session whose history and links are gone. The lock
+    is what keeps this from being reachable; the parametrization drives the
+    reopen past it at each step, and every case asserts the session survives
+    whole, so nothing short of abandoning the pass passes here.
+
+    The reopen rides the prune's own transaction here, so it is rolled back
+    along with everything else and the status reads terminal again afterwards.
+    A real resume commits on its own and would keep its status; what this
+    checks is the part that is the same either way, which is that none of the
+    prune's writes reached the database.
+    """
+    from lionagi.studio.services import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    sid = _seed_session_with_history(db_path, time.time() - 40 * 86400)
+    _reopen_before_call(monkeypatch, maint, sid, call=call)
+
+    with pytest.raises(maint.PruneRaceError):
+        run_async(maint.prune_old_data(keep_days=30, actor="test"))
+
+    row, transitions, artifacts = _session_and_its_history(db_path, sid)
+    assert row is not None, "the reopened session lost its row"
+    assert len(transitions) == 1, "the reopened session lost its transition history"
+    assert len(artifacts) == 1, "the reopened session lost its artifact association"
 
 
 def test_prune_respects_fk_branches_cascade(tmp_path, monkeypatch):

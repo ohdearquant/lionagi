@@ -12,6 +12,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from lionagi._errors import LionError
 from lionagi.state.db import DEFAULT_DB_PATH, StateDB
 
 _log = logging.getLogger(__name__)
@@ -66,6 +67,16 @@ async def _fetch_chunked(
         )
         results.extend(result.fetchall())
     return results
+
+
+class PruneRaceError(LionError):
+    """A session stopped being terminal partway through pruning its history.
+
+    The prune holds every candidate row locked for the length of its
+    transaction, so this cannot happen through the lock; it is raised as a
+    post-condition, and raising it abandons the transaction rather than
+    committing a session that kept its row and lost its associations.
+    """
 
 
 # Statuses that are safe to prune (process is definitively done).
@@ -173,11 +184,29 @@ async def prune_old_data(
             if session_ids:
                 session_ids = sorted(set(session_ids))
 
-                # A session can leave a terminal status after this selection:
-                # resuming a branch returns its session to running. Re-read the
-                # status immediately before anything destructive and drop any
-                # row that came back to life, so the batch is never assembled
-                # around a session with a live leg on it.
+                # Lock every candidate row for the rest of the transaction
+                # before its status is read. A write to a row is what takes the
+                # lock on both backends: postgresql locks the rows themselves,
+                # sqlite escalates the whole transaction to a write, which is
+                # the same guarantee at a coarser grain. The value is left
+                # exactly as it was — this statement exists for the lock.
+                #
+                # Reading the status without holding the rows would only move
+                # the window rather than close it. A session can leave a
+                # terminal status at any time (resuming a branch returns it to
+                # running), so a resume that commits after an unlocked read is
+                # still free to land between two of the destructive statements
+                # below, which is how a session ends up keeping its row and
+                # losing the associations already cleared for it.
+                await _exec_chunked(
+                    conn,
+                    "UPDATE sessions SET updated_at = updated_at WHERE id",
+                    session_ids,
+                )
+
+                # Now that the rows are held, re-read the status and drop any
+                # that came back to life before the lock, so the batch is never
+                # assembled around a session with a live leg on it.
                 rows = await _fetch_chunked(
                     conn,
                     f"SELECT id FROM sessions WHERE status IN ({sess_ph}) AND id",  # noqa: S608
@@ -282,6 +311,24 @@ async def prune_old_data(
                     session_ids,
                     _TERMINAL_SESSION_STATUSES,
                 )
+
+                # The delete is where a session that reopened mid-sequence
+                # would show up: its row survives while the statements above
+                # have already cleared its history and associations. The lock
+                # taken before the re-read is what prevents that, and this is
+                # the check that it held. Raising abandons the transaction,
+                # so the pass either applies whole or leaves the row exactly as
+                # it was; the next pass drops the resumed session at selection.
+                survivors = await _fetch_chunked(
+                    conn, "SELECT id FROM sessions WHERE id", session_ids
+                )
+                if survivors:
+                    raise PruneRaceError(
+                        "session(s) "
+                        + ", ".join(sorted(str(r[0]) for r in survivors))
+                        + " stopped being terminal while their history was being removed; "
+                        "nothing was pruned"
+                    )
 
                 # Targeted orphan cleanup scoped to pruned lineage only — avoids a
                 # newborn-orphan race where _persist.py commits a progression before
