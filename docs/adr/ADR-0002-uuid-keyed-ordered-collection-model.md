@@ -174,7 +174,64 @@ def append(self, item, /) -> None: ...
 
 ### D3 — Pile admission is nominal and its serialized constraint is not durable
 
-> **Current-state note (2026-07-20)**: The code block and delta 2 below describe the state
+> **Amendment (2026-07-25) — supersedes the 2026-07-20 note below**: Pile admission is
+> **structural**. `Observable` is a single runtime-checkable `Protocol` in
+> `lionagi/protocols/_concepts.py`: any object exposing an `id` satisfies
+> `isinstance(item, Observable)` and is admissible. `Element` conforms through its `id` field
+> without inheriting it (a Protocol cannot be a pydantic base). The two-symbol split stays
+> gone — there is one `Observable`, and it is structural, so `isinstance` and Pile admission
+> agree. Serializing a Pile remains the one Element-shaped boundary (dumping calls
+> `to_dict()`).
+>
+> **How this decision got here.** Admission has now been decided three times and the arc
+> matters, because the same ground has been re-argued twice without the reasons surviving in
+> the record:
+>
+> 1. **Structural, first attempt.** `Observable` was a structural protocol and Pile admitted
+>    anything with an `id`.
+> 2. **The defect that ended it.** Admission and *id resolution* were structural at different
+>    levels. Pile decided membership one way while `ID.get_id` and `validate_order` resolved
+>    identity another, and `item_type` judged conformance at the class level, where a
+>    data-member protocol cannot answer — `issubclass` is not supported for them by design. The
+>    two halves disagreed, and the visible failure was an object that Pile *accepted* and then
+>    could not address: it went in, and `pile[obj.id]` could not get it back out. A container
+>    that admits what it cannot retrieve is worse than one that refuses the item outright.
+> 3. **Nominal (2026-07-20).** The response was to make admission require inheritance. That
+>    closed the disagreement by removing one side of it — nominal admission is checkable at the
+>    class level, so the two halves could not diverge. It closed the defect at the cost of the
+>    contract.
+> 4. **Structural again, this amendment.** The disagreement is closed on its own terms instead.
+>
+> **Why the reason for step 3 no longer applies.** The revert happened because the class-level
+> check and the instance-level check could disagree. They can no longer be asked to. `item_type`
+> normalizes classes without judging conformance at all, because conformance is a property of
+> instances and not of classes: a class that assigns `self.id` in `__init__` declares nothing at
+> class level while every one of its instances conforms. The judgment therefore happens once, at
+> admission, where the instance exists. Id resolution (`ID.get_id`, `validate_order`) resolves
+> through the same structural check, so admission and retrieval are two uses of one rule rather
+> than two rules that must be kept in agreement. This is the specific difference from the first
+> attempt: not a better class-level check, but the removal of the class-level judgment that
+> could disagree.
+>
+> **The checkable demonstration.** Naming a suite is a pointer, not a demonstration, so the
+> guarantee is pinned to a named test:
+> `tests/protocols/test_observable_protocol.py::test_duck_typed_item_with_uuid_id_is_admitted`
+> constructs an id-bearing object that inherits nothing, admits it to a Pile, and asserts it is
+> a member, that `pile[duck.id]` returns *that same object*, that the Pile has length one, and
+> that `exclude` removes it. Admitted, addressable, removable — the exact failure of step 2,
+> reproduced and shown closed. Siblings cover admission at construction time and admission into
+> a Progression.
+>
+> **Widening is not the safety argument.** Nominal-to-structural admits strictly more, so no
+> existing inheritor is turned away. That is true and it is not why this is safe. Step 2 *was* a
+> widening, and it broke: widening admission without widening resolution is what produced an
+> accepted-but-unaddressable object. The safety comes from admission and resolution being
+> widened together, which is what the named test checks. A future change that widens one without
+> the other reproduces step 2, and the monotonicity argument would still appear to apply.
+>
+> The historical blocks below are retained as the record of states previously decided against.
+>
+> **Superseded — current-state note (2026-07-20)**: The code block and delta 2 below describe the state
 > before issue #2017. `lionagi/protocols/contracts.py` (`ObservableProto`, the structural
 > `Observable`/`LegacyObservable` aliases) is deleted; there is no exported structural
 > convenience protocol anymore. The nominal ABC is the sole public Pile-item contract and
@@ -211,14 +268,18 @@ def _validate_collections(
 ) -> dict[UUID, T]: ...
 ```
 
-**Exact semantics**:
+**Exact semantics** (as decided at the time; the admission rule below was later
+reverted — see the current-state note above for what the code does today):
 
-- With no `item_type`, every item must be an instance of the nominal ABC. Merely exposing an `id`
-  property through the structural protocol is not sufficient.
+- ~~With no `item_type`, every item must be an instance of the nominal ABC. Merely exposing an `id`
+  property through the structural protocol is not sufficient.~~ Superseded: admission is
+  structural again, and `item_type` no longer judges class-level conformance.
 - `item_type` accepts classes and unions. A fully qualified class string is resolved when it reaches
   validation as a member of a list, tuple, or set. A scalar non-UUID string is currently discarded
-  by Pile's `to_list_type` normalizer before the resolver sees it. Every resolved member must be a
-  nominal Observable subclass; duplicated declarations raise LionAGI `ValidationError`.
+  by Pile's `to_list_type` normalizer before the resolver sees it. ~~Every resolved member must be a
+  nominal Observable subclass~~ — superseded: a resolved member need only be a class, since
+  conformance is a property of instances and is established at admission. Duplicated declarations
+  raise LionAGI `ValidationError`.
 - With `strict_type=False`, an item's concrete type may be any subclass of an allowed class. With
   `strict_type=True`, `type(item)` must be exactly one allowed class.
 - Invalid item types and invalid items fail before the Pile dictionary/order is committed.
