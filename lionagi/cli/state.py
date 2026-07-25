@@ -591,12 +591,18 @@ async def _doctor(
 
     from sqlalchemy import text
 
+    from lionagi.cli._util import pid_alive
+    from lionagi.cli.kill import _check_pid_identity_tristate, _read_pid_from_entity
+
     async with StateDB() as db:
         async with db._read() as conn:
             rows = (
                 (
                     await conn.execute(
-                        text("SELECT id, started_at FROM sessions WHERE status = 'running'")
+                        text(
+                            "SELECT id, started_at, node_metadata, artifacts_path "
+                            "FROM sessions WHERE status = 'running'"
+                        )
                     )
                 )
                 .mappings()
@@ -607,10 +613,47 @@ async def _doctor(
         skipped = 0
         for row in rows:
             started = row["started_at"]
-            if started is None or started < cutoff:
-                victims.append(row["id"])
-            else:
+            if started is not None and started >= cutoff:
                 skipped += 1
+                continue
+            # Age answers "how long since this session first started", which is
+            # the same question as "how long has this process been running" only
+            # for a session that ran once. A branch picked up again keeps the
+            # start time of the session while the process is new, so the command
+            # asks the process itself before calling anything stuck.
+            entity = dict(row)
+            meta = entity.get("node_metadata")
+            if isinstance(meta, str):
+                try:
+                    meta = json.loads(meta)
+                except ValueError:
+                    meta = None
+            entity["node_metadata"] = meta if isinstance(meta, dict) else None
+            pid = _read_pid_from_entity(entity)
+            if pid is not None and pid_alive(pid):
+                # A live PID is not by itself proof: the OS can hand a dead
+                # session's number to an unrelated process, which would protect
+                # a genuinely stuck row for as long as that process lives. The
+                # stale-kill sweep already answers this, so it answers it here
+                # too rather than a second, weaker rule being written.
+                raw_ct = (entity["node_metadata"] or {}).get("pid_create_time")
+                try:
+                    expected_create_time = float(raw_ct) if raw_ct is not None else None
+                except (TypeError, ValueError):
+                    expected_create_time = None
+                verdict = _check_pid_identity_tristate(
+                    pid,
+                    "lionagi",
+                    expected_session_id=row["id"],
+                    expected_create_time=expected_create_time,
+                )
+                # "unverifiable" means the process could not be inspected, not
+                # that it is gone; skipping it leaves a row for the next run
+                # rather than reaping one out from under a worker.
+                if verdict in ("ours", "unverifiable"):
+                    skipped += 1
+                    continue
+            victims.append(row["id"])
 
         swept_count = 0
         if dry_run:
@@ -941,10 +984,11 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
             "A SIGKILL or unclean exit between session-open and teardown "
             "leaves the session row at status='running' forever. This "
             "command resets such rows (older than --stale-hours, default "
-            "24) to --new-status (default 'aborted'). Conservative: only "
-            "sessions whose started_at is older than the threshold are "
-            "swept, so an actively-running CLI process is left alone. "
-            "Use --dry-run first."
+            "24) to --new-status (default 'aborted'). Conservative: a "
+            "session is swept only if its started_at is older than the "
+            "threshold AND its recorded process is not running, so an "
+            "actively-running CLI process is left alone even when the "
+            "session it resumed started long ago. Use --dry-run first."
         ),
     )
     doctor.add_argument(

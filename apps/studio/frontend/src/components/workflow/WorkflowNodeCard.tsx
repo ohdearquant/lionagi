@@ -7,7 +7,6 @@ const KIND_GLYPH: Record<WorkflowNodeKind, string> = {
   parse: "⊞",
   fanout: "⋔",
   engine: "⊶",
-  gate: "◇",
 };
 
 const KIND_COLOR: Record<WorkflowNodeKind, string> = {
@@ -16,7 +15,6 @@ const KIND_COLOR: Record<WorkflowNodeKind, string> = {
   parse: "var(--status-pending)",
   fanout: "var(--content-muted)",
   engine: "#a78bfa",
-  gate: "var(--status-warning, #f59e0b)",
 };
 
 interface WorkflowNodeCardProps {

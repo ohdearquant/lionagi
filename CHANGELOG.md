@@ -6,6 +6,39 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- `li mcp` serves an MCP server (over stdio) that submits `li` runs — agent, flow, and fanout —
+  as detached background jobs and exposes tools to query, tail, and stop them. Each `submit_*`
+  tool mirrors a `li` command but returns a `run_id` immediately while the run continues in its
+  own process group, so it survives an MCP-server restart. `fastmcp` stays behind the optional
+  `[mcp]` extra; importing `lionagi` never pulls it, and the job engine plus terminal notify hook
+  are standard-library only. Terminal notices are delivered through a configured command
+  (lionagi's own `notify.on_terminal` setting, a per-submit override, or an environment default),
+  never a hardcoded one, and the delivery outcome is recorded on the job and surfaced in
+  `job_status`. See `docs/cli-reference.md` for the tool list and `.mcp.json` registration.
+
+### Fixed
+
+- The built-in provider collision filter no longer misses a plugin entry whose endpoint class
+  comes from a helper module. `_reject_builtin_collisions` identified an activation's entries by
+  requiring the class to be defined in the activated provider module, but a provider module may
+  register a class supplied by a helper or generated module. Such an entry carries the same
+  provenance `register` already records while its `__module__` differs, so it stayed registered
+  and silently took over a provider name a built-in serves, with no rejection diagnostic. The
+  filter now identifies activation entries by that recorded provenance alone.
+- The studio scheduler no longer silently runs a scheduled action in the daemon's own working
+  directory when the schedule's configured execution root is unavailable. A subprocess started
+  without an explicit `cwd` inherits the daemon's directory, and `_resolve_action_cwd` fell through
+  to that inherit whenever a schedule's `action_cwd`/`action_project` could not be resolved to an
+  existing directory (e.g. after a worktree was pruned). When the daemon's own directory resolves
+  to a project, the spawn does not fail — it succeeds and runs the action in the wrong directory,
+  substituting the working directory (and anything a tool derives from it) for the one the schedule
+  configured. The resolver now fails closed for any schedule that carries an execution root, raising
+  `SchedulerCwdInheritRefusedError` (recorded as `run.failed.cwd_inherit_refused`) instead of
+  inheriting. Pre-migration rows that configured no execution root keep the legacy inherit-and-warn
+  behavior and are backfilled on daemon restart.
+
 ## [0.30.2] - 2026-07-23
 
 ### Fixed

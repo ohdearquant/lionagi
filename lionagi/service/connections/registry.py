@@ -564,7 +564,7 @@ class EndpointRegistry:
                         if module_name is not None and entry.cls.__module__ == module_name:
                             entry.plugin_name = plugin_name
                             entry.plugin_target = module
-                    cls._reject_builtin_collisions(plugin_name, module, module_name)
+                    cls._reject_builtin_collisions(plugin_name, module)
                     imported = True
                 except PluginActivationError:
                     continue
@@ -588,18 +588,19 @@ class EndpointRegistry:
         return imported
 
     @classmethod
-    def _reject_builtin_collisions(
-        cls, plugin_name: str, module: str, module_name: str | None
-    ) -> None:
+    def _reject_builtin_collisions(cls, plugin_name: str, module: str) -> None:
         """ADR-0088 D6: a plugin provider must never silently take over a
         provider name a built-in already serves. Drop (and log) any entry
         this activation just added whose provider name (or provider alias)
         matches an already-registered built-in entry -- the built-in stays
         authoritative and the plugin entry is rejected.
-        """
-        if module_name is None:
-            return
 
+        Activation entries are identified by the provenance ``register``
+        already recorded, not by where the endpoint class was defined: a
+        provider module may register a class supplied by a helper or
+        generated module, and such an entry carries the same provenance
+        while its ``__module__`` differs.
+        """
         builtin_names: set[str] = set()
         for entry in cls._entries:
             if entry.plugin_name is None:
@@ -610,11 +611,7 @@ class EndpointRegistry:
 
         rejected: list[_RegistryEntry] = []
         for entry in cls._entries:
-            is_this_activation = (
-                entry.plugin_name == plugin_name
-                and entry.plugin_target == module
-                and entry.cls.__module__ == module_name
-            )
+            is_this_activation = entry.plugin_name == plugin_name and entry.plugin_target == module
             collides = entry.meta.provider in builtin_names or any(
                 alias in builtin_names for alias in entry.meta.provider_aliases
             )

@@ -110,6 +110,48 @@ async def test_save_definition_increments_version(tmp_path, monkeypatch):
     assert r2["version"] == 2
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_save_new_playbook_definition_lands_in_playbook_catalog(tmp_path, monkeypatch):
+    """Creating a new playbook via save_definition() must write a
+    *.playbook.yaml file so it shows up in playbooks.list_playbooks(), not a
+    *.md file that the playbook catalog never scans."""
+    import lionagi.cli._runs as cli_runs_mod
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.definitions as defs_mod
+    import lionagi.studio.services.playbooks as pb_mod
+
+    fake_home = tmp_path / "lionagi_home"
+    fake_home.mkdir()
+    agents_dir = fake_home / "agents"
+    playbooks_dir = fake_home / "playbooks"
+    agents_dir.mkdir()
+    playbooks_dir.mkdir()
+    fake_db = tmp_path / "state.db"
+
+    monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
+    monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
+    monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
+    monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
+    monkeypatch.setattr(pb_mod, "_PLAYBOOKS_ROOT", playbooks_dir)
+
+    result = await defs_mod.save_definition(
+        "playbook", "new-one", "description: a new playbook\n", "initial save"
+    )
+    assert result["version"] >= 1
+
+    assert not (playbooks_dir / "new-one.md").exists()
+    playbook_file = playbooks_dir / "new-one.playbook.yaml"
+    assert playbook_file.exists(), "new playbook must land as *.playbook.yaml"
+    assert playbook_file.read_text() == "description: a new playbook\n"
+
+    catalog = pb_mod.list_playbooks()
+    assert any(entry["name"] == "new-one" for entry in catalog)
+
+
 @pytest.mark.asyncio
 async def test_save_definition_unknown_kind_raises(tmp_path, monkeypatch):
     """save_definition() with an unknown kind must raise ValueError (not return success)."""
@@ -563,6 +605,65 @@ def test_find_definition_file_missing_base_returns_none(tmp_path):
     # Must not raise FileNotFoundError
     result = _find_definition_file(missing_base, "my-agent")
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Nested definitions listed under the containing directory's name must also
+# be fetchable by that same name, even when the filename inside differs.
+# ---------------------------------------------------------------------------
+
+
+def test_find_definition_file_resolves_nested_dir_with_different_filename(tmp_path):
+    """A nested definition file named differently than its directory must still
+    resolve by the directory name — the same name list_definitions() reports.
+    """
+    from lionagi.studio.services.definitions import _find_definition_file
+
+    base = tmp_path / "agents"
+    nested = base / "team"
+    nested.mkdir(parents=True)
+    (nested / "profile.md").write_text("# Team profile")
+
+    result = _find_definition_file(base, "team")
+
+    assert result is not None
+    assert result == nested / "profile.md"
+
+
+@pytest.mark.asyncio
+async def test_get_definition_finds_nested_dir_listed_by_list_definitions(tmp_path, monkeypatch):
+    """Regression test: list_definitions() names a nested definition after its
+    containing directory (agents/team/profile.md -> "team"), so get_definition()
+    with that listed name must resolve, not return None.
+    """
+    import lionagi.cli._runs as cli_runs_mod
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.definitions as defs_mod
+
+    fake_home = tmp_path / "lionagi_home"
+    agents_dir = fake_home / "agents"
+    nested = agents_dir / "team"
+    nested.mkdir(parents=True)
+    (nested / "profile.md").write_text("# Team profile")
+    playbooks_dir = fake_home / "playbooks"
+    playbooks_dir.mkdir(parents=True)
+    fake_db = tmp_path / "state.db"
+
+    monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
+    monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
+    monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
+    monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
+
+    listed = await defs_mod.list_definitions("agent")
+    assert [d["name"] for d in listed] == ["team"]
+
+    result = await defs_mod.get_definition("agent", "team")
+
+    assert result is not None, "get_definition must resolve the name list_definitions() reported"
+    assert result["content"] == "# Team profile"
 
 
 @pytest.mark.asyncio

@@ -20,6 +20,7 @@ import asyncio
 from typing import Any
 
 from .._logging import log_error
+from .._util import AmbiguousIdError
 from ..status import EXIT_UNKNOWN, _resolve_any_target, _resolve_primary_session
 
 __all__ = (
@@ -37,22 +38,6 @@ _DB_BUSY_TIMEOUT_S = 10.0
 # "flow", playbook runs set "play"); anything else has no consumer, so a
 # queued control would sit pending forever.
 _POLLER_KINDS = frozenset({"flow", "play"})
-
-
-async def _prefix_is_ambiguous(db: Any, entity_id: str) -> bool:
-    """True when a short prefix matches 2+ rows in the first table that
-    matches at all (same sessions→invocations→plays order the resolver
-    sweeps, so cross-table shadowing stays intentional)."""
-    if len(entity_id) >= 36:
-        return False
-    for table in ("sessions", "invocations", "plays"):
-        rows = await db.fetch_all(
-            f"SELECT id FROM {table} WHERE id LIKE ? LIMIT 2",  # noqa: S608
-            (entity_id + "%",),
-        )
-        if rows:
-            return len(rows) > 1
-    return False
 
 
 async def _resolve_session(db: Any, entity_id: str) -> dict[str, Any] | None:
@@ -75,13 +60,10 @@ async def _enqueue_control_inner(
 
     async with StateDB() as db:
         entity_id = entity_id.strip()
-        if await _prefix_is_ambiguous(db, entity_id):
-            return (
-                f"ambiguous id prefix {entity_id!r} — matches more than one "
-                "record; use a longer prefix or the full id",
-                EXIT_UNKNOWN,
-            )
-        session = await _resolve_session(db, entity_id)
+        try:
+            session = await _resolve_session(db, entity_id)
+        except AmbiguousIdError as exc:
+            return str(exc), EXIT_UNKNOWN
         if session is None:
             return f"no session/invocation/play found for id {entity_id!r}", EXIT_UNKNOWN
         session_id = session["id"]

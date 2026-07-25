@@ -16,6 +16,7 @@ from typing import Any
 
 from ._logging import log_error
 from ._project import detect_project
+from ._util import AmbiguousIdError, fetch_unique_row, resolve_entity
 
 __all__ = (
     "run_agent_status",
@@ -45,19 +46,14 @@ _DB_BUSY_TIMEOUT_S = 10.0
 
 
 async def _fetch_by_id(db: Any, table: str, id_or_short: str) -> dict[str, Any] | None:
-    """Exact-id fetch for full ids, prefix (LIKE) fetch for short ids, scoped
-    to one table (see _util.resolve_entity for the multi-table sweep)."""
-    id_or_short = id_or_short.strip()
-    if len(id_or_short) < 36:
-        row = await db.fetch_one(
-            f"SELECT * FROM {table} WHERE id LIKE ?",  # noqa: S608
-            (id_or_short + "%",),
-        )
-    else:
-        row = await db.fetch_one(
-            f"SELECT * FROM {table} WHERE id = ?",  # noqa: S608
-            (id_or_short,),
-        )
+    """Exact-id fetch, then unique-prefix fetch, scoped to one table (see
+    _util.resolve_entity for the multi-table sweep).
+
+    Raises `AmbiguousIdError` when a prefix matches more than one row; the
+    status entry points turn that into EXIT_UNKNOWN, never a status readout
+    for an arbitrarily chosen run.
+    """
+    row = await fetch_unique_row(db, table, id_or_short)
     return db._row_to_dict(row) if row is not None else None
 
 
@@ -91,14 +87,17 @@ async def _resolve_agent_target(
     db: Any, entity_id: str | None, project: str | None
 ) -> tuple[str, dict[str, Any]] | None:
     """`li agent status` resolution: session (any kind), invocation, or a
-    branch_id, by id; default-latest is scoped to agent-kind sessions."""
+    branch_id, by id; default-latest is scoped to agent-kind sessions.
+
+    Sessions and invocations are searched together: a prefix that fits one of
+    each is ambiguous, and reporting the session because it is looked at first
+    is search order deciding a question it cannot answer.
+    """
     if entity_id:
-        row = await _fetch_by_id(db, "sessions", entity_id)
-        if row is not None:
-            return "session", row
-        row = await _fetch_by_id(db, "invocations", entity_id)
-        if row is not None:
-            return "invocation", row
+        hit = await resolve_entity(db, entity_id, tables=("sessions", "invocations"))
+        if hit is not None:
+            _table, entity_type, row = hit
+            return entity_type, row
         row = await _resolve_session_by_branch_id(db, entity_id)
         if row is not None:
             return "session", row
@@ -110,19 +109,17 @@ async def _resolve_agent_target(
 async def _resolve_play_target(
     db: Any, entity_id: str | None, project: str | None
 ) -> tuple[str, dict[str, Any]] | None:
-    """`li play status` resolution: session, then invocation, then a show
-    sub-play row, by id; default-latest is scoped to play/flow-kind sessions.
+    """`li play status` resolution: session, invocation, or a show sub-play
+    row, by id; default-latest is scoped to play/flow-kind sessions.
+
+    The three kinds are searched together, for the same reason `li agent
+    status` searches its two together.
     """
     if entity_id:
-        row = await _fetch_by_id(db, "sessions", entity_id)
-        if row is not None:
-            return "session", row
-        row = await _fetch_by_id(db, "invocations", entity_id)
-        if row is not None:
-            return "invocation", row
-        row = await _fetch_by_id(db, "plays", entity_id)
-        if row is not None:
-            return "play", row
+        hit = await resolve_entity(db, entity_id, tables=("sessions", "invocations", "plays"))
+        if hit is not None:
+            _table, entity_type, row = hit
+            return entity_type, row
         return None
     row = await _latest_session(db, invocation_kinds=("play", "flow"), project=project)
     return ("session", row) if row is not None else None
@@ -130,16 +127,19 @@ async def _resolve_play_target(
 
 async def _resolve_any_target(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | None:
     """`li o ctl status <id>` resolution: no kind scoping, id required (no
-    latest). Falls back to branch_id last, after sessions/invocations/plays."""
-    row = await _fetch_by_id(db, "sessions", entity_id)
-    if row is not None:
-        return "session", row
-    row = await _fetch_by_id(db, "invocations", entity_id)
-    if row is not None:
-        return "invocation", row
-    row = await _fetch_by_id(db, "plays", entity_id)
-    if row is not None:
-        return "play", row
+    latest). Falls back to branch_id last, after sessions/invocations/plays.
+
+    The kinds are searched together rather than one after another. Trying each
+    in turn and keeping the first hit resolves a prefix that fits a session and
+    an invocation to whichever is looked at first, and the commands built on
+    this resolver act: `li o ctl pause` would queue a control for a flow the
+    caller never identified. The branch fallback stays last and applies only
+    when no entity matched at all.
+    """
+    hit = await resolve_entity(db, entity_id, tables=("sessions", "invocations", "plays"))
+    if hit is not None:
+        _table, entity_type, row = hit
+        return entity_type, row
     row = await _resolve_session_by_branch_id(db, entity_id)
     if row is not None:
         return "session", row
@@ -407,12 +407,15 @@ async def _run_status_inner(
 
     async with StateDB() as db:
         project = detect_project(Path.cwd())[0]
-        if command == "agent":
-            target = await _resolve_agent_target(db, entity_id, project)
-        elif command == "play":
-            target = await _resolve_play_target(db, entity_id, project)
-        else:  # "ctl" — generic, id required (enforced by argparse), no kind scoping
-            target = await _resolve_any_target(db, entity_id) if entity_id else None
+        try:
+            if command == "agent":
+                target = await _resolve_agent_target(db, entity_id, project)
+            elif command == "play":
+                target = await _resolve_play_target(db, entity_id, project)
+            else:  # "ctl" — generic, id required (enforced by argparse), no kind scoping
+                target = await _resolve_any_target(db, entity_id) if entity_id else None
+        except AmbiguousIdError as exc:
+            return str(exc), EXIT_UNKNOWN
 
         if target is None:
             who = f"id {entity_id!r}" if entity_id else f"latest {command} run"

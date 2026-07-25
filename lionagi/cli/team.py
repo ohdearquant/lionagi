@@ -16,6 +16,7 @@ from typing import Any
 from uuid import uuid4
 
 from lionagi._paths import ensure_lionagi_dir
+from lionagi.cli._util import AmbiguousIdError
 from lionagi.ln._utils import now_utc
 from lionagi.utils import LIONAGI_HOME
 
@@ -53,15 +54,26 @@ def read_team_json(path: Path) -> dict[str, Any] | None:
 
 
 def _team_file(team_id: str) -> Path:
-    """Resolve a team by id/prefix/name to its JSON path."""
-    for p in _teams_dir().glob("*.json"):
+    """Resolve a team by id, name, or an unambiguous id prefix, to its JSON path.
+
+    An id and a name are both complete answers and settle it. A prefix is a
+    guess, so one that fits two teams is refused rather than resolved to
+    whichever file the directory listing happened to yield first.
+    """
+    prefix_hits: list[tuple[str, Path]] = []
+    for p in sorted(_teams_dir().glob("*.json")):
         data = read_team_json(p)
         if data is None:
             continue
-        if data.get("id") == team_id or data.get("id", "").startswith(team_id):
+        if data.get("id") == team_id or data.get("name") == team_id:
             return p
-        if data.get("name") == team_id:
-            return p
+        if data.get("id", "").startswith(team_id):
+            prefix_hits.append((data["id"], p))
+
+    if len(prefix_hits) > 1:
+        raise AmbiguousIdError(team_id, "team", [tid for tid, _ in prefix_hits])
+    if prefix_hits:
+        return prefix_hits[0][1]
     raise FileNotFoundError(f"No team found matching '{team_id}'")
 
 

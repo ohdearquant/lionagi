@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import contextlib
+import json
+import os
 import time
 import uuid
 from pathlib import Path
@@ -435,6 +437,51 @@ async def test_doctor_sweeps_stale_running_sessions_to_aborted(
     assert s_stale["status"] == "aborted"
     assert s_stale["ended_at"] is not None
     assert s_recent["status"] == "running"
+
+
+async def test_doctor_leaves_an_old_session_whose_process_is_still_running(
+    temp_db_path: Path,
+):
+    """Age answers how long since the session first started, which is how long
+    the process has been running only for a session that ran once. A branch
+    picked up again keeps its original start time while the process is new, so
+    the command asks the process before calling the session stuck."""
+    old = time.time() - (48 * 3600)
+    async with StateDB() as db:
+        alive = await _seed_session(db, status="running")
+        dead = await _seed_session(db, status="running")
+        for sid, pid in ((alive, os.getpid()), (dead, 999999)):
+            await db.execute(
+                "UPDATE sessions SET started_at = ?, node_metadata = ? WHERE id = ?",
+                (old, json.dumps({"pid": pid}), sid),
+            )
+
+    result = await _doctor(stale_hours=24, dry_run=False)
+    assert (result["swept"], result["skipped"]) == (1, 1)
+
+    async with StateDB() as db:
+        assert (await db.get_session(alive))["status"] == "running"
+        assert (await db.get_session(dead))["status"] == "aborted"
+
+
+async def test_doctor_sweeps_a_session_whose_pid_was_recycled(temp_db_path: Path):
+    """A live PID is not proof on its own. The OS hands a dead session's number
+    to an unrelated process eventually, and a sweep that stopped there would
+    protect a genuinely stuck row for as long as that process lived."""
+    old = time.time() - (48 * 3600)
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running")
+        await db.execute(
+            "UPDATE sessions SET started_at = ?, node_metadata = ? WHERE id = ?",
+            # This process is alive, but it started at a different moment than
+            # the session recorded, so the number belongs to someone else now.
+            (old, json.dumps({"pid": os.getpid(), "pid_create_time": 1.0}), sid),
+        )
+
+    assert (await _doctor(stale_hours=24, dry_run=False))["swept"] == 1
+
+    async with StateDB() as db:
+        assert (await db.get_session(sid))["status"] == "aborted"
 
 
 async def test_doctor_handles_null_started_at_as_stale(temp_db_path: Path):
