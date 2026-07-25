@@ -1,0 +1,10 @@
+{
+  "path": "team list",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {},
+    "title": "team list",
+    "type": "object"
+  },
+  "stage": "static"
+}

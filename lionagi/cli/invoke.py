@@ -8,6 +8,7 @@ import argparse
 import json
 import time
 import uuid
+from typing import Any
 
 from ._logging import hint, log_error
 
@@ -252,3 +253,74 @@ def run_invoke(args: argparse.Namespace) -> int:
         return 0
 
     return 1
+
+
+# ── machine result ────────────────────────────────────────────────────────────
+
+# What a listing reports about one invocation. `node_metadata` is deliberately
+# not here: the store holds it as a JSON document for some rows and as the text
+# of one for others, so a caller could not tell which it had been handed without
+# guessing, and a listing is not where that ambiguity should be settled.
+_INVOCATION_FIELDS = (
+    "id",
+    "skill",
+    "plugin",
+    "status",
+    "prompt",
+    "started_at",
+    "ended_at",
+    "updated_at",
+    "session_count",
+    "project",
+    "project_source",
+)
+
+
+async def _machine_list_data(
+    *, skill: str | None, status: str | None, limit: int
+) -> dict[str, Any]:
+    from .machine import available, readonly_state_db, state_db_absent
+
+    result: dict[str, Any] = {
+        "filters": {"skill": skill, "status": status},
+        "limit": limit,
+    }
+    async with readonly_state_db() as db:
+        if db is None:
+            result["invocations"] = state_db_absent()
+            return result
+        rows = await db.list_invocations(skill=skill, status=status, limit=limit)
+    result["invocations"] = available(
+        [{field: row.get(field) for field in _INVOCATION_FIELDS} for row in rows]
+    )
+    return result
+
+
+def _machine_list(argv: list[str]) -> dict[str, Any]:
+    from lionagi.ln.concurrency import run_async
+
+    from .machine import MachineError, machine_parser, parse_machine_argv
+
+    parser = machine_parser("li invoke list")
+    parser.add_argument("--skill", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--status", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--limit", type=int, default=20, help=argparse.SUPPRESS)
+    args = parse_machine_argv(parser, argv)
+    if args.limit < 1:
+        raise MachineError("invalid_input", "--limit must be at least 1")
+    return run_async(_machine_list_data(skill=args.skill, status=args.status, limit=args.limit))
+
+
+def machine_result(argv: list[str]) -> dict[str, Any]:
+    """`li invoke <sub> --machine`."""
+    from .machine import machine_subcommand
+
+    return machine_subcommand(
+        "invoke",
+        argv,
+        {"list": _machine_list},
+        without_seam={
+            "start": "it opens an invocation record, which is a write to the store",
+            "end": "it closes an invocation record, which is a write to the store",
+        },
+    )

@@ -1,0 +1,22 @@
+{
+  "path": "plugin info",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "name": {
+        "description": "Plugin to describe \u2014 its manifest `name:`, as listed by `li plugin list`.",
+        "type": "string",
+        "x-positional": true
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "title": "plugin info",
+    "type": "object",
+    "x-positional-order": [
+      "name"
+    ]
+  },
+  "stage": "static"
+}

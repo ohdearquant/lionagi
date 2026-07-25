@@ -82,7 +82,7 @@ def test_help_for_a_verb_returns_the_projected_schema():
 
 
 def test_help_for_an_unavailable_verb_says_why_instead_of_failing():
-    answer = call(help="monitor")
+    answer = call(help="state.doctor")
     assert answer["available"] is False and answer["reason"]
 
 

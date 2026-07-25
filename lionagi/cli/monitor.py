@@ -751,15 +751,20 @@ def _show_project_matches(show: dict[str, Any], project: str) -> bool:
     return derived == project
 
 
-async def _gather_table_rows(
+async def _gather_entities(
     db: Any,
     *,
     since: float | None,
     entity_type: str | None,
     project: str | None,
-) -> list[dict[str, Any]]:
-    """Collect entity rows across all tables and convert to table-row dicts."""
-    rows: list[dict[str, Any]] = []
+) -> list[tuple[str, dict[str, Any]]]:
+    """Every in-flight row the views draw from, each paired with its kind.
+
+    Selection lives here and rendering lives in the callers, so the table and
+    the machine result answer with the same set of entities rather than with two
+    independently maintained ideas of what is running.
+    """
+    rows: list[tuple[str, dict[str, Any]]] = []
 
     sessions: list[dict[str, Any]] = []
     if entity_type in (None, "session", "agent", "play_session", "play"):
@@ -778,21 +783,41 @@ async def _gather_table_rows(
         play_session_ids = {p["session_id"] for p in plays if p.get("session_id")}
         sessions = [s for s in sessions if s["id"] not in play_session_ids]
 
-    rows.extend(_session_to_row(s) for s in sessions)
+    rows.extend(("session", s) for s in sessions)
 
     if entity_type in (None, "invocation"):
         invocations = await _query_running_invocations(db, since=since)
-        rows.extend(_invocation_to_row(i) for i in invocations)
+        rows.extend(("invocation", i) for i in invocations)
 
     if entity_type in (None, "show"):
         shows = await _query_active_shows(db, since=since)
         if project:
             shows = [s for s in shows if _show_project_matches(s, project)]
-        rows.extend(_show_to_row(s) for s in shows)
+        rows.extend(("show", s) for s in shows)
 
-    rows.extend(_play_to_row(p) for p in plays)
+    rows.extend(("play", p) for p in plays)
 
     return rows
+
+
+_ROW_BUILDERS = {
+    "session": _session_to_row,
+    "invocation": _invocation_to_row,
+    "show": _show_to_row,
+    "play": _play_to_row,
+}
+
+
+async def _gather_table_rows(
+    db: Any,
+    *,
+    since: float | None,
+    entity_type: str | None,
+    project: str | None,
+) -> list[dict[str, Any]]:
+    """Collect entity rows across all tables and convert to table-row dicts."""
+    entities = await _gather_entities(db, since=since, entity_type=entity_type, project=project)
+    return [_ROW_BUILDERS[kind](row) for kind, row in entities]
 
 
 # ── Async main routines ───────────────────────────────────────────────────────
@@ -1688,3 +1713,94 @@ def run_monitor(args: argparse.Namespace) -> int:
 
     print(output)
     return 0
+
+
+# ── machine result ────────────────────────────────────────────────────────────
+
+# Every entity carries these; a caller reads `kind` and knows which of the
+# per-kind blocks below it also has. Timestamps are epoch seconds exactly as the
+# store holds them — an elapsed string would be this module's arithmetic against
+# a clock the caller cannot see, and `observed_at` lets the caller do that sum
+# itself against a moment it was told.
+_ENTITY_CORE = ("id", "status", "started_at", "ended_at", "updated_at")
+
+_ENTITY_EXTRA: dict[str, tuple[str, ...]] = {
+    "session": (
+        "project",
+        "invocation_kind",
+        "agent_name",
+        "playbook_name",
+        "current_phase",
+        "branch_count",
+    ),
+    "invocation": ("skill", "plugin"),
+    "show": ("repo", "topic"),
+    "play": ("name", "session_id", "show_id", "session_project", "branch_count"),
+}
+
+
+def _machine_entity(kind: str, row: dict[str, Any]) -> dict[str, Any]:
+    entity: dict[str, Any] = {"kind": kind}
+    for field in (*_ENTITY_CORE, *_ENTITY_EXTRA[kind]):
+        entity[field] = row.get(field)
+    return entity
+
+
+async def _machine_monitor_data(
+    *, since_window: str | None, entity_type: str | None, project: str | None
+) -> dict[str, Any]:
+    from .machine import available as _available
+    from .machine import readonly_state_db, state_db_absent
+
+    since = _since_timestamp(since_window) if since_window else None
+    filters = {
+        "since": since_window,
+        "since_epoch": since,
+        "type": entity_type,
+        "project": project,
+    }
+    async with readonly_state_db() as db:
+        if db is None:
+            return {
+                "entities": state_db_absent(),
+                "filters": filters,
+                "observed_at": time.time(),
+            }
+        entities = await _gather_entities(db, since=since, entity_type=entity_type, project=project)
+    return {
+        "entities": _available([_machine_entity(kind, row) for kind, row in entities]),
+        "filters": filters,
+        "observed_at": time.time(),
+    }
+
+
+def machine_result(argv: list[str]) -> dict[str, Any]:
+    """`li monitor --machine` — the in-flight table, one entity per entry.
+
+    The detail view is not reachable here: it answers about one entity with a
+    different shape entirely, and a payload whose fields depend on whether an id
+    was passed is one a caller cannot branch on. It stays a separate decision.
+    """
+    from lionagi.ln.concurrency import run_async
+
+    from .machine import MachineError, machine_parser, parse_machine_argv
+
+    parser = machine_parser("li monitor")
+    parser.add_argument("--since", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--type", dest="entity_type", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--project", "-p", default=None, help=argparse.SUPPRESS)
+    args = parse_machine_argv(parser, argv)
+
+    if args.entity_type is not None and args.entity_type not in _ENTITY_EXTRA:
+        raise MachineError(
+            "invalid_input",
+            f"--type must be one of {', '.join(sorted(_ENTITY_EXTRA))}; got {args.entity_type!r}",
+        )
+    try:
+        return run_async(
+            _machine_monitor_data(
+                since_window=args.since, entity_type=args.entity_type, project=args.project
+            )
+        )
+    except ValueError as exc:
+        raise MachineError("invalid_input", str(exc)) from exc

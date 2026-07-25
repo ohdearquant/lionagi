@@ -50,6 +50,14 @@ GOLDEN_VERBS = (
     "stats runs",
     "studio start",
     "team send",
+    # The observability reads: every one of these is a path the surface now
+    # dispatches, so an argparse change under it must fail here rather than
+    # quietly reshape a schema a caller validated against.
+    "dispatch show",
+    "invoke list",
+    "plugin info",
+    "state stats",
+    "team list",
 )
 
 # Everything the MCP surface is a candidate to dispatch. `mirror` is
