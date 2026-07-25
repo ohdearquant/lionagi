@@ -208,8 +208,33 @@ def test_required_ci_wrapper_excludes_only_performance_and_quarantine() -> None:
     script = CI_SCRIPT.read_text()
 
     assert "not performance and not flaky_quarantine" in script
+    # The wrapper keeps an explicit flag so MAX_WORKER_RESTART can raise the
+    # limit for a job that wants restarts. It is an override of the default
+    # asserted below, not the thing that establishes the default.
     assert '--max-worker-restart="${MAX_WORKER_RESTART:-0}"' in script
     assert "pytest-rerunfailures" not in script
+
+
+def test_worker_restart_is_disabled_by_the_project_config(request: pytest.FixtureRequest) -> None:
+    # Read the effective ini configuration rather than the text of any one
+    # file. A caller who never runs scripts/ci.sh -- `pytest tests/` typed by
+    # hand, an editor's runner, a tool that shells out -- inherits addopts and
+    # nothing else, so asserting the flag's presence in the wrapper proves
+    # nothing about that caller. Going through pytest's own config also keeps
+    # the assertion true if the settings move to another ini source.
+    #
+    # Scope, stated because the name would otherwise overpromise: this covers
+    # callers that discover the project's pytest configuration, which is every
+    # ordinary invocation from the repository. A caller that selects a different
+    # config with `pytest -c <file>` uses that file's addopts instead, so it is
+    # protected only if that file sets the flag itself; otherwise xdist's
+    # restarting default applies. Nothing set here can reach such a caller.
+    #
+    # Without this, a crashed worker is restarted and the replacement may never
+    # be scheduled, leaving the run blocked in the controller with no test name
+    # and no timeout able to fire: pytest-timeout watches test bodies, and a
+    # controller waiting on a worker channel is not inside one.
+    assert "--max-worker-restart=0" in request.config.getini("addopts")
 
 
 def test_docs_job_always_guard_survives_upstream_changes_failure() -> None:
