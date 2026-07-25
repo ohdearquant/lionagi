@@ -20,6 +20,7 @@ import asyncio
 
 import pytest
 
+from lionagi.cli import machine
 from lionagi.mcp import dispatch, jobs, projection, verbs
 
 # Named by the operation an agent could otherwise perform on itself, not by a
@@ -30,6 +31,23 @@ FENCED_PATHS = ("state migrate", "plugin trust", "hooks trust")
 # before dispatch, so a fenced capability must not be reachable by an old name
 # either.
 FENCED_LEGACY_NAMES = ("plugin_trust", "hooks_trust", "state_migrate")
+
+# Every command path this surface can execute, written out here rather than read
+# off the registry, so the two have to agree. Matching against a list of forbidden
+# spellings only catches a capability that keeps its name: `plugin authorize`
+# would grant exactly what `plugin trust` grants and pass such a check. What is
+# checkable without knowing tomorrow's names is the size of the reachable set, so
+# adding any verb fails this until someone writes the new path down.
+REVIEWED_PATHS = frozenset(
+    {
+        "agent",
+        "doctor",
+        "handshake",
+        "orchestrate fanout",
+        "orchestrate flow",
+        "runs",
+    }
+)
 
 
 def call(**kwargs):
@@ -46,6 +64,19 @@ def test_no_registered_verb_resolves_to_a_fenced_command_path():
             continue
         for fenced in FENCED_PATHS:
             assert not verb.cli_path.startswith(fenced), f"{verb.name} -> {verb.cli_path}"
+
+
+def test_the_reachable_command_paths_are_the_reviewed_ones():
+    """The whole reachable set, both directions.
+
+    A verb added under a name nobody thought to forbid is the way this fence
+    fails, and no list of forbidden spellings can be written in advance. Reading
+    the reachable set and diffing it against one a person wrote down catches the
+    addition itself, whatever it is called.
+    """
+    reachable = {verb.cli_path for verb in verbs.VERBS.values() if verb.cli_path is not None}
+    assert reachable - REVIEWED_PATHS == set(), "a command path became reachable unreviewed"
+    assert REVIEWED_PATHS - reachable == set(), "a reviewed path is gone; update the list"
 
 
 def test_no_catalog_entry_names_a_fenced_operation():
@@ -105,4 +136,51 @@ def test_a_spawn_verb_cannot_be_argued_into_a_different_command(monkeypatch):
     call(ops=[{"op": "agent.submit", "args": {"query": ["plugin", "trust", "evil"]}}])
     assert seen["kind"] == "agent"
     assert jobs._KIND_ARGV["agent"] == ["agent"]
-    assert not any(flag.startswith("--") for flag in seen["flags"])
+    assert seen["flags"] == ["--", "plugin", "trust", "evil"]
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["--machine", "--cwd", "-h", "--", "--help"],
+    ids=["machine", "cwd", "short", "sentinel", "help"],
+)
+def test_a_positional_that_looks_like_a_switch_stays_a_positional(monkeypatch, value):
+    # The parser is not the only thing that reads this argv: the entry point scans
+    # every pre-sentinel token for `--machine` before it knows which command was
+    # asked for. A caller-supplied value landing in option position is therefore
+    # able to change which code runs, not merely which flags it sees.
+    seen: dict = {}
+
+    def fake_submit(kind, flags, **kwargs):
+        seen.update(kind=kind, flags=list(flags))
+        return {"run_id": "rid"}
+
+    monkeypatch.setattr(jobs, "submit", fake_submit)
+    answer = call(ops=[{"op": "agent.submit", "args": {"query": [value]}}])
+    assert answer["ops"][0]["ok"] is True
+    # Asserted on the rendering rather than on what a parser makes of it: where
+    # the sentinel sits is the same on every Python, and it is what decides
+    # whether the token can be read as an option at all.
+    assert seen["flags"] == ["--", value]
+    assert not machine.has_machine_flag(seen["flags"])
+
+
+def test_a_flag_value_that_looks_like_a_switch_stays_a_value(monkeypatch):
+    seen: dict = {}
+
+    def fake_submit(kind, flags, **kwargs):
+        seen.update(kind=kind, flags=list(flags))
+        return {"run_id": "rid"}
+
+    monkeypatch.setattr(jobs, "submit", fake_submit)
+    call(
+        ops=[
+            {
+                "op": "agent.submit",
+                "args": {"query": ["hi"], "cwd": "--machine"},
+            }
+        ]
+    )
+    assert "--cwd=--machine" in seen["flags"]
+    assert "--machine" not in seen["flags"]
+    assert not machine.has_machine_flag(seen["flags"])

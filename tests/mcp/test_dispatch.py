@@ -133,6 +133,33 @@ def test_a_wrong_type_is_refused_naming_what_was_expected():
     assert "expects integer" in answer["ops"][0]["error"]["message"]
 
 
+@pytest.mark.parametrize(
+    "value",
+    [5, 1, 0, [1], {"a": 1}, False, None],
+    ids=["int", "one", "zero", "list", "object", "false", "null"],
+)
+def test_a_flag_that_is_legal_bare_still_only_takes_what_it_declares(submitted, value):
+    # A flag with an optional value projects as two alternatives, a string or a
+    # literal true. Two alternatives is not "anything": admitting a value neither
+    # branch describes would make the advertised schema and the admitted set two
+    # different contracts, and the value reaches argv either way.
+    answer = call(
+        ops=[{"op": "flow.submit", "args": {"query": ["m", "do it"], "with_synthesis": value}}]
+    )
+    assert answer["ops"][0]["ok"] is False, value
+    assert "expects string or the literal true" in answer["ops"][0]["error"]["message"]
+
+
+@pytest.mark.parametrize("value", ["gpt-5", True], ids=["string", "bare"])
+def test_a_flag_that_is_legal_bare_takes_both_forms_it_declares(submitted, value):
+    answer = call(
+        ops=[{"op": "flow.submit", "args": {"query": ["m", "do it"], "with_synthesis": value}}]
+    )
+    assert answer["ops"][0]["ok"] is True, value
+    expected = "--with-synthesis" if value is True else f"--with-synthesis={value}"
+    assert expected in submitted["flags"]
+
+
 def test_a_flag_a_detached_run_cannot_honour_is_refused_with_its_reason(submitted):
     # Accepting it and dropping it would leave the caller believing it applied.
     answer = call(ops=[{"op": "agent.submit", "args": {"verbose": True}}])
@@ -189,9 +216,11 @@ def test_a_spawn_verb_renders_the_tokens_the_cli_parser_declares(submitted):
     assert submitted["kind"] == "agent"
     # The model spec is the trailing positional, as on the command line.
     assert submitted["flags"][-1] == "claude/opus"
-    assert ["--agent", "implementer"] == submitted["flags"][:2]
+    # A flag and its value are one token, so the value cannot be read as an
+    # option by the parser or by anything scanning argv ahead of it.
+    assert submitted["flags"][0] == "--agent=implementer"
     assert "--yolo" in submitted["flags"]
-    assert submitted["flags"].count("--image") == 2
+    assert sum(f.startswith("--image=") for f in submitted["flags"]) == 2
     # The server owns the prompt and the notify wiring; neither reaches argv.
     assert submitted["prompt"] == "hello"
     assert "--prompt" not in submitted["flags"]

@@ -194,10 +194,33 @@ _JSON_TYPE_CHECK = {
 }
 
 
+def _describes(spec: dict[str, Any]) -> str:
+    """How a branch of an ``anyOf`` reads in a refusal."""
+    if "const" in spec:
+        return f"the literal {json.dumps(spec['const'])}"
+    return str(spec.get("type", "a value the schema describes"))
+
+
 def _check_value(name: str, spec: dict[str, Any], value: Any) -> list[str]:
     problems: list[str] = []
     if "anyOf" in spec:
         # A flag that is legal bare: either its value, or true for the bare form.
+        # Each branch is checked, and the value has to satisfy one of them —
+        # accepting whatever arrives because the schema has two shapes would make
+        # the advertised schema and what is admitted two different contracts.
+        branches = spec["anyOf"]
+        if any(not _check_value(name, branch, value) for branch in branches):
+            return problems
+        wanted = " or ".join(_describes(branch) for branch in branches)
+        problems.append(f"{name!r} expects {wanted}, got {type(value).__name__}")
+        return problems
+    if "const" in spec:
+        const = spec["const"]
+        # `1 == True` in Python, so a bare-flag branch spelled `const: true` would
+        # otherwise admit the integer 1 and render it as the flag.
+        same_kind = isinstance(value, bool) == isinstance(const, bool)
+        if not same_kind or value != const:
+            problems.append(f"{name!r} expects {_describes(spec)}, got {value!r}")
         return problems
     expected = spec.get("type")
     check = _JSON_TYPE_CHECK.get(expected) if expected else None
@@ -265,6 +288,29 @@ def _tokens(value: Any) -> list[str]:
     return [str(value)]
 
 
+def _flag_tokens(name: str, flag: str, value: Any) -> list[str]:
+    """One flag and its value, spelled so the value cannot become an option.
+
+    ``--flag value`` puts a caller's string in argv's option position: a value of
+    ``--machine`` is then read as a switch by the parser, and by anything that
+    scans argv ahead of the parser. ``--flag=value`` binds the two into a single
+    token, which no scan can split back apart.
+    """
+    token = _tokens(value)[0]
+    if flag.startswith("--"):
+        return [f"{flag}={token}"]
+    # A short-only flag has no `=` form: `-f=x` parses as the value `=x`. Nothing
+    # on the surface is short-only today, so this refuses rather than inventing a
+    # spelling for a case that would need its own decision.
+    if token.startswith("-"):
+        raise OpError(
+            "invalid_input",
+            f"{name!r} cannot be passed a value starting with '-' because {flag} "
+            "has no long form to bind it to",
+        )
+    return [flag, token]
+
+
 def render_argv(schema: dict[str, Any], args: dict[str, Any]) -> list[str]:
     """The CLI tokens *args* becomes, spelled the way the projected parser reads.
 
@@ -292,11 +338,11 @@ def render_argv(schema: dict[str, Any], args: dict[str, Any]) -> list[str]:
                 flags.append(flag)
         elif spec.get("type") == "array":
             for element in value:
-                flags += [flag, *_tokens(element)]
+                flags += _flag_tokens(name, flag, element)
         elif value is True and "anyOf" in spec:
             flags.append(flag)
         else:
-            flags += [flag, *_tokens(value)]
+            flags += _flag_tokens(name, flag, value)
 
     tail: list[str] = []
     for name in schema.get("x-positional-order", []):
@@ -307,7 +353,13 @@ def render_argv(schema: dict[str, Any], args: dict[str, Any]) -> list[str]:
             tail += [token for element in value for token in _tokens(element)]
         else:
             tail += _tokens(value)
-    return [*flags, *tail]
+    if not tail:
+        return flags
+    # Everything after `--` is a positional, to the parser and to every scan that
+    # runs ahead of it. Without it a positional whose text begins with a dash is
+    # read as an option, and a prompt is exactly the kind of value that legitimately
+    # begins with one.
+    return [*flags, "--", *tail]
 
 
 # ── executors ────────────────────────────────────────────────────────────────
