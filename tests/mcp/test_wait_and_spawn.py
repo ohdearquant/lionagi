@@ -160,6 +160,32 @@ def test_spawn_failure_writes_a_terminal_record(sandbox, monkeypatch):
     assert st["reason_code"] == "spawn_failed"
 
 
+def test_a_spawn_refusal_that_is_not_an_errno_still_terminalises(sandbox, monkeypatch):
+    """The record is marked because it was written, not because of what failed.
+
+    A spawn can be refused for reasons that carry no errno at all — an argument
+    the exec cannot represent raises ``ValueError`` — and a handler that names
+    the errno family leaves exactly those runs claiming to be running forever.
+    Kept separate from the caller-side refusal that stops such a value earlier,
+    because with that refusal in place nothing reaches this path, and a guard
+    only one test can reach is a guard that can be removed silently.
+    """
+
+    def boom(*a, **k):
+        raise ValueError("embedded null byte")
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", boom)
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+
+    with pytest.raises(jobs.SpawnError) as excinfo:
+        jobs.submit("agent", [], prompt="x")
+
+    st = jobs.status(excinfo.value.run_id)
+    assert st["terminal"] is True
+    assert st["outcome"] == "failed"
+    assert st["reason_code"] == "spawn_failed"
+
+
 def test_spawn_failure_terminalises_without_a_pid_rule(sandbox, monkeypatch):
     """The terminal comes from the recorded spawn failure, not from pid absence.
 
@@ -362,6 +388,39 @@ def test_a_flow_prompt_goes_behind_a_sentinel_even_with_no_rendered_positional(s
     jobs.submit("flow", ["--dry-run"], prompt="-- not a flag")
     argv = spawned["argv"]
     assert argv[-2:] == ["--", "-- not a flag"]
+
+
+def test_a_value_that_cannot_be_an_argv_token_is_refused_before_any_run_exists(spawned):
+    """A NUL in a caller string is refused where it is still the caller's mistake.
+
+    ``execve`` takes NUL-terminated strings, so such a value is not one the
+    platform can pass at all. Reaching the spawn with it produces a job record
+    first and a failure second, and the caller's own input is then reported as an
+    internal error against a run that exists. Refused at rendering, no run is
+    minted: the assertion that matters is the empty jobs directory, not the
+    message.
+    """
+    import asyncio
+
+    from lionagi.mcp import dispatch
+
+    fingerprint = asyncio.run(dispatch.request(help="agent.submit"))["schema_fingerprint"]
+    answer = asyncio.run(
+        dispatch.request(
+            ops=[
+                {
+                    "op": "agent.submit",
+                    "args": {"query": ["hi\0there"]},
+                    "schema_fingerprint": fingerprint,
+                }
+            ]
+        )
+    )
+    op = answer["ops"][0]
+    assert op["ok"] is False
+    assert op["error"]["kind"] == "invalid_input"
+    assert "argv" not in spawned
+    assert list(config.JOBS_DIR.glob("*")) == []
 
 
 def test_a_switch_looking_query_reaches_the_child_as_a_positional(spawned):

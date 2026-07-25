@@ -334,10 +334,24 @@ def _validate(schema: dict[str, Any], args: dict[str, Any], verb: Verb) -> None:
 # ── argv rendering ───────────────────────────────────────────────────────────
 
 
-def _tokens(value: Any) -> list[str]:
+def _tokens(name: str, value: Any) -> list[str]:
+    """The argv token(s) *value* becomes, refused if it cannot be one.
+
+    A command line is a list of NUL-terminated strings all the way down to
+    ``execve``, so a string carrying a NUL is not a value the platform can pass
+    at all. Refusing it here — before any record of the run exists — is the
+    difference between the caller learning its input was wrong and the spawn
+    failing later with a job record nothing can terminalise.
+    """
     if isinstance(value, bool):
         return [str(value).lower()]
-    return [str(value)]
+    token = str(value)
+    if "\0" in token:
+        raise OpError(
+            "invalid_input",
+            f"{name!r} contains a NUL byte, which cannot appear in a command line",
+        )
+    return [token]
 
 
 def _flag_tokens(name: str, flag: str, value: Any) -> list[str]:
@@ -348,7 +362,7 @@ def _flag_tokens(name: str, flag: str, value: Any) -> list[str]:
     scans argv ahead of the parser. ``--flag=value`` binds the two into a single
     token, which no scan can split back apart.
     """
-    token = _tokens(value)[0]
+    token = _tokens(name, value)[0]
     if flag.startswith("--"):
         return [f"{flag}={token}"]
     # A short-only flag has no `=` form: `-f=x` parses as the value `=x`. Nothing
@@ -402,9 +416,9 @@ def render_argv(schema: dict[str, Any], args: dict[str, Any]) -> list[str]:
             continue
         value = positional[name]
         if isinstance(value, list):
-            tail += [token for element in value for token in _tokens(element)]
+            tail += [token for element in value for token in _tokens(name, element)]
         else:
-            tail += _tokens(value)
+            tail += _tokens(name, value)
     if not tail:
         return flags
     # Everything after `--` is a positional, to the parser and to every scan that

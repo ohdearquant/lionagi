@@ -526,10 +526,17 @@ def submit(
             )
         finally:
             log_f.close()  # child holds its own fd; parent drops its copy
-    except OSError as exc:
+    except Exception as exc:
         # The record already exists and no process will ever mark it, so the
         # producer that caught the failure marks it here: without this write the
         # run claims "running" forever, and nothing in the system can correct it.
+        #
+        # Every exception, not the errno family alone. What a spawn refuses is the
+        # platform's business and does not arrive by one route: an argument the
+        # exec cannot carry raises ValueError, with no errno anywhere in it. The
+        # invariant being kept is about the record — written, therefore marked —
+        # so making it depend on having enumerated the ways a spawn can fail would
+        # leave the next unenumerated one stranding a run exactly as this one did.
         raise _record_spawn_failure(run_id, exc) from exc
 
     # Attach the pid without rewriting status: if the hook already recorded a
@@ -558,7 +565,7 @@ def submit(
     }
 
 
-def _record_spawn_failure(run_id: str, exc: OSError) -> SpawnError:
+def _record_spawn_failure(run_id: str, exc: Exception) -> SpawnError:
     """Write the terminal record for a spawn that failed, and build the error.
 
     Records the spawn phase as ``failed`` and, in the same write, the end itself:
