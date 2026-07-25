@@ -46,6 +46,18 @@ REVIEWED_PATHS = frozenset(
         "orchestrate fanout",
         "orchestrate flow",
         "runs",
+        "schedule create",
+        "schedule delete",
+        "schedule disable",
+        "schedule enable",
+        "schedule export",
+        "schedule get",
+        "schedule limits",
+        "schedule list",
+        "schedule runs",
+        "schedule status",
+        "schedule trigger",
+        "schedule validate",
     }
 )
 

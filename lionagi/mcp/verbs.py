@@ -411,6 +411,127 @@ _REGISTERED: tuple[Verb, ...] = (
         cli_path="runs",
         admits=("limit",),
     ),
+    Verb(
+        name="schedule.list",
+        summary="Every schedule this Studio holds, with its trigger and enabled state.",
+        executor="machine",
+        cli_path="schedule list",
+        admits=(),
+    ),
+    Verb(
+        name="schedule.get",
+        summary="One schedule in full, including its ten most recent runs.",
+        executor="machine",
+        cli_path="schedule get",
+        admits=("id",),
+    ),
+    Verb(
+        name="schedule.status",
+        summary="Did it work: the schedule header, its latest run, and that run's verdict.",
+        executor="machine",
+        cli_path="schedule status",
+        # `--wait` blocks for as long as the run takes, past any caller's call;
+        # `--json` shapes the human printout only. Both are refused by the
+        # machine path rather than accepted and ignored.
+        admits=("id",),
+    ),
+    Verb(
+        name="schedule.runs",
+        summary="Runs of one schedule, newest first, optionally filtered by status.",
+        executor="machine",
+        cli_path="schedule runs",
+        admits=("id", "limit", "status"),
+    ),
+    Verb(
+        name="schedule.limits",
+        summary="The global concurrent-fire cap and how many fires are in flight now.",
+        executor="machine",
+        cli_path="schedule limits",
+        admits=(),
+    ),
+    Verb(
+        name="schedule.validate",
+        summary="Whether a ScheduleSet file resolves, and what each schedule resolves to.",
+        executor="machine",
+        cli_path="schedule validate",
+        admits=("file",),
+    ),
+    Verb(
+        name="schedule.create",
+        summary=(
+            "Write a schedule row, and report when its trigger next resolves in the "
+            "scheduler's own timezone."
+        ),
+        executor="machine",
+        cli_path="schedule create",
+        admits=(
+            "name",
+            "trigger_type",
+            "cron",
+            "interval",
+            "github_repo",
+            "github_filter",
+            "threshold_config",
+            "poll_interval",
+            "action_kind",
+            "prompt",
+            "model",
+            "agent",
+            "playbook",
+            "flow_yaml",
+            "action_command",
+            "action_command_args",
+            "project",
+            "cwd",
+            "description",
+            "max_runs",
+            "once",
+            "max_cost_usd",
+            "max_tokens",
+            "on_success",
+            "on_fail",
+        ),
+    ),
+    Verb(
+        name="schedule.trigger",
+        summary=("Fire a schedule now: reports the run id allocated, never that the run ran."),
+        executor="machine",
+        cli_path="schedule trigger",
+        # `--wait` blocks until the fired run is terminal, which outlives the
+        # call; the outcome is read with schedule.status or schedule.runs.
+        admits=("id",),
+    ),
+    Verb(
+        name="schedule.enable",
+        summary="Let a schedule fire again. Reports the state that was committed.",
+        executor="machine",
+        cli_path="schedule enable",
+        admits=("id",),
+    ),
+    Verb(
+        name="schedule.disable",
+        summary="Stop a schedule firing. Reports the state that was committed.",
+        executor="machine",
+        cli_path="schedule disable",
+        admits=("id",),
+    ),
+    Verb(
+        name="schedule.delete",
+        summary="Remove a schedule row. Reports the deletion the store confirmed.",
+        executor="machine",
+        cli_path="schedule delete",
+        admits=("id",),
+    ),
+    Verb(
+        name="schedule.export",
+        summary="Convert schedule rows into ScheduleSet documents, returned inline.",
+        executor="machine",
+        cli_path="schedule export",
+        # `--output` and `--report` write files relative to the dispatching
+        # process's directory, which is not the caller's; the documents and the
+        # conversion report come back in the result instead.
+        admits=("legacy",),
+    ),
 )
 
 
@@ -421,25 +542,20 @@ def _absent(prefix: str, names: tuple[str, ...], summary: str) -> tuple[AbsentVe
 
 
 ABSENT: tuple[AbsentVerb, ...] = (
-    *_absent(
-        "schedule",
-        (
-            "list",
-            "get",
-            "create",
-            "delete",
-            "enable",
-            "disable",
-            "trigger",
-            "run",
-            "runs",
-            "status",
-            "limits",
-            "apply",
-            "export",
-            "validate",
+    AbsentVerb(
+        name="schedule.apply",
+        summary="Reconcile a whole ScheduleSet file into the store, atomically.",
+        reason=(
+            "it writes a whole ScheduleSet atomically and reports a per-row plan; the "
+            "plan's shape has not been decided as a machine result yet"
         ),
-        "Unattended scheduled runs.",
+    ),
+    AbsentVerb(
+        name="schedule.run",
+        summary="One schedule run.",
+        reason=(
+            "it reports one schedule run, which schedule.runs already returns in a machine result"
+        ),
     ),
     *_absent(
         "team",

@@ -368,6 +368,12 @@ def _machine_runs(argv: list[str]) -> dict[str, Any]:
     return runs_data(known.limit)
 
 
+def _machine_schedule(argv: list[str]) -> dict[str, Any]:
+    from .machine_schedule import dispatch_schedule
+
+    return dispatch_schedule(argv)
+
+
 def _reject_extra_arguments(name: str, argv: list[str]) -> None:
     if argv:
         raise MachineError("invalid_input", f"li {name} takes no arguments: {' '.join(argv)}")
@@ -377,6 +383,7 @@ _MACHINE_COMMANDS: dict[str, Callable[[list[str]], dict[str, Any]]] = {
     "handshake": _machine_handshake,
     "doctor": _machine_doctor,
     "runs": _machine_runs,
+    "schedule": _machine_schedule,
 }
 
 
