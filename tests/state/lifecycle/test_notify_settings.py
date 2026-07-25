@@ -1108,6 +1108,120 @@ async def test_run_scoped_registration_honors_configured_filter(monkeypatch, tmp
     assert json.loads(run.notify_outcome_path.read_text())["ok"] is True
 
 
+# ── The two silences a run must not confuse ────────────────────────────────
+# Registration returns None both when nothing was configured and when a
+# configured notifier was refused. The run's own record is what tells them
+# apart: a refusal writes an unsuccessful outcome carrying the reason, chosen
+# silence writes no file. Without this, a caller waiting on a terminal notice
+# that can never arrive sees exactly what a caller that never asked for one
+# sees.
+
+
+def test_run_scoped_registration_records_a_settings_rejection(monkeypatch, tmp_path):
+    import lionagi.cli._runs as runs_mod
+    from lionagi.cli._runs import allocate_run
+    from lionagi.state.lifecycle.notify_settings import register_run_notify_outcome_scope
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    registry = TerminalCallbackRegistry()
+
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.resolve_notify_config",
+        lambda **kw: NotifyConfigResolution(reason="on_terminal_command_is_empty"),
+    )
+    rejected = allocate_run(run_id="rejected-run")
+    assert (
+        register_run_notify_outcome_scope(
+            rejected, entity_kind="session", entity_id="s-1", registry=registry
+        )
+        is None
+    )
+    assert json.loads(rejected.notify_outcome_path.read_text()) == {
+        "ok": False,
+        "exit_code": None,
+        "stderr_path": None,
+        "reason": "on_terminal_command_is_empty",
+    }
+
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.resolve_notify_config",
+        lambda **kw: NotifyConfigResolution(),
+    )
+    unconfigured = allocate_run(run_id="unconfigured-run")
+    assert (
+        register_run_notify_outcome_scope(
+            unconfigured, entity_kind="session", entity_id="s-1", registry=registry
+        )
+        is None
+    )
+    assert not unconfigured.notify_outcome_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("ref", "reason"),
+    [
+        ("lionagi._no_such_module_here:handler", "python_adapter_unresolvable"),
+        ("json:no_such_attribute", "python_adapter_unresolvable"),
+        ("json:__doc__", "python_adapter_not_callable"),
+    ],
+)
+def test_run_scoped_registration_records_a_python_build_failure(monkeypatch, tmp_path, ref, reason):
+    """A python adapter that resolves and then fails to build is configured and
+    unusable. Only build_handler knows why, so a run-bound caller is handed the
+    reason instead of the same None it returns for nothing configured."""
+    import lionagi.cli._runs as runs_mod
+    from lionagi.cli._runs import allocate_run
+    from lionagi.state.lifecycle.notify_settings import register_run_notify_outcome_scope
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.resolve_notify_config",
+        lambda **kw: NotifyConfigResolution(handler=ResolvedNotifyHandler(python_ref=ref)),
+    )
+    registry = TerminalCallbackRegistry()
+    run = allocate_run(run_id=f"build-failure-{reason}")
+
+    assert (
+        register_run_notify_outcome_scope(
+            run, entity_kind="session", entity_id="s-1", registry=registry
+        )
+        is None
+    )
+    assert json.loads(run.notify_outcome_path.read_text()) == {
+        "ok": False,
+        "exit_code": None,
+        "stderr_path": None,
+        "reason": reason,
+    }
+
+
+def test_filtered_out_entity_is_chosen_silence_not_a_rejection(monkeypatch, tmp_path):
+    """An entity the operator excluded is silence by choice for that entity, so
+    it writes no record. Recording it would make an intentional exclusion look
+    like a broken notifier."""
+    import lionagi.cli._runs as runs_mod
+    from lionagi.cli._runs import allocate_run
+    from lionagi.state.lifecycle.notify_settings import register_run_notify_outcome_scope
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.resolve_notify_config",
+        lambda **kw: NotifyConfigResolution(
+            handler=ResolvedNotifyHandler(argv=("notify-hook",), filter_kinds=("play",))
+        ),
+    )
+    registry = TerminalCallbackRegistry()
+    run = allocate_run(run_id="filtered-out-run")
+
+    assert (
+        register_run_notify_outcome_scope(
+            run, entity_kind="session", entity_id="s-1", registry=registry
+        )
+        is None
+    )
+    assert not run.notify_outcome_path.exists()
+
+
 @pytest.mark.asyncio
 async def test_adapter_argument_values_echoed_on_stderr_are_redacted(monkeypatch, tmp_path, caplog):
     """The realistic leak path: an adapter fails and echoes its own invocation

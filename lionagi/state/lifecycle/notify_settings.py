@@ -356,6 +356,26 @@ def _record_notify_outcome_to_run(
     return stderr_path
 
 
+def _record_notify_rejection_to_run(run: RunDir, reason: str) -> None:
+    """Best-effort: record into *run*'s own notify_outcome.json that a notifier
+    was configured for this run and refused, so the run says which of the two
+    silences it is. A run with nothing configured writes no file at all; a run
+    whose notifier could not be resolved or built writes an unsuccessful
+    outcome carrying the stable reason. Without this, a caller waiting on a
+    terminal notice that can never arrive sees exactly what a caller that never
+    asked for one sees. Never raises.
+
+    ``exit_code`` and ``stderr_path`` are null because nothing was launched:
+    the adapter was refused before it could run.
+    """
+    try:
+        run.write_notify_outcome(
+            {"ok": False, "exit_code": None, "stderr_path": None, "reason": reason}
+        )
+    except Exception:  # noqa: BLE001 -- outcome bookkeeping must never affect the run
+        logger.debug("failed to record notify.on_terminal rejection", exc_info=True)
+
+
 def _warn_adapter_failure(msg: str) -> None:
     try:
         from lionagi.cli._logging import warn
@@ -559,6 +579,7 @@ def build_handler(
     argv_fn: ArgvBuilder | None = None,
     env_fn: EnvBuilder | None = None,
     outcome_fn: OutcomeFn | None = None,
+    on_build_failure: Callable[[str], None] | None = None,
 ) -> TerminalCallbackHandler | None:
     """Build the process-local handler for a resolved adapter spec, or
     ``None`` if the spec fails to build (never raises). A python adapter ref
@@ -570,6 +591,12 @@ def build_handler(
     when no specific run is bound to this handler; outcome recording is then
     skipped rather than guessing at a target run. Never applies to a python
     adapter (only the exec adapter's process outcome is tracked).
+
+    *on_build_failure*, if given, is called with a stable reason when the spec
+    is refused here. A spec that resolves and then fails to build is still a
+    configured notifier that will never fire, and this is the only place that
+    knows why; a caller that can record it (one bound to a run) passes this so
+    the failure does not reduce to the same ``None`` as nothing configured.
     """
     if resolved.python_ref is not None:
         try:
@@ -580,6 +607,11 @@ def build_handler(
                 resolved.python_ref,
                 exc,
             )
+            # One identifier covers a missing module and a missing attribute:
+            # the reason is the stable contract, and the warning above carries
+            # which of the two it was.
+            if on_build_failure is not None:
+                on_build_failure("python_adapter_unresolvable")
             return None
         if not callable(handler):
             logger.warning(
@@ -588,6 +620,8 @@ def build_handler(
                 resolved.python_ref,
                 type(handler).__name__,
             )
+            if on_build_failure is not None:
+                on_build_failure("python_adapter_not_callable")
             return None
         return handler
     assert resolved.argv is not None  # _resolve_* never returns an empty spec
@@ -607,6 +641,10 @@ def register_settings_terminal_callback(
     CLI entry point and Studio service startup each call this once per
     process). Returns ``True`` iff a handler was installed.
     """
+    # A rejected configuration is already reported through the resolver's
+    # warning; this registration is process-wide and bound to no run, so it has
+    # nowhere to record a reason and only needs to know whether there is
+    # something to install. The run-scoped registration is where a reason lands.
     resolved = resolve_notify_config(project_dir=project_dir).handler
     if resolved is None:
         registry.unregister(name)
@@ -643,8 +681,18 @@ def register_run_notify_outcome_scope(
     ``unregister_run_notify_outcome_scope`` in a ``finally`` block), or
     ``None`` if notify.on_terminal resolved to disabled or if this entity is
     excluded by the configured filter (never raises).
+
+    Returning ``None`` says only that nothing was registered, so a notifier
+    this run asked for and could not have is recorded onto the run before
+    returning: an unsuccessful outcome carrying the reason. The two benign
+    cases -- nothing configured, and this entity excluded by the filter --
+    write nothing, which is what tells them apart from a refusal.
     """
-    resolved = resolve_notify_config(project_dir=project_dir).handler
+    resolution = resolve_notify_config(project_dir=project_dir)
+    if resolution.reason is not None:
+        _record_notify_rejection_to_run(run, resolution.reason)
+        return None
+    resolved = resolution.handler
     if resolved is None:
         return None
     # The scoped registration is an override, so it dispatches on its own
@@ -662,7 +710,10 @@ def register_run_notify_outcome_scope(
             run, ok=ok, exit_code=exit_code, stderr_text=stderr_text
         )
 
-    handler = build_handler(resolved, outcome_fn=_outcome_fn)
+    def _build_failure(reason: str) -> None:
+        _record_notify_rejection_to_run(run, reason)
+
+    handler = build_handler(resolved, outcome_fn=_outcome_fn, on_build_failure=_build_failure)
     if handler is None:
         return None
     name = f"notify.settings.on_terminal.{entity_kind}.{entity_id}"
