@@ -1,0 +1,315 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+"""Lifecycle-contract tests: bounded observation and the spawn-failure record.
+
+These cover the two places where a wrong answer is silent rather than loud — a
+run classified as finished when it is not, and a run that can never be finished
+because nothing recorded that its spawn failed.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from lionagi.mcp import config, jobs
+
+
+@pytest.fixture
+def sandbox(monkeypatch, tmp_path):
+    """Point job/run state at a tmp dir so tests never touch the real ~/.lionagi."""
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(config, "li_command", lambda: ["echo"])
+    return tmp_path
+
+
+class _FakeProc:
+    def __init__(self, pid: int = 4242) -> None:
+        self.pid = pid
+
+
+def _record(rid: str, **fields) -> None:
+    base = {
+        "run_id": rid,
+        "pid": None,
+        "kind": "agent",
+        "label": None,
+        "status": "running",
+        "spawn_state": "started",
+        "submitted_at": "2026-07-25T00:00:00+00:00",
+        "finished_at": None,
+        "log": None,
+    }
+    base.update(fields)
+    jobs._write_job(base)
+
+
+# --- terminal / outcome derivation ---------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("cli_status", "outcome", "reason_code"),
+    [
+        ("completed", "succeeded", None),
+        ("completed_empty", "failed", "no_artifacts"),
+        ("timed_out", "failed", None),
+        ("cancelled", "failed", None),
+        ("a_status_this_build_never_heard_of", "failed", None),
+    ],
+)
+def test_terminal_outcome_from_recorded_end(sandbox, cli_status, outcome, reason_code):
+    """A recorded end makes a run terminal; the status itself only picks outcome.
+
+    ``completed_empty`` is the case the two fields exist for: it ended, and it did
+    not succeed. An unrecognised status is reported verbatim and classified as a
+    failure, because a stale success list turning a timeout into a success is the
+    defect this shape removes.
+    """
+    rid = jobs.new_run_id()
+    _record(rid, status=cli_status, finished_at="2026-07-25T00:01:00+00:00")
+
+    st = jobs.status(rid)
+    assert st["status"] == cli_status  # verbatim, never re-spelled
+    assert st["terminal"] is True
+    assert st["outcome"] == outcome
+    assert st["reason_code"] == reason_code
+
+
+def test_orphan_is_not_terminal_and_has_no_outcome(sandbox, monkeypatch):
+    """A process gone with no end recorded has stopped and is still not terminal."""
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    rid = jobs.new_run_id()
+    _record(rid, pid=999_999)
+
+    st = jobs.status(rid)
+    assert st["status"] == "exited"
+    assert st["terminal"] is False
+    assert st["outcome"] is None  # null whenever terminal is false, not just while running
+    assert st["possibly_orphaned"] is True
+
+
+def test_preparing_record_is_not_a_spawn_failure(sandbox, monkeypatch):
+    """A record written before the pid is attached says nothing about the spawn.
+
+    A healthy child has no pid for the window between the pre-spawn write and the
+    write that attaches it, so nothing may read that absence as a failure.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    rid = jobs.new_run_id()
+    _record(rid, pid=None, spawn_state="preparing")
+
+    st = jobs.status(rid)
+    assert st["terminal"] is False
+    assert st["outcome"] is None
+    assert st["possibly_orphaned"] is False
+    assert st["spawn_state"] == "preparing"
+
+
+def test_running_job_carries_null_outcome(sandbox, monkeypatch):
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    rid = jobs.new_run_id()
+    _record(rid, pid=4242)
+
+    st = jobs.status(rid)
+    assert (st["status"], st["terminal"], st["outcome"]) == ("running", False, None)
+
+
+def test_submit_handle_and_list_rows_carry_the_derivations(sandbox, monkeypatch):
+    """Every status-bearing response carries terminal and outcome, not only status."""
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **k: _FakeProc())
+    handle = jobs.submit("agent", [], prompt="x")
+    assert handle["status"] == "running"
+    assert handle["terminal"] is False
+    assert handle["outcome"] is None
+    assert handle["spawn_state"] == "started"
+
+    jobs.mark_terminal(handle["run_id"], "completed_empty")
+    row = jobs.list_jobs()[0]
+    assert row["run_id"] == handle["run_id"]
+    assert (row["terminal"], row["outcome"], row["reason_code"]) == (True, "failed", "no_artifacts")
+
+    out = jobs.output(handle["run_id"])
+    assert (out["terminal"], out["outcome"]) == (True, "failed")
+
+
+# --- spawn failure --------------------------------------------------------------
+
+
+def test_spawn_failure_writes_a_terminal_record(sandbox, monkeypatch):
+    """A Popen that raises leaves a run nothing else can ever finish, so the
+    producer that caught it records the end itself."""
+
+    def boom(*a, **k):
+        raise OSError(8, "Exec format error")
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", boom)
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+
+    with pytest.raises(jobs.SpawnError) as excinfo:
+        jobs.submit("agent", [], prompt="x")
+
+    rid = excinfo.value.run_id  # the id survives the failure; the caller is not left guessing
+    rec = jobs._read_job(rid)
+    assert rec["spawn_state"] == "failed"
+    assert rec["finished_at"] is not None
+    assert "spawn failed" in rec["reason"]
+
+    st = jobs.status(rid)
+    assert st["terminal"] is True
+    assert st["outcome"] == "failed"
+    assert st["reason_code"] == "spawn_failed"
+
+
+def test_spawn_failure_terminalises_without_a_pid_rule(sandbox, monkeypatch):
+    """The terminal comes from the recorded spawn failure, not from pid absence.
+
+    Proved by stripping the recorded failure from an otherwise identical record:
+    the same pid-less record must then read as non-terminal.
+    """
+
+    def boom(*a, **k):
+        raise OSError(2, "No such file or directory")
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", boom)
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    with pytest.raises(jobs.SpawnError) as excinfo:
+        jobs.submit("agent", [], prompt="x")
+    rid = excinfo.value.run_id
+
+    rec = jobs._read_job(rid)
+    rec.update({"spawn_state": "preparing", "status": "running", "finished_at": None})
+    jobs._write_job(rec)
+
+    st = jobs.status(rid)
+    assert st["pid"] is None
+    assert st["terminal"] is False
+    assert st["outcome"] is None
+
+
+# --- bounded observation --------------------------------------------------------
+
+
+async def test_wait_returns_one_entry_per_id_in_input_order(sandbox, monkeypatch):
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    ids = [jobs.new_run_id() for _ in range(3)]
+    for rid in ids:
+        _record(rid, status="completed", finished_at="2026-07-25T00:01:00+00:00")
+
+    asked = [ids[2], ids[0], ids[1]]
+    res = await jobs.wait(asked, max_wait=0, poll_interval=1)
+
+    assert [e["run_id"] for e in res["runs"]] == asked
+    assert all(e["terminal"] and e["outcome"] == "succeeded" for e in res["runs"])
+    assert res["all_terminal"] is True
+    assert res["timed_out"] is False
+    assert res["pending"] == []
+
+
+async def test_wait_snapshot_with_zero_max_wait(sandbox, monkeypatch):
+    """max_wait=0 is a legal request for one observation, not an error."""
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    slept: list[float] = []
+
+    async def no_sleep(seconds):
+        slept.append(seconds)
+
+    rid = jobs.new_run_id()
+    _record(rid, pid=4242)
+
+    import anyio
+
+    monkeypatch.setattr(anyio, "sleep", no_sleep)
+    res = await jobs.wait([rid], max_wait=0, poll_interval=5)
+
+    assert slept == []  # observed once and returned
+    assert res["pending"] == [rid]
+    assert res["timed_out"] is True
+    assert res["all_terminal"] is False
+    assert res["runs"][0]["status"] == "running"
+
+
+async def test_wait_expiry_keeps_what_was_learned(sandbox, monkeypatch):
+    """A closed window is not an error: finished ids are still reported."""
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    done = jobs.new_run_id()
+    _record(done, status="completed", finished_at="2026-07-25T00:01:00+00:00")
+    busy = jobs.new_run_id()
+    _record(busy, pid=4242)
+
+    res = await jobs.wait([done, busy], max_wait=0.05, poll_interval=0.01)
+
+    assert res["timed_out"] is True
+    assert res["all_terminal"] is False
+    assert res["pending"] == [busy]
+    assert res["runs"][0]["terminal"] is True
+    assert res["runs"][0]["outcome"] == "succeeded"
+    assert res["runs"][1]["terminal"] is False
+
+
+async def test_wait_reports_unknown_ids_per_entry(sandbox, monkeypatch):
+    """One bad id costs the caller that id and nothing else."""
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    good = jobs.new_run_id()
+    _record(good, status="completed", finished_at="2026-07-25T00:01:00+00:00")
+
+    res = await jobs.wait([good, "no-such-run", ""], max_wait=0, poll_interval=1)
+
+    assert res["runs"][0]["error"] is None and res["runs"][0]["terminal"] is True
+    assert res["runs"][1]["error"]["kind"] == "not_found"
+    assert res["runs"][2]["error"]["kind"] == "invalid_input"
+    # An id that cannot be observed is not pending: waiting longer cannot resolve it.
+    assert res["pending"] == []
+    assert res["all_terminal"] is False
+    assert res["timed_out"] is False
+
+
+async def test_wait_clamps_and_echoes_the_effective_numbers(sandbox, monkeypatch):
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    rid = jobs.new_run_id()
+    _record(rid, status="completed", finished_at="2026-07-25T00:01:00+00:00")
+
+    res = await jobs.wait([rid], max_wait=10**9, poll_interval=-4)
+
+    assert res["max_wait"] == jobs.WAIT_MAX_SECONDS
+    assert res["poll_interval"] == jobs.WAIT_MIN_POLL_SECONDS
+    assert res["requested_max_wait"] == 10**9
+    assert res["requested_poll_interval"] == -4
+
+
+async def test_wait_does_not_touch_the_run(sandbox, monkeypatch):
+    """An expired wait leaves the durable record byte-for-byte as it was."""
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    rid = jobs.new_run_id()
+    _record(rid, pid=4242)
+    before = (config.job_dir(rid) / "job.json").read_text()
+
+    res = await jobs.wait([rid], max_wait=0.05, poll_interval=0.01)
+
+    assert res["timed_out"] is True
+    assert (config.job_dir(rid) / "job.json").read_text() == before
+
+
+async def test_wait_stops_as_soon_as_every_id_is_terminal(sandbox, monkeypatch):
+    """The call returns on the transition, not on the deadline."""
+    alive = {"value": True}
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: alive["value"])
+    rid = jobs.new_run_id()
+    _record(rid, pid=4242)
+
+    polls = {"n": 0}
+    real_status = jobs.status
+
+    def counting_status(run_id):
+        polls["n"] += 1
+        if polls["n"] == 2:  # the run ends between the first and second observation
+            alive["value"] = False
+            jobs.mark_terminal(run_id, "completed")
+        return real_status(run_id)
+
+    monkeypatch.setattr(jobs, "status", counting_status)
+    res = await jobs.wait([rid], max_wait=30, poll_interval=0.01)
+
+    assert res["all_terminal"] is True
+    assert res["timed_out"] is False
+    assert res["runs"][0]["outcome"] == "succeeded"
+    assert polls["n"] == 2

@@ -5,7 +5,13 @@
 Every ``submit_*`` tool mirrors a ``li`` command; the only difference from the
 CLI is that it returns a run_id immediately instead of blocking until the run
 finishes. ``job_status`` / ``job_output`` / ``job_kill`` / ``jobs_list`` operate
-on that id by reading the state the CLI already persists.
+on that id by reading the state the CLI already persists, and ``job_wait`` joins
+several of them in one bounded call so a caller does not have to poll.
+
+Every response that carries a run's ``status`` carries ``terminal`` and
+``outcome`` beside it. The status string is an open vocabulary and is passed
+through verbatim; the two derived fields are what a caller branches on, so no
+caller has to keep its own copy of lionagi's status names.
 
 The submit tools deliberately expose the common flags as typed parameters (so
 callers do not have to remember CLI syntax) plus an ``extra_args`` escape hatch
@@ -21,7 +27,17 @@ from fastmcp import FastMCP
 
 from . import jobs
 
-mcp = FastMCP("lionagi")
+# The advertised server name. It moved from "lionagi" to "lion" when this surface
+# became the machine contract a peer system drives; the previous name is kept as a
+# readable constant because it is what older registrations and logs show. fastmcp
+# carries exactly one name in the initialize response and offers no alias for it,
+# so nothing here can make a client that asks for "lionagi" by name resolve — but
+# nothing needs to: a client addresses this server by its own local config entry
+# (the command it launches), not by this string, and the tool names are unchanged.
+SERVER_NAME = "lion"
+PREVIOUS_SERVER_NAME = "lionagi"
+
+mcp = FastMCP(SERVER_NAME)
 
 
 def _resolve_prompt(prompt: str | None, prompt_file: str | None) -> str | None:
@@ -305,6 +321,130 @@ def submit_fanout(
     )
 
 
+@mcp.tool
+def submit_play(
+    name: str | None = None,
+    prompt: str | None = None,
+    prompt_file: str | None = None,
+    model: str | None = None,
+    agent: str | None = None,
+    resume: str | None = None,
+    allow_degraded_context: bool = False,
+    team_mode: str | bool | None = None,
+    team_attach: str | None = None,
+    team_max_rounds: int | None = None,
+    max_concurrent: int | None = None,
+    max_ops: int | None = None,
+    reactive: str | None = None,
+    workers: str | None = None,
+    pack: str | None = None,
+    bare: bool = False,
+    with_synthesis: str | bool | None = None,
+    save: str | None = None,
+    cwd: str | None = None,
+    timeout: int | None = None,
+    effort: str | None = None,
+    yolo: bool = False,
+    bypass: bool = False,
+    project: str | None = None,
+    notify: str | None = None,
+    notify_seat: str | None = None,
+    label: str | None = None,
+    extra_args: list[str] | None = None,
+) -> dict[str, Any]:
+    """Run a playbook in the background (mirrors ``li play``).
+
+    ``name`` is the playbook in ``~/.lionagi/playbooks/<name>.playbook.yaml``; the
+    playbook supplies the DAG and usually the prompt template, so ``prompt`` /
+    ``prompt_file`` fill that template rather than replacing it.
+
+    A playbook may declare its own ``args:`` schema. Those become ordinary flags
+    on this run and are passed through ``extra_args`` (for example
+    ``["--target", "docs/adr"]``); ``li play check <name>`` lists what a playbook
+    accepts.
+
+    ``resume`` replays a checkpointed flow from a prior run instead of starting a
+    playbook — pass it alone, without ``name``, since a resume reads its plan,
+    model and prompt from the checkpoint and ignores the rest.
+
+    ``team_mode`` creates a fresh team for this run (a name, or ``True`` for the
+    default); ``team_attach`` joins an existing one by name instead.
+    """
+    prompt = _resolve_prompt(prompt, prompt_file)
+    if resume:
+        if name:
+            raise ValueError(
+                "pass name or resume, not both: a resumed flow replays its "
+                "persisted plan and never reads a playbook"
+            )
+    elif not name:
+        raise ValueError("submit_play needs a playbook name (or resume, to replay a prior run)")
+
+    flags: list[str] = []
+    if model:
+        flags.append(model)  # leading positional model spec
+    if resume:
+        flags += ["--resume", resume]
+        if allow_degraded_context:
+            flags.append("--allow-degraded-context")
+    else:
+        flags += ["-p", name]
+    if agent:
+        flags += ["-a", agent]
+    if team_mode is not None:
+        if isinstance(team_mode, str):
+            flags += ["--team-mode", team_mode]
+        elif team_mode:
+            flags.append("--team-mode")
+    if team_attach:
+        flags += ["--team-attach", team_attach]
+    if team_max_rounds is not None:
+        flags += ["--team-max-rounds", str(team_max_rounds)]
+    if max_concurrent is not None:
+        flags += ["--max-concurrent", str(max_concurrent)]
+    if max_ops is not None:
+        flags += ["--max-ops", str(max_ops)]
+    if reactive:
+        flags += ["--reactive", reactive]
+    if workers:
+        flags += ["--workers", workers]
+    if pack:
+        flags += ["--pack", pack]
+    if bare:
+        flags.append("--bare")
+    if with_synthesis is not None:
+        if isinstance(with_synthesis, str):
+            flags += ["--with-synthesis", with_synthesis]
+        elif with_synthesis:
+            flags.append("--with-synthesis")
+    if save:
+        flags += ["--save", save]
+    if effort:
+        flags += ["--effort", effort]
+    if cwd:
+        flags += ["--cwd", cwd]
+    if timeout is not None:
+        flags += ["--timeout", str(timeout)]
+    if project:
+        flags += ["--project", project]
+    if yolo:
+        flags.append("--yolo")
+    if bypass:
+        flags.append("--bypass")
+    if extra_args:
+        flags += list(extra_args)
+
+    return jobs.submit(
+        "play",
+        flags,
+        prompt=prompt,
+        cwd=cwd,
+        label=label or name,
+        notify_command=notify,
+        notify_target=notify_seat,
+    )
+
+
 # --- query tools --------------------------------------------------------------
 
 
@@ -324,6 +464,32 @@ def job_output(run_id: str, tail_chars: int = 20000) -> dict[str, Any]:
 def job_kill(run_id: str) -> dict[str, Any]:
     """Stop a running background job (signals its whole process group)."""
     return jobs.kill(run_id)
+
+
+@mcp.tool
+async def job_wait(
+    run_ids: list[str],
+    max_wait: float = 60.0,
+    poll_interval: float = 1.0,
+) -> dict[str, Any]:
+    """Wait for background runs to finish, bounded — one call instead of a poll loop.
+
+    Returns one entry per requested id, in the order given, each with its
+    ``status`` (verbatim, never to be matched against a list), ``terminal``
+    ("stop waiting") and ``outcome`` (``succeeded``/``failed``, null while not
+    terminal) — plus ``all_terminal``, ``timed_out`` and the ids still
+    ``pending``.
+
+    Both numbers are clamped to documented bounds and the effective values come
+    back in the result. ``max_wait=0`` takes a single snapshot. A window that
+    closes early is not an error: the result still carries everything learned, so
+    calling again is safe and costs nothing already known. An unknown id is an
+    error on that entry alone and never costs the other ids their observation.
+
+    Waiting only reads. Giving up on the wait — expiry, cancellation, a dropped
+    connection — leaves every run running exactly as it was.
+    """
+    return await jobs.wait(run_ids, max_wait=max_wait, poll_interval=poll_interval)
 
 
 @mcp.tool

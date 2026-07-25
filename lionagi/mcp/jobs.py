@@ -5,12 +5,19 @@
 ``submit()`` spawns a ``li`` command as a detached process and returns immediately
 with the run_id. The id is pre-assigned via ``LIONAGI_RUN_ID`` so it is known
 before the child starts (no polling to discover it). ``status()`` / ``output()`` /
-``kill()`` / ``list_jobs()`` then operate on that id by reading the run state the
-CLI persists plus the MCP server's own small per-job record.
+``kill()`` / ``list_jobs()`` / ``wait()`` then operate on that id by reading the
+run state the CLI persists plus the MCP server's own small per-job record.
 
 The detached child gets its own session/pgid (``start_new_session``), so it
 survives an MCP-server restart and can still be signalled as a group. That is why
 job state lives on disk rather than in server memory.
+
+Every response that carries a run's ``status`` carries ``terminal`` and
+``outcome`` with it, derived here from the durable record. ``status`` itself is an
+open vocabulary passed through verbatim, so a caller never needs — and must never
+keep — a copy of lionagi's status names to tell a finished run from a running one
+or a success from a failure. All of these resolve through one path, ``status()``,
+so no two calls can disagree about the same run at the same moment.
 """
 
 from __future__ import annotations
@@ -30,11 +37,40 @@ from . import config
 
 # li subcommand for each job kind. "orchestrate" is the canonical parser name
 # (the `o` alias also works); flow and fanout live under it.
+#
+# "play" is spawned as `orchestrate flow -p NAME`, which is exactly what the CLI's
+# own `li play` sugar rewrites itself into. Going through the expanded form rather
+# than the sugar is deliberate: the sugar has to locate NAME by probing the flow
+# parser when a flag precedes it, and it rejects a playbook's own declared args in
+# that path — while `o flow -p NAME` injects the playbook's arg schema into the
+# parser and accepts them. Since every submit prepends --notify, the sugar would
+# always take the probing path.
 _KIND_ARGV: dict[str, list[str]] = {
     "agent": ["agent"],
     "flow": ["orchestrate", "flow"],
     "fanout": ["orchestrate", "fanout"],
+    "play": ["orchestrate", "flow"],
 }
+
+# Statuses that mean the work came out right. Deliberately narrow, and used ONLY
+# to pick `outcome` for a run already established terminal by a recorded end —
+# never to decide whether a run ended. A status this build has never heard of is
+# reported verbatim and classified as a failure, because the failure mode of a
+# stale success list is a timeout or an empty completion read back as a success.
+_SUCCEEDED_STATUSES = frozenset({"completed"})
+
+# Short advisory qualifiers for a terminal outcome. A caller may surface one; it
+# never needs one to decide `outcome`.
+_REASON_BY_STATUS = {
+    "completed_empty": "no_artifacts",
+}
+_SPAWN_FAILED_REASON = "spawn_failed"
+
+# Bounds for wait(). The maximum sits below ordinary MCP client timeouts so a
+# bounded observation returns partial results rather than being cut off mid-call.
+WAIT_MAX_SECONDS = 600.0
+WAIT_MIN_POLL_SECONDS = 0.05
+WAIT_MAX_POLL_SECONDS = 60.0
 
 # The terminal hook module, invoked by the CLI's --notify by absolute
 # interpreter path so it runs regardless of PATH in the CLI's environment.
@@ -255,6 +291,109 @@ def _reject_oversized_argv(argv: list[str], env: dict[str, str], *, kind: str) -
     )
 
 
+# --- lifecycle derivation ------------------------------------------------------
+
+
+class SpawnError(RuntimeError):
+    """Raised when the child could not be started after the job record existed.
+
+    Carries ``run_id`` and the terminal ``record`` written for it, so a caller
+    still learns which run failed instead of having to parse the message.
+    """
+
+    def __init__(self, run_id: str, record: dict[str, Any], message: str) -> None:
+        super().__init__(message)
+        self.run_id = run_id
+        self.record = record
+
+
+def _derive(job: dict[str, Any] | None, alive: bool) -> dict[str, Any]:
+    """Classify a job record into the fields a caller is allowed to branch on.
+
+    ``status`` is an open vocabulary: whatever the CLI recorded is passed through
+    verbatim and is never matched against a local set to decide anything.
+
+    ``terminal`` answers "stop waiting" and comes only from a recorded end — a
+    ``finished_at`` written by the terminal hook or by ``kill``, or a spawn
+    failure the producer caught and wrote down. It is never inferred from the
+    status string and never from a missing pid: between the pre-spawn write and
+    the write that attaches the pid, a perfectly healthy child has no pid yet.
+
+    ``outcome`` answers "did the work come out right" and is null whenever
+    ``terminal`` is false — including for a run whose process is gone with no end
+    recorded, which has stopped and is still not terminal.
+    """
+    if job is None:
+        return {
+            "status": "unknown",
+            "terminal": False,
+            "outcome": None,
+            "reason_code": None,
+            "spawn_state": None,
+            "possibly_orphaned": False,
+        }
+
+    recorded = job.get("status", "unknown")
+    spawn_state = job.get("spawn_state")
+
+    if spawn_state == "failed":
+        return {
+            "status": recorded,
+            "terminal": True,
+            "outcome": "failed",
+            "reason_code": _SPAWN_FAILED_REASON,
+            "spawn_state": spawn_state,
+            "possibly_orphaned": False,
+        }
+
+    if job.get("finished_at") is not None:
+        return {
+            "status": recorded,
+            "terminal": True,
+            "outcome": "succeeded" if recorded in _SUCCEEDED_STATUSES else "failed",
+            "reason_code": _REASON_BY_STATUS.get(recorded),
+            "spawn_state": spawn_state,
+            "possibly_orphaned": False,
+        }
+
+    if alive:
+        return {
+            "status": "running",
+            "terminal": False,
+            "outcome": None,
+            "reason_code": None,
+            "spawn_state": spawn_state,
+            "possibly_orphaned": False,
+        }
+
+    if spawn_state == "preparing":
+        # The spawn has not been attempted yet, or its result has not been
+        # written. Report the record as it stands and make no claim about the
+        # spawn's fate; a stale one stays non-terminal rather than being resolved
+        # by a bound that cannot tell a loaded machine from a dead spawn.
+        return {
+            "status": recorded,
+            "terminal": False,
+            "outcome": None,
+            "reason_code": None,
+            "spawn_state": spawn_state,
+            "possibly_orphaned": False,
+        }
+
+    # A recorded pid that is gone with no end recorded: an orphan. Advisory only.
+    # Nothing here terminalises it — liveness is an observation about a pid, which
+    # can be reused or denied, and two readers of one unchanged record may see it
+    # differently. It stays non-terminal.
+    return {
+        "status": "exited",
+        "terminal": False,
+        "outcome": None,
+        "reason_code": None,
+        "spawn_state": spawn_state,
+        "possibly_orphaned": True,
+    }
+
+
 # --- public API ----------------------------------------------------------------
 
 
@@ -327,6 +466,11 @@ def submit(
     # would otherwise lose its status and delivery outcome. pid is filled in right
     # after the spawn; that follow-up write only attaches the pid and never
     # rewrites status, so a terminal the hook may already have recorded survives.
+    #
+    # The write also records which phase of the spawn the record was written in,
+    # so the phase is a recorded fact rather than something a reader guesses from
+    # the pid being absent. It rides writes that have to happen anyway, so it adds
+    # no failure mode of its own.
     record = {
         "run_id": run_id,
         "pid": None,
@@ -339,31 +483,83 @@ def submit(
         "submitted_at": _now_iso(),
         "finished_at": None,
         "status": "running",
+        "spawn_state": "preparing",
         "log": str(log_path),
     }
     _write_job(record)
 
-    log_f = open(log_path, "wb")
     try:
-        proc = subprocess.Popen(  # noqa: S603 — argv is the resolved li_command + CLI flags, no shell
-            argv,
-            stdout=log_f,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            cwd=cwd or None,
-            env=env,
-            start_new_session=True,  # own session/pgid: survives restart, killable as a group
-        )
-    finally:
-        log_f.close()  # child holds its own fd; parent drops its copy
+        log_f = open(log_path, "wb")
+        try:
+            proc = subprocess.Popen(  # noqa: S603 — argv is the resolved li_command + CLI flags, no shell
+                argv,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                cwd=cwd or None,
+                env=env,
+                start_new_session=True,  # own session/pgid: survives restart, killable as a group
+            )
+        finally:
+            log_f.close()  # child holds its own fd; parent drops its copy
+    except OSError as exc:
+        # The record already exists and no process will ever mark it, so the
+        # producer that caught the failure marks it here: without this write the
+        # run claims "running" forever, and nothing in the system can correct it.
+        raise _record_spawn_failure(run_id, exc) from exc
 
     # Attach the pid without rewriting status: if the hook already recorded a
     # terminal in the (tiny) spawn window, re-reading here preserves it.
     latest = _read_job(run_id) or record
     latest["pid"] = proc.pid
+    latest["spawn_state"] = "started"
     _write_job(latest)
 
-    return {"run_id": run_id, "pid": proc.pid, "status": latest["status"], "log": str(log_path)}
+    # The handle carries the same three lifecycle fields every other
+    # status-bearing response does, so a caller never has to classify the status
+    # string itself — including in the narrow case where the child reached a
+    # terminal before this line ran.
+    # Popen returned, so the child exists; no liveness probe is taken here, which
+    # would only add a race in which an instant exit reads back as an orphan.
+    derived = _derive(latest, alive=True)
+    return {
+        "run_id": run_id,
+        "pid": proc.pid,
+        "status": derived["status"],
+        "terminal": derived["terminal"],
+        "outcome": derived["outcome"],
+        "reason_code": derived["reason_code"],
+        "spawn_state": latest["spawn_state"],
+        "log": str(log_path),
+    }
+
+
+def _record_spawn_failure(run_id: str, exc: OSError) -> SpawnError:
+    """Write the terminal record for a spawn that failed, and build the error.
+
+    Records the spawn phase as ``failed`` and, in the same write, the end itself:
+    a terminal record with a reason naming the spawn failure. Without the second
+    part the phase would say the spawn failed while the lifecycle still said the
+    run was going, which is two answers to one question.
+    """
+    reason = f"spawn failed: {exc}"
+    record = _read_job(run_id) or {"run_id": run_id}
+    record.update(
+        {
+            "spawn_state": "failed",
+            "status": "failed",
+            "finished_at": _now_iso(),
+            "reason": reason,
+        }
+    )
+    try:
+        _write_job(record)
+    except OSError:
+        # The corrective write can fail on exactly the disk that refused the
+        # spawn. The caller still gets the failure and the run_id; what is lost
+        # is the durable mark, which is why the raise below carries the record.
+        pass
+    return SpawnError(run_id, record, f"could not spawn run {run_id}: {exc}")
 
 
 def _server_identity() -> dict[str, str]:
@@ -392,10 +588,15 @@ def _server_identity() -> dict[str, str]:
 def status(run_id: str) -> dict[str, Any]:
     """Current state of *run_id*.
 
-    ``status`` is the single authoritative field (the MCP record's terminal
-    status, corrected by pid liveness). ``run`` is the raw CLI manifest,
+    ``status`` is the recorded status, verbatim and in an open vocabulary — read
+    it, display it, do not match it against a list. Branch on ``terminal`` ("stop
+    waiting") and ``outcome`` ("did the work come out right", null while
+    ``terminal`` is false) instead; both are derived here so a caller never has to
+    keep a copy of the status vocabulary. ``run`` is the raw CLI manifest,
     advisory only — its own ``status`` stays ``running`` until the CLI finalizes
     it in the StateDB, so read ``status`` here, not ``run["status"]``.
+    ``possibly_orphaned`` flags a run whose process is gone with no end recorded;
+    it is advisory and never makes the run terminal.
     ``notify_delivery`` reports whether the terminal notice was delivered.
     ``server`` identifies the implementation that answered, so a caller can tell
     which build it is talking to rather than inferring it from behaviour.
@@ -404,27 +605,18 @@ def status(run_id: str) -> dict[str, Any]:
     manifest = _read_run_manifest(run_id)
     pid = job.get("pid") if job else None
     alive = _pid_alive(pid)
-
-    recorded = (job or {}).get("status", "unknown")
-    finished = job is not None and job.get("finished_at") is not None
-    if alive:
-        state = "running"
-    elif finished:
-        # A terminal was recorded (notify hook or kill()). The CLI's own status
-        # string is authoritative and reported verbatim — never re-classified
-        # against a local vocabulary here, which is how "timed_out" once became
-        # a false "completed".
-        state = recorded
-    elif job is not None:
-        state = "exited"  # pid gone, no terminal record captured
-    else:
-        state = "unknown"
+    derived = _derive(job, alive)
 
     return {
         "run_id": run_id,
         "kind": (job or {}).get("kind"),
         "label": (job or {}).get("label"),
-        "status": state,
+        "status": derived["status"],
+        "terminal": derived["terminal"],
+        "outcome": derived["outcome"],
+        "reason_code": derived["reason_code"],
+        "spawn_state": derived["spawn_state"],
+        "possibly_orphaned": derived["possibly_orphaned"],
         "alive": alive,
         "pid": pid,
         "submitted_at": (job or {}).get("submitted_at"),
@@ -448,6 +640,9 @@ def output(run_id: str, tail_chars: int = 20000) -> dict[str, Any]:
         "run_id": run_id,
         "known": True,
         "status": st["status"],
+        "terminal": st["terminal"],
+        "outcome": st["outcome"],
+        "reason_code": st["reason_code"],
         "console": _tail(job.get("log"), limit=tail_chars),
         "artifacts": _list_artifacts(run_id),
         "run_dir": str(config.run_dir(run_id)),
@@ -498,6 +693,9 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
                 "kind": st["kind"],
                 "label": st["label"],
                 "status": st["status"],
+                "terminal": st["terminal"],
+                "outcome": st["outcome"],
+                "reason_code": st["reason_code"],
                 "submitted_at": st["submitted_at"],
                 "finished_at": st["finished_at"],
             }
@@ -505,6 +703,121 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
         if len(out) >= limit:
             break
     return out
+
+
+def _wait_entry(run_id: Any) -> dict[str, Any]:
+    """One observation of *run_id*, resolved through the same path ``status`` uses.
+
+    An id that cannot be observed comes back as an entry carrying an ``error``
+    rather than raising, so one bad id never costs the caller the ids beside it.
+    Every entry carries the full lifecycle shape, error or not, so a caller reads
+    the same keys in both cases.
+    """
+    entry: dict[str, Any] = {
+        "run_id": run_id,
+        "kind": None,
+        "label": None,
+        "status": "unknown",
+        "terminal": False,
+        "outcome": None,
+        "reason_code": None,
+        "possibly_orphaned": False,
+        "error": None,
+    }
+    if not isinstance(run_id, str) or not run_id.strip():
+        entry["error"] = {"kind": "invalid_input", "message": "run id must be a non-empty string"}
+        return entry
+
+    st = status(run_id)
+    if not st["known"]:
+        entry["error"] = {"kind": "not_found", "message": f"no job with id {run_id}"}
+        return entry
+
+    entry.update(
+        {
+            "kind": st["kind"],
+            "label": st["label"],
+            "status": st["status"],
+            "terminal": st["terminal"],
+            "outcome": st["outcome"],
+            "reason_code": st["reason_code"],
+            "possibly_orphaned": st["possibly_orphaned"],
+        }
+    )
+    return entry
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return low
+    if v != v:  # NaN: no ordering, so no clamp can be meaningful
+        return low
+    return max(low, min(high, v))
+
+
+async def wait(
+    run_ids: list[str],
+    max_wait: float = 60.0,
+    poll_interval: float = 1.0,
+) -> dict[str, Any]:
+    """Observe *run_ids* until they are all terminal or the window closes.
+
+    A bounded observation, not a subscription. It returns one entry per requested
+    id, in the order they were requested, plus ``all_terminal``, ``timed_out`` and
+    the ids still ``pending`` — never a bare boolean, because mixed outcomes are
+    the normal case and collapsing them forces the follow-up poll this call exists
+    to replace.
+
+    ``max_wait`` is clamped to ``[0, WAIT_MAX_SECONDS]`` and ``poll_interval`` to
+    ``[WAIT_MIN_POLL_SECONDS, WAIT_MAX_POLL_SECONDS]``; the effective values are
+    echoed back beside the requested ones, so a caller can see it was clamped
+    rather than infer it from the elapsed time. ``max_wait=0`` is a legal snapshot
+    request: it observes once and returns.
+
+    Expiry is not an error. A window that closes with ids still running returns
+    what was learned with ``timed_out`` set, so completed ids are not discarded
+    and calling again is safe. Unknown or malformed ids are per-id errors inside
+    the result and never stop the other ids being observed; they are not listed
+    as pending, because waiting longer cannot resolve them.
+
+    Observing does not touch the run. This function only reads: a wait that
+    expires, or whose caller cancels or disconnects, leaves the durable record
+    exactly as it was — cancelling an observation is not cancelling the work.
+    """
+    # Imported here rather than at module scope: this module is also imported by
+    # the terminal hook the CLI spawns, and that path stays import-light.
+    import anyio
+
+    ordered = list(run_ids)
+    eff_max = _clamp(max_wait, 0.0, WAIT_MAX_SECONDS)
+    eff_poll = _clamp(poll_interval, WAIT_MIN_POLL_SECONDS, WAIT_MAX_POLL_SECONDS)
+    deadline = anyio.current_time() + eff_max
+
+    entries: list[dict[str, Any]] = []
+    pending: list[str] = []
+    while True:
+        entries = [_wait_entry(rid) for rid in ordered]
+        pending = [e["run_id"] for e in entries if e["error"] is None and not e["terminal"]]
+        if not pending:
+            break
+        remaining = deadline - anyio.current_time()
+        if remaining <= 0:
+            break
+        await anyio.sleep(min(eff_poll, remaining))
+
+    errored = any(e["error"] is not None for e in entries)
+    return {
+        "runs": entries,
+        "all_terminal": not pending and not errored,
+        "timed_out": bool(pending),
+        "pending": pending,
+        "max_wait": eff_max,
+        "poll_interval": eff_poll,
+        "requested_max_wait": max_wait,
+        "requested_poll_interval": poll_interval,
+    }
 
 
 def mark_terminal(run_id: str, cli_status: str) -> dict[str, Any] | None:
