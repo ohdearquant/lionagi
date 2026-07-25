@@ -32,6 +32,7 @@ from pydantic import Field
 from pydantic.fields import FieldInfo
 
 from . import jobs
+from . import surface as _surface
 from .observability import register_observability_tools
 
 # The advertised server name. It moved from "lionagi" to "lion" when this surface
@@ -914,6 +915,9 @@ async def job_wait(
 def jobs_list(limit: int = 50, status: str | None = None) -> list[dict[str, Any]]:
     """List recent background jobs, newest first; optionally filter by status."""
     return jobs.list_jobs(limit=limit, status_filter=status)
+
+
+_surface.register(mcp)
 
 
 def main() -> None:
