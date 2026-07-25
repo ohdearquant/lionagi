@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
 import time
 import zoneinfo
 from dataclasses import dataclass
@@ -125,8 +126,17 @@ def _localtime_is_readable() -> bool:
     Opening follows the symlink deliberately: a dangling or looping link and
     an unreadable file are all "nothing to read here", which is the fallback
     case, not the failure case.
+
+    The path must be a regular file before it is opened at all. A timezone
+    file is one, and the others are not merely uninteresting: opening a FIFO
+    with no writer blocks, and this runs while a module constant is being
+    resolved, so the process would hang at import with neither an error nor a
+    fallback ever reached. Anything that is not a regular file is therefore
+    "nothing to read here" without being touched.
     """
     try:
+        if not stat.S_ISREG(SYSTEM_LOCALTIME_LINK.stat().st_mode):
+            return False
         with SYSTEM_LOCALTIME_LINK.open("rb") as handle:
             handle.read(1)
     except OSError:

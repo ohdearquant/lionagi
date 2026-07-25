@@ -16,6 +16,7 @@ key.
 
 import logging
 import os
+import signal
 import zoneinfo
 from pathlib import Path
 
@@ -184,6 +185,44 @@ def test_symlink_loop_falls_back_instead_of_raising(tz_host, tmp_path):
     set_roots("zoneinfo")
 
     assert config._system_local_tz_name() == "UTC"
+
+
+class _Blocked(BaseException):
+    """Raised from the alarm handler below.
+
+    Deliberately not an ``Exception``, and specifically not an ``OSError``.
+    ``TimeoutError`` is an ``OSError`` subclass, so raising one here is caught
+    by the very ``except OSError`` this test exists to prove is not reached,
+    and the test passes whether or not the code under it blocks.
+    """
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGALRM"), reason="needs SIGALRM to bound the hang")
+def test_a_fifo_at_localtime_falls_back_without_blocking(tz_host, tmp_path):
+    """A FIFO must be classified without being opened.
+
+    Opening a FIFO with no writer blocks. This resolution runs while a module
+    constant is being built, so a block here hangs the process at import with
+    neither the error nor the fallback ever reached — strictly worse than
+    either. The alarm is what makes the regression fail instead of hanging the
+    suite that is supposed to catch it.
+    """
+    link, set_roots, _zone_file = tz_host
+    fifo = tmp_path / "localtime_fifo"
+    os.mkfifo(fifo)
+    link.symlink_to(fifo)
+    set_roots("zoneinfo")
+
+    def _too_slow(_signum, _frame):
+        raise _Blocked("reading /etc/localtime blocked; a FIFO was opened")
+
+    previous = signal.signal(signal.SIGALRM, _too_slow)
+    signal.alarm(5)
+    try:
+        assert config._system_local_tz_name() == "UTC"
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def test_unreadable_localtime_falls_back_instead_of_raising(tz_host, tmp_path):
