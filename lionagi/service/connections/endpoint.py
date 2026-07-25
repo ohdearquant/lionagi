@@ -531,6 +531,15 @@ class Endpoint:
                     )
             return StreamChunk(type="system", metadata={"raw": event})
 
+        # Usage-only terminal event: a Chat Completions stream with
+        # stream_options.include_usage ends with {"choices": [], "usage": {...}}.
+        # Without this branch the empty-choices list would fall through to a
+        # "system" chunk and consumers that read terminal accounting from result
+        # chunks would miss the provider-reported usage.
+        usage = event.get("usage")
+        if usage is not None and isinstance(choices, list):
+            return StreamChunk(type="result", metadata={"raw": event, "usage": usage})
+
         return None
 
     def to_dict(self):

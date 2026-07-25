@@ -579,6 +579,53 @@ class TestEndpoint:
         assert chunks[0].content == "hi"
         assert chunks[1].metadata == {"done": True}
 
+    def test_usage_only_event_is_result_chunk(self, openai_config):
+        """A Chat Completions usage-only terminal event ({"choices": [],
+        "usage": {...}}) must normalize to a result chunk carrying the usage,
+        not a system chunk that terminal-accounting consumers skip."""
+        endpoint = Endpoint(config=openai_config)
+        usage = {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}
+        chunk = endpoint._event_to_stream_chunk({"choices": [], "usage": usage})
+        assert chunk is not None
+        assert chunk.type == "result"
+        assert chunk.metadata["usage"] == usage
+
+    def test_empty_choices_without_usage_is_not_result(self, openai_config):
+        """Empty choices with no usage stays a non-result (unchanged behavior)."""
+        endpoint = Endpoint(config=openai_config)
+        assert endpoint._event_to_stream_chunk({"choices": []}) is None
+
+    @pytest.mark.asyncio
+    async def test_stream_aiohttp_usage_only_terminal_event(self, openai_config):
+        """End-to-end: the usage-only line surfaces as a result chunk with usage."""
+        endpoint = Endpoint(config=openai_config)
+
+        mock_response = MagicMock()
+        mock_response.status = 200
+
+        async def mock_content_iter():
+            yield b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+            yield b'data: {"choices":[],"usage":{"total_tokens":18}}\n\n'
+            yield b"data: [DONE]\n\n"
+
+        mock_response.content = mock_content_iter()
+        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = AsyncMock()
+
+        mock_session = AsyncMock(spec=aiohttp.ClientSession)
+        mock_session.request = MagicMock(return_value=mock_response)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock()
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch("aiohttp.ClientSession", return_value=mock_session):
+                request = {"messages": [{"role": "user", "content": "test"}]}
+                chunks = [chunk async for chunk in endpoint.stream(request)]
+
+        assert [c.type for c in chunks] == ["text", "result", "result"]
+        # the usage-only result carries the provider usage
+        assert chunks[1].metadata["usage"] == {"total_tokens": 18}
+
     @pytest.mark.asyncio
     async def test_stream_with_extra_headers(self, openai_config):
         endpoint = Endpoint(config=openai_config)

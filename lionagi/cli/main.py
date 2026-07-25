@@ -47,6 +47,10 @@ def _load_kill() -> ModuleType:
     return import_module(".kill", __package__)
 
 
+def _load_mcp() -> ModuleType:
+    return import_module(".mcp", __package__)
+
+
 def _load_mirror() -> ModuleType:
     return import_module(".mirror", __package__)
 
@@ -211,6 +215,13 @@ _COMMAND_REGISTRY = (
         "add_hooks_subparser",
         "run_hooks",
     ),
+    _CommandSpec(
+        "mcp",
+        "Serve the lionagi MCP server (background job submit/query) over stdio.",
+        _load_mcp,
+        "add_mcp_subparser",
+        "run_mcp",
+    ),
 )
 _COMMAND_BY_NAME = {
     command_name: spec for spec in _COMMAND_REGISTRY for command_name in (spec.name, *spec.aliases)
@@ -268,6 +279,10 @@ def run_invoke(args: argparse.Namespace) -> int:
 
 def run_kill(args: argparse.Namespace) -> int:
     return _load_kill().run_kill(args)
+
+
+def run_mcp(args: argparse.Namespace) -> int:
+    return _load_mcp().run_mcp(args)
 
 
 def run_mirror(args: argparse.Namespace) -> int:

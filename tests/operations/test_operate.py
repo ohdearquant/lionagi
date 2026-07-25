@@ -555,3 +555,82 @@ async def test_operate_reason_only_constructs_operative_with_reason_field():
         f"'reason' field missing from generated response_format {fmt}; "
         "Operative was not constructed or reason spec was dropped"
     )
+
+
+@pytest.mark.asyncio
+async def test_operate_transport_follows_per_call_model_override(monkeypatch):
+    """A CLI model supplied on the chat param overrides the branch default,
+    so transport selection must take the streaming path even though the
+    branch's own chat_model is an API model."""
+    from types import SimpleNamespace
+
+    from lionagi.operations.operate.operate import operate
+    from lionagi.operations.types import ChatParam
+
+    branch = make_mocked_branch_for_operate()
+    assert not getattr(branch.chat_model, "is_cli", False)
+
+    selected: list[str] = []
+
+    async def fake_run_and_collect(*args, **kwargs):
+        selected.append("run_and_collect")
+        return "ok"
+
+    async def fake_communicate(*args, **kwargs):
+        selected.append("communicate")
+        return "ok"
+
+    monkeypatch.setattr(
+        "lionagi.operations.run.run.run_and_collect", fake_run_and_collect, raising=True
+    )
+    monkeypatch.setattr(
+        "lionagi.operations.communicate.communicate.communicate", fake_communicate, raising=True
+    )
+
+    cli_model = SimpleNamespace(is_cli=True)
+    chat_param = ChatParam(imodel=cli_model)
+    await operate(
+        branch,
+        "per-call CLI model",
+        chat_param,
+        skip_validation=True,
+        invoke_actions=False,
+    )
+
+    assert selected == ["run_and_collect"]
+
+
+@pytest.mark.asyncio
+async def test_operate_transport_unchanged_without_a_model_override(monkeypatch):
+    """With no per-call override the branch default still decides, so an
+    API branch keeps the non-streaming transport."""
+    from lionagi.operations.operate.operate import operate
+    from lionagi.operations.types import ChatParam
+
+    branch = make_mocked_branch_for_operate()
+    selected: list[str] = []
+
+    async def fake_run_and_collect(*args, **kwargs):
+        selected.append("run_and_collect")
+        return "ok"
+
+    async def fake_communicate(*args, **kwargs):
+        selected.append("communicate")
+        return "ok"
+
+    monkeypatch.setattr(
+        "lionagi.operations.run.run.run_and_collect", fake_run_and_collect, raising=True
+    )
+    monkeypatch.setattr(
+        "lionagi.operations.communicate.communicate.communicate", fake_communicate, raising=True
+    )
+
+    await operate(
+        branch,
+        "no override",
+        ChatParam(),
+        skip_validation=True,
+        invoke_actions=False,
+    )
+
+    assert selected == ["communicate"]

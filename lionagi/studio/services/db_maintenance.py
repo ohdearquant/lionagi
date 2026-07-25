@@ -12,6 +12,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from lionagi._errors import LionError
 from lionagi.state.db import DEFAULT_DB_PATH, StateDB
 
 _log = logging.getLogger(__name__)
@@ -30,17 +31,21 @@ async def _exec_chunked(
     sql_prefix: str,
     ids: Sequence[str],
     extra_params: Sequence[Any] = (),
+    suffix: str = "",
+    suffix_params: Sequence[Any] = (),
 ) -> int:
-    """Execute *sql_prefix* + ' IN (?,?,...)' for *ids* in chunks of _CHUNK.
+    """Execute *sql_prefix* + ' IN (?,?,...)' + *suffix* for *ids* in chunks.
 
-    *sql_prefix* must end just before the IN clause. Returns total rowcount.
+    *sql_prefix* must end just before the IN clause. *suffix* is appended after
+    it, for a condition that has to be part of the statement itself rather than
+    checked beforehand. Returns total rowcount.
     """
     total = 0
     for i in range(0, len(ids), _CHUNK):
         chunk = ids[i : i + _CHUNK]
         ph = ", ".join("?" * len(chunk))
         result = await conn.execute(
-            *_q(f"{sql_prefix} IN ({ph})", (*extra_params, *chunk))  # noqa: S608
+            *_q(f"{sql_prefix} IN ({ph}){suffix}", (*extra_params, *chunk, *suffix_params))  # noqa: S608
         )
         total += result.rowcount
     return total
@@ -62,6 +67,16 @@ async def _fetch_chunked(
         )
         results.extend(result.fetchall())
     return results
+
+
+class PruneRaceError(LionError):
+    """A session stopped being terminal partway through pruning its history.
+
+    The prune holds every candidate row locked for the length of its
+    transaction, so this cannot happen through the lock; it is raised as a
+    post-condition, and raising it abandons the transaction rather than
+    committing a session that kept its row and lost its associations.
+    """
 
 
 # Statuses that are safe to prune (process is definitively done).
@@ -169,6 +184,38 @@ async def prune_old_data(
             if session_ids:
                 session_ids = sorted(set(session_ids))
 
+                # Lock every candidate row for the rest of the transaction
+                # before its status is read. A write to a row is what takes the
+                # lock on both backends: postgresql locks the rows themselves,
+                # sqlite escalates the whole transaction to a write, which is
+                # the same guarantee at a coarser grain. The value is left
+                # exactly as it was — this statement exists for the lock.
+                #
+                # Reading the status without holding the rows would only move
+                # the window rather than close it. A session can leave a
+                # terminal status at any time (resuming a branch returns it to
+                # running), so a resume that commits after an unlocked read is
+                # still free to land between two of the destructive statements
+                # below, which is how a session ends up keeping its row and
+                # losing the associations already cleared for it.
+                await _exec_chunked(
+                    conn,
+                    "UPDATE sessions SET updated_at = updated_at WHERE id",
+                    session_ids,
+                )
+
+                # Now that the rows are held, re-read the status and drop any
+                # that came back to life before the lock, so the batch is never
+                # assembled around a session with a live leg on it.
+                rows = await _fetch_chunked(
+                    conn,
+                    f"SELECT id FROM sessions WHERE status IN ({sess_ph}) AND id",  # noqa: S608
+                    session_ids,
+                    _TERMINAL_SESSION_STATUSES,
+                )
+                session_ids = sorted({r[0] for r in rows})
+
+            if session_ids:
                 # Capture child ids BEFORE deleting anything.
                 rows = await _fetch_chunked(
                     conn,
@@ -222,34 +269,66 @@ async def prune_old_data(
                     {*coll_msg_ids, *session_first_ids, *session_last_ids, *branch_sys_ids}
                 )
 
+                # Every destructive statement carries the terminal condition
+                # itself. Checking it once above and then running a sequence of
+                # writes would protect only whichever statement happens to be
+                # last: a session that reopens partway through would keep its
+                # row and lose the history and associations already removed,
+                # which is a worse outcome than the one being prevented.
+                still_terminal = (
+                    f" AND session_id IN (SELECT id FROM sessions WHERE status IN ({sess_ph}))"  # noqa: S608
+                )
+
                 # Nullify soft FKs (no CASCADE) before deleting sessions.
-                await _exec_chunked(
-                    conn, "UPDATE artifacts SET session_id = NULL WHERE session_id", session_ids
-                )
-                await _exec_chunked(
-                    conn, "UPDATE plays SET session_id = NULL WHERE session_id", session_ids
-                )
-                await _exec_chunked(
-                    conn,
-                    "UPDATE team_messages SET session_id = NULL WHERE session_id",
-                    session_ids,
-                )
-                # dispatch_outbox.session_id is a plain FK (no CASCADE) — nullify
-                # before the parent DELETE or the prune aborts on the FK constraint.
-                await _exec_chunked(
-                    conn,
-                    "UPDATE dispatch_outbox SET session_id = NULL WHERE session_id",
-                    session_ids,
-                )
+                for table in ("artifacts", "plays", "team_messages", "dispatch_outbox"):
+                    # dispatch_outbox.session_id is a plain FK (no CASCADE) —
+                    # nullify before the parent DELETE or the prune aborts on
+                    # the FK constraint.
+                    await _exec_chunked(
+                        conn,
+                        f"UPDATE {table} SET session_id = NULL WHERE session_id",  # noqa: S608
+                        session_ids,
+                        suffix=still_terminal,
+                        suffix_params=_TERMINAL_SESSION_STATUSES,
+                    )
                 await _exec_chunked(
                     conn,
                     "DELETE FROM status_transitions WHERE entity_type = 'session' AND entity_id",
                     session_ids,
+                    suffix=(
+                        f" AND entity_id IN (SELECT id FROM sessions WHERE status IN ({sess_ph}))"  # noqa: S608
+                    ),
+                    suffix_params=_TERMINAL_SESSION_STATUSES,
                 )
                 # branches cascade automatically via FK ON DELETE CASCADE
+                # The status predicate rides the delete itself, not only the
+                # read above it: on a backend where concurrent transactions can
+                # commit between the two, the statement that removes the row is
+                # the only place the condition is guaranteed to still hold.
                 sessions_pruned = await _exec_chunked(
-                    conn, "DELETE FROM sessions WHERE id", session_ids
+                    conn,
+                    f"DELETE FROM sessions WHERE status IN ({sess_ph}) AND id",  # noqa: S608
+                    session_ids,
+                    _TERMINAL_SESSION_STATUSES,
                 )
+
+                # The delete is where a session that reopened mid-sequence
+                # would show up: its row survives while the statements above
+                # have already cleared its history and associations. The lock
+                # taken before the re-read is what prevents that, and this is
+                # the check that it held. Raising abandons the transaction,
+                # so the pass either applies whole or leaves the row exactly as
+                # it was; the next pass drops the resumed session at selection.
+                survivors = await _fetch_chunked(
+                    conn, "SELECT id FROM sessions WHERE id", session_ids
+                )
+                if survivors:
+                    raise PruneRaceError(
+                        "session(s) "
+                        + ", ".join(sorted(str(r[0]) for r in survivors))
+                        + " stopped being terminal while their history was being removed; "
+                        "nothing was pruned"
+                    )
 
                 # Targeted orphan cleanup scoped to pruned lineage only — avoids a
                 # newborn-orphan race where _persist.py commits a progression before

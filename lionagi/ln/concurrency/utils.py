@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import inspect
+import logging
 import signal
 import threading
 from collections.abc import Awaitable, Callable
@@ -131,19 +132,43 @@ def run_async(coro: Awaitable[T]) -> T:
 
         return _handler
 
+    # Take over a signal only when the previous handler can be given back.
+    # getsignal() reports None for a handler installed outside Python, and
+    # signal.signal(signum, None) raises, so restoring one is impossible:
+    # taking it over would leave this runner's handler installed for the rest
+    # of the process. Abstaining per signal costs the caller's own cancellation
+    # wiring for that signal and keeps whatever was already there working.
+    installed: list[tuple[int, Any]] = []
     if in_main_thread:
-        old_sigint_handler = signal.getsignal(signal.SIGINT)
-        old_sigterm_handler = signal.getsignal(signal.SIGTERM)
-        signal.signal(signal.SIGINT, _make_handler(_cancel_requested, old_sigint_handler))
-        signal.signal(signal.SIGTERM, _make_handler(_term_requested, old_sigterm_handler))
+        for signum, requested in (
+            (signal.SIGINT, _cancel_requested),
+            (signal.SIGTERM, _term_requested),
+        ):
+            prior = signal.getsignal(signum)
+            if prior is None:
+                continue
+            signal.signal(signum, _make_handler(requested, prior))
+            installed.append((signum, prior))
 
     thread.start()
     try:
         thread.join()
     finally:
-        if in_main_thread:
-            signal.signal(signal.SIGINT, old_sigint_handler)
-            signal.signal(signal.SIGTERM, old_sigterm_handler)
+        # Restore only what was installed above. Each restore stands alone: this
+        # runs in a finally, often while an exception is already propagating, and
+        # a failure on one signal must not strand the others with this runner's
+        # handler still installed. Failures are logged rather than raised, since
+        # raising here would replace whatever the caller was actually failing on.
+        for signum, prior in installed:
+            try:
+                signal.signal(signum, prior)
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "could not restore the previous handler for signal %s; it "
+                    "remains overridden for the rest of this process",
+                    signum,
+                    exc_info=True,
+                )
 
     if _cancel_requested.is_set():
         raise KeyboardInterrupt

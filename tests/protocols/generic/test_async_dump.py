@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -176,6 +177,25 @@ class TestDataLoggerAdump:
         fp = tmp_path / "test_dump.xml"
         with pytest.raises(ValueError, match="Unsupported file extension"):
             await logger_with_logs.adump(persist_path=fp)
+
+    @pytest.mark.asyncio
+    async def test_dump_and_adump_need_no_pandas(self, logger_with_logs, tmp_path, monkeypatch):
+        """The activity-log auto-save path (sync dump + async adump) must
+        serialize without pandas — that is the point of removing it from the
+        default serialization path."""
+        monkeypatch.setitem(sys.modules, "pandas", None)
+        with pytest.raises(ImportError):
+            import pandas  # noqa: F401
+
+        sync_fp = tmp_path / "sync.json"
+        logger_with_logs.dump(persist_path=sync_fp)
+        assert len(sync_fp.read_text().strip().splitlines()) == 5
+
+        async_fp = tmp_path / "async.csv"
+        await logger_with_logs.adump(persist_path=async_fp)
+        lines = async_fp.read_text().strip().splitlines()
+        assert lines[0].startswith("id")
+        assert len(lines) == 6  # header + 5 rows
 
     @pytest.mark.asyncio
     async def test_adump_preserves_logs_when_write_fails(self, tmp_path):

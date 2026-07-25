@@ -1378,7 +1378,7 @@ export async function deleteEngineDef(defId: string): Promise<{ ok: boolean }> {
 
 // ─── Workflow definitions ─────────────────────────────────────────────────────
 
-export type WorkflowNodeKind = "input" | "chat" | "parse" | "fanout" | "engine" | "gate";
+export type WorkflowNodeKind = "input" | "chat" | "parse" | "fanout" | "engine";
 
 export interface WorkflowNodePos {
   x: number;
@@ -1393,16 +1393,12 @@ export interface WorkflowEngineConfig {
   options?: Record<string, string>;
 }
 
-export interface WorkflowGateConfig {
-  condition: string;
-}
-
 export interface WorkflowNode {
   id: string;
   kind: WorkflowNodeKind;
   label: string;
   pos: WorkflowNodePos;
-  config?: WorkflowEngineConfig | WorkflowGateConfig | Record<string, unknown>;
+  config?: WorkflowEngineConfig | Record<string, unknown>;
 }
 
 export interface WorkflowEdge {

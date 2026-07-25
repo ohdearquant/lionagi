@@ -231,44 +231,6 @@ describe("validateSpec — rule: engine-no-config / engine-unknown-def", () => {
   });
 });
 
-// ── validateSpec — rule 5: gate fan-out ──────────────────────────────────────
-
-describe("validateSpec — rule: gate-fan-out", () => {
-  it("passes for gate with 2 outgoing edges", () => {
-    const spec = makeSpec({
-      nodes: [
-        { id: "n1", kind: "input", label: "Input", pos: { x: 0, y: 0 } },
-        { id: "n2", kind: "gate", label: "Gate", pos: { x: 200, y: 0 } },
-        { id: "n3", kind: "chat", label: "Chat A", pos: { x: 400, y: 0 } },
-        { id: "n4", kind: "chat", label: "Chat B", pos: { x: 400, y: 100 } },
-      ],
-      edges: [edge("e1", "n1", "n2"), edge("e2", "n2", "n3", "if"), edge("e3", "n2", "n4", "else")],
-    });
-    const errors = validateSpec(spec);
-    expect(errors.find((e) => e.rule === "gate-fan-out")).toBeUndefined();
-  });
-
-  it("fails for gate with 3 outgoing edges", () => {
-    const spec = makeSpec({
-      nodes: [
-        { id: "n1", kind: "input", label: "Input", pos: { x: 0, y: 0 } },
-        { id: "n2", kind: "gate", label: "Gate", pos: { x: 200, y: 0 } },
-        { id: "n3", kind: "chat", label: "A", pos: { x: 400, y: 0 } },
-        { id: "n4", kind: "chat", label: "B", pos: { x: 400, y: 100 } },
-        { id: "n5", kind: "chat", label: "C", pos: { x: 400, y: 200 } },
-      ],
-      edges: [
-        edge("e1", "n1", "n2"),
-        edge("e2", "n2", "n3"),
-        edge("e3", "n2", "n4"),
-        edge("e4", "n2", "n5"),
-      ],
-    });
-    const errors = validateSpec(spec);
-    expect(errors.find((e) => e.rule === "gate-fan-out")).toBeDefined();
-  });
-});
-
 // ── emptySpec ─────────────────────────────────────────────────────────────────
 
 describe("emptySpec", () => {

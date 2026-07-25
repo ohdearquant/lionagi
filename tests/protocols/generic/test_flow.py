@@ -9,6 +9,7 @@ import pytest
 
 from lionagi._errors import ItemExistsError, ItemNotFoundError
 from lionagi.protocols.generic.flow import Flow
+from lionagi.protocols.generic.pile import Pile
 from lionagi.protocols.generic.progression import Progression
 from lionagi.protocols.graph.node import Node
 
@@ -358,37 +359,41 @@ class TestReferentialIntegrityOnInit:
             )
 
 
-# ---------------------------------------------------------------------------
-# Duplicate progression names (construction / deserialization / rename)
-# ---------------------------------------------------------------------------
+class TestFlowDuplicateProgressionNames:
+    """Duplicate progression names are rejected on every construction path,
+    matching add_progression's uniqueness contract."""
 
-
-class TestDuplicateProgressionNames:
-    """A single-value name index cannot silently retain only the last
-    duplicate; construction and deserialization must reject duplicates."""
-
-    def test_init_rejects_duplicate_names(self):
+    def test_construction_rejects_duplicate_names(self):
         nodes = _make_nodes(2)
-        prog1 = Progression(order=[nodes[0].id], name="duplicate")
-        prog2 = Progression(order=[nodes[1].id], name="duplicate")
+        p1 = Progression(order=[nodes[0].id], name="dup")
+        p2 = Progression(order=[nodes[1].id], name="dup")
         with pytest.raises(ItemExistsError):
             Flow(
                 items={"collections": nodes},
-                progressions={"collections": [prog1, prog2]},
+                progressions={"collections": [p1, p2]},
             )
 
     def test_from_dict_rejects_duplicate_names(self):
-        flow, nodes = _flow_with_items(2)
-        prog1 = Progression(order=[nodes[0].id], name="duplicate")
-        prog2 = Progression(order=[nodes[1].id], name="duplicate")
-        flow.add_progression(prog1)
-        # Bypass add_progression's own duplicate guard to get a Flow with
-        # two same-named progressions, mirroring what a stale/hand-built
-        # payload could deserialize into.
-        flow.progressions.include(prog2)
-        data = flow.to_dict()
+        nodes = _make_nodes(2)
+        p1 = Progression(order=[nodes[0].id], name="dup")
+        p2 = Progression(order=[nodes[1].id], name="dup")
         with pytest.raises(ItemExistsError):
-            Flow.from_dict(data)
+            Flow.from_dict(
+                {
+                    "items": Pile(collections=nodes),
+                    "progressions": Pile(collections=[p1, p2]),
+                }
+            )
+
+    def test_distinct_names_still_allowed(self):
+        nodes = _make_nodes(2)
+        p1 = Progression(order=[nodes[0].id], name="a")
+        p2 = Progression(order=[nodes[1].id], name="b")
+        flow = Flow(
+            items={"collections": nodes},
+            progressions={"collections": [p1, p2]},
+        )
+        assert len(flow.progressions) == 2
 
     def test_remove_by_uuid_purges_stale_name_after_direct_rename(self):
         flow, nodes = _flow_with_items(1)
