@@ -23,6 +23,11 @@ def sandbox(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
     monkeypatch.setattr(config, "li_command", lambda: ["echo"])
+    # Popen is doubled for the whole module here, and subprocess.run goes
+    # through Popen — so the lifecycle read cannot run in this file at all.
+    # Stubbed to the answer a failed read gives ("learned nothing"), which is
+    # what these tests assume; the read itself is covered in test_lifecycle.py.
+    monkeypatch.setattr(jobs, "_read_lifecycle", lambda run_id: None)
     return tmp_path
 
 

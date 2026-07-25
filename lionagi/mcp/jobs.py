@@ -18,6 +18,15 @@ open vocabulary passed through verbatim, so a caller never needs — and must ne
 keep — a copy of lionagi's status names to tell a finished run from a running one
 or a success from a failure. All of these resolve through one path, ``status()``,
 so no two calls can disagree about the same run at the same moment.
+
+A run's end reaches that path from two writers. The terminal hook the CLI runs
+on ``--notify`` writes it into this package's own job record. A run stopped by
+``li kill`` never reaches that hook — the kill transitions the lifecycle row and
+signals the process, and writes nothing here — so when the process is gone and
+the job record shows no end, the state is read from the CLI itself, via
+``li lifecycle <run_id> --machine``, and cached back onto the job record. A read
+that cannot be made concludes nothing: the run is classified exactly as it would
+have been without it.
 """
 
 from __future__ import annotations
@@ -60,12 +69,26 @@ _KIND_ARGV: dict[str, list[str]] = {
 # stale success list is a timeout or an empty completion read back as a success.
 _SUCCEEDED_STATUSES = frozenset({"completed"})
 
+# Statuses that mean the run was stopped on purpose. Separated from failure
+# because "someone cancelled this" and "this went wrong" call for different
+# things from a caller, and reporting a cancellation as a failure invites a
+# retry of work that was deliberately abandoned.
+_CANCELLED_STATUSES = frozenset({"cancelled", "aborted"})
+
 # Short advisory qualifiers for a terminal outcome. A caller may surface one; it
 # never needs one to decide `outcome`.
 _REASON_BY_STATUS = {
     "completed_empty": "no_artifacts",
 }
 _SPAWN_FAILED_REASON = "spawn_failed"
+
+# The lifecycle read is a control-plane query against a local store; anything
+# slower than this is treated as unavailable rather than waited on, because it
+# is consulted from inside a caller's own poll.
+LIFECYCLE_TIMEOUT_SECONDS = 20.0
+
+# The most the lifecycle command may write on its result channel.
+_LIFECYCLE_OUTPUT_LIMIT = 1_000_000
 
 # Bounds for wait(). The maximum sits below ordinary MCP client timeouts so a
 # bounded observation returns partial results rather than being cut off mid-call.
@@ -122,6 +145,52 @@ def _read_job(run_id: str) -> dict[str, Any] | None:
         return json.loads(p.read_text())
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def _read_lifecycle(run_id: str) -> dict[str, Any] | None:
+    """Ask the CLI what the lifecycle store records about *run_id*.
+
+    Spawned as ``li lifecycle <run_id> --machine``, the same way every other
+    non-job verb reaches the CLI. Going through the command rather than opening
+    the database here keeps one reader of a schema this package does not own.
+
+    Returns the summary the command established, or None when it could not be
+    established for any reason at all — the command missing, refusing, timing
+    out, or answering that the store was unreadable. None is not "no record":
+    a caller must treat it as "did not learn anything" and fall back to what it
+    already knew, because the alternative is calling a run finished on the
+    strength of a read that never happened.
+    """
+    argv = [*config.li_command(), "lifecycle", run_id, "--machine"]
+    try:
+        completed = subprocess.run(  # noqa: S603 — resolved li command plus one run id, no shell
+            argv,
+            capture_output=True,
+            timeout=LIFECYCLE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    if len(completed.stdout) > _LIFECYCLE_OUTPUT_LIMIT:
+        return None
+    text = completed.stdout.decode("utf-8", "replace").strip()
+    if not text:
+        return None
+    try:
+        envelope = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(envelope, dict) or not envelope.get("ok"):
+        return None
+    data = envelope.get("data")
+    if not isinstance(data, dict):
+        return None
+    state = data.get("lifecycle")
+    if not isinstance(state, dict) or not state.get("available"):
+        return None
+    value = state.get("value")
+    return value if isinstance(value, dict) else None
 
 
 def _read_run_manifest(run_id: str) -> dict[str, Any] | None:
@@ -322,17 +391,43 @@ class SpawnError(RuntimeError):
         self.record = record
 
 
-def _derive(job: dict[str, Any] | None, alive: bool) -> dict[str, Any]:
+def _outcome_for(status: Any) -> str:
+    """How a terminal run came out, from the status the CLI recorded.
+
+    Used only once a run has been established terminal by a recorded end, never
+    to decide whether it ended. A status this build has never heard of is a
+    failure, because the failure mode of a stale success list is a timeout or an
+    empty completion read back as a success.
+    """
+    if status in _SUCCEEDED_STATUSES:
+        return "succeeded"
+    if status in _CANCELLED_STATUSES:
+        return "cancelled"
+    return "failed"
+
+
+def _derive(
+    job: dict[str, Any] | None,
+    alive: bool,
+    lifecycle: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Classify a job record into the fields a caller is allowed to branch on.
 
     ``status`` is an open vocabulary: whatever the CLI recorded is passed through
     verbatim and is never matched against a local set to decide anything.
 
     ``terminal`` answers "stop waiting" and comes only from a recorded end — a
-    ``finished_at`` written by the terminal hook or by ``kill``, or a spawn
-    failure the producer caught and wrote down. It is never inferred from the
-    status string and never from a missing pid: between the pre-spawn write and
-    the write that attaches the pid, a perfectly healthy child has no pid yet.
+    ``finished_at`` written by the terminal hook or by ``kill``, a spawn failure
+    the producer caught and wrote down, or an end recorded in the lifecycle
+    store, which is where a run stopped by ``li kill`` leaves its only trace. It
+    is never inferred from the status string and never from a missing pid:
+    between the pre-spawn write and the write that attaches the pid, a perfectly
+    healthy child has no pid yet.
+
+    *lifecycle* is the summary ``li lifecycle`` established for this run, or None
+    when nothing could be established. None never terminalises anything: a read
+    that failed leaves the classification exactly as it was before this argument
+    existed.
 
     ``outcome`` answers "did the work come out right" and is null whenever
     ``terminal`` is false — including for a run whose process is gone with no end
@@ -365,8 +460,11 @@ def _derive(job: dict[str, Any] | None, alive: bool) -> dict[str, Any]:
         return {
             "status": recorded,
             "terminal": True,
-            "outcome": "succeeded" if recorded in _SUCCEEDED_STATUSES else "failed",
-            "reason_code": _REASON_BY_STATUS.get(recorded),
+            "outcome": _outcome_for(recorded),
+            # A reason carried on the record wins: it came from the lifecycle
+            # store, which knows why the run ended, while the status-derived one
+            # is only what the status alone can say.
+            "reason_code": job.get("reason_code") or _REASON_BY_STATUS.get(recorded),
             "spawn_state": spawn_state,
             "possibly_orphaned": False,
         }
@@ -377,6 +475,21 @@ def _derive(job: dict[str, Any] | None, alive: bool) -> dict[str, Any]:
             "terminal": False,
             "outcome": None,
             "reason_code": None,
+            "spawn_state": spawn_state,
+            "possibly_orphaned": False,
+        }
+
+    # The process is gone (or was never there) and the sidecar records no end.
+    # The lifecycle store is the other place an end gets written, and the only
+    # place a cancellation does: `li kill` transitions the row and signals the
+    # pid, and writes nothing here.
+    if lifecycle is not None and lifecycle.get("terminal"):
+        lifecycle_status = lifecycle.get("status", recorded)
+        return {
+            "status": lifecycle_status,
+            "terminal": True,
+            "outcome": _outcome_for(lifecycle_status),
+            "reason_code": lifecycle.get("reason_code"),
             "spawn_state": spawn_state,
             "possibly_orphaned": False,
         }
@@ -395,10 +508,10 @@ def _derive(job: dict[str, Any] | None, alive: bool) -> dict[str, Any]:
             "possibly_orphaned": False,
         }
 
-    # A recorded pid that is gone with no end recorded: an orphan. Advisory only.
-    # Nothing here terminalises it — liveness is an observation about a pid, which
-    # can be reused or denied, and two readers of one unchanged record may see it
-    # differently. It stays non-terminal.
+    # A recorded pid that is gone, with no end recorded anywhere: an orphan.
+    # Advisory only. Nothing here terminalises it — liveness is an observation
+    # about a pid, which can be reused or denied, and two readers of one
+    # unchanged record may see it differently. It stays non-terminal.
     return {
         "status": "exited",
         "terminal": False,
@@ -593,6 +706,61 @@ def _record_spawn_failure(run_id: str, exc: Exception) -> SpawnError:
     return SpawnError(run_id, record, f"could not spawn run {run_id}: {exc}")
 
 
+def _needs_lifecycle_read(job: dict[str, Any] | None, alive: bool) -> bool:
+    """Whether this observation has to go and ask the lifecycle store.
+
+    Only when the sidecar cannot already answer: there is a job, its process is
+    not running, and nothing has recorded an end for it. Those are exactly the
+    records `_derive` would otherwise classify from a dead pid alone. A run
+    whose process is alive, or whose end is already on the record, is answered
+    from the record — so the ordinary poll of a healthy run spawns nothing, and
+    a run observed repeatedly after it ended asks once.
+    """
+    if job is None or alive:
+        return False
+    return job.get("finished_at") is None and job.get("spawn_state") != "failed"
+
+
+def _cache_lifecycle_end(
+    job: dict[str, Any] | None, lifecycle: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Copy a lifecycle-recorded end onto the sidecar record, once.
+
+    The sidecar is a cache of the end, not a second opinion about it: the
+    lifecycle store and the terminal hook are the two writers, and whichever
+    gets there first is what the record then says. Writing it back is what keeps
+    the next observation from spawning the read again, and what keeps two
+    observations of one unchanged run from answering differently.
+
+    A failed write is not an error here — the record is a cache, so the next
+    observation simply asks again — and the in-memory record is returned either
+    way so this call is what the caller classifies.
+    """
+    if job is None or lifecycle is None or not lifecycle.get("terminal"):
+        return job
+    ended = lifecycle.get("ended_at")
+    updated = {
+        **job,
+        "status": lifecycle.get("status", job.get("status")),
+        "finished_at": _iso_from_epoch(ended) or _now_iso(),
+        "reason_code": lifecycle.get("reason_code"),
+        "terminal_source": "lifecycle",
+    }
+    try:
+        _write_job(updated)
+    except OSError:
+        pass
+    return updated
+
+
+def _iso_from_epoch(value: Any) -> str | None:
+    """The store keeps epoch seconds; the sidecar keeps ISO-8601 strings."""
+    try:
+        return datetime.fromtimestamp(float(value), timezone.utc).isoformat()
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+
+
 def _server_identity() -> dict[str, str]:
     """Which implementation answered this call.
 
@@ -623,9 +791,15 @@ def status(run_id: str) -> dict[str, Any]:
     it, display it, do not match it against a list. Branch on ``terminal`` ("stop
     waiting") and ``outcome`` ("did the work come out right", null while
     ``terminal`` is false) instead; both are derived here so a caller never has to
-    keep a copy of the status vocabulary. ``run`` is the raw CLI manifest,
-    advisory only — its own ``status`` stays ``running`` until the CLI finalizes
-    it in the StateDB, so read ``status`` here, not ``run["status"]``.
+    keep a copy of the status vocabulary. ``run`` is the raw CLI manifest. Its
+    ``status`` is not advisory in the sense of being unreliable — for a run that
+    reaches its own teardown, the manifest is rewritten with the terminal status
+    and an ``ended_at``, and that write happens after the CLI has finalized the
+    run in the StateDB, so a manifest that says a run ended is telling the truth.
+    What it cannot do is say a run ended when the run's own process did not live
+    to write it: a killed or crashed run leaves a manifest still reading
+    ``running`` forever. It is one-directional evidence, so read ``status`` here,
+    not ``run["status"]``.
     ``possibly_orphaned`` flags a run whose process is gone with no end recorded;
     it is advisory and never makes the run terminal.
     ``notify_delivery`` reports whether the terminal notice was delivered.
@@ -636,7 +810,13 @@ def status(run_id: str) -> dict[str, Any]:
     manifest = _read_run_manifest(run_id)
     pid = job.get("pid") if job else None
     alive = _pid_alive(pid)
-    derived = _derive(job, alive)
+
+    lifecycle = None
+    if _needs_lifecycle_read(job, alive):
+        lifecycle = _read_lifecycle(run_id)
+        job = _cache_lifecycle_end(job, lifecycle)
+
+    derived = _derive(job, alive, lifecycle)
 
     return {
         "run_id": run_id,

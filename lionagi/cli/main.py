@@ -241,6 +241,13 @@ _COMMAND_REGISTRY = (
         "run_runs",
     ),
     _CommandSpec(
+        "lifecycle",
+        "Report the recorded lifecycle state of a run.",
+        _load_machine,
+        "add_lifecycle_subparser",
+        "run_lifecycle",
+    ),
+    _CommandSpec(
         "mcp",
         "Serve the lionagi MCP server (background job submit/query) over stdio.",
         _load_mcp,
@@ -337,6 +344,10 @@ def run_handshake(args: argparse.Namespace) -> int:
 
 def run_runs(args: argparse.Namespace) -> int:
     return _load_machine().run_runs(args)
+
+
+def run_lifecycle(args: argparse.Namespace) -> int:
+    return _load_machine().run_lifecycle(args)
 
 
 def run_hooks(args: argparse.Namespace) -> int:

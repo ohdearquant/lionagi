@@ -1913,7 +1913,7 @@ class StateDB:
         async with self._tx() as conn:
             result = await conn.execute(
                 text(
-                    """INSERT INTO sessions (id, cc_session_id, created_at, node_metadata, name, "user",
+                    """INSERT INTO sessions (id, cc_session_id, run_id, created_at, node_metadata, name, "user",
                        progression_id, first_msg_id, last_msg_id, updated_at,
                        playbook_name, agent_name, invocation_kind, show_topic,
                        show_play_name, artifacts_path, artifact_contract_json,
@@ -1921,7 +1921,7 @@ class StateDB:
                        status, started_at, ended_at, last_message_at, invocation_id,
                        model, provider, effort, agent_hash,
                        project, project_source)
-                       VALUES (:id, :cc_session_id, :created_at, :node_metadata, :name, :user,
+                       VALUES (:id, :cc_session_id, :run_id, :created_at, :node_metadata, :name, :user,
                                :progression_id, :first_msg_id, :last_msg_id, :updated_at,
                                :playbook_name, :agent_name, :invocation_kind, :show_topic,
                                :show_play_name, :artifacts_path, :artifact_contract_json,
@@ -1938,6 +1938,7 @@ class StateDB:
                 {
                     "id": session["id"],
                     "cc_session_id": session.get("cc_session_id"),
+                    "run_id": session.get("run_id"),
                     "created_at": session.get("created_at", now),
                     "node_metadata": session.get("node_metadata"),
                     "name": session.get("name"),
@@ -2008,6 +2009,29 @@ class StateDB:
                 .first()
             )
         return self._row_to_dict(row) if row else None
+
+    async def get_sessions_for_run(self, run_id: str) -> list[dict[str, Any]]:
+        """Every session recorded against CLI run *run_id*, oldest first.
+
+        A list rather than one row: one run can persist more than one session,
+        and a caller deciding whether the run is over has to see all of them.
+        An empty list means no session was ever recorded under this run id.
+        """
+        async with self._read() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT * FROM sessions WHERE run_id = :run_id "
+                            "ORDER BY created_at ASC, id ASC"
+                        ),
+                        {"run_id": run_id},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [self._row_to_dict(row) for row in rows]
 
     async def get_session_by_cc_id(self, cc_session_id: str) -> dict[str, Any] | None:
         async with self._read() as conn:
