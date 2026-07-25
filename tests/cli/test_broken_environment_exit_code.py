@@ -306,6 +306,42 @@ def test_the_marker_survives_allocation_on_another_thread(monkeypatch, reported)
     assert reported == []
 
 
+@pytest.mark.parametrize(
+    ("raised", "expected_code"),
+    [
+        (ModuleNotFoundError("No module named 'fastmcp'", name="fastmcp"), 78),
+        (ImportError("cannot import name 'serve'"), 1),
+    ],
+)
+def test_li_mcp_separates_a_missing_extra_from_a_broken_one(monkeypatch, raised, expected_code):
+    """`li mcp` imports an optional extra, and the two ways that fails differ.
+
+    An extra that is not installed means the server never started and nothing
+    ran. An extra that is installed but cannot be imported is a defect in what is
+    present. Reporting both with the ordinary failure code leaves a caller unable
+    to tell "install this" from "this installation is broken", and the handler
+    catches the wider of the two exception types, so the narrower one has to be
+    split out ahead of it.
+    """
+    import argparse
+
+    from lionagi.cli import mcp as cli_mcp
+
+    blocked = "lionagi.mcp"
+
+    class _RefuseOne:
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname == blocked or fullname.startswith(blocked + "."):
+                raise raised
+            return None
+
+    for name in [m for m in list(sys.modules) if m == blocked or m.startswith(blocked + ".")]:
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setattr(sys, "meta_path", [_RefuseOne(), *sys.meta_path])
+
+    assert cli_mcp.run_mcp(argparse.Namespace(action="serve")) == expected_code
+
+
 def test_other_exceptions_are_not_swallowed(monkeypatch):
     """Only a missing module means the environment cannot start.
 

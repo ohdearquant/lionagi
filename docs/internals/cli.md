@@ -279,6 +279,14 @@ seeing another invocation's allocation only re-raises, which is the behaviour th
 code, while *losing* one would assert something false, so the reset on entry is skipped whenever
 another invocation is in flight.
 
+The accepted limitation, stated so it is not rediscovered as a bug: while two invocations overlap,
+one that dies on a missing import before allocating anything can see the other's allocation and
+re-raise rather than reporting 78. Making that precise requires attributing an allocation to an
+invocation, and allocation happens on a thread the entry point did not create, so attribution means
+threading a token through `run_async` into every command's async body — a change to a shared
+concurrency primitive, for an entry point that is not supported, to turn an ambiguous report into a
+precise one. Revisit if concurrent in-process invocation ever becomes supported.
+
 ## `dispatch.py` — dispatch outbox (ADR-0059)
 
 Module docstring: `li dispatch` inspects and acknowledges durable `dispatch_outbox` rows.

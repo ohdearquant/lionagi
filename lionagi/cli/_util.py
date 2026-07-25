@@ -62,6 +62,18 @@ EXIT_CODE_ENVIRONMENT_ERROR = 78
 # asserts that nothing ran when something did. So the reset is what needs
 # guarding, and it only happens when no other invocation is in flight; anything
 # less certain leaves the flag alone and degrades to the older behaviour.
+#
+# The remaining imprecision is stated rather than left to be rediscovered: while
+# two invocations overlap, one that dies on a missing import before allocating
+# anything can see the other's allocation and re-raise instead of reporting 78.
+# That is the degraded-to-older-behaviour direction, and it is accepted. Fixing
+# it needs the allocation to be attributable to an invocation, and allocation
+# happens on a thread this code did not create, so attribution means propagating
+# an invocation token through `run_async` into every command's async body. That
+# is a change to a shared concurrency primitive on behalf of an entry point that
+# is not supported, to convert an ambiguous report into a precise one. If
+# concurrent in-process invocation ever becomes supported, this is the thing to
+# revisit, and the token is the design to revisit it with.
 _allocation_lock = threading.Lock()
 _invocations_in_flight = 0
 _run_allocated = False
