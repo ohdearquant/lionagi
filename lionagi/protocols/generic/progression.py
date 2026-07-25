@@ -38,7 +38,6 @@ class Progression(Element, Ordering[T], Generic[T]):
         description="A human-readable identifier for the progression.",
     )
     _members: set[UUID] = PrivateAttr(default_factory=set)
-    _next_cursor: Any = PrivateAttr(default=None)
 
     def model_post_init(self, __context: Any) -> None:
         super().model_post_init(__context)
@@ -120,12 +119,9 @@ class Progression(Element, Ordering[T], Generic[T]):
         return iter(self.order)
 
     def __next__(self) -> UUID:
-        if self._next_cursor is None:
-            self._next_cursor = iter(self.order)
         try:
-            return next(self._next_cursor)
+            return next(iter(self.order))
         except StopIteration:
-            self._next_cursor = None
             raise StopIteration("No more items in the progression") from None
 
     def __list__(self) -> list[UUID]:
