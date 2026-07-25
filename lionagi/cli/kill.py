@@ -593,32 +593,6 @@ async def _do_kill_all_stale(
     verbose: bool = False,
 ) -> int:
     """Sweep stale sessions/invocations whose PIDs are dead."""
-    counts = await sweep_stale(
-        threshold_seconds=threshold_seconds,
-        user_reason=user_reason,
-        grace_seconds=grace_seconds,
-        dry_run=dry_run,
-        verbose=verbose,
-    )
-    prefix = "(dry-run) would cancel" if dry_run else "cancelled"
-    print(
-        f"\n{prefix} {counts['cancelled']} stale entities "
-        f"[skipped_recent={counts['skipped_recent']}, "
-        f"skipped_live_pid={counts['skipped_live_pid']}, "
-        f"skipped_unverifiable_pid={counts['skipped_unverifiable_pid']}]"
-    )
-    return 0
-
-
-async def sweep_stale(
-    *,
-    threshold_seconds: int,
-    user_reason: str = "",
-    grace_seconds: float = 5.0,
-    dry_run: bool = False,
-    verbose: bool = False,
-) -> dict[str, int]:
-    """Sweep stale rows and return the counters the CLI summary line reports."""
     from lionagi.state.db import StateDB
     from lionagi.state.reasons import RunReasons
 
@@ -833,12 +807,13 @@ async def sweep_stale(
             killed += 1
             print(f"  cancelled stale show {show_id[:12]} (child-derived)")
 
-    return {
-        "cancelled": killed,
-        "skipped_recent": skipped_recent,
-        "skipped_live_pid": skipped_live,
-        "skipped_unverifiable_pid": skipped_unverifiable,
-    }
+    prefix = "(dry-run) would cancel" if dry_run else "cancelled"
+    print(
+        f"\n{prefix} {killed} stale entities "
+        f"[skipped_recent={skipped_recent}, skipped_live_pid={skipped_live}, "
+        f"skipped_unverifiable_pid={skipped_unverifiable}]"
+    )
+    return 0
 
 
 def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
