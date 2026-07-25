@@ -363,6 +363,73 @@ def test_li_mcp_separates_a_missing_extra_from_a_broken_one(raised, expected_cod
     assert proc.returncode == expected_code, proc.stderr
 
 
+@pytest.mark.parametrize(
+    ("raised", "expected_type", "expected_name"),
+    [
+        (
+            "ModuleNotFoundError(\"No module named 'fastmcp'\", name='fastmcp')",
+            "ModuleNotFoundError",
+            "fastmcp",
+        ),
+        ("ImportError(\"cannot import name 'FastMCP'\")", "ImportError", None),
+    ],
+)
+def test_serve_reports_a_missing_extra_as_a_missing_module(raised, expected_type, expected_name):
+    """`serve()` keeps the distinction in the exception type it raises.
+
+    `li mcp` does not depend on this: it imports the server module itself, so it
+    sees the original error before `serve()` is ever called. The caller that does
+    depend on it is `python -m lionagi.mcp`, which calls `serve()` directly and
+    has nothing else to key off. Without this test the type is pinned only where
+    it happens to be redundant, and flattening it to a plain ImportError would
+    leave every test passing while that entry point lost the distinction.
+
+    `name` is asserted too, because it is what a caller reports to a human and it
+    is dropped by the obvious wrong implementation.
+    """
+    script = textwrap.dedent(
+        f"""
+        import sys
+
+        BLOCKED = "fastmcp"
+
+        class _RefuseOne:
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname == BLOCKED or fullname.startswith(BLOCKED + "."):
+                    raise {raised}
+                return None
+
+        for name in [m for m in list(sys.modules)
+                     if m == BLOCKED or m.startswith(BLOCKED + ".")]:
+            del sys.modules[name]
+        sys.meta_path.insert(0, _RefuseOne())
+
+        from lionagi.mcp import serve
+
+        try:
+            serve()
+        except BaseException as exc:
+            print(type(exc).__name__)
+            print(getattr(exc, "name", None))
+            sys.exit(0)
+        sys.exit(1)
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        timeout=120,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    seen_type, seen_name = proc.stdout.split()[:2]
+    assert seen_type == expected_type, proc.stdout
+    assert seen_name == str(expected_name), proc.stdout
+
+
 def test_other_exceptions_are_not_swallowed(monkeypatch):
     """Only a missing module means the environment cannot start.
 
