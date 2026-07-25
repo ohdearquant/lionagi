@@ -21,6 +21,7 @@ from lionagi.ln.concurrency import (
     run_async,
 )
 from lionagi.protocols.generic.log import DataLoggerConfig
+from lionagi.protocols.messages import ActionRequest, AssistantResponse
 from lionagi.state import provenance as _provenance
 from lionagi.state.artifact_verifier import resolve_artifact_contract
 
@@ -227,6 +228,70 @@ def _form_to_context_block(form) -> str:
     for key, value in form.values.items():
         lines.append(f"  {key}: {value!r}")
     return "\n".join(lines)
+
+
+class _ProgressReport:
+    """Heartbeat text that distinguishes a working agent from a merely live one.
+
+    A bare elapsed-seconds timer reports that the event loop is scheduling, which
+    a reader takes as evidence that work is happening. Assistant responses and
+    action requests are added to the branch as the stream arrives, so counting
+    them says whether anything has actually landed since the run started.
+    """
+
+    def __init__(self, branch, now: float):
+        self._branch = branch
+        self._start = now
+        # The only read taken before the run starts, so every later count is a
+        # delta from it. Do not retry it on failure: a baseline adopted once
+        # messages have arrived would take them as the starting point and report
+        # work already done as no progress at all.
+        self._base = self._counts()
+        self._last = self._base
+        self._changed_at = now
+
+    def _counts(self) -> tuple[int, int, int] | None:
+        """(turns, tool calls, total messages), or None if they cannot be read."""
+        try:
+            messages = list(self._branch.msgs.messages)
+        except Exception:
+            return None
+        turns = sum(1 for m in messages if isinstance(m, AssistantResponse))
+        calls = sum(1 for m in messages if isinstance(m, ActionRequest))
+        return turns, calls, len(messages)
+
+    def line(self, now: float) -> str:
+        elapsed = int(now - self._start)
+        current = self._counts()
+        # Two different unreadable states, kept apart because they license
+        # different claims. The baseline is taken once and never retried, so a
+        # baseline that failed to read means no delta is computable for the rest
+        # of this run; a single unreadable snapshot may be one bad tick, and
+        # widening it past this tick claims more than was measured. Neither
+        # falls back to the previous reading, which would present a stale count
+        # as current.
+        if self._base is None:
+            return (
+                f"[progress] {elapsed}s elapsed — progress is not observable for "
+                "this run; this line means alive, not working"
+            )
+        if current is None:
+            return (
+                f"[progress] {elapsed}s elapsed — progress could not be read this "
+                "tick; this line means alive, not working"
+            )
+        if current[2] != self._last[2]:
+            self._last = current
+            self._changed_at = now
+        turns = self._last[0] - self._base[0]
+        calls = self._last[1] - self._base[1]
+        if turns <= 0 and calls <= 0:
+            return f"[progress] {elapsed}s elapsed — no completed turn yet ({elapsed}s since start)"
+        return (
+            f"[progress] {elapsed}s elapsed — {turns} turn{'' if turns == 1 else 's'}, "
+            f"{calls} tool call{'' if calls == 1 else 's'}, "
+            f"last activity {int(now - self._changed_at)}s ago"
+        )
 
 
 async def _run_agent(
@@ -606,15 +671,12 @@ async def _run_agent(
         import asyncio as _asyncio
         import time as _hb_time
 
-        _hb_start = _hb_time.monotonic()
+        _hb_report = _ProgressReport(branch, _hb_time.monotonic())
 
         async def _heartbeat_loop():
             while True:
                 await _asyncio.sleep(60)
-                elapsed = int(_hb_time.monotonic() - _hb_start)
-                from lionagi.cli._logging import hint as _hint
-
-                _hint(f"[progress] {elapsed}s elapsed — agent still running…")
+                hint(_hb_report.line(_hb_time.monotonic()))
 
         try:
             _heartbeat_task = _asyncio.ensure_future(_heartbeat_loop())
