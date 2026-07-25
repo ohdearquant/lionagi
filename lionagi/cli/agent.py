@@ -840,13 +840,19 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         dest="prompt_flag",
         metavar="TEXT",
         default=None,
-        help="Prompt text (alternative to the positional PROMPT).",
+        help=(
+            "The instruction, as a flag instead of the positional PROMPT. Give it one way or "
+            "the other, never both."
+        ),
     )
     agent.add_argument(
         "--prompt-file",
         metavar="PATH",
         default=None,
-        help="Read the prompt from a file; '-' reads stdin (heredoc-friendly).",
+        help=(
+            "Read the instruction from a file; '-' reads stdin, which is heredoc-friendly. The "
+            "file is read once at spawn, so editing it afterwards cannot change the run."
+        ),
     )
     agent.add_argument(
         "-a",
@@ -865,20 +871,29 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     agent.add_argument(
         "--list-profiles",
         action="store_true",
-        help="Print the resolved agent-profile catalog as JSON and exit.",
+        help=(
+            "Print every agent profile -a would resolve, as JSON, and exit without running "
+            "anything. Use it to find out what names are available here."
+        ),
     )
     agent.add_argument(
         "-r",
         "--resume",
         metavar="BRANCH_ID",
         default=None,
-        help="Resume a previous branch by ID.",
+        help=(
+            "Continue a previous run by its branch id, keeping that conversation's history. "
+            "Cannot be combined with --context-from, which is for starting fresh."
+        ),
     )
     agent.add_argument(
         "-c",
         "--continue-last",
         action="store_true",
-        help="Continue the most recently used branch.",
+        help=(
+            "Continue the most recently used branch, keeping its history, without having to "
+            "look up its id."
+        ),
     )
     agent.add_argument(
         "--preset",

@@ -864,9 +864,9 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help=(
             "Also kill direct child entities (e.g. invocations spawned by a session). "
-            "Play kills always reap their linked workers. Has no effect on show kills: "
-            "reaping a show's plays/workers is deferred per ADR-0104 -- kill the play "
-            "or session id directly to stop a show's workers."
+            "Play kills always reap their linked workers regardless. Has no effect on show "
+            "kills, which never reap their plays -- kill the play or session id directly to "
+            "stop a show's workers."
         ),
     )
     kill.add_argument(

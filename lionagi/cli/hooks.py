@@ -70,21 +70,43 @@ def add_hooks_subparser(subparsers: argparse._SubParsersAction) -> None:
         help="Translate a Claude Code / Codex hooks config into hooks_external:.",
     )
     imp.add_argument(
-        "source", choices=("claude", "codex"), help="Which harness's config shape to read."
+        "source",
+        choices=("claude", "codex"),
+        help=(
+            "Which harness wrote the config being imported: 'claude' for Claude Code's "
+            "settings.json shape, 'codex' for the Codex hooks.json shape."
+        ),
     )
     imp.add_argument(
         "path",
         nargs="?",
         default=None,
-        help="Path to the config file (defaults to .claude/settings.json or .codex/hooks.json).",
+        help=(
+            "Config file to read. Defaults to .claude/settings.json or .codex/hooks.json under "
+            "the project directory, matching the source given."
+        ),
     )
-    imp.add_argument("--cwd", default=None, help="Project directory (defaults to cwd).")
+    imp.add_argument(
+        "--cwd",
+        default=None,
+        help=(
+            "Project whose .lionagi/settings.yaml receives the imported hooks, and where the "
+            "default config path is looked up (defaults to the current directory)."
+        ),
+    )
 
     trust = hooks_sub.add_parser(
         "trust",
         help="List and approve pending imported hook commands (hash-pinned).",
     )
-    trust.add_argument("--cwd", default=None, help="Project directory (defaults to cwd).")
+    trust.add_argument(
+        "--cwd",
+        default=None,
+        help=(
+            "Project whose imported hook commands are listed and approved "
+            "(defaults to the current directory)."
+        ),
+    )
     trust.add_argument(
         "--yes",
         action="store_true",
