@@ -956,17 +956,20 @@ class StateDB:
         async def _rebuild() -> None:
             async with self._engine.connect() as conn:
                 driver = (await conn.get_raw_connection()).driver_connection
-                await driver.execute("PRAGMA foreign_keys = OFF")
-                # Everything after the OFF pragma -- including the flush commit
-                # that makes it take effect -- sits inside the outer try so that
-                # ANY failure path restores enforcement in the finally block; a
-                # flush failure must not leave the pooled connection with
-                # foreign keys silently disabled. The pragma must run on the raw
-                # driver outside a transaction: open() installs BEGIN IMMEDIATE
-                # on every sqlite engine, so setting it through an engine-level
-                # begin() block leaves it a no-op and enforcement stays on for
-                # the whole rebuild.
                 try:
+                    # The OFF pragma is inside this try, not above it, because it
+                    # takes effect at its own await with no flush required. That is
+                    # measured, not inferred from the commit that follows. Anything
+                    # interrupting after it -- cancellation included -- must still
+                    # reach the finally, or a pooled connection keeps foreign keys
+                    # disabled for every caller that borrows it next.
+                    await driver.execute("PRAGMA foreign_keys = OFF")
+                    # The commit does not make the pragma effective; it closes any
+                    # open transaction so BEGIN IMMEDIATE starts cleanly. The pragma
+                    # must run on the raw driver: open() installs BEGIN IMMEDIATE on
+                    # every sqlite engine, so setting it through an engine-level
+                    # begin() block leaves it a no-op and enforcement stays on for
+                    # the whole rebuild.
                     await driver.commit()
                     await driver.execute("BEGIN IMMEDIATE")
                     try:
@@ -1143,13 +1146,14 @@ class StateDB:
         async def _rebuild() -> None:
             async with self._engine.connect() as conn:
                 driver = (await conn.get_raw_connection()).driver_connection
-                await driver.execute("PRAGMA foreign_keys = OFF")
-                # Everything after the OFF pragma — including the flush commit
-                # that makes it take effect — sits inside the outer try so that
-                # ANY failure path restores enforcement in the finally block; a
-                # flush failure must not leave the pooled connection with
-                # foreign keys silently disabled.
                 try:
+                    # Inside the try, not above it: the pragma takes effect at its
+                    # own await with no flush required, so anything interrupting
+                    # after it -- cancellation included -- must still reach the
+                    # finally or a pooled connection keeps foreign keys disabled.
+                    # The commit closes any open transaction rather than making the
+                    # pragma effective.
+                    await driver.execute("PRAGMA foreign_keys = OFF")
                     await driver.commit()
                     await driver.execute("BEGIN IMMEDIATE")
                     try:
@@ -1261,13 +1265,14 @@ class StateDB:
         async def _rebuild() -> None:
             async with self._engine.connect() as conn:
                 driver = (await conn.get_raw_connection()).driver_connection
-                await driver.execute("PRAGMA foreign_keys = OFF")
-                # Everything after the OFF pragma — including the flush commit
-                # that makes it take effect — sits inside the outer try so that
-                # ANY failure path restores enforcement in the finally block; a
-                # flush failure must not leave the pooled connection with
-                # foreign keys silently disabled.
                 try:
+                    # Inside the try, not above it: the pragma takes effect at its
+                    # own await with no flush required, so anything interrupting
+                    # after it -- cancellation included -- must still reach the
+                    # finally or a pooled connection keeps foreign keys disabled.
+                    # The commit closes any open transaction rather than making the
+                    # pragma effective.
+                    await driver.execute("PRAGMA foreign_keys = OFF")
                     await driver.commit()
                     await driver.execute("BEGIN IMMEDIATE")
                     try:
@@ -1347,8 +1352,14 @@ class StateDB:
         async def _rebuild() -> None:
             async with self._engine.connect() as conn:
                 driver = (await conn.get_raw_connection()).driver_connection
-                await driver.execute("PRAGMA foreign_keys = OFF")
                 try:
+                    # Inside the try, not above it: the pragma takes effect at its
+                    # own await with no flush required, so anything interrupting
+                    # after it -- cancellation included -- must still reach the
+                    # finally or a pooled connection keeps foreign keys disabled.
+                    # The commit closes any open transaction rather than making the
+                    # pragma effective.
+                    await driver.execute("PRAGMA foreign_keys = OFF")
                     await driver.commit()
                     await driver.execute("BEGIN IMMEDIATE")
                     try:
@@ -1438,14 +1449,17 @@ class StateDB:
         async def _rebuild() -> None:
             async with self._engine.connect() as conn:
                 driver = (await conn.get_raw_connection()).driver_connection
-                await driver.execute("PRAGMA foreign_keys = OFF")
-                # Everything after the OFF pragma sits inside the outer try so
-                # ANY failure path restores enforcement in the finally block.
-                # The flush commit makes the pragma effective, then BEGIN
-                # IMMEDIATE makes the whole rebuild one atomic transaction —
-                # DDL autocommits per-statement otherwise, so a crash between
-                # DROP and RENAME would strand the data in invocations_new.
                 try:
+                    # Inside the try, not above it: the pragma takes effect at its
+                    # own await with no flush required, so anything interrupting
+                    # after it -- cancellation included -- must still reach the
+                    # finally or a pooled connection keeps foreign keys disabled.
+                    await driver.execute("PRAGMA foreign_keys = OFF")
+                    # The commit closes any open transaction rather than making the
+                    # pragma effective, then BEGIN IMMEDIATE makes the whole rebuild
+                    # one atomic transaction — DDL autocommits per-statement
+                    # otherwise, so a crash between DROP and RENAME would strand the
+                    # data in invocations_new.
                     await driver.commit()
                     await driver.execute("BEGIN IMMEDIATE")
                     await driver.execute(
@@ -1604,12 +1618,16 @@ class StateDB:
         async def _rebuild() -> None:
             async with self._engine.connect() as conn:
                 driver = (await conn.get_raw_connection()).driver_connection
-                await driver.execute("PRAGMA foreign_keys = OFF")
-                # Same shape as the invocations rebuild above: flush commit so
-                # the pragma takes effect, then one BEGIN IMMEDIATE transaction
-                # around the whole rebuild so a crash mid-sequence cannot
-                # strand the data in schedule_runs_new.
                 try:
+                    # Same shape as the invocations rebuild above. The pragma is
+                    # inside the try because it takes effect at its own await, so
+                    # anything interrupting after it -- cancellation included --
+                    # must still reach the finally.
+                    await driver.execute("PRAGMA foreign_keys = OFF")
+                    # The commit closes any open transaction rather than making the
+                    # pragma effective, then one BEGIN IMMEDIATE transaction wraps
+                    # the whole rebuild so a crash mid-sequence cannot strand the
+                    # data in schedule_runs_new.
                     await driver.commit()
                     await driver.execute("BEGIN IMMEDIATE")
                     await driver.execute(

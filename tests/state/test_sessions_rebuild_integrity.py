@@ -254,3 +254,55 @@ async def test_cancellation_invalidates_before_it_propagates(fail_on):
         "cancellation reached the caller without invalidating a connection whose "
         "foreign-key enforcement was never confirmed"
     )
+
+
+async def test_cancellation_at_the_disable_still_reaches_cleanup(tmp_path: Path, monkeypatch):
+    """The disable itself has to be inside the try that installs the cleanup.
+
+    `PRAGMA foreign_keys = OFF` takes effect at its own await, with no flush
+    needed. So if it sat above the try, a cancellation arriving right after it
+    would leave enforcement off with no finally installed, and the connection
+    would go back to the pool disabled for whoever borrows it next. Interrupting
+    exactly that await is the only way to pin the ordering.
+    """
+    import aiosqlite
+
+    import lionagi.state.db as db_mod
+    from lionagi.ln.concurrency import get_cancelled_exc_class
+
+    cancelled_exc = get_cancelled_exc_class()
+
+    path = tmp_path / "legacy.db"
+    async with aiosqlite.connect(str(path)) as old:
+        await old.execute(_LEGACY_SESSIONS_DDL)
+        await old.commit()
+
+    reached: list[bool] = []
+    real_restore = db_mod._restore_foreign_keys
+
+    async def _spy_restore(conn, driver):
+        reached.append(True)
+        return await real_restore(conn, driver)
+
+    monkeypatch.setattr(db_mod, "_restore_foreign_keys", _spy_restore)
+
+    real_execute = aiosqlite.Connection.execute
+
+    async def _cancel_on_disable(self, sql, *args, **kwargs):
+        if isinstance(sql, str) and sql.strip() == "PRAGMA foreign_keys = OFF":
+            raise cancelled_exc()
+        return await real_execute(self, sql, *args, **kwargs)
+
+    monkeypatch.setattr(aiosqlite.Connection, "execute", _cancel_on_disable)
+
+    state = StateDB(path)
+    with pytest.raises(BaseException) as excinfo:
+        await state.open()
+
+    assert isinstance(excinfo.value, cancelled_exc), (
+        f"expected the cancellation to propagate, got {type(excinfo.value).__name__}"
+    )
+    assert reached, (
+        "cancellation at the disable never reached the restore, so the pragma is "
+        "taking effect outside the try that installs cleanup"
+    )
