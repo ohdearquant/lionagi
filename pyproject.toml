@@ -217,7 +217,9 @@ ignore = [
 # always scheduled -- the run then blocks in the controller's read() with no
 # timeout that can see it, because pytest-timeout is scoped to test bodies and
 # the controller is not inside one. Failing fast instead names the crashed test.
-# A CLI flag beats addopts, so callers that want restarts can still pass one.
+# Here it reaches every caller that discovers this config, rather than only the
+# ones that go through the wrapper script. A CLI flag beats addopts, so callers
+# that want restarts can still pass one.
 addopts = "-q -ra --strict-config --strict-markers --tb=short --maxfail=5 -n auto --dist loadfile --benchmark-disable --max-worker-restart=0"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
