@@ -94,13 +94,15 @@ _CANDIDATES_SHOWN = 5
 
 
 class AmbiguousIdError(ValueError):
-    """A short id prefix matched more than one row in one table.
+    """A short id prefix matched more than one record.
 
     Carries the colliding ids so every CLI surface can tell the user what to
-    disambiguate between instead of silently acting on one of them.
+    disambiguate between instead of silently acting on one of them. `table` is
+    None when the collision is across kinds rather than inside one, since the
+    candidates then name their own kind and a single table would misdescribe it.
     """
 
-    def __init__(self, id_or_short: str, table: str, candidates: list[str]) -> None:
+    def __init__(self, id_or_short: str, table: str | None, candidates: list[str]) -> None:
         self.id_or_short = id_or_short
         self.table = table
         self.candidates = list(candidates)
@@ -108,9 +110,10 @@ class AmbiguousIdError(ValueError):
         listed = ", ".join(shown)
         if len(self.candidates) > len(shown):
             listed += ", ..."
+        what = f"more than one {table} record" if table else "records of more than one kind"
         super().__init__(
-            f"ambiguous id prefix {id_or_short!r} — matches more than one "
-            f"{table} record ({listed}); use a longer prefix or the full id"
+            f"ambiguous id prefix {id_or_short!r} — matches {what} "
+            f"({listed}); use a longer prefix or the full id"
         )
 
 
@@ -137,18 +140,11 @@ async def fetch_unique_row(db: Any, table: str, id_or_short: str) -> dict[str, A
     if not id_or_short:
         return None
 
-    row = await db.fetch_one(
-        f"SELECT * FROM {table} WHERE id = ?",  # noqa: S608
-        (id_or_short,),
-    )
+    row = await _fetch_exact_row(db, table, id_or_short)
     if row is not None:
         return row
 
-    rows = await db.fetch_all(
-        f"SELECT * FROM {table} WHERE id LIKE ? ESCAPE '\\' "  # noqa: S608
-        f"ORDER BY id LIMIT {_CANDIDATES_SHOWN + 1}",
-        (_like_prefix_pattern(id_or_short),),
-    )
+    rows = await _fetch_prefix_rows(db, table, id_or_short)
     if not rows:
         return None
     if len(rows) > 1:
@@ -156,18 +152,68 @@ async def fetch_unique_row(db: Any, table: str, id_or_short: str) -> dict[str, A
     return rows[0]
 
 
-async def resolve_entity(db: Any, id_or_short: str) -> tuple[str, str, dict[str, Any]] | None:
-    """Sweep the entity tables in order for the first one holding *id_or_short*.
+async def _fetch_exact_row(db: Any, table: str, id_or_short: str) -> dict[str, Any] | None:
+    return await db.fetch_one(
+        f"SELECT * FROM {table} WHERE id = ?",  # noqa: S608
+        (id_or_short,),
+    )
 
-    Raises `AmbiguousIdError` when the prefix collides inside a table. A prefix
-    that matches one row in each of two different tables still resolves to the
-    earlier table in `_SEARCH_ORDER` — that shadowing is the documented
-    search-order contract, not a cardinality failure.
+
+async def _fetch_prefix_rows(db: Any, table: str, id_or_short: str) -> list[dict[str, Any]]:
+    """Rows of *table* whose id starts with *id_or_short*, case-sensitively.
+
+    LIKE alone is not enough: on the default backend it compares ASCII
+    case-insensitively, so an upper-cased prefix would match a lower-cased id
+    while the exact comparison beside it would not. It is kept as the first
+    predicate because it is the one an index on `id` can use; the substring
+    equality after it is what actually decides.
     """
-    for table in _SEARCH_ORDER:
-        row = await fetch_unique_row(db, table, id_or_short)
-        if row is not None:
-            entity_type = _TABLE_TO_ENTITY_TYPE[table]
-            return table, entity_type, db._row_to_dict(row)
+    return await db.fetch_all(
+        f"SELECT * FROM {table} WHERE id LIKE ? ESCAPE '\\' "  # noqa: S608
+        f"AND substr(id, 1, ?) = ? "
+        f"ORDER BY id LIMIT {_CANDIDATES_SHOWN + 1}",
+        (_like_prefix_pattern(id_or_short), len(id_or_short), id_or_short),
+    )
 
-    return None
+
+async def resolve_entity(db: Any, id_or_short: str) -> tuple[str, str, dict[str, Any]] | None:
+    """Find the one record holding *id_or_short*, across every entity kind.
+
+    An exact id is a primary key and settles it outright, in `_SEARCH_ORDER`.
+    A prefix does not: it is a guess, and a guess that fits a session and an
+    invocation equally well has no correct winner. Search order cannot break
+    that tie, because ordering is about where to look first, not about which of
+    two equally good matches the caller meant. So prefixes are gathered from
+    every kind and a collision across kinds raises `AmbiguousIdError`, exactly
+    as a collision inside one does. The alternative is a resolver that rejects
+    ambiguity in one direction and silently picks in the other, which teaches
+    callers to trust a prefix that resolves.
+    """
+    id_or_short = id_or_short.strip()
+    if not id_or_short:
+        return None
+
+    for table in _SEARCH_ORDER:
+        row = await _fetch_exact_row(db, table, id_or_short)
+        if row is not None:
+            return table, _TABLE_TO_ENTITY_TYPE[table], db._row_to_dict(row)
+
+    hits: list[tuple[str, dict[str, Any]]] = []
+    for table in _SEARCH_ORDER:
+        hits.extend((table, row) for row in await _fetch_prefix_rows(db, table, id_or_short))
+
+    if not hits:
+        return None
+    if len(hits) > 1:
+        kinds = {table for table, _ in hits}
+        raise AmbiguousIdError(
+            id_or_short,
+            _TABLE_TO_ENTITY_TYPE[next(iter(kinds))] if len(kinds) == 1 else None,
+            [
+                row["id"] if len(kinds) == 1 else f"{_TABLE_TO_ENTITY_TYPE[table]} {row['id']}"
+                for table, row in hits
+            ],
+        )
+
+    table, row = hits[0]
+    return table, _TABLE_TO_ENTITY_TYPE[table], db._row_to_dict(row)
