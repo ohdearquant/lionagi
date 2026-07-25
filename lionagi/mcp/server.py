@@ -32,6 +32,7 @@ from pydantic import Field
 from pydantic.fields import FieldInfo
 
 from . import jobs
+from .observability import register_observability_tools
 
 # The advertised server name. It moved from "lionagi" to "lion" when this surface
 # became the machine contract a peer system drives; the previous name is kept as a
@@ -44,6 +45,10 @@ SERVER_NAME = "lion"
 PREVIOUS_SERVER_NAME = "lionagi"
 
 mcp = FastMCP(SERVER_NAME)
+
+# Observing and controlling what already runs — monitor/kill/stats/state/
+# dispatch/doctor — as typed tools alongside the submit surface.
+register_observability_tools(mcp)
 
 
 def _resolve_prompt(prompt: str | None, prompt_file: str | None) -> str | None:
