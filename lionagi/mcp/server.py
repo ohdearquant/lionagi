@@ -20,6 +20,7 @@ from typing import Any
 from fastmcp import FastMCP
 
 from . import jobs
+from . import surface as _surface
 
 mcp = FastMCP("lionagi")
 
@@ -330,6 +331,9 @@ def job_kill(run_id: str) -> dict[str, Any]:
 def jobs_list(limit: int = 50, status: str | None = None) -> list[dict[str, Any]]:
     """List recent background jobs, newest first; optionally filter by status."""
     return jobs.list_jobs(limit=limit, status_filter=status)
+
+
+_surface.register(mcp)
 
 
 def main() -> None:
