@@ -91,6 +91,19 @@ Verbs are namespaced strings that mirror the CLI's own structure:
 `play.submit` and `job.wait` are new; the rest are v1's seven operations renamed into the
 namespace. Nothing that was reachable becomes unreachable.
 
+**The tool-level change is a clean break; the verb-level change is not.** v1's seven tools
+cease to exist when this ships. They are not kept as thin shims for a deprecation window,
+because those shims *are* the advertised schema this decision exists to delete — a window
+would pay the full cost for its whole duration and deliver the benefit only at its end.
+Clients pick up the new surface by reloading, which is one action rather than a migration.
+
+Verb-level continuity is cheap and is kept: v1's operation names (`submit_agent`,
+`job_status`, and the rest) are accepted as synonyms inside `ops`, resolved to their
+namespaced form before dispatch, and **absent from the catalog** so they are never
+advertised or taught. They exist for callers already scripted against the old names. They
+are accepted for exactly one release and removed in the first minor release after the one
+that introduces this surface, and no later than 2026-09-30.
+
 **Ops are JSON, never a DSL string.** `ops` is a list of objects:
 
 ```json
@@ -434,6 +447,21 @@ follow-up.
   show-level gap is documented rather than papered over.
 - The visibility fence means some CLI capability is permanently out of reach from MCP. That
   is the intent, not a limitation to be lifted later without a decision.
+- **Tool-name-keyed policy loses its signal, and this is the largest hidden cost of the
+  shape.** External layers that gate, audit, or annotate MCP calls commonly key on the tool
+  name: permission prompts, allowlists, audit filters, and hooks that rewrite arguments
+  before a call. Against a surface with one tool, the name no longer distinguishes reading
+  a job's status from spawning twenty agents, so every such layer must either inspect
+  `ops[].op` or treat the whole surface as one undifferentiated capability. Anything that
+  cannot be made payload-aware degrades to all-or-nothing.
+
+  This is a real and permanent trade, not a migration detail. It is accepted here because a
+  payload-aware check is strictly more precise than a name match — it can distinguish verbs
+  that a name match never could, since one tool name was already covering several
+  operations — and because the alternative preserves the signal only by paying the
+  advertised-schema cost this decision exists to remove. Adopters of this shape should
+  expect to rewrite tool-name-based policy before cutover, not after: a policy layer that
+  silently stops matching does not fail loudly, it fails open.
 
 ## Alternatives considered
 
