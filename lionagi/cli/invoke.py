@@ -152,8 +152,11 @@ def add_invoke_subparser(subparsers: argparse._SubParsersAction) -> None:
             "cancelled",
         ],
         help=(
-            "How the work ended. Say 'failed' when it did — this status is what later listings "
-            "and dashboards filter on."
+            "How the work ended, which also fixes the reason stored with it: 'completed' for "
+            "success, 'failed' for an exception, 'timed_out' for a deadline, 'aborted' for a "
+            "user interrupt, 'cancelled' for a system cancellation. Later listings and "
+            "dashboards filter on this, so leaving the default on work that did not succeed "
+            "records it as a success."
         ),
     )
     end.add_argument(
