@@ -172,13 +172,30 @@ def _notify_template(run_id: str, notify_target: str | None, notify_command: str
     return " ".join(parts)
 
 
-# Linux caps a single exec argument at MAX_ARG_STRLEN — 32 pages — independently of
-# the aggregate limit, and offers no sysconf for it.
-_MAX_SINGLE_ARG_BYTES = 32 * 4096
 # argv and envp are pointer arrays, so every entry costs a slot as well as its bytes.
 _POINTER_BYTES = 8
 # Small allowance for the aux vector and alignment the kernel adds on top.
 _EXEC_RESERVE_BYTES = 4096
+
+
+def _max_single_arg_bytes() -> int | None:
+    """The per-argument exec limit, or None where the platform imposes none.
+
+    Linux caps one argument at ``MAX_ARG_STRLEN`` (32 pages) independently of the
+    aggregate limit and exposes no ``sysconf`` for it, so it is derived from the
+    running page size. Other platforms — macOS among them — bound only the total,
+    and happily exec a single argument far larger than this; applying the Linux
+    number there would refuse work the OS would have accepted.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        page = os.sysconf("SC_PAGESIZE")
+    except (ValueError, OSError):  # pragma: no cover — platform without the knob
+        page = 4096
+    if not isinstance(page, int) or page <= 0:  # pragma: no cover — unset knob
+        page = 4096
+    return 32 * page
 
 
 def _reject_oversized_argv(argv: list[str], env: dict[str, str], *, kind: str) -> None:
@@ -194,12 +211,10 @@ def _reject_oversized_argv(argv: list[str], env: dict[str, str], *, kind: str) -
     terminator and a pointer per entry, so entries are counted, not just bytes —
     a flat reserve would be defeated by a long list of short arguments.
 
-    The *per-argument* limit applies to one string on its own. Linux enforces
-    ``MAX_ARG_STRLEN`` (32 pages, 128 KiB) and does not expose it through
-    ``sysconf``, so it is used as a constant on every platform. That is
-    deliberately conservative: a flow instruction between 128 KiB and the
-    aggregate limit runs on macOS and fails on Linux, and one predictable refusal
-    beats a limit that depends on where the server happens to be running.
+    The *per-argument* limit applies to one string on its own, and only where the
+    platform imposes one — see :func:`_max_single_arg_bytes`. It is checked
+    separately because an argument can be under the aggregate limit and still be
+    refused on its own.
     """
     try:
         limit = os.sysconf("SC_ARG_MAX")
@@ -213,14 +228,16 @@ def _reject_oversized_argv(argv: list[str], env: dict[str, str], *, kind: str) -
         "to the run in a file instead of on the command line."
     )
 
-    for arg in argv:
-        n = len(arg.encode())
-        if n > _MAX_SINGLE_ARG_BYTES:
-            raise ValueError(
-                f"cannot submit this {kind} run: one argument is {n} bytes, over the "
-                f"{_MAX_SINGLE_ARG_BYTES}-byte limit an operating system places on a "
-                f"single argument regardless of the {limit}-byte total. {advice}"
-            )
+    per_arg = _max_single_arg_bytes()
+    if per_arg is not None:
+        for arg in argv:
+            n = len(arg.encode())
+            if n > per_arg:
+                raise ValueError(
+                    f"cannot submit this {kind} run: one argument is {n} bytes, over the "
+                    f"{per_arg}-byte limit this platform places on a single argument "
+                    f"regardless of the {limit}-byte total. {advice}"
+                )
 
     used = sum(len(a.encode()) + 1 + _POINTER_BYTES for a in argv)
     used += sum(len(k.encode()) + len(v.encode()) + 2 + _POINTER_BYTES for k, v in env.items())

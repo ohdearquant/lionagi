@@ -327,22 +327,48 @@ def test_oversized_flow_prompt_is_refused_before_a_record_exists(sandbox):
     assert jobs.list_jobs() == []
 
 
-def test_one_oversized_argument_is_refused_even_when_the_total_would_fit(sandbox):
-    """A single argument has its own limit, below the aggregate one.
+def test_one_oversized_argument_is_refused_where_the_platform_caps_one(sandbox, monkeypatch):
+    """A single argument has its own limit on Linux, below the aggregate one.
 
-    Linux caps one exec argument at MAX_ARG_STRLEN (32 pages) regardless of how
-    much aggregate room is left, and does not expose it via sysconf. A flow prompt
-    between that and SC_ARG_MAX spawns fine on macOS and dies with E2BIG on Linux,
-    so it has to be refused on both.
+    Linux caps one exec argument at MAX_ARG_STRLEN regardless of how much
+    aggregate room is left, so a flow prompt between that and SC_ARG_MAX would
+    otherwise pass the preflight and die in exec after the record was written.
+    The cap is forced on here rather than skipped off Linux, so the rule is
+    exercised wherever the tests run.
     """
+    monkeypatch.setattr(jobs, "_max_single_arg_bytes", lambda: 131072)
     limit = os.sysconf("SC_ARG_MAX")
-    one_arg = "x" * (jobs._MAX_SINGLE_ARG_BYTES + 1)
+    one_arg = "x" * 131073
     assert len(one_arg) < limit, "must fit the aggregate limit, or this tests the wrong thing"
 
     with pytest.raises(ValueError, match="single argument"):
         jobs.submit("flow", [], prompt=one_arg)
 
     assert jobs.list_jobs() == []
+
+
+def test_a_platform_without_a_per_argument_cap_is_bounded_only_by_the_total(sandbox, monkeypatch):
+    """Where the OS caps only the total, do not invent a per-argument refusal.
+
+    macOS execs a single argument far larger than Linux's MAX_ARG_STRLEN, so
+    applying that number there would reject work the OS would have accepted.
+    """
+    monkeypatch.setattr(jobs, "_max_single_arg_bytes", lambda: None)
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **k: _FakeProc(4242))
+
+    # Comfortably over Linux's per-argument cap, comfortably under the aggregate.
+    accepted = jobs.submit("flow", [], prompt="x" * 200_000)
+
+    assert accepted["status"] == "running"
+
+
+def test_the_per_argument_cap_tracks_the_platform(monkeypatch):
+    """Linux derives it from the page size; elsewhere there is none to apply."""
+    monkeypatch.setattr(jobs.sys, "platform", "linux")
+    assert jobs._max_single_arg_bytes() == 32 * os.sysconf("SC_PAGESIZE")
+
+    monkeypatch.setattr(jobs.sys, "platform", "darwin")
+    assert jobs._max_single_arg_bytes() is None
 
 
 def test_argument_count_is_charged_not_only_bytes():
