@@ -9,6 +9,7 @@ import sys
 import pytest
 import yaml
 
+from lionagi.cli._util import EXIT_CODE_ENVIRONMENT_ERROR
 from lionagi.cli.main import _handle_play_shortcut, main
 from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
 
@@ -281,6 +282,46 @@ def test_play_check_playbook_with_contract(tmp_path, monkeypatch, capsys):
     assert "review" in out and "notes" in out
 
 
+@pytest.mark.parametrize(
+    ("raised", "expected_code", "expected_text"),
+    [
+        (ModuleNotFoundError("No module named 'thing'", name="thing"), 78, "thing"),
+        (RuntimeError("profile is malformed"), 1, "could not be loaded"),
+    ],
+)
+def test_play_check_separates_a_missing_module_from_a_bad_profile(
+    tmp_path, monkeypatch, caplog, raised, expected_code, expected_text
+):
+    """`li play check` loads the named agent profile, and that import can fail two ways.
+
+    A malformed profile is a real finding and the check should report it as a
+    failure. A profile this installation cannot import is not a finding at all:
+    nothing was checked, and returning the same code makes a broken environment
+    look like a playbook with a broken profile - which sends someone to edit a
+    file that is fine.
+    """
+    pb_path = tmp_path / "withagent.playbook.yaml"
+    pb_path.write_text("name: withagent\nmodel: claude/sonnet\nprompt: do z\nagent: someprofile\n")
+
+    from lionagi.cli import orchestrate as _orch
+
+    def fake_resolve(name):
+        return (pb_path, None) if name == "withagent" else _orch._resolve_playbook_path(name)
+
+    def fake_load(name):
+        raise raised
+
+    monkeypatch.setattr(_orch, "_resolve_playbook_path", fake_resolve)
+    monkeypatch.setattr("lionagi.cli.main._resolve_playbook_path", fake_resolve, raising=False)
+    monkeypatch.setattr("lionagi.cli._providers.load_agent_profile", fake_load)
+
+    with caplog.at_level("ERROR"):
+        result = _handle_play_shortcut(["play", "check", "withagent"])
+
+    assert result == expected_code
+    assert expected_text in caplog.text
+
+
 def test_play_check_playbook_without_contract(tmp_path, monkeypatch, capsys):
     """A playbook without `artifacts:` exits 0 and reports verification skipped."""
     pb_path = tmp_path / "plain.playbook.yaml"
@@ -433,6 +474,42 @@ def test_broken_command_loader_reports_error_without_traceback(capsys, monkeypat
             "agent",
             "broken",
             lambda: __import__("missing_lionagi_command_module"),
+            "add_agent_subparser",
+            "run_agent",
+        ),
+    )
+    rc = main_module.main(["agent", "--help"])
+    # A module missing from the environment is reported as an unusable
+    # environment, not as a failed run: exit 1 here is what a run that started
+    # and failed returns, and a caller reading the status could not tell the two
+    # apart. The concise report is unchanged — only the status distinguishes.
+    assert rc == EXIT_CODE_ENVIRONMENT_ERROR
+    err = capsys.readouterr().err
+    assert "missing_lionagi_command_module" in err
+    assert "Traceback" not in err
+
+
+def test_a_command_loader_failing_for_another_reason_is_an_ordinary_failure(capsys, monkeypatch):
+    """Only a missing module means the environment is unusable.
+
+    The loader boundary splits on the exception type, so the other side of that
+    split needs its own case: a command module that imports fine but raises
+    while being set up is a defect in this installation's code, not a missing
+    piece of it, and reporting it as an unusable environment would send the
+    caller off to install something that is already there.
+    """
+    import lionagi.cli.main as main_module
+
+    def _explode():
+        raise RuntimeError("bad module")
+
+    monkeypatch.setitem(
+        main_module._COMMAND_BY_NAME,
+        "agent",
+        main_module._CommandSpec(
+            "agent",
+            "broken",
+            _explode,
             "add_agent_subparser",
             "run_agent",
         ),

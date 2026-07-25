@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from lionagi._paths import RUNS_ROOT, ensure_lionagi_dir
-from lionagi.cli._util import AmbiguousIdError
+from lionagi.cli._util import AmbiguousIdError, mark_run_allocated
 from lionagi.libs.path_safety import validate_path_component
 from lionagi.ln._utils import now_utc
 from lionagi.providers._provider_errors import ProviderError
@@ -220,6 +220,11 @@ def allocate_run(
     run = RunDir(run_id=rid, state_root=state_root, artifact_root=artifact_root)
     run.ensure_state_dirs()
     run.ensure_artifact_root()
+    # From here on there is durable state on disk under this run id, so a later
+    # failure is a failed run and must not be reported as an unusable
+    # environment. Marked here rather than at the call sites so every caller,
+    # including ones added later, is covered.
+    mark_run_allocated()
     run.write_manifest(
         {
             "status": "running",

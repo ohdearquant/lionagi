@@ -7,12 +7,19 @@ from __future__ import annotations
 import argparse
 import signal
 import sys
+import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import import_module
 from types import ModuleType
 
 from ._logging import configure_cli_logging, log_error
+from ._util import (
+    EXIT_CODE_ENVIRONMENT_ERROR,
+    begin_invocation,
+    end_invocation,
+    run_was_allocated,
+)
 
 
 def _load_agent() -> ModuleType:
@@ -415,6 +422,19 @@ def _handle_play_check(argv: list[str]) -> int:
 
             profile = load_agent_profile(agent_name)
             agent_defaults = getattr(profile, "artifact_defaults", None)
+        except ModuleNotFoundError as exc:
+            # The profile is fine; this installation cannot load it. Nothing has
+            # run, so this is the environment, and returning the ordinary
+            # failure code here would make it indistinguishable from a check
+            # that found a genuinely broken playbook.
+            missing = exc.name or "a required module"
+            log_error(
+                f"playbook '{name}' references agent profile '{agent_name}', "
+                f"which needs {missing}, and it is not installed in this "
+                f"environment. Nothing was checked and no run was started. "
+                f"Install the missing dependency, then re-run."
+            )
+            return EXIT_CODE_ENVIRONMENT_ERROR
         except Exception as exc:  # noqa: BLE001 — match runtime behaviour
             log_error(
                 f"playbook '{name}' references agent profile "
@@ -554,7 +574,7 @@ def _get_version() -> str:
     return __version__
 
 
-def main(argv: list[str] | None = None) -> int:
+def _run(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
     # Resolve verbose before any CLI code emits (argparse hasn't run yet).
@@ -621,8 +641,24 @@ def main(argv: list[str] | None = None) -> int:
     selected = _COMMAND_BY_NAME.get(_argv[0]) if _argv else None
     try:
         parser, selected_parser = _build_parser(selected)
+    except ModuleNotFoundError as exc:
+        # A dependency missing from the environment is not a command-scoped
+        # error, even though it surfaces while loading one. Reported below it
+        # would exit 1, which is what a run that started and failed returns, so
+        # a caller could not tell an unusable environment from a real failure.
+        # Only the status changes here: the concise report stays, because a
+        # traceback for a command that never started was judged to be noise and
+        # naming the missing module is the whole diagnosis at this boundary.
+        # Nothing has run at this point — the parser is still being built.
+        missing = exc.name or "a required module"
+        log_error(
+            f"command {_argv[0]!r} cannot run: {missing} is not installed in this "
+            "environment. No run was started, so this is an unusable environment "
+            "rather than a failed run. Install the missing dependency, then re-run."
+        )
+        return EXIT_CODE_ENVIRONMENT_ERROR
     except Exception as exc:
-        # A lazy command module that fails to import surfaces here at
+        # Any other lazy command module that fails to import surfaces here at
         # dispatch; report it as a command-scoped error, not a traceback.
         log_error(f"command {_argv[0]!r} failed to load: {type(exc).__name__}: {exc}")
         return 1
@@ -719,6 +755,56 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.print_help()
     return 1
+
+
+def _report_broken_environment(exc: ModuleNotFoundError) -> int:
+    """Report a missing import as an environment fault, not a failed run.
+
+    A ``ModuleNotFoundError`` reaching the top of the CLI means some import
+    failed and nothing along the way handled it. Reporting it the way a failed
+    run is reported tells every caller the wrong thing: the command looks like
+    it executed and came back empty. That is how a dependency dropping out of an
+    environment reads downstream as a crashed agent.
+
+    Only called once it is established that no run was allocated, which is what
+    makes the message's claim true rather than merely likely. See ``main``.
+
+    The traceback is printed first because it names the import chain and is the
+    only thing that identifies which package went missing and from where. The
+    single-line summary goes last so that a caller which keeps only the tail of
+    stderr still receives the diagnosis rather than the middle of a stack.
+    """
+    traceback.print_exc()
+    missing = exc.name or "a required module"
+    log_error(
+        f"cannot start: {missing} is not installed in this environment. "
+        "No run was started, so this is an unusable environment rather than a "
+        "failed run. Install the missing dependency, then re-run."
+    )
+    return EXIT_CODE_ENVIRONMENT_ERROR
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Entry point for the ``li`` console script.
+
+    Wraps the real implementation so that a missing dependency is reported as a
+    broken environment rather than as a failed run, but only where that is
+    actually true. A lazily imported module can go missing after a command has
+    already allocated a run, and there a run id, a run directory and a manifest
+    exist on disk; calling that an unusable environment would tell the caller
+    nothing was executed while durable state sits in the runs directory. So the
+    allocation marker decides, and once a run exists the error is left to
+    propagate and be reported the way any other failure during a run is.
+    """
+    begin_invocation()
+    try:
+        return _run(argv)
+    except ModuleNotFoundError as exc:
+        if run_was_allocated():
+            raise
+        return _report_broken_environment(exc)
+    finally:
+        end_invocation()
 
 
 if __name__ == "__main__":
