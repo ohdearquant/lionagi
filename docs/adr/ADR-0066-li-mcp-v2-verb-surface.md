@@ -225,6 +225,15 @@ logged with secrets redacted, and marks its result as having bypassed validation
 cannot introduce a new command boundary — otherwise the D8 fence would be bypassable
 through argv.
 
+That check is **fail-closed**: argv the checker cannot positively classify as safe is
+rejected, never best-effort scrubbed and forwarded. Rejection is the default outcome, so
+an argument the checker cannot parse, an unfamiliar quoting or escaping form, and an
+internal error in the checker itself all deny the call rather than pass along what was not
+understood. Stated the other way, only a positive determination of safety admits argv. A
+scrubbing check would degrade into a permissive one precisely where its input is most
+adversarial, and it would do so quietly, since a scrubbed call still succeeds; D8's fence
+rests on this direction and not merely on the check existing.
+
 **Why runtime rather than the alternatives.** A build-time artifact cannot model
 user-installed or user-edited playbooks, so it proves only the source tree and not the
 executing environment — it fails the "live" requirement it is meant to satisfy. A
