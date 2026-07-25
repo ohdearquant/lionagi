@@ -574,6 +574,18 @@ def _run_machine(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> di
             error.get("message", "the command refused without saying why"),
             error.get("detail"),
         )
+    if completed.returncode != 0:
+        # The envelope is the authoritative answer for a command that speaks this
+        # contract, and such a command exits 0 whenever it emitted one. A success
+        # envelope beside a non-zero exit is therefore not a success reported
+        # twice, it is two channels contradicting each other, and nothing here can
+        # tell which one is right. A refusal is left alone: there both channels
+        # agree that something went wrong, and the envelope says more about it.
+        raise OpError(
+            "internal",
+            f"`{verb.cli_path}` reported success but exited {completed.returncode}",
+            {"stderr": stderr_tail},
+        )
     return {"contract_version": envelope["contract_version"], "data": envelope["data"]}
 
 
@@ -669,7 +681,14 @@ async def _run_one(entry: Any) -> dict[str, Any]:
             name, OpError("unavailable", absent["reason"], {"summary": absent["summary"]}), None
         )
 
-    args = entry.get("args") or {}
+    # Absent and null both mean "no arguments"; anything else is judged on its
+    # type. `or {}` would have collapsed every falsy value — an empty list, an
+    # empty string, false — into the no-arguments case, so a caller passing the
+    # wrong shape was told its op succeeded and its input was dropped, which is
+    # the one answer closed validation exists to make impossible.
+    args = entry.get("args")
+    if args is None:
+        args = {}
     if not isinstance(args, dict):
         return _op_error(
             name, OpError("invalid_input", f"args is an object, got {type(args).__name__}"), None

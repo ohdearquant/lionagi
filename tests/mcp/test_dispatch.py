@@ -320,6 +320,63 @@ def test_a_refusal_from_the_machine_command_keeps_its_kind(monkeypatch):
     assert answer["ops"][0]["error"]["kind"] == "not_found"
 
 
+def test_a_success_envelope_beside_a_non_zero_exit_is_not_a_success(monkeypatch):
+    """Two channels contradicting each other is not an answer.
+
+    A command that speaks this contract exits 0 whenever it emitted an envelope,
+    so a success envelope from a child that exited non-zero says the child is not
+    speaking it. Nothing here can tell which channel is right, and reporting the
+    envelope means a caller reads a crash as a result.
+    """
+    envelope = json.dumps({"ok": True, "contract_version": 1, "data": {"x": 1}, "error": None})
+    monkeypatch.setattr(
+        dispatch.config,
+        "li_command",
+        lambda: [sys.executable, "-c", f"print({envelope!r}); raise SystemExit(7)"],
+    )
+    answer = call(ops=[{"op": "handshake"}])
+    assert answer["ops"][0]["ok"] is False
+    assert "exited 7" in answer["ops"][0]["error"]["message"]
+
+
+def test_a_refusal_envelope_beside_a_non_zero_exit_keeps_its_own_error(monkeypatch):
+    """The complement: there the channels agree, so the envelope says more."""
+    envelope = json.dumps(
+        {
+            "ok": False,
+            "contract_version": 1,
+            "data": None,
+            "error": {"kind": "not_found", "message": "nothing here", "detail": None},
+        }
+    )
+    monkeypatch.setattr(
+        dispatch.config,
+        "li_command",
+        lambda: [sys.executable, "-c", f"print({envelope!r}); raise SystemExit(3)"],
+    )
+    answer = call(ops=[{"op": "handshake"}])
+    assert answer["ops"][0]["error"]["kind"] == "not_found"
+
+
+@pytest.mark.parametrize("bad", [[], "", False, 0, 0.0, "args"], ids=repr)
+def test_args_that_is_not_an_object_is_refused_even_when_it_is_falsey(bad):
+    """A falsey non-object used to become `{}` before its type was ever checked.
+
+    The type check below it was unreachable for exactly the values a caller is
+    most likely to send by mistake, so the op ran with the caller's input
+    silently discarded and reported success — which is the answer closed
+    validation exists to make impossible.
+    """
+    answer = call(ops=[{"op": "job.list", "args": bad}])
+    assert answer["ops"][0]["ok"] is False
+    assert answer["ops"][0]["error"]["kind"] == "invalid_input"
+
+
+@pytest.mark.parametrize("absent", [{"op": "job.list"}, {"op": "job.list", "args": None}])
+def test_no_arguments_may_be_spelled_as_absent_or_null(absent):
+    assert call(ops=[absent])["ops"][0]["ok"] is True
+
+
 # ── response conventions ─────────────────────────────────────────────────────
 
 
