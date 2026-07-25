@@ -321,8 +321,11 @@ TEAM_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["team"]
 # same transaction as the status/status_transitions write — keeps a caller
 # from splitting a status change and a dependent column (e.g. ended_at) into
 # two transactions that a crash between them could leave inconsistent.
+# node_metadata is here for the same reason: it carries the process markers
+# the sweeps use to answer "is this still alive", a question they only ask of
+# rows their status filter already selected.
 EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
-    "session": frozenset({"ended_at"}),
+    "session": frozenset({"ended_at", "node_metadata"}),
     "invocation": frozenset({"ended_at"}),
 }
 

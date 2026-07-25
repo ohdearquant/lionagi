@@ -992,6 +992,102 @@ async def _flush_pending_message_events(ctx: dict) -> None:
         await retry_queue.flush()
 
 
+async def _reopen_session_for_resume(db, session_id: str, existing_session: dict | None) -> bool:
+    """Return a resumed session to ``running`` so its next close is a real change.
+
+    A session's closing transition only announces itself when the status
+    actually changes. A resume adopts a session an earlier leg already took
+    terminal, so writing that same terminal status at the end is not a change:
+    the leg finishes without announcing anything, the completion notice never
+    arrives, and the job record never closes. Reopening first restores the
+    invariant the rest of the system reads off this column, which is that a
+    session marked terminal is not currently executing.
+
+    Reopening is the only sanctioned exit from a terminal status, so it carries
+    an override. That is not a formality to satisfy the guard: it is what makes
+    each reopening attributable. Declaring a terminal-to-running edge in the
+    session policy would have satisfied the guard too, and would have permitted
+    terminal exit for every writer in the system, while finality is exactly what
+    the reapers, the teardown guard and ``li wait`` all rest on.
+    """
+    from lionagi.cli.kill import current_pid_markers
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+    from lionagi.state.reasons import SessionReasons
+
+    if not existing_session or existing_session.get("status") not in SESSION_TERMINAL_STATUSES:
+        # Not terminal: a resume racing a live leg on the same branch. The row
+        # already describes the session correctly, so there is nothing to reopen.
+        return False
+
+    # Liveness is judged from the process markers on the row, and a reopened
+    # session used to carry the markers of the leg that already exited. A
+    # terminal session is never checked for liveness, so those markers were
+    # harmless while it was terminal; a running one is checked, so leaving them
+    # would describe this live leg by a dead process. They move in the same
+    # transaction as the status: the sweeps select on status and then answer
+    # "is it alive" from these markers, so a row that is running for even an
+    # instant with the previous leg's markers is a row they can cancel.
+    # Anything that is not a JSON object is dropped rather than raised on: every
+    # reader of this column already ignores what it cannot read as one, and a
+    # resume must not fail on its own bookkeeping. The markers are the part that
+    # has to be right.
+    node_metadata = existing_session.get("node_metadata")
+    if isinstance(node_metadata, str):
+        try:
+            node_metadata = json.loads(node_metadata)
+        except ValueError:
+            node_metadata = None
+    if not isinstance(node_metadata, dict):
+        node_metadata = {}
+
+    try:
+        applied = await db.update_status(
+            "session",
+            session_id,
+            new_status="running",
+            reason_code=SessionReasons.REOPENED_BY_RESUME,
+            reason_summary="branch resumed by a new leg",
+            source="executor",
+            actor=session_id,
+            expected_statuses=SESSION_TERMINAL_STATUSES,
+            extra_fields={
+                "ended_at": None,
+                "node_metadata": json.dumps({**node_metadata, **current_pid_markers()}),
+            },
+            override=True,
+            override_actor="cli.resume",
+            override_justification="branch resumed by a new leg; the session is executing again",
+        )
+    except LookupError:
+        # update_status reports a missing row this way. The row was read a
+        # moment ago and is gone now: maintenance removes old terminal sessions
+        # and holds each candidate for the length of its transaction, so a
+        # resume that arrives just before one starts is let through only after
+        # it commits, to find nothing there. That is a legitimate outcome
+        # rather than a failure of this leg — there is no session to reopen,
+        # and the caller falls back to starting one.
+        _log.warning(
+            "session %s no longer exists and was not reopened for resume; "
+            "this leg will record itself under a new session",
+            session_id,
+        )
+        return False
+
+    if not applied:
+        # A resumed leg must not fail because its bookkeeping lost a race, but
+        # the consequence is worth saying out loud: this leg will finish without
+        # announcing itself, and from the outside that is indistinguishable from
+        # a leg that is still running.
+        _log.warning(
+            "session %s was not reopened for resume; another writer moved it "
+            "first, so this leg will close without emitting a terminal notice",
+            session_id,
+        )
+        return False
+
+    return True
+
+
 async def setup_agent_persist(
     branch: Branch,
     *,
@@ -1019,9 +1115,28 @@ async def setup_agent_persist(
         db = await _open_shared_db()
 
         existing_branch = await db.get_branch(branch_id)
+        existing_session = None
+        if existing_branch:
+            existing_session = await db.get_session(existing_branch["session_id"])
+            if existing_session is not None and not await _reopen_session_for_resume(
+                db, existing_branch["session_id"], existing_session
+            ):
+                # The reopen declines for three reasons and one of them is that
+                # the session is no longer there — maintenance removes old
+                # terminal sessions, and a resume can arrive as one commits.
+                # Confirm the row before reading anything else out of a copy of
+                # it that may describe a row that no longer exists.
+                existing_session = await db.get_session(existing_branch["session_id"])
+
+            if existing_session is None:
+                # Nothing to resume into. Branches are removed with their
+                # session, so this leg records itself the way a branch nobody
+                # has seen before does, rather than persisting against ids that
+                # no longer resolve.
+                existing_branch = None
+
         if existing_branch:
             session_id = existing_branch["session_id"]
-            existing_session = await db.get_session(session_id)
             session_prog_id = existing_session["progression_id"]
             branch_prog_id = existing_branch["progression_id"]
 
