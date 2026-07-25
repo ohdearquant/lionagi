@@ -627,6 +627,40 @@ a different framing and lifecycle protocol, and it breaks D1's "exactly one JSON
 on stdout" invariant, which is the single property that makes the current shape
 trivially parseable. It should not be weakened until a consumer genuinely needs it.
 
+## Consumer obligations
+
+A contract that only constrains the producer is half a contract. Everything below is
+required of a conforming consumer, and each one exists because the corresponding
+producer-side decision is defeated without it. They are collected here rather than left
+scattered through the decisions, because a consumer author needs the list of what is
+being asked of them in one place.
+
+1. **Validate `contract_version` on every envelope before decoding `data`** (D2). A
+   handshake governs registration only, and the binary at a pinned path is replaced
+   during normal operation.
+2. **Ignore unrecognised fields** (D2). Additive change is only free if the other side
+   actually tolerates it.
+3. **Never map `status` onto a local set** (D4). Record and display it verbatim; branch
+   on `terminal` and `outcome`.
+4. **Never render `available: false` as "none"** (D7). Absence of evidence is not
+   evidence of absence, and the whole wrapper exists to stop those sharing an encoding.
+5. **Check the exit status before parsing stdout, and do not parse it at all on 78**
+   (D8). Attributing an environment fault to the submitted work is the misattribution
+   this contract was written to remove.
+6. **Never treat a terminal notice as proof, or as the only discovery path** (D9).
+   Delivery can fail, and the record of that failure lives in state a non-polling
+   consumer is not reading.
+7. **Have a defined policy for a run still pending when a bounded wait expires** (D10,
+   D6). This is the obligation created by v1's liveness choice, and it is the one most
+   likely to be skipped, because most runs resolve and the case looks like an edge. It is
+   not an edge: v1 states that nothing terminalises an orphan, so a consumer that runs
+   long enough **will** meet a run that is pending and never resolves, and this contract
+   does not supply the policy for it. Give up after N attempts, escalate to a human, mark
+   it abandoned in your own store — any of those is conforming. Having no policy is not,
+   because the failure mode is a consumer that waits forever on a run nobody will ever
+   finish, or three integrators each inventing a different timeout behaviour, which is
+   the divergence removed from the specification arriving back through the consumers.
+
 ## Consequences
 
 **Easier.** A second consumer can be written without reading lionagi's source, and
