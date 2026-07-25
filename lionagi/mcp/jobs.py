@@ -260,7 +260,7 @@ def _reject_oversized_argv(argv: list[str], env: dict[str, str], *, kind: str) -
         return
 
     advice = (
-        "Shorten the instruction, or use submit_agent, which hands the instruction "
+        "Shorten the instruction, or use agent.submit, which hands the instruction "
         "to the run in a file instead of on the command line."
     )
 
