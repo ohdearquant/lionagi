@@ -692,32 +692,7 @@ def test_plugin_info_reports_an_unknown_name(registry):
     assert surface.plugin_info("nope")["ok"] is False
 
 
-def test_plugin_trust_records_trust_and_echoes_what_was_approved(registry, monkeypatch):
-    record = registry.get("alpha")
-    record.manifest = type("M", (), {"name": "alpha"})()
-    trusted: list = []
-    monkeypatch.setattr("lionagi.plugins.trust.trust_plugin", trusted.append)
-    monkeypatch.setattr(
-        "lionagi.plugins.trust.build_trust_disclosure",
-        lambda r: {"name": r.name, "tools": []},
-    )
-
-    result = surface.plugin_trust("alpha")
-
-    assert trusted == [record]
-    assert result == {
-        "ok": True,
-        "name": "alpha",
-        "trusted": True,
-        "disclosure": {"name": "alpha", "tools": []},
-    }
-
-
-def test_plugin_trust_refuses_a_plugin_with_no_valid_manifest(registry):
-    result = surface.plugin_trust("zeta")
-
-    assert result["ok"] is False
-    assert "unknown or invalid" in result["error"]
+# Granting trust is not reachable from this surface; see tests/mcp/test_privilege_fence.py.
 
 
 @pytest.mark.parametrize("enabled", [True, False])

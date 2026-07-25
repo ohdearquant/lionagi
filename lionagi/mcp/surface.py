@@ -1065,44 +1065,12 @@ def plugin_info(name: str) -> dict[str, Any]:
     return {"ok": True, "plugin": info, "disclosure": build_trust_disclosure(record)}
 
 
-def plugin_trust(name: str) -> dict[str, Any]:
-    """Approve a plugin so its tools, hooks and profiles actually load.
-
-    Trust is content-pinned: a sha256 of every declared file is recorded, and
-    any later edit flips the plugin back to ``changed`` until it is trusted
-    again. This grants a bundle the right to run code in your process, so read
-    ``plugin_info`` first — the disclosure it returns is exactly what is being
-    approved, and is echoed back here as ``disclosure``.
-
-    Returns ``{"ok": true, "name": ..., "trusted": true, "disclosure": {...}}``.
-
-    Args:
-        name: Plugin to trust. Its bundle is re-scanned first, so what is
-            pinned is what is on disk right now.
-    """
-    from lionagi import plugins as plugins_mod
-    from lionagi.plugins.discovery import discover_plugins
-    from lionagi.plugins.trust import build_trust_disclosure, trust_plugin
-
-    plugins_mod.PluginRegistry.reset()
-    record = plugins_mod.PluginRegistry.get(name)
-    if record is None or record.manifest is None:
-        return _err(f"unknown or invalid plugin: {name!r}")
-    # Trust needs the freshly-discovered bundle (declared files + manifest),
-    # not the registry's summary record.
-    discovered = next(
-        (d for d in discover_plugins() if d.manifest is not None and d.manifest.name == name),
-        None,
-    )
-    if discovered is None:
-        return _err(f"plugin {name!r} disappeared during trust; re-run plugin_list")
-    disclosure = build_trust_disclosure(discovered)
-    try:
-        trust_plugin(discovered)
-    except FileNotFoundError as exc:
-        return _err(str(exc))
-    plugins_mod.PluginRegistry.reset()
-    return {"ok": True, "name": name, "trusted": True, "disclosure": disclosure}
+# Granting a plugin trust is deliberately absent from this surface. Trust lets a
+# bundle run code in the process, and every caller here is an agent, so exposing
+# it would let the thing being trusted be the thing that grants the trust. Read
+# the disclosure with ``plugin_info``; approving it stays a human step at a
+# terminal (``li plugin trust``). Schema migration is excluded for the same
+# reason: it rewrites the store the rest of these tools report on.
 
 
 def plugin_set_enabled(name: str, enabled: bool) -> dict[str, Any]:
@@ -1246,7 +1214,6 @@ TOOLS = (
     casts_get,
     plugin_list,
     plugin_info,
-    plugin_trust,
     plugin_set_enabled,
     invoke_start,
     invoke_end,
