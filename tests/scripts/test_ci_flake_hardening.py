@@ -226,10 +226,9 @@ def test_worker_restart_is_disabled_by_the_project_config(request: pytest.Fixtur
     # Scope, stated because the name would otherwise overpromise: this covers
     # callers that discover the project's pytest configuration, which is every
     # ordinary invocation from the repository. A caller that selects a different
-    # config with `pytest -c <file>` gets that file's addopts instead -- an
-    # empty list, and so xdist's restarting default. No setting here can reach
-    # such a caller; protecting one means putting the flag in the config it
-    # actually names.
+    # config with `pytest -c <file>` uses that file's addopts instead, so it is
+    # protected only if that file sets the flag itself; otherwise xdist's
+    # restarting default applies. Nothing set here can reach such a caller.
     #
     # Without this, a crashed worker is restarted and the replacement may never
     # be scheduled, leaving the run blocked in the controller with no test name
