@@ -229,7 +229,7 @@ def reserve_stdout() -> Iterator[MachineChannel]:
     except (ValueError, OSError):
         pass
 
-    saved_fd: int | None
+    saved_fd: int | None = None
     try:
         saved_fd = os.dup(1)
         os.dup2(2, 1)
@@ -237,6 +237,17 @@ def reserve_stdout() -> Iterator[MachineChannel]:
         # No usable descriptor (an embedding with a non-file stdout, say). The
         # Python-level rebinding below still holds, so the envelope is still the
         # only thing written to the stream the caller gave us.
+        #
+        # The duplicate is closed here rather than left to the exit path, because
+        # the two calls fail independently: `dup` can succeed and `dup2` fail on
+        # the very next line, and the exit path only closes a descriptor it was
+        # told to restore. A long-lived process running machine commands with no
+        # usable stderr would otherwise leak one descriptor per call.
+        if saved_fd is not None:
+            try:
+                os.close(saved_fd)
+            except OSError:
+                pass
         saved_fd = None
 
     original_stdout = sys.stdout

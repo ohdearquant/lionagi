@@ -11,6 +11,7 @@ decides which of the exit status and the envelope answers.
 
 from __future__ import annotations
 
+import errno
 import importlib
 import json
 import os
@@ -196,6 +197,33 @@ def test_stdout_is_restored_afterwards(capfd):
 
     print("back on stdout")
     assert "back on stdout" in capfd.readouterr().out
+
+
+def test_no_descriptor_is_left_behind_when_the_redirect_cannot_be_installed(monkeypatch):
+    """The two syscalls fail independently, so the first one's result needs closing.
+
+    `dup` can succeed and the `dup2` on the next line fail — an embedding with no
+    usable stderr is the realistic case. The exit path only closes a descriptor it
+    was told to restore, so without an explicit close the duplicate survives the
+    call, once per call, for as long as the process runs.
+    """
+    real_dup2 = os.dup2
+
+    def no_stderr_redirect(source, target, *args, **kwargs):
+        if (source, target) == (2, 1):
+            raise OSError(errno.EBADF, "Bad file descriptor")
+        return real_dup2(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(os, "dup2", no_stderr_redirect)
+
+    def open_descriptors() -> int:
+        return len(os.listdir("/dev/fd"))
+
+    before = open_descriptors()
+    for _ in range(5):
+        with machine.reserve_stdout() as channel:
+            channel.emit(machine.ok({}))
+    assert open_descriptors() == before
 
 
 def test_a_second_envelope_is_refused():
