@@ -23,6 +23,15 @@ def call(**kwargs):
     return asyncio.run(dispatch.request(**kwargs))
 
 
+def spawn_op(op: str, args: dict) -> dict:
+    """A spawn op carrying the fingerprint its verb requires.
+
+    Fetched the way a caller has to fetch it, so these tests exercise the
+    round-trip rather than reaching past it.
+    """
+    return {"op": op, "args": args, "schema_fingerprint": call(help=op)["schema_fingerprint"]}
+
+
 @pytest.fixture
 def submitted(monkeypatch):
     """Capture what a spawn verb hands the job engine; nothing is spawned."""
@@ -113,7 +122,7 @@ def test_ops_over_the_documented_maximum_is_an_error_not_a_truncation():
 
 
 def test_a_misspelled_parameter_is_refused_by_name(submitted):
-    answer = call(ops=[{"op": "agent.submit", "args": {"tiemout": 30}}])
+    answer = call(ops=[spawn_op("agent.submit", {"tiemout": 30})])
     error = answer["ops"][0]["error"]
     assert error["kind"] == "invalid_input"
     assert "tiemout" in error["message"]
@@ -122,7 +131,7 @@ def test_a_misspelled_parameter_is_refused_by_name(submitted):
 def test_a_rejected_op_carries_the_schema_it_was_judged_against(submitted):
     # This is what makes the first mistake cost one round-trip: the caller is
     # told the shape in the same reply that refuses them.
-    answer = call(ops=[{"op": "agent.submit", "args": {"nope": 1}}])
+    answer = call(ops=[spawn_op("agent.submit", {"nope": 1})])
     schema = answer["ops"][0]["error"]["schema"]
     assert schema["title"] == "agent.submit"
     assert "timeout" in schema["properties"]
@@ -143,18 +152,14 @@ def test_a_flag_that_is_legal_bare_still_only_takes_what_it_declares(submitted, 
     # literal true. Two alternatives is not "anything": admitting a value neither
     # branch describes would make the advertised schema and the admitted set two
     # different contracts, and the value reaches argv either way.
-    answer = call(
-        ops=[{"op": "flow.submit", "args": {"query": ["m", "do it"], "with_synthesis": value}}]
-    )
+    answer = call(ops=[spawn_op("flow.submit", {"query": ["m", "do it"], "with_synthesis": value})])
     assert answer["ops"][0]["ok"] is False, value
     assert "expects string or the literal true" in answer["ops"][0]["error"]["message"]
 
 
 @pytest.mark.parametrize("value", ["gpt-5", True], ids=["string", "bare"])
 def test_a_flag_that_is_legal_bare_takes_both_forms_it_declares(submitted, value):
-    answer = call(
-        ops=[{"op": "flow.submit", "args": {"query": ["m", "do it"], "with_synthesis": value}}]
-    )
+    answer = call(ops=[spawn_op("flow.submit", {"query": ["m", "do it"], "with_synthesis": value})])
     assert answer["ops"][0]["ok"] is True, value
     expected = "--with-synthesis" if value is True else f"--with-synthesis={value}"
     assert expected in submitted["flags"]
@@ -162,12 +167,12 @@ def test_a_flag_that_is_legal_bare_takes_both_forms_it_declares(submitted, value
 
 def test_a_flag_a_detached_run_cannot_honour_is_refused_with_its_reason(submitted):
     # Accepting it and dropping it would leave the caller believing it applied.
-    answer = call(ops=[{"op": "agent.submit", "args": {"verbose": True}}])
+    answer = call(ops=[spawn_op("agent.submit", {"verbose": True})])
     assert "job.output" in answer["ops"][0]["error"]["message"]
 
 
 def test_a_missing_required_parameter_names_itself(submitted):
-    answer = call(ops=[{"op": "play.submit", "args": {}}])
+    answer = call(ops=[spawn_op("play.submit", {})])
     assert "missing required parameter 'playbook'" in answer["ops"][0]["error"]["message"]
 
 
@@ -197,9 +202,9 @@ def test_the_synonym_sunset_lives_in_one_named_constant():
 def test_a_spawn_verb_renders_the_tokens_the_cli_parser_declares(submitted):
     answer = call(
         ops=[
-            {
-                "op": "agent.submit",
-                "args": {
+            spawn_op(
+                "agent.submit",
+                {
                     "query": ["claude/opus"],
                     "prompt": "hello",
                     "agent": "implementer",
@@ -209,7 +214,7 @@ def test_a_spawn_verb_renders_the_tokens_the_cli_parser_declares(submitted):
                     "label": "probe",
                     "notify_seat": "seat",
                 },
-            }
+            )
         ]
     )
     assert answer["ops"][0]["ok"] is True
@@ -230,7 +235,7 @@ def test_a_spawn_verb_renders_the_tokens_the_cli_parser_declares(submitted):
 
 
 def test_a_boolean_only_reaches_argv_when_it_differs_from_the_parser_default(submitted):
-    call(ops=[{"op": "agent.submit", "args": {"query": ["m"], "yolo": False}}])
+    call(ops=[spawn_op("agent.submit", {"query": ["m"], "yolo": False})])
     assert "--yolo" not in submitted["flags"]
 
 
@@ -240,7 +245,7 @@ def test_each_spawn_verb_reaches_its_own_run_kind(submitted):
         ("flow.submit", "flow"),
         ("fanout.submit", "fanout"),
     ):
-        call(ops=[{"op": verb, "args": {"query": ["m", "do it"]}}])
+        call(ops=[spawn_op(verb, {"query": ["m", "do it"]})])
         assert submitted["kind"] == kind
 
 
@@ -328,3 +333,77 @@ def test_server_info_reports_one_advertised_tool():
     assert info["tool_count"] == 1
     assert info["verb_count"] == len(verbs.VERBS)
     assert info["absent_verb_count"] == len(verbs.ABSENT)
+
+
+# ── the spawn fingerprint ────────────────────────────────────────────────────
+#
+# Collapsing the surface to one tool makes discovery a call; it does not make
+# discovery happen. These pin what the requirement does and does not establish.
+
+
+def test_help_for_a_spawn_verb_returns_a_fingerprint(submitted):
+    answer = call(help="agent.submit")
+    assert answer["schema_fingerprint"]
+    assert answer["schema_fingerprint"] == call(help="agent.submit")["schema_fingerprint"]
+
+
+@pytest.mark.parametrize("verb", ["job.status", "job.wait", "job.kill", "server.info"])
+def test_a_verb_that_is_not_a_spawn_neither_offers_nor_demands_one(verb):
+    # The kill path is the deliberate exemption: a discovery round-trip in front
+    # of stopping a runaway run is friction at the moment it is most expensive.
+    assert "schema_fingerprint" not in call(help=verb)
+    answer = call(ops=[{"op": verb, "args": {"run_id": "nope"} if verb != "server.info" else {}}])
+    error = answer["ops"][0].get("error") or {}
+    assert error.get("kind") != "stale_schema"
+
+
+def test_a_spawn_op_without_a_fingerprint_is_refused_with_the_call_that_fixes_it(submitted):
+    answer = call(ops=[{"op": "agent.submit", "args": {"query": ["m"]}}])
+    error = answer["ops"][0]["error"]
+    assert error["kind"] == "stale_schema"
+    assert error["detail"]["help"] == "agent.submit"
+    assert error["detail"]["schema_fingerprint"] == call(help="agent.submit")["schema_fingerprint"]
+    assert submitted == {}
+
+
+def test_a_stale_fingerprint_is_refused_and_says_it_is_the_schema_that_moved(submitted):
+    answer = call(
+        ops=[
+            {
+                "op": "agent.submit",
+                "args": {"query": ["m"]},
+                "schema_fingerprint": "0000000000000000",
+            }
+        ]
+    )
+    error = answer["ops"][0]["error"]
+    assert error["kind"] == "stale_schema"
+    assert "changed since that schema was read" in error["message"]
+    assert submitted == {}
+
+
+def test_the_fingerprint_follows_the_schema_it_describes():
+    # A fingerprint that did not move when the parameters moved would let a caller
+    # validate against one shape and run another, which is the only thing this
+    # mechanism actually guarantees.
+    schema = call(help="agent.submit")["schema"]
+    moved = json.loads(json.dumps(schema))
+    moved["properties"]["a_parameter_that_did_not_exist"] = {"type": "string"}
+    assert dispatch.schema_fingerprint(moved) != dispatch.schema_fingerprint(schema)
+
+
+def test_the_fingerprint_is_not_a_claim_that_anyone_read_the_schema(submitted):
+    # Written down as a test because the ADR states the limit and a reader of the
+    # code should meet it here too: the value is transferable, so a caller who
+    # inherited it from a prompt template passes exactly like one who fetched it.
+    inherited = call(help="flow.submit")["schema_fingerprint"]
+    answer = call(
+        ops=[
+            {
+                "op": "flow.submit",
+                "args": {"query": ["m", "do it"]},
+                "schema_fingerprint": inherited,
+            }
+        ]
+    )
+    assert answer["ops"][0]["ok"] is True

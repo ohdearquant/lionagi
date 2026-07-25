@@ -23,6 +23,7 @@ moves in the CLI moves here with it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -176,10 +177,61 @@ def catalog() -> dict[str, Any]:
         "help_usage": (
             "help=true returns this catalog; help='<verb>' returns that verb's full "
             "parameter schema; help={'verb': '<verb>', 'playbook': '<name>'} resolves a "
-            "playbook's own declared arguments into the schema."
+            "playbook's own declared arguments into the schema. A spawn verb's help also "
+            "returns a schema_fingerprint, which that verb's ops must carry: "
+            "{'op': 'agent.submit', 'args': {...}, 'schema_fingerprint': '<from help>'}."
         ),
         "synonyms_removed_after": SYNONYM_REMOVAL_DATE,
     }
+
+
+# ── schema fingerprint ───────────────────────────────────────────────────────
+
+
+def schema_fingerprint(schema: dict[str, Any]) -> str:
+    """A short digest of a verb's schema, stable across processes.
+
+    Derived from the schema's own content, so it changes exactly when the
+    parameters a caller would have read change, and not when anything else about
+    the build does.
+    """
+    body = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(body.encode()).hexdigest()[:16]
+
+
+def _require_fingerprint(name: str, verb: Verb, schema: dict[str, Any], supplied: Any) -> None:
+    """Spawn ops carry the fingerprint targeted help returned for them.
+
+    What this establishes is agreement: the schema the caller validated against is
+    the schema about to run. For a caller that fetched it, it also means the
+    parameters were in that caller's context first, which is the whole reason a
+    wide spawn surface is discoverable at all rather than merely documented. It
+    does not establish that in general — a fingerprint is a string and can be
+    inherited from someone who did read the schema.
+
+    The refusal carries its own remedy, because a rejection that only says
+    "stale" strands exactly the caller this exists to help.
+    """
+    current = schema_fingerprint(schema)
+    if supplied == current:
+        return
+    remedy = {
+        "help": {"verb": name} if verb.playbook_aware else name,
+        "schema_fingerprint": current,
+    }
+    if supplied is None:
+        raise OpError(
+            "stale_schema",
+            f"{name!r} needs the schema_fingerprint that help returns for it; "
+            f"ask for help={name!r} and send its schema_fingerprint with the op",
+            remedy,
+        )
+    raise OpError(
+        "stale_schema",
+        f"{name!r} was called with schema_fingerprint {supplied!r}, which is not the "
+        f"current {current!r}; the parameters changed since that schema was read",
+        remedy,
+    )
 
 
 # ── closed argument validation ───────────────────────────────────────────────
@@ -538,7 +590,10 @@ def _help(target: Any) -> dict[str, Any]:
         schema = verb_schema(verb, playbook=playbook)
     except projection.SchemaProjectionError as exc:
         raise ValueError(f"{resolved!r} has no describable schema: {exc}") from exc
-    return {"verb": resolved, "schema": schema}
+    answer = {"verb": resolved, "schema": schema}
+    if verb.executor == "spawn":
+        answer["schema_fingerprint"] = schema_fingerprint(schema)
+    return answer
 
 
 def _unknown_verb(name: Any, resolved: str) -> dict[str, Any]:
@@ -570,7 +625,7 @@ async def _run_one(entry: Any) -> dict[str, Any]:
         return _op_error(
             "?", OpError("invalid_input", f"each op is an object, got {type(entry).__name__}"), None
         )
-    unknown_keys = sorted(set(entry) - {"op", "args"})
+    unknown_keys = sorted(set(entry) - {"op", "args", "schema_fingerprint"})
     raw_op = entry.get("op")
     try:
         name = resolve(raw_op)
@@ -581,7 +636,10 @@ async def _run_one(entry: Any) -> dict[str, Any]:
     if unknown_keys:
         return _op_error(
             name,
-            OpError("invalid_input", f"an op takes 'op' and 'args'; got {unknown_keys}"),
+            OpError(
+                "invalid_input",
+                f"an op takes 'op', 'args' and 'schema_fingerprint'; got {unknown_keys}",
+            ),
             None,
         )
 
@@ -607,6 +665,8 @@ async def _run_one(entry: Any) -> dict[str, Any]:
     try:
         playbook = args.get("playbook") if verb.playbook_aware else None
         schema = verb_schema(verb, playbook=playbook if isinstance(playbook, str) else None)
+        if verb.executor == "spawn":
+            _require_fingerprint(name, verb, schema, entry.get("schema_fingerprint"))
         _validate(schema, args, verb)
         if verb.executor == "spawn":
             result = _run_spawn(verb, schema, args)

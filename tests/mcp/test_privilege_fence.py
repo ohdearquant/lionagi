@@ -54,6 +54,15 @@ def call(**kwargs):
     return asyncio.run(dispatch.request(**kwargs))
 
 
+def spawn_op(op: str, args: dict) -> dict:
+    """A spawn op carrying the fingerprint its verb requires.
+
+    Fetched the way a caller has to fetch it, so these tests exercise the
+    round-trip rather than reaching past it.
+    """
+    return {"op": op, "args": args, "schema_fingerprint": call(help=op)["schema_fingerprint"]}
+
+
 def test_the_fence_list_is_the_one_the_registry_states():
     assert set(verbs.FENCED_PATHS) == set(FENCED_PATHS)
 
@@ -133,7 +142,7 @@ def test_a_spawn_verb_cannot_be_argued_into_a_different_command(monkeypatch):
         return {"run_id": "rid"}
 
     monkeypatch.setattr(jobs, "submit", fake_submit)
-    call(ops=[{"op": "agent.submit", "args": {"query": ["plugin", "trust", "evil"]}}])
+    call(ops=[spawn_op("agent.submit", {"query": ["plugin", "trust", "evil"]})])
     assert seen["kind"] == "agent"
     assert jobs._KIND_ARGV["agent"] == ["agent"]
     assert seen["flags"] == ["--", "plugin", "trust", "evil"]
@@ -156,7 +165,7 @@ def test_a_positional_that_looks_like_a_switch_stays_a_positional(monkeypatch, v
         return {"run_id": "rid"}
 
     monkeypatch.setattr(jobs, "submit", fake_submit)
-    answer = call(ops=[{"op": "agent.submit", "args": {"query": [value]}}])
+    answer = call(ops=[spawn_op("agent.submit", {"query": [value]})])
     assert answer["ops"][0]["ok"] is True
     # Asserted on the rendering rather than on what a parser makes of it: where
     # the sentinel sits is the same on every Python, and it is what decides
@@ -173,14 +182,7 @@ def test_a_flag_value_that_looks_like_a_switch_stays_a_value(monkeypatch):
         return {"run_id": "rid"}
 
     monkeypatch.setattr(jobs, "submit", fake_submit)
-    call(
-        ops=[
-            {
-                "op": "agent.submit",
-                "args": {"query": ["hi"], "cwd": "--machine"},
-            }
-        ]
-    )
+    call(ops=[spawn_op("agent.submit", {"query": ["hi"], "cwd": "--machine"})])
     assert "--cwd=--machine" in seen["flags"]
     assert "--machine" not in seen["flags"]
     assert not machine.has_machine_flag(seen["flags"])
