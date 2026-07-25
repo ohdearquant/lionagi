@@ -24,12 +24,18 @@ from __future__ import annotations
 
 import functools
 import inspect
+import os
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastmcp import FastMCP
 from pydantic import Field
 from pydantic.fields import FieldInfo
+
+from lionagi.cli.machine import CONTRACT_VERSION
+from lionagi.version import __version__
 
 from . import jobs
 from . import surface as _surface
@@ -44,6 +50,10 @@ from .observability import register_observability_tools
 # (the command it launches), not by this string, and the tool names are unchanged.
 SERVER_NAME = "lion"
 PREVIOUS_SERVER_NAME = "lionagi"
+
+# Stamped at import so server_info can report which build is actually serving.
+_STARTED_AT = datetime.now(timezone.utc).isoformat()
+_STARTED_MONOTONIC = time.time()
 
 mcp = FastMCP(SERVER_NAME)
 
@@ -918,6 +928,39 @@ def jobs_list(limit: int = 50, status: str | None = None) -> list[dict[str, Any]
 
 
 _surface.register(mcp)
+
+
+@mcp.tool
+async def server_info() -> dict[str, Any]:
+    """What this server is, and whether it is the build you expect.
+
+    A server process loads its code once, at startup, and serves that code for
+    as long as it lives. Updating the installation on disk therefore changes
+    nothing about a server already running: it goes on advertising exactly the
+    tools it started with. No tool result reveals this, so a caller looking for a
+    capability added after its server started sees only that the tool is absent,
+    which is indistinguishable from the capability never having been built.
+
+    That is the question this answers, in one call. Check ``tools`` for the
+    capability you came for, or ``lionagi_version`` against the version you
+    expect. If either is behind, the fix is restarting the server process;
+    reinstalling on its own will not do it, and neither will a retry.
+
+    Returns ``lionagi_version``, ``contract_version`` (the machine-result
+    envelope version this build speaks), ``started_at``, ``uptime_seconds``,
+    ``tools`` (every registered tool name, sorted), ``tool_count`` and ``pid``.
+    """
+    names = sorted(t.name for t in await mcp.list_tools())
+    return {
+        "server_name": SERVER_NAME,
+        "lionagi_version": __version__,
+        "contract_version": CONTRACT_VERSION,
+        "started_at": _STARTED_AT,
+        "uptime_seconds": round(time.time() - _STARTED_MONOTONIC, 3),
+        "tools": names,
+        "tool_count": len(names),
+        "pid": os.getpid(),
+    }
 
 
 def main() -> None:
