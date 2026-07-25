@@ -275,9 +275,11 @@ another copy of our rules living in code we do not control.
   failure (D5) — never by matching `status` against a set, and never computed by a reader.
   In v1 those are the only two sources; the deferred reconciler in D6 would be a third.
 - `outcome` answers **"did the work come out right"**. It is a **closed** vocabulary,
-  `succeeded | failed | indeterminate`, meaningful only when `terminal` is true and `null`
-  while the run is in flight. Being closed, it may be branched on, and a new value costs a
-  version increment. It is the producer's derivation, on the same principle as `terminal`:
+  `succeeded | failed | indeterminate`, and it is **`null` whenever `terminal` is false**.
+  Stated against `terminal` rather than against "the run is still going", because v1 has a
+  state that is neither: an orphan has stopped and is still not terminal (D6), and a rule
+  phrased around being in flight would leave that case undefined. Being closed, `outcome`
+  may be branched on, and a new value costs a version increment. It is the producer's derivation, on the same principle as `terminal`:
   the party that owns the status vocabulary is the only party that can classify it without
   holding a copy.
 - Both are needed because they are different questions and their answers diverge.
@@ -607,11 +609,16 @@ starts from the constraints rather than rediscovering them:
   to prove absent, and it needs a durable producer-attempt identity to be resolvable in
   principle. A reconciler specified only for `started` cannot resolve `preparing`, and
   claiming otherwise was the defect that produced this deferral.
-- A rule for platforms where the identity cannot be obtained: **leave the run pending**
-  rather than improvise weaker evidence.
+- A decision, when it is designed, about platforms where that identity cannot be
+  obtained. The constraint to carry into it is that leaving the run pending beats
+  improvising weaker evidence, since weaker evidence is what the first three attempts at
+  this were made of.
 
-Adding it is additive under D2 only if `outcome`'s vocabulary and the terminal fields are
-already defined, which is why they are defined in v1.
+Everything in this list is a constraint on a future design, not a requirement on a v1
+implementation. Nothing here is normative: a v1 implementation has no reconciler, and the
+list exists so that whoever builds one starts from the constraints rather than
+rediscovering them. Adding it later is additive under D2 only because `outcome`'s
+vocabulary and the terminal fields are defined now, which is why they are.
 
 **DEFERRED: usage and cost accounting** — tokens, duration, and whatever else a metered
 consumer needs to bill a run. Not v1, and recorded here at the external consumer's request
