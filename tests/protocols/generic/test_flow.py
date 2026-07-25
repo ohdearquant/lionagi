@@ -394,3 +394,25 @@ class TestFlowDuplicateProgressionNames:
             progressions={"collections": [p1, p2]},
         )
         assert len(flow.progressions) == 2
+
+    def test_remove_by_uuid_purges_stale_name_after_direct_rename(self):
+        flow, nodes = _flow_with_items(1)
+        prog = _make_progression(nodes, name="before")
+        flow.add_progression(prog)
+
+        prog.name = "after"  # direct mutation; Flow has no back-reference
+        flow.remove_progression(prog.id)
+
+        assert "before" not in flow._progression_names
+        assert "after" not in flow._progression_names
+
+    def test_get_progression_resolves_new_name_after_direct_rename(self):
+        flow, nodes = _flow_with_items(1)
+        prog = _make_progression(nodes, name="before")
+        flow.add_progression(prog)
+
+        prog.name = "after"
+
+        with pytest.raises(ItemNotFoundError):
+            flow.get_progression("before")
+        assert flow.get_progression("after") is prog

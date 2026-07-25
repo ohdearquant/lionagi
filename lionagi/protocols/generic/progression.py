@@ -63,7 +63,12 @@ class Progression(Element, Ordering[T], Generic[T]):
     def __contains__(self, item: Any) -> bool:
         try:
             refs = validate_order(item)
-            return all(ref in self._members for ref in refs)
+            # Recomputed from `order` rather than the `_members` cache: `order`
+            # is a public mutable deque, so direct external mutation (e.g.
+            # `progression.order.append(x)`) can desync a cached set without
+            # this method ever knowing.
+            members = set(self.order)
+            return all(ref in members for ref in refs)
         except (ValueError, TypeError):
             return False
 

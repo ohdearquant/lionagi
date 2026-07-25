@@ -490,10 +490,21 @@ class Adaptable:
 
     @classmethod
     def _registry(cls) -> AdapterRegistry:
-        registry_attr = f"__adapter_registry_{cls.__name__}_{id(cls)}"
-        if not hasattr(cls, registry_attr):
-            setattr(cls, registry_attr, AdapterRegistry())
-        return getattr(cls, registry_attr)
+        # Own-registry check via `cls.__dict__` (not `hasattr`/`getattr`, which
+        # follow the MRO): a subclass without its own registry yet inherits a
+        # snapshot of the nearest ancestor's adapters, so e.g. `Operation`
+        # sees adapters `Node` already registered. Once seeded, the subclass
+        # registry is a distinct dict -- further registrations on either
+        # class never leak to the other.
+        if "_adapter_registry" not in cls.__dict__:
+            registry = AdapterRegistry()
+            for base in cls.__mro__[1:]:
+                parent_registry = base.__dict__.get("_adapter_registry")
+                if parent_registry is not None:
+                    registry._reg.update(parent_registry._reg)
+                    break
+            cls._adapter_registry = registry
+        return cls._adapter_registry
 
     @classmethod
     def register_adapter(cls, adapter_cls: type[Adapter]) -> None:
@@ -625,12 +636,22 @@ class AsyncAdapterRegistry:
 class AsyncAdaptable:
     """Mixin adding async adapt-from/adapt-to to any class."""
 
-    _async_registry: ClassVar[AsyncAdapterRegistry | None] = None
-
     @classmethod
     def _areg(cls) -> AsyncAdapterRegistry:
-        if cls._async_registry is None:
-            cls._async_registry = AsyncAdapterRegistry()
+        # Own-registry check via `cls.__dict__`, not `cls._async_registry is
+        # None`: the latter follows the MRO, so once a base class initializes
+        # its registry, every subclass's attribute lookup resolves to that
+        # same (non-None) object and `_areg()` returns it unchanged instead
+        # of creating its own -- child-only registrations then mutate the
+        # base's shared dict and leak to the base and every sibling.
+        if "_async_registry" not in cls.__dict__:
+            registry = AsyncAdapterRegistry()
+            for base in cls.__mro__[1:]:
+                parent_registry = base.__dict__.get("_async_registry")
+                if parent_registry is not None:
+                    registry._reg.update(parent_registry._reg)
+                    break
+            cls._async_registry = registry
         return cls._async_registry
 
     @classmethod

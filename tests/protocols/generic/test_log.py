@@ -68,6 +68,22 @@ class TestLogManagerConfig:
         with pytest.raises(ValueError):
             LogManagerConfig(hash_digits=-1)
 
+    def test_undotted_unsupported_extension_rejected(self):
+        # "txt" without a leading dot must be rejected the same way ".txt" is,
+        # not silently accepted as ".txt" by returning before the allow-list check.
+        with pytest.raises(ValueError):
+            LogManagerConfig(extension="txt")
+
+        with pytest.raises(ValueError):
+            LogManagerConfig(extension=".txt")
+
+    def test_jsonl_extension_accepted(self):
+        config = LogManagerConfig(extension="jsonl")
+        assert config.extension == ".jsonl"
+
+        config = LogManagerConfig(extension=".jsonl")
+        assert config.extension == ".jsonl"
+
 
 class TestLog:
     def test_create_from_dict(self):

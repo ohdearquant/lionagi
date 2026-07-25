@@ -150,28 +150,48 @@ class Flow(Element, Generic[E, P]):
             if progression.name:
                 self._progression_names[progression.name] = progression.id
 
+    def _purge_name_index(self, uid: UUID) -> None:
+        """Drop every name-index entry pointing at `uid`, however it got there."""
+        stale = [name for name, pid in self._progression_names.items() if pid == uid]
+        for name in stale:
+            del self._progression_names[name]
+
     def remove_progression(self, key: UUID | str | P) -> None:
         """Remove progression by UUID, name, or instance; raises ItemNotFoundError if absent."""
         with self._lock:
-            if isinstance(key, str) and key in self._progression_names:
-                uid = self._progression_names.pop(key)
-                self.progressions.pop(uid)
+            if isinstance(key, str):
+                prog = self.get_progression(key)
+                self._purge_name_index(prog.id)
+                self.progressions.pop(prog.id)
                 return
 
             uid = ID.get_id(key)
-            prog = self.progressions[uid]
-            if prog.name and prog.name in self._progression_names:
-                del self._progression_names[prog.name]
+            self.progressions[uid]
+            self._purge_name_index(uid)
             self.progressions.pop(uid)
 
     def get_progression(self, key: UUID | str | P) -> P:
         """Return progression by UUID, name, or instance; raises ItemNotFoundError if absent."""
         with self._lock:
-            if isinstance(key, str) and key in self._progression_names:
-                uid = self._progression_names[key]
-                return self.progressions[uid]
-
             if isinstance(key, str):
+                uid = self._progression_names.get(key)
+                if uid is not None:
+                    prog = self.progressions.get(uid, None)
+                    # A progression's `name` can be mutated directly (Progression
+                    # has no back-reference to this Flow), so a stored index
+                    # entry can point at a progression removed or renamed away
+                    # from `key`. Treat that as stale rather than trusting it.
+                    if prog is not None and prog.name == key:
+                        return prog
+                    del self._progression_names[key]
+
+                # Live scan repairs the index for a progression whose current
+                # name matches `key` but was never (or no longer) indexed.
+                for prog in self.progressions:
+                    if prog.name == key:
+                        self._progression_names[key] = prog.id
+                        return prog
+
                 try:
                     uid = ID.get_id(key)
                     return self.progressions[uid]

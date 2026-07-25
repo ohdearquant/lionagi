@@ -3,6 +3,7 @@ from pydantic import BaseModel
 
 from lionagi.operations.fields import ActionResponseModel
 from lionagi.protocols.generic.log import LogManagerConfig
+from lionagi.protocols.generic.progression import Progression
 from lionagi.protocols.types import (
     ActionRequest,
     AssistantResponse,
@@ -309,6 +310,37 @@ def test_clone_with_id_sender(branch_with_mock_imodel: Branch):
     cm = cloned.messages[0]
     assert cm.sender == msg.id
     assert cm.recipient == cloned.id
+
+
+def test_clone_preserves_evicted_active_context(branch_with_mock_imodel: Branch):
+    branch = branch_with_mock_imodel
+    msg1 = Instruction(
+        content={"instruction": "kept"},
+        sender=branch.user,
+        recipient=branch.id,
+    )
+    msg2 = Instruction(
+        content={"instruction": "evicted"},
+        sender=branch.user,
+        recipient=branch.id,
+    )
+    branch.messages.include(msg1)
+    branch.messages.include(msg2)
+
+    # Simulate context_tool eviction: only msg1 remains in the active view,
+    # even though both messages are still durably stored.
+    branch.metadata["current_progression"] = Progression(order=[msg1.id])
+
+    assert len(branch.msgs.progression) == 2
+    assert len(branch.progression) == 1
+
+    cloned = branch.clone()
+
+    assert len(cloned.msgs.progression) == 2
+    assert len(cloned.progression) == 1
+
+    active_contents = [cloned.messages[uid].content.instruction for uid in cloned.progression]
+    assert active_contents == ["kept"]
 
 
 @pytest.mark.asyncio

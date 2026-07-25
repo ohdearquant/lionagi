@@ -125,6 +125,18 @@ def test_next_empty():
         next(empty_prog)
 
 
+def test_direct_order_mutation_keeps_contains_accurate():
+    prog = Progression()
+    new_id = MockElement(value="x").id
+    prog.order.append(new_id)
+    assert len(prog) == 1
+    assert new_id in prog
+
+    prog.order.clear()
+    assert len(prog) == 0
+    assert new_id not in prog
+
+
 def test_clear(sample_progression):
     sample_progression.clear()
     assert len(sample_progression) == 0
