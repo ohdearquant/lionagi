@@ -282,6 +282,46 @@ def test_play_check_playbook_with_contract(tmp_path, monkeypatch, capsys):
     assert "review" in out and "notes" in out
 
 
+@pytest.mark.parametrize(
+    ("raised", "expected_code", "expected_text"),
+    [
+        (ModuleNotFoundError("No module named 'thing'", name="thing"), 78, "thing"),
+        (RuntimeError("profile is malformed"), 1, "could not be loaded"),
+    ],
+)
+def test_play_check_separates_a_missing_module_from_a_bad_profile(
+    tmp_path, monkeypatch, caplog, raised, expected_code, expected_text
+):
+    """`li play check` loads the named agent profile, and that import can fail two ways.
+
+    A malformed profile is a real finding and the check should report it as a
+    failure. A profile this installation cannot import is not a finding at all:
+    nothing was checked, and returning the same code makes a broken environment
+    look like a playbook with a broken profile - which sends someone to edit a
+    file that is fine.
+    """
+    pb_path = tmp_path / "withagent.playbook.yaml"
+    pb_path.write_text("name: withagent\nmodel: claude/sonnet\nprompt: do z\nagent: someprofile\n")
+
+    from lionagi.cli import orchestrate as _orch
+
+    def fake_resolve(name):
+        return (pb_path, None) if name == "withagent" else _orch._resolve_playbook_path(name)
+
+    def fake_load(name):
+        raise raised
+
+    monkeypatch.setattr(_orch, "_resolve_playbook_path", fake_resolve)
+    monkeypatch.setattr("lionagi.cli.main._resolve_playbook_path", fake_resolve, raising=False)
+    monkeypatch.setattr("lionagi.cli._providers.load_agent_profile", fake_load)
+
+    with caplog.at_level("ERROR"):
+        result = _handle_play_shortcut(["play", "check", "withagent"])
+
+    assert result == expected_code
+    assert expected_text in caplog.text
+
+
 def test_play_check_playbook_without_contract(tmp_path, monkeypatch, capsys):
     """A playbook without `artifacts:` exits 0 and reports verification skipped."""
     pb_path = tmp_path / "plain.playbook.yaml"

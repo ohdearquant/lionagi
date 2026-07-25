@@ -25,8 +25,11 @@ import pytest
 from lionagi.cli._util import (
     EXIT_CODE_BY_STATUS,
     EXIT_CODE_ENVIRONMENT_ERROR,
+    begin_invocation,
     clear_run_allocation,
+    end_invocation,
     mark_run_allocated,
+    run_was_allocated,
 )
 
 # `from lionagi.cli import main` is not a handle on this module. What it yields
@@ -243,6 +246,64 @@ def test_a_previous_invocations_run_does_not_suppress_the_report(monkeypatch, re
 
     assert cli_main.main([]) == EXIT_CODE_ENVIRONMENT_ERROR
     assert "sniffio" in "\n".join(reported)
+
+
+def test_an_overlapping_invocation_does_not_erase_an_allocation():
+    """The reset is the dangerous operation, so it only runs when nothing is in flight.
+
+    The two ways overlapping invocations can go wrong are not equally bad.
+    Seeing another invocation's allocation only re-raises, which is what
+    happened before any of this existed. Losing one asserts that nothing ran
+    while a run directory sits on disk, which is the false claim the exit code
+    exists to prevent, so that direction has to be impossible.
+    """
+    begin_invocation()
+    mark_run_allocated()
+
+    begin_invocation()  # a second invocation starts while the first is running
+    assert run_was_allocated(), "the second entry erased the first one's allocation"
+
+    end_invocation()
+    end_invocation()
+
+
+def test_a_finished_invocation_lets_the_next_one_reset():
+    """Guarding the reset must not disable it, or the marker latches on forever.
+
+    Once nothing is in flight the fact is stale, and a later broken environment
+    in the same process has to be reported as one.
+    """
+    begin_invocation()
+    mark_run_allocated()
+    end_invocation()
+
+    begin_invocation()
+    assert not run_was_allocated()
+    end_invocation()
+
+
+def test_the_marker_survives_allocation_on_another_thread(monkeypatch, reported):
+    """Allocation does not happen on the thread that returns the exit code.
+
+    `run_async` drives each command's async body on its own thread with its own
+    event loop, so a thread-local or a ContextVar would be invisible here and
+    would report that nothing ran while a run existed. This pins the property
+    that makes the process-wide marker the correct choice rather than the lazy
+    one.
+    """
+    import threading
+
+    def _boom(argv=None):
+        worker = threading.Thread(target=mark_run_allocated)
+        worker.start()
+        worker.join()
+        raise ModuleNotFoundError("No module named 'some_provider'", name="some_provider")
+
+    monkeypatch.setattr(cli_main, "_run", _boom)
+
+    with pytest.raises(ModuleNotFoundError):
+        cli_main.main([])
+    assert reported == []
 
 
 def test_other_exceptions_are_not_swallowed(monkeypatch):

@@ -16,7 +16,8 @@ from types import ModuleType
 from ._logging import configure_cli_logging, log_error
 from ._util import (
     EXIT_CODE_ENVIRONMENT_ERROR,
-    clear_run_allocation,
+    begin_invocation,
+    end_invocation,
     run_was_allocated,
 )
 
@@ -421,6 +422,19 @@ def _handle_play_check(argv: list[str]) -> int:
 
             profile = load_agent_profile(agent_name)
             agent_defaults = getattr(profile, "artifact_defaults", None)
+        except ModuleNotFoundError as exc:
+            # The profile is fine; this installation cannot load it. Nothing has
+            # run, so this is the environment, and returning the ordinary
+            # failure code here would make it indistinguishable from a check
+            # that found a genuinely broken playbook.
+            missing = exc.name or "a required module"
+            log_error(
+                f"playbook '{name}' references agent profile '{agent_name}', "
+                f"which needs {missing}, and it is not installed in this "
+                f"environment. Nothing was checked and no run was started. "
+                f"Install the missing dependency, then re-run."
+            )
+            return EXIT_CODE_ENVIRONMENT_ERROR
         except Exception as exc:  # noqa: BLE001 — match runtime behaviour
             log_error(
                 f"playbook '{name}' references agent profile "
@@ -782,13 +796,15 @@ def main(argv: list[str] | None = None) -> int:
     allocation marker decides, and once a run exists the error is left to
     propagate and be reported the way any other failure during a run is.
     """
-    clear_run_allocation()
+    begin_invocation()
     try:
         return _run(argv)
     except ModuleNotFoundError as exc:
         if run_was_allocated():
             raise
         return _report_broken_environment(exc)
+    finally:
+        end_invocation()
 
 
 if __name__ == "__main__":

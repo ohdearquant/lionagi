@@ -253,20 +253,31 @@ the one-line summary is emitted last through the CLI error logger, so a caller k
 tail of stderr still receives the diagnosis. Callers distinguishing the two cases should test for
 78 specifically; every other exit code retains its existing meaning.
 
-A missing module reaches this state from two places, and both are covered:
+The wrapper in `main()` catches whatever escapes, but a `ModuleNotFoundError` absorbed by a broad
+handler on the way to dispatch never reaches it. Every such handler ahead of the wrapper must
+therefore split the missing-module case out and return 78 itself, keeping its existing handling for
+everything else; a discriminator absorbed upstream is not a discriminator. Two do so today: the
+lazy command-module loader, and the agent-profile load in `li play check`. Both keep their concise
+report rather than switching to a traceback, because a command that never started has no stack
+worth printing and naming the missing module is the whole diagnosis. Any new broad handler in that
+region needs the same split.
 
-- **While loading a command.** Command modules are imported lazily once one is selected, behind a
-  broad handler that reports a command-scoped error. A missing dependency is split out of that
-  handler and returns 78 with the same concise report — a traceback for a command that never
-  started is noise, and naming the module is the whole diagnosis at that point.
-- **Anywhere else before a run exists.** The wrapper in `main()` catches what escapes.
+The boundary in the wrapper is a run having been allocated. `allocate_run` sets a marker, and once
+it is set a `ModuleNotFoundError` is *not* reported as an environment fault: a run id, a run
+directory and a manifest exist on disk, so telling the caller nothing was executed would be the
+same misattribution pointed the other way. Such an error propagates and is reported the way any
+other failure during a run is. This is why a lazily imported provider extra going missing mid-run
+does not exit 78.
 
-The boundary on the second is a run having been allocated. `allocate_run` sets a process-level
-marker, and once it is set a `ModuleNotFoundError` is *not* reported as an environment fault: a run
-id, a run directory and a manifest exist on disk, so telling the caller nothing was executed would
-be the same misattribution pointed the other way. Such an error propagates and is reported the way
-any other failure during a run is. This is why a lazily imported provider extra going missing
-mid-run does not exit 78.
+The marker is process-wide by necessity, not by convenience. `run_async` drives each command's
+async body on its own thread with its own event loop, so allocation happens on a different thread,
+in a fresh context, from the one the entry point returns on — a thread-local or a `ContextVar`
+would be invisible to the reader and would claim no run started while one existed. The cost is
+precision when two invocations overlap in one process, which is not a supported entry point. That
+is handled by making the unsafe direction impossible rather than by pretending it cannot happen:
+seeing another invocation's allocation only re-raises, which is the behaviour that predates this
+code, while *losing* one would assert something false, so the reset on entry is skipped whenever
+another invocation is in flight.
 
 ## `dispatch.py` — dispatch outbox (ADR-0059)
 
