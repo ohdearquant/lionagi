@@ -212,7 +212,15 @@ ignore = [
 ]
 
 [tool.pytest.ini_options]
-addopts = "-q -ra --strict-config --strict-markers --tb=short --maxfail=5 -n auto --dist loadfile --benchmark-disable"
+# --max-worker-restart=0 belongs here rather than only in scripts/ci.sh: when a
+# worker crashes, xdist's default is to restart it, and the replacement is not
+# always scheduled -- the run then blocks in the controller's read() with no
+# timeout that can see it, because pytest-timeout is scoped to test bodies and
+# the controller is not inside one. Failing fast instead names the crashed test.
+# Here it reaches every caller that discovers this config, rather than only the
+# ones that go through the wrapper script. A CLI flag beats addopts, so callers
+# that want restarts can still pass one.
+addopts = "-q -ra --strict-config --strict-markers --tb=short --maxfail=5 -n auto --dist loadfile --benchmark-disable --max-worker-restart=0"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 testpaths = ["tests"]
