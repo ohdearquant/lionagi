@@ -54,6 +54,10 @@ def _load_kill() -> ModuleType:
     return import_module(".kill", __package__)
 
 
+def _load_machine() -> ModuleType:
+    return import_module(".machine", __package__)
+
+
 def _load_mcp() -> ModuleType:
     return import_module(".mcp", __package__)
 
@@ -223,6 +227,20 @@ _COMMAND_REGISTRY = (
         "run_hooks",
     ),
     _CommandSpec(
+        "handshake",
+        "Report the machine-result contract version this build speaks.",
+        _load_machine,
+        "add_handshake_subparser",
+        "run_handshake",
+    ),
+    _CommandSpec(
+        "runs",
+        "List recorded runs and what each one wrote.",
+        _load_machine,
+        "add_runs_subparser",
+        "run_runs",
+    ),
+    _CommandSpec(
         "mcp",
         "Serve the lionagi MCP server (background job submit/query) over stdio.",
         _load_mcp,
@@ -244,6 +262,14 @@ def _build_parser(selected: _CommandSpec | None) -> tuple[argparse.ArgumentParse
         "--version",
         action="version",
         version=f"%(prog)s {_get_version()}",
+    )
+    parser.add_argument(
+        "--machine",
+        action="store_true",
+        help=(
+            "Emit one machine-result JSON object on stdout and send every "
+            "human-facing line to stderr."
+        ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     # Every command is registered for usage/error listing; only the selected
@@ -302,6 +328,14 @@ def run_monitor(args: argparse.Namespace) -> int:
 
 def run_orchestrate(args: argparse.Namespace) -> int:
     return _load_orchestrate().run_orchestrate(args)
+
+
+def run_handshake(args: argparse.Namespace) -> int:
+    return _load_machine().run_handshake(args)
+
+
+def run_runs(args: argparse.Namespace) -> int:
+    return _load_machine().run_runs(args)
 
 
 def run_hooks(args: argparse.Namespace) -> int:
@@ -588,6 +622,15 @@ def _run(argv: list[str] | None = None) -> int:
         _pre_sentinel = _argv
     verbose = "-v" in _pre_sentinel or "--verbose" in _pre_sentinel
     configure_cli_logging(verbose)
+
+    # Machine mode is answered here, before any other command path can write to
+    # stdout, and never inferred from the shape of the caller's terminal: the
+    # output shape follows what the caller asked for, not how it was invoked.
+    # The dispatcher owns stdout from this point and emits one JSON object on
+    # it; everything human-facing goes to stderr.
+    if "--machine" in _pre_sentinel:
+        machine = _load_machine()
+        return machine.dispatch_machine(machine.strip_machine_flag(_argv))
 
     # Same pre-argparse scan, so a project-scoped .lionagi/settings.yaml
     # next to a `--cwd DIR` target isn't missed in favor of the shell's cwd.
