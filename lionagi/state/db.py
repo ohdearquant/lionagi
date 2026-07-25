@@ -421,6 +421,41 @@ def _install_begin_immediate(sync_engine) -> None:
         conn.exec_driver_sql("BEGIN IMMEDIATE")
 
 
+async def _restore_foreign_keys(conn, driver) -> None:
+    """Turn foreign-key enforcement back on after a legacy table rebuild.
+
+    Every rebuild calls this from its ``finally``, so it runs on the failure
+    paths too, and those are the ones that need the care. Two things can leave a
+    pooled connection with enforcement silently off:
+
+    ``PRAGMA foreign_keys`` is a no-op while a transaction is open, so a rollback
+    that itself failed leaves its transaction alive and the pragma inert. Any
+    surviving transaction is therefore closed first.
+
+    And a write is not a result. The setting is read back rather than assumed,
+    and a connection whose enforcement cannot be confirmed is invalidated so it
+    is never handed out again.
+    """
+    try:
+        # No-op when the caller already ended its own transaction.
+        await driver.rollback()
+    except Exception:  # noqa: S110 -- not fatal on its own; the read-back below is
+        # what decides whether this connection is safe to hand out again.
+        pass
+
+    confirmed = False
+    try:
+        await driver.execute("PRAGMA foreign_keys = ON")
+        await driver.commit()
+        row = await (await driver.execute("PRAGMA foreign_keys")).fetchone()
+        confirmed = bool(row) and row[0] == 1
+    except Exception:
+        confirmed = False
+
+    if not confirmed:
+        await conn.invalidate()
+
+
 class StateDB:
     """Async SQLAlchemy state layer for sessions, branches, messages, and progressions."""
 
@@ -1003,8 +1038,7 @@ class StateDB:
                         await driver.rollback()
                         raise
                 finally:
-                    await driver.execute("PRAGMA foreign_keys = ON")
-                    await driver.commit()
+                    await _restore_foreign_keys(conn, driver)
 
         await self._rebuild_check_constraint(
             "sessions",
@@ -1117,8 +1151,7 @@ class StateDB:
                         await driver.rollback()
                         raise
                 finally:
-                    await driver.execute("PRAGMA foreign_keys = ON")
-                    await driver.commit()
+                    await _restore_foreign_keys(conn, driver)
 
         await self._rebuild_check_constraint(
             "schedules",
@@ -1236,8 +1269,7 @@ class StateDB:
                         await driver.rollback()
                         raise
                 finally:
-                    await driver.execute("PRAGMA foreign_keys = ON")
-                    await driver.commit()
+                    await _restore_foreign_keys(conn, driver)
 
         await self._rebuild_check_constraint(
             "schedules",
@@ -1318,8 +1350,7 @@ class StateDB:
                         await driver.rollback()
                         raise
                 finally:
-                    await driver.execute("PRAGMA foreign_keys = ON")
-                    await driver.commit()
+                    await _restore_foreign_keys(conn, driver)
 
         await self._rebuild_check_constraint(
             "schedules",
@@ -1440,8 +1471,7 @@ class StateDB:
                     await driver.rollback()
                     raise
                 finally:
-                    await driver.execute("PRAGMA foreign_keys = ON")
-                    await driver.commit()
+                    await _restore_foreign_keys(conn, driver)
 
         await self._rebuild_check_constraint(
             "invocations",
@@ -1637,8 +1667,7 @@ class StateDB:
                     await driver.rollback()
                     raise
                 finally:
-                    await driver.execute("PRAGMA foreign_keys = ON")
-                    await driver.commit()
+                    await _restore_foreign_keys(conn, driver)
 
         await self._rebuild_check_constraint(
             "schedule_runs",

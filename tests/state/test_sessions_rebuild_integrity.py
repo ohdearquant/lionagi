@@ -115,8 +115,12 @@ async def test_rebuild_survives_a_database_with_no_parent_tables(tmp_path: Path)
 
 
 async def test_foreign_key_enforcement_is_restored_after_the_rebuild(tmp_path: Path):
-    """The rebuild turns enforcement off. It has to come back on, or every write
-    for the rest of the process runs unchecked."""
+    """The rebuild turns enforcement off. On the ordinary path it has to come
+    back on, or every write for the rest of the process runs unchecked.
+
+    This covers the ordinary path only. What happens when the restore itself
+    fails is a different guarantee, pinned below.
+    """
     path = tmp_path / "restored.db"
     async with aiosqlite.connect(str(path)) as old:
         await old.execute(_LEGACY_SESSIONS_DDL)
@@ -131,3 +135,84 @@ async def test_foreign_key_enforcement_is_restored_after_the_rebuild(tmp_path: P
         assert enforced[0] == 1, "foreign key enforcement was left disabled after the rebuild"
     finally:
         await state.close()
+
+
+class _FakeCursor:
+    def __init__(self, row):
+        self._row = row
+
+    async def fetchone(self):
+        return self._row
+
+
+class _FakeDriver:
+    """Enough of the aiosqlite driver surface for the restore helper."""
+
+    def __init__(self, *, rollback_raises=False, pragma_raises=False, readback=1):
+        self.rollback_raises = rollback_raises
+        self.pragma_raises = pragma_raises
+        self.readback = readback
+        self.executed: list[str] = []
+
+    async def rollback(self):
+        if self.rollback_raises:
+            raise RuntimeError("rollback failed")
+
+    async def commit(self):
+        return None
+
+    async def execute(self, sql):
+        self.executed.append(sql)
+        if self.pragma_raises:
+            raise RuntimeError("pragma failed")
+        if sql == "PRAGMA foreign_keys":
+            return _FakeCursor((self.readback,))
+        return _FakeCursor(None)
+
+
+class _FakeConn:
+    def __init__(self):
+        self.invalidated = False
+
+    async def invalidate(self):
+        self.invalidated = True
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expect_invalidated", "why"),
+    [
+        ({}, False, "ordinary path: enforcement confirmed on, connection stays in the pool"),
+        (
+            {"readback": 0},
+            True,
+            "the write appeared to succeed but enforcement read back off, which is what "
+            "a pragma issued inside a surviving transaction looks like",
+        ),
+        ({"pragma_raises": True}, True, "the restore itself raised, so nothing was restored"),
+        (
+            {"rollback_raises": True},
+            False,
+            "a failed rollback alone is survivable: enforcement still read back on",
+        ),
+    ],
+)
+async def test_a_connection_with_unconfirmed_enforcement_is_never_reused(
+    kwargs, expect_invalidated, why
+):
+    """The guarantee is not that the restore always succeeds. It is that a
+    connection whose foreign-key enforcement cannot be CONFIRMED is invalidated
+    rather than returned to the pool.
+
+    Both failure modes here are the same defect the rebuild itself was fixed for:
+    a pragma is a no-op inside an open transaction, so writing it proves nothing
+    and only reading it back does.
+    """
+    from lionagi.state.db import _restore_foreign_keys
+
+    driver = _FakeDriver(**kwargs)
+    conn = _FakeConn()
+
+    await _restore_foreign_keys(conn, driver)
+
+    assert conn.invalidated is expect_invalidated, why
+    assert "PRAGMA foreign_keys = ON" in driver.executed
