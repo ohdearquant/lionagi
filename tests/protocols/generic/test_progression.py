@@ -390,3 +390,16 @@ def test_progression_serialization_advanced():
     assert len(deserialized) == 5
     assert all(isinstance(elem, UUID) for elem in deserialized)  # IDs are UUIDs
     assert p == deserialized
+
+
+def test_repeated_next_advances(sample_elements):
+    """next() must walk the progression, not restart from the first item."""
+    p = Progression(order=sample_elements)
+
+    assert [next(p) for _ in range(len(sample_elements))] == [e.id for e in sample_elements]
+
+    with pytest.raises(StopIteration):
+        next(p)
+
+    # Exhausting the cursor resets it, so the container stays reusable.
+    assert next(p) == sample_elements[0].id

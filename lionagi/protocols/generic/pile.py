@@ -248,6 +248,9 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
     # may call @synchronized siblings while the wrapper already holds it.
     _lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
     _async_lock: ConcurrencyLock = PrivateAttr(default_factory=ConcurrencyLock)
+    # Cursor backing __next__ so repeated next(pile) calls advance instead of
+    # restarting a fresh iterator each time.
+    _iterator: Any = PrivateAttr(default=None)
 
     @classmethod
     def _validate_before(cls, data: dict[str, Any]) -> dict[str, Any]:
@@ -427,9 +430,12 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
             yield self.collections[key]
 
     def __next__(self) -> T:
+        if self._iterator is None:
+            self._iterator = iter(self)
         try:
-            return next(iter(self))
+            return next(self._iterator)
         except StopIteration:
+            self._iterator = None
             raise StopIteration("End of pile") from None
 
     @synchronized

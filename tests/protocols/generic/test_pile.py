@@ -696,3 +696,14 @@ def test_list_adapters_returns_registered_keys():
     adapters = Pile.list_adapters()
     assert "csv" in adapters
     assert "json" in adapters
+
+
+def test_repeated_next_advances(sample_pile, sample_elements):
+    """next() must walk the pile, not restart from the first item."""
+    assert [next(sample_pile) for _ in range(len(sample_elements))] == sample_elements
+
+    with pytest.raises(StopIteration):
+        next(sample_pile)
+
+    # Exhausting the cursor resets it, so the container stays reusable.
+    assert next(sample_pile) == sample_elements[0]
