@@ -212,7 +212,15 @@ ignore = [
 ]
 
 [tool.pytest.ini_options]
-addopts = "-q -ra --strict-config --strict-markers --tb=short --maxfail=5 -n auto --dist loadfile --benchmark-disable"
+# --max-worker-restart=0 belongs here rather than only in scripts/ci.sh: when a
+# worker crashes, xdist's default is to restart it, and the replacement is not
+# always scheduled -- the run then blocks in the controller's read() with no
+# timeout that can see it, because pytest-timeout is scoped to test bodies and
+# the controller is not inside one. Failing fast instead names the crashed test.
+# Here it reaches every caller that discovers this config, rather than only the
+# ones that go through the wrapper script. A CLI flag beats addopts, so callers
+# that want restarts can still pass one.
+addopts = "-q -ra --strict-config --strict-markers --tb=short --maxfail=5 -n auto --dist loadfile --benchmark-disable --max-worker-restart=0"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 testpaths = ["tests"]
@@ -321,6 +329,14 @@ constraint-dependencies = [
     "requests>=2.33.0",     # CVE: insecure temp file reuse in extract_zipped_paths
     "pygments>=2.20.0",     # CVE: ReDoS in GUID regex
     "lxml>=6.1.0",          # CVE-2026-41066: XXE via default iterparse / ETCompatXMLParser config
-    "gitpython>=3.1.49",    # CVE: RCE via config_writer + path traversal in reference APIs
+    "gitpython>=3.1.55",    # CVE: RCE via config_writer + path traversal in reference APIs; then a
+                            # run of option-injection escapes -- long-option abbreviation, joined and
+                            # single-character short options, and unguarded options in archive(),
+                            # ls_remote(), iter_commits() and blame() -- plus env-var exfiltration
+                            # through expandvars() on clone_from()/create_remote() URLs
+    "pymdown-extensions>=11.0.0",  # CVE: path traversal in the b64 extension lets an <img src> read
+                            # files outside base_path
+    "setuptools>=83.0.0",   # CVE: MANIFEST.in exclusion bypass in sdist via Unicode NFC/NFD
+                            # normalization collision on case-preserving macOS filesystems
     "torch>=2.13.0",        # CVE: vulnerability affecting torch <= 2.12.1 (transitive via docling/torchvision)
 ]
