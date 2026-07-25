@@ -216,3 +216,41 @@ async def test_a_connection_with_unconfirmed_enforcement_is_never_reused(
 
     assert conn.invalidated is expect_invalidated, why
     assert "PRAGMA foreign_keys = ON" in driver.executed
+
+
+@pytest.mark.parametrize("fail_on", ["rollback", "pragma"])
+async def test_cancellation_invalidates_before_it_propagates(fail_on):
+    """Cancellation is the one path that must not silently skip invalidation.
+
+    It arrives as a BaseException, so an ``except Exception`` guard lets it past
+    both the read-back and the invalidation, returning a connection with
+    enforcement in an unknown state to the pool. The cancellation itself still
+    has to propagate untouched, so this pins both halves: invalidated, and still
+    raised.
+    """
+    from lionagi.ln.concurrency import get_cancelled_exc_class
+    from lionagi.state.db import _restore_foreign_keys
+
+    cancelled_exc = get_cancelled_exc_class()
+
+    class _CancellingDriver(_FakeDriver):
+        async def rollback(self):
+            if fail_on == "rollback":
+                raise cancelled_exc()
+
+        async def execute(self, sql):
+            self.executed.append(sql)
+            if fail_on == "pragma":
+                raise cancelled_exc()
+            return _FakeCursor((1,))
+
+    driver = _CancellingDriver()
+    conn = _FakeConn()
+
+    with pytest.raises(cancelled_exc):
+        await _restore_foreign_keys(conn, driver)
+
+    assert conn.invalidated, (
+        "cancellation reached the caller without invalidating a connection whose "
+        "foreign-key enforcement was never confirmed"
+    )

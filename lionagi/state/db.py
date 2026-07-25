@@ -20,7 +20,7 @@ from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
 from lionagi.config import settings
 from lionagi.libs.path_safety import check_path_safe as _check_path_safe
 from lionagi.ln import json_dumps as _json_dumps
-from lionagi.ln.concurrency import CancelScope, Lock
+from lionagi.ln.concurrency import CancelScope, Lock, get_cancelled_exc_class, shield
 from lionagi.state.engine import (
     dialect_of,
     make_engine,
@@ -435,10 +435,21 @@ async def _restore_foreign_keys(conn, driver) -> None:
     And a write is not a result. The setting is read back rather than assumed,
     and a connection whose enforcement cannot be confirmed is invalidated so it
     is never handed out again.
+
+    Cancellation gets its own handling rather than falling through. It arrives as
+    a BaseException, so catching ``Exception`` would let it skip the read-back and
+    the invalidation both, which is the one outcome this function exists to
+    prevent. The invalidation is shielded so it completes, and the cancellation is
+    then re-raised untouched.
     """
+    cancelled_exc = get_cancelled_exc_class()
+
     try:
         # No-op when the caller already ended its own transaction.
         await driver.rollback()
+    except cancelled_exc:
+        await shield(conn.invalidate)
+        raise
     except Exception:  # noqa: S110 -- not fatal on its own; the read-back below is
         # what decides whether this connection is safe to hand out again.
         pass
@@ -449,11 +460,14 @@ async def _restore_foreign_keys(conn, driver) -> None:
         await driver.commit()
         row = await (await driver.execute("PRAGMA foreign_keys")).fetchone()
         confirmed = bool(row) and row[0] == 1
+    except cancelled_exc:
+        await shield(conn.invalidate)
+        raise
     except Exception:
         confirmed = False
 
     if not confirmed:
-        await conn.invalidate()
+        await shield(conn.invalidate)
 
 
 class StateDB:
