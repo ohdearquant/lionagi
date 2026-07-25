@@ -172,6 +172,89 @@ def _notify_template(run_id: str, notify_target: str | None, notify_command: str
     return " ".join(parts)
 
 
+# argv and envp are pointer arrays, so every entry costs a slot as well as its bytes.
+_POINTER_BYTES = 8
+# Small allowance for the aux vector and alignment the kernel adds on top.
+_EXEC_RESERVE_BYTES = 4096
+
+
+def _max_single_arg_bytes() -> int | None:
+    """The per-argument exec limit, or None where the platform imposes none.
+
+    Linux caps one argument at ``MAX_ARG_STRLEN`` (32 pages) independently of the
+    aggregate limit and exposes no ``sysconf`` for it, so it is derived from the
+    running page size. Other platforms — macOS among them — bound only the total,
+    and happily exec a single argument far larger than this; applying the Linux
+    number there would refuse work the OS would have accepted.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        page = os.sysconf("SC_PAGESIZE")
+    except (ValueError, OSError):  # pragma: no cover — platform without the knob
+        page = 4096
+    if not isinstance(page, int) or page <= 0:  # pragma: no cover — unset knob
+        page = 4096
+    return 32 * page
+
+
+def _reject_oversized_argv(argv: list[str], env: dict[str, str], *, kind: str) -> None:
+    """Refuse a command line the OS will not accept, before anything is spawned.
+
+    ``exec`` rejects an oversized invocation with ``OSError: [Errno 7] Argument
+    list too long``, which arrives too late to be useful: by then the caller has a
+    run id for a process that never started. There are two independent limits and
+    both have to hold.
+
+    The *aggregate* limit covers argv and the environment together and is readable
+    as ``SC_ARG_MAX``. Alongside the strings themselves the kernel stores a
+    terminator and a pointer per entry, so entries are counted, not just bytes —
+    a flat reserve would be defeated by a long list of short arguments.
+
+    The *per-argument* limit applies to one string on its own, and only where the
+    platform imposes one — see :func:`_max_single_arg_bytes`. It is checked
+    separately because an argument can be under the aggregate limit and still be
+    refused on its own.
+    """
+    try:
+        limit = os.sysconf("SC_ARG_MAX")
+    except (ValueError, OSError):  # pragma: no cover — platform without the knob
+        return
+    if not isinstance(limit, int) or limit <= 0:  # pragma: no cover — unset knob
+        return
+
+    advice = (
+        "Shorten the instruction, or use submit_agent, which hands the instruction "
+        "to the run in a file instead of on the command line."
+    )
+
+    per_arg = _max_single_arg_bytes()
+    if per_arg is not None:
+        for arg in argv:
+            n = len(arg.encode())
+            if n > per_arg:
+                raise ValueError(
+                    f"cannot submit this {kind} run: one argument is {n} bytes, over the "
+                    f"{per_arg}-byte limit this platform places on a single argument "
+                    f"regardless of the {limit}-byte total. {advice}"
+                )
+
+    used = sum(len(a.encode()) + 1 + _POINTER_BYTES for a in argv)
+    used += sum(len(k.encode()) + len(v.encode()) + 2 + _POINTER_BYTES for k, v in env.items())
+    if used + _EXEC_RESERVE_BYTES <= limit:
+        return
+
+    detail = (
+        "the instruction is passed on the command line for this kind of run"
+        if kind != "agent"
+        else "the command line is too long"
+    )
+    raise ValueError(
+        f"cannot submit this {kind} run: {detail}, and it needs {used} bytes of "
+        f"argument vector plus environment against an OS limit of {limit}. {advice}"
+    )
+
+
 # --- public API ----------------------------------------------------------------
 
 
@@ -202,15 +285,18 @@ def submit(
 
     run_id = new_run_id()
     d = config.job_dir(run_id)
-    d.mkdir(parents=True, exist_ok=True)
     log_path = d / "console.log"
 
+    # The whole command line is assembled before anything is created on disk, so a
+    # run that cannot be spawned leaves no trace. Creating the directory first
+    # would leave an empty one behind on a rejection, and that reads back as a job
+    # with no kind that never finishes.
     tail = list(flags)
+    prompt_path = None
     if prompt is not None:
         if kind == "agent":
-            pf = d / "prompt.txt"
-            pf.write_text(prompt)
-            tail += ["--prompt-file", str(pf)]
+            prompt_path = d / "prompt.txt"
+            tail += ["--prompt-file", str(prompt_path)]
         else:
             tail.append(prompt)  # flow/fanout take the prompt as a positional
 
@@ -224,6 +310,16 @@ def submit(
     # environment that claims it is running under an interactive harness.
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
     env[config.RUN_ID_ENV_VAR] = run_id
+
+    # Only "agent" hands the instruction over in a file; flow and fanout take it
+    # as a positional, so a long one has to fit in the process argument vector.
+    # Checked before anything is written, because Popen raising this late would
+    # leave a job recorded as "running" for a run that never started.
+    _reject_oversized_argv(argv, env, kind=kind)
+
+    d.mkdir(parents=True, exist_ok=True)
+    if prompt_path is not None:
+        prompt_path.write_text(prompt)
 
     # Persist the record BEFORE spawning, so the child's terminal --notify hook
     # always finds a record to mark. mark_terminal no-ops on a missing record, so
@@ -270,6 +366,29 @@ def submit(
     return {"run_id": run_id, "pid": proc.pid, "status": latest["status"], "log": str(log_path)}
 
 
+def _server_identity() -> dict[str, str]:
+    """Which implementation answered this call.
+
+    A server imports its code once, at startup, so a caller cannot tell which
+    build is answering from the file on disk: the process may predate it. The
+    tool list does not help either, because two separate implementations can
+    expose the same tool names and differ only in parameters and behaviour. That
+    combination makes a wrong answer look authoritative — a field described from
+    a newer source reads as missing rather than as unsupported, and a caller who
+    trusts the description writes down a rule the running server does not
+    implement.
+
+    Reporting the version and the directory actually imported turns that from an
+    inference into a readable fact. Resolved per call rather than cached at
+    import so it reflects the module that is genuinely loaded.
+    """
+    try:
+        from lionagi.version import __version__ as version
+    except Exception:  # noqa: BLE001 — identity is diagnostic; never fail a status read
+        version = "unknown"
+    return {"version": version, "module": str(Path(__file__).resolve().parent)}
+
+
 def status(run_id: str) -> dict[str, Any]:
     """Current state of *run_id*.
 
@@ -278,6 +397,8 @@ def status(run_id: str) -> dict[str, Any]:
     advisory only — its own ``status`` stays ``running`` until the CLI finalizes
     it in the StateDB, so read ``status`` here, not ``run["status"]``.
     ``notify_delivery`` reports whether the terminal notice was delivered.
+    ``server`` identifies the implementation that answered, so a caller can tell
+    which build it is talking to rather than inferring it from behaviour.
     """
     job = _read_job(run_id)
     manifest = _read_run_manifest(run_id)
@@ -312,6 +433,7 @@ def status(run_id: str) -> dict[str, Any]:
         "run": manifest,
         "log_tail": _tail((job or {}).get("log")),
         "known": job is not None,
+        "server": _server_identity(),
     }
 
 
