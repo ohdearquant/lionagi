@@ -415,3 +415,105 @@ async def test_no_shell_ever_used(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     )
     await registry.emit(_envelope(eid="inv-1"))
     assert out_file.exists()  # ran fine via create_subprocess_exec, never the shell
+
+
+@pytest.mark.parametrize(
+    ("override", "expected_reason"),
+    [
+        ("   ", "on_terminal_command_is_empty"),
+        ("echo hi && rm -rf /", "on_terminal_command_requires_shell_features"),
+        ('echo "unbalanced', "on_terminal_command_not_parseable"),
+    ],
+)
+def test_a_refused_override_reports_why_it_was_refused(override, expected_reason):
+    """A caller that asked for a notifier and was refused must be able to find
+    out, and asking is what separates this from the unconfigured case.
+
+    Registration returns None either way, so the return value alone cannot tell
+    a refusal from nothing having been configured. The callback is the only
+    thing that carries the difference out.
+    """
+    reasons: list[str] = []
+
+    name = register_flow_notify_scope(
+        TerminalCallbackRegistry(),
+        override=override,
+        entity_kind="session",
+        entity_id="s1",
+        invocation_id=None,
+        flow_kind="agent",
+        playbook=None,
+        save_dir=None,
+        cwd=".",
+        started_at=0.0,
+        on_rejection=reasons.append,
+    )
+
+    assert name is None
+    assert reasons == [expected_reason]
+
+
+def test_a_refused_override_without_a_listener_still_does_not_raise():
+    """The callback is optional. A caller with no run to record against passes
+    nothing and must keep the old behavior: refuse quietly, never raise."""
+    name = register_flow_notify_scope(
+        TerminalCallbackRegistry(),
+        override="   ",
+        entity_kind="session",
+        entity_id="s1",
+        invocation_id=None,
+        flow_kind="agent",
+        playbook=None,
+        save_dir=None,
+        cwd=".",
+        started_at=0.0,
+    )
+    assert name is None
+
+
+def test_an_accepted_override_reports_no_refusal():
+    """The negative case: a good override must not fire the refusal path.
+    Without this, a callback that fired unconditionally would pass every test
+    above while turning every successful run into a recorded failure."""
+    reasons: list[str] = []
+
+    name = register_flow_notify_scope(
+        TerminalCallbackRegistry(),
+        override=f"{shlex.quote(sys.executable)} -c pass",
+        entity_kind="session",
+        entity_id="s1",
+        invocation_id=None,
+        flow_kind="agent",
+        playbook=None,
+        save_dir=None,
+        cwd=".",
+        started_at=0.0,
+        on_rejection=reasons.append,
+    )
+
+    assert name is not None
+    assert reasons == []
+
+
+def test_a_raising_rejection_callback_does_not_break_registration():
+    """The refusal is already bad news; bookkeeping about it must not become a
+    second, louder failure. A callback that raises is swallowed so the caller
+    still gets the ordinary None rather than an exception out of registration."""
+
+    def _boom(reason: str) -> None:
+        raise RuntimeError("recorder exploded")
+
+    name = register_flow_notify_scope(
+        TerminalCallbackRegistry(),
+        override="   ",
+        entity_kind="session",
+        entity_id="s1",
+        invocation_id=None,
+        flow_kind="agent",
+        playbook=None,
+        save_dir=None,
+        cwd=".",
+        started_at=0.0,
+        on_rejection=_boom,
+    )
+    assert name is None

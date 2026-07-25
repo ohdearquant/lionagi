@@ -7,6 +7,7 @@ the run scope (mirrors the `li o flow` / `li o fanout` wiring)."""
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from unittest.mock import patch
 
@@ -80,3 +81,81 @@ async def test_notify_scope_is_session_even_with_invocation_id(monkeypatch, tmp_
     assert captured["entity_kind"] == "session"
     assert captured["entity_id"] == "sess-notify-1"
     assert captured["invocation_id"] == "parent-inv-123"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_notify_override_is_recorded_on_the_run(monkeypatch, tmp_path):
+    """A `--notify` value the resolver refuses must leave a record on the run.
+
+    The run-scoped outcome recorder is skipped whenever `--notify` is given,
+    because the override owns the entity. So if the override is then refused,
+    nothing registers and nothing is written, and a caller reading the run
+    cannot tell "asked for a notifier and was refused" from "never asked".
+    That is the same collapse the settings path was fixed for, one layer up.
+
+    A real RunDir is used deliberately: the shared stub returns a namespace
+    with no outcome-writing methods, and the recorder swallows its own errors,
+    so this assertion would pass vacuously against the stub.
+    """
+    import lionagi.cli.agent as agent_mod
+    from lionagi.cli._runs import RunDir
+
+    _wire_agent_stubs(
+        monkeypatch,
+        tmp_path,
+        operate_side_effect=lambda i: "done",
+        session_ids=["sess-refused-1"],
+    )
+
+    run = RunDir(
+        run_id="r",
+        state_root=tmp_path / "state",
+        artifact_root=tmp_path / "artifacts",
+    )
+    monkeypatch.setattr(agent_mod, "allocate_run", lambda *a, **kw: run)
+
+    from lionagi.cli.agent import _run_agent
+
+    await _run_agent(
+        "claude_code/sonnet",
+        "hello",
+        notify="echo hi && rm -rf /",  # shell features: refused by the resolver
+    )
+
+    assert run.notify_outcome_path.exists(), "a refused --notify override left no record on the run"
+    outcome = json.loads(run.notify_outcome_path.read_text())
+    assert outcome["ok"] is False
+    assert outcome["reason"] == "on_terminal_command_requires_shell_features"
+
+
+@pytest.mark.asyncio
+async def test_an_accepted_notify_override_records_no_refusal(monkeypatch, tmp_path):
+    """The negative half: a good override must not write a refusal outcome.
+
+    Without this, a recorder wired to fire unconditionally would satisfy the
+    test above while marking every healthy run as failed.
+    """
+    import lionagi.cli.agent as agent_mod
+    from lionagi.cli._runs import RunDir
+
+    _wire_agent_stubs(
+        monkeypatch,
+        tmp_path,
+        operate_side_effect=lambda i: "done",
+        session_ids=["sess-accepted-1"],
+    )
+
+    run = RunDir(
+        run_id="r",
+        state_root=tmp_path / "state",
+        artifact_root=tmp_path / "artifacts",
+    )
+    monkeypatch.setattr(agent_mod, "allocate_run", lambda *a, **kw: run)
+
+    from lionagi.cli.agent import _run_agent
+
+    await _run_agent("claude_code/sonnet", "hello", notify="true {status}")
+
+    if run.notify_outcome_path.exists():
+        outcome = json.loads(run.notify_outcome_path.read_text())
+        assert "reason" not in outcome, f"an accepted override recorded a refusal: {outcome}"

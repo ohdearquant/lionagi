@@ -555,6 +555,15 @@ async def _run_agent(
             register_flow_notify_scope,
             unregister_flow_notify_scope,
         )
+        from lionagi.state.lifecycle.notify_settings import (
+            record_notify_rejection_to_run,
+        )
+
+        def _notify_override_refused(reason: str) -> None:
+            # This run explicitly asked for a notifier and will not get one.
+            # Recording it here is what keeps a refusal distinguishable from
+            # never having configured one; both otherwise register nothing.
+            record_notify_rejection_to_run(run, reason)
 
         _notify_scope_name = register_flow_notify_scope(
             override=notify,
@@ -566,6 +575,7 @@ async def _run_agent(
             save_dir=str(run.artifact_root),
             cwd=cwd or os.getcwd(),
             started_at=run_manifest["started_at"],
+            on_rejection=_notify_override_refused,
         )
 
     # notify.on_terminal (settings-driven, independent of --notify) outcome
