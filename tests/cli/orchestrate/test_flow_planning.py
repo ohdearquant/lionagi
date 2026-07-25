@@ -33,6 +33,20 @@ class _FakeOrcBranch:
         return SimpleNamespace(assignments=[])
 
 
+@pytest.fixture(autouse=True)
+def _isolated_agent_profiles(tmp_path, monkeypatch):
+    """Resolve agent profiles against an empty temp dir, not the developer's home.
+
+    ``resolve_worker_spec`` searches the project/global ``.lionagi/agents/``
+    dirs, so a locally configured profile for a role under test (e.g. ``writer``)
+    shadows the pack routing these tests assert and the result depends on host
+    state the tests never create.
+    """
+    empty_dir = tmp_path / "isolated-lionagi"
+    empty_dir.mkdir()
+    monkeypatch.setattr("lionagi.cli._providers._find_lionagi_dirs", lambda: [empty_dir])
+
+
 def _env(tmp_path, orc) -> SimpleNamespace:
     _name_counts: dict = {}
 
