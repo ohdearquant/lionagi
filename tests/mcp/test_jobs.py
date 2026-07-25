@@ -8,6 +8,10 @@ on the argv/env the engine builds and on the on-disk job records it reads back.
 
 from __future__ import annotations
 
+import builtins
+import os
+from pathlib import Path
+
 import pytest
 
 from lionagi.mcp import config, jobs
@@ -263,3 +267,132 @@ def test_write_job_publishes_atomically(sandbox, monkeypatch):
     assert jobs._read_job(rid) == good
     # and the failed publish cleaned up its staging file rather than orphaning it
     assert not list(config.job_dir(rid).glob(".job.json.*.tmp"))
+
+
+def test_status_reports_which_implementation_answered(sandbox, monkeypatch):
+    # Two same-named MCP surfaces can expose identical tool lists, and a server
+    # imports its code at startup, so neither the tool list nor the file on disk
+    # tells a caller which build is answering. The stamp makes it readable.
+    monkeypatch.setattr(
+        subprocess := __import__("subprocess"), "Popen", lambda *a, **k: _FakeProc()
+    )
+    handle = jobs.submit("agent", [], prompt="x")
+
+    st = jobs.status(handle["run_id"])
+
+    from lionagi.version import __version__
+
+    assert st["server"]["version"] == __version__
+    # The module path is the one actually imported, not a configured guess.
+    assert st["server"]["module"] == str(Path(jobs.__file__).resolve().parent)
+
+
+def test_status_stamp_survives_an_unreadable_version(sandbox, monkeypatch):
+    # Identity is diagnostic; a status read must never fail for want of it.
+    monkeypatch.setattr(
+        subprocess := __import__("subprocess"), "Popen", lambda *a, **k: _FakeProc()
+    )
+    handle = jobs.submit("agent", [], prompt="x")
+    real_import = builtins.__import__
+
+    def boom(name, *args, **kwargs):
+        if name == "lionagi.version":
+            raise ImportError("simulated")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", boom)
+    st = jobs.status(handle["run_id"])
+
+    assert st["server"]["version"] == "unknown"
+    assert st["status"]  # the rest of the read is unaffected
+
+
+def test_oversized_flow_prompt_is_refused_before_a_record_exists(sandbox):
+    """A prompt too big for the argument vector must fail before anything is recorded.
+
+    flow and fanout pass the instruction as a positional argument, so a large one
+    hits the OS exec limit. If that surfaced from the spawn, the job record would
+    already be on disk and would sit at "running" forever for a run that never
+    started.
+    """
+    limit = os.sysconf("SC_ARG_MAX")
+    huge = "x" * limit
+
+    # Refused for whichever limit it hits first; the point is that it is refused
+    # before anything is recorded, not which of the two bounds caught it.
+    with pytest.raises(ValueError, match="cannot submit this flow run"):
+        jobs.submit("flow", [], prompt=huge)
+
+    # Nothing was recorded, so nothing shows up as a job that never finishes.
+    assert jobs.list_jobs() == []
+
+
+def test_one_oversized_argument_is_refused_where_the_platform_caps_one(sandbox, monkeypatch):
+    """A single argument has its own limit on Linux, below the aggregate one.
+
+    Linux caps one exec argument at MAX_ARG_STRLEN regardless of how much
+    aggregate room is left, so a flow prompt between that and SC_ARG_MAX would
+    otherwise pass the preflight and die in exec after the record was written.
+    The cap is forced on here rather than skipped off Linux, so the rule is
+    exercised wherever the tests run.
+    """
+    monkeypatch.setattr(jobs, "_max_single_arg_bytes", lambda: 131072)
+    limit = os.sysconf("SC_ARG_MAX")
+    one_arg = "x" * 131073
+    assert len(one_arg) < limit, "must fit the aggregate limit, or this tests the wrong thing"
+
+    with pytest.raises(ValueError, match="single argument"):
+        jobs.submit("flow", [], prompt=one_arg)
+
+    assert jobs.list_jobs() == []
+
+
+def test_a_platform_without_a_per_argument_cap_is_bounded_only_by_the_total(sandbox, monkeypatch):
+    """Where the OS caps only the total, do not invent a per-argument refusal.
+
+    macOS execs a single argument far larger than Linux's MAX_ARG_STRLEN, so
+    applying that number there would reject work the OS would have accepted.
+    """
+    monkeypatch.setattr(jobs, "_max_single_arg_bytes", lambda: None)
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **k: _FakeProc(4242))
+
+    # Comfortably over Linux's per-argument cap, comfortably under the aggregate.
+    accepted = jobs.submit("flow", [], prompt="x" * 200_000)
+
+    assert accepted["status"] == "running"
+
+
+def test_the_per_argument_cap_tracks_the_platform(monkeypatch):
+    """Linux derives it from the page size; elsewhere there is none to apply."""
+    monkeypatch.setattr(jobs.sys, "platform", "linux")
+    assert jobs._max_single_arg_bytes() == 32 * os.sysconf("SC_PAGESIZE")
+
+    monkeypatch.setattr(jobs.sys, "platform", "darwin")
+    assert jobs._max_single_arg_bytes() is None
+
+
+def test_argument_count_is_charged_not_only_bytes():
+    """Entries cost a pointer slot each, so counting bytes alone is not enough.
+
+    Constructed so the strings themselves fit the aggregate limit with room to
+    spare and only the per-entry pointer cost pushes the invocation over. A
+    byte-only estimate with a flat reserve accepts this and then dies in exec.
+    """
+    limit = os.sysconf("SC_ARG_MAX")
+    argv = ["x"] * (limit // 8)
+    env = {"PATH": "/usr/bin"}
+
+    byte_total = sum(len(a.encode()) + 1 for a in argv)
+    assert byte_total * 2 < limit, "bytes alone must fit, or this tests the wrong thing"
+
+    with pytest.raises(ValueError, match="OS limit"):
+        jobs._reject_oversized_argv(argv, env, kind="flow")
+
+
+def test_an_ordinary_prompt_is_not_caught_by_the_size_guard(tmp_path, monkeypatch):
+    """The guard must not fire on realistic input — it only bounds the extreme."""
+    argv = ["li", "o", "flow", "a normal instruction"]
+    env = {"PATH": "/usr/bin"}
+
+    # Returns rather than raising.
+    assert jobs._reject_oversized_argv(argv, env, kind="flow") is None
