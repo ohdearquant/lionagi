@@ -94,8 +94,8 @@ wake it. A consumer restart across a successful delivery loses it the same way.
 | Version negotiation | D2: `contract_version` is an integer, checked on every envelope, not only at a handshake |
 | The envelope every machine call returns | D3: one envelope shape — `ok`, `contract_version`, `data`, `error` |
 | Run status | D4: `status` is opaque and verbatim; the producer also publishes `terminal` and `outcome`, on every status-bearing response |
-| Submit | D5: submit returns a handle; a spawn that fails after the record exists reconciles that record |
-| Reads | D6: reads are answerable from lionagi's store; liveness is a separate advisory observation |
+| Submit | D5: submit returns a handle; the spawn phase is recorded rather than inferred from a missing pid |
+| Reads | D6: one lifecycle authority for every path; liveness is advisory and never establishes terminality |
 | Distinguishing absence from failure | D7: every read-derived field carries its own availability and reason |
 | Process-level faults | D8: a valid envelope is authoritative; exit status is the transport-level answer, with a defined precedence |
 | Terminal notification | D9: a notification is a prompt to read state, never proof and never the only path |
@@ -271,8 +271,9 @@ another copy of our rules living in code we do not control.
   `killed`, `exited`, `unknown` — informative, not exhaustive; a consumer treating this
   list as closed is non-conforming.
 - `terminal` answers **"stop waiting"**. True when and only when the run reached an end
-  state, derived by lionagi from a recorded end — `finished_at`, or the reconciliation
-  rules in D5 and D6 — never by matching `status` against a set.
+  state, derived by lionagi from a recorded end — `finished_at`, a producer-written spawn
+  failure (D5), or a transition written by the reconciler (D6) — never by matching `status`
+  against a set, and never computed by a reader.
 - `outcome` answers **"did the work come out right"**. It is a **closed** vocabulary,
   `succeeded | failed | indeterminate`, meaningful only when `terminal` is true and `null`
   while the run is in flight. Being closed, it may be branched on, and a new value costs a
@@ -283,12 +284,12 @@ another copy of our rules living in code we do not control.
   `completed_empty` is `terminal: true, outcome: "failed"`. A consumer given only
   `terminal` must either invent the forbidden vocabulary or call every finished run a
   success, which is P2 recreated one level up (P2b).
-- **`indeterminate` is not a hedge and is not optional.** It is the value for a run that
-  definitely ended and whose result the producer cannot establish — a process that vanished
-  with no terminal recorded (D6). A two-valued field has no encoding for that case and would
-  force `failed`, which asserts a fact from a failure to establish one. That is the defect
-  D7's availability wrapper exists to prevent, and a field small enough to look like a
-  boolean is exactly where it gets smuggled back in.
+- **`indeterminate` is not a hedge and is not optional.** It is the value the reconciler
+  writes for a run it can establish has ended but whose result it cannot establish — a
+  process that vanished with no terminal recorded (D6). A two-valued field has no encoding
+  for that case and would force `failed`, which asserts a fact from a failure to establish
+  one. That is the defect D7's availability wrapper exists to prevent, and a field small
+  enough to look like a boolean is exactly where it gets smuggled back in.
 - `reason_code` is a short machine-readable qualifier for a terminal outcome, drawn
   from the same cross-kind lifecycle resolver ADR-0066 D6 uses. It is advisory: a
   consumer may surface it, and must not need it to decide `outcome`.
@@ -307,7 +308,7 @@ would silently become "not terminal" or "not a success" there. Publishing the
 derivation instead of the inputs keeps the classification with the only party that
 always has the current vocabulary.
 
-### D5 — Submit returns a handle, and a failed spawn reconciles its own record
+### D5 — Submit returns a handle, and the spawn phase is recorded
 
 ```text
 li agent --machine --detach [...]
@@ -350,22 +351,31 @@ li orchestrate fanout --machine --detach [...]
   no process that can ever terminalise it. The executable can be replaced with a
   non-executable file, the working directory can vanish, and descriptor limits can be
   exhausted, all after validation passed.
-- On such a failure the producer **writes a terminal record** — `terminal: true`,
-  `outcome: "failed"`, a reason identifying the spawn failure — and the envelope reports
-  `ok: false`.
-- **That write is the fast path, not the guarantee.** It can itself fail: the disk that
-  refused the spawn can refuse the reconciliation, and an atomic replace prevents a torn
-  record without promising that the replace succeeds. A contract whose correctness rests on
-  a write succeeding on the exact path where writes are failing has moved the impossible
-  promise one line later rather than removing it. The guarantee is therefore stated as a
-  **reader-derived rule that requires no write at all**: a non-terminal record carrying no
-  pid, once the submitting call has returned, is reported by every reader as `terminal:
-  true`, `outcome: "failed"`, with a spawn-failure reason. No pid was ever recorded, so no
-  child exists to record one, and the state is decidable from the record alone.
-- The general form is the rule the rest of this contract leans on: **a fact a reader can
-  derive is derived, never made to depend on a write that can fail.** A record left
-  enumerable as `running` with no child is a run a consumer polls forever, and that must not
-  be reachable by any sequence of storage failures.
+- **The spawn phase is recorded, never inferred.** The record carries `spawn_state`, and
+  it rides writes that already have to happen, so no new failure mode is introduced:
+  `"preparing"` in the pre-spawn write, `"started"` in the write that attaches the pid,
+  `"failed"` when the producer catches the spawn error. On a spawn failure the producer
+  also writes the terminal record — `terminal: true`, `outcome: "failed"`, a reason
+  naming the spawn failure — and the envelope reports `ok: false`.
+- **A reader must not infer spawn failure from a missing pid.** Between the pre-spawn
+  write and the pid attachment, a perfectly healthy child is on disk with no pid, so a rule
+  keyed on pid absence reports a run that is starting normally as terminally failed. That is
+  worse than the ghost record it would be trying to remove, because a false terminal is one
+  a consumer acts on. `spawn_state: "preparing"` is reported as exactly that: non-terminal,
+  `outcome: null`, with no claim about the spawn's fate.
+- **A `preparing` record that has gone stale is surfaced, not resolved.** Its age is
+  reported, and it may be flagged as possibly orphaned, but staleness is advisory and never
+  a terminal transition — a loaded machine and a dead spawn look identical from the record,
+  and a bound chosen to tell them apart is a guess with a consumer belief riding on it.
+  Terminalising it is the reconciler's job, below.
+- An earlier revision made both this and the orphan case in D6 **reader-derived**, on the
+  reasoning that a fact a reader can compute should never depend on a write that can fail.
+  That reasoning is right about *presentation* and wrong about *lifecycle*. A reader
+  computing a lifecycle transition manufactures a durable fact out of a local observation,
+  which is how one reader comes to disagree with another about the same unchanged record.
+  The narrow form that survives: **a reader may derive a presentation field that is a
+  deterministic function of durable authoritative facts; only the lifecycle authority may
+  make a lifecycle transition.**
 - Long instruction text is passed to the child in a file, written before the spawn, so
   editing it afterwards cannot change what an already-submitted run executes.
 
@@ -373,7 +383,7 @@ li orchestrate fanout --machine --detach [...]
 where run state lives, and it would be the one place a consumer could read without a
 subsequent call — which is exactly the state P3 forbids it from holding.
 
-### D6 — Reads are answerable from the store; liveness is advisory beside it
+### D6 — One lifecycle authority; liveness is advisory beside it
 
 ```text
 li job status <run_id> --machine
@@ -394,15 +404,29 @@ li job kill <run_id> --machine
   observe different liveness. The earlier framing of reads as answerable from "the
   store alone" was an overclaim: the store alone settles the lifecycle, and liveness is
   extra information carried beside it with its own reliability.
-- A run whose recorded pid is gone with no terminal recorded is reported as `status:
-  "exited"`, `terminal: true`, `outcome: "indeterminate"`. This is the second reader-derived
-  rule, and the counterpart to D5's: a pid was recorded, so a child did start, and its result
-  is genuinely unknowable rather than bad. It is terminal because the run will never
-  progress, and waiting on it is what a consumer must stop doing. An earlier draft reported
-  it `terminal: false` and said bounded wait was how a consumer resolved it; that was wrong
-  in a way worth naming, because observation creates no lifecycle facts — every wait would
-  have returned the same pending id forever, and "resolves" described a loop, not a
-  resolution. This is also the case `indeterminate` exists for.
+- A run whose recorded pid is gone with no terminal recorded is an **orphan**. It is
+  reported as `status: "exited"`, `terminal: false`, `outcome: null`, with `alive: false`
+  and an advisory flag that it may be orphaned. It becomes terminal only when the
+  reconciler below says so.
+- **Liveness may not be the fact that establishes terminality**, and an earlier revision
+  had it both ways: this decision declares the pid probe advisory because a pid can be
+  reused or denied, and the next paragraph then derived a terminal outcome from that same
+  probe. A bare `kill(pid, 0)` identifies neither the process incarnation nor the run that
+  owns it, so a reused pid makes a dead run look alive, and the same unchanged record reads
+  differently from two hosts. A lifecycle transition resting on that is a transition that
+  depends on who asked.
+- **The reconciler is the named owner of orphan terminalisation.** It is the lifecycle
+  authority, it is the only component permitted to terminalise a run it did not run, and it
+  must establish ownership before doing so rather than racing another reconciler. Its
+  evidence has to be stronger than pid absence — a process-incarnation identity, within a
+  stated host boundary. When it can establish that a run ended but not how it ended, it
+  writes `terminal: true` with `outcome: "indeterminate"`, which is the case that value
+  exists for.
+- **Until the reconciler runs, an orphan is honestly non-terminal.** That is a real cost:
+  a consumer can wait on a run that will never finish. It is the correct cost, because the
+  alternative on offer was every reader inventing the transition from an observation it
+  cannot trust, which trades a visible stall for a silent disagreement. Naming the owner is
+  the answer to the ghost record; pretending a reader can stand in for one is not.
 - `kill` signals the run's whole process group. It reports what it did rather than
   raising, because "already exited" is an ordinary answer to a kill request. It reports
   **signal delivery**, not process death and not lifecycle terminality; a consumer that
@@ -513,6 +537,14 @@ request.
 - Lifecycle state is the single authority for these answers, not the MCP job sidecar,
   because a universal verb cannot pick its source of truth based on who submitted the
   work; the same id would then answer differently depending on provenance.
+- **That authority is the same one `status` reads**, and this is load-bearing rather than
+  incidental. An earlier revision let `status` apply a reader rule that terminalised an
+  orphan while `wait` resolved the same run through lifecycle state, which still said
+  running. The consumer was told by one conforming call that the run had definitely ended
+  and by another that it must keep waiting, for the same id, at the same moment. Two
+  normative source-of-truth rules for one question is the defect; which of the two answers
+  is nicer is not the point. Every status-bearing path in this contract resolves through one
+  authority, and an orphan is terminal on all of them or on none.
 
 **Two additions this ADR makes, which ADR-0066 does not state.** They are marked as
 extensions rather than folded into the list above, because presenting a new decision as an
@@ -630,6 +662,19 @@ about what a wait entry contains and what a disconnect does.
   external consumer proposed the three-valued shape independently, from its own analytics
   requirements, while concluding it was not needed in v1 — two unrelated routes to the same
   field is a stronger argument than either one alone.
+
+- **Letting readers derive the terminal state of a spawn failure and of an orphan.** This
+  was the previous revision's answer, and it is the most instructive thing that has been
+  rejected here. Its appeal was real: a corrective write can fail on exactly the disk that
+  just refused the spawn, so a guarantee resting on that write is not a guarantee. But a
+  reader computing a *lifecycle transition* invents a durable fact from a local observation,
+  and both concrete rules proved it. Spawn-failure-from-missing-pid is racy against the
+  required write ordering, so a healthy child is reported terminally failed in the window
+  before its pid is attached. Orphan-from-pid-absence rests on a probe that cannot identify
+  a process incarnation, so a reused pid hides a dead run and two hosts disagree about one
+  unchanged record. What survives is the narrow form: readers derive presentation, the
+  lifecycle authority derives lifecycle. The ghost record is answered by naming an owner for
+  it, not by hoping every reader will independently reach the same conclusion.
 
 - **Semantic versioning for the contract.** Would allow finer-grained compatibility
   statements. It lost because it invites partial-compatibility logic in code we do not
