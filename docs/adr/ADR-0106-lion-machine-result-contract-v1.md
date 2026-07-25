@@ -95,7 +95,7 @@ wake it. A consumer restart across a successful delivery loses it the same way.
 | The envelope every machine call returns | D3: one envelope shape — `ok`, `contract_version`, `data`, `error` |
 | Run status | D4: `status` is opaque and verbatim; the producer also publishes `terminal` and `outcome`, on every status-bearing response |
 | Submit | D5: submit returns a handle; the spawn phase is recorded rather than inferred from a missing pid |
-| Reads | D6: one lifecycle authority for every path; liveness is advisory and never establishes terminality |
+| Reads | D6: one lifecycle authority for every path; liveness is advisory; in v1 an orphaned run stays non-terminal |
 | Distinguishing absence from failure | D7: every read-derived field carries its own availability and reason |
 | Process-level faults | D8: a valid envelope is authoritative; exit status is the transport-level answer, with a defined precedence |
 | Terminal notification | D9: a notification is a prompt to read state, never proof and never the only path |
@@ -272,8 +272,8 @@ another copy of our rules living in code we do not control.
   list as closed is non-conforming.
 - `terminal` answers **"stop waiting"**. True when and only when the run reached an end
   state, derived by lionagi from a recorded end — `finished_at`, a producer-written spawn
-  failure (D5), or a transition written by the reconciler (D6) — never by matching `status`
-  against a set, and never computed by a reader.
+  failure (D5) — never by matching `status` against a set, and never computed by a reader.
+  In v1 those are the only two sources; the deferred reconciler in D6 would be a third.
 - `outcome` answers **"did the work come out right"**. It is a **closed** vocabulary,
   `succeeded | failed | indeterminate`, meaningful only when `terminal` is true and `null`
   while the run is in flight. Being closed, it may be branched on, and a new value costs a
@@ -284,12 +284,16 @@ another copy of our rules living in code we do not control.
   `completed_empty` is `terminal: true, outcome: "failed"`. A consumer given only
   `terminal` must either invent the forbidden vocabulary or call every finished run a
   success, which is P2 recreated one level up (P2b).
-- **`indeterminate` is not a hedge and is not optional.** It is the value the reconciler
-  writes for a run it can establish has ended but whose result it cannot establish — a
-  process that vanished with no terminal recorded (D6). A two-valued field has no encoding
-  for that case and would force `failed`, which asserts a fact from a failure to establish
-  one. That is the defect D7's availability wrapper exists to prevent, and a field small
-  enough to look like a boolean is exactly where it gets smuggled back in.
+- **`indeterminate` is reserved in v1 and emitted by no path in it.** It is the value for a
+  run that can be established to have ended but whose result cannot be established, and the
+  only component that would produce it is the reconciler deferred in D6. It is defined now
+  anyway, and deliberately: `outcome` is a closed vocabulary that consumers branch on, so
+  adding a third value later would be a breaking change under D2 and would cost a contract
+  version. Defining an unused value costs one sentence; introducing it in v2 costs every
+  consumer an upgrade. A two-valued field would also force `failed` for the unknowable case,
+  which asserts a fact from a failure to establish one — the defect D7's availability
+  wrapper exists to prevent, smuggled back in through a field small enough to look like a
+  boolean.
 - `reason_code` is a short machine-readable qualifier for a terminal outcome, drawn
   from the same cross-kind lifecycle resolver ADR-0066 D6 uses. It is advisory: a
   consumer may surface it, and must not need it to decide `outcome`.
@@ -367,7 +371,8 @@ li orchestrate fanout --machine --detach [...]
   reported, and it may be flagged as possibly orphaned, but staleness is advisory and never
   a terminal transition — a loaded machine and a dead spawn look identical from the record,
   and a bound chosen to tell them apart is a guess with a consumer belief riding on it.
-  Terminalising it is the reconciler's job, below.
+  **In v1 it stays non-terminal, permanently**, and that is the contract rather than an
+  omission from it; see D6.
 - An earlier revision made both this and the orphan case in D6 **reader-derived**, on the
   reasoning that a fact a reader can compute should never depend on a write that can fail.
   That reasoning is right about *presentation* and wrong about *lifecycle*. A reader
@@ -406,8 +411,7 @@ li job kill <run_id> --machine
   extra information carried beside it with its own reliability.
 - A run whose recorded pid is gone with no terminal recorded is an **orphan**. It is
   reported as `status: "exited"`, `terminal: false`, `outcome: null`, with `alive: false`
-  and an advisory flag that it may be orphaned. It becomes terminal only when the
-  reconciler below says so.
+  and an advisory flag that it may be orphaned. In v1 it never becomes terminal.
 - **Liveness may not be the fact that establishes terminality**, and an earlier revision
   had it both ways: this decision declares the pid probe advisory because a pid can be
   reused or denied, and the next paragraph then derived a terminal outcome from that same
@@ -415,18 +419,28 @@ li job kill <run_id> --machine
   owns it, so a reused pid makes a dead run look alive, and the same unchanged record reads
   differently from two hosts. A lifecycle transition resting on that is a transition that
   depends on who asked.
-- **The reconciler is the named owner of orphan terminalisation.** It is the lifecycle
-  authority, it is the only component permitted to terminalise a run it did not run, and it
-  must establish ownership before doing so rather than racing another reconciler. Its
-  evidence has to be stronger than pid absence — a process-incarnation identity, within a
-  stated host boundary. When it can establish that a run ended but not how it ended, it
-  writes `terminal: true` with `outcome: "indeterminate"`, which is the case that value
-  exists for.
-- **Until the reconciler runs, an orphan is honestly non-terminal.** That is a real cost:
-  a consumer can wait on a run that will never finish. It is the correct cost, because the
-  alternative on offer was every reader inventing the transition from an observation it
-  cannot trust, which trades a visible stall for a silent disagreement. Naming the owner is
-  the answer to the ghost record; pretending a reader can stand in for one is not.
+- **In v1, nothing terminalises an orphan. It stays non-terminal indefinitely.** This is a
+  decision, not a gap, and it is stated here so that a consumer can plan for it rather than
+  discover it. A run whose process died without its terminal hook running, and a run whose
+  producer died before it ever spawned, both remain `terminal: false` for as long as their
+  records exist. A consumer's bounded wait will keep returning them as pending until its own
+  window closes; what it does then is the consumer's policy, and this contract does not
+  pretend to make that decision for it.
+- **Why not simply specify the reconciler here.** Two earlier revisions tried, in opposite
+  directions, and both failed for the same underlying reason: terminalising a run you did
+  not run requires evidence that a run *ended*, and neither a missing pid nor an
+  unresponsive one is that evidence. Doing it properly needs a durable process-incarnation
+  identity, a host boundary, and a fenced ownership protocol so two reconcilers cannot race.
+  That is a distributed-systems protocol with its own failure modes, not a paragraph in a
+  result contract. Naming an owner without specifying when its transition is *valid* moves
+  the ambiguity from readers into an unspecified component and lets two conforming
+  implementations disagree about whether the same run is over — which is the divergence P1
+  describes, one level further in. The target shape is written out in the deferred section
+  below.
+- **The cost is real and is the right one to accept.** A visible stall is worse than
+  nothing and better than every reader independently inventing a terminal state from an
+  observation it cannot trust. A false pending wastes a consumer's time; a false terminal
+  gets acted on.
 - `kill` signals the run's whole process group. It reports what it did rather than
   raising, because "already exited" is an ordinary answer to a kill request. It reports
   **signal delivery**, not process death and not lifecycle terminality; a consumer that
@@ -575,6 +589,30 @@ opposite direction once corrected: the first revision claimed ADR-0066 answered 
 when it answers one. Both errors ran the same way, toward reading a document as settling
 more than it says, in whichever direction removed the obstacle in front of the draft.
 
+**DEFERRED: the orphan reconciler.** The component that would terminalise a run whose
+process died without recording a terminal, or whose producer died before spawning. It is
+deferred rather than dropped because v1's answer — those runs stay non-terminal forever —
+is a real cost that should eventually be paid off. What it needs, so that whoever builds it
+starts from the constraints rather than rediscovering them:
+
+- A durable **process-incarnation identity** written at spawn, not a bare pid. A pid is
+  reused, so "pid 41234 is gone" does not establish that *this run's* process is gone. Boot
+  identity plus process start time is the usual portable-enough pair.
+- A stated **host boundary**. The same record read from two machines must not yield two
+  answers, so a reconciler has to know which runs it is entitled to judge.
+- A **fenced ownership protocol** — a lease or compare-and-set — so two reconcilers cannot
+  both decide, and a stalled one cannot wake up and overwrite a newer decision.
+- An explicit **eligibility predicate per spawn phase**. `started` and `preparing` are
+  different problems: a `preparing` record has no child at all, so there is no incarnation
+  to prove absent, and it needs a durable producer-attempt identity to be resolvable in
+  principle. A reconciler specified only for `started` cannot resolve `preparing`, and
+  claiming otherwise was the defect that produced this deferral.
+- A rule for platforms where the identity cannot be obtained: **leave the run pending**
+  rather than improvise weaker evidence.
+
+Adding it is additive under D2 only if `outcome`'s vocabulary and the terminal fields are
+already defined, which is why they are defined in v1.
+
 **DEFERRED: usage and cost accounting** — tokens, duration, and whatever else a metered
 consumer needs to bill a run. Not v1, and recorded here at the external consumer's request
 so that it is not designed ad hoc when it is needed. Its shape is already constrained: an
@@ -609,6 +647,16 @@ a local change: it must also be classified, on every status-bearing response.
 **Given up.** The freedom to change what a machine call returns without thinking about
 it. Additive change stays free under the narrowed rule in D2; anything else costs a
 version increment and a coordinated update.
+
+**Accepted in v1, and stated rather than discovered.** A run whose process dies without
+recording a terminal, or whose producer dies before spawning it, stays non-terminal for as
+long as its record exists. A consumer's bounded wait will return it as pending every time.
+Two earlier revisions tried to close this with a rule every reader would apply, and both
+produced worse failures than the one they removed: a healthy child reported as terminally
+failed, and two hosts disagreeing about one unchanged record. Closing it properly needs a
+fenced reconciler with process-incarnation evidence, which is a protocol with its own
+failure modes rather than a clause, so it is written out in the deferred section instead of
+half-specified here. A visible stall is the honest cost of not having built that yet.
 
 **New failure modes.** A consumer pinned to v1 against an implementation that dropped
 v1 refuses to register rather than misbehaving, which operationally looks like a
