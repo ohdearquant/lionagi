@@ -56,11 +56,12 @@ jobs:
       run: |
         curl -LsSf https://astral.sh/uv/install.sh | sh
         echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-    # Every other job installs --all-extras. That makes a module which is
+    # The other Python jobs all install extras, most with --all-extras and the
+    # studio job with --extra studio. Under any of them a module which is
     # imported on a core path, but only ever supplied by some extra's
-    # transitive tree, indistinguishable from a properly declared dependency:
-    # it is always present, so nothing ever fails. Installing the base
-    # dependency set by itself is the only configuration in which that
+    # transitive tree, is indistinguishable from a properly declared
+    # dependency: it is always present, so nothing ever fails. Installing the
+    # base dependency set by itself is the only configuration in which that
     # distinction is observable, which is why this job exists separately
     # rather than as another step somewhere green.
     - name: Install with no extras
