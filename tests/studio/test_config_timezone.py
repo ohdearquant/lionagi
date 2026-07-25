@@ -15,6 +15,8 @@ key.
 """
 
 import logging
+import os
+import signal
 import zoneinfo
 from pathlib import Path
 
@@ -104,12 +106,15 @@ def test_multi_level_zone_name_keeps_all_its_parts(tz_host):
 
 def test_directory_that_merely_looks_like_a_tree_is_not_one(tz_host):
     """A path under some unrelated directory named ``zoneinfo.backup`` is not
-    a zone source. Only the configured search roots are."""
+    a zone source. Only the configured search roots are — and since the host
+    did point somewhere readable, failing to name it is a refusal, not a
+    default."""
     link, set_roots, zone_file = tz_host
     link.symlink_to(zone_file("zoneinfo.backup"))
     set_roots("zoneinfo")
 
-    assert config._system_local_tz_name() == "UTC"
+    with pytest.raises(config.SystemTimezoneUnreadableError):
+        config._system_local_tz_name()
 
 
 def test_zone_follows_the_resolved_path_not_the_link_text(tz_host, tmp_path):
@@ -136,7 +141,8 @@ def test_shadowed_key_is_refused_rather_than_loading_another_zone(tz_host):
     link.symlink_to(zone_file("second", "America/New_York"))
     set_roots("first", "second")
 
-    assert config._system_local_tz_name() == "UTC"
+    with pytest.raises(config.SystemTimezoneUnreadableError):
+        config._system_local_tz_name()
 
 
 def test_unshadowed_key_still_resolves_with_several_roots(tz_host):
@@ -150,9 +156,9 @@ def test_unshadowed_key_still_resolves_with_several_roots(tz_host):
     assert config._system_local_tz_name() == "America/New_York"
 
 
-def test_unreadable_zone_data_falls_back_instead_of_raising(tz_host, tmp_path):
-    """The name is computed at import to build a module constant, so a
-    malformed tzfile must not make the package unimportable."""
+def test_malformed_zone_data_raises_rather_than_defaulting(tz_host, tmp_path):
+    """The link opens, so the host stated a zone; the bytes behind it just
+    don't load. Substituting UTC there misreads an answer that exists."""
     link, set_roots, _zone_file = tz_host
     path = tmp_path / "zoneinfo" / "America" / "New_York"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -160,12 +166,18 @@ def test_unreadable_zone_data_falls_back_instead_of_raising(tz_host, tmp_path):
     link.symlink_to(path)
     set_roots("zoneinfo")
 
-    assert config._system_local_tz_name() == "UTC"
+    with pytest.raises(config.SystemTimezoneUnreadableError) as excinfo:
+        config._system_local_tz_name()
+
+    message = str(excinfo.value)
+    assert str(link) in message
+    assert "LIONAGI_SCHEDULER_TZ" in message
 
 
 def test_symlink_loop_falls_back_instead_of_raising(tz_host, tmp_path):
     """A looping localtime link raises from ``resolve()`` rather than
-    returning. At import that would take the whole package down."""
+    returning, and nothing can be read through it — no answer to misread, so
+    the fallback stands."""
     link, set_roots, _zone_file = tz_host
     other = tmp_path / "loop_b"
     link.symlink_to(other)
@@ -173,6 +185,63 @@ def test_symlink_loop_falls_back_instead_of_raising(tz_host, tmp_path):
     set_roots("zoneinfo")
 
     assert config._system_local_tz_name() == "UTC"
+
+
+class _Blocked(BaseException):
+    """Raised from the alarm handler below.
+
+    Deliberately not an ``Exception``, and specifically not an ``OSError``.
+    ``TimeoutError`` is an ``OSError`` subclass, so raising one here is caught
+    by the very ``except OSError`` this test exists to prove is not reached,
+    and the test passes whether or not the code under it blocks.
+    """
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGALRM"), reason="needs SIGALRM to bound the hang")
+def test_a_fifo_at_localtime_falls_back_without_blocking(tz_host, tmp_path):
+    """A FIFO must be classified without being opened.
+
+    Opening a FIFO with no writer blocks. This resolution runs while a module
+    constant is being built, so a block here hangs the process at import with
+    neither the error nor the fallback ever reached — strictly worse than
+    either. The alarm is what makes the regression fail instead of hanging the
+    suite that is supposed to catch it.
+    """
+    link, set_roots, _zone_file = tz_host
+    fifo = tmp_path / "localtime_fifo"
+    os.mkfifo(fifo)
+    link.symlink_to(fifo)
+    set_roots("zoneinfo")
+
+    def _too_slow(_signum, _frame):
+        raise _Blocked("reading /etc/localtime blocked; a FIFO was opened")
+
+    previous = signal.signal(signal.SIGALRM, _too_slow)
+    signal.alarm(5)
+    try:
+        assert config._system_local_tz_name() == "UTC"
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def test_unreadable_localtime_falls_back_instead_of_raising(tz_host, tmp_path):
+    """Present but unreadable is still nothing we can read an opinion out of.
+    The crash case is a file that opens and then names no loadable zone."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads through mode 000, so the unreadable case cannot be staged")
+    link, set_roots, _zone_file = tz_host
+    path = tmp_path / "zoneinfo" / "America" / "New_York"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"not a tzfile")
+    path.chmod(0o000)
+    link.symlink_to(path)
+    set_roots("zoneinfo")
+
+    try:
+        assert config._system_local_tz_name() == "UTC"
+    finally:
+        path.chmod(0o644)
 
 
 def test_tz_environment_variable_wins(tz_host, monkeypatch):

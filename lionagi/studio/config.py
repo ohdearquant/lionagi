@@ -2,12 +2,48 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
+import time
 import zoneinfo
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 _logger = logging.getLogger(__name__)
 
 SYSTEM_LOCALTIME_LINK = Path("/etc/localtime")
+
+SCHEDULER_TZ_ENV_VAR = "LIONAGI_SCHEDULER_TZ"
+
+# Where a resolved scheduler zone came from. The name alone is not diagnostic:
+# a UTC that an operator asked for and a UTC nothing else could be read are the
+# same string, and only the second one means cron rows are firing on an hour
+# nobody chose.
+TZ_SOURCE_SCHEDULER_ENV = "env:LIONAGI_SCHEDULER_TZ"
+TZ_SOURCE_TZ_ENV = "env:TZ"
+TZ_SOURCE_SYSTEM_LOCALTIME = "system:localtime"
+TZ_SOURCE_UTC_FALLBACK = "fallback:utc"
+
+
+class SystemTimezoneUnreadableError(RuntimeError):
+    """The host's localtime file is readable but names no loadable zone.
+
+    Raised while resolving the scheduler's default zone, which happens once at
+    import. A host in this state has a timezone opinion that could not be read,
+    and interpreting cron expressions in UTC instead would shift every fire by
+    the host's offset and drop a day from any row scheduled inside it — all of
+    it silent. Refusing to start is the loud alternative.
+    """
+
+
+@dataclass(frozen=True)
+class TimezoneResolution:
+    """A resolved zone name together with the evidence that produced it."""
+
+    name: str
+    source: str
+    detail: str | None = None
 
 
 def _tz_search_roots() -> list[Path]:
@@ -33,9 +69,9 @@ def _resolved(path: Path) -> Path | None:
     """``path.resolve()``, or None when the filesystem refuses to answer.
 
     Symlink loops surface as RuntimeError on some Python versions and OSError
-    on others, so both are treated as "no answer". This is called while
-    computing a module constant at import, where an escaping exception makes
-    the package unimportable rather than merely mis-zoned.
+    on others, so both are treated as "no answer". A path that cannot even be
+    resolved is a host with nothing to say about its zone, not a host whose
+    answer was misread.
     """
     try:
         return path.resolve()
@@ -78,8 +114,38 @@ def _zone_name_from_path(path: Path, roots: list[Path]) -> str | None:
     return None
 
 
-def _system_local_tz_name() -> str:
-    """Best-effort resolution of the system's IANA timezone name.
+def _localtime_is_readable() -> bool:
+    """Whether the host's localtime file exists and can actually be read.
+
+    This is the line between the two failure modes. A host with no readable
+    localtime file has no zone opinion to lose, and UTC is a reasonable
+    default for it. A host whose localtime file opens fine but yields no
+    loadable zone name does have an opinion, and substituting UTC there
+    misreads it rather than defaulting.
+
+    Opening follows the symlink deliberately: a dangling or looping link and
+    an unreadable file are all "nothing to read here", which is the fallback
+    case, not the failure case.
+
+    The path must be a regular file before it is opened at all. A timezone
+    file is one, and the others are not merely uninteresting: opening a FIFO
+    with no writer blocks, and this runs while a module constant is being
+    resolved, so the process would hang at import with neither an error nor a
+    fallback ever reached. Anything that is not a regular file is therefore
+    "nothing to read here" without being touched.
+    """
+    try:
+        if not stat.S_ISREG(SYSTEM_LOCALTIME_LINK.stat().st_mode):
+            return False
+        with SYSTEM_LOCALTIME_LINK.open("rb") as handle:
+            handle.read(1)
+    except OSError:
+        return False
+    return True
+
+
+def _resolve_system_local_tz() -> TimezoneResolution:
+    """Resolve the system's IANA timezone name, with its provenance.
 
     Checks ``$TZ`` first, then reads the ``/etc/localtime`` symlink — the
     standard way Unix hosts point at their zoneinfo entry — and expresses it
@@ -94,14 +160,16 @@ def _system_local_tz_name() -> str:
     still reopen an earlier root's file, so the name is additionally required
     to round-trip back to the same tzfile.
 
-    Returns "UTC" if nothing resolves to a loadable zone. The daemon still
-    runs correctly then, but cron expressions are interpreted in UTC rather
-    than local time, so the fallback is logged: an unrequested UTC is
-    otherwise indistinguishable from a configured one.
+    Falls back to UTC only when there was nothing to read. When the localtime
+    file reads fine but no loadable zone name comes out of it, this raises
+    instead: the host stated a zone the resolver could not express, and a
+    silent UTC would run every cron row on an hour nobody chose. Setting
+    ``LIONAGI_SCHEDULER_TZ`` short-circuits this whole path, so an operator
+    always has a way past a host the resolver cannot read.
     """
     tz_env = os.environ.get("TZ")
     if tz_env:
-        return tz_env
+        return TimezoneResolution(tz_env, TZ_SOURCE_TZ_ENV, "TZ")
 
     localtime = _resolved(SYSTEM_LOCALTIME_LINK)
     if localtime is not None:
@@ -110,20 +178,46 @@ def _system_local_tz_name() -> str:
             try:
                 zoneinfo.ZoneInfo(name)
             except Exception:  # noqa: BLE001
-                # This runs at import to compute a module constant, so nothing
-                # may escape: an unreadable or malformed tzfile would otherwise
-                # make the package unimportable rather than merely mis-zoned.
                 name = None
             if name is not None:
-                return name
+                return TimezoneResolution(
+                    name, TZ_SOURCE_SYSTEM_LOCALTIME, str(SYSTEM_LOCALTIME_LINK)
+                )
+
+    if _localtime_is_readable():
+        raise SystemTimezoneUnreadableError(
+            f"{SYSTEM_LOCALTIME_LINK} is readable but does not resolve to a "
+            "loadable IANA timezone, so the host's own timezone could not be "
+            "read. Refusing to start rather than interpreting schedules in an "
+            f"unrequested UTC. Set {SCHEDULER_TZ_ENV_VAR} to an IANA zone name "
+            "(for example America/New_York) to choose one explicitly."
+        )
 
     _logger.warning(
         "Could not determine the system timezone from %s; scheduler times will "
-        "be interpreted as UTC. Set LIONAGI_SCHEDULER_TZ to an IANA zone name "
-        "(for example America/New_York) to choose one explicitly.",
+        "be interpreted as UTC. Set %s to an IANA zone name (for example "
+        "America/New_York) to choose one explicitly.",
         SYSTEM_LOCALTIME_LINK,
+        SCHEDULER_TZ_ENV_VAR,
     )
-    return "UTC"
+    return TimezoneResolution("UTC", TZ_SOURCE_UTC_FALLBACK, str(SYSTEM_LOCALTIME_LINK))
+
+
+def _system_local_tz_name() -> str:
+    return _resolve_system_local_tz().name
+
+
+def _resolve_scheduler_tz() -> TimezoneResolution:
+    """The zone cron expressions are interpreted in, and where it came from.
+
+    An explicit ``LIONAGI_SCHEDULER_TZ`` wins over host detection and is never
+    second-guessed, which is what makes it usable as the escape hatch on a
+    host whose own zone cannot be read.
+    """
+    override = os.environ.get(SCHEDULER_TZ_ENV_VAR)
+    if override:
+        return TimezoneResolution(override, TZ_SOURCE_SCHEDULER_ENV, SCHEDULER_TZ_ENV_VAR)
+    return _resolve_system_local_tz()
 
 
 STUDIO_PORT: int = int(os.environ.get("LIONAGI_STUDIO_PORT", "8765"))
@@ -203,7 +297,52 @@ REAPER_INTERVAL_SECONDS: int = int(os.environ.get("LIONAGI_STUDIO_REAPER_INTERVA
 # to the system's local timezone (resolved from $TZ, else /etc/localtime);
 # override for deployments where the daemon host's timezone doesn't match
 # operator intent.
-SCHEDULER_TZ: str = os.environ.get("LIONAGI_SCHEDULER_TZ") or _system_local_tz_name()
+#
+# Resolved once, here, and frozen for the life of the process — so a host whose
+# timezone configuration changes, or a source tree that learns to read it
+# better, changes nothing until the daemon is restarted. That is why the
+# resolution is reported on /api/admin/health rather than only logged at start:
+# the running process is the only place the effective value exists.
+_SCHEDULER_TZ_RESOLUTION = _resolve_scheduler_tz()
+SCHEDULER_TZ: str = _SCHEDULER_TZ_RESOLUTION.name
+SCHEDULER_TZ_SOURCE: str = _SCHEDULER_TZ_RESOLUTION.source
+SCHEDULER_TZ_SOURCE_DETAIL: str | None = _SCHEDULER_TZ_RESOLUTION.detail
+SCHEDULER_TZ_RESOLVED_AT: float = time.time()
+
+
+def _process_started_at() -> float | None:
+    """This process's start time, or None if the platform won't say."""
+    try:
+        import psutil
+
+        return psutil.Process().create_time()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _as_utc_iso(epoch: float | None) -> str | None:
+    if epoch is None:
+        return None
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+
+
+def scheduler_timezone_report() -> dict[str, Any]:
+    """The scheduler's effective cron timezone, as this process holds it.
+
+    Reads the module attributes the scheduler itself reads when computing fire
+    times, so the report cannot drift into describing a resolution the
+    scheduler is not using. Re-deriving the zone here would answer a different
+    question — what the host says now — which is exactly the question that
+    looks fine while a long-lived daemon carries a stale value.
+    """
+    return {
+        "name": SCHEDULER_TZ,
+        "source": SCHEDULER_TZ_SOURCE,
+        "source_detail": SCHEDULER_TZ_SOURCE_DETAIL,
+        "resolved_at": _as_utc_iso(SCHEDULER_TZ_RESOLVED_AT),
+        "daemon_started_at": _as_utc_iso(_process_started_at()),
+    }
+
 
 # ── DB maintenance config ─────────────────────────────────────────────────────
 # Size threshold in bytes above which /api/stats raises a size_alert (500 MB).

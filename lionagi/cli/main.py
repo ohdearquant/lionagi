@@ -262,6 +262,7 @@ def _build_parser(selected: _CommandSpec | None) -> tuple[argparse.ArgumentParse
         "--version",
         action="version",
         version=f"%(prog)s {_get_version()}",
+        help="Print the installed lionagi version and exit.",
     )
     parser.add_argument(
         "--machine",

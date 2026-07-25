@@ -546,10 +546,19 @@ def run_agent_status(argv: list[str]) -> int:
     """Entry point for `li agent status [<id>] [--json]`."""
     parser = argparse.ArgumentParser(prog="li agent status", add_help=True)
     parser.add_argument(
-        "id", nargs="?", default=None, help="Session or invocation ID (or short prefix)."
+        "id",
+        nargs="?",
+        default=None,
+        help=(
+            "Session id, invocation id or branch id to report on — full, or an unambiguous "
+            "prefix. Omit it for the most recent agent run in this project."
+        ),
     )
     parser.add_argument(
-        "--json", action="store_true", dest="as_json", help="Emit a stable JSON object."
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="Print one JSON object with stable keys instead of the human table, for scripting.",
     )
     args = parser.parse_args(argv)
     return _dispatch("agent", args.id, args.as_json)
@@ -559,10 +568,19 @@ def run_play_status(argv: list[str]) -> int:
     """Entry point for `li play status [<id>] [--json] [--audit-degraded]`."""
     parser = argparse.ArgumentParser(prog="li play status", add_help=True)
     parser.add_argument(
-        "id", nargs="?", default=None, help="Session, invocation, or play ID (or short prefix)."
+        "id",
+        nargs="?",
+        default=None,
+        help=(
+            "Session, invocation or play id to report on — full, or an unambiguous prefix. "
+            "Omit it for the most recent play or flow run in this project."
+        ),
     )
     parser.add_argument(
-        "--json", action="store_true", dest="as_json", help="Emit a stable JSON object."
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="Print one JSON object with stable keys instead of the human table, for scripting.",
     )
     parser.add_argument(
         "--audit-degraded",

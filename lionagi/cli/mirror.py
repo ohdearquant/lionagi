@@ -41,14 +41,17 @@ def add_mirror_subparser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--once",
         action="store_true",
-        help="Do a single catch-up pass and exit (backfill), instead of tailing.",
+        help=(
+            "Do a single catch-up pass over existing transcripts and exit, instead of tailing "
+            "for new ones. Use it to backfill history without leaving a process running."
+        ),
     )
     p.add_argument(
         "--interval",
         type=float,
         default=3.0,
         metavar="SECS",
-        help="Poll interval while tailing (default 3).",
+        help="Seconds between passes over the transcript directory while tailing (default 3).",
     )
     p.add_argument(
         "--since",

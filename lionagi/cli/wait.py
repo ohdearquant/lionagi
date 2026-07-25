@@ -242,7 +242,7 @@ def run_wait(argv: list[str]) -> int:
         type=float,
         default=1.0,
         metavar="SECS",
-        help="Poll interval in seconds (default 1).",
+        help="Seconds between state.db polls while waiting (default 1). Must be positive.",
     )
     args = parser.parse_args(argv)
     watched_ids = _split_watched_ids(args.ids)

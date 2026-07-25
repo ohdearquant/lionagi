@@ -154,21 +154,39 @@ def add_dispatch_subparser(subparsers: argparse._SubParsersAction) -> None:
     dispatch_sub = dispatch.add_subparsers(dest="dispatch_command", required=True)
 
     ls = dispatch_sub.add_parser("ls", help="List dispatches.")
-    ls.add_argument("--status", default=None, help="Filter by status.")
-    ls.add_argument("--limit", type=int, default=50, help="Max rows (default 50).")
+    ls.add_argument(
+        "--status",
+        default=None,
+        help=(
+            "Show only rows in this status: pending, delivering, delivered, acked, dead_letter "
+            "or expired. Omit to list every status."
+        ),
+    )
+    ls.add_argument(
+        "--limit",
+        type=int,
+        default=50,
+        help="Maximum rows to print, newest first (default 50).",
+    )
 
     show = dispatch_sub.add_parser("show", help="Show one dispatch in full.")
-    show.add_argument("id", help="Dispatch id.")
+    show.add_argument("id", help="Id of the dispatch row to show, as listed by `li dispatch ls`.")
 
     ack = dispatch_sub.add_parser("ack", help="Acknowledge an ack_required dispatch.")
-    ack.add_argument("id", help="Dispatch id.")
-    ack.add_argument("token", help="ack_token presented by the consumer.")
+    ack.add_argument("id", help="Id of the dispatch to acknowledge, as listed by `li dispatch ls`.")
+    ack.add_argument(
+        "token",
+        help=(
+            "The ack_token this dispatch was delivered with, reported by `li dispatch show`. A "
+            "mismatched token is refused, so an acknowledgement cannot be guessed."
+        ),
+    )
 
     retry = dispatch_sub.add_parser(
         "retry",
         help="Force an immediate retry of a dead_letter/expired dispatch.",
     )
-    retry.add_argument("id", help="Dispatch id.")
+    retry.add_argument("id", help="Id of the dispatch to re-queue for delivery.")
 
     purge = dispatch_sub.add_parser(
         "purge",
@@ -185,7 +203,15 @@ def add_dispatch_subparser(subparsers: argparse._SubParsersAction) -> None:
             "pending/delivering rows."
         ),
     )
-    purge.add_argument("id", nargs="?", default=None, help="Dispatch id (single-row purge).")
+    purge.add_argument(
+        "id",
+        nargs="?",
+        default=None,
+        help=(
+            "Id of a single dispatch to delete, whatever its status. Omit it to bulk-delete by "
+            "--status/--before instead; one of the two is then required."
+        ),
+    )
     purge.add_argument(
         "--status",
         default=None,
