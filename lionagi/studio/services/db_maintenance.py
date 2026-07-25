@@ -177,7 +177,14 @@ async def prune_old_data(
     async with StateDB() as db:
         async with db.transaction() as conn:
             # ── find session IDs to prune ─────────────────────────────────
-            sql = f"SELECT id FROM sessions WHERE status IN ({sess_ph}) AND started_at <= ?"  # noqa: S608
+            # Age is measured from the last activity, not the first leg. A
+            # resumed session keeps its original ``started_at`` across every
+            # subsequent leg, so selecting on it would prune a branch that ran
+            # minutes ago. ``li state prune`` already selects on ``updated_at``.
+            sql = (
+                f"SELECT id FROM sessions WHERE status IN ({sess_ph}) "  # noqa: S608
+                "AND COALESCE(updated_at, started_at) <= ?"
+            )
             rows = (await conn.execute(*_q(sql, (*_TERMINAL_SESSION_STATUSES, cutoff)))).fetchall()
             session_ids = [r[0] for r in rows]
 

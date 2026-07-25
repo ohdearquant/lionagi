@@ -25,7 +25,9 @@ def _details(event: dict) -> dict:
     return json.loads(raw) if isinstance(raw, str) else raw
 
 
-async def _make_session(db: StateDB, *, status: str, started_at: float) -> str:
+async def _make_session(
+    db: StateDB, *, status: str, started_at: float, updated_at: float | None = None
+) -> str:
     pid = str(uuid.uuid4())
     sid = str(uuid.uuid4())
     await db.create_progression(pid)
@@ -36,6 +38,9 @@ async def _make_session(db: StateDB, *, status: str, started_at: float) -> str:
             "name": f"s-{status}-{sid[:6]}",
             "status": status,
             "started_at": started_at,
+            # A session that ran once has updated_at == started_at; pass
+            # updated_at explicitly to model a session that was resumed.
+            "updated_at": started_at if updated_at is None else updated_at,
         }
     )
     return sid
@@ -200,6 +205,42 @@ def test_prune_removes_old_terminal_sessions_only(tmp_path, monkeypatch):
     assert old_failed not in rem
     assert running_old in rem
     assert recent_completed in rem
+
+
+def test_prune_keeps_a_resumed_session_that_ran_recently(tmp_path, monkeypatch):
+    """Retention measures age since the session last ran, not since it first started."""
+    from lionagi.studio.services import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+
+    now = time.time()
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            # Resumed daily for 40 days: first leg is old, last leg is an hour ago.
+            resumed = await _make_session(
+                db,
+                status="completed",
+                started_at=now - 40 * 86400,
+                updated_at=now - 3600,
+            )
+            stale = await _make_session(db, status="completed", started_at=now - 40 * 86400)
+        return resumed, stale
+
+    resumed, stale = run_async(seed())
+
+    result = run_async(maint.prune_old_data(keep_days=30, actor="test"))
+    assert result["sessions_pruned"] == 1
+
+    async def remaining_ids():
+        async with StateDB(db_path) as db:
+            rows = await db.fetch_all("SELECT id FROM sessions")
+            return {r["id"] for r in rows}
+
+    rem = run_async(remaining_ids())
+    assert resumed in rem
+    assert stale not in rem
 
 
 def _reopen_before_call(monkeypatch, maint, session_id: str, *, call: int) -> None:
