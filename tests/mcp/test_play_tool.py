@@ -47,10 +47,27 @@ def test_play_runs_the_playbook_through_the_flow_command(captured):
     assert captured["label"] == "review"
 
 
-def test_play_passes_playbook_declared_args_through(captured):
-    """A playbook's own args are flags on the run; they ride the escape hatch."""
-    server.submit_play(name="adr", extra_args=["--target", "docs/adr"])
+def test_play_passes_playbook_declared_args_by_name(captured):
+    """A playbook's own declared args are given by name, not as raw flag tokens."""
+    server.submit_play(name="adr", playbook_args={"target": "docs/adr"})
     assert captured["flags"][-2:] == ["--target", "docs/adr"]
+
+
+def test_play_declared_bool_arg_is_a_bare_flag(captured):
+    server.submit_play(name="adr", playbook_args={"strict": True})
+    assert captured["flags"][-1] == "--strict"
+
+
+def test_play_accepts_a_dashed_arg_name_as_the_bare_one(captured):
+    """'--target' and 'target' name the same declared argument; both are accepted."""
+    server.submit_play(name="adr", playbook_args={"--target": "docs/adr"})
+    assert captured["flags"][-2:] == ["--target", "docs/adr"]
+
+
+def test_play_rejects_an_arg_name_that_is_not_a_name(captured):
+    with pytest.raises(ValueError, match="not an argument name"):
+        server.submit_play(name="adr", playbook_args={"tar get!": "x"})
+    assert captured == {}
 
 
 def test_play_team_mode_takes_a_name(captured):
