@@ -356,7 +356,7 @@ def _record_notify_outcome_to_run(
     return stderr_path
 
 
-def _record_notify_rejection_to_run(run: RunDir, reason: str) -> None:
+def record_notify_rejection_to_run(run: RunDir, reason: str) -> None:
     """Best-effort: record into *run*'s own notify_outcome.json that a notifier
     was configured for this run and refused, so the run says which of the two
     silences it is. A run with nothing configured writes no file at all; a run
@@ -690,7 +690,7 @@ def register_run_notify_outcome_scope(
     """
     resolution = resolve_notify_config(project_dir=project_dir)
     if resolution.reason is not None:
-        _record_notify_rejection_to_run(run, resolution.reason)
+        record_notify_rejection_to_run(run, resolution.reason)
         return None
     resolved = resolution.handler
     if resolved is None:
@@ -711,7 +711,7 @@ def register_run_notify_outcome_scope(
         )
 
     def _build_failure(reason: str) -> None:
-        _record_notify_rejection_to_run(run, reason)
+        record_notify_rejection_to_run(run, reason)
 
     handler = build_handler(resolved, outcome_fn=_outcome_fn, on_build_failure=_build_failure)
     if handler is None:

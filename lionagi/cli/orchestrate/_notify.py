@@ -8,6 +8,7 @@ adapter for this run's entity. See docs/internals/cli.md.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 
 from lionagi.cli.status import _classify
 from lionagi.state.lifecycle.callbacks import (
@@ -66,15 +67,25 @@ def register_flow_notify_scope(
     save_dir: str | None,
     cwd: str,
     started_at: float,
+    on_rejection: Callable[[str], None] | None = None,
 ) -> str | None:
     """Register the `--notify` legacy-payload adapter scoped to this run's
     own terminal entity. Returns the registration name (pass to
     ``unregister_flow_notify_scope`` in a ``finally`` block), or ``None`` if
     *override* resolved to disabled (never raised).
+
+    *on_rejection*, if given, is called with a stable reason when an override
+    was asked for and refused, whether the spec itself was rejected or the
+    handler could not be built from it. A caller bound to a run passes this to
+    record the refusal; without it, asking for a notifier and being refused
+    looks exactly like never having asked, since both return ``None``.
     """
-    # A rejected override is already reported through the resolver's warning;
-    # this registration only needs to know whether there is something to launch.
-    resolved = resolve_notify_config(override=override).handler
+    resolution = resolve_notify_config(override=override)
+    if resolution.reason is not None:
+        if on_rejection is not None:
+            on_rejection(resolution.reason)
+        return None
+    resolved = resolution.handler
     if resolved is None:
         return None
     payload_fn = _legacy_payload_builder(
@@ -104,7 +115,13 @@ def register_flow_notify_scope(
             _INVOCATION_ID_ENV: invocation_id or "",
         }
 
-    handler = build_handler(resolved, payload_fn=payload_fn, argv_fn=_argv_fn, env_fn=_env_fn)
+    handler = build_handler(
+        resolved,
+        payload_fn=payload_fn,
+        argv_fn=_argv_fn,
+        env_fn=_env_fn,
+        on_build_failure=on_rejection,
+    )
     if handler is None:
         return None
     name = f"notify.flow.{entity_kind}.{entity_id}"

@@ -1747,6 +1747,16 @@ async def _run_flow(
     _notify_entity_kind = "invocation" if invocation_id else "session"
     _notify_entity_id = invocation_id if invocation_id else str(env.session.id)
     if notify:
+        from lionagi.state.lifecycle.notify_settings import (
+            record_notify_rejection_to_run,
+        )
+
+        def _notify_override_refused(reason: str) -> None:
+            # This run explicitly asked for a notifier and will not get one.
+            # Recording it here is what keeps a refusal distinguishable from
+            # never having configured one; both otherwise register nothing.
+            record_notify_rejection_to_run(env.run, reason)
+
         _notify_scope_name = register_flow_notify_scope(
             override=notify,
             entity_kind=_notify_entity_kind,
@@ -1757,6 +1767,7 @@ async def _run_flow(
             save_dir=save_dir,
             cwd=cwd or os.getcwd(),
             started_at=_started_at,
+            on_rejection=_notify_override_refused,
         )
 
     # notify.on_terminal (settings-driven, independent of --notify) outcome
