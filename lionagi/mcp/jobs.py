@@ -172,6 +172,43 @@ def _notify_template(run_id: str, notify_target: str | None, notify_command: str
     return " ".join(parts)
 
 
+def _reject_oversized_argv(argv: list[str], env: dict[str, str], *, kind: str) -> None:
+    """Refuse a command line the OS will not accept, before anything is spawned.
+
+    ``exec`` limits the combined size of the argument vector and the environment.
+    Exceeding it raises ``OSError: [Errno 7] Argument list too long`` from the
+    spawn, which is late and hard to read; refusing here names the cause and the
+    limit instead.
+    """
+    try:
+        limit = os.sysconf("SC_ARG_MAX")
+    except (ValueError, OSError):  # pragma: no cover — platform without the knob
+        return
+    if not isinstance(limit, int) or limit <= 0:  # pragma: no cover — unset knob
+        return
+
+    # Each entry is stored with a terminator, and the kernel also keeps a pointer
+    # table and alignment padding that is not worth modelling exactly, so leave
+    # headroom rather than approving a command line that only just fits.
+    used = sum(len(a.encode()) + 1 for a in argv)
+    used += sum(len(k.encode()) + len(v.encode()) + 2 for k, v in env.items())
+    headroom = 8192
+    if used + headroom <= limit:
+        return
+
+    detail = (
+        "the instruction is passed on the command line for this kind of run"
+        if kind != "agent"
+        else "the command line is too long"
+    )
+    raise ValueError(
+        f"cannot submit this {kind} run: {detail}, and it needs {used} bytes of "
+        f"argument vector plus environment against an OS limit of {limit}. "
+        "Shorten the instruction, or use submit_agent, which hands the "
+        "instruction to the run in a file instead of on the command line."
+    )
+
+
 # --- public API ----------------------------------------------------------------
 
 
@@ -202,15 +239,18 @@ def submit(
 
     run_id = new_run_id()
     d = config.job_dir(run_id)
-    d.mkdir(parents=True, exist_ok=True)
     log_path = d / "console.log"
 
+    # The whole command line is assembled before anything is created on disk, so a
+    # run that cannot be spawned leaves no trace. Creating the directory first
+    # would leave an empty one behind on a rejection, and that reads back as a job
+    # with no kind that never finishes.
     tail = list(flags)
+    prompt_path = None
     if prompt is not None:
         if kind == "agent":
-            pf = d / "prompt.txt"
-            pf.write_text(prompt)
-            tail += ["--prompt-file", str(pf)]
+            prompt_path = d / "prompt.txt"
+            tail += ["--prompt-file", str(prompt_path)]
         else:
             tail.append(prompt)  # flow/fanout take the prompt as a positional
 
@@ -224,6 +264,16 @@ def submit(
     # environment that claims it is running under an interactive harness.
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
     env[config.RUN_ID_ENV_VAR] = run_id
+
+    # Only "agent" hands the instruction over in a file; flow and fanout take it
+    # as a positional, so a long one has to fit in the process argument vector.
+    # Checked before anything is written, because Popen raising this late would
+    # leave a job recorded as "running" for a run that never started.
+    _reject_oversized_argv(argv, env, kind=kind)
+
+    d.mkdir(parents=True, exist_ok=True)
+    if prompt_path is not None:
+        prompt_path.write_text(prompt)
 
     # Persist the record BEFORE spawning, so the child's terminal --notify hook
     # always finds a record to mark. mark_terminal no-ops on a missing record, so

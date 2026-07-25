@@ -9,6 +9,7 @@ on the argv/env the engine builds and on the on-disk job records it reads back.
 from __future__ import annotations
 
 import builtins
+import os
 from pathlib import Path
 
 import pytest
@@ -304,3 +305,30 @@ def test_status_stamp_survives_an_unreadable_version(sandbox, monkeypatch):
 
     assert st["server"]["version"] == "unknown"
     assert st["status"]  # the rest of the read is unaffected
+
+
+def test_oversized_flow_prompt_is_refused_before_a_record_exists(sandbox):
+    """A prompt too big for the argument vector must fail before anything is recorded.
+
+    flow and fanout pass the instruction as a positional argument, so a large one
+    hits the OS exec limit. If that surfaced from the spawn, the job record would
+    already be on disk and would sit at "running" forever for a run that never
+    started.
+    """
+    limit = os.sysconf("SC_ARG_MAX")
+    huge = "x" * limit
+
+    with pytest.raises(ValueError, match="OS limit"):
+        jobs.submit("flow", [], prompt=huge)
+
+    # Nothing was recorded, so nothing shows up as a job that never finishes.
+    assert jobs.list_jobs() == []
+
+
+def test_an_ordinary_prompt_is_not_caught_by_the_size_guard(tmp_path, monkeypatch):
+    """The guard must not fire on realistic input — it only bounds the extreme."""
+    argv = ["li", "o", "flow", "a normal instruction"]
+    env = {"PATH": "/usr/bin"}
+
+    # Returns rather than raising.
+    assert jobs._reject_oversized_argv(argv, env, kind="flow") is None

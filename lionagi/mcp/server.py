@@ -47,9 +47,15 @@ def _resolve_prompt(prompt: str | None, prompt_file: str | None) -> str | None:
         raise ValueError("prompt_file cannot be '-': a background run has no stdin")
     path = Path(prompt_file).expanduser()
     if not path.is_absolute():
-        # Resolved against this server's working directory, which the caller does
-        # not know and did not choose.
-        raise ValueError(f"prompt_file must be an absolute path, got {prompt_file!r}")
+        # The file is opened here, in the server process, so a relative path would
+        # resolve against the server's working directory — NOT the ``cwd`` the
+        # caller passes for the run, which is the directory they would reasonably
+        # expect. Rather than resolve it against the wrong root, require an
+        # absolute path and say so.
+        raise ValueError(
+            f"prompt_file must be an absolute path, got {prompt_file!r}: it is read by "
+            "the server, so a relative path would not resolve against the run's cwd"
+        )
     try:
         text = path.read_text()
     except OSError as exc:
