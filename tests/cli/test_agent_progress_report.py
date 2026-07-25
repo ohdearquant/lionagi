@@ -80,7 +80,7 @@ def test_unreadable_counts_report_unobservable_rather_than_working():
     report = _ProgressReport(_NoMessages(), now=0.0)
     line = report.line(60.0)
 
-    assert "not observable for this engine" in line
+    assert "not observable for this run" in line
     assert "alive, not working" in line
     assert "still running" not in line
 
@@ -120,7 +120,7 @@ def test_counts_becoming_unreadable_mid_run_does_not_leave_a_stale_claim():
     assert "1 turn" not in line
 
 
-def test_a_bad_tick_is_not_reported_as_a_property_of_the_engine():
+def test_a_bad_tick_is_not_reported_as_unobservable_for_the_whole_run():
     """The two unreadable states license different claims, so they read differently."""
     never_readable = _ProgressReport(_Holder(_Broken()), now=0.0).line(60.0)
 
@@ -128,8 +128,8 @@ def test_a_bad_tick_is_not_reported_as_a_property_of_the_engine():
     holder.msgs = _Broken()
     one_bad_tick = report.line(60.0)
 
-    assert "not observable for this engine" in never_readable
-    assert "not observable for this engine" not in one_bad_tick
+    assert "not observable for this run" in never_readable
+    assert "not observable for this run" not in one_bad_tick
     assert never_readable != one_bad_tick
 
 

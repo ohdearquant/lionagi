@@ -264,15 +264,16 @@ class _ProgressReport:
         elapsed = int(now - self._start)
         current = self._counts()
         # Two different unreadable states, kept apart because they license
-        # different claims. An unreadable baseline means the counts were never
-        # available here; a single unreadable snapshot may be one bad tick, and
-        # calling it an engine property claims more than was measured. Neither
+        # different claims. The baseline is taken once and never retried, so a
+        # baseline that failed to read means no delta is computable for the rest
+        # of this run; a single unreadable snapshot may be one bad tick, and
+        # widening it past this tick claims more than was measured. Neither
         # falls back to the previous reading, which would present a stale count
         # as current.
         if self._base is None:
             return (
                 f"[progress] {elapsed}s elapsed — progress is not observable for "
-                "this engine; this line means alive, not working"
+                "this run; this line means alive, not working"
             )
         if current is None:
             return (
