@@ -8,6 +8,7 @@ adapter for this run's entity. See docs/internals/cli.md.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 
 from lionagi.cli.status import _classify
@@ -22,6 +23,8 @@ from lionagi.state.lifecycle.notify_settings import (
 )
 
 __all__ = ("register_flow_notify_scope", "unregister_flow_notify_scope")
+
+logger = logging.getLogger(__name__)
 
 _PAYLOAD_ENV = "LIONAGI_NOTIFY_PAYLOAD"
 _STATUS_ENV = "LIONAGI_NOTIFY_STATUS"
@@ -80,10 +83,21 @@ def register_flow_notify_scope(
     record the refusal; without it, asking for a notifier and being refused
     looks exactly like never having asked, since both return ``None``.
     """
+
+    def _report(reason: str) -> None:
+        # Bookkeeping about a refusal must never turn into a second failure:
+        # the caller's notifier is already not going to fire, and aborting
+        # registration here would lose the reason as well.
+        if on_rejection is None:
+            return
+        try:
+            on_rejection(reason)
+        except Exception:  # noqa: BLE001 -- bookkeeping must never affect the run
+            logger.debug("failed to record notify override rejection", exc_info=True)
+
     resolution = resolve_notify_config(override=override)
     if resolution.reason is not None:
-        if on_rejection is not None:
-            on_rejection(resolution.reason)
+        _report(resolution.reason)
         return None
     resolved = resolution.handler
     if resolved is None:
@@ -120,7 +134,7 @@ def register_flow_notify_scope(
         payload_fn=payload_fn,
         argv_fn=_argv_fn,
         env_fn=_env_fn,
-        on_build_failure=on_rejection,
+        on_build_failure=_report,
     )
     if handler is None:
         return None

@@ -493,3 +493,27 @@ def test_an_accepted_override_reports_no_refusal():
 
     assert name is not None
     assert reasons == []
+
+
+def test_a_raising_rejection_callback_does_not_break_registration():
+    """The refusal is already bad news; bookkeeping about it must not become a
+    second, louder failure. A callback that raises is swallowed so the caller
+    still gets the ordinary None rather than an exception out of registration."""
+
+    def _boom(reason: str) -> None:
+        raise RuntimeError("recorder exploded")
+
+    name = register_flow_notify_scope(
+        TerminalCallbackRegistry(),
+        override="   ",
+        entity_kind="session",
+        entity_id="s1",
+        invocation_id=None,
+        flow_kind="agent",
+        playbook=None,
+        save_dir=None,
+        cwd=".",
+        started_at=0.0,
+        on_rejection=_boom,
+    )
+    assert name is None

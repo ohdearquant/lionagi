@@ -133,6 +133,16 @@ async def _run_fanout(
     # records are finalized externally and would never fire.
     _notify_scope_name: str | None = None
     if notify:
+        from lionagi.state.lifecycle.notify_settings import (
+            record_notify_rejection_to_run,
+        )
+
+        def _notify_override_refused(reason: str) -> None:
+            # This run explicitly asked for a notifier and will not get one.
+            # Recording it here is what keeps a refusal distinguishable from
+            # never having configured one; both otherwise register nothing.
+            record_notify_rejection_to_run(env.run, reason)
+
         _notify_scope_name = register_flow_notify_scope(
             override=notify,
             entity_kind="session",
@@ -143,6 +153,7 @@ async def _run_fanout(
             save_dir=save_dir,
             cwd=cwd or os.getcwd(),
             started_at=_started_at,
+            on_rejection=_notify_override_refused,
         )
 
     inner_kw = dict(
