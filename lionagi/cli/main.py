@@ -7,12 +7,14 @@ from __future__ import annotations
 import argparse
 import signal
 import sys
+import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import import_module
 from types import ModuleType
 
 from ._logging import configure_cli_logging, log_error
+from ._util import EXIT_CODE_ENVIRONMENT_ERROR
 
 
 def _load_agent() -> ModuleType:
@@ -554,7 +556,7 @@ def _get_version() -> str:
     return __version__
 
 
-def main(argv: list[str] | None = None) -> int:
+def _run(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
     # Resolve verbose before any CLI code emits (argparse hasn't run yet).
@@ -719,6 +721,38 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.print_help()
     return 1
+
+
+def _report_broken_environment(exc: ModuleNotFoundError) -> int:
+    """Report a missing import as an environment fault, not a failed run.
+
+    A ``ModuleNotFoundError`` reaching the top of the CLI means some import
+    failed and nothing along the way handled it. Whatever the command was, it
+    never got the chance to run, so reporting it the way a failed run is
+    reported tells every caller the wrong thing: the command looks like it
+    executed and came back empty. That is how a dependency dropping out of an
+    environment reads downstream as a crashed agent.
+
+    The traceback is printed first because it names the import chain and is the
+    only thing that identifies which package went missing and from where. The
+    single-line summary goes last so that a caller which keeps only the tail of
+    stderr still receives the diagnosis rather than the middle of a stack.
+    """
+    traceback.print_exc()
+    missing = exc.name or "a required module"
+    log_error(
+        f"cannot start: {missing} is not installed in this environment. "
+        "This is a broken installation, not a failed run - nothing was "
+        "executed. Reinstall lionagi in this environment, then re-run."
+    )
+    return EXIT_CODE_ENVIRONMENT_ERROR
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        return _run(argv)
+    except ModuleNotFoundError as exc:
+        return _report_broken_environment(exc)
 
 
 if __name__ == "__main__":

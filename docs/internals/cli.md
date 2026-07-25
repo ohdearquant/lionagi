@@ -239,6 +239,20 @@ surfaced as a UI note in `_detect_degraded`/`_audit_degraded` in that same modul
 not an internal failure — it lands in the same terminal bucket as a runtime-cancelled task
 (same reason class, same exit code 143) rather than a new status.
 
+**`EXIT_CODE_ENVIRONMENT_ERROR` (78)** — the installation cannot start. A `ModuleNotFoundError`
+reaching the top of `main()` means an import failed and nothing handled it, so no command ran at
+all. This is deliberately outside `EXIT_CODE_BY_STATUS`, because it is not a run status: there is
+no run. It exits 78 (`EX_CONFIG`) rather than 1 so that a caller can tell a broken environment
+from a run that started and failed, which both used to exit 1 with a traceback. A wrapper that
+reads only the exit status and the presence of an artifact would otherwise report a missing
+dependency as the agent's own empty or crashed result, and attribute an environment outage to
+whatever the agent had been asked to do.
+
+The traceback is printed first because it names the import chain that reached the missing module;
+the one-line summary is emitted last through the CLI error logger, so a caller keeping only the
+tail of stderr still receives the diagnosis. Callers distinguishing the two cases should test for
+78 specifically; every other exit code retains its existing meaning.
+
 ## `dispatch.py` — dispatch outbox (ADR-0059)
 
 Module docstring: `li dispatch` inspects and acknowledges durable `dispatch_outbox` rows.

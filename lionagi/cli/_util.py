@@ -19,6 +19,17 @@ EXIT_CODE_BY_STATUS: dict[str, int] = {
     "cancelled": 143,
 }
 
+# A run never reaches a status when the environment cannot import what the CLI
+# needs, so this code deliberately sits outside the map above. It exists to be
+# distinguishable: an installation missing a dependency previously exited 1
+# with a traceback, which is the same thing a run that started and failed
+# reports, so a wrapper reading only the exit status could not tell a broken
+# environment from a genuine failure and would attribute the outage to whatever
+# the agent had been asked to do. 78 is EX_CONFIG from sysexits, meaning
+# something was found in an unconfigured state, and it collides with no status
+# above.
+EXIT_CODE_ENVIRONMENT_ERROR = 78
+
 
 def validate_cwd_exists(cwd: str | None, *, flag: str = "--cwd") -> str | None:
     """Fail fast when a user-supplied working directory doesn't exist.
