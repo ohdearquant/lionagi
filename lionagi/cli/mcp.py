@@ -34,7 +34,10 @@ def add_mcp_subparser(subparsers: argparse._SubParsersAction) -> None:
         nargs="?",
         default="serve",
         choices=["serve"],
-        help="serve the server over stdio (default).",
+        help=(
+            "What to do: 'serve' (the default and only value) runs the server on stdin/stdout "
+            "until the client disconnects."
+        ),
     )
 
 

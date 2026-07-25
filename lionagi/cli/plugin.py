@@ -37,7 +37,10 @@ def add_plugin_subparser(subparsers: argparse._SubParsersAction) -> None:
         "info",
         help="Show a plugin's manifest and trust state.",
     )
-    info.add_argument("name", help="Plugin name (the manifest's `name:` field).")
+    info.add_argument(
+        "name",
+        help="Plugin to describe — its manifest `name:`, as listed by `li plugin list`.",
+    )
 
     trust = plugin_sub.add_parser(
         "trust",
@@ -50,7 +53,7 @@ def add_plugin_subparser(subparsers: argparse._SubParsersAction) -> None:
             "until re-trusted. Use --yes to skip the confirmation prompt."
         ),
     )
-    trust.add_argument("name", help="Plugin name.")
+    trust.add_argument("name", help="Plugin to trust, as named by `li plugin list`.")
     trust.add_argument(
         "--yes",
         action="store_true",
@@ -61,14 +64,23 @@ def add_plugin_subparser(subparsers: argparse._SubParsersAction) -> None:
         "enable",
         help="Enable a plugin (clears `enabled: false` in ~/.lionagi/settings.yaml).",
     )
-    enable.add_argument("name", help="Plugin name.")
+    enable.add_argument(
+        "name",
+        help="Plugin to load again, as named by `li plugin list`. It must already be trusted.",
+    )
 
     disable = plugin_sub.add_parser(
         "disable",
         help="Disable a plugin (sets `enabled: false` in ~/.lionagi/settings.yaml).",
         description="A settings flag, not a file mutation — the bundle stays pristine.",
     )
-    disable.add_argument("name", help="Plugin name.")
+    disable.add_argument(
+        "name",
+        help=(
+            "Plugin to leave installed and trusted but inert, as named by `li plugin list`. "
+            "Re-enable it with `li plugin enable`."
+        ),
+    )
 
 
 def _state_row(record) -> str:  # noqa: ANN001 — PluginRecord, imported lazily by callers

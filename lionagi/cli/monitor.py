@@ -1451,19 +1451,25 @@ def run_monitor_wait(argv: list[str]) -> int:
     parser.add_argument(
         "ids",
         nargs="+",
-        help="schedule_run ID(s) (or short prefixes) to wait for. Comma- or space-separated.",
+        help=(
+            "schedule_run ids to wait for, full or by unique prefix, comma- or space-separated. "
+            "An id matching nothing is reported as unresolved rather than holding up the wait."
+        ),
     )
     parser.add_argument(
         "--interval",
         type=float,
         default=3.0,
         metavar="SECS",
-        help="Poll interval in seconds (default 3).",
+        help="Seconds between state.db polls while waiting (default 3). Must be positive.",
     )
     parser.add_argument(
         "--follow",
         action="store_true",
-        help="Keep watching for new schedule_runs after the initial set drains.",
+        help=(
+            "Keep discovering schedule_runs created after the initial set drains, instead of "
+            "exiting once it is empty. Never ends on its own — pair it with --max-wait."
+        ),
     )
     parser.add_argument(
         "--no-chain",
@@ -1522,20 +1528,26 @@ def add_monitor_subparser(subparsers: argparse._SubParsersAction) -> None:
         "id",
         nargs="?",
         default=None,
-        help="Entity ID (or prefix) to show detail view for. Omit for table view.",
+        help=(
+            "Run, session, play or show to open in the detail view — full id, or an unambiguous "
+            "prefix. Omit it for the table of everything in flight."
+        ),
     )
     mon.add_argument(
         "--watch",
         "-w",
         action="store_true",
-        help="Live-refresh the view every REFRESH seconds (default 2).",
+        help=(
+            "Redraw the view every --refresh seconds until interrupted, instead of printing one "
+            "snapshot and exiting."
+        ),
     )
     mon.add_argument(
         "--refresh",
         type=int,
         default=2,
         metavar="SECS",
-        help="Refresh interval for --watch mode (default 2).",
+        help="Seconds between redraws under --watch (default 2). Ignored without it.",
     )
     mon.add_argument(
         "--since",
@@ -1552,13 +1564,16 @@ def add_monitor_subparser(subparsers: argparse._SubParsersAction) -> None:
         dest="entity_type",
         default=None,
         choices=["session", "invocation", "show", "play"],
-        help="Filter table to a single entity type.",
+        help="Narrow the table to one kind of entity: session, invocation, show or play.",
     )
     mon.add_argument(
         "--project",
         "-p",
         default=None,
-        help="Filter sessions and plays by project name.",
+        help=(
+            "Filter sessions and plays to one project name, matched exactly — the same name the "
+            "table's project column shows."
+        ),
     )
     mon.add_argument(
         "--run",
@@ -1578,12 +1593,18 @@ def add_monitor_subparser(subparsers: argparse._SubParsersAction) -> None:
         type=float,
         default=3.0,
         metavar="SECS",
-        help="Poll interval in seconds for --run mode (default 3). Independent of --refresh.",
+        help=(
+            "Seconds between state.db polls in --run mode (default 3). Independent of --refresh, "
+            "which paces the table redraw."
+        ),
     )
     mon.add_argument(
         "--follow",
         action="store_true",
-        help="With --run: keep watching for new schedule_runs after the initial set drains.",
+        help=(
+            "With --run: keep discovering schedule_runs created after the initial set drains, "
+            "instead of exiting once it is empty. Never ends on its own — pair with --max-wait."
+        ),
     )
     mon.add_argument(
         "--no-chain",

@@ -109,17 +109,20 @@ def add_invoke_subparser(subparsers: argparse._SubParsersAction) -> None:
     start.add_argument(
         "--skill",
         required=True,
-        help="Skill name: 'show', 'codex-pr-review', 'reprompt', etc.",
+        help=(
+            "Name of the orchestration being recorded, e.g. 'show', 'codex-pr-review' or "
+            "'reprompt'. Every session spawned under this id groups by it."
+        ),
     )
     start.add_argument(
         "--plugin",
         default=None,
-        help="Marketplace plugin packaging the skill (optional).",
+        help="Marketplace plugin packaging that skill, when the skill came from one.",
     )
     start.add_argument(
         "--prompt",
         default=None,
-        help="The user's input that triggered the skill (free text).",
+        help="The request that triggered this work, stored as free text for later reading.",
     )
     start.add_argument(
         "--metadata",
@@ -131,7 +134,13 @@ def add_invoke_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
 
     end = inv_sub.add_parser("end", help="Close an invocation.")
-    end.add_argument("invocation_id", help="The id printed by `li invoke start`.")
+    end.add_argument(
+        "invocation_id",
+        help=(
+            "The id printed by `li invoke start`. An invocation never closed stays 'running' "
+            "forever."
+        ),
+    )
     end.add_argument(
         "--status",
         default="completed",
@@ -142,18 +151,40 @@ def add_invoke_subparser(subparsers: argparse._SubParsersAction) -> None:
             "aborted",
             "cancelled",
         ],
-        help="Terminal status (ADR-0057 vocabulary).",
+        help=(
+            "How the work ended. Say 'failed' when it did — this status is what later listings "
+            "and dashboards filter on."
+        ),
     )
     end.add_argument(
         "--metadata",
         default=None,
-        help="Optional JSON to merge into the invocation's node_metadata.",
+        help=(
+            "JSON merged key-by-key into the invocation's existing metadata, so anything written "
+            "during the run survives unless this overwrites that key."
+        ),
     )
 
     ls = inv_sub.add_parser("list", help="List recent invocations.")
-    ls.add_argument("--skill", default=None, help="Filter by skill name.")
-    ls.add_argument("--status", default=None, help="Filter by status (one of the 6 values).")
-    ls.add_argument("--limit", type=int, default=20, help="Max rows to print (default 20).")
+    ls.add_argument(
+        "--skill",
+        default=None,
+        help="Show only invocations of this skill name, matched exactly.",
+    )
+    ls.add_argument(
+        "--status",
+        default=None,
+        help=(
+            "Show only invocations in this status: running, completed, failed, timed_out, "
+            "aborted or cancelled."
+        ),
+    )
+    ls.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum rows to print, newest first (default 20).",
+    )
 
 
 def _parse_metadata(raw: str | None) -> dict | None:

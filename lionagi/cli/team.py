@@ -529,12 +529,18 @@ def add_team_subparser(subparsers: argparse._SubParsersAction) -> None:
 
     # create
     cr = team_sub.add_parser("create", help="Create a new team.")
-    cr.add_argument("name", help="Team name.")
+    cr.add_argument(
+        "name",
+        help="Name for the new team. Every other team command accepts it in place of the team id.",
+    )
     cr.add_argument(
         "-m",
         "--members",
         required=True,
-        help="Comma-separated member names.",
+        help=(
+            "Comma-separated member names. Only these names can send or receive as themselves; "
+            "a message from or to anyone else still goes through, with a warning."
+        ),
     )
 
     # list
@@ -542,18 +548,31 @@ def add_team_subparser(subparsers: argparse._SubParsersAction) -> None:
 
     # show
     sh = team_sub.add_parser("show", help="Show team details and messages.")
-    sh.add_argument("team", help="Team ID or name.")
+    sh.add_argument("team", help="Team to show — its id, its name, or an unambiguous id prefix.")
 
     # send
     snd = team_sub.add_parser("send", help="Send a message to team members.")
-    snd.add_argument("content", help="Message content.")
-    snd.add_argument("--team", "-t", required=True, help="Team ID or name.")
+    snd.add_argument("content", help="Message body, as the recipients will read it.")
+    snd.add_argument(
+        "--team",
+        "-t",
+        required=True,
+        help="Team to send into — its id, its name, or an unambiguous id prefix.",
+    )
     snd.add_argument(
         "--to",
         required=True,
-        help="Recipients: 'all' or comma-separated names.",
+        help="Recipients: 'all' to broadcast to the whole team, or comma-separated member names.",
     )
-    snd.add_argument("--from", dest="sender", default=None, help="Sender name.")
+    snd.add_argument(
+        "--from",
+        dest="sender",
+        default=None,
+        help=(
+            "Name to send as, so recipients know who is asking (defaults to '_cli'). A name that "
+            "is not a member still sends, and is reported as a warning."
+        ),
+    )
     snd.add_argument(
         "--from-op",
         dest="from_op",
@@ -583,8 +602,21 @@ def add_team_subparser(subparsers: argparse._SubParsersAction) -> None:
 
     # receive
     rcv = team_sub.add_parser("receive", aliases=["recv"], help="Read inbox messages.")
-    rcv.add_argument("--team", "-t", required=True, help="Team ID or name.")
-    rcv.add_argument("--as", dest="member", default=None, help="Read as this member.")
+    rcv.add_argument(
+        "--team",
+        "-t",
+        required=True,
+        help="Team to read from — its id, its name, or an unambiguous id prefix.",
+    )
+    rcv.add_argument(
+        "--as",
+        dest="member",
+        default=None,
+        help=(
+            "Read as this member: returns only their unread mail and marks it read. Omit it to "
+            "dump every message and mark nothing read."
+        ),
+    )
 
 
 def run_team(args: argparse.Namespace) -> int:

@@ -244,6 +244,7 @@ def _build_parser(selected: _CommandSpec | None) -> tuple[argparse.ArgumentParse
         "--version",
         action="version",
         version=f"%(prog)s {_get_version()}",
+        help="Print the installed lionagi version and exit.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     # Every command is registered for usage/error listing; only the selected

@@ -197,7 +197,11 @@ def resolve_model_spec(spec: str) -> tuple[str, str]:
 
 def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
     """Add shared CLI flags to any subparser."""
-    parser.add_argument("--yolo", action="store_true", help="Auto-approve tool calls.")
+    parser.add_argument(
+        "--yolo",
+        action="store_true",
+        help="Auto-approve the agent's tool calls, so an unattended run is never left waiting.",
+    )
     parser.add_argument(
         "--bypass",
         action="store_true",
@@ -212,8 +216,21 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
             "Does not change model or reasoning effort."
         ),
     )
-    parser.add_argument("-v", "--verbose", action="store_true", help="Stream real-time output.")
-    parser.add_argument("--theme", choices=("light", "dark"), default=None, help="Terminal theme.")
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help=(
+            "Stream the agent's output as it is produced instead of printing only the final "
+            "result, and silence the progress lines that would interleave with it."
+        ),
+    )
+    parser.add_argument(
+        "--theme",
+        choices=("light", "dark"),
+        default=None,
+        help="Pick the colour scheme printed output is tuned for: 'light' or 'dark' terminal.",
+    )
     parser.add_argument(
         "--effort",
         metavar="LEVEL",
@@ -231,7 +248,10 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
         "--cwd",
         metavar="DIR",
         default=None,
-        help="Working directory for CLI endpoints.",
+        help=(
+            "Directory the agent's process runs in — the repo or worktree it acts on. "
+            "Defaults to the current directory."
+        ),
     )
     parser.add_argument(
         "--timeout",

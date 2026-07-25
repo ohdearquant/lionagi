@@ -899,12 +899,15 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
         "--limit",
         type=int,
         default=50,
-        help="Max sessions to list (default 50).",
+        help="Maximum sessions to print, newest first (default 50).",
     )
     ls.add_argument(
         "--status",
         default=None,
-        help="Filter by session status (running|completed|failed|aborted).",
+        help=(
+            "Show only sessions in this status: running, completed, failed or aborted. "
+            "Omit to list every status."
+        ),
     )
 
     # li state stats
@@ -933,7 +936,11 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
         "--mode",
         default="TRUNCATE",
         choices=["PASSIVE", "FULL", "RESTART", "TRUNCATE"],
-        help="Checkpoint mode (default TRUNCATE).",
+        help=(
+            "How hard to push the WAL back into the database. TRUNCATE (default) frees the WAL "
+            "file outright but needs no active readers; PASSIVE, FULL and RESTART give up "
+            "completeness to avoid blocking. No run data is lost in any mode."
+        ),
     )
 
     # li state vacuum
