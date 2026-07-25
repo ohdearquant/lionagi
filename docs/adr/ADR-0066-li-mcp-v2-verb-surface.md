@@ -1,15 +1,29 @@
 # ADR-0066: `li mcp` v2 verb surface — one tool, generated per-verb schemas
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Aspirational
 - **Area**: cli-surface
-- **Date**: 2026-07-24 (amended 2026-07-25 — D1 and D2, see Amendment history)
+- **Date**: 2026-07-24 (amended 2026-07-25 twice — D1, D2, D3 and D7, see Amendment history)
 - **Relations**: builds on ADR-0095 (run-terminal callbacks — the `notify.on_terminal`
   layer the MCP submits ride) and ADR-0104 (`li kill` transitive play reaping and
   terminal-notify on kill, whose semantics the kill verb must inherit rather than
   re-implement); none superseded
 
 ## Amendment history
+
+**2026-07-25 — Accepted.** The status field is the authority on a document's stage and nothing
+infers acceptance from an edit, including an edit by the author of the decision. Recorded here
+rather than derived: the first amendment below was authored in place at `e082e02f0`, and the
+second was gated separately before landing.
+
+**2026-07-25 — Amendment 2: `extra_args` removed from D3 and D7; D2 requires a schema
+fingerprint on spawn verbs.** The escape hatch is deleted rather than retained, because
+retention is a standing obligation to re-prove that no opaque token sequence introduces a new
+command boundary, and D2/D3 removed the premise that made the hatch useful. The fingerprint
+makes schema agreement a property of the protocol: a spawn op carries the fingerprint targeted
+help returned, so the schema a caller validated against is the schema that runs. Its guarantee
+is stated at the strength it actually has — agreement always, exposure only for the caller that
+fetched it, since a fingerprint can be inherited.
 
 **2026-07-25 — D1 reversed from a discrete core to a single tool; D2 extended.** The
 original D1 kept nine high-frequency operations as individually advertised tools alongside
@@ -173,6 +187,43 @@ separate `help` call. This is what makes a single dispatch tool fluent in practi
 than merely compact: the surface repairs the caller as it refuses them. Closed validation
 (D7) supplies the rejection; this decides what the rejection must contain.
 
+**Spawn verbs require the fingerprint that targeted help returns.** `help="<verb>"` returns,
+alongside the verb's full projected schema, a `schema_fingerprint` derived from that schema's
+content. An op naming a spawn verb (`agent.submit`, `flow.submit`, `fanout.submit`,
+`play.submit`) must carry the current `schema_fingerprint` for that verb; an op without one,
+or with one that no longer matches, is rejected.
+
+Collapsing the surface to one tool makes discovery a call. It does not make discovery happen.
+A caller can read a one-line catalog signature and invoke a thirty-parameter verb having never
+seen the rest of it, which is the condition this surface exists to end.
+
+State the guarantee at its real strength. The fingerprint proves that the schema the caller
+validated against is the schema that will run: agreement at spawn time, staleness impossible.
+For a caller that fetched it, it also proves exposure — the parameters were in that caller's
+context before it was allowed to spawn. It does **not** prove exposure in general, because a
+fingerprint is a transferable string: a parent that pastes the current value into every
+spawn-prompt template passes children through the gate who never saw the schema, which is
+shallow usage reproduced one layer up. The mitigation for that is convention, not protocol —
+spawn prompts do not carry fingerprints — and staleness-rejection alone justifies the
+round-trip. Before proposing a gate, ask who controls its input: here the caller does, so this
+gate proves a fetch happened, not that anything was read.
+
+**The rejection carries its own remedy, in band.** A rejected op returns the exact `help` call
+to make and the current fingerprint in the same response. Recovery is one step. A rejection
+that reports only "stale fingerprint" strands precisely the naive caller the requirement exists
+to protect. This is the same distinction that makes per-call rejection acceptable where
+server-level refusal is not: refusing to serve because the server is behind fails toward
+darkness, while an op-level rejection whose recovery is one in-band call fails toward a
+round-trip.
+
+**Scope is spawn only, and the exclusions are deliberate.** `job.kill` is exempt: it is an
+emergency operation with a trivial argument surface, and gating the stop of a runaway run
+behind a discovery round-trip is the one place this friction could cost something real. The
+read verbs (`job.status`, `job.output`, `job.list`, `job.wait`) are exempt: their argument
+surfaces are small and a wrong read is self-correcting. Widening the requirement to control or
+read verbs needs its own decision, because the argument that justifies it on spawn — a wide
+parameter surface where a silently missed parameter does real damage — does not hold there.
+
 Generation mechanics are decided in D3.
 
 ### D3 — Schema generation: runtime projection of the built parsers
@@ -218,21 +269,31 @@ of a playbook and executed against another must be told so where it will actuall
 A static union over every installed playbook is rejected: it is stale the moment a playbook
 is edited, and it reintroduces exactly the schema-size problem D2 exists to prevent.
 
-**`extra_args` coexists with closed validation as a declared escape hatch.** Structured
-parameters stay closed and typos are rejected. `extra_args` is opaque argv by contract, is
-logged with secrets redacted, and marks its result as having bypassed validation. It is
-**not** accepted on the long-tail verbs, and on the spawn verbs it is checked so it
-cannot introduce a new command boundary — otherwise the D8 fence would be bypassable
-through argv.
+**`extra_args` is not accepted anywhere on this surface.** Structured parameters are closed
+and typos are rejected; there is no opaque argv channel alongside them.
 
-That check is **fail-closed**: argv the checker cannot positively classify as safe is
-rejected, never best-effort scrubbed and forwarded. Rejection is the default outcome, so
-an argument the checker cannot parse, an unfamiliar quoting or escaping form, and an
-internal error in the checker itself all deny the call rather than pass along what was not
-understood. Stated the other way, only a positive determination of safety admits argv. A
-scrubbing check would degrade into a permissive one precisely where its input is most
-adversarial, and it would do so quietly, since a scrubbed call still succeeds; D8's fence
-rests on this direction and not merely on the check existing.
+The escape hatch existed to reach flags the schema did not model. D2 and D3 remove the
+premise: the schema is projected from the parser the CLI itself builds, so a flag that exists
+is a flag the schema models, and one that is not projectable is unavailable by decision rather
+than reachable by accident. What remains of the hatch is only its cost.
+
+That cost is a fence obligation. D8 is an allowlist, and an argv channel is a second way into
+the same executable that the allowlist does not describe. Keeping it means every release must
+re-establish that no sequence of opaque tokens introduces a new command boundary — a proof
+about string parsing that has to hold forever and is one argparse behaviour change from being
+wrong. Deleting the channel discharges the obligation instead of re-proving it. This is not a
+hypothetical class: a caller value reaching argv's option position was found and fixed on the
+implementing change, in the rendering of *typed* parameters, where the schema is known.
+
+The concrete loss is one real use: passing a prompt file as `["--prompt-file", "/abs/path"]`
+because no typed parameter existed. That becomes a typed `prompt_file` parameter, read and
+snapshotted at submit time, which is strictly better than the argv form it replaces — the
+caller gets validation and a defined read moment rather than a flag appended to a command
+line. It lands with the same change that removes the hatch, on every spawn verb.
+
+**Why this is written down rather than left as an implementation choice.** A future reader
+comparing the code to an ADR that still declared an escape hatch would restore it to match,
+and reopen the argv path the fence does not describe. The reasoning is the load-bearing part.
 
 **Why runtime rather than the alternatives.** A build-time artifact cannot model
 user-installed or user-edited playbooks, so it proves only the source tree and not the
@@ -382,10 +443,9 @@ These apply uniformly to every verb.
   are given.
 - **Closed argument validation.** An unknown or misspelled parameter is rejected loudly,
   echoing the offending name back. Silently ignoring an unrecognized argument turns a typo
-  into a wrong-but-successful call. `--extra-args` remains the documented escape hatch for
-  passing through flags the schema does not model, and its use is logged — on the submit
-  spawn verbs that accept it, not on the long-tail verbs, which reject `extra_args`
-  outright per D3.
+  into a wrong-but-successful call. There is no `extra_args` escape hatch beside it: per D3
+  the schema is projected from the parser, so a flag the schema does not model is one the
+  surface does not reach.
 - **Per-op error envelope.** Each op returns `{ok, op, ...}`; a failing op returns
   `{ok: false, op, error}` carrying that verb's expected schema per D2. The outer call returns an overall `status` of `success` or
   `partial` and **never throws for a per-op failure**. Callers check per-op `ok`.
