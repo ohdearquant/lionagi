@@ -18,11 +18,104 @@ from __future__ import annotations
 import contextlib
 import io
 import time
-from typing import Any
+from typing import Annotated, Any
 
 from fastmcp import FastMCP
+from pydantic import Field
 
 _ENTITY_TYPES = ("session", "invocation", "show", "play")
+
+
+# --- parameter descriptions ---------------------------------------------------
+
+_DESCRIPTIONS: dict[str, str] = {
+    "entity_id": (
+        "Id, or a unique id prefix, of a run, session, play or show — as returned by "
+        "``monitor_running``. An ambiguous prefix is refused with the candidates named, rather "
+        "than answered for the wrong entity."
+    ),
+    "wait_run_ids": (
+        "schedule_run ids or session ids to wait on, full or by unique prefix. Ids that match "
+        "nothing come back under ``unresolved`` instead of holding up the wait."
+    ),
+    "wait_interval": "Seconds between state.db polls while waiting. Must be positive.",
+    "wait_chain": (
+        "When a watched run goes terminal, keep following the scheduler's on_success/on_fail "
+        "chain children so the wait tracks a chain to its last link (default). Set False to watch "
+        "only the ids given."
+    ),
+    "wait_follow": (
+        "Keep discovering schedule_runs created after the initial set drains, instead of "
+        "returning once it is empty. It never ends on its own, so it is only useful with a "
+        "deliberately short max_wait."
+    ),
+    "wait_max_wait": (
+        "Total wall-clock bound in seconds; must be positive. The call always returns, with "
+        "``timed_out=True`` if anything watched is still pending."
+    ),
+    "kill_entity_id": (
+        "Id, or a unique id prefix, of the running session, invocation, play or show to "
+        "terminate. An id that matches nothing, is ambiguous, or is already terminal is refused."
+    ),
+    "kill_reason": (
+        "Why the kill happened, recorded on the entity's status transition so the history "
+        "explains itself later. Free text; empty by default."
+    ),
+    "kill_recursive": (
+        "Kill direct child entities before the named one. A play kill always reaps its linked "
+        "workers regardless; a show kill never reaps its plays, whatever this says."
+    ),
+    "kill_grace_seconds": "Seconds between SIGTERM and the SIGKILL that follows it.",
+    "stale_threshold_seconds": (
+        "Only sweep rows that have been claiming to run for longer than this many seconds "
+        "(default 3600). Raise it to be conservative on a machine with genuinely long runs."
+    ),
+    "stale_reason": (
+        "Extra text recorded beside the automatic stale-cancel reason on every row this sweep "
+        "moves to a terminal status."
+    ),
+    "stale_grace_seconds": "Seconds between SIGTERM and SIGKILL for rows that still get signalled.",
+    "stale_dry_run": "Count what would be swept and write nothing.",
+    "dispatch_id": "Id of the dispatch row, as listed by ``dispatch_list``.",
+    "ack_token": (
+        "The token this dispatch was delivered with, which ``dispatch_show`` reports as its "
+        "``ack_token``. A mismatched token is refused, so an ack cannot be guessed."
+    ),
+    "checkpoint_mode": (
+        "How hard to push the WAL back into the database: 'TRUNCATE' (default) frees the WAL file "
+        "outright but needs no active readers; 'PASSIVE', 'FULL' and 'RESTART' give up "
+        "completeness to avoid blocking. No run data is lost in any mode."
+    ),
+    "keep_days": (
+        "Keep every session updated within this many days; older ones are candidates for deletion."
+    ),
+    "keep_n": (
+        "Always keep this many most-recent sessions, however old they are — the floor that stops "
+        "a long-idle machine from pruning its whole history."
+    ),
+    "prune_dry_run": (
+        "Report the session and branch counts that would be deleted and delete nothing (the "
+        "message count cannot be previewed and comes back 0)."
+    ),
+    "stale_hours": (
+        "Only reset sessions whose ``started_at`` is older than this many hours (default 24). "
+        "A session whose process is still running is left alone regardless."
+    ),
+    "new_status": (
+        "Terminal status to write on each swept session: 'aborted' (default) for a run that was "
+        "interrupted, or 'failed' to record it as a failure."
+    ),
+    "doctor_dry_run": "Count the sessions that would be reset and write nothing.",
+}
+
+
+def _desc(key: str) -> Any:
+    """A typed parameter that carries its description into the tool schema.
+
+    A caller decides what a tool can do by reading its schema, so a parameter
+    with no description there is a capability they will not find.
+    """
+    return Field(description=_DESCRIPTIONS[key])
 
 
 def _quiet(func: Any, *args: Any, **kwargs: Any) -> Any:
@@ -109,13 +202,17 @@ def register_observability_tools(mcp: FastMCP) -> dict[str, Any]:
         name), ``elapsed`` (human duration) and ``agents`` (branch count). Pass an
         entity's id to ``monitor_entity`` for the full row.
 
-        ``since`` widens the view from "currently running" to "anything touched in
-        this window", terminal runs included — format ``30m``, ``2h``, ``7d``.
-        ``entity_type`` narrows to one of session, invocation, show, play.
-        ``project`` filters to one project name.
-
         This is a point-in-time snapshot. To track progress, call it again — there
         is no live-refresh mode here, since a tool call returns once.
+
+        Args:
+            since: Widen the view from "running right now" to "anything touched in
+                this window", terminal runs included — a duration like ``30m``,
+                ``2h`` or ``7d``. Omit it to see only what is still in flight.
+            entity_type: Narrow the listing to one kind of entity: ``session``,
+                ``invocation``, ``show`` or ``play``. Anything else is refused.
+            project: Filter to one project name, matched exactly — the same name
+                that appears in an entity's ``project`` field.
         """
         from lionagi.cli.monitor import _since_timestamp
 
@@ -127,7 +224,7 @@ def register_observability_tools(mcp: FastMCP) -> dict[str, Any]:
         return _run(_snapshot(since=cutoff, entity_type=entity_type, project=project))
 
     @mcp.tool
-    def monitor_entity(entity_id: str) -> dict[str, Any]:
+    def monitor_entity(entity_id: Annotated[str, _desc("entity_id")]) -> dict[str, Any]:
         """Everything recorded about one run, session, play or show, by id or id prefix.
 
         Use after ``monitor_running`` (or with an id from anywhere else) to see why
@@ -149,11 +246,11 @@ def register_observability_tools(mcp: FastMCP) -> dict[str, Any]:
 
     @mcp.tool
     def monitor_wait_for_runs(
-        run_ids: list[str],
-        interval: float = 3.0,
-        chain: bool = True,
-        follow: bool = False,
-        max_wait: float = 900.0,
+        run_ids: Annotated[list[str], _desc("wait_run_ids")],
+        interval: Annotated[float, _desc("wait_interval")] = 3.0,
+        chain: Annotated[bool, _desc("wait_chain")] = True,
+        follow: Annotated[bool, _desc("wait_follow")] = False,
+        max_wait: Annotated[float, _desc("wait_max_wait")] = 900.0,
     ) -> dict[str, Any]:
         """Block until named scheduled runs (or sessions) finish, then report outcomes.
 
@@ -204,10 +301,10 @@ def register_observability_tools(mcp: FastMCP) -> dict[str, Any]:
 
     @mcp.tool
     def kill_entity(
-        entity_id: str,
-        reason: str = "",
-        recursive: bool = False,
-        grace_seconds: float = 5.0,
+        entity_id: Annotated[str, _desc("kill_entity_id")],
+        reason: Annotated[str, _desc("kill_reason")] = "",
+        recursive: Annotated[bool, _desc("kill_recursive")] = False,
+        grace_seconds: Annotated[float, _desc("kill_grace_seconds")] = 5.0,
     ) -> dict[str, Any]:
         """Terminate a running run/session/play/show. The work stops and does not resume.
 
@@ -242,10 +339,10 @@ def register_observability_tools(mcp: FastMCP) -> dict[str, Any]:
 
     @mcp.tool
     def kill_stale_entities(
-        threshold_seconds: int = 3600,
-        reason: str = "",
-        grace_seconds: float = 5.0,
-        dry_run: bool = False,
+        threshold_seconds: Annotated[int, _desc("stale_threshold_seconds")] = 3600,
+        reason: Annotated[str, _desc("stale_reason")] = "",
+        grace_seconds: Annotated[float, _desc("stale_grace_seconds")] = 5.0,
+        dry_run: Annotated[bool, _desc("stale_dry_run")] = False,
     ) -> dict[str, Any]:
         """Clean up rows still marked running whose process is already dead.
 
@@ -294,13 +391,16 @@ def register_observability_tools(mcp: FastMCP) -> dict[str, Any]:
         what fraction of runs failed this week. It reads state.db read-only and
         never writes to it.
 
-        ``since`` is the window over runs' last update — ``30m``, ``6h``, ``7d``;
-        must be positive. ``group_by`` is any combination of ``project``, ``kind``,
-        ``agent``, ``model``, ``status`` (default ``["project", "kind"]``).
-
         Returns ``{since, group_by, rows}`` where each row carries the requested
         group keys plus ``run_count``, ``completed``, ``failed``, and ISO-8601
         ``first_at``/``last_at``. An empty ``rows`` means nothing ran in the window.
+
+        Args:
+            since: Window over runs' last-update time — a duration like ``30m``,
+                ``6h`` or ``7d`` (default ``7d``). Must be positive.
+            group_by: Columns to aggregate by, any combination of ``project``,
+                ``kind``, ``agent``, ``model`` and ``status`` (default
+                ``["project", "kind"]``).
         """
         from lionagi.cli.monitor import _since_timestamp
         from lionagi.cli.stats import (
@@ -344,7 +444,10 @@ def register_observability_tools(mcp: FastMCP) -> dict[str, Any]:
     # ── dispatch ──────────────────────────────────────────────────────────────
 
     @mcp.tool
-    def dispatch_list(status: str | None = None, limit: int = 50) -> dict[str, Any]:
+    def dispatch_list(
+        status: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
         """List durable outbox rows — the notifications and hand-offs lionagi owes someone.
 
         Dispatches are enqueued by schedule actions and delivered by the Studio
@@ -352,16 +455,19 @@ def register_observability_tools(mcp: FastMCP) -> dict[str, Any]:
         arrive, or to see what delivery is backed up: rows sitting in ``pending``
         or ``dead_letter`` are the evidence.
 
-        ``status`` filters exactly (``pending``, ``delivering``, ``delivered``,
-        ``acked``, ``dead_letter``, ``expired``); ``limit`` caps rows returned.
-
         Returns ``{rows, count}`` with each row's ``id``, ``kind``, ``deliver_to``,
         ``status``, ``attempt`` and ``created_at`` (epoch seconds) among its columns.
+
+        Args:
+            status: Return only rows in this delivery state: ``pending``,
+                ``delivering``, ``delivered``, ``acked``, ``dead_letter`` or
+                ``expired``. Matched exactly.
+            limit: Maximum number of dispatch rows to return.
         """
         return _run(_dispatch_list(status=status, limit=limit))
 
     @mcp.tool
-    def dispatch_show(dispatch_id: str) -> dict[str, Any]:
+    def dispatch_show(dispatch_id: Annotated[str, _desc("dispatch_id")]) -> dict[str, Any]:
         """Full record of one dispatch, including its payload and ack state.
 
         Use when ``dispatch_list`` shows a row worth explaining: this returns the
@@ -375,7 +481,10 @@ def register_observability_tools(mcp: FastMCP) -> dict[str, Any]:
         return _run(_dispatch_show(dispatch_id))
 
     @mcp.tool
-    def dispatch_ack(dispatch_id: str, ack_token: str) -> dict[str, Any]:
+    def dispatch_ack(
+        dispatch_id: Annotated[str, _desc("dispatch_id")],
+        ack_token: Annotated[str, _desc("ack_token")],
+    ) -> dict[str, Any]:
         """Acknowledge a delivered dispatch that is waiting on the consumer's confirmation.
 
         An ack-required dispatch stays open until its consumer confirms receipt with
@@ -389,7 +498,7 @@ def register_observability_tools(mcp: FastMCP) -> dict[str, Any]:
         return _run(_dispatch_ack(dispatch_id, ack_token))
 
     @mcp.tool
-    def dispatch_retry(dispatch_id: str) -> dict[str, Any]:
+    def dispatch_retry(dispatch_id: Annotated[str, _desc("dispatch_id")]) -> dict[str, Any]:
         """Force an immediate re-delivery of a dead-lettered or expired dispatch.
 
         Use after fixing whatever made delivery fail. The row is put back in line
@@ -425,10 +534,20 @@ def register_observability_tools(mcp: FastMCP) -> dict[str, Any]:
         against ``updated_at``) with no ``status`` is scoped to terminal statuses
         only and never sweeps in-flight rows.
 
-        ``dry_run=True`` reports counts and deletes nothing.
-
         Returns ``{deleted, dry_run, ...}``: for a single row, ``found`` and
         ``status``; for a bulk purge, ``total`` and a per-status breakdown.
+
+        Args:
+            dispatch_id: Delete this one row whatever its status. Omit it to
+                bulk-purge by status and/or before instead.
+            status: Bulk-delete rows in this state (``pending``, ``delivering``,
+                ``delivered``, ``acked``, ``dead_letter``, ``expired``). Naming an
+                in-flight state is honoured as deliberate: those rows will never be
+                delivered.
+            before: Bulk-delete rows whose ``updated_at`` is older than this
+                epoch-seconds timestamp. On its own, with no status, it is scoped
+                to terminal states only and never sweeps in-flight rows.
+            dry_run: Report the counts that would be deleted and delete nothing.
         """
         if dispatch_id is None and status is None and before is None:
             raise ValueError(
@@ -442,18 +561,24 @@ def register_observability_tools(mcp: FastMCP) -> dict[str, Any]:
     # ── state ─────────────────────────────────────────────────────────────────
 
     @mcp.tool
-    def state_list_sessions(limit: int = 50, status: str | None = None) -> dict[str, Any]:
+    def state_list_sessions(
+        limit: int = 50,
+        status: str | None = None,
+    ) -> dict[str, Any]:
         """List sessions recorded in state.db, most recently updated first.
 
         This is the history view, where ``monitor_running`` is the live view: it
         includes finished runs. Use it to find a past session's id — to read its
         detail, or to see how many runs a status like ``failed`` has accumulated.
 
-        ``limit`` caps rows; ``status`` filters (``running``, ``completed``,
-        ``failed``, ``aborted``).
-
         Returns ``{sessions, count}`` with ``id``, ``name``, ``status``,
         ``updated_at`` (epoch seconds) and ``branch_count`` per session.
+
+        Args:
+            limit: Maximum number of sessions to return, most recently updated
+                first.
+            status: Return only sessions in this state: ``running``, ``completed``,
+                ``failed`` or ``aborted``.
         """
         if not _state_db_exists():
             return {"sessions": [], "count": 0}
@@ -476,7 +601,9 @@ def register_observability_tools(mcp: FastMCP) -> dict[str, Any]:
         return _run(_state_stats())
 
     @mcp.tool
-    def state_checkpoint(mode: str = "TRUNCATE") -> dict[str, Any]:
+    def state_checkpoint(
+        mode: Annotated[str, _desc("checkpoint_mode")] = "TRUNCATE",
+    ) -> dict[str, Any]:
         """Flush the write-ahead log back into state.db to reclaim WAL disk.
 
         Use when ``state_stats`` shows a large ``wal_bytes``. ``TRUNCATE`` (default)
@@ -514,7 +641,9 @@ def register_observability_tools(mcp: FastMCP) -> dict[str, Any]:
 
     @mcp.tool
     def state_prune(
-        keep_days: int = 30, keep_n: int = 100, dry_run: bool = False
+        keep_days: Annotated[int, _desc("keep_days")] = 30,
+        keep_n: Annotated[int, _desc("keep_n")] = 100,
+        dry_run: Annotated[bool, _desc("prune_dry_run")] = False,
     ) -> dict[str, Any]:
         """Delete old sessions and their history from state.db. The transcripts are gone.
 
@@ -536,7 +665,9 @@ def register_observability_tools(mcp: FastMCP) -> dict[str, Any]:
 
     @mcp.tool
     def state_doctor(
-        stale_hours: int = 24, new_status: str = "aborted", dry_run: bool = False
+        stale_hours: Annotated[int, _desc("stale_hours")] = 24,
+        new_status: Annotated[str, _desc("new_status")] = "aborted",
+        dry_run: Annotated[bool, _desc("doctor_dry_run")] = False,
     ) -> dict[str, Any]:
         """Reset sessions stuck at running after a crash, so the history stops lying.
 
