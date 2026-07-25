@@ -28,6 +28,7 @@ import shlex
 import signal
 import subprocess
 import sys
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -181,6 +182,20 @@ def _list_artifacts(run_id: str) -> list[str]:
     if not adir.exists():
         return []
     return sorted(str(p.relative_to(adir)) for p in adir.rglob("*") if p.is_file())
+
+
+def _split_at_sentinel(flags: Sequence[str]) -> tuple[list[str], list[str]]:
+    """Split rendered tokens into the option side and the positional side.
+
+    The sentinel stays with the positionals, so re-joining the two halves is the
+    identity when nothing is added between them.
+    """
+    tokens = list(flags)
+    try:
+        cut = tokens.index("--")
+    except ValueError:
+        return tokens, []
+    return tokens[:cut], tokens[cut:]
 
 
 def _notify_template(run_id: str, notify_target: str | None, notify_command: str | None) -> str:
@@ -430,20 +445,29 @@ def submit(
     # run that cannot be spawned leaves no trace. Creating the directory first
     # would leave an empty one behind on a rejection, and that reads back as a job
     # with no kind that never finishes.
-    tail = list(flags)
+    # `flags` may already carry a `--` sentinel, after which every token is a
+    # positional. Options this function adds have to go in front of it, or they
+    # arrive as text: appending `--prompt-file` past the sentinel would hand the
+    # agent two words of prompt instead of a file to read.
+    options, positionals = _split_at_sentinel(flags)
     prompt_path = None
     if prompt is not None:
         if kind == "agent":
             prompt_path = d / "prompt.txt"
-            tail += ["--prompt-file", str(prompt_path)]
+            options += ["--prompt-file", str(prompt_path)]
         else:
-            tail.append(prompt)  # flow/fanout take the prompt as a positional
+            # flow/fanout take the prompt as a positional, and a prompt may well
+            # begin with a dash, so it goes behind a sentinel whether or not the
+            # rendered flags already opened one.
+            if not positionals:
+                positionals = ["--"]
+            positionals.append(prompt)
 
     # Wire the CLI's terminal hook back to the MCP server so we record a reliable
     # finished_at/status (and fire the configured delivery) even across a restart.
-    tail = ["--notify", _notify_template(run_id, notify_target, notify_command), *tail]
+    options = ["--notify", _notify_template(run_id, notify_target, notify_command), *options]
 
-    argv = [*config.li_command(), *_KIND_ARGV[kind], *tail]
+    argv = [*config.li_command(), *_KIND_ARGV[kind], *options, *positionals]
 
     # Drop the parent harness marker so the detached child does not inherit an
     # environment that claims it is running under an interactive harness.

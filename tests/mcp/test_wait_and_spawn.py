@@ -313,3 +313,63 @@ async def test_wait_stops_as_soon_as_every_id_is_terminal(sandbox, monkeypatch):
     assert res["timed_out"] is False
     assert res["runs"][0]["outcome"] == "succeeded"
     assert polls["n"] == 2
+
+
+# --- the argv the child is actually spawned with --------------------------------
+#
+# Everything above this point either mocks `jobs.submit` or reads records back, so
+# nothing in it sees the command line. That is where a value stops being a value:
+# the tokens are assembled here from three sources — what the caller asked for,
+# what the projection renders, and what the server wires on — and only the
+# assembled whole can be parsed by the parser that will read it.
+
+
+@pytest.fixture
+def spawned(sandbox, monkeypatch):
+    """Capture the argv `submit` hands to Popen; nothing is executed."""
+    seen: dict = {}
+
+    def fake_popen(argv, **kwargs):
+        seen["argv"] = list(argv)
+        return _FakeProc()
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(config, "li_command", lambda: ["li"])
+    return seen
+
+
+def _parse(argv: list[str]):
+    """Read a captured child argv with the parser that build will read it with."""
+    import argparse
+
+    from lionagi.cli.agent import add_agent_subparser
+
+    root = argparse.ArgumentParser(prog="li")
+    add_agent_subparser(root.add_subparsers(dest="command"))
+    assert argv[0] == "li"
+    return root.parse_args(argv[1:])
+
+
+def test_a_prompt_file_stays_an_option_when_the_query_opened_a_sentinel(spawned):
+    jobs.submit("agent", ["--cwd=/tmp", "--", "claude/opus"], prompt="hello")
+    parsed = _parse(spawned["argv"])
+    assert parsed.query == ["claude/opus"]
+    assert parsed.prompt_file and parsed.prompt_file.endswith("prompt.txt")
+    assert parsed.cwd == "/tmp"
+
+
+def test_a_flow_prompt_goes_behind_a_sentinel_even_with_no_rendered_positional(spawned):
+    jobs.submit("flow", ["--dry-run"], prompt="-- not a flag")
+    argv = spawned["argv"]
+    assert argv[-2:] == ["--", "-- not a flag"]
+
+
+def test_a_switch_looking_query_reaches_the_child_as_a_positional(spawned):
+    jobs.submit("agent", ["--", "--machine"], prompt="hi")
+    argv = spawned["argv"]
+    parsed = _parse(argv)
+    assert parsed.query == ["--machine"]
+    # And the scan that runs before any parsing does not see a switch either.
+    from lionagi.cli import machine
+
+    assert not machine.has_machine_flag(argv[1:])
