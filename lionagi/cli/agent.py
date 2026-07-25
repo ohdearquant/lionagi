@@ -259,12 +259,21 @@ class _ProgressReport:
     def line(self, now: float) -> str:
         elapsed = int(now - self._start)
         current = self._counts()
-        if self._base is None or current is None:
-            # Saying nothing here would leave the last reading standing as if it
-            # still applied, which is the failure this class exists to avoid.
+        # Two different unreadable states, kept apart because they license
+        # different claims. An unreadable baseline means the counts were never
+        # available here; a single unreadable snapshot may be one bad tick, and
+        # calling it an engine property claims more than was measured. Neither
+        # falls back to the previous reading, which would present a stale count
+        # as current.
+        if self._base is None:
             return (
                 f"[progress] {elapsed}s elapsed — progress is not observable for "
                 "this engine; this line means alive, not working"
+            )
+        if current is None:
+            return (
+                f"[progress] {elapsed}s elapsed — progress could not be read this "
+                "tick; this line means alive, not working"
             )
         if current[2] != self._last[2]:
             self._last = current

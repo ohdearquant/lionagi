@@ -80,33 +80,57 @@ def test_unreadable_counts_report_unobservable_rather_than_working():
     report = _ProgressReport(_NoMessages(), now=0.0)
     line = report.line(60.0)
 
-    assert "not observable" in line
+    assert "not observable for this engine" in line
     assert "alive, not working" in line
     assert "still running" not in line
 
 
-def test_counts_becoming_unreadable_mid_run_does_not_leave_a_stale_claim():
-    class _Msgs:
-        def __init__(self, messages):
-            self.messages = messages
+class _Msgs:
+    def __init__(self, messages):
+        self.messages = messages
 
-    class _Broken:
-        @property
-        def messages(self):
-            raise RuntimeError("pile went away")
 
-    class _Holder:
-        def __init__(self, msgs):
-            self.msgs = msgs
+class _Broken:
+    @property
+    def messages(self):
+        raise RuntimeError("pile went away")
 
+
+class _Holder:
+    def __init__(self, msgs):
+        self.msgs = msgs
+
+
+def _report_that_breaks_mid_run() -> tuple[_ProgressReport, _Holder, Branch]:
     real = _branch()
     holder = _Holder(_Msgs(real.msgs.messages))
     report = _ProgressReport(holder, now=0.0)
+    return report, holder, real
+
+
+def test_counts_becoming_unreadable_mid_run_does_not_leave_a_stale_claim():
+    report, holder, real = _report_that_breaks_mid_run()
     real.msgs.add_message(assistant_response="one turn's worth")
     assert "1 turn," in report.line(60.0)
 
     holder.msgs = _Broken()
-    assert "not observable" in report.line(120.0)
+    line = report.line(120.0)
+    assert "could not be read this tick" in line
+    assert "alive, not working" in line
+    assert "1 turn" not in line
+
+
+def test_a_bad_tick_is_not_reported_as_a_property_of_the_engine():
+    """The two unreadable states license different claims, so they read differently."""
+    never_readable = _ProgressReport(_Holder(_Broken()), now=0.0).line(60.0)
+
+    report, holder, _ = _report_that_breaks_mid_run()
+    holder.msgs = _Broken()
+    one_bad_tick = report.line(60.0)
+
+    assert "not observable for this engine" in never_readable
+    assert "not observable for this engine" not in one_bad_tick
+    assert never_readable != one_bad_tick
 
 
 @pytest.mark.parametrize("count,expected", [(1, "1 turn,"), (2, "2 turns,")])
