@@ -111,9 +111,14 @@ existing_branch = await db.get_branch(branch_id)
 if existing_branch:
     session_id = existing_branch["session_id"]
     existing_session = await db.get_session(session_id)
+    # A session that is no longer there is not an error: maintenance removes old
+    # terminal sessions, and there is then nothing to resume into. The leg records
+    # itself under a new session rather than reading a row that no longer exists.
     # A reopened session is running again: its closing transition must be a real
     # status change, or the terminal callback that announces this leg never fires.
-    if existing_session["status"] in SESSION_TERMINAL_STATUSES:
+    if existing_session is None:
+        existing_branch = None  # take the new-session path
+    elif existing_session["status"] in SESSION_TERMINAL_STATUSES:
         await db.update_status(
             "session",
             session_id,
@@ -275,8 +280,9 @@ decision. Results:
 | `studio/services/admin.py` health sweep (`UPDATE ... WHERE status='running'`) | Same class, additionally guarded on `last_message_at`/`updated_at` equality | disclosed |
 | `cli/kill.py` `--all-stale` sweep | **Newly reachable**: selects `status='running'` past an age threshold, then vetoes on a live recorded PID. Safe once the markers move with the status; unsafe if they lag it | fixed in D1 |
 | `cli/state.py` `_doctor` (`li state doctor`) | **Newly reachable and not veto-guarded**: see below | fixed |
+| `studio/services/db_maintenance.py` `prune_old_data` | **Newly reachable in both directions**: a session can leave terminal while its history is being removed, and can be removed while a resume is reopening it | fixed |
 
-No consumer breaks. Three findings need stating; one of them needed a fix.
+No consumer breaks. Four findings need stating; two of them needed a fix.
 
 **The teardown terminal-skip guard starts working.** `cli/_runs.py` skips its status
 write when the session was already terminal at teardown start, logging that the earlier
@@ -317,6 +323,32 @@ The general shape, worth naming because two consumers hit it in one change: a sw
 selects on `status` and thresholds on `started_at` is asking "is this stuck" and answering
 "is this old". Those were the same question while a session had exactly one leg.
 
+**The prune and a resume can now collide, and it had to be settled in both directions.**
+`prune_old_data` removes terminal sessions past a retention window. It clears their
+associations and transition history first, then deletes the row, all inside one
+transaction. Before D1 a session selected as terminal stayed terminal for the length of
+that pass; after D1 it can be reopened partway through.
+
+*A resume landing mid-prune* leaves the session with its row and without the history
+already cleared for it. Putting the terminal predicate on each destructive statement is
+necessary and not sufficient: every statement is then individually correct and the
+sequence can still land half-applied, because another transaction commits between two of
+them. The prune now writes to each candidate row before reading the status that decides
+the batch — the write is what takes the lock, on postgresql by holding the rows and on
+sqlite by escalating the transaction to a write. A resume that arrives before the lock is
+dropped at the re-read, which is a quiet zero-count pass. A post-condition after the
+delete re-reads the candidates and abandons the transaction if any survived, so the pass
+applies whole or not at all.
+
+*A prune landing mid-resume* is the same race from the other side, and the lock decides it
+in the prune's favour: a resume already waiting is released to find its session gone.
+Two paths turned that into a leg with no persistence at all — the status write reports a
+missing row by raising, and persistence read the branch and its session as two separate
+reads and then dereferenced a row that no longer existed. Both now treat a missing session
+as "nothing to resume into": the leg records itself under a new session, exactly as a
+branch nobody has seen before does. The old session's history is gone either way, since
+removing it is what the prune was for; what is preserved is the current leg.
+
 ## Alternatives considered
 
 **Create a new session per resume leg, linked to the branch.** Each leg would own
@@ -339,6 +371,15 @@ Invocations are per-leg, so a resumed leg would have its own fresh entity. Rejec
 `cli/agent.py` documents why this is session-scoped — invocation records are
 finalized externally and would never fire. This trades a missing notice for a
 different missing notice.
+
+**Give resume and prune a shared claim or lease over a session.** The prune would refuse
+to delete a row an in-flight resume had claimed, so neither side could lose. Rejected: a
+lease is only as good as its expiry, and the process that holds one is exactly the
+process that can die without releasing it — the failure it introduces (a session nothing
+will ever prune because a dead leg holds its claim) is quieter than the one it prevents.
+Letting the prune win and having the resume start a new session reaches the same end
+state without a second liveness problem to get right. The lock is held for one
+transaction by the database itself, which needs no expiry.
 
 **Have `--notify` fall back to running the command unconditionally at teardown.**
 Simple and always fires. Rejected: it abandons the entity model entirely, would fire
@@ -406,3 +447,14 @@ not JSON objects, and reading one as an object raises: for a string that is not 
 all, and for a JSON scalar or list when the object is merged. The resume must survive all
 of them, because the caller catches broadly and turns any raise here into a run with no
 state persistence at all — a far larger failure than the field that caused it.
+
+A sixth covers the prune, from both sides, and each side needs more than one case. On the
+prune side: the reopen is driven past each destructive statement in turn, and every case
+asserts the session keeps its row, its transition history and its associations, so a guard
+that covers one statement and not the next fails. A separate case pins the order — the
+first statement the prune issues against `sessions` must be a write, since reading first
+leaves the decision resting on a value another transaction may change before the writes
+land. On the resume side: a session deleted between the read and the write must not raise,
+and a session deleted between the branch read and the session read must leave the leg with
+persistence under a new session rather than none at all. Both of those fail on the
+untreated code at the exact line that breaks, one raising and one dereferencing `None`.
