@@ -323,3 +323,20 @@ async def test_the_status_resolvers_still_take_an_exact_id(db_path: Path):
         assert (await status._resolve_any_target(db, FIRST))[0] == "session"
         assert (await status._resolve_any_target(db, SECOND))[0] == "invocation"
         assert (await status._resolve_agent_target(db, SECOND, None))[0] == "invocation"
+
+
+async def test_the_monitor_detail_resolver_still_takes_an_exact_id(db_path: Path):
+    """The same guarantee where monitor gets it, which is by delegation.
+
+    Refusing an ambiguous prefix is only correct while an exact id still
+    answers. Monitor gets both from `resolve_entity` rather than stating them
+    itself, so the assertion is here to hold that delegation in place.
+    """
+    from lionagi.cli.monitor import _find_entity
+
+    async with StateDB(db_path) as db:
+        await _seed_session(db, FIRST)
+        await _seed_invocation(db, SECOND)
+
+        assert (await _find_entity(db, FIRST))[0] == "session"
+        assert (await _find_entity(db, SECOND))[0] == "invocation"
