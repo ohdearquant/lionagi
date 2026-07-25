@@ -905,17 +905,33 @@ class StateDB:
         col_list = ", ".join(cols)
 
         async def _rebuild() -> None:
-            async with self._engine.begin() as conn:
-                await conn.execute(text("PRAGMA foreign_keys = OFF"))
+            async with self._engine.connect() as conn:
+                driver = (await conn.get_raw_connection()).driver_connection
+                await driver.execute("PRAGMA foreign_keys = OFF")
+                # Everything after the OFF pragma -- including the flush commit
+                # that makes it take effect -- sits inside the outer try so that
+                # ANY failure path restores enforcement in the finally block; a
+                # flush failure must not leave the pooled connection with
+                # foreign keys silently disabled. The pragma must run on the raw
+                # driver outside a transaction: open() installs BEGIN IMMEDIATE
+                # on every sqlite engine, so setting it through an engine-level
+                # begin() block leaves it a no-op and enforcement stays on for
+                # the whole rebuild.
                 try:
-                    # Create without FK references: the referenced tables (messages,
-                    # invocations) may not exist yet in a minimal legacy DB.
-                    # metadata.create_all() runs AFTER this rebuild and will not
-                    # re-create sessions (table already exists after rename).
-                    # FK enforcement relies on the PRAGMA which is already set up
-                    # by make_engine and applies to all DML after schema init.
-                    await conn.execute(
-                        text(
+                    await driver.commit()
+                    await driver.execute("BEGIN IMMEDIATE")
+                    try:
+                        # The foreign keys below are the ones the declared schema
+                        # carries, so a rebuilt table ends up with the same
+                        # constraints a freshly created one gets. They are what
+                        # makes the OFF pragma above load-bearing: sqlite accepts
+                        # a forward reference to a table that does not exist yet,
+                        # but with enforcement on, every statement against the
+                        # child fails while the parent is absent -- including the
+                        # copy below, and including rows whose FK column is NULL.
+                        # A minimal legacy DB has no messages or invocations table
+                        # until create_all() runs after this rebuild.
+                        await driver.execute(
                             """
                             CREATE TABLE sessions_new (
                               id              TEXT    PRIMARY KEY,
@@ -924,9 +940,9 @@ class StateDB:
                               node_metadata   JSON,
                               name            TEXT,
                               user            TEXT,
-                              progression_id  TEXT    NOT NULL,
-                              first_msg_id    TEXT,
-                              last_msg_id     TEXT,
+                              progression_id  TEXT    NOT NULL REFERENCES progressions(id),
+                              first_msg_id    TEXT    REFERENCES messages(id),
+                              last_msg_id     TEXT    REFERENCES messages(id),
                               updated_at      REAL    NOT NULL,
                               playbook_name   TEXT,
                               agent_name      TEXT,
@@ -947,7 +963,7 @@ class StateDB:
                               ended_at        REAL,
                               last_message_at REAL,
                               current_phase   TEXT,
-                              invocation_id   TEXT,
+                              invocation_id   TEXT    REFERENCES invocations(id),
                               model           TEXT,
                               provider        TEXT,
                               effort          TEXT,
@@ -967,26 +983,28 @@ class StateDB:
                             )
                             """
                         )
-                    )
-                    select_cols = []
-                    for c in cols:
-                        if c == "updated_at":
-                            select_cols.append(
-                                "COALESCE(updated_at, created_at, strftime('%s','now')) AS updated_at"
-                            )
-                        else:
-                            select_cols.append(c)
-                    select_list = ", ".join(select_cols)
-                    insert_sql = (
-                        f"INSERT INTO sessions_new ({col_list}) SELECT {select_list} FROM sessions"  # noqa: S608
-                    )
-                    await conn.execute(text(insert_sql))
-                    await conn.execute(text("DROP TABLE sessions"))
-                    await conn.execute(text("ALTER TABLE sessions_new RENAME TO sessions"))
-                    for idx_sql in index_sqls:
-                        await conn.execute(text(idx_sql))
+                        select_cols = []
+                        for c in cols:
+                            if c == "updated_at":
+                                select_cols.append(
+                                    "COALESCE(updated_at, created_at, strftime('%s','now')) AS updated_at"
+                                )
+                            else:
+                                select_cols.append(c)
+                        select_list = ", ".join(select_cols)
+                        insert_sql = f"INSERT INTO sessions_new ({col_list}) SELECT {select_list} FROM sessions"  # noqa: S608
+                        await driver.execute(insert_sql)
+                        await driver.execute("DROP TABLE sessions")
+                        await driver.execute("ALTER TABLE sessions_new RENAME TO sessions")
+                        for idx_sql in index_sqls:
+                            await driver.execute(idx_sql)
+                        await driver.commit()
+                    except BaseException:
+                        await driver.rollback()
+                        raise
                 finally:
-                    await conn.execute(text("PRAGMA foreign_keys = ON"))
+                    await driver.execute("PRAGMA foreign_keys = ON")
+                    await driver.commit()
 
         await self._rebuild_check_constraint(
             "sessions",
