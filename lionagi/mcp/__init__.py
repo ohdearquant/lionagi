@@ -20,9 +20,21 @@ def serve() -> None:
     """Run the MCP server over stdio. Requires the ``mcp`` extra."""
     try:
         from .server import main
+    except ModuleNotFoundError as exc:  # pragma: no cover - exercised via the CLI path
+        # Re-raised as the same type, not as a plain ImportError. A caller
+        # deciding whether this installation is unusable or merely broken keys
+        # off the type, and flattening it here would discard exactly the fact
+        # that distinguishes "the extra is not installed" from "the extra is
+        # installed and something in it is wrong". `name` is carried through for
+        # the same reason: it is what a caller reports.
+        raise ModuleNotFoundError(
+            "the lionagi MCP server requires the 'mcp' extra; "
+            "install it with: pip install 'lionagi[mcp]'",
+            name=exc.name,
+        ) from exc
     except ImportError as exc:  # pragma: no cover - exercised via the CLI path
         raise ImportError(
-            "the lionagi MCP server requires the 'mcp' extra; "
-            "install it with: pip install 'lionagi[mcp]'"
+            "the lionagi MCP server could not be imported; the 'mcp' extra is "
+            "present but something in it failed to load"
         ) from exc
     main()

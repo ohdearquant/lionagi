@@ -310,36 +310,57 @@ def test_the_marker_survives_allocation_on_another_thread(monkeypatch, reported)
     ("raised", "expected_code"),
     [
         (ModuleNotFoundError("No module named 'fastmcp'", name="fastmcp"), 78),
-        (ImportError("cannot import name 'serve'"), 1),
+        (ImportError("cannot import name 'FastMCP'"), 1),
     ],
 )
-def test_li_mcp_separates_a_missing_extra_from_a_broken_one(monkeypatch, raised, expected_code):
-    """`li mcp` imports an optional extra, and the two ways that fails differ.
+def test_li_mcp_separates_a_missing_extra_from_a_broken_one(raised, expected_code):
+    """`li mcp` needs an optional extra, and the two ways that fails differ.
 
     An extra that is not installed means the server never started and nothing
     ran. An extra that is installed but cannot be imported is a defect in what is
-    present. Reporting both with the ordinary failure code leaves a caller unable
-    to tell "install this" from "this installation is broken", and the handler
-    catches the wider of the two exception types, so the narrower one has to be
-    split out ahead of it.
+    present rather than a missing piece of it. Reporting both with the ordinary
+    failure code leaves a caller unable to tell "install this" from "this
+    installation is broken".
+
+    The dependency blocked here is `fastmcp`, the package the extra actually
+    supplies, and the command is driven through `main()`. Blocking `lionagi.mcp`
+    instead would prove nothing: that package is deliberately dependency-free and
+    imports fine without the extra, so the real failure happens one level deeper
+    and would have been missed by a test that never reached it.
     """
-    import argparse
+    script = textwrap.dedent(
+        f"""
+        import sys
 
-    from lionagi.cli import mcp as cli_mcp
+        BLOCKED = "fastmcp"
+        RAISED = {raised!r}
 
-    blocked = "lionagi.mcp"
+        class _RefuseOne:
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname == BLOCKED or fullname.startswith(BLOCKED + "."):
+                    raise RAISED
+                return None
 
-    class _RefuseOne:
-        def find_spec(self, fullname, path=None, target=None):
-            if fullname == blocked or fullname.startswith(blocked + "."):
-                raise raised
-            return None
+        for name in [m for m in list(sys.modules)
+                     if m == BLOCKED or m.startswith(BLOCKED + ".")]:
+            del sys.modules[name]
+        sys.meta_path.insert(0, _RefuseOne())
 
-    for name in [m for m in list(sys.modules) if m == blocked or m.startswith(blocked + ".")]:
-        monkeypatch.delitem(sys.modules, name, raising=False)
-    monkeypatch.setattr(sys, "meta_path", [_RefuseOne(), *sys.meta_path])
+        from lionagi.cli.main import main
 
-    assert cli_mcp.run_mcp(argparse.Namespace(action="serve")) == expected_code
+        sys.exit(main(["mcp"]))
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        timeout=120,
+    )
+
+    assert proc.returncode == expected_code, proc.stderr
 
 
 def test_other_exceptions_are_not_swallowed(monkeypatch):
