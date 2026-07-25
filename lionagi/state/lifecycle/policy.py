@@ -189,7 +189,18 @@ def build_default_registry() -> PolicyRegistry:
     )
     session_edges = _edges(("running", _to(*sorted(session_terminal))))
     session_patch_fields = frozenset(
-        {"ended_at", "input_tokens", "output_tokens", "total_cost_usd", "num_turns", "duration_ms"}
+        {
+            "ended_at",
+            "input_tokens",
+            "output_tokens",
+            "total_cost_usd",
+            "num_turns",
+            "duration_ms",
+            # The process markers a sweep reads to decide whether a row its
+            # status filter selected is still alive. Status and markers have to
+            # agree at every instant a sweep could look, so they move together.
+            "node_metadata",
+        }
     )
     registry.register(
         LifecyclePolicy(

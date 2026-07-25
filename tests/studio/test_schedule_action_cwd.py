@@ -42,8 +42,18 @@ def test_validate_action_cwd_none_is_noop():
     _svc_validate_action_cwd(None)
 
 
-def test_validate_action_cwd_empty_string_is_noop():
-    _svc_validate_action_cwd("")
+def test_validate_action_cwd_rejects_empty_string():
+    # Only None means "no execution root". A supplied-but-empty value is
+    # rejected at the boundary rather than persisted: the scheduler fails
+    # closed on any non-None root it cannot resolve, so an empty root would
+    # only surface later as a refused run. An empty string is not absolute.
+    with pytest.raises(ValueError, match="absolute"):
+        _svc_validate_action_cwd("")
+
+
+def test_validate_action_cwd_rejects_whitespace_only():
+    with pytest.raises(ValueError, match="absolute"):
+        _svc_validate_action_cwd("   ")
 
 
 def test_validate_action_cwd_rejects_relative_path():

@@ -9,6 +9,8 @@ import os
 import textwrap
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # subprocess.build_argv tests
 # ---------------------------------------------------------------------------
@@ -149,6 +151,33 @@ def test_validate_flow_yaml_spec_rejects_invalid_field():
     assert "workers" in result
 
 
+@pytest.mark.parametrize(
+    "yaml_text",
+    [
+        'bare: "true"\n',
+        "prompt: 42\n",
+        "save: 7\n",
+        "model: 42\n",
+        "artifacts: null\n",
+    ],
+)
+def test_validate_flow_yaml_spec_rejects_fields_execution_rejects(yaml_text):
+    """Fields the CLI execution validator rejects must also fail Studio validation."""
+    from lionagi.studio.services.schedules import _validate_flow_yaml_spec
+
+    result = _validate_flow_yaml_spec(yaml_text)
+    assert result is not None, f"{yaml_text!r} should be rejected"
+
+
+def test_validate_flow_yaml_spec_rejects_non_string_key():
+    """A YAML mapping with a non-string key must return an error, not raise TypeError."""
+    from lionagi.studio.services.schedules import _validate_flow_yaml_spec
+
+    result = _validate_flow_yaml_spec("1: value\n")
+    assert result is not None
+    assert "string" in result
+
+
 def test_create_schedule_rejects_empty_flow_yaml():
     """create_schedule raises ValueError when action_flow_yaml is missing."""
     import asyncio
@@ -195,6 +224,62 @@ def test_create_schedule_rejects_malformed_flow_yaml():
         raise AssertionError("Should have raised ValueError")
     except ValueError as exc:
         assert "flow_yaml" in str(exc).lower() or "YAML" in str(exc)
+
+
+def _minimal_command_schedule(name: str) -> dict:
+    return {
+        "name": name,
+        "trigger_type": "cron",
+        "cron_expr": "0 * * * *",
+        "action_kind": "agent",
+        "action_prompt": "say hi",
+    }
+
+
+def test_create_schedule_route_duplicate_name_returns_409(tmp_path, monkeypatch):
+    """Creating a schedule with a name that already exists must return 409,
+    not a generic server error."""
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.schedules as schedules_mod
+
+    fake_db = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(schedules_mod, "DEFAULT_DB_PATH", fake_db)
+    from fastapi.testclient import TestClient
+
+    from lionagi.studio.app import app
+
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
+    body = _minimal_command_schedule("dup-schedule")
+    r1 = client.post("/api/schedules/", json=body)
+    assert r1.status_code == 201, r1.text
+    r2 = client.post("/api/schedules/", json=body)
+    assert r2.status_code == 409
+
+
+def test_create_schedule_route_storage_failure_is_not_409(tmp_path, monkeypatch):
+    """A non-conflict exception from the storage layer (e.g. RuntimeError)
+    must not be reported to the client as a 409 name conflict."""
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.schedules as schedules_mod
+
+    fake_db = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(schedules_mod, "DEFAULT_DB_PATH", fake_db)
+
+    async def _boom(self, schedule):
+        raise RuntimeError("storage offline")
+
+    monkeypatch.setattr(state_db_mod.StateDB, "create_schedule", _boom)
+
+    from fastapi.testclient import TestClient
+
+    from lionagi.studio.app import app
+
+    client = TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
+    r = client.post("/api/schedules/", json=_minimal_command_schedule("will-fail-schedule"))
+    assert r.status_code != 409
+    assert r.status_code == 500
 
 
 # ---------------------------------------------------------------------------

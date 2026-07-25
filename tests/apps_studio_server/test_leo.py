@@ -102,6 +102,53 @@ def test_session_registry_evicts_lru_over_cap(monkeypatch):
     assert len(leo_svc._SESSIONS) == 3
 
 
+def test_session_registry_skips_busy_session_when_evicting_lru(monkeypatch):
+    """A session whose lock is held (mid-turn) must never be the eviction victim."""
+    import asyncio
+
+    from lionagi.studio.services import leo as leo_svc
+
+    monkeypatch.setattr(leo_svc, "_MAX_SESSIONS", 3)
+
+    ids = [leo_svc.create_session().id for _ in range(3)]
+    now = time.time()
+    leo_svc._SESSIONS[ids[0]].last_used_at = now + 10
+    leo_svc._SESSIONS[ids[1]].last_used_at = now  # oldest, but busy
+    leo_svc._SESSIONS[ids[2]].last_used_at = now + 20
+
+    asyncio.run(leo_svc._SESSIONS[ids[1]].lock.acquire())
+
+    new_sess = leo_svc.create_session()
+
+    assert ids[1] in leo_svc._SESSIONS  # busy session survives even though it's LRU
+    assert leo_svc._SESSIONS[ids[1]].lock.locked()
+    assert ids[0] not in leo_svc._SESSIONS  # next-oldest idle session evicted instead
+    assert ids[2] in leo_svc._SESSIONS
+    assert new_sess.id in leo_svc._SESSIONS
+    assert len(leo_svc._SESSIONS) == 3
+
+
+def test_session_registry_all_busy_exceeds_cap_rather_than_evict(monkeypatch):
+    """When every session is mid-turn, capacity is temporarily exceeded rather than evicting one."""
+    import asyncio
+
+    from lionagi.studio.services import leo as leo_svc
+
+    monkeypatch.setattr(leo_svc, "_MAX_SESSIONS", 3)
+
+    ids = [leo_svc.create_session().id for _ in range(3)]
+    for sid in ids:
+        asyncio.run(leo_svc._SESSIONS[sid].lock.acquire())
+
+    new_sess = leo_svc.create_session()
+
+    for sid in ids:
+        assert sid in leo_svc._SESSIONS
+        assert leo_svc._SESSIONS[sid].lock.locked()
+    assert new_sess.id in leo_svc._SESSIONS
+    assert len(leo_svc._SESSIONS) == 4
+
+
 def test_session_registry_expires_idle_sessions():
     from lionagi.studio.services import leo as leo_svc
 
