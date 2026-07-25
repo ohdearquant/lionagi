@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from lionagi._paths import RUNS_ROOT, ensure_lionagi_dir
+from lionagi.cli._util import AmbiguousIdError
 from lionagi.libs.path_safety import validate_path_component
 from lionagi.ln._utils import now_utc
 from lionagi.providers._provider_errors import ProviderError
@@ -232,36 +233,59 @@ def allocate_run(
 # ── Branch lookup (canonical + legacy fallback) ─────────────────────────
 
 
-def find_branch(branch_id: str) -> tuple[str | None, Path]:
-    """Locate a branch JSON; returns (run_id, path), run_id=None for legacy logs/agents/ storage."""
-    if RUNS_ROOT.exists():
-        # Prefer an exact hit, fall back to prefix match (branch UUIDs may
-        # have been truncated by the user when resuming).
-        for run_dir in sorted(
-            RUNS_ROOT.iterdir(),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        ):
-            if not run_dir.is_dir():
-                continue
-            branches = run_dir / "branches"
-            if not branches.exists():
-                continue
-            exact = branches / f"{branch_id}.json"
-            if exact.exists():
-                return run_dir.name, exact
-            for match in branches.glob(f"{branch_id}*.json"):
-                return run_dir.name, match
+def _branch_dirs() -> list[tuple[str | None, Path, str]]:
+    """Every directory that can hold a branch file, with its run id and suffix.
 
+    Newest run first, so an exact hit is found in the order a caller expects.
+    """
+    places: list[tuple[str | None, Path, str]] = []
+    if RUNS_ROOT.exists():
+        for run_dir in sorted(RUNS_ROOT.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+            branches = run_dir / "branches"
+            if run_dir.is_dir() and branches.exists():
+                places.append((run_dir.name, branches, ".json"))
     if _LEGACY_AGENTS_ROOT.exists():
-        for provider_dir in sorted(_LEGACY_AGENTS_ROOT.iterdir()):
-            if not provider_dir.is_dir():
-                continue
-            exact = provider_dir / branch_id
-            if exact.exists():
-                return None, exact
-            for match in provider_dir.glob(f"{branch_id}*"):
-                return None, match
+        places.extend(
+            (None, provider_dir, "")
+            for provider_dir in sorted(_LEGACY_AGENTS_ROOT.iterdir())
+            if provider_dir.is_dir()
+        )
+    return places
+
+
+def find_branch(branch_id: str) -> tuple[str | None, Path]:
+    """Locate a branch JSON; returns (run_id, path), run_id=None for legacy logs/agents/ storage.
+
+    Branch ids may be given truncated, so a prefix is accepted. It is resolved
+    in two passes over every place a branch can live rather than one pass that
+    accepts whatever it finds first: an exact id is a complete answer and must
+    win wherever it lives, and a prefix that fits more than one branch has no
+    correct winner. Resuming acts, so picking one of several would silently put
+    a new leg on a branch the caller did not name.
+    """
+    places = _branch_dirs()
+
+    for run_id, directory, suffix in places:
+        exact = directory / f"{branch_id}{suffix}"
+        if exact.exists():
+            return run_id, exact
+
+    matches: list[tuple[str | None, Path]] = []
+    for run_id, directory, suffix in places:
+        # startswith re-checks the glob: a case-insensitive filesystem matches
+        # names the id does not actually prefix.
+        matches.extend(
+            (run_id, match)
+            for match in sorted(directory.glob(f"{branch_id}*{suffix}"))
+            if match.name.startswith(branch_id)
+        )
+
+    if len(matches) > 1:
+        raise AmbiguousIdError(
+            branch_id, "branch", [m.name.removesuffix(".json") for _, m in matches]
+        )
+    if matches:
+        return matches[0]
 
     raise FileNotFoundError(f"No branch log found for id {branch_id!r}")
 

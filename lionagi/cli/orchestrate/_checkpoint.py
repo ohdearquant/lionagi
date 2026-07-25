@@ -15,6 +15,7 @@ from lionagi._errors import LionError
 from lionagi._paths import RUNS_ROOT
 
 from .._runs import RunDir
+from .._util import AmbiguousIdError
 
 __all__ = (
     "CHECKPOINT_VERSION",
@@ -164,18 +165,29 @@ def load_checkpoint(path: Path) -> dict[str, Any]:
 
 
 def _find_run_dir_by_id(run_id: str) -> RunDir | None:
+    """Resolve a run id, or an unambiguous prefix of one, to its directory.
+
+    Taking the most recent of several prefix matches would answer a question
+    the caller did not ask: they named a run, not "the newest run starting
+    with this", and the commands built on this act on what comes back.
+    """
     exact = RUNS_ROOT / run_id
     if exact.is_dir():
         return RunDir(run_id=run_id, state_root=exact, artifact_root=exact / "artifacts")
-    if RUNS_ROOT.exists():
-        for match in sorted(
-            RUNS_ROOT.glob(f"{run_id}*"), key=lambda p: p.stat().st_mtime, reverse=True
-        ):
-            if match.is_dir():
-                return RunDir(
-                    run_id=match.name, state_root=match, artifact_root=match / "artifacts"
-                )
-    return None
+    if not RUNS_ROOT.exists():
+        return None
+
+    # startswith re-checks the glob: a case-insensitive filesystem matches
+    # names the id does not actually prefix.
+    matches = sorted(
+        p for p in RUNS_ROOT.glob(f"{run_id}*") if p.is_dir() and p.name.startswith(run_id)
+    )
+    if len(matches) > 1:
+        raise AmbiguousIdError(run_id, "run", [p.name for p in matches])
+    if not matches:
+        return None
+    match = matches[0]
+    return RunDir(run_id=match.name, state_root=match, artifact_root=match / "artifacts")
 
 
 async def resolve_checkpoint_target(target: str) -> tuple[RunDir, dict[str, Any]]:
