@@ -20,8 +20,13 @@ from typing import Any
 from fastmcp import FastMCP
 
 from . import jobs
+from .observability import register_observability_tools
 
 mcp = FastMCP("lionagi")
+
+# Observing and controlling what already runs — monitor/kill/stats/state/
+# dispatch/doctor — as typed tools alongside the submit surface.
+register_observability_tools(mcp)
 
 
 def _resolve_prompt(prompt: str | None, prompt_file: str | None) -> str | None:
