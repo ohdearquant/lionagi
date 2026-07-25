@@ -318,11 +318,49 @@ def test_oversized_flow_prompt_is_refused_before_a_record_exists(sandbox):
     limit = os.sysconf("SC_ARG_MAX")
     huge = "x" * limit
 
-    with pytest.raises(ValueError, match="OS limit"):
+    # Refused for whichever limit it hits first; the point is that it is refused
+    # before anything is recorded, not which of the two bounds caught it.
+    with pytest.raises(ValueError, match="cannot submit this flow run"):
         jobs.submit("flow", [], prompt=huge)
 
     # Nothing was recorded, so nothing shows up as a job that never finishes.
     assert jobs.list_jobs() == []
+
+
+def test_one_oversized_argument_is_refused_even_when_the_total_would_fit(sandbox):
+    """A single argument has its own limit, below the aggregate one.
+
+    Linux caps one exec argument at MAX_ARG_STRLEN (32 pages) regardless of how
+    much aggregate room is left, and does not expose it via sysconf. A flow prompt
+    between that and SC_ARG_MAX spawns fine on macOS and dies with E2BIG on Linux,
+    so it has to be refused on both.
+    """
+    limit = os.sysconf("SC_ARG_MAX")
+    one_arg = "x" * (jobs._MAX_SINGLE_ARG_BYTES + 1)
+    assert len(one_arg) < limit, "must fit the aggregate limit, or this tests the wrong thing"
+
+    with pytest.raises(ValueError, match="single argument"):
+        jobs.submit("flow", [], prompt=one_arg)
+
+    assert jobs.list_jobs() == []
+
+
+def test_argument_count_is_charged_not_only_bytes():
+    """Entries cost a pointer slot each, so counting bytes alone is not enough.
+
+    Constructed so the strings themselves fit the aggregate limit with room to
+    spare and only the per-entry pointer cost pushes the invocation over. A
+    byte-only estimate with a flat reserve accepts this and then dies in exec.
+    """
+    limit = os.sysconf("SC_ARG_MAX")
+    argv = ["x"] * (limit // 8)
+    env = {"PATH": "/usr/bin"}
+
+    byte_total = sum(len(a.encode()) + 1 for a in argv)
+    assert byte_total * 2 < limit, "bytes alone must fit, or this tests the wrong thing"
+
+    with pytest.raises(ValueError, match="OS limit"):
+        jobs._reject_oversized_argv(argv, env, kind="flow")
 
 
 def test_an_ordinary_prompt_is_not_caught_by_the_size_guard(tmp_path, monkeypatch):

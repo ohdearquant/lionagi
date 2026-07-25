@@ -172,13 +172,34 @@ def _notify_template(run_id: str, notify_target: str | None, notify_command: str
     return " ".join(parts)
 
 
+# Linux caps a single exec argument at MAX_ARG_STRLEN — 32 pages — independently of
+# the aggregate limit, and offers no sysconf for it.
+_MAX_SINGLE_ARG_BYTES = 32 * 4096
+# argv and envp are pointer arrays, so every entry costs a slot as well as its bytes.
+_POINTER_BYTES = 8
+# Small allowance for the aux vector and alignment the kernel adds on top.
+_EXEC_RESERVE_BYTES = 4096
+
+
 def _reject_oversized_argv(argv: list[str], env: dict[str, str], *, kind: str) -> None:
     """Refuse a command line the OS will not accept, before anything is spawned.
 
-    ``exec`` limits the combined size of the argument vector and the environment.
-    Exceeding it raises ``OSError: [Errno 7] Argument list too long`` from the
-    spawn, which is late and hard to read; refusing here names the cause and the
-    limit instead.
+    ``exec`` rejects an oversized invocation with ``OSError: [Errno 7] Argument
+    list too long``, which arrives too late to be useful: by then the caller has a
+    run id for a process that never started. There are two independent limits and
+    both have to hold.
+
+    The *aggregate* limit covers argv and the environment together and is readable
+    as ``SC_ARG_MAX``. Alongside the strings themselves the kernel stores a
+    terminator and a pointer per entry, so entries are counted, not just bytes —
+    a flat reserve would be defeated by a long list of short arguments.
+
+    The *per-argument* limit applies to one string on its own. Linux enforces
+    ``MAX_ARG_STRLEN`` (32 pages, 128 KiB) and does not expose it through
+    ``sysconf``, so it is used as a constant on every platform. That is
+    deliberately conservative: a flow instruction between 128 KiB and the
+    aggregate limit runs on macOS and fails on Linux, and one predictable refusal
+    beats a limit that depends on where the server happens to be running.
     """
     try:
         limit = os.sysconf("SC_ARG_MAX")
@@ -187,13 +208,23 @@ def _reject_oversized_argv(argv: list[str], env: dict[str, str], *, kind: str) -
     if not isinstance(limit, int) or limit <= 0:  # pragma: no cover — unset knob
         return
 
-    # Each entry is stored with a terminator, and the kernel also keeps a pointer
-    # table and alignment padding that is not worth modelling exactly, so leave
-    # headroom rather than approving a command line that only just fits.
-    used = sum(len(a.encode()) + 1 for a in argv)
-    used += sum(len(k.encode()) + len(v.encode()) + 2 for k, v in env.items())
-    headroom = 8192
-    if used + headroom <= limit:
+    advice = (
+        "Shorten the instruction, or use submit_agent, which hands the instruction "
+        "to the run in a file instead of on the command line."
+    )
+
+    for arg in argv:
+        n = len(arg.encode())
+        if n > _MAX_SINGLE_ARG_BYTES:
+            raise ValueError(
+                f"cannot submit this {kind} run: one argument is {n} bytes, over the "
+                f"{_MAX_SINGLE_ARG_BYTES}-byte limit an operating system places on a "
+                f"single argument regardless of the {limit}-byte total. {advice}"
+            )
+
+    used = sum(len(a.encode()) + 1 + _POINTER_BYTES for a in argv)
+    used += sum(len(k.encode()) + len(v.encode()) + 2 + _POINTER_BYTES for k, v in env.items())
+    if used + _EXEC_RESERVE_BYTES <= limit:
         return
 
     detail = (
@@ -203,9 +234,7 @@ def _reject_oversized_argv(argv: list[str], env: dict[str, str], *, kind: str) -
     )
     raise ValueError(
         f"cannot submit this {kind} run: {detail}, and it needs {used} bytes of "
-        f"argument vector plus environment against an OS limit of {limit}. "
-        "Shorten the instruction, or use submit_agent, which hands the "
-        "instruction to the run in a file instead of on the command line."
+        f"argument vector plus environment against an OS limit of {limit}. {advice}"
     )
 
 
