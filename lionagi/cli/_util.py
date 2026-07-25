@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -176,10 +177,12 @@ async def _fetch_prefix_rows(db: Any, table: str, id_or_short: str) -> list[dict
     )
 
 
-async def resolve_entity(db: Any, id_or_short: str) -> tuple[str, str, dict[str, Any]] | None:
+async def resolve_entity(
+    db: Any, id_or_short: str, tables: Sequence[str] = _SEARCH_ORDER
+) -> tuple[str, str, dict[str, Any]] | None:
     """Find the one record holding *id_or_short*, across every entity kind.
 
-    An exact id is a primary key and settles it outright, in `_SEARCH_ORDER`.
+    An exact id is a primary key and settles it outright, in *tables* order.
     A prefix does not: it is a guess, and a guess that fits a session and an
     invocation equally well has no correct winner. Search order cannot break
     that tie, because ordering is about where to look first, not about which of
@@ -188,18 +191,23 @@ async def resolve_entity(db: Any, id_or_short: str) -> tuple[str, str, dict[str,
     as a collision inside one does. The alternative is a resolver that rejects
     ambiguity in one direction and silently picks in the other, which teaches
     callers to trust a prefix that resolves.
+
+    *tables* narrows which kinds are considered, for callers that answer about
+    a subset. It is the kinds a caller searches, not the policy it searches
+    them under: a caller with its own list still gets the same exact-first,
+    refuse-a-collision behaviour, which is the whole point of it living here.
     """
     id_or_short = id_or_short.strip()
     if not id_or_short:
         return None
 
-    for table in _SEARCH_ORDER:
+    for table in tables:
         row = await _fetch_exact_row(db, table, id_or_short)
         if row is not None:
             return table, _TABLE_TO_ENTITY_TYPE[table], db._row_to_dict(row)
 
     hits: list[tuple[str, dict[str, Any]]] = []
-    for table in _SEARCH_ORDER:
+    for table in tables:
         hits.extend((table, row) for row in await _fetch_prefix_rows(db, table, id_or_short))
 
     if not hits:

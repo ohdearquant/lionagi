@@ -16,7 +16,7 @@ from typing import Any
 
 from ._project import detect_project
 from ._runs import RUNS_ROOT
-from ._util import AmbiguousIdError, fetch_unique_row
+from ._util import AmbiguousIdError, fetch_unique_row, resolve_entity
 from ._util import pid_alive as _pid_alive_int
 
 __all__ = (
@@ -237,21 +237,18 @@ async def _query_plays_for_show(db: Any, show_id: str) -> list[dict[str, Any]]:
 async def _find_entity(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | None:
     """Resolve entity_id across all entity tables; returns (entity_type, row) or None.
 
-    Raises `AmbiguousIdError` when a short prefix matches more than one row in
-    a table, so a detail view can never be rendered for an arbitrarily chosen
-    run.
+    Raises `AmbiguousIdError` when a short prefix matches more than one row,
+    whether the rows are of one kind or several, so a detail view can never be
+    rendered for an arbitrarily chosen run. Kinds are searched together for
+    that reason: taking the first kind that matches would answer a collision
+    across kinds by search order, which says where to look first and nothing
+    about which record the caller meant.
     """
-    searches = [
-        ("session", "sessions"),
-        ("invocation", "invocations"),
-        ("show", "shows"),
-        ("play", "plays"),
-    ]
-    for entity_type, table in searches:
-        row = await fetch_unique_row(db, table, entity_id)
-        if row:
-            return entity_type, row
-    return None
+    hit = await resolve_entity(db, entity_id, tables=("sessions", "invocations", "shows", "plays"))
+    if hit is None:
+        return None
+    _table, entity_type, row = hit
+    return entity_type, row
 
 
 def _stream_tail(run_dir: Path, branch_id: str, n_lines: int = 5) -> list[str]:

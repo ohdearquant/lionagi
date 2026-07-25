@@ -16,7 +16,7 @@ from typing import Any
 
 from ._logging import log_error
 from ._project import detect_project
-from ._util import AmbiguousIdError, fetch_unique_row
+from ._util import AmbiguousIdError, fetch_unique_row, resolve_entity
 
 __all__ = (
     "run_agent_status",
@@ -87,14 +87,17 @@ async def _resolve_agent_target(
     db: Any, entity_id: str | None, project: str | None
 ) -> tuple[str, dict[str, Any]] | None:
     """`li agent status` resolution: session (any kind), invocation, or a
-    branch_id, by id; default-latest is scoped to agent-kind sessions."""
+    branch_id, by id; default-latest is scoped to agent-kind sessions.
+
+    Sessions and invocations are searched together: a prefix that fits one of
+    each is ambiguous, and reporting the session because it is looked at first
+    is search order deciding a question it cannot answer.
+    """
     if entity_id:
-        row = await _fetch_by_id(db, "sessions", entity_id)
-        if row is not None:
-            return "session", row
-        row = await _fetch_by_id(db, "invocations", entity_id)
-        if row is not None:
-            return "invocation", row
+        hit = await resolve_entity(db, entity_id, tables=("sessions", "invocations"))
+        if hit is not None:
+            _table, entity_type, row = hit
+            return entity_type, row
         row = await _resolve_session_by_branch_id(db, entity_id)
         if row is not None:
             return "session", row
@@ -106,19 +109,17 @@ async def _resolve_agent_target(
 async def _resolve_play_target(
     db: Any, entity_id: str | None, project: str | None
 ) -> tuple[str, dict[str, Any]] | None:
-    """`li play status` resolution: session, then invocation, then a show
-    sub-play row, by id; default-latest is scoped to play/flow-kind sessions.
+    """`li play status` resolution: session, invocation, or a show sub-play
+    row, by id; default-latest is scoped to play/flow-kind sessions.
+
+    The three kinds are searched together, for the same reason `li agent
+    status` searches its two together.
     """
     if entity_id:
-        row = await _fetch_by_id(db, "sessions", entity_id)
-        if row is not None:
-            return "session", row
-        row = await _fetch_by_id(db, "invocations", entity_id)
-        if row is not None:
-            return "invocation", row
-        row = await _fetch_by_id(db, "plays", entity_id)
-        if row is not None:
-            return "play", row
+        hit = await resolve_entity(db, entity_id, tables=("sessions", "invocations", "plays"))
+        if hit is not None:
+            _table, entity_type, row = hit
+            return entity_type, row
         return None
     row = await _latest_session(db, invocation_kinds=("play", "flow"), project=project)
     return ("session", row) if row is not None else None
@@ -126,16 +127,19 @@ async def _resolve_play_target(
 
 async def _resolve_any_target(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | None:
     """`li o ctl status <id>` resolution: no kind scoping, id required (no
-    latest). Falls back to branch_id last, after sessions/invocations/plays."""
-    row = await _fetch_by_id(db, "sessions", entity_id)
-    if row is not None:
-        return "session", row
-    row = await _fetch_by_id(db, "invocations", entity_id)
-    if row is not None:
-        return "invocation", row
-    row = await _fetch_by_id(db, "plays", entity_id)
-    if row is not None:
-        return "play", row
+    latest). Falls back to branch_id last, after sessions/invocations/plays.
+
+    The kinds are searched together rather than one after another. Trying each
+    in turn and keeping the first hit resolves a prefix that fits a session and
+    an invocation to whichever is looked at first, and the commands built on
+    this resolver act: `li o ctl pause` would queue a control for a flow the
+    caller never identified. The branch fallback stays last and applies only
+    when no entity matched at all.
+    """
+    hit = await resolve_entity(db, entity_id, tables=("sessions", "invocations", "plays"))
+    if hit is not None:
+        _table, entity_type, row = hit
+        return entity_type, row
     row = await _resolve_session_by_branch_id(db, entity_id)
     if row is not None:
         return "session", row

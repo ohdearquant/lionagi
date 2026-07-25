@@ -268,3 +268,58 @@ def test_team_lookup_settles_on_an_id_or_a_name(teams_dir: Path):
 
     assert _team_file(FIRST) == first
     assert _team_file("two") == second
+
+
+# ── the resolvers the CLI surfaces actually call ──────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "resolver",
+    [
+        "_resolve_any_target",
+        "_resolve_agent_target",
+        "_resolve_play_target",
+    ],
+)
+async def test_the_status_resolvers_refuse_a_prefix_that_fits_two_kinds(db_path: Path, resolver):
+    """The resolvers behind the commands, not only the shared helper.
+
+    Each of these used to try one table after another and keep the first hit,
+    so a prefix that fits a session and an invocation resolved to the session
+    because sessions are looked at first. `li o ctl pause` and the checkpoint
+    replay act on what comes back, so the pick is a control queued against a
+    flow the caller never identified.
+    """
+    from lionagi.cli import status
+
+    fn = getattr(status, resolver)
+    async with StateDB(db_path) as db:
+        await _seed_session(db, FIRST)
+        await _seed_invocation(db, SECOND)
+
+        with pytest.raises(AmbiguousIdError):
+            await (fn(db, SHARED) if resolver == "_resolve_any_target" else fn(db, SHARED, None))
+
+
+async def test_the_monitor_detail_resolver_refuses_a_prefix_that_fits_two_kinds(db_path: Path):
+    from lionagi.cli.monitor import _find_entity
+
+    async with StateDB(db_path) as db:
+        await _seed_session(db, FIRST)
+        await _seed_invocation(db, SECOND)
+
+        with pytest.raises(AmbiguousIdError):
+            await _find_entity(db, SHARED)
+
+
+async def test_the_status_resolvers_still_take_an_exact_id(db_path: Path):
+    """Aggregating prefixes must not disturb the answer an exact id gives."""
+    from lionagi.cli import status
+
+    async with StateDB(db_path) as db:
+        await _seed_session(db, FIRST)
+        await _seed_invocation(db, SECOND)
+
+        assert (await status._resolve_any_target(db, FIRST))[0] == "session"
+        assert (await status._resolve_any_target(db, SECOND))[0] == "invocation"
+        assert (await status._resolve_agent_target(db, SECOND, None))[0] == "invocation"
