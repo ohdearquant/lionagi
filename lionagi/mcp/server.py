@@ -24,6 +24,41 @@ from . import jobs
 mcp = FastMCP("lionagi")
 
 
+def _resolve_prompt(prompt: str | None, prompt_file: str | None) -> str | None:
+    """Return the instruction text, given either inline text or a file holding it.
+
+    The file is read here rather than passed to the CLI as a path. That snapshots
+    the text at submit time: ``submit`` writes it into the job directory, so
+    editing the file afterwards cannot change what an already-submitted run goes
+    on to execute.
+
+    Bad input is rejected before anything is submitted, because otherwise it
+    reaches the CLI only after the job record is written and a process is
+    spawned, and the caller learns about a typo by going to read the console log
+    of a failed run.
+    """
+    if prompt_file is None:
+        return prompt
+    if prompt is not None:
+        raise ValueError("pass prompt or prompt_file, not both")
+    if prompt_file == "-":
+        # The CLI reads stdin for "-", but a background job is spawned with stdin
+        # at DEVNULL, so it would read an empty prompt and fail.
+        raise ValueError("prompt_file cannot be '-': a background run has no stdin")
+    path = Path(prompt_file).expanduser()
+    if not path.is_absolute():
+        # Resolved against this server's working directory, which the caller does
+        # not know and did not choose.
+        raise ValueError(f"prompt_file must be an absolute path, got {prompt_file!r}")
+    try:
+        text = path.read_text()
+    except OSError as exc:
+        raise ValueError(f"could not read prompt_file {path}: {exc}") from exc
+    if not text.strip():
+        raise ValueError(f"prompt_file is empty: {path}")
+    return text
+
+
 # --- submit tools (mirror the CLI) --------------------------------------------
 
 
@@ -58,37 +93,18 @@ def submit_agent(
     (a profile) or ``resume``/``continue_last`` already supplies one. ``agent``
     loads a profile from ``.lionagi/agents/``.
 
-    Give the instruction as either ``prompt`` (text, written to a file before the
-    run so long text with quotes or code is safe — no shell is involved on this
-    path) or ``prompt_file`` (an absolute path to a file you already have), never
-    both.
+    Give the instruction as either ``prompt`` (text) or ``prompt_file`` (an
+    absolute path to a file holding it), never both. Either way the text is
+    written to a file before the run and the process is spawned with an argv list
+    and no shell, so long text containing quotes or code is safe.
 
     On terminal the run records its status. If a delivery command is configured
     (``notify`` here, or lionagi's ``notify.on_terminal`` setting) it also sends
     a terminal notice; ``notify_seat`` fills that command's ``{target}``
     placeholder. With nothing configured the run delivers nothing.
     """
+    prompt = _resolve_prompt(prompt, prompt_file)
     flags: list[str] = []
-    if prompt_file is not None:
-        # Validated here rather than left to the CLI: a bad path would otherwise
-        # surface as a failed run whose console output the caller has to go read,
-        # and the run would already have been recorded and spawned.
-        if prompt is not None:
-            raise ValueError("pass prompt or prompt_file, not both")
-        if prompt_file == "-":
-            # The CLI accepts "-" for stdin, but a background job is spawned with
-            # stdin at DEVNULL, so it would read an empty prompt and fail.
-            raise ValueError("prompt_file cannot be '-': a background run has no stdin")
-        pf = Path(prompt_file).expanduser()
-        if not pf.is_absolute():
-            # The run's cwd is the caller's cwd argument, not this server's, so a
-            # relative path resolves against a directory the caller did not pick.
-            raise ValueError(f"prompt_file must be an absolute path, got {prompt_file!r}")
-        if not pf.is_file():
-            raise ValueError(f"prompt_file does not exist or is not a file: {pf}")
-        if pf.stat().st_size == 0:
-            raise ValueError(f"prompt_file is empty: {pf}")
-        flags += ["--prompt-file", str(pf)]
     if model:
         flags.append(model)  # leading positional model spec
     if agent:
@@ -132,6 +148,7 @@ def submit_agent(
 @mcp.tool
 def submit_flow(
     prompt: str | None = None,
+    prompt_file: str | None = None,
     model: str | None = None,
     agent: str | None = None,
     file: str | None = None,
@@ -154,9 +171,11 @@ def submit_flow(
     """Submit an orchestrated flow in the background (mirrors ``li o flow``).
 
     The orchestrator composes a DAG of agents and runs it with automatic
-    parallelism. Prompt may come from ``prompt``, ``file`` (-f), or ``playbook``
-    (-p). ``with_synthesis`` may be a model spec or ``True`` for the default.
+    parallelism. Prompt may come from ``prompt``, ``prompt_file`` (an absolute
+    path to a file holding the text), ``file`` (-f), or ``playbook`` (-p).
+    ``with_synthesis`` may be a model spec or ``True`` for the default.
     """
+    prompt = _resolve_prompt(prompt, prompt_file)
     flags: list[str] = []
     if model:
         flags.append(model)
@@ -206,6 +225,7 @@ def submit_flow(
 @mcp.tool
 def submit_fanout(
     prompt: str | None = None,
+    prompt_file: str | None = None,
     model: str | None = None,
     agent: str | None = None,
     num_workers: int | None = None,
@@ -229,8 +249,10 @@ def submit_fanout(
 
     ``num_workers`` copies of one worker, or ``workers`` as a comma-separated
     list of model specs (M1,M2,...). ``synthesis_prompt`` drives an optional
-    synthesis pass over the workers' results.
+    synthesis pass over the workers' results. The worker instruction may be given
+    inline as ``prompt`` or as ``prompt_file`` (an absolute path).
     """
+    prompt = _resolve_prompt(prompt, prompt_file)
     flags: list[str] = []
     if model:
         flags.append(model)

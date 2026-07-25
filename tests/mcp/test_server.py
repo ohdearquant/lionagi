@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for the MCP tool surface.
 
-``jobs.submit`` is stubbed so nothing spawns; these assert on the flags the tool
-builds and on the input it refuses before a run is ever recorded.
+``jobs.submit`` is stubbed so nothing spawns; these assert on what the tools hand
+it and on the input they refuse before a run is ever recorded.
 """
 
 from __future__ import annotations
@@ -16,6 +16,14 @@ import pytest
 pytest.importorskip("fastmcp", reason="requires the 'mcp' extra")
 
 from lionagi.mcp import server  # noqa: E402 — must follow the extra guard
+
+# Every submit tool takes the instruction the same way, so the path handling is
+# checked against all three rather than only the one it was added for.
+SUBMITTERS = pytest.mark.parametrize(
+    "submit",
+    [server.submit_agent, server.submit_flow, server.submit_fanout],
+    ids=["agent", "flow", "fanout"],
+)
 
 
 @pytest.fixture
@@ -33,86 +41,118 @@ def captured(monkeypatch):
     return seen
 
 
-def test_prompt_file_is_passed_through_as_a_cli_flag(captured, tmp_path):
+@SUBMITTERS
+def test_prompt_file_contents_are_submitted_as_the_prompt(captured, tmp_path, submit):
+    body = "a long instruction with 'quotes' and `code`\n"
     pf = tmp_path / "prompt.md"
-    pf.write_text("a long instruction with 'quotes' and `code`\n")
+    pf.write_text(body)
 
-    server.submit_agent(prompt_file=str(pf), agent="reviewer")
+    submit(prompt_file=str(pf))
 
-    assert captured["flags"][:2] == ["--prompt-file", str(pf)]
-    # The text is not read here and not inlined: the path is handed to the CLI.
-    assert captured["prompt"] is None
+    # The text is read here, so submit() snapshots it into the job directory. The
+    # caller's path is deliberately not forwarded: see the snapshot test below.
+    assert captured["prompt"] == body
+    assert "--prompt-file" not in captured["flags"]
+    assert str(pf) not in captured["flags"]
 
 
-def test_prompt_file_accepts_a_tilde_path(captured, tmp_path, monkeypatch):
+@SUBMITTERS
+def test_prompt_file_accepts_a_tilde_path(captured, tmp_path, monkeypatch, submit):
     monkeypatch.setenv("HOME", str(tmp_path))
-    pf = tmp_path / "prompt.md"
-    pf.write_text("body")
+    (tmp_path / "prompt.md").write_text("body")
 
-    server.submit_agent(prompt_file="~/prompt.md")
+    submit(prompt_file="~/prompt.md")
 
-    assert captured["flags"] == ["--prompt-file", str(pf)]
+    assert captured["prompt"] == "body"
 
 
-def test_prompt_and_prompt_file_together_are_refused(captured, tmp_path):
+@SUBMITTERS
+def test_prompt_and_prompt_file_together_are_refused(captured, tmp_path, submit):
     pf = tmp_path / "prompt.md"
     pf.write_text("body")
 
     with pytest.raises(ValueError, match="not both"):
-        server.submit_agent(prompt="inline", prompt_file=str(pf))
+        submit(prompt="inline", prompt_file=str(pf))
 
     assert captured == {}  # refused before anything was submitted
 
 
-def test_missing_prompt_file_is_refused_before_submitting(captured, tmp_path):
+@SUBMITTERS
+def test_missing_prompt_file_is_refused_before_submitting(captured, tmp_path, submit):
     # Without this the path reaches the CLI, the job record is written, a process
     # is spawned, and the caller learns about the typo only by reading a console
     # log of a failed run.
-    with pytest.raises(ValueError, match="does not exist"):
-        server.submit_agent(prompt_file=str(tmp_path / "nope.md"))
+    with pytest.raises(ValueError, match="could not read"):
+        submit(prompt_file=str(tmp_path / "nope.md"))
 
     assert captured == {}
 
 
-def test_empty_prompt_file_is_refused(captured, tmp_path):
-    # The CLI itself errors on an empty prompt file, so catching it here turns a
-    # failed run into a rejected call.
+@SUBMITTERS
+def test_a_directory_is_refused_rather_than_passed_on(captured, tmp_path, submit):
+    with pytest.raises(ValueError, match="could not read"):
+        submit(prompt_file=str(tmp_path))
+
+    assert captured == {}
+
+
+@SUBMITTERS
+@pytest.mark.parametrize("body", ["", "   \n\t\n"], ids=["empty", "whitespace"])
+def test_a_prompt_file_with_no_instruction_in_it_is_refused(captured, tmp_path, submit, body):
+    # An agent handed a blank instruction burns a real run to produce nothing.
     pf = tmp_path / "empty.md"
-    pf.write_text("")
+    pf.write_text(body)
 
     with pytest.raises(ValueError, match="is empty"):
-        server.submit_agent(prompt_file=str(pf))
+        submit(prompt_file=str(pf))
 
     assert captured == {}
 
 
-def test_relative_prompt_file_is_refused(captured):
-    # The run's cwd is the caller's `cwd` argument, not this server's, so a
-    # relative path would resolve against a directory the caller never chose.
+@SUBMITTERS
+def test_relative_prompt_file_is_refused(captured, submit):
+    # A relative path resolves against this server's working directory, which the
+    # caller does not know and did not choose.
     with pytest.raises(ValueError, match="absolute path"):
-        server.submit_agent(prompt_file="prompt.md", cwd="/tmp")
+        submit(prompt_file="prompt.md", cwd="/tmp")
 
     assert captured == {}
 
 
-def test_stdin_prompt_file_is_refused(captured):
+@SUBMITTERS
+def test_stdin_prompt_file_is_refused(captured, submit):
     # The CLI accepts "-" for stdin, but a background run is spawned with stdin at
     # DEVNULL, so "-" would yield an empty prompt and a failed run.
     with pytest.raises(ValueError, match="no stdin"):
-        server.submit_agent(prompt_file="-")
+        submit(prompt_file="-")
 
     assert captured == {}
 
 
-def test_a_directory_is_refused_rather_than_passed_on(captured, tmp_path):
-    with pytest.raises(ValueError, match="not a file"):
-        server.submit_agent(prompt_file=str(tmp_path))
-
-    assert captured == {}
-
-
-def test_plain_prompt_still_goes_through_untouched(captured):
-    server.submit_agent(prompt="hello")
+@SUBMITTERS
+def test_plain_prompt_still_goes_through_untouched(captured, submit):
+    submit(prompt="hello")
 
     assert captured["prompt"] == "hello"
     assert "--prompt-file" not in captured["flags"]
+
+
+@SUBMITTERS
+def test_neither_prompt_nor_prompt_file_leaves_the_prompt_unset(captured, submit):
+    # Both are optional: a resumed or playbook-driven run supplies its own text.
+    submit(agent="reviewer")
+
+    assert captured["prompt"] is None
+
+
+def test_the_text_is_snapshotted_at_submit_time(captured, tmp_path):
+    # An editable prompt file must not be able to change what an already-submitted
+    # run executes. Reading at submit time is what guarantees that; forwarding the
+    # path would leave the text live until the CLI opened it.
+    pf = tmp_path / "prompt.md"
+    pf.write_text("original")
+
+    server.submit_agent(prompt_file=str(pf))
+    pf.write_text("edited after submitting")
+
+    assert captured["prompt"] == "original"
