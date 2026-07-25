@@ -6,12 +6,12 @@
     "properties": {
       "limit": {
         "default": 50,
-        "description": "Max sessions to list (default 50).",
+        "description": "Maximum sessions to print, newest first (default 50).",
         "type": "integer",
         "x-flag": "--limit"
       },
       "status": {
-        "description": "Filter by session status (running|completed|failed|aborted).",
+        "description": "Show only sessions in this status: running, completed, failed or aborted. Omit to list every status.",
         "type": "string",
         "x-flag": "--status"
       }

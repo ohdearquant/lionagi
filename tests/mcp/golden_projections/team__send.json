@@ -9,7 +9,7 @@
         "x-flag": "--artifacts"
       },
       "content": {
-        "description": "Message content.",
+        "description": "Message body, as the recipients will read it.",
         "type": "string",
         "x-positional": true
       },
@@ -30,12 +30,12 @@
         "x-flag": "--kind"
       },
       "sender": {
-        "description": "Sender name.",
+        "description": "Name to send as, so recipients know who is asking (defaults to '_cli'). A name that is not a member still sends, and is reported as a warning.",
         "type": "string",
         "x-flag": "--from"
       },
       "team": {
-        "description": "Team ID or name.",
+        "description": "Team to send into \u2014 its id, its name, or an unambiguous id prefix.",
         "type": "string",
         "x-aliases": [
           "-t"
@@ -43,7 +43,7 @@
         "x-flag": "--team"
       },
       "to": {
-        "description": "Recipients: 'all' or comma-separated names.",
+        "description": "Recipients: 'all' to broadcast to the whole team, or comma-separated member names.",
         "type": "string",
         "x-flag": "--to"
       }

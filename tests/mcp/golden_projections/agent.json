@@ -33,7 +33,7 @@
       },
       "continue_last": {
         "default": false,
-        "description": "Continue the most recently used branch.",
+        "description": "Continue the most recently used branch, keeping its history, without having to look up its id.",
         "type": "boolean",
         "x-aliases": [
           "-c"
@@ -41,7 +41,7 @@
         "x-flag": "--continue-last"
       },
       "cwd": {
-        "description": "Working directory for CLI endpoints.",
+        "description": "Directory the agent's process runs in \u2014 the repo or worktree it acts on. Defaults to the current directory.",
         "type": "string",
         "x-flag": "--cwd"
       },
@@ -76,7 +76,7 @@
       },
       "list_profiles": {
         "default": false,
-        "description": "Print the resolved agent-profile catalog as JSON and exit.",
+        "description": "Print every agent profile -a would resolve, as JSON, and exit without running anything. Use it to find out what names are available here.",
         "type": "boolean",
         "x-flag": "--list-profiles"
       },
@@ -99,12 +99,12 @@
         "x-flag": "--project"
       },
       "prompt_file": {
-        "description": "Read the prompt from a file; '-' reads stdin (heredoc-friendly).",
+        "description": "Read the instruction from a file; '-' reads stdin, which is heredoc-friendly. The file is read once at spawn, so editing it afterwards cannot change the run.",
         "type": "string",
         "x-flag": "--prompt-file"
       },
       "prompt_flag": {
-        "description": "Prompt text (alternative to the positional PROMPT).",
+        "description": "The instruction, as a flag instead of the positional PROMPT. Give it one way or the other, never both.",
         "type": "string",
         "x-flag": "--prompt"
       },
@@ -117,7 +117,7 @@
         "x-positional": true
       },
       "resume": {
-        "description": "Resume a previous branch by ID.",
+        "description": "Continue a previous run by its branch id, keeping that conversation's history. Cannot be combined with --context-from, which is for starting fresh.",
         "type": "string",
         "x-aliases": [
           "-r"
@@ -131,7 +131,7 @@
         "x-flag": "--resume-on-timeout"
       },
       "theme": {
-        "description": "Terminal theme.",
+        "description": "Pick the colour scheme printed output is tuned for: 'light' or 'dark' terminal.",
         "enum": [
           "light",
           "dark"
@@ -146,7 +146,7 @@
       },
       "verbose": {
         "default": false,
-        "description": "Stream real-time output.",
+        "description": "Stream the agent's output as it is produced instead of printing only the final result, and silence the progress lines that would interleave with it.",
         "type": "boolean",
         "x-aliases": [
           "-v"
@@ -155,7 +155,7 @@
       },
       "yolo": {
         "default": false,
-        "description": "Auto-approve tool calls.",
+        "description": "Auto-approve the agent's tool calls, so an unattended run is never left waiting.",
         "type": "boolean",
         "x-flag": "--yolo"
       }

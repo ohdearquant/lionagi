@@ -9,17 +9,17 @@
         "x-flag": "--metadata"
       },
       "plugin": {
-        "description": "Marketplace plugin packaging the skill (optional).",
+        "description": "Marketplace plugin packaging that skill, when the skill came from one.",
         "type": "string",
         "x-flag": "--plugin"
       },
       "prompt": {
-        "description": "The user's input that triggered the skill (free text).",
+        "description": "The request that triggered this work, stored as free text for later reading.",
         "type": "string",
         "x-flag": "--prompt"
       },
       "skill": {
-        "description": "Skill name: 'show', 'codex-pr-review', 'reprompt', etc.",
+        "description": "Name of the orchestration being recorded, e.g. 'show', 'codex-pr-review' or 'reprompt'. Every session spawned under this id groups by it.",
         "type": "string",
         "x-flag": "--skill"
       }

@@ -11,7 +11,7 @@
         "x-flag": "--no-chain"
       },
       "entity_type": {
-        "description": "Filter table to a single entity type.",
+        "description": "Narrow the table to one kind of entity: session, invocation, show or play.",
         "enum": [
           "session",
           "invocation",
@@ -26,18 +26,18 @@
       },
       "follow": {
         "default": false,
-        "description": "With --run: keep watching for new schedule_runs after the initial set drains.",
+        "description": "With --run: keep discovering schedule_runs created after the initial set drains, instead of exiting once it is empty. Never ends on its own \u2014 pair with --max-wait.",
         "type": "boolean",
         "x-flag": "--follow"
       },
       "id": {
-        "description": "Entity ID (or prefix) to show detail view for. Omit for table view.",
+        "description": "Run, session, play or show to open in the detail view \u2014 full id, or an unambiguous prefix. Omit it for the table of everything in flight.",
         "type": "string",
         "x-positional": true
       },
       "interval": {
         "default": 3.0,
-        "description": "Poll interval in seconds for --run mode (default 3). Independent of --refresh.",
+        "description": "Seconds between state.db polls in --run mode (default 3). Independent of --refresh, which paces the table redraw.",
         "type": "number",
         "x-flag": "--interval"
       },
@@ -47,7 +47,7 @@
         "x-flag": "--max-wait"
       },
       "project": {
-        "description": "Filter sessions and plays by project name.",
+        "description": "Filter sessions and plays to one project name, matched exactly \u2014 the same name the table's project column shows.",
         "type": "string",
         "x-aliases": [
           "-p"
@@ -56,7 +56,7 @@
       },
       "refresh": {
         "default": 2,
-        "description": "Refresh interval for --watch mode (default 2).",
+        "description": "Seconds between redraws under --watch (default 2). Ignored without it.",
         "type": "integer",
         "x-flag": "--refresh"
       },
@@ -72,7 +72,7 @@
       },
       "watch": {
         "default": false,
-        "description": "Live-refresh the view every REFRESH seconds (default 2).",
+        "description": "Redraw the view every --refresh seconds until interrupted, instead of printing one snapshot and exiting.",
         "type": "boolean",
         "x-aliases": [
           "-w"

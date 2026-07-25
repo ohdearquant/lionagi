@@ -340,7 +340,15 @@ def _machine_doctor(argv: list[str]) -> dict[str, Any]:
 
 def _machine_runs(argv: list[str]) -> dict[str, Any]:
     parser = argparse.ArgumentParser(prog="li runs", add_help=False)
-    parser.add_argument("--limit", type=int, default=_DEFAULT_RUNS_LIMIT)
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=_DEFAULT_RUNS_LIMIT,
+        help=(
+            "How many of the most recent runs to return, newest first. The result says "
+            "whether more exist than were returned."
+        ),
+    )
     known, extras = parser.parse_known_args(argv)
     if extras:
         raise MachineError("invalid_input", f"unrecognized arguments: {' '.join(extras)}")

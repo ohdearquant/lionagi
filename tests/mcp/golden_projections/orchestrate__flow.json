@@ -37,7 +37,7 @@
         "x-flag": "--bypass"
       },
       "cwd": {
-        "description": "Working directory for CLI endpoints.",
+        "description": "Directory the agent's process runs in \u2014 the repo or worktree it acts on. Defaults to the current directory.",
         "type": "string",
         "x-flag": "--cwd"
       },
@@ -73,7 +73,7 @@
       },
       "max_concurrent": {
         "default": 0,
-        "description": "Max concurrent agents within a phase (default: all).",
+        "description": "Cap on agents running at the same time within one phase. 0, the default, runs the whole phase at once \u2014 lower it to stay under a provider's rate limit.",
         "type": "integer",
         "x-flag": "--max-concurrent"
       },
@@ -93,7 +93,7 @@
       },
       "output": {
         "default": "text",
-        "description": "Output format (default: text).",
+        "description": "Result format: 'text' (default) for reading, 'json' for a machine-readable run.",
         "enum": [
           "text",
           "json"
@@ -144,7 +144,7 @@
         "x-flag": "--resume-on-timeout"
       },
       "save": {
-        "description": "Save outputs to directory.",
+        "description": "Directory to write each agent's output and the run's artifacts into. Required by --background, which has nowhere else to report.",
         "type": "string",
         "x-flag": "--save"
       },
@@ -179,7 +179,7 @@
         "x-flag": "--team-mode"
       },
       "theme": {
-        "description": "Terminal theme.",
+        "description": "Pick the colour scheme printed output is tuned for: 'light' or 'dark' terminal.",
         "enum": [
           "light",
           "dark"
@@ -194,7 +194,7 @@
       },
       "verbose": {
         "default": false,
-        "description": "Stream real-time output.",
+        "description": "Stream the agent's output as it is produced instead of printing only the final result, and silence the progress lines that would interleave with it.",
         "type": "boolean",
         "x-aliases": [
           "-v"
@@ -211,7 +211,7 @@
           }
         ],
         "default": false,
-        "description": "Enable final synthesis. Bare flag uses orchestrator model.",
+        "description": "Run a final pass merging the DAG's results into one answer. Bare flag uses the orchestrator model; with an argument, that model instead.",
         "x-bare-value": true,
         "x-flag": "--with-synthesis"
       },
@@ -222,7 +222,7 @@
       },
       "yolo": {
         "default": false,
-        "description": "Auto-approve tool calls.",
+        "description": "Auto-approve the agent's tool calls, so an unattended run is never left waiting.",
         "type": "boolean",
         "x-flag": "--yolo"
       }

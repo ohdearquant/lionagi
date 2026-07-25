@@ -5,12 +5,12 @@
     "properties": {
       "modes": {
         "default": false,
-        "description": "list modes instead of roles when no name is given",
+        "description": "List the behavior overlays (modes) instead of the personas (roles). Only affects the bare listing; ignored when a name is given.",
         "type": "boolean",
         "x-flag": "--modes"
       },
       "name": {
-        "description": "role or mode name; omit to list all",
+        "description": "Role or mode to print in full, including its prompt body. Looked up in both catalogs, so you need not know which it is. Omit it to list names only.",
         "type": "string",
         "x-positional": true
       }

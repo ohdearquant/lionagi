@@ -19,7 +19,7 @@
         "x-flag": "--bypass"
       },
       "cwd": {
-        "description": "Working directory for CLI endpoints.",
+        "description": "Directory the agent's process runs in \u2014 the repo or worktree it acts on. Defaults to the current directory.",
         "type": "string",
         "x-flag": "--cwd"
       },
@@ -41,7 +41,7 @@
       },
       "max_concurrent": {
         "default": 0,
-        "description": "Max concurrent workers (default: all).",
+        "description": "Cap on workers running at the same time. 0, the default, runs them all at once \u2014 lower it to stay under a provider's rate limit.",
         "type": "integer",
         "x-flag": "--max-concurrent"
       },
@@ -52,7 +52,7 @@
       },
       "num_workers": {
         "default": 3,
-        "description": "Maximum assignments generated (default: 3).",
+        "description": "Maximum assignments the orchestrator generates (default 3). It may generate fewer if the task does not divide that far, and --workers specs beyond this cap go unused.",
         "type": "integer",
         "x-aliases": [
           "-n"
@@ -61,7 +61,7 @@
       },
       "output": {
         "default": "text",
-        "description": "Output format (default: text).",
+        "description": "Result format: 'text' (default) for reading, 'json' for a machine-readable run.",
         "enum": [
           "text",
           "json"
@@ -94,12 +94,12 @@
         "x-flag": "--resume-on-timeout"
       },
       "save": {
-        "description": "Save outputs to directory.",
+        "description": "Directory to write each worker's output and the run's artifacts into. Without it they land in the run's own artifacts directory.",
         "type": "string",
         "x-flag": "--save"
       },
       "synthesis_prompt": {
-        "description": "Custom synthesis instruction.",
+        "description": "What the merged answer should be \u2014 a ranked list, a decision, a single patch. Implies synthesis.",
         "type": "string",
         "x-flag": "--synthesis-prompt"
       },
@@ -117,7 +117,7 @@
         "x-flag": "--team-mode"
       },
       "theme": {
-        "description": "Terminal theme.",
+        "description": "Pick the colour scheme printed output is tuned for: 'light' or 'dark' terminal.",
         "enum": [
           "light",
           "dark"
@@ -132,7 +132,7 @@
       },
       "verbose": {
         "default": false,
-        "description": "Stream real-time output.",
+        "description": "Stream the agent's output as it is produced instead of printing only the final result, and silence the progress lines that would interleave with it.",
         "type": "boolean",
         "x-aliases": [
           "-v"
@@ -149,18 +149,18 @@
           }
         ],
         "default": false,
-        "description": "Enable synthesis. Bare flag uses orchestrator model; with arg uses that model.",
+        "description": "Run a final pass merging the workers' results into one answer. Bare flag uses the orchestrator model; with an argument, that model instead.",
         "x-bare-value": true,
         "x-flag": "--with-synthesis"
       },
       "workers": {
-        "description": "Worker model pool, assigned round-robin (each spec can include effort).",
+        "description": "Comma-separated worker model specs, assigned round-robin (each may carry an effort suffix). This is how one fanout mixes cheap and expensive models across workers.",
         "type": "string",
         "x-flag": "--workers"
       },
       "yolo": {
         "default": false,
-        "description": "Auto-approve tool calls.",
+        "description": "Auto-approve the agent's tool calls, so an unattended run is never left waiting.",
         "type": "boolean",
         "x-flag": "--yolo"
       }
