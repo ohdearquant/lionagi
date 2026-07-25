@@ -337,6 +337,33 @@ class TestRetryAndRepair:
         result = await lndl_middle(branch, "answer", chat_param)
         assert result.answer == "fixed"
 
+    @pytest.mark.asyncio
+    async def test_repair_round_fires_user_prompt_submit_once(self):
+        """A one-repair-round LNDL run is still one user turn: only round 1
+        may fire USER_PROMPT_SUBMIT. A later round reusing the caller's
+        unset turn_origin would mint (and fire) a fresh token every round."""
+        branch = TestBranch.from_text(
+            [
+                "```lndl\nOUT{answer: [missing]}\n```",
+                "```lndl\n<lvar a>fixed</lvar>\nOUT{answer: [a]}\n```",
+            ]
+        )
+        bus = HookBus()
+        submits: list[dict] = []
+
+        async def on_submit(**kw):
+            submits.append(kw)
+
+        bus.on(HookPoint.USER_PROMPT_SUBMIT, on_submit)
+        branch._hooks = bus
+
+        chat_param = ChatParam(response_format=AnswerModel)
+        result = await lndl_middle(branch, "answer", chat_param)
+
+        assert result.answer == "fixed"
+        assert len(TestBranch.calls(branch)) == 2
+        assert len(submits) == 1
+
 
 class TestRoundBudgetExhaustion:
     """The Middle raises LNDLError rather than leaking a raw last_error str

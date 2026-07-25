@@ -267,3 +267,20 @@ async def test_stream_post_hook_failure_silenced():
     # Should NOT raise — stream data already sent
     chunks = [c async for c in h._stream()]
     assert chunks == ["chunk1", "chunk2"]
+
+
+@pytest.mark.asyncio
+async def test_stream_post_hook_aborted_status_logs_warning(caplog):
+    """A normal (non-raising) post-hook failure — the shape HookRegistry.
+    post_invocation() actually produces, recording the error on the
+    HookEvent with status ABORTED instead of raising out of invoke() — must
+    still log the promised warning, not be silently dropped."""
+    h = SimpleHooked()
+    h._post_invoke_hook_event = _fake_hook(EventStatus.ABORTED)
+    h._post_invoke_hook_event.execution.error = "post hook probe failure"
+
+    with caplog.at_level("WARNING", logger="lionagi.service.hooks.hooked_event"):
+        chunks = [c async for c in h._stream()]
+
+    assert chunks == ["chunk1", "chunk2"]
+    assert any("Post-stream hook failed" in r.message for r in caplog.records)

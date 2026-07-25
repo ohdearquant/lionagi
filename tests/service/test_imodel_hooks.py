@@ -107,6 +107,34 @@ class TestiModelHooks:
         assert result.status == EventStatus.COMPLETED
 
     @pytest.mark.asyncio
+    async def test_pre_event_create_hook_replacement_is_used(self):
+        """A PreEventCreate handler returning a prepared APICalling must be
+        the event create_event() returns — not a fresh one built from the
+        original kwargs, which would silently discard the handler's payload
+        edits."""
+
+        imodel = iModel(
+            provider="openai",
+            model="gpt-4.1-mini",
+            api_key="test-key",
+        )
+
+        replacement = imodel.create_api_calling(
+            messages=[{"role": "user", "content": "replacement payload"}]
+        )
+
+        async def pre_create_hook(event_type, **kwargs):
+            return replacement
+
+        imodel.hook_registry = HookRegistry(hooks={HookEventTypes.PreEventCreate: pre_create_hook})
+
+        api_call = await imodel.create_event(
+            messages=[{"role": "user", "content": "original payload"}]
+        )
+
+        assert api_call is replacement
+
+    @pytest.mark.asyncio
     async def test_hook_error_handling(self):
 
         async def failing_hook(event, **kwargs):
