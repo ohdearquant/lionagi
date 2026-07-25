@@ -1,0 +1,23 @@
+{
+  "path": "state ls",
+  "schema": {
+    "additionalProperties": false,
+    "description": "Print a table of sessions stored in state.db.",
+    "properties": {
+      "limit": {
+        "default": 50,
+        "description": "Max sessions to list (default 50).",
+        "type": "integer",
+        "x-flag": "--limit"
+      },
+      "status": {
+        "description": "Filter by session status (running|completed|failed|aborted).",
+        "type": "string",
+        "x-flag": "--status"
+      }
+    },
+    "title": "state ls",
+    "type": "object"
+  },
+  "stage": "static"
+}

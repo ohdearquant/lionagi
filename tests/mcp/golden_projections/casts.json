@@ -1,0 +1,25 @@
+{
+  "path": "casts",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "modes": {
+        "default": false,
+        "description": "list modes instead of roles when no name is given",
+        "type": "boolean",
+        "x-flag": "--modes"
+      },
+      "name": {
+        "description": "role or mode name; omit to list all",
+        "type": "string",
+        "x-positional": true
+      }
+    },
+    "title": "casts",
+    "type": "object",
+    "x-positional-order": [
+      "name"
+    ]
+  },
+  "stage": "static"
+}

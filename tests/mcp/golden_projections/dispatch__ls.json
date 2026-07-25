@@ -1,0 +1,22 @@
+{
+  "path": "dispatch ls",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "limit": {
+        "default": 50,
+        "description": "Max rows (default 50).",
+        "type": "integer",
+        "x-flag": "--limit"
+      },
+      "status": {
+        "description": "Filter by status.",
+        "type": "string",
+        "x-flag": "--status"
+      }
+    },
+    "title": "dispatch ls",
+    "type": "object"
+  },
+  "stage": "static"
+}

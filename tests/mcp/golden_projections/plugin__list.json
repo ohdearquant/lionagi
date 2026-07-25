@@ -1,0 +1,11 @@
+{
+  "path": "plugin list",
+  "schema": {
+    "additionalProperties": false,
+    "description": "State is one of: active, disabled, untrusted, changed, incompatible, collision, invalid. Also garbage-collects trust records whose bundle directory no longer exists, printing which ones were pruned and why.",
+    "properties": {},
+    "title": "plugin list",
+    "type": "object"
+  },
+  "stage": "static"
+}

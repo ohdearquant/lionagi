@@ -1,0 +1,178 @@
+{
+  "path": "orchestrate fanout",
+  "schema": {
+    "additionalProperties": false,
+    "description": "Orchestrator decomposes task into N agent requests, fans out to workers, optionally synthesizes. Effort can be embedded in model spec: claude/opus-4-7-high. Flags may appear anywhere relative to the positionals.",
+    "properties": {
+      "agent": {
+        "description": "Load orchestrator profile by name. Resolves .lionagi/agents/<NAME>/<NAME>.md first, then .lionagi/agents/<NAME>.md. Profile provides system prompt, default model, effort, yolo. CLI flags and positional model override profile settings.",
+        "type": "string",
+        "x-aliases": [
+          "-a"
+        ],
+        "x-flag": "--agent"
+      },
+      "bypass": {
+        "default": false,
+        "description": "Bypass all codex approvals and sandbox (for cloud/codespace environments).",
+        "type": "boolean",
+        "x-flag": "--bypass"
+      },
+      "cwd": {
+        "description": "Working directory for CLI endpoints.",
+        "type": "string",
+        "x-flag": "--cwd"
+      },
+      "effort": {
+        "description": "Override effort (overrides spec suffix). claude: low|medium|high|xhigh|max. codex: none|minimal|low|medium|high|xhigh|max|ultra (max/ultra clamp per model support). gemini-code/gemini-cli: folded into --model as Low|Medium|High (Gemini 3.1 Pro has no Medium).",
+        "type": "string",
+        "x-flag": "--effort"
+      },
+      "fast": {
+        "default": false,
+        "description": "Route codex requests through OpenAI's priority service tier (lower latency; requires account eligibility). Does not change model or reasoning effort.",
+        "type": "boolean",
+        "x-flag": "--fast"
+      },
+      "invocation": {
+        "description": "Parent invocation id (from `li invoke start`). Groups this session under a skill orchestration record. Optional.",
+        "type": "string",
+        "x-flag": "--invocation"
+      },
+      "max_concurrent": {
+        "default": 0,
+        "description": "Max concurrent workers (default: all).",
+        "type": "integer",
+        "x-flag": "--max-concurrent"
+      },
+      "notify": {
+        "description": "Shell command template run once this run reaches its terminal status. Overrides .lionagi/settings.yaml notify.on_terminal. Substitutes {payload} (full JSON), {status}, {invocation_id}.",
+        "type": "string",
+        "x-flag": "--notify"
+      },
+      "num_workers": {
+        "default": 3,
+        "description": "Maximum assignments generated (default: 3).",
+        "type": "integer",
+        "x-aliases": [
+          "-n"
+        ],
+        "x-flag": "--num-workers"
+      },
+      "output": {
+        "default": "text",
+        "description": "Output format (default: text).",
+        "enum": [
+          "text",
+          "json"
+        ],
+        "type": "string",
+        "x-flag": "--output"
+      },
+      "pack": {
+        "description": "Path to a YAML routing pack. Provides per-role model/effort when --workers is absent. --workers overrides pack routing.",
+        "type": "string",
+        "x-flag": "--pack"
+      },
+      "project": {
+        "description": "Explicit project name for this session. Overrides auto-detection from .lionagi/config.toml or git remote.",
+        "type": "string",
+        "x-flag": "--project"
+      },
+      "query": {
+        "description": "Orchestrator model spec (provider/model-effort) followed by the task prompt. Model is also used as the default worker model unless --workers is set; omit it when -a/--agent provides one. A single positional is treated as the prompt.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array",
+        "x-positional": true
+      },
+      "resume_on_timeout": {
+        "default": false,
+        "description": "If the run terminates on --timeout, automatically fire one resume of the same session with 'continue and conclude the task' and report the combined result. Bounded to a single auto-resume; a timeout on the resumed leg terminates normally. Same effect as an agent profile's 'resume_on_timeout: once'.",
+        "type": "boolean",
+        "x-flag": "--resume-on-timeout"
+      },
+      "save": {
+        "description": "Save outputs to directory.",
+        "type": "string",
+        "x-flag": "--save"
+      },
+      "synthesis_prompt": {
+        "description": "Custom synthesis instruction.",
+        "type": "string",
+        "x-flag": "--synthesis-prompt"
+      },
+      "team_mode": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "const": true
+          }
+        ],
+        "description": "Create a persistent team for this fanout. Workers get team context and results are posted as team messages. Bare flag uses 'fanout' as team name; with arg uses that name.",
+        "x-bare-value": "fanout",
+        "x-flag": "--team-mode"
+      },
+      "theme": {
+        "description": "Terminal theme.",
+        "enum": [
+          "light",
+          "dark"
+        ],
+        "type": "string",
+        "x-flag": "--theme"
+      },
+      "timeout": {
+        "description": "Hard wall-clock timeout in seconds. When set, a [DEADLINE] preamble is injected into the agent's prompt so the agent knows its time budget and can pace reasoning accordingly.",
+        "type": "integer",
+        "x-flag": "--timeout"
+      },
+      "verbose": {
+        "default": false,
+        "description": "Stream real-time output.",
+        "type": "boolean",
+        "x-aliases": [
+          "-v"
+        ],
+        "x-flag": "--verbose"
+      },
+      "with_synthesis": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "const": true
+          }
+        ],
+        "default": false,
+        "description": "Enable synthesis. Bare flag uses orchestrator model; with arg uses that model.",
+        "x-bare-value": true,
+        "x-flag": "--with-synthesis"
+      },
+      "workers": {
+        "description": "Worker model pool, assigned round-robin (each spec can include effort).",
+        "type": "string",
+        "x-flag": "--workers"
+      },
+      "yolo": {
+        "default": false,
+        "description": "Auto-approve tool calls.",
+        "type": "boolean",
+        "x-flag": "--yolo"
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "title": "orchestrate fanout",
+    "type": "object",
+    "x-positional-order": [
+      "query"
+    ]
+  },
+  "stage": "static"
+}

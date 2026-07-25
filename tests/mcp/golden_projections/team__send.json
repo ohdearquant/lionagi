@@ -1,0 +1,63 @@
+{
+  "path": "team send",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "artifacts": {
+        "description": "Comma-separated artifact paths to attach (used with --kind done).",
+        "type": "string",
+        "x-flag": "--artifacts"
+      },
+      "content": {
+        "description": "Message content.",
+        "type": "string",
+        "x-positional": true
+      },
+      "from_op": {
+        "description": "The op id this message belongs to (e.g. 'o3'). Ties a coord signal to a specific invocation when the sender agent runs multiple ops on the same branch.",
+        "type": "string",
+        "x-flag": "--from-op"
+      },
+      "kind": {
+        "description": "Message kind (default: 'message'). Use 'done' when you've finished your part and may be revived later, 'finished' when you're permanently done \u2014 quiescence detection reads this.",
+        "enum": [
+          "message",
+          "done",
+          "finished",
+          "wakeup"
+        ],
+        "type": "string",
+        "x-flag": "--kind"
+      },
+      "sender": {
+        "description": "Sender name.",
+        "type": "string",
+        "x-flag": "--from"
+      },
+      "team": {
+        "description": "Team ID or name.",
+        "type": "string",
+        "x-aliases": [
+          "-t"
+        ],
+        "x-flag": "--team"
+      },
+      "to": {
+        "description": "Recipients: 'all' or comma-separated names.",
+        "type": "string",
+        "x-flag": "--to"
+      }
+    },
+    "required": [
+      "content",
+      "team",
+      "to"
+    ],
+    "title": "team send",
+    "type": "object",
+    "x-positional-order": [
+      "content"
+    ]
+  },
+  "stage": "static"
+}

@@ -1,0 +1,487 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+"""Project the CLI's own argparse parsers into JSON Schema at runtime.
+
+The MCP dispatch surface advertises one tool, so a caller discovers a verb's
+parameters by asking for them rather than by reading a schema shipped in the
+tool list. This module answers that ask by building the *same* parser the
+CLI builds for a real invocation and translating it, so the schema cannot
+drift from the command it describes.
+
+Translation is deliberately bounded: scalar ``str``/``int``/``float``,
+``store_true``/``store_false``, ``choices`` as enums, ``nargs`` and repeated
+values as arrays, requiredness, defaults, aliases, positionals in parser
+order, and mutually exclusive groups. Anything outside that — an unknown
+``Action`` subclass, a ``type=`` callable with no JSON counterpart, a parser
+that still has an unresolved subcommand — raises
+:class:`SchemaProjectionError` naming the offending action. A verb that
+cannot be described exactly is better absent than described wrongly; a
+caller trusts a schema, so coercing an unmodelable parameter to ``string``
+would be worse than having no schema at all.
+
+``li play`` has no parser of its own: it rewrites into ``li o flow -p NAME``,
+and the playbook's declared arguments reach the parser only once NAME is
+known. So ``orchestrate flow`` projects in two stages — without a playbook
+it advertises the playbook parameter and the common flow flags; with one it
+performs the same injection the CLI performs and returns a fingerprint of
+the playbook it resolved.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+from dataclasses import dataclass, field
+from importlib import import_module
+from pathlib import Path
+from types import ModuleType
+from typing import Any
+
+__all__ = (
+    "SchemaProjectionError",
+    "PlaybookResolutionError",
+    "VerbProjection",
+    "available_paths",
+    "build_parser_for",
+    "playbook_fingerprint",
+    "project",
+    "project_parser",
+)
+
+
+class SchemaProjectionError(RuntimeError):
+    """A parser holds something the bounded translation cannot describe."""
+
+    def __init__(self, path: str, reason: str, *, action: str | None = None) -> None:
+        self.path = path
+        self.reason = reason
+        self.action = action
+        where = f"{path!r} action {action!r}" if action else f"{path!r}"
+        super().__init__(f"cannot project {where}: {reason}")
+
+
+class PlaybookResolutionError(SchemaProjectionError):
+    """A named playbook did not resolve to a readable file."""
+
+
+# ── the CLI seam ─────────────────────────────────────────────────────────────
+
+
+def _cli_main() -> ModuleType:
+    """The ``lionagi.cli.main`` module object.
+
+    ``import lionagi.cli.main as m`` and ``from lionagi.cli import main`` both
+    hand back the ``main()`` *function*: the package ``__init__`` resolves the
+    name lazily and pins the callable into its globals, which shadows the
+    submodule the import machinery would otherwise bind. Going through
+    ``import_module`` reads ``sys.modules`` and returns the module, which is
+    where ``_COMMAND_REGISTRY`` and ``_build_parser`` live.
+    """
+    return import_module("lionagi.cli.main")
+
+
+def _subparser_actions(parser: argparse.ArgumentParser) -> list[argparse._SubParsersAction]:
+    return [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)]
+
+
+def _canonical_choices(
+    action: argparse._SubParsersAction,
+) -> list[tuple[str, tuple[str, ...], argparse.ArgumentParser]]:
+    """(canonical name, aliases, parser) per registered subcommand.
+
+    ``choices`` maps every alias to the same parser object and preserves
+    registration order, so the first name seen for a given parser is the one
+    it was declared under.
+    """
+    ordered: dict[int, list[str]] = {}
+    for name, sub in action.choices.items():
+        ordered.setdefault(id(sub), []).append(name)
+    out = []
+    for names in ordered.values():
+        sub = action.choices[names[0]]
+        out.append((names[0], tuple(names[1:]), sub))
+    return out
+
+
+_Tree = dict[tuple[str, ...], tuple[argparse.ArgumentParser, bool]]
+
+
+def _walk(parser: argparse.ArgumentParser, prefix: tuple[str, ...], canonical: bool) -> _Tree:
+    found: _Tree = {prefix: (parser, canonical)}
+    for sub_action in _subparser_actions(parser):
+        for name, aliases, sub in _canonical_choices(sub_action):
+            found.update(_walk(sub, (*prefix, name), canonical))
+            for alias in aliases:
+                found.update(_walk(sub, (*prefix, alias), False))
+    return found
+
+
+def _command_tree(spec: Any) -> _Tree:
+    """Every parser path under one top-level command, freshly built.
+
+    Each entry says whether the path spells every level with its canonical
+    name; alias spellings resolve to the same parser but are not listed as
+    separate commands.
+
+    The per-command ``parser_factory`` return values are not uniform —
+    ``orchestrate`` hands back a dict of its sub-parsers where the others hand
+    back a parser — so this walks the root parser's registered subparsers
+    action instead of whatever the factory returned.
+    """
+    main = _cli_main()
+    root, _selected = main._build_parser(spec)
+    tree: _Tree = {}
+    for sub_action in _subparser_actions(root):
+        for name, aliases, sub in _canonical_choices(sub_action):
+            if name != spec.name:
+                continue  # the unselected commands are metadata-only stubs
+            tree.update(_walk(sub, (name,), True))
+            for alias in aliases:
+                tree.update(_walk(sub, (alias,), False))
+    return tree
+
+
+def _split(path: str) -> tuple[str, ...]:
+    parts = tuple(p for p in path.strip().split() if p)
+    if not parts:
+        raise SchemaProjectionError(path, "empty command path")
+    return parts
+
+
+def _spec_for(head: str) -> Any:
+    main = _cli_main()
+    spec = main._COMMAND_BY_NAME.get(head)
+    if spec is None:
+        raise SchemaProjectionError(head, "no such command")
+    return spec
+
+
+def available_paths() -> tuple[str, ...]:
+    """Every command path the projector can reach, canonical names only.
+
+    Building this constructs every command's real parser, which imports every
+    command module. Reachability here is not authorization: what the projector
+    can read is strictly wider than what the dispatch surface allows.
+    """
+    main = _cli_main()
+    paths: list[str] = []
+    for spec in main._COMMAND_REGISTRY:
+        for parts, (_parser, canonical) in _command_tree(spec).items():
+            if canonical:
+                paths.append(" ".join(parts))
+    return tuple(sorted(set(paths)))
+
+
+def build_parser_for(path: str) -> argparse.ArgumentParser:
+    """The real parser the CLI would build for *path*, freshly constructed.
+
+    Fresh on every call because projecting a playbook-bearing path mutates the
+    parser it reads.
+    """
+    parts = _split(path)
+    spec = _spec_for(parts[0])
+    entry = _command_tree(spec).get(parts)
+    if entry is None:
+        raise SchemaProjectionError(path, "no such command path")
+    return entry[0]
+
+
+# ── bounded translation ──────────────────────────────────────────────────────
+
+# Exact classes, not isinstance: a subclass may override __call__ with
+# semantics this translation would silently misdescribe, so a subclass is an
+# unknown action like any other.
+_STORE = argparse._StoreAction
+_STORE_TRUE = argparse._StoreTrueAction
+_STORE_FALSE = argparse._StoreFalseAction
+_APPEND = argparse._AppendAction
+
+# Terminating actions that print and exit. They are not parameters of an
+# invocation, so skipping them is not a gap in the description.
+_META_ACTIONS = (argparse._HelpAction, argparse._VersionAction)
+
+_SCALAR_JSON_TYPE = {None: "string", str: "string", int: "integer", float: "number"}
+
+_UNBOUNDED_NARGS = (argparse.REMAINDER, argparse.PARSER)
+
+
+def _scalar_type(path: str, action: argparse.Action, label: str) -> str:
+    kind = action.type
+    if kind not in _SCALAR_JSON_TYPE:
+        name = getattr(kind, "__name__", repr(kind))
+        raise SchemaProjectionError(
+            path, f"type={name} has no scalar JSON counterpart", action=label
+        )
+    return _SCALAR_JSON_TYPE[kind]
+
+
+def _label(action: argparse.Action) -> str:
+    if action.option_strings:
+        return "/".join(action.option_strings)
+    return action.metavar or action.dest
+
+
+def _flag_of(action: argparse.Action) -> tuple[str | None, tuple[str, ...]]:
+    """Primary flag and its aliases; argparse derives dest from the first long
+    option, so that is the primary when there is one."""
+    if not action.option_strings:
+        return None, ()
+    long_opts = [o for o in action.option_strings if o.startswith("--")]
+    primary = long_opts[0] if long_opts else action.option_strings[0]
+    aliases = tuple(o for o in action.option_strings if o != primary)
+    return primary, aliases
+
+
+def _description(parser: argparse.ArgumentParser, action: argparse.Action) -> str | None:
+    """The help text, with argparse's ``%(default)s``-style fields expanded the
+    way argparse expands them when it prints help."""
+    text = action.help
+    if not text:
+        return None
+    if "%" not in text:
+        return text
+    params = dict(vars(action), prog=parser.prog)
+    for name, value in list(params.items()):
+        if value is argparse.SUPPRESS:
+            del params[name]
+        elif hasattr(value, "__name__"):
+            params[name] = value.__name__
+    try:
+        return text % params
+    except (KeyError, TypeError, ValueError):
+        return text
+
+
+def _choices_enum(path: str, action: argparse.Action, label: str) -> list[Any] | None:
+    if action.choices is None:
+        return None
+    values = list(action.choices)
+    for value in values:
+        if not isinstance(value, str | int | float | bool) and value is not None:
+            raise SchemaProjectionError(
+                path, f"choices contain a non-JSON value {value!r}", action=label
+            )
+    return values
+
+
+def _jsonable_default(value: Any) -> Any:
+    if value is None or isinstance(value, str | int | float | bool | list | dict):
+        return value
+    return str(value)
+
+
+def _project_action(
+    path: str, parser: argparse.ArgumentParser, action: argparse.Action
+) -> dict[str, Any]:
+    label = _label(action)
+    kind = type(action)
+
+    if kind is _STORE_TRUE or kind is _STORE_FALSE:
+        schema: dict[str, Any] = {"type": "boolean"}
+    elif kind is _STORE or kind is _APPEND:
+        nargs = action.nargs
+        if nargs in _UNBOUNDED_NARGS:
+            raise SchemaProjectionError(
+                path, f"nargs={nargs!r} consumes argv verbatim", action=label
+            )
+        if kind is _APPEND and nargs is not None:
+            raise SchemaProjectionError(
+                path, f"append with nargs={nargs!r} nests arrays", action=label
+            )
+        item: dict[str, Any] = {"type": _scalar_type(path, action, label)}
+        enum = _choices_enum(path, action, label)
+        if enum is not None:
+            item["enum"] = enum
+
+        if kind is _APPEND and nargs is None:
+            schema = {"type": "array", "items": item}
+        elif nargs is None:
+            schema = dict(item)
+        elif isinstance(nargs, int):
+            schema = {"type": "array", "items": item, "minItems": nargs, "maxItems": nargs}
+        elif nargs == "*":
+            schema = {"type": "array", "items": item}
+        elif nargs == "+":
+            schema = {"type": "array", "items": item, "minItems": 1}
+        elif nargs == "?":
+            if action.const is None:
+                schema = dict(item)
+            else:
+                # The flag is legal bare, and argparse then stores `const`.
+                # `true` is how a caller asks for the bare form.
+                schema = {"anyOf": [item, {"const": True}], "x-bare-value": action.const}
+        else:
+            raise SchemaProjectionError(path, f"nargs={nargs!r} is not modelled", action=label)
+    else:
+        raise SchemaProjectionError(path, f"unknown action class {kind.__name__}", action=label)
+
+    description = _description(parser, action)
+    if description:
+        schema["description"] = description
+    if action.default is not None and action.default is not argparse.SUPPRESS:
+        schema["default"] = _jsonable_default(action.default)
+
+    flag, aliases = _flag_of(action)
+    if flag is None:
+        schema["x-positional"] = True
+    else:
+        schema["x-flag"] = flag
+        if aliases:
+            schema["x-aliases"] = list(aliases)
+    return schema
+
+
+def _mutually_exclusive(parser: argparse.ArgumentParser) -> list[dict[str, Any]]:
+    groups = []
+    for group in parser._mutually_exclusive_groups:
+        members = [a.dest for a in group._group_actions]
+        if members:
+            groups.append({"parameters": members, "required": bool(group.required)})
+    return groups
+
+
+def project_parser(parser: argparse.ArgumentParser, *, path: str) -> dict[str, Any]:
+    """Translate one fully-resolved parser into a JSON Schema object."""
+    nested = _subparser_actions(parser)
+    if nested:
+        names = sorted({name for a in nested for name in a.choices})
+        raise SchemaProjectionError(
+            path,
+            f"path stops at an unresolved subcommand; name one of {names}",
+            action=nested[0].dest,
+        )
+
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    positionals: list[str] = []
+
+    for action in parser._actions:
+        if isinstance(action, _META_ACTIONS):
+            continue
+        if action.dest == argparse.SUPPRESS:
+            continue
+        properties[action.dest] = _project_action(path, parser, action)
+        if action.required:
+            required.append(action.dest)
+        if not action.option_strings:
+            positionals.append(action.dest)
+
+    schema: dict[str, Any] = {
+        "type": "object",
+        "title": path,
+        "properties": properties,
+        "additionalProperties": False,
+    }
+    if parser.description:
+        schema["description"] = parser.description.strip()
+    if required:
+        schema["required"] = required
+    if positionals:
+        schema["x-positional-order"] = positionals
+    exclusive = _mutually_exclusive(parser)
+    if exclusive:
+        schema["x-mutually-exclusive"] = exclusive
+    return schema
+
+
+# ── playbooks ────────────────────────────────────────────────────────────────
+
+_PLAYBOOK_DEST = "playbook"
+
+
+def _orchestrate() -> ModuleType:
+    return import_module("lionagi.cli.orchestrate")
+
+
+def _has_playbook_parameter(parser: argparse.ArgumentParser) -> bool:
+    return any(a.dest == _PLAYBOOK_DEST and a.option_strings for a in parser._actions)
+
+
+def playbook_fingerprint(name: str) -> tuple[str, str]:
+    """``(fingerprint, resolved path)`` for a playbook name.
+
+    The fingerprint covers the whole playbook file, not only its declared
+    arguments, because the body is what runs. A caller that validated against
+    one fingerprint and executed against another ran something it never
+    checked, and that is what the fingerprint exists to make visible.
+    """
+    path_obj, err = _orchestrate()._resolve_playbook_path(name)
+    if err is not None or path_obj is None:
+        raise PlaybookResolutionError(f"playbook:{name}", err or "playbook did not resolve")
+    resolved = Path(str(path_obj))
+    try:
+        digest = hashlib.sha256(resolved.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise PlaybookResolutionError(f"playbook:{name}", f"unreadable: {exc}") from exc
+    return f"sha256:{digest[:32]}", str(resolved)
+
+
+@dataclass(frozen=True)
+class VerbProjection:
+    """A verb's parameter schema, and how the playbook stage was resolved.
+
+    ``stage`` is ``static`` for a path with no playbook parameter, ``base``
+    for a playbook-bearing path projected without a playbook named, and
+    ``resolved`` once one is.
+    """
+
+    path: str
+    schema: dict[str, Any]
+    stage: str
+    playbook: str | None = None
+    playbook_fingerprint: str | None = None
+    playbook_path: str | None = None
+    playbook_parameters: tuple[str, ...] = field(default_factory=tuple)
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"path": self.path, "stage": self.stage, "schema": self.schema}
+        if self.playbook is not None:
+            out["playbook"] = self.playbook
+            out["playbook_fingerprint"] = self.playbook_fingerprint
+            out["playbook_path"] = self.playbook_path
+            out["playbook_parameters"] = list(self.playbook_parameters)
+        return out
+
+
+def project(path: str, *, playbook: str | None = None) -> VerbProjection:
+    """Project one command path into a JSON Schema object.
+
+    Naming *playbook* on a playbook-bearing path performs the same argument
+    injection the CLI performs before argparse runs, so the returned schema
+    carries that playbook's declared arguments alongside the built-in flags.
+    """
+    parser = build_parser_for(path)
+    canonical = " ".join(_split(path))
+    playbook_bearing = _has_playbook_parameter(parser)
+
+    if playbook is None:
+        schema = project_parser(parser, path=canonical)
+        if playbook_bearing:
+            schema["x-playbook-arguments"] = (
+                "This command accepts arguments declared by the playbook named in "
+                "'playbook'. Ask for this schema again with that playbook named to "
+                "see them."
+            )
+            return VerbProjection(path=canonical, schema=schema, stage="base")
+        return VerbProjection(path=canonical, schema=schema, stage="static")
+
+    if not playbook_bearing:
+        raise SchemaProjectionError(canonical, "command takes no playbook")
+
+    fingerprint, resolved_path = playbook_fingerprint(playbook)
+    injected = _orchestrate().inject_playbook_schema_into_parser(parser, ["--playbook", playbook])
+    schema = project_parser(parser, path=canonical)
+    injected_names = tuple(injected)
+    for name in injected_names:
+        if name in schema["properties"]:
+            schema["properties"][name]["x-from-playbook"] = playbook
+    schema["x-playbook-fingerprint"] = fingerprint
+    return VerbProjection(
+        path=canonical,
+        schema=schema,
+        stage="resolved",
+        playbook=playbook,
+        playbook_fingerprint=fingerprint,
+        playbook_path=resolved_path,
+        playbook_parameters=injected_names,
+    )

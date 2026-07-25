@@ -1,0 +1,90 @@
+{
+  "path": "monitor",
+  "schema": {
+    "additionalProperties": false,
+    "description": "Show all running entities (sessions, invocations, shows, plays) in a compact table, or drill into one entity by ID. Use --watch for live refresh.",
+    "properties": {
+      "chain": {
+        "default": true,
+        "description": "With --run: watch only the literal id(s) given, instead of following scheduler on_success/on_fail chain children by default.",
+        "type": "boolean",
+        "x-flag": "--no-chain"
+      },
+      "entity_type": {
+        "description": "Filter table to a single entity type.",
+        "enum": [
+          "session",
+          "invocation",
+          "show",
+          "play"
+        ],
+        "type": "string",
+        "x-aliases": [
+          "-t"
+        ],
+        "x-flag": "--type"
+      },
+      "follow": {
+        "default": false,
+        "description": "With --run: keep watching for new schedule_runs after the initial set drains.",
+        "type": "boolean",
+        "x-flag": "--follow"
+      },
+      "id": {
+        "description": "Entity ID (or prefix) to show detail view for. Omit for table view.",
+        "type": "string",
+        "x-positional": true
+      },
+      "interval": {
+        "default": 3.0,
+        "description": "Poll interval in seconds for --run mode (default 3). Independent of --refresh.",
+        "type": "number",
+        "x-flag": "--interval"
+      },
+      "max_wait": {
+        "description": "With --run: give up waiting after this many seconds and exit EXIT_RUNNING for whatever is still pending, instead of blocking forever on a stuck session or run. Default: 900s. Pass 0 for unlimited.",
+        "type": "number",
+        "x-flag": "--max-wait"
+      },
+      "project": {
+        "description": "Filter sessions and plays by project name.",
+        "type": "string",
+        "x-aliases": [
+          "-p"
+        ],
+        "x-flag": "--project"
+      },
+      "refresh": {
+        "default": 2,
+        "description": "Refresh interval for --watch mode (default 2).",
+        "type": "integer",
+        "x-flag": "--refresh"
+      },
+      "run_ids": {
+        "description": "Wait for one or more schedule_run IDs to reach a terminal state, then exit (scripting primitive; see `li monitor run --help` for the positional form). Follows scheduler on_success/on_fail chain children by default (see --no-chain). Ignores id/--watch/--since/--type/--project.",
+        "type": "string",
+        "x-flag": "--run"
+      },
+      "since": {
+        "description": "Only show entities updated within this time window. Format: 30m, 1h, 2d (minutes/hours/days). Default: all running.",
+        "type": "string",
+        "x-flag": "--since"
+      },
+      "watch": {
+        "default": false,
+        "description": "Live-refresh the view every REFRESH seconds (default 2).",
+        "type": "boolean",
+        "x-aliases": [
+          "-w"
+        ],
+        "x-flag": "--watch"
+      }
+    },
+    "title": "monitor",
+    "type": "object",
+    "x-positional-order": [
+      "id"
+    ]
+  },
+  "stage": "static"
+}
