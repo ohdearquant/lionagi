@@ -253,6 +253,21 @@ the one-line summary is emitted last through the CLI error logger, so a caller k
 tail of stderr still receives the diagnosis. Callers distinguishing the two cases should test for
 78 specifically; every other exit code retains its existing meaning.
 
+A missing module reaches this state from two places, and both are covered:
+
+- **While loading a command.** Command modules are imported lazily once one is selected, behind a
+  broad handler that reports a command-scoped error. A missing dependency is split out of that
+  handler and returns 78 with the same concise report — a traceback for a command that never
+  started is noise, and naming the module is the whole diagnosis at that point.
+- **Anywhere else before a run exists.** The wrapper in `main()` catches what escapes.
+
+The boundary on the second is a run having been allocated. `allocate_run` sets a process-level
+marker, and once it is set a `ModuleNotFoundError` is *not* reported as an environment fault: a run
+id, a run directory and a manifest exist on disk, so telling the caller nothing was executed would
+be the same misattribution pointed the other way. Such an error propagates and is reported the way
+any other failure during a run is. This is why a lazily imported provider extra going missing
+mid-run does not exit 78.
+
 ## `dispatch.py` — dispatch outbox (ADR-0059)
 
 Module docstring: `li dispatch` inspects and acknowledges durable `dispatch_outbox` rows.

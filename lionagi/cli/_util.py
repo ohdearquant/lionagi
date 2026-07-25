@@ -30,6 +30,45 @@ EXIT_CODE_BY_STATUS: dict[str, int] = {
 # above.
 EXIT_CODE_ENVIRONMENT_ERROR = 78
 
+# Whether this invocation got as far as allocating a run.
+#
+# The code above may only be reported while this is false. A missing import can
+# surface at two very different moments: before anything started, where nothing
+# ran and the environment is the whole story, and part-way through a command
+# that already allocated a run, where a run id, a run directory and a manifest
+# exist on disk. Reporting the second as an unusable environment is the same
+# misattribution the exit code exists to prevent, pointed the other way: it
+# tells a caller nothing was executed while durable state is sitting in the runs
+# directory waiting to be read.
+#
+# The flag is set inside `allocate_run` rather than at each of its callers, so a
+# future caller is covered without having to know this exists. It is a
+# process-level fact because the exit status it guards is a process-level fact.
+_run_allocated = False
+
+
+def mark_run_allocated() -> None:
+    """Record that a run directory now exists for this invocation."""
+    global _run_allocated
+    _run_allocated = True
+
+
+def clear_run_allocation() -> None:
+    """Reset the marker at the start of an invocation.
+
+    The question the flag answers is whether *this* invocation allocated a run,
+    so it has to start false every time. A process that calls the entry point
+    more than once - the test suite does, and so would any in-process embedding
+    of the CLI - would otherwise carry the first run's allocation forward and
+    misreport every later broken-environment exit as a failed run.
+    """
+    global _run_allocated
+    _run_allocated = False
+
+
+def run_was_allocated() -> bool:
+    return _run_allocated
+
 
 def validate_cwd_exists(cwd: str | None, *, flag: str = "--cwd") -> str | None:
     """Fail fast when a user-supplied working directory doesn't exist.

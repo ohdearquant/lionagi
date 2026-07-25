@@ -9,6 +9,7 @@ import sys
 import pytest
 import yaml
 
+from lionagi.cli._util import EXIT_CODE_ENVIRONMENT_ERROR
 from lionagi.cli.main import _handle_play_shortcut, main
 from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
 
@@ -433,6 +434,42 @@ def test_broken_command_loader_reports_error_without_traceback(capsys, monkeypat
             "agent",
             "broken",
             lambda: __import__("missing_lionagi_command_module"),
+            "add_agent_subparser",
+            "run_agent",
+        ),
+    )
+    rc = main_module.main(["agent", "--help"])
+    # A module missing from the environment is reported as an unusable
+    # environment, not as a failed run: exit 1 here is what a run that started
+    # and failed returns, and a caller reading the status could not tell the two
+    # apart. The concise report is unchanged — only the status distinguishes.
+    assert rc == EXIT_CODE_ENVIRONMENT_ERROR
+    err = capsys.readouterr().err
+    assert "missing_lionagi_command_module" in err
+    assert "Traceback" not in err
+
+
+def test_a_command_loader_failing_for_another_reason_is_an_ordinary_failure(capsys, monkeypatch):
+    """Only a missing module means the environment is unusable.
+
+    The loader boundary splits on the exception type, so the other side of that
+    split needs its own case: a command module that imports fine but raises
+    while being set up is a defect in this installation's code, not a missing
+    piece of it, and reporting it as an unusable environment would send the
+    caller off to install something that is already there.
+    """
+    import lionagi.cli.main as main_module
+
+    def _explode():
+        raise RuntimeError("bad module")
+
+    monkeypatch.setitem(
+        main_module._COMMAND_BY_NAME,
+        "agent",
+        main_module._CommandSpec(
+            "agent",
+            "broken",
+            _explode,
             "add_agent_subparser",
             "run_agent",
         ),
