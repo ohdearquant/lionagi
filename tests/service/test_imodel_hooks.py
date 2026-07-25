@@ -570,3 +570,80 @@ class TestProcessChunkExitTuple:
         ):
             with pytest.raises(RuntimeError, match="Streaming hook requested exit without a cause"):
                 await imodel.process_chunk(_FakeChunk())
+
+
+class TestiModelStreamFailurePropagation:
+    """A transport/provider failure during streaming must reach the caller of
+    imodel.stream(), not end as a silent, complete-looking iteration."""
+
+    def _imodel(self):
+        return iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+
+    @pytest.mark.asyncio
+    async def test_mid_stream_failure_raises_at_boundary(self):
+        imodel = self._imodel()
+
+        async def failing_stream():
+            yield {"choices": [{"delta": {"content": "partial"}}]}
+            raise RuntimeError("connection dropped mid-stream")
+
+        seen = []
+        with patch.object(imodel.endpoint, "stream", return_value=failing_stream()):
+            with pytest.raises(ValueError, match="connection dropped mid-stream"):
+                async for chunk in imodel.stream(messages=[{"role": "user", "content": "hi"}]):
+                    if chunk and not isinstance(chunk, APICalling):
+                        seen.append(chunk)
+        # partial content was delivered, but the failure still surfaced
+        assert seen  # got the partial chunk before the error
+
+    @pytest.mark.asyncio
+    async def test_pre_first_byte_failure_raises_at_boundary(self):
+        imodel = self._imodel()
+
+        async def failing_stream():
+            raise RuntimeError("401 before first byte")
+            yield  # pragma: no cover -- makes this an async generator
+
+        with patch.object(imodel.endpoint, "stream", return_value=failing_stream()):
+            with pytest.raises(ValueError, match="401 before first byte"):
+                async for _ in imodel.stream(messages=[{"role": "user", "content": "hi"}]):
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_successful_stream_does_not_raise(self):
+        imodel = self._imodel()
+
+        async def ok_stream():
+            for i in range(3):
+                yield {"choices": [{"delta": {"content": f"c{i}"}}]}
+
+        chunks = []
+        with patch.object(imodel.endpoint, "stream", return_value=ok_stream()):
+            async for chunk in imodel.stream(messages=[{"role": "user", "content": "hi"}]):
+                if chunk and not isinstance(chunk, APICalling):
+                    chunks.append(chunk)
+        assert len(chunks) >= 3
+
+    @pytest.mark.asyncio
+    async def test_failure_raises_through_concurrency_sem_branch(self):
+        """concurrency_limit routes stream() through the semaphore branch; the
+        terminal failure must still surface there."""
+        # concurrency_limit routes stream() through the semaphore branch once the
+        # executor starts and builds the processor with a non-None _concurrency_sem.
+        imodel = iModel(
+            provider="openai",
+            model="gpt-4.1-mini",
+            api_key="test-key",
+            concurrency_limit=1,
+        )
+
+        async def failing_stream():
+            yield {"choices": [{"delta": {"content": "x"}}]}
+            raise RuntimeError("sem-branch transport failure")
+
+        with patch.object(imodel.endpoint, "stream", return_value=failing_stream()):
+            with pytest.raises(ValueError, match="sem-branch transport failure"):
+                async for _ in imodel.stream(messages=[{"role": "user", "content": "hi"}]):
+                    pass
+        # confirm this run actually exercised the semaphore branch
+        assert imodel.executor.processor._concurrency_sem is not None

@@ -18,7 +18,6 @@ const KIND_LABEL: Record<string, string> = {
   parse: "parse",
   fanout: "fanout",
   engine: "engine",
-  gate: "gate",
 };
 
 export function specToFlowModel(spec: WorkflowSpec): FlowModel {

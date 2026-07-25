@@ -48,8 +48,10 @@ class DataLoggerConfig(BaseModel):
 
     @field_validator("extension")
     def _ensure_dot_extension(cls, value):
+        # Normalize the leading dot first, then validate: an undotted spelling
+        # must be held to the same allowlist as its dotted form.
         if not value.startswith("."):
-            return "." + value
+            value = "." + value
         if value not in {".csv", ".json", ".jsonl"}:
             raise ValueError("Extension must be '.csv', '.json' or '.jsonl'.")
         return value
@@ -143,7 +145,7 @@ class DataLogger:
         try:
             if suffix == ".csv":
                 self.logs.dump(fp, "csv")
-            elif suffix == ".json":
+            elif suffix in (".json", ".jsonl"):
                 self.logs.dump(fp, "json")
             else:
                 raise ValueError(f"Unsupported file extension: {suffix}")
@@ -176,7 +178,7 @@ class DataLogger:
                 return
             fp = persist_path or self._create_path()
             suffix = fp.suffix.lower()
-            if suffix not in (".csv", ".json"):
+            if suffix not in (".csv", ".json", ".jsonl"):
                 raise ValueError(f"Unsupported file extension: {suffix}")
             snapshot_ids = set(self.logs.collections.keys())
             records = self.logs._ordered_records()

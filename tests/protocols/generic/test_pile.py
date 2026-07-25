@@ -688,3 +688,11 @@ async def test_async_type_checking():
         await p.ainclude("not an Node")
 
     assert len(p) == 1
+
+
+def test_list_adapters_returns_registered_keys():
+    # list_adapters must reach the adapter registries through their accessors;
+    # the default csv/json adapters are registered at import time.
+    adapters = Pile.list_adapters()
+    assert "csv" in adapters
+    assert "json" in adapters

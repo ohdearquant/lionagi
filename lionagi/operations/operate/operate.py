@@ -228,7 +228,12 @@ async def operate(
             _pctx = _pctx.with_updates(response_format=response_fmt)
 
     if middle is None:
-        if isinstance(_cctx, RunParam) or getattr(branch.chat_model, "is_cli", False):
+        # A model carried on the chat param overrides the branch default for
+        # this call, so transport must follow the effective model's CLI flag
+        # rather than the branch's — otherwise a per-call CLI model on an API
+        # branch takes the non-streaming path.
+        effective_imodel = _cctx.imodel or branch.chat_model
+        if isinstance(_cctx, RunParam) or getattr(effective_imodel, "is_cli", False):
             from ..run.run import run_and_collect
 
             middle = run_and_collect
