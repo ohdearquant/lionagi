@@ -1016,23 +1016,39 @@ async def _reopen_session_for_resume(db, session_id: str, existing_session: dict
     if not isinstance(node_metadata, dict):
         node_metadata = {}
 
-    applied = await db.update_status(
-        "session",
-        session_id,
-        new_status="running",
-        reason_code=SessionReasons.REOPENED_BY_RESUME,
-        reason_summary="branch resumed by a new leg",
-        source="executor",
-        actor=session_id,
-        expected_statuses=SESSION_TERMINAL_STATUSES,
-        extra_fields={
-            "ended_at": None,
-            "node_metadata": json.dumps({**node_metadata, **current_pid_markers()}),
-        },
-        override=True,
-        override_actor="cli.resume",
-        override_justification="branch resumed by a new leg; the session is executing again",
-    )
+    try:
+        applied = await db.update_status(
+            "session",
+            session_id,
+            new_status="running",
+            reason_code=SessionReasons.REOPENED_BY_RESUME,
+            reason_summary="branch resumed by a new leg",
+            source="executor",
+            actor=session_id,
+            expected_statuses=SESSION_TERMINAL_STATUSES,
+            extra_fields={
+                "ended_at": None,
+                "node_metadata": json.dumps({**node_metadata, **current_pid_markers()}),
+            },
+            override=True,
+            override_actor="cli.resume",
+            override_justification="branch resumed by a new leg; the session is executing again",
+        )
+    except LookupError:
+        # update_status reports a missing row this way. The row was read a
+        # moment ago and is gone now: maintenance removes old terminal sessions
+        # and holds each candidate for the length of its transaction, so a
+        # resume that arrives just before one starts is let through only after
+        # it commits, to find nothing there. That is a legitimate outcome
+        # rather than a failure of this leg — there is no session to reopen,
+        # and the caller falls back to starting one.
+        _log.warning(
+            "session %s no longer exists and was not reopened for resume; "
+            "this leg will record itself under a new session",
+            session_id,
+        )
+        return False
+
     if not applied:
         # A resumed leg must not fail because its bookkeeping lost a race, but
         # the consequence is worth saying out loud: this leg will finish without
@@ -1075,10 +1091,28 @@ async def setup_agent_persist(
         db = await _open_shared_db()
 
         existing_branch = await db.get_branch(branch_id)
+        existing_session = None
+        if existing_branch:
+            existing_session = await db.get_session(existing_branch["session_id"])
+            if existing_session is not None and not await _reopen_session_for_resume(
+                db, existing_branch["session_id"], existing_session
+            ):
+                # The reopen declines for three reasons and one of them is that
+                # the session is no longer there — maintenance removes old
+                # terminal sessions, and a resume can arrive as one commits.
+                # Confirm the row before reading anything else out of a copy of
+                # it that may describe a row that no longer exists.
+                existing_session = await db.get_session(existing_branch["session_id"])
+
+            if existing_session is None:
+                # Nothing to resume into. Branches are removed with their
+                # session, so this leg records itself the way a branch nobody
+                # has seen before does, rather than persisting against ids that
+                # no longer resolve.
+                existing_branch = None
+
         if existing_branch:
             session_id = existing_branch["session_id"]
-            existing_session = await db.get_session(session_id)
-            await _reopen_session_for_resume(db, session_id, existing_session)
             session_prog_id = existing_session["progression_id"]
             branch_prog_id = existing_branch["progression_id"]
 

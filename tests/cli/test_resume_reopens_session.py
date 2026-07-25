@@ -300,3 +300,66 @@ async def test_a_missing_session_row_is_not_an_error(temp_db_path):
     resume should carry on rather than fail on its own bookkeeping."""
     async with StateDB() as db:
         assert await _reopen_session_for_resume(db, "gone", None) is False
+
+
+@pytest.mark.asyncio
+async def test_a_session_deleted_while_the_resume_waited_is_not_an_error(temp_db_path):
+    """The row can be read as terminal and be gone by the time it is written.
+
+    Maintenance removes old terminal sessions and holds each candidate for the
+    length of its transaction, so a resume that arrives just before one starts
+    is released only after it commits. Nothing is left to reopen, and treating
+    that as a failure would stop the leg over bookkeeping it does not need.
+    """
+    async with StateDB() as db:
+        sid = await _finished_session(db)
+        snapshot = await db.get_session(sid)
+        await db.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+
+        assert await _reopen_session_for_resume(db, sid, snapshot) is False
+
+
+@pytest.mark.asyncio
+async def test_a_resume_whose_session_is_pruned_mid_setup_still_records_itself(
+    temp_db_path, monkeypatch
+):
+    """Persistence reads the branch and its session as two separate reads.
+
+    A maintenance pass can commit between them, so the branch is read as
+    present and its session comes back missing. Reading the rest of the
+    resume out of the branch's copy of a row that no longer exists takes the
+    whole run down to no persistence at all, which is a much larger loss than
+    the session that went away. The leg records itself under a new session
+    instead, the same way a branch nobody has seen before does.
+    """
+    from lionagi import Branch
+    from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
+
+    branch = Branch(name="resumed")
+    async with StateDB() as db:
+        first = await setup_agent_persist(branch, agent_name="implementer")
+        assert first is not None
+        await teardown_agent_persist(first, status="completed")
+        pruned_id = first["session_id"]
+
+    real_get_session = StateDB.get_session
+
+    async def get_session_after_a_prune(self, session_id):
+        row = await real_get_session(self, session_id)
+        if row is not None and session_id == pruned_id:
+            # The maintenance pass commits here, between the two reads.
+            await self.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            return None
+        return row
+
+    # Scoped to this patch alone: undoing every patch would also put back the
+    # database path this test is redirected away from.
+    with monkeypatch.context() as mp:
+        mp.setattr(StateDB, "get_session", get_session_after_a_prune)
+        second = await setup_agent_persist(branch, agent_name="implementer")
+
+    assert second is not None, "the resumed leg was left with no persistence at all"
+    assert second["session_id"] != pruned_id
+
+    async with StateDB() as db:
+        assert await db.get_session(second["session_id"]) is not None
