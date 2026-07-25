@@ -30,17 +30,21 @@ async def _exec_chunked(
     sql_prefix: str,
     ids: Sequence[str],
     extra_params: Sequence[Any] = (),
+    suffix: str = "",
+    suffix_params: Sequence[Any] = (),
 ) -> int:
-    """Execute *sql_prefix* + ' IN (?,?,...)' for *ids* in chunks of _CHUNK.
+    """Execute *sql_prefix* + ' IN (?,?,...)' + *suffix* for *ids* in chunks.
 
-    *sql_prefix* must end just before the IN clause. Returns total rowcount.
+    *sql_prefix* must end just before the IN clause. *suffix* is appended after
+    it, for a condition that has to be part of the statement itself rather than
+    checked beforehand. Returns total rowcount.
     """
     total = 0
     for i in range(0, len(ids), _CHUNK):
         chunk = ids[i : i + _CHUNK]
         ph = ", ".join("?" * len(chunk))
         result = await conn.execute(
-            *_q(f"{sql_prefix} IN ({ph})", (*extra_params, *chunk))  # noqa: S608
+            *_q(f"{sql_prefix} IN ({ph}){suffix}", (*extra_params, *chunk, *suffix_params))  # noqa: S608
         )
         total += result.rowcount
     return total
@@ -236,29 +240,36 @@ async def prune_old_data(
                     {*coll_msg_ids, *session_first_ids, *session_last_ids, *branch_sys_ids}
                 )
 
+                # Every destructive statement carries the terminal condition
+                # itself. Checking it once above and then running a sequence of
+                # writes would protect only whichever statement happens to be
+                # last: a session that reopens partway through would keep its
+                # row and lose the history and associations already removed,
+                # which is a worse outcome than the one being prevented.
+                still_terminal = (
+                    f" AND session_id IN (SELECT id FROM sessions WHERE status IN ({sess_ph}))"  # noqa: S608
+                )
+
                 # Nullify soft FKs (no CASCADE) before deleting sessions.
-                await _exec_chunked(
-                    conn, "UPDATE artifacts SET session_id = NULL WHERE session_id", session_ids
-                )
-                await _exec_chunked(
-                    conn, "UPDATE plays SET session_id = NULL WHERE session_id", session_ids
-                )
-                await _exec_chunked(
-                    conn,
-                    "UPDATE team_messages SET session_id = NULL WHERE session_id",
-                    session_ids,
-                )
-                # dispatch_outbox.session_id is a plain FK (no CASCADE) — nullify
-                # before the parent DELETE or the prune aborts on the FK constraint.
-                await _exec_chunked(
-                    conn,
-                    "UPDATE dispatch_outbox SET session_id = NULL WHERE session_id",
-                    session_ids,
-                )
+                for table in ("artifacts", "plays", "team_messages", "dispatch_outbox"):
+                    # dispatch_outbox.session_id is a plain FK (no CASCADE) —
+                    # nullify before the parent DELETE or the prune aborts on
+                    # the FK constraint.
+                    await _exec_chunked(
+                        conn,
+                        f"UPDATE {table} SET session_id = NULL WHERE session_id",  # noqa: S608
+                        session_ids,
+                        suffix=still_terminal,
+                        suffix_params=_TERMINAL_SESSION_STATUSES,
+                    )
                 await _exec_chunked(
                     conn,
                     "DELETE FROM status_transitions WHERE entity_type = 'session' AND entity_id",
                     session_ids,
+                    suffix=(
+                        f" AND entity_id IN (SELECT id FROM sessions WHERE status IN ({sess_ph}))"  # noqa: S608
+                    ),
+                    suffix_params=_TERMINAL_SESSION_STATUSES,
                 )
                 # branches cascade automatically via FK ON DELETE CASCADE
                 # The status predicate rides the delete itself, not only the

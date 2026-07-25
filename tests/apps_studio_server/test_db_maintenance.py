@@ -227,16 +227,17 @@ def _reopen_before_call(monkeypatch, maint, session_id: str, *, call: int) -> No
     monkeypatch.setattr(maint, "_fetch_chunked", wrapper)
 
 
-@pytest.mark.parametrize(
-    ("call", "what_it_pins"),
-    [(1, "the re-read before anything destructive"), (2, "the predicate on the delete itself")],
-)
-def test_prune_leaves_a_session_that_stopped_being_terminal(
-    tmp_path, monkeypatch, call, what_it_pins
-):
-    """A session picked up by a resume mid-prune must survive it. Deleting one
-    would take a live leg's session, branches and messages out from under it,
-    and the leg would keep running against state that no longer exists."""
+@pytest.mark.parametrize("call", [1, 2, 3, 4])
+def test_prune_leaves_a_session_that_stopped_being_terminal(tmp_path, monkeypatch, call):
+    """A session picked up by a resume mid-prune must survive it whole.
+
+    Surviving as a row is not enough. The prune nullifies associations and
+    deletes transition history before it deletes the session, so a check made
+    once at the top protects only the last statement under it: the leg keeps a
+    session whose history and links are gone. The parametrization moves the
+    reopen through those statements, and each case asserts everything, so a
+    guard that covers one statement and not the next fails here.
+    """
     from lionagi.studio.services import db_maintenance as maint
 
     db_path = tmp_path / "state.db"
@@ -245,20 +246,39 @@ def test_prune_leaves_a_session_that_stopped_being_terminal(
 
     async def seed():
         async with StateDB(db_path) as db:
-            return await _make_session(db, status="completed", started_at=old_ts)
+            sid = await _make_session(db, status="completed", started_at=old_ts)
+            await db.execute(
+                "INSERT INTO status_transitions"
+                " (id, entity_type, entity_id, previous_status, status, reason_code,"
+                "  source, created_at)"
+                " VALUES (?, 'session', ?, 'running', 'completed', 'run.completed.ok',"
+                "  'executor', ?)",
+                (str(uuid.uuid4()), sid, old_ts),
+            )
+            await db.execute(
+                "INSERT INTO artifacts (id, session_id, created_at, updated_at, kind, name,"
+                " content) VALUES (?, ?, ?, ?, 'file', 'a.txt', '{}')",
+                (str(uuid.uuid4()), sid, old_ts, old_ts),
+            )
+        return sid
 
     sid = run_async(seed())
     _reopen_before_call(monkeypatch, maint, sid, call=call)
 
     result = run_async(maint.prune_old_data(keep_days=30, actor="test"))
 
-    async def remaining():
+    async def survivors():
         async with StateDB(db_path) as db:
-            return await db.fetch_one("SELECT id, status FROM sessions WHERE id = ?", (sid,))
+            return (
+                await db.fetch_one("SELECT id, status FROM sessions WHERE id = ?", (sid,)),
+                await db.fetch_all("SELECT id FROM status_transitions WHERE entity_id = ?", (sid,)),
+                await db.fetch_all("SELECT id FROM artifacts WHERE session_id = ?", (sid,)),
+            )
 
-    row = run_async(remaining())
-    assert row is not None, what_it_pins
-    assert row["status"] == "running"
+    row, transitions, artifacts = run_async(survivors())
+    assert row is not None and row["status"] == "running"
+    assert len(transitions) == 1, "the reopened session lost its transition history"
+    assert len(artifacts) == 1, "the reopened session lost its artifact association"
     assert result["sessions_pruned"] == 0
 
 
