@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from abc import ABC, abstractmethod
-from typing import Generic, TypeVar
+from typing import Generic, Protocol, TypeVar, runtime_checkable
 
 E = TypeVar("E")
 
@@ -46,14 +46,30 @@ class Sendable(ABC):  # noqa: B024
     pass
 
 
-class Observable(ABC):  # noqa: B024
+@runtime_checkable
+class Observable(Protocol):
     """A thing with durable identity that a Pile can hold and observe.
 
-    Nominal admission contract: Pile membership requires inheriting this ABC,
-    not merely exposing an ``id`` attribute.
+    Structural (protocol) admission contract: an object conforms by exposing an
+    ``id``, whether or not it inherits anything. ``isinstance(obj, Observable)``
+    is true for any object with an ``id`` attribute. This is the duck-typed
+    contract the Pile, Session, SessionObserver, and reactive event layers are
+    built on -- identity by capability, not by inheritance.
+
+    Intentional design, not a defect: admission is structural on purpose. A
+    2026-07 change briefly made it nominal (isinstance required inheriting this
+    class); that was a regression and is reverted here. A later reader or audit
+    that sees a duck-typed object satisfy ``isinstance(obj, Observable)`` -- or
+    that Pile admits an object which does not inherit ``Observable`` -- is
+    looking at the designed behavior, guarded by
+    ``tests/protocols/test_observable_protocol.py``. Do not "fix" it back to
+    inheritance-only admission.
     """
 
-    pass
+    @property
+    def id(self) -> object:
+        """Unique, durable identifier."""
+        ...
 
 
 class Composable(ABC):  # noqa: B024
@@ -67,8 +83,13 @@ class Composed(ABC):
         """Compose from components."""
 
 
-class Communicatable(Observable):
-    """Communicatable must define 'mailbox' and send/receive methods."""
+class Communicatable(ABC):
+    """Communicatable must define 'mailbox' and send/receive methods.
+
+    Concrete communicatables are Elements and therefore structurally Observable
+    (they expose an ``id``); this ABC does not inherit the Observable protocol,
+    it composes with it by capability.
+    """
 
     @abstractmethod
     def send(self, *args, **kwargs):

@@ -25,8 +25,13 @@ __all__ = (
 )
 
 
-class Element(BaseModel, Observable):
-    """Pydantic base with UUID id, creation timestamp, and metadata dict."""
+class Element(BaseModel):
+    """Pydantic base with UUID id, creation timestamp, and metadata dict.
+
+    Structurally satisfies the ``Observable`` protocol through its ``id`` field;
+    it does not inherit ``Observable`` (a runtime-checkable Protocol cannot be a
+    pydantic base), and does not need to -- Pile admission is by capability.
+    """
 
     model_config = ConfigDict(
         arbitrary_types_allowed=True,
@@ -215,10 +220,21 @@ DEFAULT_ELEMENT_SERIALIZER = get_orjson_default(
 )
 
 
+def _observable_uuid(obj: Observable) -> UUID:
+    """Extract an Observable's ``id`` as a UUID (coercing a string id).
+
+    Shared by ``validate_order`` and ``ID.get_id`` so every id-resolution path
+    accepts the same structural contract Pile admits by -- any object exposing an
+    ``id``, not only nominal Element subclasses.
+    """
+    oid = obj.id
+    return oid if isinstance(oid, UUID) else UUID(str(oid))
+
+
 def validate_order(order: Any) -> list[UUID]:
-    """Flatten an ordering (Element, UUID, str, nested list, or dict) into a list of UUIDs."""
-    if isinstance(order, Element):
-        return [order.id]
+    """Flatten an ordering (Observable, UUID, str, nested list, or dict) into a list of UUIDs."""
+    if isinstance(order, Observable):
+        return [_observable_uuid(order)]
     if isinstance(order, Mapping):
         order = list(order.keys())
 
@@ -228,8 +244,8 @@ def validate_order(order: Any) -> list[UUID]:
         cur = stack.pop()
         if cur is None:
             continue
-        if isinstance(cur, Element):
-            out.append(cur.id)
+        if isinstance(cur, Observable):
+            out.append(_observable_uuid(cur))
         elif isinstance(cur, UUID):
             out.append(cur)
         elif isinstance(cur, str):
@@ -257,11 +273,17 @@ class ID(Generic[E]):
 
     @staticmethod
     def get_id(item: E) -> UUID:
-        """Return UUID from an Element, UUID, or str; raises ValueError otherwise."""
+        """Return UUID from an Observable, UUID, or str; raises ValueError otherwise.
+
+        Resolution is structural, matching Pile's admission contract: any object
+        exposing an ``id`` (an Element or a duck-typed item) resolves, not just
+        nominal Element subclasses -- otherwise an object Pile admits could not
+        be looked up or removed by identity.
+        """
         if isinstance(item, UUID):
             return item
-        if isinstance(item, Element):
-            return item.id
+        if isinstance(item, Observable):
+            return _observable_uuid(item)
         if isinstance(item, str):
             return UUID(item)
         raise ValueError("Cannot get ID from item.")
