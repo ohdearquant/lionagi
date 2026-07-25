@@ -253,13 +253,21 @@ def test_an_unknown_output_format_is_refused_before_submitting(captured, submit,
     assert captured == {}
 
 
-def test_every_submit_parameter_carries_a_description():
+def test_every_parameter_of_every_tool_carries_a_description():
     # The schema is what a caller reads to find a capability; an undescribed
-    # parameter is only marginally more visible than a hidden one.
+    # parameter is only marginally more visible than a hidden one. Every tool
+    # registered on the server is checked, so one added later is covered without
+    # anyone remembering to list it here.
     import asyncio
 
-    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
-    for name in ("submit_agent", "submit_flow", "submit_fanout", "submit_play"):
-        props = tools[name].parameters["properties"]
-        undescribed = [k for k, v in props.items() if not v.get("description")]
-        assert undescribed == [], f"{name} has undescribed parameters: {undescribed}"
+    tools = asyncio.run(server.mcp.list_tools())
+    assert tools, "the server registered no tools"
+    undescribed = [
+        f"{tool.name}.{name}"
+        for tool in tools
+        for name, prop in tool.parameters.get("properties", {}).items()
+        # A description nested inside an ``anyOf`` branch does not count: a client
+        # rendering per-parameter help reads the property itself.
+        if not prop.get("description")
+    ]
+    assert undescribed == [], f"undescribed parameters: {undescribed}"

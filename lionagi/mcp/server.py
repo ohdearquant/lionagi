@@ -354,6 +354,29 @@ _DESCRIPTIONS: dict[str, str] = {
         "Playbook to run, from ~/.lionagi/playbooks/<name>.playbook.yaml. `li play list` names "
         "the available ones."
     ),
+    "run_id": (
+        "Id of a background run, as returned by a submit_* tool (format "
+        "YYYYMMDDTHHMMSS-<6hex>). An id with no job record answers with known=false rather than "
+        "raising."
+    ),
+    "tail_chars": (
+        "How much of the console log to return, in characters counted from the END (default "
+        "20000). Raise it when a run's final answer is longer than the tail; the artifact list is "
+        "returned in full either way."
+    ),
+    "wait_run_ids": (
+        "Run ids to wait on. Results come back in this order, one entry each, and an id with no "
+        "job record fails only its own entry — the other ids are still observed."
+    ),
+    "max_wait": (
+        "Seconds to keep waiting before returning what is known so far, clamped to 0-600; 0 takes "
+        "a single snapshot. Expiring is not an error: the result still carries every observation, "
+        "so calling again to keep waiting is safe."
+    ),
+    "poll_interval": (
+        "Seconds between status reads while waiting, clamped to 0.05-60. The effective value is "
+        "echoed back beside the requested one."
+    ),
 }
 
 
@@ -878,28 +901,31 @@ def submit_play(
 
 
 @mcp.tool
-def job_status(run_id: str) -> dict[str, Any]:
+def job_status(run_id: Annotated[str, _desc("run_id")]) -> dict[str, Any]:
     """Current state of a background run: liveness, MCP record, CLI manifest."""
     return jobs.status(run_id)
 
 
 @mcp.tool
-def job_output(run_id: str, tail_chars: int = 20000) -> dict[str, Any]:
+def job_output(
+    run_id: Annotated[str, _desc("run_id")],
+    tail_chars: Annotated[int, _desc("tail_chars")] = 20000,
+) -> dict[str, Any]:
     """Terminal output of a run: console (an agent's final response) + artifacts."""
     return jobs.output(run_id, tail_chars=tail_chars)
 
 
 @mcp.tool
-def job_kill(run_id: str) -> dict[str, Any]:
+def job_kill(run_id: Annotated[str, _desc("run_id")]) -> dict[str, Any]:
     """Stop a running background job (signals its whole process group)."""
     return jobs.kill(run_id)
 
 
 @mcp.tool
 async def job_wait(
-    run_ids: list[str],
-    max_wait: float = 60.0,
-    poll_interval: float = 1.0,
+    run_ids: Annotated[list[str], _desc("wait_run_ids")],
+    max_wait: Annotated[float, _desc("max_wait")] = 60.0,
+    poll_interval: Annotated[float, _desc("poll_interval")] = 1.0,
 ) -> dict[str, Any]:
     """Wait for background runs to finish, bounded — one call instead of a poll loop.
 
@@ -923,7 +949,16 @@ async def job_wait(
 
 @mcp.tool
 def jobs_list(limit: int = 50, status: str | None = None) -> list[dict[str, Any]]:
-    """List recent background jobs, newest first; optionally filter by status."""
+    """List recent background jobs, newest first; optionally filter by status.
+
+    Args:
+        limit: Maximum number of jobs to return, newest first.
+        status: Return only jobs whose status matches this string exactly —
+            ``running``, ``completed``, ``failed``, ``killed``, ``exited``
+            (process gone with no end recorded) or ``unknown``. The vocabulary is
+            open: a status recorded by the CLI is passed through verbatim, so
+            prefer filtering on a value you have already seen in a job record.
+    """
     return jobs.list_jobs(limit=limit, status_filter=status)
 
 
