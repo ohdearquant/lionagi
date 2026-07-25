@@ -439,7 +439,12 @@ def test_admin_health_response_shape(tmp_path, monkeypatch):
 
     r = client.get("/api/admin/health")
     assert r.status_code == 200
-    assert sorted(r.json().keys()) == ["db", "diagnostic_run_at", "sessions"]
+    assert sorted(r.json().keys()) == [
+        "db",
+        "diagnostic_run_at",
+        "scheduler_timezone",
+        "sessions",
+    ]
 
 
 def test_admin_events_response_shape(tmp_path, monkeypatch):

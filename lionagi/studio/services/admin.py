@@ -274,11 +274,13 @@ async def health_report() -> dict[str, Any]:
         SessionHealth,
         classify_session_health,
     )
+    from lionagi.studio.config import scheduler_timezone_report
 
     if not DEFAULT_DB_PATH.exists():
         return {
             "sessions": {"total": 0, "by_status": {}, "by_health": {}, "unhealthy": []},
             "db": db_health(),
+            "scheduler_timezone": scheduler_timezone_report(),
             "diagnostic_run_at": now_utc().isoformat(),
         }
 
@@ -373,6 +375,11 @@ async def health_report() -> dict[str, Any]:
             "unhealthy": unhealthy,
         },
         "db": db_health(),
+        # The zone this daemon interprets cron expressions in, as resolved at
+        # its own start. Reported alongside the other daemon state because the
+        # value is frozen per process: nothing in the source tree or the host's
+        # configuration can be read back from a running scheduler otherwise.
+        "scheduler_timezone": scheduler_timezone_report(),
         "diagnostic_run_at": now_utc().isoformat(),
     }
 
