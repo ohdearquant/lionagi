@@ -1,0 +1,409 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+"""The machine-result contract, pinned at the boundary a consumer sees.
+
+These tests are written from the position of a consumer in another language that
+reaches lionagi by running the CLI as a subprocess: it has two channels, one
+integer version, and no way to ask what a field means. So what is asserted here
+is the shape on stdout, the closedness of the error vocabulary, and the rule that
+decides which of the exit status and the envelope answers.
+"""
+
+from __future__ import annotations
+
+import importlib
+import json
+import os
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
+import pytest
+
+from lionagi.cli import machine
+from lionagi.cli._util import (
+    EXIT_CODE_ENVIRONMENT_ERROR,
+    clear_run_allocation,
+    mark_run_allocated,
+)
+
+cli_main = importlib.import_module("lionagi.cli.main")
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture(autouse=True)
+def _no_run_allocated():
+    clear_run_allocation()
+    yield
+    clear_run_allocation()
+
+
+def _one_object(out: str) -> dict:
+    """Parse stdout under the invariant, rather than around it."""
+    lines = [line for line in out.splitlines() if line.strip()]
+    assert len(lines) == 1, f"stdout carried {len(lines)} lines, not one object: {out!r}"
+    return json.loads(lines[0])
+
+
+# ── The envelope ────────────────────────────────────────────────────────────
+
+
+def test_a_success_carries_data_and_no_error(capfd):
+    assert cli_main.main(["handshake", "--machine"]) == 0
+    envelope = _one_object(capfd.readouterr().out)
+
+    assert envelope["ok"] is True
+    assert envelope["error"] is None
+    assert envelope["data"]["implementation"] == "lionagi"
+    assert set(envelope) == {"ok", "contract_version", "data", "error"}
+
+
+def test_a_refusal_carries_error_and_no_data(capfd):
+    assert cli_main.main(["no-such-command", "--machine"]) == 0
+    envelope = _one_object(capfd.readouterr().out)
+
+    assert envelope["ok"] is False
+    assert envelope["data"] is None
+    assert envelope["error"]["kind"] == "invalid_input"
+    assert isinstance(envelope["error"]["message"], str)
+
+
+def test_the_version_is_an_integer_and_lives_in_one_place(capfd):
+    """A consumer compares it, so `1` and `"1"` are not interchangeable."""
+    assert cli_main.main(["handshake", "--machine"]) == 0
+    envelope = _one_object(capfd.readouterr().out)
+
+    assert envelope["contract_version"] == machine.CONTRACT_VERSION
+    assert isinstance(envelope["contract_version"], int)
+    assert not isinstance(envelope["contract_version"], bool)
+    # The handshake governs registration and the envelope governs every call, so
+    # the two must never be able to disagree.
+    assert envelope["data"]["contract_version"] == machine.CONTRACT_VERSION
+    assert envelope["data"]["min_supported_version"] == machine.MIN_SUPPORTED_CONTRACT_VERSION
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        {"ok": True, "contract_version": 1, "data": None, "error": None},
+        {"ok": True, "contract_version": 1, "data": {}, "error": {"kind": "internal", "m": "x"}},
+        {"ok": True, "contract_version": "1", "data": {}, "error": None},
+        {"ok": False, "contract_version": 1, "data": {}, "error": None},
+        {"contract_version": 1, "data": {}, "error": None},
+    ],
+)
+def test_a_malformed_envelope_is_refused_before_it_is_written(malformed):
+    """Both-null and both-set are the two shapes a consumer cannot interpret."""
+    with pytest.raises(ValueError):
+        machine.validate_envelope(malformed)
+
+
+# ── The closed error vocabulary ─────────────────────────────────────────────
+
+
+def test_the_error_kinds_are_exactly_the_contract_set():
+    """Closedness is the property a consumer branches on, so it is asserted as a
+    set rather than as membership."""
+    assert set(machine.ERROR_KINDS) == {
+        "not_found",
+        "invalid_input",
+        "conflict",
+        "unavailable",
+        "internal",
+    }
+
+
+@pytest.mark.parametrize("kind", ["not_a_kind", "error", "failure", "timeout", ""])
+def test_a_kind_outside_the_set_cannot_be_constructed(kind):
+    with pytest.raises(ValueError):
+        machine.failure(kind, "message")
+    with pytest.raises(ValueError):
+        machine.MachineError(kind, "message")
+
+
+def test_an_unsupported_command_refuses_inside_the_vocabulary(capfd, monkeypatch):
+    """A command with no machine result still answers in the contract's terms.
+
+    The alternative — argparse rejecting the flag — leaves the consumer with a
+    nonzero exit, no envelope and nothing to distinguish it from a crash.
+    """
+    assert cli_main.main(["mirror", "--machine"]) == 0
+    envelope = _one_object(capfd.readouterr().out)
+
+    assert envelope["ok"] is False
+    assert envelope["error"]["kind"] == "unavailable"
+    assert "mirror" in envelope["error"]["message"]
+
+
+def test_an_unexpected_crash_becomes_an_envelope(capfd, monkeypatch):
+    """A traceback and no JSON is indistinguishable from the process dying."""
+
+    def _boom(argv):
+        raise RuntimeError("something nobody anticipated")
+
+    monkeypatch.setitem(machine._MACHINE_COMMANDS, "handshake", _boom)
+
+    assert cli_main.main(["handshake", "--machine"]) == 0
+    envelope = _one_object(capfd.readouterr().out)
+
+    assert envelope["error"]["kind"] == "internal"
+    assert "something nobody anticipated" in envelope["error"]["message"]
+
+
+# ── Exactly one JSON object on stdout ───────────────────────────────────────
+
+
+def test_nothing_else_reaches_stdout(capfd, monkeypatch):
+    """Every writer a command has, pointed away from stdout at once.
+
+    `print` and the four logging channels are Python-level writers; the raw
+    descriptor write stands in for a spawned child that inherited stdout. All of
+    them corrupt the result identically if any one is missed.
+    """
+    from lionagi.cli._logging import configure_cli_logging, hint, log_error, progress, warn
+
+    configure_cli_logging(verbose=False)
+
+    def _noisy(argv):
+        print("a stray print")
+        sys.stdout.write("a stray write\n")
+        os.write(1, b"a stray descriptor write\n")
+        progress("progress line")
+        hint("hint line")
+        warn("warning line")
+        log_error("error line")
+        return {"fine": True}
+
+    monkeypatch.setitem(machine._MACHINE_COMMANDS, "handshake", _noisy)
+
+    assert cli_main.main(["handshake", "--machine"]) == 0
+    captured = capfd.readouterr()
+
+    envelope = _one_object(captured.out)
+    assert envelope["data"] == {"fine": True}
+    for line in ("a stray print", "a stray write", "a stray descriptor write", "hint line"):
+        assert line in captured.err
+    assert "warning: warning line" in captured.err
+    assert "error: error line" in captured.err
+
+
+def test_stdout_is_restored_afterwards(capfd):
+    """The reservation is scoped to the call, not to the process."""
+    assert cli_main.main(["handshake", "--machine"]) == 0
+    capfd.readouterr()
+
+    print("back on stdout")
+    assert "back on stdout" in capfd.readouterr().out
+
+
+def test_a_second_envelope_is_refused():
+    """One object is the framing; a second one silently breaks every parser."""
+    with machine.reserve_stdout() as channel:
+        channel.emit(machine.ok({}))
+        with pytest.raises(RuntimeError):
+            channel.emit(machine.ok({}))
+
+
+def test_the_flag_after_a_sentinel_is_a_prompt_token():
+    """A prompt containing `--machine` must not change the output mode."""
+    assert machine.has_machine_flag(["agent", "--", "--machine"]) is False
+    assert machine.strip_machine_flag(["agent", "--machine", "--", "--machine"]) == [
+        "agent",
+        "--",
+        "--machine",
+    ]
+
+
+def test_one_object_on_stdout_end_to_end():
+    """The same invariant with nothing patched and a real process boundary.
+
+    In-process tests share an interpreter with the harness, and the descriptor
+    layer is the part most easily faked by that. This is what the consumer
+    actually reads.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-m", "lionagi.cli", "handshake", "--machine"],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        timeout=120,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    envelope = _one_object(proc.stdout)
+    assert envelope["ok"] is True
+    assert envelope["contract_version"] == machine.CONTRACT_VERSION
+
+
+# ── D7: absence and failure do not share an encoding ────────────────────────
+
+
+def test_an_empty_read_and_a_failed_read_are_different_answers(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+
+    established = machine.list_directory(empty)
+    assert established == {"available": True, "value": [], "reason_code": None, "detail": None}
+
+    missing = machine.list_directory(tmp_path / "gone")
+    assert missing["available"] is False
+    assert missing["value"] is None
+    assert missing["reason_code"] == "not_found"
+
+
+def test_an_unreadable_directory_is_not_reported_as_empty(tmp_path):
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    os.chmod(locked, 0o000)
+    try:
+        result = machine.list_directory(locked)
+    finally:
+        os.chmod(locked, 0o755)
+
+    if os.geteuid() == 0:  # root reads it regardless, so there is nothing to assert
+        pytest.skip("permissions do not constrain root")
+    assert result["available"] is False
+    assert result["reason_code"] == "unreadable"
+    assert result["value"] is None
+
+
+def test_a_missing_document_and_a_corrupt_one_are_told_apart(tmp_path):
+    corrupt = tmp_path / "run.json"
+    corrupt.write_text("{not json")
+
+    assert machine.read_json_file(tmp_path / "absent.json")["reason_code"] == "not_found"
+    assert machine.read_json_file(corrupt)["reason_code"] == "malformed"
+
+    good = tmp_path / "good.json"
+    good.write_text('{"status": "running"}')
+    assert machine.read_json_file(good) == {
+        "available": True,
+        "value": {"status": "running"},
+        "reason_code": None,
+        "detail": None,
+    }
+
+
+def test_a_run_listing_wraps_every_read_it_makes(capfd, monkeypatch, tmp_path):
+    runs_root = tmp_path / "runs"
+    (runs_root / "20260725T000000-aaaaaa").mkdir(parents=True)
+    (runs_root / "20260725T000000-aaaaaa" / "run.json").write_text("{}")
+    # No artifacts directory: the producer always creates one, so its absence is
+    # a read that did not establish an answer rather than a count of zero.
+    monkeypatch.setattr("lionagi.cli._runs.RUNS_ROOT", runs_root)
+
+    assert cli_main.main(["runs", "--machine"]) == 0
+    envelope = _one_object(capfd.readouterr().out)
+
+    listing = envelope["data"]["runs"]
+    assert listing["available"] is True
+    entry = listing["value"][0]
+    assert entry["run_id"] == "20260725T000000-aaaaaa"
+    assert entry["artifacts"]["available"] is False
+    assert entry["artifacts"]["value"] is None
+    assert entry["artifacts"]["reason_code"] == "not_found"
+
+
+def test_no_runs_at_all_is_an_established_answer(capfd, monkeypatch, tmp_path):
+    monkeypatch.setattr("lionagi.cli._runs.RUNS_ROOT", tmp_path / "never-created")
+
+    assert cli_main.main(["runs", "--machine"]) == 0
+    envelope = _one_object(capfd.readouterr().out)
+
+    assert envelope["data"]["runs"] == {
+        "available": True,
+        "value": [],
+        "reason_code": None,
+        "detail": None,
+    }
+
+
+# ── D8: which signal answers ────────────────────────────────────────────────
+
+
+def test_a_refusal_still_exits_zero(capfd):
+    """The envelope is the answer; repeating the refusal in the exit status
+    would give one question two answers."""
+    assert cli_main.main(["no-such-command", "--machine"]) == 0
+    assert _one_object(capfd.readouterr().out)["ok"] is False
+
+
+def test_an_unusable_environment_exits_78_with_no_envelope(capfd, monkeypatch):
+    """Nothing executed, so there is nothing on stdout for a consumer to parse.
+
+    An envelope here would describe a request that never ran, which sends the
+    consumer looking for a result instead of at its own installation.
+    """
+
+    def _boom(argv):
+        raise ModuleNotFoundError("No module named 'sniffio'", name="sniffio")
+
+    monkeypatch.setitem(machine._MACHINE_COMMANDS, "handshake", _boom)
+
+    assert cli_main.main(["handshake", "--machine"]) == EXIT_CODE_ENVIRONMENT_ERROR
+    captured = capfd.readouterr()
+    assert captured.out.strip() == ""
+    assert "No run was started" in captured.err
+
+
+def test_a_missing_import_after_a_run_exists_is_an_envelope(capfd, monkeypatch):
+    """78 claims nothing ran, and once a run directory exists that is false.
+
+    The failure belongs to the run, so it is reported the way every other
+    handled request is: an envelope, on stdout, exit 0.
+    """
+
+    def _boom(argv):
+        mark_run_allocated()
+        raise ModuleNotFoundError("No module named 'some_provider'", name="some_provider")
+
+    monkeypatch.setitem(machine._MACHINE_COMMANDS, "handshake", _boom)
+
+    assert cli_main.main(["handshake", "--machine"]) == 0
+    envelope = _one_object(capfd.readouterr().out)
+    assert envelope["error"]["kind"] == "internal"
+
+
+def test_78_survives_end_to_end_under_the_machine_flag():
+    """The environment fault is decided before machine mode can answer at all.
+
+    Asserted through a real interpreter because the import that fails here has
+    to fail for real: the in-process test above supplies the error, which cannot
+    prove that the code path a broken installation takes reaches this rule.
+    """
+    script = textwrap.dedent(
+        """
+        import sys
+
+        BLOCKED = "lionagi.cli.machine"
+
+        class _RefuseOne:
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname == BLOCKED:
+                    raise ModuleNotFoundError(
+                        f"No module named {fullname!r}", name=fullname
+                    )
+                return None
+
+        sys.modules.pop(BLOCKED, None)
+        sys.meta_path.insert(0, _RefuseOne())
+
+        from lionagi.cli.main import main
+
+        sys.exit(main(["handshake", "--machine"]))
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        timeout=120,
+    )
+
+    assert proc.returncode == EXIT_CODE_ENVIRONMENT_ERROR, proc.stderr
+    assert proc.stdout.strip() == ""
