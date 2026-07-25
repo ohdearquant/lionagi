@@ -14,6 +14,7 @@ for the long tail of flags, so the surface never drifts out of reach of the CLI.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from fastmcp import FastMCP
@@ -29,6 +30,7 @@ mcp = FastMCP("lionagi")
 @mcp.tool
 def submit_agent(
     prompt: str | None = None,
+    prompt_file: str | None = None,
     model: str | None = None,
     agent: str | None = None,
     effort: str | None = None,
@@ -56,12 +58,37 @@ def submit_agent(
     (a profile) or ``resume``/``continue_last`` already supplies one. ``agent``
     loads a profile from ``.lionagi/agents/``.
 
+    Give the instruction as either ``prompt`` (text, written to a file before the
+    run so long text with quotes or code is safe — no shell is involved on this
+    path) or ``prompt_file`` (an absolute path to a file you already have), never
+    both.
+
     On terminal the run records its status. If a delivery command is configured
     (``notify`` here, or lionagi's ``notify.on_terminal`` setting) it also sends
     a terminal notice; ``notify_seat`` fills that command's ``{target}``
     placeholder. With nothing configured the run delivers nothing.
     """
     flags: list[str] = []
+    if prompt_file is not None:
+        # Validated here rather than left to the CLI: a bad path would otherwise
+        # surface as a failed run whose console output the caller has to go read,
+        # and the run would already have been recorded and spawned.
+        if prompt is not None:
+            raise ValueError("pass prompt or prompt_file, not both")
+        if prompt_file == "-":
+            # The CLI accepts "-" for stdin, but a background job is spawned with
+            # stdin at DEVNULL, so it would read an empty prompt and fail.
+            raise ValueError("prompt_file cannot be '-': a background run has no stdin")
+        pf = Path(prompt_file).expanduser()
+        if not pf.is_absolute():
+            # The run's cwd is the caller's cwd argument, not this server's, so a
+            # relative path resolves against a directory the caller did not pick.
+            raise ValueError(f"prompt_file must be an absolute path, got {prompt_file!r}")
+        if not pf.is_file():
+            raise ValueError(f"prompt_file does not exist or is not a file: {pf}")
+        if pf.stat().st_size == 0:
+            raise ValueError(f"prompt_file is empty: {pf}")
+        flags += ["--prompt-file", str(pf)]
     if model:
         flags.append(model)  # leading positional model spec
     if agent:
