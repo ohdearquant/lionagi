@@ -270,6 +270,29 @@ def submit(
     return {"run_id": run_id, "pid": proc.pid, "status": latest["status"], "log": str(log_path)}
 
 
+def _server_identity() -> dict[str, str]:
+    """Which implementation answered this call.
+
+    A server imports its code once, at startup, so a caller cannot tell which
+    build is answering from the file on disk: the process may predate it. The
+    tool list does not help either, because two separate implementations can
+    expose the same tool names and differ only in parameters and behaviour. That
+    combination makes a wrong answer look authoritative — a field described from
+    a newer source reads as missing rather than as unsupported, and a caller who
+    trusts the description writes down a rule the running server does not
+    implement.
+
+    Reporting the version and the directory actually imported turns that from an
+    inference into a readable fact. Resolved per call rather than cached at
+    import so it reflects the module that is genuinely loaded.
+    """
+    try:
+        from lionagi.version import __version__ as version
+    except Exception:  # noqa: BLE001 — identity is diagnostic; never fail a status read
+        version = "unknown"
+    return {"version": version, "module": str(Path(__file__).resolve().parent)}
+
+
 def status(run_id: str) -> dict[str, Any]:
     """Current state of *run_id*.
 
@@ -278,6 +301,8 @@ def status(run_id: str) -> dict[str, Any]:
     advisory only — its own ``status`` stays ``running`` until the CLI finalizes
     it in the StateDB, so read ``status`` here, not ``run["status"]``.
     ``notify_delivery`` reports whether the terminal notice was delivered.
+    ``server`` identifies the implementation that answered, so a caller can tell
+    which build it is talking to rather than inferring it from behaviour.
     """
     job = _read_job(run_id)
     manifest = _read_run_manifest(run_id)
@@ -312,6 +337,7 @@ def status(run_id: str) -> dict[str, Any]:
         "run": manifest,
         "log_tail": _tail((job or {}).get("log")),
         "known": job is not None,
+        "server": _server_identity(),
     }
 
 

@@ -8,6 +8,9 @@ on the argv/env the engine builds and on the on-disk job records it reads back.
 
 from __future__ import annotations
 
+import builtins
+from pathlib import Path
+
 import pytest
 
 from lionagi.mcp import config, jobs
@@ -263,3 +266,41 @@ def test_write_job_publishes_atomically(sandbox, monkeypatch):
     assert jobs._read_job(rid) == good
     # and the failed publish cleaned up its staging file rather than orphaning it
     assert not list(config.job_dir(rid).glob(".job.json.*.tmp"))
+
+
+def test_status_reports_which_implementation_answered(sandbox, monkeypatch):
+    # Two same-named MCP surfaces can expose identical tool lists, and a server
+    # imports its code at startup, so neither the tool list nor the file on disk
+    # tells a caller which build is answering. The stamp makes it readable.
+    monkeypatch.setattr(
+        subprocess := __import__("subprocess"), "Popen", lambda *a, **k: _FakeProc()
+    )
+    handle = jobs.submit("agent", [], prompt="x")
+
+    st = jobs.status(handle["run_id"])
+
+    from lionagi.version import __version__
+
+    assert st["server"]["version"] == __version__
+    # The module path is the one actually imported, not a configured guess.
+    assert st["server"]["module"] == str(Path(jobs.__file__).resolve().parent)
+
+
+def test_status_stamp_survives_an_unreadable_version(sandbox, monkeypatch):
+    # Identity is diagnostic; a status read must never fail for want of it.
+    monkeypatch.setattr(
+        subprocess := __import__("subprocess"), "Popen", lambda *a, **k: _FakeProc()
+    )
+    handle = jobs.submit("agent", [], prompt="x")
+    real_import = builtins.__import__
+
+    def boom(name, *args, **kwargs):
+        if name == "lionagi.version":
+            raise ImportError("simulated")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", boom)
+    st = jobs.status(handle["run_id"])
+
+    assert st["server"]["version"] == "unknown"
+    assert st["status"]  # the rest of the read is unaffected
