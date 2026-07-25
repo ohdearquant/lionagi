@@ -242,6 +242,10 @@ class _ProgressReport:
     def __init__(self, branch, now: float):
         self._branch = branch
         self._start = now
+        # Read once, and never re-read if it failed. Nothing is writing to the
+        # branch yet at this point, so a failure here is structural rather than
+        # transient. Adopting a later baseline instead would silently discard
+        # whatever had already landed and report it as no progress at all.
         self._base = self._counts()
         self._last = self._base
         self._changed_at = now
