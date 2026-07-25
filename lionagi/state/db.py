@@ -20,7 +20,7 @@ from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
 from lionagi.config import settings
 from lionagi.libs.path_safety import check_path_safe as _check_path_safe
 from lionagi.ln import json_dumps as _json_dumps
-from lionagi.ln.concurrency import CancelScope, Lock
+from lionagi.ln.concurrency import CancelScope, Lock, get_cancelled_exc_class, shield
 from lionagi.state.engine import (
     dialect_of,
     make_engine,
@@ -419,6 +419,55 @@ def _install_begin_immediate(sync_engine) -> None:
     @event.listens_for(sync_engine, "begin")
     def _on_begin(conn):
         conn.exec_driver_sql("BEGIN IMMEDIATE")
+
+
+async def _restore_foreign_keys(conn, driver) -> None:
+    """Turn foreign-key enforcement back on after a legacy table rebuild.
+
+    Every rebuild calls this from its ``finally``, so it runs on the failure
+    paths too, and those are the ones that need the care. Two things can leave a
+    pooled connection with enforcement silently off:
+
+    ``PRAGMA foreign_keys`` is a no-op while a transaction is open, so a rollback
+    that itself failed leaves its transaction alive and the pragma inert. Any
+    surviving transaction is therefore closed first.
+
+    And a write is not a result. The setting is read back rather than assumed,
+    and a connection whose enforcement cannot be confirmed is invalidated so it
+    is never handed out again.
+
+    Cancellation gets its own handling rather than falling through. It arrives as
+    a BaseException, so catching ``Exception`` would let it skip the read-back and
+    the invalidation both, which is the one outcome this function exists to
+    prevent. The invalidation is shielded so it completes, and the cancellation is
+    then re-raised untouched.
+    """
+    cancelled_exc = get_cancelled_exc_class()
+
+    try:
+        # No-op when the caller already ended its own transaction.
+        await driver.rollback()
+    except cancelled_exc:
+        await shield(conn.invalidate)
+        raise
+    except Exception:  # noqa: S110 -- not fatal on its own; the read-back below is
+        # what decides whether this connection is safe to hand out again.
+        pass
+
+    confirmed = False
+    try:
+        await driver.execute("PRAGMA foreign_keys = ON")
+        await driver.commit()
+        row = await (await driver.execute("PRAGMA foreign_keys")).fetchone()
+        confirmed = bool(row) and row[0] == 1
+    except cancelled_exc:
+        await shield(conn.invalidate)
+        raise
+    except Exception:
+        confirmed = False
+
+    if not confirmed:
+        await shield(conn.invalidate)
 
 
 class StateDB:
@@ -905,17 +954,36 @@ class StateDB:
         col_list = ", ".join(cols)
 
         async def _rebuild() -> None:
-            async with self._engine.begin() as conn:
-                await conn.execute(text("PRAGMA foreign_keys = OFF"))
+            async with self._engine.connect() as conn:
+                driver = (await conn.get_raw_connection()).driver_connection
                 try:
-                    # Create without FK references: the referenced tables (messages,
-                    # invocations) may not exist yet in a minimal legacy DB.
-                    # metadata.create_all() runs AFTER this rebuild and will not
-                    # re-create sessions (table already exists after rename).
-                    # FK enforcement relies on the PRAGMA which is already set up
-                    # by make_engine and applies to all DML after schema init.
-                    await conn.execute(
-                        text(
+                    # The OFF pragma is inside this try, not above it, because it
+                    # takes effect at its own await with no flush required. That is
+                    # measured, not inferred from the commit that follows. Anything
+                    # interrupting after it -- cancellation included -- must still
+                    # reach the finally, or a pooled connection keeps foreign keys
+                    # disabled for every caller that borrows it next.
+                    await driver.execute("PRAGMA foreign_keys = OFF")
+                    # The commit does not make the pragma effective; it closes any
+                    # open transaction so BEGIN IMMEDIATE starts cleanly. The pragma
+                    # must run on the raw driver: open() installs BEGIN IMMEDIATE on
+                    # every sqlite engine, so setting it through an engine-level
+                    # begin() block leaves it a no-op and enforcement stays on for
+                    # the whole rebuild.
+                    await driver.commit()
+                    await driver.execute("BEGIN IMMEDIATE")
+                    try:
+                        # The foreign keys below are the ones the declared schema
+                        # carries, so a rebuilt table ends up with the same
+                        # constraints a freshly created one gets. They are what
+                        # makes the OFF pragma above load-bearing: sqlite accepts
+                        # a forward reference to a table that does not exist yet,
+                        # but with enforcement on, every statement against the
+                        # child fails while the parent is absent -- including the
+                        # copy below, and including rows whose FK column is NULL.
+                        # A minimal legacy DB has no messages or invocations table
+                        # until create_all() runs after this rebuild.
+                        await driver.execute(
                             """
                             CREATE TABLE sessions_new (
                               id              TEXT    PRIMARY KEY,
@@ -924,9 +992,9 @@ class StateDB:
                               node_metadata   JSON,
                               name            TEXT,
                               user            TEXT,
-                              progression_id  TEXT    NOT NULL,
-                              first_msg_id    TEXT,
-                              last_msg_id     TEXT,
+                              progression_id  TEXT    NOT NULL REFERENCES progressions(id),
+                              first_msg_id    TEXT    REFERENCES messages(id),
+                              last_msg_id     TEXT    REFERENCES messages(id),
                               updated_at      REAL    NOT NULL,
                               playbook_name   TEXT,
                               agent_name      TEXT,
@@ -947,7 +1015,7 @@ class StateDB:
                               ended_at        REAL,
                               last_message_at REAL,
                               current_phase   TEXT,
-                              invocation_id   TEXT,
+                              invocation_id   TEXT    REFERENCES invocations(id),
                               model           TEXT,
                               provider        TEXT,
                               effort          TEXT,
@@ -967,26 +1035,27 @@ class StateDB:
                             )
                             """
                         )
-                    )
-                    select_cols = []
-                    for c in cols:
-                        if c == "updated_at":
-                            select_cols.append(
-                                "COALESCE(updated_at, created_at, strftime('%s','now')) AS updated_at"
-                            )
-                        else:
-                            select_cols.append(c)
-                    select_list = ", ".join(select_cols)
-                    insert_sql = (
-                        f"INSERT INTO sessions_new ({col_list}) SELECT {select_list} FROM sessions"  # noqa: S608
-                    )
-                    await conn.execute(text(insert_sql))
-                    await conn.execute(text("DROP TABLE sessions"))
-                    await conn.execute(text("ALTER TABLE sessions_new RENAME TO sessions"))
-                    for idx_sql in index_sqls:
-                        await conn.execute(text(idx_sql))
+                        select_cols = []
+                        for c in cols:
+                            if c == "updated_at":
+                                select_cols.append(
+                                    "COALESCE(updated_at, created_at, strftime('%s','now')) AS updated_at"
+                                )
+                            else:
+                                select_cols.append(c)
+                        select_list = ", ".join(select_cols)
+                        insert_sql = f"INSERT INTO sessions_new ({col_list}) SELECT {select_list} FROM sessions"  # noqa: S608
+                        await driver.execute(insert_sql)
+                        await driver.execute("DROP TABLE sessions")
+                        await driver.execute("ALTER TABLE sessions_new RENAME TO sessions")
+                        for idx_sql in index_sqls:
+                            await driver.execute(idx_sql)
+                        await driver.commit()
+                    except BaseException:
+                        await driver.rollback()
+                        raise
                 finally:
-                    await conn.execute(text("PRAGMA foreign_keys = ON"))
+                    await _restore_foreign_keys(conn, driver)
 
         await self._rebuild_check_constraint(
             "sessions",
@@ -1077,13 +1146,14 @@ class StateDB:
         async def _rebuild() -> None:
             async with self._engine.connect() as conn:
                 driver = (await conn.get_raw_connection()).driver_connection
-                await driver.execute("PRAGMA foreign_keys = OFF")
-                # Everything after the OFF pragma — including the flush commit
-                # that makes it take effect — sits inside the outer try so that
-                # ANY failure path restores enforcement in the finally block; a
-                # flush failure must not leave the pooled connection with
-                # foreign keys silently disabled.
                 try:
+                    # Inside the try, not above it: the pragma takes effect at its
+                    # own await with no flush required, so anything interrupting
+                    # after it -- cancellation included -- must still reach the
+                    # finally or a pooled connection keeps foreign keys disabled.
+                    # The commit closes any open transaction rather than making the
+                    # pragma effective.
+                    await driver.execute("PRAGMA foreign_keys = OFF")
                     await driver.commit()
                     await driver.execute("BEGIN IMMEDIATE")
                     try:
@@ -1099,8 +1169,7 @@ class StateDB:
                         await driver.rollback()
                         raise
                 finally:
-                    await driver.execute("PRAGMA foreign_keys = ON")
-                    await driver.commit()
+                    await _restore_foreign_keys(conn, driver)
 
         await self._rebuild_check_constraint(
             "schedules",
@@ -1196,13 +1265,14 @@ class StateDB:
         async def _rebuild() -> None:
             async with self._engine.connect() as conn:
                 driver = (await conn.get_raw_connection()).driver_connection
-                await driver.execute("PRAGMA foreign_keys = OFF")
-                # Everything after the OFF pragma — including the flush commit
-                # that makes it take effect — sits inside the outer try so that
-                # ANY failure path restores enforcement in the finally block; a
-                # flush failure must not leave the pooled connection with
-                # foreign keys silently disabled.
                 try:
+                    # Inside the try, not above it: the pragma takes effect at its
+                    # own await with no flush required, so anything interrupting
+                    # after it -- cancellation included -- must still reach the
+                    # finally or a pooled connection keeps foreign keys disabled.
+                    # The commit closes any open transaction rather than making the
+                    # pragma effective.
+                    await driver.execute("PRAGMA foreign_keys = OFF")
                     await driver.commit()
                     await driver.execute("BEGIN IMMEDIATE")
                     try:
@@ -1218,8 +1288,7 @@ class StateDB:
                         await driver.rollback()
                         raise
                 finally:
-                    await driver.execute("PRAGMA foreign_keys = ON")
-                    await driver.commit()
+                    await _restore_foreign_keys(conn, driver)
 
         await self._rebuild_check_constraint(
             "schedules",
@@ -1283,8 +1352,14 @@ class StateDB:
         async def _rebuild() -> None:
             async with self._engine.connect() as conn:
                 driver = (await conn.get_raw_connection()).driver_connection
-                await driver.execute("PRAGMA foreign_keys = OFF")
                 try:
+                    # Inside the try, not above it: the pragma takes effect at its
+                    # own await with no flush required, so anything interrupting
+                    # after it -- cancellation included -- must still reach the
+                    # finally or a pooled connection keeps foreign keys disabled.
+                    # The commit closes any open transaction rather than making the
+                    # pragma effective.
+                    await driver.execute("PRAGMA foreign_keys = OFF")
                     await driver.commit()
                     await driver.execute("BEGIN IMMEDIATE")
                     try:
@@ -1300,8 +1375,7 @@ class StateDB:
                         await driver.rollback()
                         raise
                 finally:
-                    await driver.execute("PRAGMA foreign_keys = ON")
-                    await driver.commit()
+                    await _restore_foreign_keys(conn, driver)
 
         await self._rebuild_check_constraint(
             "schedules",
@@ -1375,14 +1449,17 @@ class StateDB:
         async def _rebuild() -> None:
             async with self._engine.connect() as conn:
                 driver = (await conn.get_raw_connection()).driver_connection
-                await driver.execute("PRAGMA foreign_keys = OFF")
-                # Everything after the OFF pragma sits inside the outer try so
-                # ANY failure path restores enforcement in the finally block.
-                # The flush commit makes the pragma effective, then BEGIN
-                # IMMEDIATE makes the whole rebuild one atomic transaction —
-                # DDL autocommits per-statement otherwise, so a crash between
-                # DROP and RENAME would strand the data in invocations_new.
                 try:
+                    # Inside the try, not above it: the pragma takes effect at its
+                    # own await with no flush required, so anything interrupting
+                    # after it -- cancellation included -- must still reach the
+                    # finally or a pooled connection keeps foreign keys disabled.
+                    await driver.execute("PRAGMA foreign_keys = OFF")
+                    # The commit closes any open transaction rather than making the
+                    # pragma effective, then BEGIN IMMEDIATE makes the whole rebuild
+                    # one atomic transaction — DDL autocommits per-statement
+                    # otherwise, so a crash between DROP and RENAME would strand the
+                    # data in invocations_new.
                     await driver.commit()
                     await driver.execute("BEGIN IMMEDIATE")
                     await driver.execute(
@@ -1422,8 +1499,7 @@ class StateDB:
                     await driver.rollback()
                     raise
                 finally:
-                    await driver.execute("PRAGMA foreign_keys = ON")
-                    await driver.commit()
+                    await _restore_foreign_keys(conn, driver)
 
         await self._rebuild_check_constraint(
             "invocations",
@@ -1542,12 +1618,16 @@ class StateDB:
         async def _rebuild() -> None:
             async with self._engine.connect() as conn:
                 driver = (await conn.get_raw_connection()).driver_connection
-                await driver.execute("PRAGMA foreign_keys = OFF")
-                # Same shape as the invocations rebuild above: flush commit so
-                # the pragma takes effect, then one BEGIN IMMEDIATE transaction
-                # around the whole rebuild so a crash mid-sequence cannot
-                # strand the data in schedule_runs_new.
                 try:
+                    # Same shape as the invocations rebuild above. The pragma is
+                    # inside the try because it takes effect at its own await, so
+                    # anything interrupting after it -- cancellation included --
+                    # must still reach the finally.
+                    await driver.execute("PRAGMA foreign_keys = OFF")
+                    # The commit closes any open transaction rather than making the
+                    # pragma effective, then one BEGIN IMMEDIATE transaction wraps
+                    # the whole rebuild so a crash mid-sequence cannot strand the
+                    # data in schedule_runs_new.
                     await driver.commit()
                     await driver.execute("BEGIN IMMEDIATE")
                     await driver.execute(
@@ -1619,8 +1699,7 @@ class StateDB:
                     await driver.rollback()
                     raise
                 finally:
-                    await driver.execute("PRAGMA foreign_keys = ON")
-                    await driver.commit()
+                    await _restore_foreign_keys(conn, driver)
 
         await self._rebuild_check_constraint(
             "schedule_runs",
