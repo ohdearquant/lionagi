@@ -525,7 +525,11 @@ is configured, sends a terminal notice.
   reading, so nothing wakes it to learn that nothing will wake it (P8). A consumer
   restart across a successful delivery loses it identically. Reconciliation is D10's
   bounded wait, or a poll; the notice is an optimisation over that floor, not a
-  replacement for it.
+  replacement for it. That floor is bounded observation and not eventual resolution: an
+  orphan under D6 sends no notice, because it never reaches a terminal status, and it does
+  not resolve under polling either. A consumer that reads this decision as "the poll always
+  gets there in the end" has the right fallback and the wrong stopping condition, which is
+  what the consumer obligation on a still-pending bounded wait is for.
 - The outcome of the delivery attempt is recorded and surfaced on `status` under D7's
   availability shape. `attempted: false` means no delivery was configured, which is a
   valid configuration and not a failure — and is a different fact from a delivery that
@@ -649,15 +653,23 @@ being asked of them in one place.
    actually tolerates it.
 3. **Never map `status` onto a local set** (D4). Record and display it verbatim; branch
    on `terminal` and `outcome`.
-4. **Never render `available: false` as "none"** (D7). Absence of evidence is not
+4. **Branch on `outcome` totally, including `indeterminate`** (D4). All four cases —
+   `null`, `succeeded`, `failed`, `indeterminate` — need a defined behaviour. This is the
+   obligation that makes D4's reservation of `indeterminate` worth anything: the value is
+   defined now so that a reconciler can be added later without a version increment, and
+   that additivity is real only if consumers already have somewhere to put it. No v1 path
+   emits it, so a consumer cannot find the missing branch by testing against a producer,
+   and a two-way branch written against v1 behaviour looks complete for as long as v1 is
+   what it talks to. Test the branch against a hand-written envelope.
+5. **Never render `available: false` as "none"** (D7). Absence of evidence is not
    evidence of absence, and the whole wrapper exists to stop those sharing an encoding.
-5. **Check the exit status before parsing stdout, and do not parse it at all on 78**
+6. **Check the exit status before parsing stdout, and do not parse it at all on 78**
    (D8). Attributing an environment fault to the submitted work is the misattribution
    this contract was written to remove.
-6. **Never treat a terminal notice as proof, or as the only discovery path** (D9).
+7. **Never treat a terminal notice as proof, or as the only discovery path** (D9).
    Delivery can fail, and the record of that failure lives in state a non-polling
    consumer is not reading.
-7. **Have a defined policy for a run still pending when a bounded wait expires** (D10,
+8. **Have a defined policy for a run still pending when a bounded wait expires** (D10,
    D6). This is the obligation created by v1's liveness choice, and it is the one most
    likely to be skipped, because most runs resolve and the case looks like an edge. It is
    not an edge: v1 states that nothing terminalises an orphan, so a consumer that runs
