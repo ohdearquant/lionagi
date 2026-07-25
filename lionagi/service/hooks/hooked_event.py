@@ -95,32 +95,43 @@ class HookedEvent(Event):
                 )
             await global_hook_logger.alog(h_ev)
 
-        async for chunk in self._core_stream():
-            yield chunk
+        # The post-stream hook is teardown: it must run whether the core stream
+        # completed, raised, or the consumer stopped early (which resumes this
+        # generator with GeneratorExit at the yield), so the loop is wrapped in
+        # try/finally rather than falling through on the happy path only.
+        try:
+            async for chunk in self._core_stream():
+                yield chunk
+        finally:
+            await self._run_post_stream_hook()
 
-        # Post-stream hook failure: data already sent, must not reraise — log at WARNING only.
-        # HookRegistry.post_invocation() records a handler's raised exception on the
-        # HookEvent (status FAILED/CANCELLED/ABORTED) rather than re-raising it out of
-        # invoke(), so the failure must be detected via status, not a try/except.
-        if h_ev := self._post_invoke_hook_event:
-            try:
-                await h_ev.invoke()
-                if h_ev.execution.status in (
-                    EventStatus.FAILED,
-                    EventStatus.CANCELLED,
-                    EventStatus.ABORTED,
-                ):
-                    _logger.warning(
-                        "Post-stream hook failed (data already sent): %s",
-                        h_ev.execution.error,
-                    )
-            except Exception as _hook_exc:
+    async def _run_post_stream_hook(self):
+        """Run the post-stream hook; failures are logged, never raised (data already sent).
+
+        HookRegistry.post_invocation() records a handler's raised exception on the
+        HookEvent (status FAILED/CANCELLED/ABORTED) rather than re-raising it out of
+        invoke(), so the failure must be detected via status, not a try/except.
+        """
+        if not (h_ev := self._post_invoke_hook_event):
+            return
+        try:
+            await h_ev.invoke()
+            if h_ev.execution.status in (
+                EventStatus.FAILED,
+                EventStatus.CANCELLED,
+                EventStatus.ABORTED,
+            ):
                 _logger.warning(
                     "Post-stream hook failed (data already sent): %s",
-                    _hook_exc,
-                    exc_info=True,
+                    h_ev.execution.error,
                 )
-            await global_hook_logger.alog(h_ev)
+        except Exception as _hook_exc:
+            _logger.warning(
+                "Post-stream hook failed (data already sent): %s",
+                _hook_exc,
+                exc_info=True,
+            )
+        await global_hook_logger.alog(h_ev)
 
     def create_pre_invoke_hook(
         self,

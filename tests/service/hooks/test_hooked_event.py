@@ -284,3 +284,53 @@ async def test_stream_post_hook_aborted_status_logs_warning(caplog):
 
     assert chunks == ["chunk1", "chunk2"]
     assert any("Post-stream hook failed" in r.message for r in caplog.records)
+
+
+class PartialFailingHooked(HookedEvent):
+    async def _core_stream(self):
+        yield "chunk1"
+        raise ValueError("core_stream_failed_midway")
+
+
+@pytest.mark.asyncio
+async def test_stream_post_hook_runs_when_core_stream_raises():
+    """A stream that fails partway through must still run post-hook teardown,
+    and the original exception must reach the caller unchanged."""
+    h = PartialFailingHooked()
+    hook = _fake_hook()
+    hook.invoked = False
+
+    async def _invoke():
+        hook.invoked = True
+
+    hook.invoke = _invoke
+    h._post_invoke_hook_event = hook
+
+    chunks = []
+    with pytest.raises(ValueError, match="core_stream_failed_midway"):
+        async for c in h._stream():
+            chunks.append(c)
+
+    assert chunks == ["chunk1"]
+    assert hook.invoked is True
+
+
+@pytest.mark.asyncio
+async def test_stream_post_hook_runs_when_consumer_stops_early():
+    """A consumer that breaks out of the stream must still run post-hook teardown."""
+    h = SimpleHooked()
+    hook = _fake_hook()
+    hook.invoked = False
+
+    async def _invoke():
+        hook.invoked = True
+
+    hook.invoke = _invoke
+    h._post_invoke_hook_event = hook
+
+    agen = h._stream()
+    async for _ in agen:
+        break
+    await agen.aclose()
+
+    assert hook.invoked is True
