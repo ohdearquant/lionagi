@@ -34,6 +34,15 @@ _REAPABLE_PLAY_STATUSES = frozenset({"running", "running_complete", "prepared", 
 
 # ── invocation deadline + zero-session reaper ────────────────────────────────
 
+# Action kinds whose child process never creates a lionagi session. The
+# zero-session condition below infers "this launch is stuck" from a session
+# count that never left zero; for these kinds zero is the correct steady
+# state for the whole run, so that inference would reap a perfectly healthy
+# process. A 'command' action spawns an allow-listed executable directly —
+# a shell script, a test runner — which has no reason to ever open a Branch.
+# The wall-clock deadline still applies to them; only this heuristic is off.
+_SESSIONLESS_ACTION_KINDS = frozenset({"command"})
+
 
 def _deadline_for_kind(action_kind: str | None, global_default: int) -> int:
     """Resolve the effective deadline: checks
@@ -88,7 +97,7 @@ async def reap_stale_invocations(
                 started_at = inv.get("started_at") or now
                 updated_at = inv.get("updated_at") or started_at
                 session_count = inv.get("session_count") or 0
-                action_kind = inv.get("action_kind")  # SELECT inv.* includes this column
+                action_kind = inv.get("action_kind")  # joined from the firing occurrence
 
                 # Per-kind override: check env var before falling back to global.
                 effective_deadline = _deadline_for_kind(action_kind, deadline_seconds)
@@ -127,7 +136,16 @@ async def reap_stale_invocations(
                         _log.debug("Invocation %s skipped (status changed before CAS lock)", inv_id)
                     continue
 
-                # Condition 2: zero sessions and past grace period.
+                # Condition 2: zero sessions and past grace period. Skipped
+                # for kinds that never open a session — see
+                # _SESSIONLESS_ACTION_KINDS. Reaping one of those writes a
+                # terminal status onto a row whose process is still running,
+                # and because the executor's own terminal write is guarded on
+                # the row still being 'running', the real outcome is then
+                # refused for good: the run reports the reaper's verdict
+                # forever, whatever the child went on to do.
+                if action_kind in _SESSIONLESS_ACTION_KINDS:
+                    continue
                 if session_count == 0 and updated_at < grace_cutoff:
                     _log.info(
                         "Reaping invocation %s: zero sessions past grace period (%ss)",

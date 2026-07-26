@@ -3669,7 +3669,9 @@ class StateDB:
         #
         # Also surface the schedule_run that fired this invocation (exit_code,
         # error_detail) so the UI can show why a scheduled run failed without
-        # a second round-trip. Unlike the sessions join above, this uses
+        # a second round-trip. action_kind comes from the same subquery: it is
+        # a property of the fired occurrence, not a column on invocations, and
+        # the lifecycle reaper's policy is per-kind. Unlike the sessions join above, this uses
         # correlated scalar subqueries rather than a ranked derived table:
         # ORDER BY + LIMIT/OFFSET on inv.updated_at narrows to the emitted
         # page first (sorting only invocations, not schedule_runs), and each
@@ -3687,7 +3689,11 @@ class StateDB:
             "  ( SELECT sr.error_detail FROM schedule_runs sr "
             "    WHERE sr.invocation_id = inv.id "
             "    ORDER BY COALESCE(sr.created_at, 0) DESC, sr.id DESC LIMIT 1 "
-            "  ) AS schedule_run_error_detail "
+            "  ) AS schedule_run_error_detail, "
+            "  ( SELECT sr.action_kind FROM schedule_runs sr "
+            "    WHERE sr.invocation_id = inv.id "
+            "    ORDER BY COALESCE(sr.created_at, 0) DESC, sr.id DESC LIMIT 1 "
+            "  ) AS action_kind "
             "FROM invocations inv "
             "LEFT JOIN ( "
             "  SELECT invocation_id, project, project_source FROM ( "
