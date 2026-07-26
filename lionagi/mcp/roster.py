@@ -88,14 +88,18 @@ def _placement(name: str) -> dict[str, Any]:
     walked in the same order, so the file named here is the file that was read.
     """
     from lionagi._paths import find_lionagi_dirs
-    from lionagi.cli._providers import _resolve_plugin_profile_path, _resolve_profile_path
+    from lionagi.cli._providers import _profile_path_candidates, _resolve_plugin_profile_path
 
     found: list[dict[str, str]] = []
     if "/" not in name:
         for d in find_lionagi_dirs():
-            path = _resolve_profile_path(d / "agents", name)
-            if path is not None:
-                found.append({"path": str(path), "scope": _scope(d)})
+            # Every candidate in the root, not just the winning one: the two
+            # layouts share a directory, so a single root can hold two
+            # declarations of the same name and the loser is displaced just as
+            # surely as one in a root further down.
+            for path in _profile_path_candidates(d / "agents", name):
+                if path.is_file():
+                    found.append({"path": str(path), "scope": _scope(d)})
     plugin_path = _resolve_plugin_profile_path(name)
     if plugin_path is not None:
         found.append({"path": str(plugin_path), "scope": "plugin"})

@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.cli._providers import load_agent_profile
+from lionagi.cli._providers import load_agent_profile, profile_config
 from lionagi.mcp import dispatch
 
 
@@ -126,13 +126,59 @@ def test_a_name_in_both_roots_resolves_to_the_project_one(roots):
     assert shown["shadowed"] == [{"path": str(roots.glob / "reviewer.md"), "scope": "global"}]
 
 
+def test_the_two_layouts_in_one_root_shadow_each_other_too(roots):
+    """A root holds two layouts, so it can hold two declarations of one name.
+
+    The loser here is displaced exactly as surely as a file in a root further
+    down, and it is easier to miss: reporting only the winning path per root
+    hides it, and the caller reads an empty shadowed list as "nothing else
+    declares this".
+    """
+    directory_layout = roots.proj / "reviewer" / "reviewer.md"
+    directory_layout.parent.mkdir(parents=True)
+    directory_layout.write_text("---\nmodel: directory-model\n---\ndirectory\n")
+    flat_layout = write_profile(roots.proj, "reviewer", "---\nmodel: flat-model\n---\nflat\n")
+
+    shown = op("profile.show", {"name": "reviewer"})["result"]
+
+    assert shown["source"]["path"] == str(directory_layout)
+    assert shown["resolved"]["model"] == "directory-model"
+    assert shown["shadowed"] == [{"path": str(flat_layout), "scope": "project"}]
+
+
+def test_a_same_root_loser_is_listed_before_a_further_root(roots):
+    # Shadowed is in resolution order, so the file that came closest to winning
+    # comes first -- which is the one to delete if the wrong profile ran.
+    directory_layout = roots.proj / "reviewer" / "reviewer.md"
+    directory_layout.parent.mkdir(parents=True)
+    directory_layout.write_text("---\nmodel: directory-model\n---\ndirectory\n")
+    flat_layout = write_profile(roots.proj, "reviewer", "---\nmodel: flat-model\n---\nflat\n")
+    global_layout = write_profile(roots.glob, "reviewer", "---\nmodel: g\n---\nglobal\n")
+
+    shown = op("profile.show", {"name": "reviewer"})["result"]
+
+    assert [entry["path"] for entry in shown["shadowed"]] == [
+        str(flat_layout),
+        str(global_layout),
+    ]
+
+
 def test_the_verb_agrees_with_the_loader_a_run_would_use(roots):
-    write_profile(roots.glob, "reviewer", "---\nmodel: global-model\n---\nglobal\n")
-    write_profile(roots.proj, "reviewer", "---\nmodel: project-model\neffort: high\n---\np\n")
+    """Compared on a profile that declares almost nothing, and on every field.
+
+    Both halves are load-bearing. Two fields are not enough — a roster that
+    parsed a couple for itself would pass and disagree with the run about the
+    rest. And a profile with everything set is not enough either: a reader
+    supplying its own default only diverges where the file is silent, so a fully
+    populated fixture agrees with any defaulting logic at all.
+    """
+    write_profile(roots.glob, "reviewer", "---\nmodel: global-model\neffort: high\n---\ng\n")
+    write_profile(roots.proj, "reviewer", "---\nmodel: project-model\n---\nproject\n")
 
     shown = op("profile.show", {"name": "reviewer"})["result"]["resolved"]
-    loaded = load_agent_profile("reviewer")
-    assert (shown["model"], shown["effort"]) == (loaded.model, loaded.effort)
+    assert shown == profile_config(load_agent_profile("reviewer"))
+    assert shown["model"] == "project-model"
+    assert [key for key, value in shown.items() if value is None]
 
 
 def test_an_unshadowed_name_reports_nothing_shadowed(roots):

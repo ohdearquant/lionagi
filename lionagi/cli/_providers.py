@@ -371,6 +371,17 @@ def _unreadable_symlink_target(path: Path) -> str | None:
         return "<unreadable>"
 
 
+def _profile_path_candidates(agents_dir: Path, name: str) -> tuple[Path, ...]:
+    """Where NAME may live in one agents dir, in the order resolution tries them.
+
+    Two layouts share a directory, so a root can hold more than one declaration
+    of the same name. Anything reporting which files declare a profile has to
+    walk the same candidates in the same order as the resolver, or it reports a
+    displaced file in one root while missing one in another.
+    """
+    return (agents_dir / name / f"{name}.md", agents_dir / f"{name}.md")
+
+
 def _resolve_profile_path(
     agents_dir: Path,
     name: str,
@@ -378,8 +389,7 @@ def _resolve_profile_path(
     unreadable_symlinks: list[tuple[Path, str]] | None = None,
 ) -> Path | None:
     """Return profile path for NAME, recording unreadable candidate symlinks."""
-    candidates = (agents_dir / name / f"{name}.md", agents_dir / f"{name}.md")
-    for candidate in candidates:
+    for candidate in _profile_path_candidates(agents_dir, name):
         if candidate.is_file():
             return candidate
         target = _unreadable_symlink_target(candidate)
