@@ -101,6 +101,7 @@ async def store_probe(*, timeout_ms: int = STORE_PROBE_TIMEOUT_MS) -> dict[str, 
     import aiosqlite
 
     from lionagi.ln import move_on_after
+    from lionagi.ln.concurrency import CancelScope
 
     result: dict[str, Any] = {
         "status": "unavailable",
@@ -116,15 +117,23 @@ async def store_probe(*, timeout_ms: int = STORE_PROBE_TIMEOUT_MS) -> dict[str, 
 
     started = time.perf_counter()
     timed_out = True
+    # Closing is deliberately not left to `async with`. This connection runs a
+    # worker thread, and closing it is itself an await; inside a scope that has
+    # just been cancelled that await is cancelled too, so the thread survives
+    # holding an open database and then tries to complete against an event loop
+    # that has since closed. The probe exists to be cancelled — that is what a
+    # slow verdict is — so its cleanup is the one part that must not be.
+    conn = None
     try:
         with move_on_after(timeout_ms / 1000) as scope:
-            async with aiosqlite.connect(str(DEFAULT_DB_PATH)) as db:
-                # The shared connection helper waits 5s on a lock, which would
-                # outlast this probe's own deadline; the probe would rather
-                # report "slow" than sit in SQLite's retry loop.
-                await db.execute(f"PRAGMA busy_timeout = {timeout_ms}")
-                cur = await db.execute(_STORE_PROBE_SQL)
-                await cur.fetchone()
+            conn = aiosqlite.connect(str(DEFAULT_DB_PATH))
+            db = await conn
+            # The shared connection helper waits 5s on a lock, which would
+            # outlast this probe's own deadline; the probe would rather
+            # report "slow" than sit in SQLite's retry loop.
+            await db.execute(f"PRAGMA busy_timeout = {timeout_ms}")
+            cur = await db.execute(_STORE_PROBE_SQL)
+            await cur.fetchone()
             timed_out = False
         if scope.cancelled_caught:
             timed_out = True
@@ -132,6 +141,10 @@ async def store_probe(*, timeout_ms: int = STORE_PROBE_TIMEOUT_MS) -> dict[str, 
         result["latency_ms"] = round((time.perf_counter() - started) * 1000, 1)
         result["detail"] = f"{type(exc).__name__}: {exc}"
         return result
+    finally:
+        if conn is not None:
+            with CancelScope(shield=True):
+                await conn.close()
 
     result["latency_ms"] = round((time.perf_counter() - started) * 1000, 1)
     if timed_out:

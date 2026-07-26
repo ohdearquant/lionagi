@@ -275,12 +275,19 @@ class TestStoreProbe:
         import anyio
 
         class _SlowConnection:
-            async def __aenter__(self):
-                await anyio.sleep(5)
-                raise AssertionError("probe should have given up before this")
+            # Shaped like the real connection object, which is awaited to
+            # connect and closed explicitly. A double that only implemented
+            # `async with` would still pass while the code under test stopped
+            # using it.
+            def __await__(self):
+                async def _hang():
+                    await anyio.sleep(5)
+                    raise AssertionError("probe should have given up before this")
 
-            async def __aexit__(self, *exc):
-                return False
+                return _hang().__await__()
+
+            async def close(self):
+                return None
 
         import aiosqlite
 
@@ -290,6 +297,101 @@ class TestStoreProbe:
         assert body["timeout_ms"] == 100
         assert body["store_present"] is True
         assert "did not answer" in body["detail"]
+
+    def test_a_real_lock_leaves_no_connection_running_behind_the_timeout(self, seeded, monkeypatch):
+        """The probe gives up on a genuinely locked store and takes its thread with it.
+
+        A slow verdict is a cancellation, so the code that closes the connection
+        runs inside a scope that has already been cancelled. If that close is
+        awaited unprotected it is cancelled too, and the connection's worker
+        thread outlives the probe holding an open database — until the event
+        loop closes underneath it and it raises from a thread nobody is
+        watching. Nothing about the response body shows this, which is why the
+        assertion is on the thread rather than on the verdict.
+
+        The lock is a real one taken by another connection. A slow double can
+        be made to hang, but only a real lock produces the real connection, the
+        real worker thread and the real cleanup path that was wrong.
+        """
+        import asyncio
+        import threading
+
+        from aiosqlite.core import _connection_worker_thread
+
+        from lionagi.studio.services import admin as admin_svc
+
+        db_path, _ = seeded
+
+        def _workers() -> int:
+            return sum(
+                1
+                for t in threading.enumerate()
+                if getattr(t, "_target", None) is _connection_worker_thread
+            )
+
+        # The store runs in WAL, where an ordinary writer never blocks a reader.
+        # An exclusive locking mode does: it holds the file lock outright, so
+        # any other connection is refused until this one lets go.
+        blocker = sqlite3.connect(str(db_path), isolation_level=None)
+        blocker.execute("PRAGMA locking_mode = EXCLUSIVE")
+        blocker.execute("BEGIN IMMEDIATE")
+        blocker.execute("UPDATE sessions SET name = name")
+        try:
+            before = _workers()
+            body = asyncio.run(admin_svc.store_probe(timeout_ms=50))
+            assert body["status"] == "slow", body
+            assert _workers() == before, "a connection worker outlived the probe"
+        finally:
+            blocker.rollback()
+            blocker.close()
+
+    def test_a_caller_that_gives_up_first_also_leaves_nothing_running(self, seeded):
+        """The same cleanup, with the cancellation coming from outside.
+
+        Readiness is served inside a request, and a request can be abandoned:
+        the client disconnects, the daemon shuts down, an outer deadline fires.
+        Then the probe's own cleanup runs with a cancellation already active
+        around it, and an unprotected close is cancelled before it reaches the
+        connection. The previous test cannot see this — there the probe absorbs
+        its own timeout, so by the time cleanup runs nothing is cancelling any
+        more and the close completes either way.
+        """
+        import threading
+
+        import anyio
+        from aiosqlite.core import _connection_worker_thread
+
+        from lionagi.studio.services import admin as admin_svc
+
+        db_path, _ = seeded
+
+        def _workers() -> int:
+            return sum(
+                1
+                for t in threading.enumerate()
+                if getattr(t, "_target", None) is _connection_worker_thread
+            )
+
+        blocker = sqlite3.connect(str(db_path), isolation_level=None)
+        blocker.execute("PRAGMA locking_mode = EXCLUSIVE")
+        blocker.execute("BEGIN IMMEDIATE")
+        blocker.execute("UPDATE sessions SET name = name")
+        try:
+            before = _workers()
+
+            async def _abandon():
+                with anyio.move_on_after(0.05):
+                    # Long enough that the caller's deadline is the one that fires.
+                    await admin_svc.store_probe(timeout_ms=5000)
+
+            anyio.run(_abandon)
+            deadline = time.monotonic() + 5
+            while _workers() > before and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert _workers() == before, "a connection worker outlived an abandoned probe"
+        finally:
+            blocker.rollback()
+            blocker.close()
 
     def test_probe_never_returns_5xx(self, client, monkeypatch):
         import aiosqlite
