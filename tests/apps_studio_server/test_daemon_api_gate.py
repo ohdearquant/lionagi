@@ -441,6 +441,7 @@ def test_admin_health_response_shape(tmp_path, monkeypatch):
     r = client.get("/api/admin/health")
     assert r.status_code == 200
     assert sorted(r.json().keys()) == [
+        "code_identity",
         "db",
         "diagnostic_run_at",
         "scheduler_timezone",
