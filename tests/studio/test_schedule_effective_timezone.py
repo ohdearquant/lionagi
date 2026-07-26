@@ -151,7 +151,7 @@ async def test_declared_zone_on_the_row_wins_and_is_attributed_to_the_row(
 
 
 @pytest.mark.asyncio
-async def test_a_fire_stamps_the_row_too(temp_db_path, monkeypatch):
+async def test_a_rearm_by_the_tick_loop_stamps_the_row_too(temp_db_path, monkeypatch):
     """Startup is not the only resolve point. A schedule armed by the tick
     loop must carry the stamp as well, or a row created between restarts
     stays unattributed until the daemon happens to bounce."""
@@ -171,6 +171,87 @@ async def test_a_fire_stamps_the_row_too(temp_db_path, monkeypatch):
     async with StateDB() as db:
         row = await db.get_schedule(sid)
 
+    assert row["effective_timezone"] == "America/New_York"
+    assert row["effective_timezone_source"] == "env:LIONAGI_SCHEDULER_TZ"
+
+
+@pytest.mark.asyncio
+async def test_an_actual_fire_stamps_the_row_too(temp_db_path, monkeypatch):
+    """Re-arming and firing are different writes, and both compute a next
+    fire time.
+
+    A schedule that never restarts and never has its next fire recomputed by
+    the tick loop still passes through here on every occurrence, so a stamp
+    missing from this path leaves exactly the schedules that run most often
+    as the ones nobody can attribute. Asserted through a real fire against
+    the store rather than on the arguments to a mock, because the question is
+    what ends up on the row.
+    """
+    from unittest.mock import AsyncMock, patch
+
+    from lionagi.state.db import StateDB
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    _pin_scheduler_tz(monkeypatch, "America/New_York", "env:LIONAGI_SCHEDULER_TZ")
+    sid = await _create_cron_schedule("tz-fired")
+
+    async with StateDB() as db:
+        schedule = await db.get_schedule(sid)
+
+    engine = SchedulerEngine()
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._fire(schedule, "run-tz-001", trigger_context={"scheduled": True})
+
+    async with StateDB() as db:
+        row = await db.get_schedule(sid)
+
+    assert row["last_fired_at"] is not None, "the fire path did not run"
+    assert row["effective_timezone"] == "America/New_York"
+    assert row["effective_timezone_source"] == "env:LIONAGI_SCHEDULER_TZ"
+
+
+@pytest.mark.asyncio
+async def test_a_fire_that_could_not_spawn_stamps_the_row_too(temp_db_path, monkeypatch):
+    """The failure path computes a next fire time as well, so it resolves a
+    zone as well, so it has to record which one.
+
+    A schedule whose action cannot be built fires, fails and re-arms on every
+    occurrence without ever reaching the normal path. Left unstamped it would
+    be the one class of schedule that is both permanently broken and
+    permanently unattributable, which is the combination least affordable
+    when someone is trying to work out why it runs when it does.
+    """
+    from unittest.mock import patch
+
+    from lionagi.state.db import StateDB
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    _pin_scheduler_tz(monkeypatch, "America/New_York", "env:LIONAGI_SCHEDULER_TZ")
+    sid = await _create_cron_schedule("tz-unspawnable")
+
+    async with StateDB() as db:
+        schedule = await db.get_schedule(sid)
+
+    engine = SchedulerEngine()
+    with patch(
+        "lionagi.studio.scheduler.subprocess.build_argv",
+        side_effect=ValueError("action is not buildable"),
+    ):
+        await engine._fire(schedule, "run-tz-002", trigger_context={"scheduled": True})
+
+    async with StateDB() as db:
+        row = await db.get_schedule(sid)
+
+    assert row["last_fired_at"] is not None, "the failure path did not run"
     assert row["effective_timezone"] == "America/New_York"
     assert row["effective_timezone_source"] == "env:LIONAGI_SCHEDULER_TZ"
 
