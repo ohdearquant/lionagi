@@ -658,7 +658,7 @@ async def _doctor(
     from sqlalchemy import text
 
     from lionagi.cli._util import pid_alive
-    from lionagi.cli.kill import _check_pid_identity_tristate, _read_pid_from_entity
+    from lionagi.cli.kill import _check_pid_identity, _read_pid_from_entity
 
     async with StateDB() as db:
         async with db._read() as conn:
@@ -707,7 +707,7 @@ async def _doctor(
                     expected_create_time = float(raw_ct) if raw_ct is not None else None
                 except (TypeError, ValueError):
                     expected_create_time = None
-                verdict = _check_pid_identity_tristate(
+                verdict = _check_pid_identity(
                     pid,
                     "lionagi",
                     expected_session_id=row["id"],
@@ -715,7 +715,9 @@ async def _doctor(
                 )
                 # "unverifiable" means the process could not be inspected, not
                 # that it is gone; skipping it leaves a row for the next run
-                # rather than reaping one out from under a worker.
+                # rather than reaping one out from under a worker. "zombie" is
+                # the opposite: the process has exited and is only waiting to
+                # be reaped, so the row is stale and belongs in the sweep.
                 if verdict in ("ours", "unverifiable"):
                     skipped += 1
                     continue

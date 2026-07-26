@@ -182,7 +182,7 @@ async def test_do_kill_all_stale_does_not_sweep_play_with_live_session(
     # lionagi CLI invocation, so the real cmdline check would (correctly)
     # reject it -- here it stands in for a live, identity-matching session.
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: pid == own_pid)
-    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", lambda *a, **kw: True)
+    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", lambda *a, **kw: "ours")
 
     old_time = time.time() - 7200
     async with StateDB() as db:
