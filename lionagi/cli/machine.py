@@ -433,12 +433,17 @@ def reserve_stdout() -> Iterator[MachineChannel]:
 def handshake_data() -> dict[str, Any]:
     from lionagi.version import __version__
 
+    from ._code_identity import code_identity
+
     return {
         "contract_version": CONTRACT_VERSION,
         "min_supported_version": MIN_SUPPORTED_CONTRACT_VERSION,
         "implementation": "lionagi",
         "implementation_version": __version__,
         "module": str(Path(__file__).resolve().parent),
+        # Which build answered, not which build was installed: a caller with no
+        # shell on this host has no other way to tell the two apart.
+        "code_identity": code_identity(),
     }
 
 
@@ -449,6 +454,10 @@ def doctor_data() -> dict[str, Any]:
     return {
         "checks": checks,
         "failed": sorted(name for name, result in checks.items() if result["status"] == "fail"),
+        # Reported apart from `failed` because a check that could not be run is
+        # not a check that passed, and a caller that only reads `failed` would
+        # otherwise treat the two the same.
+        "unknown": sorted(name for name, result in checks.items() if result["status"] == "unknown"),
     }
 
 

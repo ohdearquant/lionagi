@@ -468,12 +468,17 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
 
 
 def _server_info() -> dict[str, Any]:
+    from lionagi.cli._code_identity import code_identity
     from lionagi.cli.machine import CONTRACT_VERSION
     from lionagi.version import __version__
 
     return {
         "lionagi_version": __version__,
         "contract_version": CONTRACT_VERSION,
+        # The verb count below is this process's registration; `code_identity`
+        # says which tree that registration was read from and whether that tree
+        # is behind what it should be serving.
+        "code_identity": code_identity(),
         "started_at": _STARTED_AT,
         "uptime_seconds": round(time.time() - _STARTED_MONOTONIC, 3),
         "tool_count": 1,
