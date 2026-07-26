@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import config, jobs, projection
+from . import config, jobs, projection, roster
 from .verbs import (
     ABSENT,
     MAX_OPS,
@@ -498,6 +498,31 @@ async def _run_job(verb: Verb, args: dict[str, Any]) -> dict[str, Any]:
     return _JOB_EXECUTORS[verb.name](args)
 
 
+def _run_roster(verb: Verb, args: dict[str, Any]) -> dict[str, Any]:
+    """Answer a roster verb through the resolver a run itself uses.
+
+    Called in this process rather than spawned, because there is nothing here to
+    drift from: the profile loader is one function, and it is the same one the
+    spawned `li agent` calls. The one thing the subprocess boundary would have
+    carried for free is the working directory, so that is taken as an argument
+    and checked here — a run submitted with a bad cwd fails at spawn, and a
+    roster read of the same cwd should not answer for a different directory.
+    """
+    cwd = args.get("cwd")
+    if cwd is not None and not Path(cwd).expanduser().is_dir():
+        raise OpError("invalid_input", f"cwd {cwd!r} is not a directory")
+    try:
+        if verb.name == "profile.list":
+            return roster.profile_list(cwd=cwd)
+        return roster.profile_show(args["name"], cwd=cwd)
+    except FileNotFoundError as exc:
+        # The loader's own miss already names every available profile; re-listing
+        # them here would be a second answer that could disagree with it.
+        raise OpError("not_found", str(exc)) from exc
+    except ValueError as exc:
+        raise OpError("invalid_input", str(exc)) from exc
+
+
 def _run_machine(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
     """Run the verb's CLI path as a subprocess and return its versioned envelope.
 
@@ -686,6 +711,8 @@ async def _run_one(entry: Any) -> dict[str, Any]:
             result = _run_spawn(verb, schema, args)
         elif verb.executor == "job":
             result = await _run_job(verb, args)
+        elif verb.executor == "roster":
+            result = _run_roster(verb, args)
         else:
             result = _run_machine(verb, schema, args)
     except OpError as exc:

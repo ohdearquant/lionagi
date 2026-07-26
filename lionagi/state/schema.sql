@@ -214,6 +214,21 @@ CREATE INDEX IF NOT EXISTS idx_sessions_cc_session
   ON sessions(cc_session_id) WHERE cc_session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_run_id
   ON sessions(run_id) WHERE run_id IS NOT NULL;
+-- first_msg_id / last_msg_id are child keys of messages(id). Deleting a
+-- message makes sqlite look for rows here that still point at it, and with
+-- no index on the column that search is a scan of the whole table, once per
+-- deleted row -- a cost that is a function of the store rather than of the
+-- delete. Measured on a 3.9 GB store, indexing these two columns and
+-- branches(system_msg_id) took a message delete from 8.47 ms/row to
+-- 0.86 ms/row. Not partial: the search sqlite runs for a foreign key is not
+-- the query planner's, and only a plain index is certain to serve it.
+CREATE INDEX IF NOT EXISTS idx_sessions_first_msg_id
+  ON sessions(first_msg_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_last_msg_id
+  ON sessions(last_msg_id);
+-- Same shape one level up: progressions(id) is this column's parent.
+CREATE INDEX IF NOT EXISTS idx_sessions_progression_id
+  ON sessions(progression_id);
 
 -- ── Branches ──────────────────────────────────────────────────────────────
 -- A progression with identity.  Branch config (provider, model,
@@ -244,6 +259,11 @@ CREATE TABLE IF NOT EXISTS branches (
 
 CREATE INDEX IF NOT EXISTS idx_branches_session
   ON branches(session_id);
+-- Child keys of messages(id) / progressions(id); see idx_sessions_first_msg_id.
+CREATE INDEX IF NOT EXISTS idx_branches_system_msg_id
+  ON branches(system_msg_id);
+CREATE INDEX IF NOT EXISTS idx_branches_progression_id
+  ON branches(progression_id);
 
 -- ── Definitions (versioned agent + playbook files) ───────────────────────────
 -- Disk files remain source of truth; this table tracks edit history.

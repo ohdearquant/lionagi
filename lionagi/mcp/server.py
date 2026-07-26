@@ -37,7 +37,8 @@ mcp = FastMCP(SERVER_NAME)
 _OPS_DESCRIPTION = (
     "Operations to run, each {'op': '<verb>', 'args': {...}}. Verbs are namespaced: "
     "agent.submit, flow.submit, fanout.submit, play.submit spawn background runs; "
-    "job.status, job.output, job.list, job.wait, job.kill observe and control them. "
+    "job.status, job.output, job.list, job.wait, job.kill observe and control them; "
+    "profile.list, profile.show say which agent profiles exist here and what one runs. "
     "Call with help=true first for the full catalog with each verb's required "
     "parameters. Ops run in order; a failing op returns ok=false and does not stop "
     "the ops beside it."
