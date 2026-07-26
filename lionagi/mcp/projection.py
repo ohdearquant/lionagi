@@ -331,6 +331,22 @@ def _project_action(
     return schema
 
 
+def _accepts_no_values(action: argparse.Action) -> bool:
+    """A positional that parses happily with nothing supplied for it.
+
+    ``nargs="*"`` consumes zero or more values, so the command runs without it,
+    but argparse marks the action required all the same and then never enforces
+    it. Carrying that flag into the schema would tell a caller a parameter is
+    mandatory when the parser itself does not think so, and the caller has no
+    way to check. The rule is stated about the action rather than read off
+    ``required``, because ``required`` is what is wrong here: Python 3.14 stopped
+    setting it for exactly these actions, so trusting it makes the schema — and
+    every golden pinned to it — say different things on different interpreters
+    about one unchanged command.
+    """
+    return not action.option_strings and action.nargs == "*"
+
+
 def _mutually_exclusive(parser: argparse.ArgumentParser) -> list[dict[str, Any]]:
     groups = []
     for group in parser._mutually_exclusive_groups:
@@ -361,7 +377,7 @@ def project_parser(parser: argparse.ArgumentParser, *, path: str) -> dict[str, A
         if action.dest == argparse.SUPPRESS:
             continue
         properties[action.dest] = _project_action(path, parser, action)
-        if action.required:
+        if action.required and not _accepts_no_values(action):
             required.append(action.dest)
         if not action.option_strings:
             positionals.append(action.dest)

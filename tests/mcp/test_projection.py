@@ -285,6 +285,25 @@ def test_positionals_keep_parser_order() -> None:
     assert schema["properties"]["first"]["x-positional"] is True
 
 
+def test_a_positional_that_accepts_zero_values_is_not_required() -> None:
+    """The parser's own `required` flag is wrong here, so it is not consulted.
+
+    argparse marks an ``nargs="*"`` positional required and then parses happily
+    without it. Carrying that into the schema tells a caller a parameter is
+    mandatory when the command it describes does not think so, and the caller
+    cannot check. Asserted against the parser's behaviour rather than against its
+    flag, because the flag is what changed: Python 3.14 stopped setting it, so a
+    schema that trusted it described one unchanged command differently on
+    different interpreters.
+    """
+    parser = argparse.ArgumentParser(prog="probe")
+    parser.add_argument("query", nargs="*")
+    parser.add_argument("--flag")
+
+    parser.parse_args([])  # the command runs with nothing supplied for `query`
+    assert "required" not in project_parser(parser, path="probe")
+
+
 def test_aliases_are_recorded_against_the_long_option() -> None:
     schema = project("agent").schema["properties"]["agent"]
     assert schema["x-flag"] == "--agent"

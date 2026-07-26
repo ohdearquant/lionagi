@@ -165,9 +165,6 @@
         "x-flag": "--yolo"
       }
     },
-    "required": [
-      "query"
-    ],
     "title": "orchestrate fanout",
     "type": "object",
     "x-positional-order": [

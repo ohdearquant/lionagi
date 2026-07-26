@@ -160,9 +160,6 @@
         "x-flag": "--yolo"
       }
     },
-    "required": [
-      "query"
-    ],
     "title": "agent",
     "type": "object",
     "x-positional-order": [

@@ -77,21 +77,6 @@ class OpError(Exception):
 # ── schema assembly ──────────────────────────────────────────────────────────
 
 
-def _unbounded_array_positional(spec: dict[str, Any]) -> bool:
-    """A positional that argparse accepts zero values for.
-
-    argparse marks such an action required and then parses happily without it,
-    so carrying that requiredness into the schema would demand an empty list from
-    every caller for a parameter the command does not actually need.
-    """
-    return (
-        bool(spec.get("x-positional"))
-        and spec.get("type") == "array"
-        and "minItems" not in spec
-        and "maxItems" not in spec
-    )
-
-
 def verb_schema(verb: Verb, *, playbook: str | None = None) -> dict[str, Any]:
     """The parameter schema *verb* is validated against, built now.
 
@@ -117,11 +102,7 @@ def verb_schema(verb: Verb, *, playbook: str | None = None) -> dict[str, Any]:
         properties[name] = spec
     properties.update({name: dict(spec) for name, spec in verb.server_params.items()})
 
-    required = [
-        name
-        for name in schema.get("required", [])
-        if name in properties and not _unbounded_array_positional(properties[name])
-    ]
+    required = [name for name in schema.get("required", []) if name in properties]
     required += [name for name in verb.requires if name not in required]
     order = [name for name in schema.get("x-positional-order", []) if name in properties]
 

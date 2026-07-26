@@ -227,9 +227,6 @@
         "x-flag": "--yolo"
       }
     },
-    "required": [
-      "query"
-    ],
     "title": "orchestrate flow",
     "type": "object",
     "x-playbook-arguments": "This command accepts arguments declared by the playbook named in 'playbook'. Ask for this schema again with that playbook named to see them.",
