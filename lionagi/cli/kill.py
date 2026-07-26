@@ -74,63 +74,61 @@ def _cmdline_is_lionagi(cmdline: list[str], expected_cmd: str) -> bool:
     return False
 
 
+_IdentityVerdict = Literal["ours", "not_ours", "unverifiable", "zombie"]
+
+
+def _pid_is_zombie(pid: int) -> bool:
+    """True if *pid* has exited and is waiting for its parent to reap it.
+
+    `pid_alive` answers "does the OS still know this pid", and a zombie
+    satisfies that: it keeps its slot until it is reaped, so `kill -0` keeps
+    succeeding and signals keep being accepted with no effect. Anything that
+    reads "still there" as "still working" will wait out a grace period that
+    can never end and then escalate onto a process that is already dead.
+    """
+    if pid <= 1:
+        return False
+    try:
+        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    except psutil.ZombieProcess:
+        return True
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+
+
 def _check_pid_identity(
     pid: int,
     expected_cmd: str,
     *,
     expected_session_id: str | None = None,
     expected_create_time: float | None = None,
-) -> bool:
-    """Return True iff the live process at *pid* is the lionagi run we recorded."""
-    try:
-        proc = psutil.Process(pid)
-        create_time_ok: bool | None = None
-        if expected_create_time is not None:
-            create_time_ok = (
-                abs(proc.create_time() - expected_create_time) <= _CREATE_TIME_TOLERANCE
-            )
-            if not create_time_ok:
-                return False
-
-        if expected_session_id is not None:
-            try:
-                marker = proc.environ().get("LIONAGI_SESSION_ID")
-            except (psutil.AccessDenied, NotImplementedError):
-                marker = None
-            if marker is not None:
-                return marker == expected_session_id
-            # Without env marker, require BOTH create_time match AND lionagi cmdline.
-            return create_time_ok is True and _cmdline_is_lionagi(proc.cmdline(), expected_cmd)
-
-        cmdline = proc.cmdline()
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        return False
-
-    return _cmdline_is_lionagi(cmdline, expected_cmd)
-
-
-_IdentityVerdict = Literal["ours", "not_ours", "unverifiable"]
-
-
-def _check_pid_identity_tristate(
-    pid: int,
-    expected_cmd: str,
-    *,
-    expected_session_id: str | None = None,
-    expected_create_time: float | None = None,
 ) -> _IdentityVerdict:
-    """Sweep-only identity check that separates "definitely not ours" from
-    "cannot tell" (permission denied reading process details).
+    """Classify the process at *pid* against the run we recorded.
 
-    The direct-kill path (`_check_pid_identity`) collapses AccessDenied to a
-    refusal, which is the safe default when a human explicitly asked to kill
-    one entity. The stale sweep runs unattended over many rows; if it reused
-    that same collapse, a live worker we simply lack permission to inspect
-    would be swept and its row marked cancelled while the process keeps
-    running. Callers must treat "unverifiable" as still-alive, not as dead.
+    Four answers, and every caller has to say which of them it accepts:
+
+    - "ours": positively identified as the run in the row.
+    - "not_ours": the pid is gone, or a different process holds it now. Killing
+      it would hit a stranger, which is the whole reason this check exists.
+    - "unverifiable": the process is there but could not be inspected (usually
+      permission denied). Callers must read this as still-alive, not as dead:
+      an unattended sweep that read it as dead would cancel the row of a worker
+      it merely lacks permission to look at, while that worker keeps running.
+    - "zombie": our process has exited and has not been reaped yet. A zombie
+      cannot be a recycled pid, because the OS does not hand a pid out again
+      until it is reaped, and it cannot be killed again either. It is a
+      finished termination, not an unidentifiable process, and callers that
+      fold it into "not_ours" refuse to record a cancellation that already
+      happened.
+
+    A recorded create_time still rules first: it is readable on a zombie, so a
+    pid that was reaped, recycled, and died again is reported "not_ours" rather
+    than being mistaken for our own corpse.
     """
     try:
         proc = psutil.Process(pid)
+    except psutil.ZombieProcess:
+        return "zombie"
     except psutil.NoSuchProcess:
         return "not_ours"
     except psutil.AccessDenied:
@@ -141,6 +139,8 @@ def _check_pid_identity_tristate(
             create_time_ok = (
                 abs(proc.create_time() - expected_create_time) <= _CREATE_TIME_TOLERANCE
             )
+        except psutil.ZombieProcess:
+            return "zombie"
         except psutil.NoSuchProcess:
             return "not_ours"
         except psutil.AccessDenied:
@@ -151,6 +151,10 @@ def _check_pid_identity_tristate(
     if expected_session_id is not None:
         try:
             marker = proc.environ().get("LIONAGI_SESSION_ID")
+        except psutil.ZombieProcess:
+            # A zombie has no environment left to read, which is exactly how
+            # this case used to disappear into "cannot identify it".
+            return "zombie"
         except psutil.NoSuchProcess:
             # The process died between the liveness check and here: the row
             # is genuinely stale, and letting this escape would abort the
@@ -168,6 +172,8 @@ def _check_pid_identity_tristate(
 
     try:
         cmdline = proc.cmdline()
+    except psutil.ZombieProcess:
+        return "zombie"
     except psutil.NoSuchProcess:
         return "not_ours"
     except psutil.AccessDenied:
@@ -188,13 +194,26 @@ def _terminate_pid(
     if not _pid_alive(pid):
         return "already_dead"
 
-    if expected_cmd is not None and not _check_pid_identity(
-        pid,
-        expected_cmd,
-        expected_session_id=expected_session_id,
-        expected_create_time=expected_create_time,
-    ):
-        return "identity_mismatch"
+    if _pid_is_zombie(pid):
+        # Exited already, just not reaped by whoever started it. There is
+        # nothing left to signal, and no other process can be holding this pid
+        # until the reap happens, so this is a termination that is already
+        # complete rather than a process we failed to identify.
+        return "already_dead"
+
+    if expected_cmd is not None:
+        verdict = _check_pid_identity(
+            pid,
+            expected_cmd,
+            expected_session_id=expected_session_id,
+            expected_create_time=expected_create_time,
+        )
+        if verdict == "zombie":
+            return "already_dead"
+        # "unverifiable" refuses too: when a human named one entity to kill,
+        # not being able to confirm the target is a reason to stop.
+        if verdict != "ours":
+            return "identity_mismatch"
 
     try:
         os.kill(pid, signal.SIGTERM)
@@ -209,12 +228,15 @@ def _terminate_pid(
     deadline = time.monotonic() + grace_seconds
     interval = 0.1
     while time.monotonic() < deadline:
-        if not _pid_alive(pid):
+        # A process whose parent never reaps it stays visible to `kill -0`
+        # forever, so waiting on liveness alone would sit out the whole grace
+        # window for a process that obeyed the SIGTERM immediately.
+        if not _pid_alive(pid) or _pid_is_zombie(pid):
             return "sigterm"
         time.sleep(interval)
         interval = min(interval * 2, 0.5)
 
-    if not _pid_alive(pid):
+    if not _pid_alive(pid) or _pid_is_zombie(pid):
         return "sigterm"
 
     # Re-check identity before escalating. The check above this function's
@@ -225,13 +247,19 @@ def _terminate_pid(
     # chance to identify itself, so the one thing this must not do is escalate
     # onto a stranger. A pid that now belongs to a different process is
     # reported the same way a mismatch at entry is.
-    if expected_cmd is not None and not _check_pid_identity(
-        pid,
-        expected_cmd,
-        expected_session_id=expected_session_id,
-        expected_create_time=expected_create_time,
-    ):
-        return "identity_mismatch"
+    if expected_cmd is not None:
+        verdict = _check_pid_identity(
+            pid,
+            expected_cmd,
+            expected_session_id=expected_session_id,
+            expected_create_time=expected_create_time,
+        )
+        if verdict == "zombie":
+            # It exited between the last poll and this check: the SIGTERM
+            # worked, and escalating would be aiming at a corpse.
+            return "sigterm"
+        if verdict != "ours":
+            return "identity_mismatch"
 
     try:
         os.kill(pid, signal.SIGKILL)
@@ -654,7 +682,7 @@ async def _do_kill_all_stale(
                     except (TypeError, ValueError):
                         expected_create_time = None
 
-                    verdict = _check_pid_identity_tristate(
+                    verdict = _check_pid_identity(
                         pid,
                         "lionagi",
                         expected_session_id=expected_session_id,
@@ -680,8 +708,10 @@ async def _do_kill_all_stale(
                                 "identity unverifiable (permission denied) — treated as live"
                             )
                         continue
-                    # verdict == "not_ours": pid was recycled by an unrelated
-                    # process, fall through and sweep the row.
+                    # "not_ours" (the pid was recycled by an unrelated process)
+                    # and "zombie" (our process exited and nobody reaped it)
+                    # both mean the recorded run is gone: fall through and
+                    # sweep the row.
 
                 if dry_run:
                     print(
