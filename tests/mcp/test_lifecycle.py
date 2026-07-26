@@ -19,6 +19,7 @@ import json
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -65,6 +66,12 @@ anyio.run(_main)
 def home(monkeypatch, tmp_path):
     """A whole lionagi home of our own, for this process and every child."""
     monkeypatch.setenv("LIONAGI_HOME", str(tmp_path))
+    # Children are launched by absolute script path, so their `sys.path[0]` is
+    # the directory that script sits in and the checkout under test is not on
+    # it. Without this they import whatever `lionagi` the interpreter's
+    # environment already has installed, which is a different tree — and then
+    # the end-to-end tests here run a CLI that is not the one being changed.
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[2]))
     monkeypatch.delenv("LIONAGI_SESSION_ID", raising=False)
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "mcp" / "jobs")
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
@@ -415,3 +422,50 @@ def test_a_healthy_running_job_is_never_asked_about(home, monkeypatch):
     )
 
     assert jobs.status(run_id)["status"] == "running"
+
+
+# --- which store the read opens -------------------------------------------------
+
+
+async def test_a_run_in_a_configured_store_is_found_there(home, monkeypatch):
+    """`LIONAGI_STATE_DB_URL` moves the store, and the read has to follow it.
+
+    The reader opens whatever `StateDB()` resolves, which is the configured URL
+    when one is set. A precondition asked of the default path instead is asking
+    about a file that need not be involved at all: with the store configured
+    elsewhere the default is absent, so every run in the configured store reads
+    back as `unavailable`, and a caller that cannot distinguish "no store" from
+    "no such run" gets neither. The run below exists and is finished; the only
+    reason it could be missed is that the answer came from the wrong file.
+    """
+    from lionagi.state.db import StateDB
+
+    configured = home / "elsewhere" / "configured.db"
+    configured.parent.mkdir(parents=True)
+    run_id = "20260725T120000-c0ffee"
+
+    async with StateDB(configured) as db:
+        progression_id = uuid.uuid4().hex
+        await db.create_progression(progression_id)
+        await db.create_session(
+            {
+                "id": uuid.uuid4().hex[:12],
+                "progression_id": progression_id,
+                "run_id": run_id,
+                "status": "completed",
+                "invocation_kind": "agent",
+                "started_at": time.time(),
+                "ended_at": time.time(),
+            }
+        )
+
+    assert not (home / "state.db").exists(), "the default store must stay absent"
+    monkeypatch.setenv("LIONAGI_STATE_DB_URL", str(configured))
+
+    result = _li(home, "lifecycle", run_id, "--machine")
+    assert result.returncode == 0, result.stderr
+    envelope = json.loads(result.stdout)
+
+    lifecycle = envelope["data"]["lifecycle"]
+    assert lifecycle["available"] is True, lifecycle
+    assert lifecycle["value"]["found"] is True, lifecycle

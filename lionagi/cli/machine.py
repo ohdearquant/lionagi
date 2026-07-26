@@ -437,14 +437,19 @@ def lifecycle_data(run_id: str) -> dict[str, Any]:
     opened.
     """
     from lionagi.ln.concurrency import run_async
-    from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+    from lionagi.state.db import StateDB, state_db_file, state_db_known_absent
 
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         # No store at all is not evidence about one run: it is the absence of
         # every record, including the ones that would answer this question.
+        #
+        # Asked of the store this read will actually open, not of the default
+        # path. `LIONAGI_STATE_DB_URL` moves the store, and a check against the
+        # default would then report every run in a configured store as
+        # unreadable while the reader beside it opens that store and finds them.
         return {
             "run_id": run_id,
-            "lifecycle": unavailable(REASON_NOT_FOUND, f"{DEFAULT_DB_PATH} does not exist"),
+            "lifecycle": unavailable(REASON_NOT_FOUND, f"{state_db_file()} does not exist"),
         }
 
     async def _read() -> list[dict[str, Any]]:

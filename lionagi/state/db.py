@@ -115,6 +115,49 @@ def _default_reason_code_for_entity_status(entity_type: str, status: str) -> str
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
 
+
+def state_db_file() -> Path | None:
+    """The local file a default ``StateDB()`` would open, if it opens one at all.
+
+    Resolved the same way ``StateDB.__init__`` resolves it, so the two cannot
+    disagree about which store is in play. Returns None when the configured
+    store is not a local file — a server, or an in-memory database — because
+    then there is no path to report and nothing a filesystem check can say
+    about it.
+    """
+    raw = settings.LIONAGI_STATE_DB_URL
+    if raw is None:
+        raw = DEFAULT_DB_PATH
+    url = normalize_state_db_url(raw)
+    if dialect_of(url) != "sqlite":
+        return None
+    from sqlalchemy.engine import make_url
+
+    database = make_url(url).database
+    if not database or database == ":memory:":
+        return None
+    return Path(database)
+
+
+def state_db_known_absent() -> bool:
+    """Whether the store a default ``StateDB()`` would open is known not to exist.
+
+    Callers use this to tell "there is no store, so there is no record of
+    anything" apart from "the store is there and something went wrong reading
+    it". Those are different answers and a caller acts differently on each, so
+    the check has to be about the store that will actually be opened. Testing
+    ``DEFAULT_DB_PATH`` instead asks about a file that need not be involved:
+    ``LIONAGI_STATE_DB_URL`` moves the store elsewhere, and then the default
+    path is absent while every row being asked about exists.
+
+    Only a positive answer is confident. Where existence is not a filesystem
+    question this reports False and leaves the open attempt to give the real
+    answer.
+    """
+    path = state_db_file()
+    return path is not None and not path.exists()
+
+
 # The single definition of which schedule_run statuses count as "fired and
 # resolved" for budget bookkeeping (max_runs, one-shot auto-disable). The
 # scheduler service layer must observe the same set — both its defaults and
