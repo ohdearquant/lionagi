@@ -692,3 +692,116 @@ def test_stats_includes_phantom_count(tmp_path, monkeypatch):
     body = r.json()
     assert "phantom_count" in body
     assert isinstance(body["phantom_count"], int)
+
+
+# ── session-less action kinds ────────────────────────────────────────────────
+
+
+async def _seed_scheduled_invocation(
+    db_path: Path,
+    *,
+    action_kind: str,
+    updated_at: float,
+    started_at: float | None = None,
+) -> str:
+    """Seed a running invocation plus the schedule_run occurrence that fired
+    it, so the reaper can see the action kind the way production does."""
+    iid = await _seed_invocation(
+        db_path,
+        started_at=started_at or time.time() - 120,
+        updated_at=updated_at,
+        session_count=0,
+    )
+    async with StateDB(db_path) as db:
+        await db.create_schedule_run(
+            {
+                "id": uuid.uuid4().hex[:12],
+                "schedule_id": None,
+                "invocation_id": iid,
+                "trigger_context": {},
+                "action_kind": action_kind,
+                "action_args": [],
+                "status": "running",
+                "fired_at": time.time(),
+            }
+        )
+    return iid
+
+
+def test_list_invocations_surfaces_action_kind_from_occurrence(tmp_path, monkeypatch):
+    """action_kind lives on schedule_runs, not invocations; the listing joins it
+    through so per-kind reaper policy has something to read."""
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    iid = run_async(
+        _seed_scheduled_invocation(db_path, action_kind="command", updated_at=time.time())
+    )
+
+    async def _list() -> list[dict]:
+        async with StateDB(db_path) as db:
+            return await db.list_invocations(status="running")
+
+    rows = {r["id"]: r for r in run_async(_list())}
+    assert rows[iid]["action_kind"] == "command"
+
+
+def test_zero_session_reaper_skips_sessionless_kind(tmp_path, monkeypatch):
+    """A 'command' run never opens a session, so a zero session count is its
+    normal steady state and must not be read as a stuck launch."""
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    stale = time.time() - 600  # past the 300s grace
+    iid = run_async(_seed_scheduled_invocation(db_path, action_kind="command", updated_at=stale))
+
+    from lionagi.studio.services.lifecycle import reap_stale_invocations
+
+    count = run_async(reap_stale_invocations(deadline_seconds=7200, zero_session_grace_seconds=300))
+    assert count == 0
+
+    inv = run_async(_get_invocation(db_path, iid))
+    assert inv["status"] == "running"
+    assert run_async(_count_reaping_transitions(db_path, iid)) == 0
+
+
+def test_zero_session_reaper_still_reaps_session_bearing_kind(tmp_path, monkeypatch):
+    """The skip is scoped to session-less kinds — an 'agent' run that spawned
+    nothing past the grace period is still reaped."""
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    stale = time.time() - 600
+    iid = run_async(_seed_scheduled_invocation(db_path, action_kind="agent", updated_at=stale))
+
+    from lionagi.studio.services.lifecycle import reap_stale_invocations
+
+    count = run_async(reap_stale_invocations(deadline_seconds=7200, zero_session_grace_seconds=300))
+    assert count == 1
+
+    inv = run_async(_get_invocation(db_path, iid))
+    assert inv["status"] == "timed_out"
+
+
+def test_sessionless_kind_still_bound_by_wall_clock_deadline(tmp_path, monkeypatch):
+    """Only the zero-session heuristic is off for session-less kinds; a
+    'command' run past the wall-clock deadline is still reaped."""
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    iid = run_async(
+        _seed_scheduled_invocation(
+            db_path,
+            action_kind="command",
+            started_at=time.time() - 8000,  # past the 7200s deadline
+            updated_at=time.time(),
+        )
+    )
+
+    from lionagi.studio.services.lifecycle import reap_stale_invocations
+
+    count = run_async(reap_stale_invocations(deadline_seconds=7200, zero_session_grace_seconds=300))
+    assert count == 1
+
+    inv = run_async(_get_invocation(db_path, iid))
+    assert inv["status"] == "timed_out"
