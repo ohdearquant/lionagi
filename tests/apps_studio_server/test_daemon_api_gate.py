@@ -42,6 +42,7 @@ import pytest
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
+import lionagi.state.db as state_db_mod
 from lionagi.state.db import StateDB  # noqa: E402
 
 from ._helpers import run_async  # noqa: E402
@@ -350,7 +351,6 @@ def test_api_prefix_appears_exactly_once_in_every_route_path():
 
 def _patch_db(monkeypatch, db_path: Path) -> None:
     """Point every service module's DB reference at a fresh temp path; must run before any seeding call since StateDB() re-reads DEFAULT_DB_PATH fresh per instantiation, and admin.py/sessions.py additionally cache the path in their own module-level `_DB`."""
-    import lionagi.state.db as state_db_mod
     import lionagi.studio.services.admin as admin_mod
     import lionagi.studio.services.db_maintenance as db_maintenance_mod
     import lionagi.studio.services.schedules as schedules_mod
@@ -377,10 +377,10 @@ def _patch_db(monkeypatch, db_path: Path) -> None:
     monkeypatch.setattr(admin_mod, "_DB", str(db_path))
     monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
-    monkeypatch.setattr(schedules_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     # db_maintenance imports DEFAULT_DB_PATH by value, so the state_db_mod
     # patch above never reaches its own module-level binding.
-    monkeypatch.setattr(db_maintenance_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
 
 def _make_client() -> TestClient:

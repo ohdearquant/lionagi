@@ -24,6 +24,7 @@ from sqlalchemy import text
 
 pytest.importorskip("fastapi", reason="studio extra not installed")
 
+import lionagi.state.db as state_db_mod
 from lionagi.state.db import StateDB, TransitionRejectedError  # noqa: E402
 
 from ._helpers import run_async  # noqa: E402
@@ -32,11 +33,10 @@ from ._helpers import run_async  # noqa: E402
 
 
 def _patch_db(monkeypatch, db_path: Path) -> None:
-    import lionagi.state.db as state_db_mod
     import lionagi.studio.services.lifecycle as lifecycle_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(lifecycle_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
 
 async def _make_session(db_path: Path, *, status: str | None = "running") -> str:
@@ -310,10 +310,8 @@ def test_prune_cleans_orphaned_messages_and_progressions(tmp_path, monkeypatch):
 
     db_path = tmp_path / "state.db"
 
-    import lionagi.state.db as state_db_mod
-
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(maint, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     old_ts = time.time() - 40 * 86400
     recent_ts = time.time() - 1 * 86400
@@ -477,7 +475,6 @@ async def _run_global_delete(db_path: Path) -> None:
 
 def test_newborn_orphan_global_delete_destroys_progression(tmp_path, monkeypatch):
     """FAIL-before: the old global-delete spuriously deletes a newborn progression with no session yet -- reproducing the race where _persist.py commits the progression before the session, so the old NOT-IN-sessions/branches query sees no session row and deletes it."""
-    import lionagi.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -533,12 +530,11 @@ def test_newborn_orphan_global_delete_destroys_progression(tmp_path, monkeypatch
 
 def test_newborn_orphan_scoped_delete_preserves_progression(tmp_path, monkeypatch):
     """PASS-after: the scoped delete only targets progressions/messages captured from the pruned sessions' lineage before the DELETE, so a newborn progression with no referencing session (not in that candidate set) survives."""
-    import lionagi.state.db as state_db_mod
     from lionagi.studio.services import db_maintenance as maint
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(maint, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     old_ts = time.time() - 40 * 86400
 
@@ -592,12 +588,11 @@ def test_null_in_collection_does_not_stall_message_cleanup(tmp_path, monkeypatch
     """A progression collection containing a JSON null entry must not stall message cleanup: the NOT-IN guard filters out NULL collection values so a null entry can't propagate into the NOT IN set and suppress all message deletions."""
     import json
 
-    import lionagi.state.db as state_db_mod
     from lionagi.studio.services import db_maintenance as maint
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(maint, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     old_ts = time.time() - 40 * 86400
 
@@ -735,7 +730,6 @@ async def _seed_shared_message_scenario(db_path: Path) -> tuple[str, str, str, s
 
 def test_shared_message_collection_only_check_deletes_it(tmp_path, monkeypatch):
     """FAIL-before, foreign_keys=OFF: the old collection-only survivor check (NOT IN progressions.collection) spuriously deletes shared_msg once the pruned progression is gone, even though surviving_branch.system_msg_id still holds it -- the failure mode for any runtime that doesn't enforce FKs."""
-    import lionagi.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -791,12 +785,11 @@ def test_shared_message_collection_only_check_deletes_it(tmp_path, monkeypatch):
 
 def test_shared_message_fk_survivor_check_preserves_it(tmp_path, monkeypatch):
     """PASS-after: the full survivor check (collection + FK columns) UNIONs first_msg_id/last_msg_id/system_msg_id into the NOT IN subquery, so shared_msg_id survives via surviving_branch.system_msg_id while the unshared message is still correctly deleted."""
-    import lionagi.state.db as state_db_mod
     from lionagi.studio.services import db_maintenance as maint
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(maint, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     _, _, shared_msg_id, unshared_msg_id = run_async(_seed_shared_message_scenario(db_path))
 

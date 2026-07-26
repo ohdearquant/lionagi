@@ -400,9 +400,9 @@ def _render_human(view: dict[str, Any]) -> str:
 async def _run_status_inner(
     *, command: str, entity_id: str | None, as_json: bool
 ) -> tuple[str, int]:
-    from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+    from lionagi.state.db import StateDB, state_db_known_absent
 
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return f"state.db not found — no {command} runs recorded yet", EXIT_UNKNOWN
 
     async with StateDB() as db:
@@ -498,9 +498,9 @@ async def _audit_degraded(db: Any) -> dict[str, Any]:
 
 def _dispatch_audit(*, as_json: bool) -> int:
     from lionagi.ln.concurrency import run_async
-    from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+    from lionagi.state.db import StateDB, state_db_known_absent
 
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         log_error("state.db not found — no runs recorded yet")
         return EXIT_UNKNOWN
 

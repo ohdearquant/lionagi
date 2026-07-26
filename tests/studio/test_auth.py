@@ -18,6 +18,8 @@ fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+import lionagi.state.db as state_db_mod
+
 # Every data-returning GET prefix that must be gated when a token is configured.
 _DATA_GET_PREFIXES = [
     "/api/runs/",
@@ -53,6 +55,7 @@ def _make_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
             monkeypatch.setattr(mod, "DEFAULT_DB_PATH", fake_db)
         if hasattr(mod, "_DB"):
             monkeypatch.setattr(mod, "_DB", str(fake_db))
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
 
     # A fresh app instance (via create_app()) instead of importlib.reload(app_mod):
     # reload mutates the shared module singleton every other importer holds a

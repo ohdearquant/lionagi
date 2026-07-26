@@ -11,6 +11,8 @@ from typing import Any
 
 import pytest
 
+import lionagi.state.db as state_db_mod
+
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
 
@@ -73,7 +75,7 @@ def patched_svc(tmp_path: Path, monkeypatch):
     from lionagi.state.db import DEFAULT_DB_PATH
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr(svc, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     # Also patch db module's DEFAULT_DB_PATH so StateDB() picks up the temp path.
     import lionagi.state.db as db_mod
 
@@ -214,7 +216,7 @@ def patched_app(tmp_path: Path, monkeypatch):
     import lionagi.studio.services.engine_defs as ed_svc
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr(ed_svc, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
 
     from lionagi.studio.app import app

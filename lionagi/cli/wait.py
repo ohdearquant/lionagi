@@ -225,7 +225,7 @@ def run_wait(argv: list[str]) -> int:
     See docs/internals/cli.md for the SIGINT/SIGTERM handling contract.
     """
     from lionagi.ln.concurrency import SigtermInterrupt, run_async
-    from lionagi.state.db import DEFAULT_DB_PATH
+    from lionagi.state.db import state_db_known_absent
 
     parser = argparse.ArgumentParser(prog="li wait", add_help=True)
     parser.add_argument(
@@ -249,7 +249,7 @@ def run_wait(argv: list[str]) -> int:
     if not watched_ids:
         parser.error("no run ids given (only empty/comma-only tokens)")
 
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         log_error("state.db not found — no runs recorded yet")
         return EXIT_UNKNOWN
 

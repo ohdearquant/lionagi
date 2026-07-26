@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+import lionagi.state.db as state_db_mod
 from lionagi.state.db import StateDB
 
 from ._helpers import run_async
@@ -21,14 +22,13 @@ from ._helpers import run_async
 
 def _monkey_db(monkeypatch, db_path: Path) -> None:
     """Point all relevant modules at a temp DB path."""
-    import lionagi.state.db as state_db_mod
     import lionagi.studio.services.admin as admin_mod
     import lionagi.studio.services.lifecycle as lifecycle_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(admin_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(admin_mod, "_DB", str(db_path))
-    monkeypatch.setattr(lifecycle_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
 
 async def _seed_session(
@@ -255,7 +255,6 @@ def test_reap_stale_invocations_per_kind_override(tmp_path, monkeypatch):
     # Patch list_invocations to inject action_kind into the returned rows
     # (the invocations table currently has no action_kind column; the per-kind
     # lookup is tested here at the reaper level via the list_invocations result).
-    import lionagi.state.db as state_db_mod
 
     _original_list = state_db_mod.StateDB.list_invocations
 
@@ -648,8 +647,6 @@ def test_admin_prune_all_phantom_transitions_not_deletes(tmp_path, monkeypatch):
         )
     )
 
-    import lionagi.state.db as state_db_mod
-
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     from lionagi.studio.app import app
@@ -677,7 +674,6 @@ def test_stats_includes_phantom_count(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)
 
-    import lionagi.state.db as state_db_mod
     import lionagi.studio.services.sessions as sessions_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)

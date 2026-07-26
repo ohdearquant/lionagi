@@ -435,13 +435,31 @@ _STATS_PRAGMAS = (
 
 
 def _db_sizes() -> dict[str, Any]:
-    from lionagi.state.db import DEFAULT_DB_PATH
+    """Bytes on disk for the configured store, when the configured store is a file.
 
-    wal_path = DEFAULT_DB_PATH.with_name(DEFAULT_DB_PATH.name + "-wal")
+    Size and WAL are questions about a file. A server or in-memory URL still has
+    rows to report; it just has no bytes on disk to report them next to, and
+    answering with the default path's size there would describe a file nothing
+    is reading. ``is_file`` says which case this is, so a null size means "not
+    answerable" and can never be read as "empty".
+    """
+    from lionagi.state.db import StateDB, state_db_file
+
+    db_path = state_db_file()
+    if db_path is None:
+        return {
+            "path": StateDB().url,
+            "is_file": False,
+            "exists": False,
+            "size_bytes": None,
+            "wal_size_bytes": None,
+        }
+    wal_path = db_path.with_name(db_path.name + "-wal")
     return {
-        "path": str(DEFAULT_DB_PATH),
-        "exists": DEFAULT_DB_PATH.exists(),
-        "size_bytes": DEFAULT_DB_PATH.stat().st_size if DEFAULT_DB_PATH.exists() else 0,
+        "path": str(db_path),
+        "is_file": True,
+        "exists": db_path.exists(),
+        "size_bytes": db_path.stat().st_size if db_path.exists() else 0,
         "wal_size_bytes": wal_path.stat().st_size if wal_path.exists() else 0,
     }
 
@@ -495,16 +513,19 @@ async def _collect_stats(db: Any) -> dict[str, Any]:
 
 
 async def _print_stats() -> None:
-    from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+    from lionagi.state.db import StateDB
 
     sizes = _db_sizes()
 
-    print(f"state.db path:   {DEFAULT_DB_PATH}")
-    print(f"state.db size:   {_format_bytes(sizes['size_bytes'])}")
-    print(f"state.db-wal:    {_format_bytes(sizes['wal_size_bytes'])}")
+    print(f"state.db path:   {sizes['path']}")
+    if sizes["is_file"]:
+        print(f"state.db size:   {_format_bytes(sizes['size_bytes'])}")
+        print(f"state.db-wal:    {_format_bytes(sizes['wal_size_bytes'])}")
+    else:
+        print("state.db size:   (not a local file)")
     print()
 
-    if not sizes["exists"]:
+    if sizes["is_file"] and not sizes["exists"]:
         print("(no state.db yet — first run will create it)")
         return
 
