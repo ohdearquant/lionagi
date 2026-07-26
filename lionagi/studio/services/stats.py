@@ -220,7 +220,9 @@ async def get_stats() -> dict[str, Any]:
     return {
         "playbooks": len(playbooks_svc.list_playbooks()),
         "agents": len(agents_svc.list_agents()),
-        "runs": len(await sessions_svc.list_sessions()),
+        # Counted in SQL; materializing the rows just to take len() made the
+        # dashboard's cheapest number the most expensive query on the page.
+        "runs": await sessions_svc.count_sessions(),
         "shows": len(await shows_svc.list_shows()),
         "skills": len(skills_svc.list_skills()),
         "plugins": len(plugins_svc.list_plugins()),
