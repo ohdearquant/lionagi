@@ -22,17 +22,19 @@ because an uncommitted edit moves the files and leaves the commit id alone. Two
 things follow. A commit id does not describe a dirty tree in the first place, so
 a snapshot taken over uncommitted changes can only ever be a partial identity and
 says so. And to notice an edit made afterwards, the snapshot carries a digest of
-the tree's uncommitted state — its shape and the size and modification time of
-every path git names, never its content — which is compared live exactly as the
-commit is. The two kinds of movement stay separate in the payload: moving the
+the tree's uncommitted state — its shape, and the size, modification time, mode
+and inode of every path git names, never its content — which is compared live
+exactly as the commit is. The two kinds of movement stay separate in the payload: moving the
 checkout and editing files under it are different operator actions with different
 remedies, and one boolean cannot carry both.
 
-What that digest can miss is stated where it is computed, and it comes to one
-thing: a rewrite that leaves both the size and the modification time untouched.
-Everything else an operator can do to a file under this process — including to an
-untracked file, to a file inside an untracked directory, and to a file git renders
-only as a modified binary — moves the digest.
+What that digest can miss is enumerated where it is computed, as a list rather
+than as a count: an edit is invisible to it only if it moves none of a path's
+size, modification time, mode or inode, or if it happens somewhere git never
+names, which is what ``.gitignore`` puts out of scope. Everything else an operator
+can do to a file under this process — including to an untracked file, to a file
+inside an untracked directory, to a file git renders only as a modified binary,
+and a permission change that rewrites no bytes at all — moves the digest.
 
 Failure is closed: a tree whose git state cannot be read is ``unknown``, never
 ``ok``. "Cannot tell" and "nothing wrong" are different answers, and a git call
@@ -222,10 +224,31 @@ def _worktree_fingerprint(
     A clean tree needs no diff — an empty status listing is already the whole
     answer, and skipping the call keeps the common case off the allowance.
 
-    One edit remains invisible: a rewrite that leaves both the size and the
-    modification time as they were. That is a deliberate residual of measuring
-    metadata instead of content, and it is the price of a cost that does not grow
-    with the size of the tree.
+    The per-path measurement sits inside the same allowance as the git calls,
+    because a tree with a large unignored untracked directory is exactly the case
+    the allowance exists for. Running out of it yields no digest and a reason, not
+    the digest built so far: a partial digest compares unequal to a full one taken
+    at another moment, which would report an edit to a tree nobody touched. A
+    timeout is a thing that could not be measured, and the honest report of it is
+    "cannot tell", not a manufactured difference.
+
+    What this cannot see is a list, and it is worth keeping as a list because
+    "only one case" is the shape of claim that goes stale without anyone noticing:
+
+    - a rewrite that leaves the size, the modification time, the mode and the
+      inode all as they were — the deliberate residual of measuring metadata
+      instead of content, and the price of a cost that does not grow with the
+      size of the tree;
+    - any change beneath ``.gitignore``, which git never names here, so nothing
+      stats it;
+    - ownership and extended attributes, which are not in the mark.
+
+    The inode is in the mark so that replacing a file by renaming another over it
+    stays visible even when the replacement matches on every other field. The cost
+    is that a filesystem which does not hold inode numbers stable across stats
+    would read as an edit that did not happen; the digest is only ever compared
+    within one process against one tree, which is the narrow condition that makes
+    that safe to rely on.
     """
     digest = hashlib.sha256(porcelain.encode(errors="replace"))
     if porcelain:
@@ -234,7 +257,14 @@ def _worktree_fingerprint(
             return None, f"could not read the uncommitted changes: {err or 'no output'}"
         digest.update(b"\x00")
         digest.update(diff.encode(errors="replace"))
-        for relative in _status_paths(porcelain):
+        paths = _status_paths(porcelain)
+        for measured, relative in enumerate(paths):
+            if budget.remaining() <= 0:
+                return None, (
+                    f"the {budget.total}s allowance for reading git state was spent "
+                    f"after measuring {measured} of the {len(paths)} paths the status "
+                    "listing names, so no digest of the uncommitted state was taken"
+                )
             try:
                 stat = (root / relative).lstat()
             except FileNotFoundError:
@@ -245,7 +275,7 @@ def _worktree_fingerprint(
                     f"{type(exc).__name__}: {exc}"
                 )
             else:
-                mark = f"{stat.st_size}:{stat.st_mtime_ns}"
+                mark = f"{stat.st_size}:{stat.st_mtime_ns}:{stat.st_mode}:{stat.st_ino}"
             digest.update(f"\x00{relative}\x00{mark}".encode(errors="replace"))
     return digest.hexdigest()[:_FINGERPRINT_CHARS], None
 

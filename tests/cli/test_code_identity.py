@@ -514,6 +514,108 @@ def test_a_renamed_path_does_not_stat_the_name_it_came_from(checkout_behind: Pat
     assert "worktree_fingerprint_detail" not in git
 
 
+def test_a_permission_change_on_an_untracked_file_is_an_edit(loaded_from: Path) -> None:
+    """chmod rewrites no bytes, so nothing but the mode moves — and it still counts.
+
+    Making a file executable changes what an operator can run out of the tree
+    while leaving the size, the modification time and the status listing exactly
+    as they were.
+    """
+    scratch = loaded_from / "scratch.txt"
+    scratch.write_text("plain")
+    scratch.chmod(0o644)
+    was = scratch.lstat()
+
+    before = code_identity()
+    assert before["git"]["dirty"] is True
+    assert before["worktree_edited"] is False
+
+    scratch.chmod(0o755)
+
+    now = scratch.lstat()
+    assert (now.st_size, now.st_mtime_ns) == (was.st_size, was.st_mtime_ns), (
+        "the premise of this test is that size and mtime cannot see a chmod"
+    )
+
+    after = code_identity()
+    assert after["checkout_moved"] is False
+    assert after["worktree_edited"] is True
+    assert "was edited after this process loaded" in after["worktree_edited_detail"]
+
+
+class _SpentAfter:
+    """A budget generous for a fixed number of readings, then exhausted.
+
+    Deterministic where a wall-clock deadline is not: exhaustion lands on a chosen
+    iteration of the per-path loop rather than wherever the machine happens to be
+    slow that day.
+    """
+
+    total = 6.0
+
+    def __init__(self, readings: int) -> None:
+        self._left = readings
+
+    def remaining(self) -> float:
+        if self._left > 0:
+            self._left -= 1
+            return self.total
+        return -1.0
+
+
+def test_an_allowance_spent_inside_the_per_path_loop_yields_no_digest(
+    checkout_behind: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The loop is inside the allowance, and running out of it is not a partial answer.
+
+    A digest over some of the paths compares unequal to one over all of them, so a
+    loop that stopped at the deadline and returned what it had would report an
+    edit to a tree nobody touched. This pins the difference that truncation would
+    manufacture, then shows the code declines to manufacture it.
+    """
+    for name in ("one.txt", "two.txt", "three.txt"):
+        (checkout_behind / name).write_text(name)
+
+    top = Path(_git(checkout_behind, "rev-parse", "--show-toplevel"))
+    porcelain = _git(checkout_behind, "status", "--porcelain", "-z", "--untracked-files=all")
+    paths = _code_identity._status_paths(porcelain)
+    assert len(paths) == 3
+
+    full, detail = _code_identity._worktree_fingerprint(
+        checkout_behind, top, porcelain, _code_identity._Budget(60.0)
+    )
+    assert detail is None
+    assert full
+
+    with monkeypatch.context() as stop_after_one:
+        stop_after_one.setattr(_code_identity, "_status_paths", lambda _: paths[:1])
+        truncated, _ = _code_identity._worktree_fingerprint(
+            checkout_behind, top, porcelain, _code_identity._Budget(60.0)
+        )
+    assert truncated != full, "truncation invents a difference in a tree that did not change"
+
+    spent, reason = _code_identity._worktree_fingerprint(
+        checkout_behind, top, porcelain, _SpentAfter(2)
+    )
+    assert spent is None, "a spent allowance must not return the digest built so far"
+    assert spent != truncated
+    assert "allowance" in reason
+    assert f"measuring 1 of the {len(paths)} paths" in reason
+
+    edited, movement = _code_identity._worktree_movement(
+        {"status": "ok", "commit": "a" * 40, "worktree_fingerprint": full},
+        {
+            "status": "ok",
+            "commit": "a" * 40,
+            "worktree_fingerprint": spent,
+            "worktree_fingerprint_detail": reason,
+        },
+        False,
+    )
+    assert edited is None, "a timeout is 'cannot tell', never 'the tree was edited'"
+    assert "allowance" in movement
+
+
 def test_a_dirty_snapshot_is_unknown_not_ok() -> None:
     """A commit id cannot describe a tree with changes that are not in it."""
     git = {
