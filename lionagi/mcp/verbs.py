@@ -112,11 +112,19 @@ class Verb:
 
 @dataclass(frozen=True)
 class AbsentVerb:
-    """A verb the catalog names and cannot run, with why."""
+    """A verb the catalog names and cannot run, with why.
+
+    ``cli_path`` is the command this entry speaks for. It is stated rather than
+    derived from ``name`` because a verb name is not a dotted spelling of its
+    path — ``orchestrate fanout`` is registered as ``fanout.submit`` — so a
+    coverage check that guessed one from the other would need a table of
+    exceptions, and the table is what goes stale.
+    """
 
     name: str
     summary: str
     reason: str
+    cli_path: str
 
 
 # ── parameters this server implements rather than passes through ─────────────
@@ -459,6 +467,14 @@ _REGISTERED: tuple[Verb, ...] = (
         admits=("limit",),
     ),
     Verb(
+        name="lifecycle",
+        summary="What the lifecycle store records about one run: whether every session it "
+        "opened has ended, and with what outcome.",
+        executor="machine",
+        cli_path="lifecycle",
+        admits=("run_id",),
+    ),
+    Verb(
         name="schedule.list",
         summary="Every schedule this Studio holds, with its trigger and enabled state.",
         executor="machine",
@@ -669,10 +685,52 @@ _REGISTERED: tuple[Verb, ...] = (
 )
 
 
-def _absent(prefix: str, names: tuple[str, ...], summary: str) -> tuple[AbsentVerb, ...]:
+def _absent(
+    prefix: str, names: tuple[str, ...], summary: str, reason: str = _NO_MACHINE_SEAM
+) -> tuple[AbsentVerb, ...]:
+    """Absent entries sharing a prefix, a summary and a reason.
+
+    The CLI path is the prefix and name spelled with spaces, which is how every
+    grouped entry happens to read. An entry whose path does not follow from its
+    name is written out in full below instead of forced through here.
+    """
     return tuple(
-        AbsentVerb(name=f"{prefix}.{n}", summary=summary, reason=_NO_MACHINE_SEAM) for n in names
+        AbsentVerb(
+            name=f"{prefix}.{n}",
+            summary=summary,
+            reason=reason,
+            cli_path=f"{prefix.replace('.', ' ')} {n}",
+        )
+        for n in names
     )
+
+
+# Granting a right to the caller. Every caller here is an agent, so a verb that
+# trusts a bundle, enables a plugin, or imports a hook command lets the thing
+# being granted a right be the thing that grants it. This reason does not expire
+# when the CLI grows a machine seam, which is why it is written separately from
+# _NO_MACHINE_SEAM: a seam would make these callable, not safe to call.
+_PRIVILEGE = (
+    "it widens what this caller can reach — trusting a bundle, enabling a plugin "
+    "or importing a hook command grants a right to the agent asking for it, so no "
+    "machine seam would make it available here"
+)
+
+# Rewriting or deleting from the store every other verb reports on. A caller
+# cannot see from a machine result which of its own earlier reads a checkpoint,
+# prune or vacuum has since invalidated.
+_STORE_MUTATION = (
+    "it rewrites or removes rows in the lifecycle store that every read verb "
+    "reports on, and nothing in a machine result tells a caller which of its own "
+    "earlier answers the write invalidated"
+)
+
+# Occupying the process for as long as it runs. A verb returns one result; these
+# are the process, not a call within it.
+_LONG_RUNNING = (
+    "it runs for as long as the process lives rather than returning a result, so "
+    "it is a process to start, not a call to make"
+)
 
 
 ABSENT: tuple[AbsentVerb, ...] = (
@@ -683,6 +741,7 @@ ABSENT: tuple[AbsentVerb, ...] = (
             "it writes a whole ScheduleSet atomically and reports a per-row plan; the "
             "plan's shape has not been decided as a machine result yet"
         ),
+        cli_path="schedule apply",
     ),
     AbsentVerb(
         name="schedule.run",
@@ -690,6 +749,7 @@ ABSENT: tuple[AbsentVerb, ...] = (
         reason=(
             "it reports one schedule run, which schedule.runs already returns in a machine result"
         ),
+        cli_path="schedule run",
     ),
     *_absent(
         "team",
@@ -706,6 +766,101 @@ ABSENT: tuple[AbsentVerb, ...] = (
         ("ack", "retry", "purge"),
         "The outbound dispatch queue.",
     ),
+    # `plugin trust` and `hooks trust` are deliberately not here. A fenced path is
+    # accounted for by FENCED_PATHS, and naming it in the catalog would advertise
+    # the capability to the caller it is fenced from; that is a different silence
+    # from the one the absent entries exist to end.
+    *_absent(
+        "plugin",
+        ("enable", "disable"),
+        "Plugin bundle enablement.",
+        _PRIVILEGE,
+    ),
+    *_absent(
+        "hooks",
+        ("import",),
+        "Importing hook commands from another tool's config.",
+        _PRIVILEGE,
+    ),
+    *_absent(
+        "state",
+        ("checkpoint", "prune", "vacuum", "import", "import-teams"),
+        "Writes against the lifecycle store.",
+        _STORE_MUTATION,
+    ),
+    *_absent(
+        "studio",
+        ("start",),
+        "The Studio server.",
+        _LONG_RUNNING,
+    ),
+    AbsentVerb(
+        name="mirror",
+        summary="Mirror Claude Code sessions into Studio, live.",
+        reason=_LONG_RUNNING,
+        cli_path="mirror",
+    ),
+    AbsentVerb(
+        name="mcp",
+        summary="Serve this surface over stdio.",
+        reason=(
+            "it is this server: a call to it from here would serve a second copy of "
+            "the surface the call arrived on"
+        ),
+        cli_path="mcp",
+    ),
+    AbsentVerb(
+        name="engine.run",
+        summary="Run a domain-specific multi-agent pipeline.",
+        reason=(
+            "the spawn verbs return a job id because they go through this server's "
+            "job records; this path spawns without one, so a caller would get a "
+            "result it could not later ask about"
+        ),
+        cli_path="engine run",
+    ),
+    *_absent(
+        "invoke",
+        ("start", "end"),
+        "Opening and closing a skill-level orchestration record.",
+        (
+            "the pair brackets a caller's own work, and this surface has no way to "
+            "tell that the caller who opened a record is the one closing it; "
+            "invoke.list reads what they wrote"
+        ),
+    ),
+    AbsentVerb(
+        name="kill",
+        summary="Terminate a run, session, play or show by id.",
+        reason=(
+            "job.kill covers the jobs this server spawned, where the record carries "
+            "the pid to correlate against; this path reaches entities this server "
+            "never spawned and holds no identity for"
+        ),
+        cli_path="kill",
+    ),
+    *_absent(
+        "orchestrate.ctl",
+        ("pause", "resume", "msg"),
+        "The running-flow control plane.",
+        (
+            "it steers a flow that is already running, and the effect lands on the "
+            "flow rather than in a result; whether the flow honoured it is read from "
+            "the flow's own state, not returned here"
+        ),
+    ),
+    AbsentVerb(
+        name="orchestrate.ctl.status",
+        summary="What a running flow's control plane reports about it.",
+        reason=_NO_MACHINE_SEAM,
+        cli_path="orchestrate ctl status",
+    ),
+    AbsentVerb(
+        name="casts",
+        summary="The built-in roles and modes an agent can be composed from.",
+        reason=_NO_MACHINE_SEAM,
+        cli_path="casts",
+    ),
     AbsentVerb(
         name="plugin.list",
         summary="Installed plugin bundles and their trust state.",
@@ -719,6 +874,7 @@ ABSENT: tuple[AbsentVerb, ...] = (
             "gone, so it writes to user settings on the trust surface; a listing "
             "that skipped the prune would not be this command"
         ),
+        cli_path="plugin list",
     ),
 )
 
