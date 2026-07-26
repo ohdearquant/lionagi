@@ -306,6 +306,35 @@ _JOB_WAIT_SCHEMA = _own(
 
 _SERVER_INFO_SCHEMA = _own({})
 
+# Profile resolution reads the working directory live, and a submitted run's
+# working directory is this same argument. Answering under the server's own
+# directory instead would be accurate about the wrong roster.
+_ROSTER_CWD = {
+    "type": "string",
+    "description": (
+        "Resolve as a run submitted with this cwd would: the search starts at its "
+        "git root, walks up from it, then reaches ~/.lionagi/. Omit it to answer "
+        "for the server's own directory, which is what a submit without cwd gets."
+    ),
+}
+
+_PROFILE_LIST_SCHEMA = _own({"cwd": _ROSTER_CWD})
+
+_PROFILE_SHOW_SCHEMA = _own(
+    {
+        "name": {
+            "type": "string",
+            "description": (
+                "The profile name, as it would be passed to agent.submit. A name "
+                "nothing declares is an error listing every name that is available "
+                "here, rather than an empty result."
+            ),
+        },
+        "cwd": _ROSTER_CWD,
+    },
+    ["name"],
+)
+
 
 # ── the registry ─────────────────────────────────────────────────────────────
 
@@ -380,6 +409,24 @@ _REGISTERED: tuple[Verb, ...] = (
         summary="Stop a background job by signalling the process group this server created.",
         executor="job",
         own_schema=_JOB_KILL_SCHEMA,
+    ),
+    Verb(
+        name="profile.list",
+        summary=(
+            "Agent profiles agent.submit would accept here, each with the file it "
+            "comes from and the configuration it resolves to."
+        ),
+        executor="roster",
+        own_schema=_PROFILE_LIST_SCHEMA,
+    ),
+    Verb(
+        name="profile.show",
+        summary=(
+            "What one agent profile name resolves to: its winning file, the files "
+            "it shadows, and its effective configuration."
+        ),
+        executor="roster",
+        own_schema=_PROFILE_SHOW_SCHEMA,
     ),
     Verb(
         name="server.info",
