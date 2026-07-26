@@ -15,6 +15,7 @@ import errno
 import importlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import textwrap
@@ -435,3 +436,54 @@ def test_78_survives_end_to_end_under_the_machine_flag():
 
     assert proc.returncode == EXIT_CODE_ENVIRONMENT_ERROR, proc.stderr
     assert proc.stdout.strip() == ""
+
+
+# ── the machine path leaves SIGPIPE where the interpreter put it ────────────
+
+
+def _sigpipe_disposition_after(*argv: str) -> str:
+    script = textwrap.dedent(
+        """
+        import signal, sys
+
+        from lionagi.cli.main import _run
+
+        _run(sys.argv[1:])
+        print(
+            "SIG_DFL" if signal.getsignal(signal.SIGPIPE) is signal.SIG_DFL else "ignored",
+            file=sys.stderr,
+        )
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script, *argv],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stderr.strip().splitlines()[-1]
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGPIPE"), reason="no SIGPIPE on this platform")
+def test_a_machine_call_never_runs_with_a_signal_that_can_kill_it_silently():
+    """A command under the default SIGPIPE disposition can stop mid-answer.
+
+    The default kills the process on any EPIPE, from any thread, with no
+    envelope and nothing on stderr — and not every write is one the command
+    made. A database driver's worker thread reporting a result to an event loop
+    that is shutting down writes to the loop's own wakeup socket, and loses that
+    race often enough to be a routine outcome rather than a rare one. The
+    interpreter's own setting turns that into a catchable error; this surface
+    needs it, because its whole contract is that a call always answers.
+    """
+    assert _sigpipe_disposition_after("handshake", "--machine") == "ignored"
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGPIPE"), reason="no SIGPIPE on this platform")
+def test_the_human_path_still_ends_quietly_when_its_reader_goes_away():
+    # The reason the default is set at all: `li ... | head` should stop, not
+    # print a traceback about a pipe the person closed on purpose.
+    assert _sigpipe_disposition_after("handshake") == "SIG_DFL"
