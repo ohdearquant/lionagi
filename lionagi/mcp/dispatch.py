@@ -518,6 +518,9 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
         label=args.get("label") or args.get("playbook"),
         notify_command=args.get("notify_command"),
         notify_target=args.get("notify_seat"),
+        notify_sender=args.get("notify_sender"),
+        mcp_config=args.get("mcp_config"),
+        no_mcp_config=bool(args.get("no_mcp_config")),
     )
     fingerprint = schema.get("x-playbook-fingerprint")
     if fingerprint is not None:

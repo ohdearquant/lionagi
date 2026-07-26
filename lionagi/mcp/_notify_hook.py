@@ -99,7 +99,7 @@ def _resolve_command(
 
 
 def _substitute(argv: list[str], fields: dict[str, str]) -> list[str]:
-    """Replace ``{run_id}``/``{status}``/``{label}``/``{target}`` per token."""
+    """Replace ``{run_id}``/``{status}``/``{label}``/``{target}``/``{sender}`` per token."""
     out: list[str] = []
     for tok in argv:
         for key, value in fields.items():
@@ -108,7 +108,31 @@ def _substitute(argv: list[str], fields: dict[str, str]) -> list[str]:
     return out
 
 
-def _deliver(argv: list[str], payload: dict[str, str]) -> dict[str, Any]:
+def _delivery_env(sender: str) -> dict[str, str] | None:
+    """Environment for the delivery command, carrying an explicit sender.
+
+    A notifier that resolves who it is from its working directory reports the
+    identity of whoever owns that directory, not the identity of whoever
+    submitted the run. That misattribution is silent — the notice arrives, it
+    just arrives signed by the wrong seat, and downstream routing rules act on
+    the signature. Naming the sender here is the caller's answer to that.
+
+    This publishes the value; it does not force any particular notifier to
+    prefer it over its own directory-based resolution. A notifier whose
+    identity precedence puts a working-directory config first has to be given
+    the sender in its command line, which is what the ``{sender}`` placeholder
+    is for.
+    """
+    if not sender:
+        return None
+    env = dict(os.environ)
+    env["LIONAGI_NOTIFY_SENDER"] = sender
+    return env
+
+
+def _deliver(
+    argv: list[str], payload: dict[str, str], env: dict[str, str] | None = None
+) -> dict[str, Any]:
     """Run the delivery command best-effort; return its outcome for the record.
 
     The outcome is recorded on the job so a dead completion notice surfaces in
@@ -126,6 +150,7 @@ def _deliver(argv: list[str], payload: dict[str, str]) -> dict[str, Any]:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
+            env=env,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         # never fail the run's terminal path; record the failure instead
@@ -177,24 +202,40 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--status", default="completed")
     ap.add_argument("--target", default=None, help="value for the {target} placeholder")
     ap.add_argument("--command", default=None, help="delivery argv override (JSON list)")
+    ap.add_argument(
+        "--sender",
+        default=None,
+        help="value for the {sender} placeholder: who the notice is from",
+    )
     args = ap.parse_args(argv)
 
     job = jobs.mark_terminal(args.run_id, args.status)
 
     target = args.target or os.environ.get("LIONAGI_MCP_NOTIFY_TARGET") or ""
+    sender = args.sender or os.environ.get("LIONAGI_MCP_NOTIFY_SENDER") or ""
     label = (job or {}).get("label") or (job or {}).get("kind") or "run"
     template, unusable = _resolve_command(
         args.command or os.environ.get("LIONAGI_MCP_NOTIFY_COMMAND"),
         cwd=(job or {}).get("cwd"),
     )
+    if template and not sender and any("{sender}" in tok for tok in template):
+        # The command asks who the notice is from and there is no answer. An
+        # empty string is not one: it puts a blank where an identity belongs,
+        # and a delivery tool that accepts it — or falls back to resolving a
+        # sender from its own working directory — signs the notice with a seat
+        # that did not send it, silently. Unusable in the same sense as a
+        # template that cannot be parsed, and recorded the same way.
+        template, unusable = None, "delivery_command_needs_a_sender_and_none_was_given"
+
     if template:
         fields = {
             "run_id": args.run_id,
             "status": args.status,
             "label": label,
             "target": target,
+            "sender": sender,
         }
-        outcome = _deliver(_substitute(template, fields), fields)
+        outcome = _deliver(_substitute(template, fields), fields, _delivery_env(sender))
     elif unusable:
         # Configured but unusable. Recorded as a failure so job_status shows a
         # notifier that cannot deliver, rather than the silence of one that was

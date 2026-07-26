@@ -88,7 +88,15 @@ def test_command_override_substitutes_and_delivers(job, monkeypatch):
     assert captured["argv"] == ["notify", job, "failed", "t1", "downstream"]
     # the same fields are offered as a JSON payload on stdin
     payload = json.loads(captured["input"])
-    assert payload == {"run_id": job, "status": "failed", "label": "t1", "target": "downstream"}
+    assert payload == {
+        "run_id": job,
+        "status": "failed",
+        "label": "t1",
+        "target": "downstream",
+        # Empty, not absent: no sender was given, and the notifier is told that
+        # rather than left to fill the gap from its working directory.
+        "sender": "",
+    }
     assert rec["notify_delivery"] == {
         "attempted": True,
         "ok": True,

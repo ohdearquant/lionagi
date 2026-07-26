@@ -32,6 +32,7 @@ from ._context_from import (
     resolve_and_build_context_block,
 )
 from ._logging import hint, log_error
+from ._mcp_resolve import McpConfigError, McpResolution, resolve_spawn_mcp_servers
 from ._providers import (
     _CLAUDE_PROVIDER_NAMES,
     BACKENDS,
@@ -294,6 +295,43 @@ class _ProgressReport:
         )
 
 
+def _report_mcp_resolution(resolution: McpResolution, *, provider: str, cwd: str | None) -> None:
+    """Say at spawn time what tool surface the leg is actually getting.
+
+    The whole point of resolving here is that a leg starting without the
+    servers its instructions assume should be visible when it is launched
+    rather than inferred from its output an hour later. Silence is reserved
+    for the one case where it is accurate: servers resolved and handed over.
+    """
+    from lionagi.cli._logging import warn
+
+    if provider not in _CLAUDE_PROVIDER_NAMES:
+        if resolution.servers is not None:
+            warn(
+                f"MCP servers resolved from {resolution.source} are not carried to "
+                f"provider {provider!r}: only the Claude CLI lane accepts a server "
+                "set per request. This leg gets whatever that CLI discovers for itself."
+            )
+        return
+
+    if resolution.servers is not None:
+        names = ", ".join(sorted(resolution.servers))
+        hint(f"[mcp] {len(resolution.servers)} server(s) from {resolution.source}: {names}")
+        return
+
+    if resolution.reason is None:
+        return  # --no-mcp-config: chosen, not degraded
+
+    target = cwd or os.getcwd()
+    warn(
+        f"no MCP servers are being handed to this leg ({resolution.reason}; searched "
+        f"from {resolution.searched_from}). It will start with only whatever the "
+        f"Claude CLI discovers from {target} itself, which is where a leg pointed at "
+        "a checkout silently loses them. Pass --mcp-config PATH, or --no-mcp-config "
+        "to state that this is intended."
+    )
+
+
 async def _run_agent(
     model_str: str | None,
     prompt: str,
@@ -316,6 +354,8 @@ async def _run_agent(
     context_budget: int | None = None,
     notify: str | None = None,
     images: list[str] | None = None,
+    mcp_config: str | None = None,
+    no_mcp_config: bool = False,
     _auto_resumed: bool = False,
 ) -> tuple[str, str, str, str, str | None]:
     """Execute one agent turn; returns (result, provider, branch_id, terminal_status, session_id).
@@ -327,6 +367,14 @@ async def _run_agent(
     # into a provider-created dir. Forward the tilde-expanded path — providers
     # never expand `~`.
     cwd = validate_cwd_exists(cwd)
+    # Read from *this* process's directory, before --cwd is applied to anything.
+    # The child's tool surface is meant to be a property of the submission, and
+    # this is the only point at which the submitting directory is still known.
+    mcp_resolution = resolve_spawn_mcp_servers(
+        mcp_config,
+        launch_dir=os.getcwd(),
+        disabled=no_mcp_config,
+    )
     if resume and continue_last:
         raise ConfigurationError("--resume / -r and --continue-last / -c are mutually exclusive.")
     if preset and (resume or continue_last):
@@ -453,8 +501,19 @@ async def _run_agent(
                 "sandboxed default, or use an agent profile (-a). --bypass also "
                 "works but disables the sandbox."
             )
-        chat_model = build_chat_model(provider, model, yolo, verbose, theme, effort, fast, bypass)
+        chat_model = build_chat_model(
+            provider,
+            model,
+            yolo,
+            verbose,
+            theme,
+            effort,
+            fast,
+            bypass,
+            mcp_servers=mcp_resolution.servers,
+        )
         effort = resolve_persisted_effort(provider, chat_model, effort)
+        _report_mcp_resolution(mcp_resolution, provider=provider, cwd=cwd)
 
         # Opt-in profile `role:` key switches a plain `-a <profile>` leg onto
         # the same create_agent path as --preset coding, parameterized by role.
@@ -552,6 +611,12 @@ async def _run_agent(
             cfg.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
         if fast:
             cfg.update(PROVIDER_FAST_KWARGS.get(provider, {}))
+        # A resumed leg re-spawns a CLI child, so it needs the server set handed
+        # to it just as a new one does; the persisted branch carries the model,
+        # not the caller's directory.
+        if mcp_resolution.servers is not None and provider in _CLAUDE_PROVIDER_NAMES:
+            cfg["mcp_servers"] = mcp_resolution.servers
+        _report_mcp_resolution(mcp_resolution, provider=provider, cwd=cwd)
 
     # Add the profile system prompt for every leg EXCEPT one whose branch carries
     # (or, on a brand-new leg, would carry) a create_agent-composed system message
@@ -803,6 +868,8 @@ async def _run_agent(
             bypass=bypass,
             resume_on_timeout=resume_on_timeout,
             notify=notify,
+            mcp_config=mcp_config,
+            no_mcp_config=no_mcp_config,
             _auto_resumed=True,
         )
 
@@ -959,6 +1026,27 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         ),
     )
 
+    agent.add_argument(
+        "--mcp-config",
+        dest="mcp_config",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Read this MCP config and hand its servers to the leg explicitly. "
+            "By default the nearest .mcp.json at or above the directory this "
+            "command was run in is used, so the leg's tools come from the "
+            "submission rather than from --cwd. The file is read once at spawn."
+        ),
+    )
+    agent.add_argument(
+        "--no-mcp-config",
+        dest="no_mcp_config",
+        action="store_true",
+        help=(
+            "Hand the leg no MCP servers, and say so deliberately instead of "
+            "arriving there by an empty search."
+        ),
+    )
     add_common_cli_args(agent)
     return agent
 
@@ -1083,8 +1171,15 @@ def run_agent(args: argparse.Namespace) -> int:
                 context_budget=getattr(args, "context_budget", None),
                 notify=getattr(args, "notify", None),
                 images=image_uris,
+                mcp_config=getattr(args, "mcp_config", None),
+                no_mcp_config=getattr(args, "no_mcp_config", False),
             )
         )
+    except McpConfigError as exc:
+        # An explicitly named --mcp-config that cannot be used: refuse at spawn,
+        # rather than starting a leg whose tool surface is not what was asked for.
+        log_error(str(exc))
+        return 2
     except ContextFromError as exc:
         log_error(str(exc))
         return 2

@@ -80,6 +80,17 @@
         "type": "boolean",
         "x-flag": "--list-profiles"
       },
+      "mcp_config": {
+        "description": "Read this MCP config and hand its servers to the leg explicitly. By default the nearest .mcp.json at or above the directory this command was run in is used, so the leg's tools come from the submission rather than from --cwd. The file is read once at spawn.",
+        "type": "string",
+        "x-flag": "--mcp-config"
+      },
+      "no_mcp_config": {
+        "default": false,
+        "description": "Hand the leg no MCP servers, and say so deliberately instead of arriving there by an empty search.",
+        "type": "boolean",
+        "x-flag": "--no-mcp-config"
+      },
       "notify": {
         "description": "Shell command template run once this run reaches its terminal status. Overrides .lionagi/settings.yaml notify.on_terminal. Substitutes {payload} (full JSON), {status}, {invocation_id}.",
         "type": "string",
