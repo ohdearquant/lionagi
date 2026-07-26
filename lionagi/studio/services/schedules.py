@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import sqlite3
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +58,36 @@ def _svc_validate_identifier(value: str | None, field_name: str) -> None:
     from lionagi.studio.scheduler.subprocess import _validate_identifier
 
     _validate_identifier(value, field_name)
+
+
+_GITHUB_CURSOR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+
+def _svc_validate_github_cursor(cursor: str | None) -> None:
+    """Service-boundary check: a github_cursor must be a UTC ISO-8601 instant
+    spelled exactly as GitHub spells it, ``YYYY-MM-DDTHH:MM:SSZ``.
+
+    The poller compares cursors as STRINGS against the API's own timestamps, so
+    the format is a correctness contract rather than a presentation choice: a
+    space separator, a fractional part, or a ``+00:00`` offset all denote the
+    right instant and all order wrongly against ``2026-07-20T15:21:57Z``, which
+    silently makes the poller skip or replay events.
+
+    ``None`` is allowed and clears the cursor, meaning "no bookmark". That is a
+    legitimate operator action and a consequential one -- an unbookmarked
+    merged-mode poll dispatches everything its scan reaches.
+    """
+    if cursor is None:
+        return
+    if not isinstance(cursor, str) or not _GITHUB_CURSOR_RE.match(cursor):
+        raise ValueError(
+            "github_cursor must be a UTC ISO-8601 timestamp of the form "
+            f"YYYY-MM-DDTHH:MM:SSZ (got {cursor!r})"
+        )
+    try:
+        datetime.strptime(cursor, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as exc:
+        raise ValueError(f"github_cursor is not a real timestamp: {cursor!r}") from exc
 
 
 def _svc_validate_action_cwd(cwd: str | None) -> None:
@@ -606,6 +638,8 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
             _svc_validate_github_repo(fields["github_repo"])
         if "github_filter" in fields:
             _svc_validate_github_filter(fields["github_filter"])
+        if "github_cursor" in fields:
+            _svc_validate_github_cursor(fields["github_cursor"])
         if "max_runs" in fields:
             _svc_validate_max_runs(fields["max_runs"])
         if "budget_usd" in fields:
@@ -805,6 +839,10 @@ class UpdateScheduleRequest(BaseModel):
     interval_sec: int | None = None
     github_repo: str | None = None
     github_filter: dict | None = None
+    # The poller's own bookmark, patchable so an operator can move it
+    # deliberately -- forward to skip a backlog the schedule would
+    # otherwise dispatch all at once, or back to replay one.
+    github_cursor: str | None = None
     poll_interval_sec: int | None = None
     action_kind: str | None = None
     action_model: str | None = None
