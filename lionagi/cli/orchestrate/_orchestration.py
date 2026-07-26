@@ -8,6 +8,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -95,20 +96,61 @@ def available_roles() -> list[str]:
     return sorted(set(list_roles()) | set(list_agents()))
 
 
+def _first_sentence(text: str) -> str:
+    """Opening sentence of ``text``, truncated so one role cannot crowd out
+    the roster."""
+    first = text.split(". ", 1)[0].strip()
+    return (first[:160] + "…") if len(first) > 161 else first
+
+
+_MISSION_LABEL = re.compile(r"^\*\*mission\*\*\s*:?\s*", re.IGNORECASE)
+_MARKDOWN_FURNITURE = re.compile(r"^(#|-{3,}|\||>|```|`[^`]*`$)")
+
+
+def _profile_summary(profile: AgentProfile) -> str:
+    """One line describing what a user profile is for.
+
+    Profiles state their purpose on a ``**Mission**:`` line; when a file has
+    none, its first paragraph of prose is the next best summary.
+    """
+    body = profile.raw_body or profile.system_prompt or ""
+    paragraphs = [
+        " ".join(line.strip() for line in block.splitlines() if line.strip())
+        for block in re.split(r"\n\s*\n", body)
+    ]
+    paragraphs = [p for p in paragraphs if p]
+    for p in paragraphs:
+        if _MISSION_LABEL.match(p):
+            return _MISSION_LABEL.sub("", p).strip(" `*")
+    prose = (p for p in paragraphs if not _MARKDOWN_FURNITURE.match(p))
+    return next(prose, "").strip(" `*")
+
+
 def _role_blurb(role: str, default_model: str) -> str:
+    """Roster line body: what the role is for, and what it will run on.
+
+    A built-in role's description is written as selection guidance, so it is
+    preferred over the profile body even when both exist; the profile still
+    contributes the model.
+    """
     try:
-        p = load_agent_profile(role)
-        return f"user profile (model: {p.model or default_model})"
+        profile = load_agent_profile(role)
     except FileNotFoundError:
-        pass
+        profile = None
+
     from lionagi.casts.pattern import Role
 
     try:
-        desc = Role.load(role).description
+        summary = _first_sentence(Role.load(role).description)
     except ValueError:
-        return ""
-    first = desc.split(". ", 1)[0].strip()
-    return (first[:160] + "…") if len(first) > 161 else first
+        summary = ""
+    if not summary and profile is not None:
+        summary = _first_sentence(_profile_summary(profile))
+
+    if profile is None:
+        return summary
+    model = f"(model: {profile.model or default_model})"
+    return f"{summary} {model}" if summary else f"user profile {model}"
 
 
 def role_roster(default_model: str) -> str:
