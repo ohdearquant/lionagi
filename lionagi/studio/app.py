@@ -146,8 +146,20 @@ async def _finalize_warmup(task: asyncio.Task | None) -> None:
 
 @asynccontextmanager
 async def lifespan(app_instance):
+    from lionagi.cli._code_identity import snapshot_git_position
+
     from .scheduler.engine import scheduler
     from .services.lifecycle import run_startup_reconciliation
+
+    # First, before anything else can run and long before the first request:
+    # read where this process's code came from. The modules in memory were fixed
+    # at import, but the checkout they came from is a directory anyone can move
+    # afterwards. Only a reading taken now distinguishes "the tree moved under a
+    # running daemon" from "this is the code we loaded" — deferred to the first
+    # health request, the snapshot would describe whatever the tree had become by
+    # then and report a commit this process never loaded, with a clean drift
+    # verdict on top.
+    snapshot_git_position()
 
     _emit_startup_warnings()
     # The second of the two settings-driven notify bootstrap points (CLI is the first).

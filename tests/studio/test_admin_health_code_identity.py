@@ -115,6 +115,55 @@ def test_an_unreadable_identity_is_unknown_and_still_present(monkeypatch, tmp_pa
     assert any("git is not on PATH" in u for u in payload["drift"]["unknown"])
 
 
+def test_the_daemon_snapshots_its_position_before_it_starts_serving(monkeypatch):
+    """The snapshot has to be taken at startup, not on the first health request.
+
+    ``code_identity`` reads its git position once and keeps it, initialising
+    lazily. Left to initialise on the first request, the reading describes
+    whatever the tree had become by then — so a checkout moved after the daemon
+    started would be reported as the code being *run*, with ``checkout_moved``
+    false and a clean drift verdict, which is precisely the condition the field
+    exists to detect.
+
+    Asserting the snapshot exists by the time the scheduler starts is what
+    distinguishes taking it at startup from taking it later: everything after
+    that point can already cause, or observe, a request.
+    """
+    import lionagi.cli._code_identity as ci
+    import lionagi.studio.app as app_mod
+    from lionagi.studio.scheduler.engine import scheduler
+
+    monkeypatch.setattr(ci, "_SNAPSHOT", None)
+    seen: dict[str, object] = {}
+
+    async def _record_start() -> None:
+        seen["snapshot_at_scheduler_start"] = ci._SNAPSHOT
+
+    async def _noop() -> None:
+        return None
+
+    monkeypatch.setattr(scheduler, "start", _record_start)
+    monkeypatch.setattr(scheduler, "stop", _noop)
+    monkeypatch.setattr(app_mod, "run_startup_reconciliation", _noop, raising=False)
+    monkeypatch.setattr(app_mod, "_start_claude_mirror", lambda: (None, None))
+    monkeypatch.setattr(app_mod, "_stop_claude_mirror", lambda *a: _noop())
+    monkeypatch.setattr(app_mod, "_startup_warmup", _noop)
+    monkeypatch.setattr(app_mod, "_finalize_warmup", lambda *a: _noop())
+
+    async def _drive() -> None:
+        async with app_mod.lifespan(None):
+            seen["snapshot_while_serving"] = ci._SNAPSHOT
+
+    import anyio
+
+    anyio.run(_drive)
+
+    assert seen.get("snapshot_at_scheduler_start") is not None, (
+        "the position was not read before the scheduler started"
+    )
+    assert seen.get("snapshot_while_serving") is not None
+
+
 def test_the_reading_does_not_block_the_event_loop(monkeypatch, tmp_path):
     """A health check must not stall the daemon it is reporting on.
 
