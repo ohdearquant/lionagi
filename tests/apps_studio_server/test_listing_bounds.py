@@ -494,3 +494,35 @@ class TestStoreProbe:
         r = client.get("/health")
         assert r.status_code == 200
         assert r.json() == {"status": "ok"}
+
+    def test_this_file_runs_under_the_interpreter_default_sigpipe(self):
+        """The tests above must not inherit a ``SIG_DFL`` from an earlier test.
+
+        Several of them close an event loop while a database connection's
+        worker thread may still be finishing. Closing a loop closes the read
+        end of its self-pipe before the write end, so a thread handing back a
+        result in that window writes to a pipe whose peer is gone. Under the
+        interpreter default that is an ``OSError`` asyncio already swallows.
+        Under ``SIG_DFL`` the kernel kills the process first, and it dies with
+        its buffered output still buffered: no traceback, no failing
+        assertion, just a worker that stopped and a report blaming whichever
+        test it was holding.
+
+        The CLI sets ``SIG_DFL`` on entry, deliberately, because a command in
+        a pipeline should die quietly when its reader leaves. ``signal.signal``
+        is process-wide, so any test that drives the CLI in-process hands that
+        to every test after it. A fixture in ``tests/conftest.py`` puts it
+        back; this asserts the tests here actually got the benefit.
+
+        Order-dependent by nature: it can only catch the leak when something
+        that changes the policy ran earlier in this same process. Run this
+        file after ``tests/cli`` with ``-n 0`` to see it fail without that
+        fixture. Distributed across workers it may pass without proving
+        anything, which is why it is written to never fail falsely.
+        """
+        import signal
+
+        assert signal.getsignal(signal.SIGPIPE) is signal.SIG_IGN, (
+            "an earlier test left SIGPIPE at SIG_DFL; a closed-loop wakeup "
+            "here will kill the worker with no traceback"
+        )
