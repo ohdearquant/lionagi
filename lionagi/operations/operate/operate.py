@@ -16,10 +16,12 @@ from ..fields import Instruct
 from ..types import (
     ActionParam,
     ChatParam,
+    ExtractionError,
     HandleValidation,
     Middle,
     ParseParam,
     RunParam,
+    SchemaRejectedError,
 )
 
 if TYPE_CHECKING:
@@ -263,7 +265,18 @@ async def operate(
             case "raise":
                 expected_name = getattr(model_class, "__name__", repr(model_class))
                 received_snippet = repr(result)[:200]
-                raise ValueError(
+                if getattr(result, "failure_kind", None) == "validation":
+                    # JSON came back intact and the schema refused it. The
+                    # generic hint below blames the provider's structured-output
+                    # support, which sends the caller to the wrong place — the
+                    # pydantic error already names the offending field.
+                    raise SchemaRejectedError(
+                        f"Model response parsed as JSON but did not satisfy "
+                        f"'{expected_name}': {result.validation_error}. "
+                        f"Received (truncated): {received_snippet}.",
+                        validation_error=result.validation_error,
+                    )
+                raise ExtractionError(
                     f"Failed to parse LLM response into '{expected_name}'. "
                     f"Received (truncated): {received_snippet}. "
                     f"Hint: verify the model supports structured JSON output "

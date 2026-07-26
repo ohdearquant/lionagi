@@ -1,10 +1,11 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-import contextlib
+import logging
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
+from pydantic import ValidationError as PydanticValidationError
 
 from lionagi.ln import (
     AlcallParams,
@@ -18,11 +19,82 @@ from lionagi.operations.schema.structure import Structure
 from lionagi.protocols.types import AssistantResponse
 
 from .._defaults import get_default_parse_call as get_default_call
-from ..types import HandleValidation, ParseParam
+from ..types import (
+    ExtractionError,
+    HandleValidation,
+    ParseError,
+    ParseParam,
+    SchemaRejectedError,
+    UnparsedResponse,
+)
 
 if TYPE_CHECKING:
     from lionagi.ln.types import Operable
     from lionagi.session.branch import Branch
+
+
+logger = logging.getLogger(__name__)
+
+_BASE_REFORMAT_GUIDANCE = "follow the required response format, using the model schema as a guide"
+
+# Validation errors list every offending field; keep the tail out of the prompt.
+_MAX_REPORTED_ERROR_CHARS = 800
+
+
+class _ReformatAttempts:
+    """Per-attempt framing for the reformat turn.
+
+    Every reformat turn is a repair of the *same* text, so without this the
+    retry loop reissues a byte-identical request; on a deterministic engine
+    (temperature 0) that cannot produce a different answer, and the caller pays
+    for each repetition. Each turn instead reports the failure that preceded
+    it, so the request differs and the model is told what to fix.
+    """
+
+    __slots__ = ("count", "last_error", "last_exc")
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.last_error: str | None = None
+        self.last_exc: Exception | None = None
+
+    def record_failure(self, exc: Exception) -> None:
+        message = str(exc).strip() or type(exc).__name__
+        if len(message) > _MAX_REPORTED_ERROR_CHARS:
+            message = message[:_MAX_REPORTED_ERROR_CHARS] + " …(truncated)"
+        self.last_error = message
+        self.last_exc = exc
+
+    def failure_kind(self) -> str:
+        """Classify the last failure; unclassified causes count as extraction."""
+        return self.last_exc.kind if isinstance(self.last_exc, ParseError) else "extraction"
+
+    def as_unparsed(self, text: str) -> UnparsedResponse:
+        """Wrap the raw text with why it could not be parsed."""
+        exc = self.last_exc
+        return UnparsedResponse(
+            text,
+            failure_kind=self.failure_kind(),
+            validation_error=(
+                exc.validation_error if isinstance(exc, SchemaRejectedError) else None
+            ),
+        )
+
+    def guidance(self) -> str:
+        self.count += 1
+        parts = [_BASE_REFORMAT_GUIDANCE]
+        if self.last_error:
+            parts.append(
+                f"The previous attempt did not validate: {self.last_error}. "
+                "Correct exactly what that error names — every field it reports "
+                "must carry a value of the required type."
+            )
+        if self.count > 1:
+            parts.append(
+                f"This is attempt {self.count}; earlier attempts failed. Return only "
+                "the JSON object, with no text before or after it."
+            )
+        return " ".join(parts)
 
 
 def _try_propagate_structure(content: Any, parse_param: "ParseParam") -> "ParseParam":
@@ -90,20 +162,25 @@ async def parse(
     return_res_message: bool = False,
 ) -> Any | tuple[Any, AssistantResponse | None]:
     structure = parse_param.structure if isinstance(parse_param.structure, Structure) else None
+    attempts = _ReformatAttempts()
 
     if structure is not None:
-        with contextlib.suppress(Exception):
+        try:
             result = structure.parse(
                 text,
                 fuzzy_match_params=parse_param.fuzzy_match_params,
             )
             return result if not return_res_message else (result, None)
+        except Exception as e:
+            attempts.record_failure(e)
     else:
-        with contextlib.suppress(Exception):
+        try:
             result = _validate_dict_or_model(
                 text, parse_param.response_format, parse_param.fuzzy_match_params
             )
             return result if not return_res_message else (result, None)
+        except Exception as e:
+            attempts.record_failure(e)
 
     async def _inner_parse(i):
         # This retries a failed parse by calling the public Branch.chat()
@@ -114,7 +191,7 @@ async def parse(
 
         _, res = await branch.chat(
             instruction="reformat text into specified model or structure",
-            guidance="follow the required response format, using the model schema as a guide",
+            guidance=attempts.guidance(),
             context=[{"text_to_format": text}],
             request_fields=(
                 parse_param.response_format
@@ -140,22 +217,22 @@ async def parse(
         res.metadata["is_parsed"] = True
         res.metadata["original_text"] = text
 
-        if structure is not None:
-            return (
-                structure.parse(
+        try:
+            if structure is not None:
+                parsed = structure.parse(
                     res.response,
                     fuzzy_match_params=parse_param.fuzzy_match_params,
-                ),
-                res,
-            )
-        return (
-            _validate_dict_or_model(
-                res.response,
-                parse_param.response_format,
-                parse_param.fuzzy_match_params,
-            ),
-            res,
-        )
+                )
+            else:
+                parsed = _validate_dict_or_model(
+                    res.response,
+                    parse_param.response_format,
+                    parse_param.fuzzy_match_params,
+                )
+        except Exception as e:
+            attempts.record_failure(e)
+            raise
+        return parsed, res
 
     _call = parse_param.alcall_params or get_default_call()
     if isinstance(parse_param.alcall_params, dict):
@@ -168,11 +245,36 @@ async def parse(
     except Exception as e:
         match parse_param.handle_validation:
             case "raise":
-                raise ValueError(f"Failed to parse response: {e}") from e
+                # Keep the message and the ValueError base, so existing handlers
+                # are unaffected, but carry the kind and the pydantic error.
+                failure_cls = (
+                    SchemaRejectedError
+                    if attempts.failure_kind() == "validation"
+                    else ExtractionError
+                )
+                last = attempts.last_exc
+                raise failure_cls(
+                    f"Failed to parse response: {e}",
+                    validation_error=(
+                        last.validation_error if isinstance(last, SchemaRejectedError) else None
+                    ),
+                ) from e
             case "return_none":
                 return (None, None) if return_res_message else None
             case "return_value":
-                return (text, None) if return_res_message else text
+                # Degrade to the raw text as before, but attached to why it
+                # failed — a schema rejection must not look like a parse error.
+                value = attempts.as_unparsed(text)
+                if value.failure_kind == "validation":
+                    logger.warning(
+                        "parse: response was valid JSON but did not satisfy %s; "
+                        "returning raw text. Validation error: %s",
+                        getattr(
+                            parse_param.response_format, "__name__", parse_param.response_format
+                        ),
+                        attempts.last_error,
+                    )
+                return (value, None) if return_res_message else value
     return (*result[0],) if return_res_message else result[0][0]
 
 
@@ -233,8 +335,15 @@ def _validate_dict_or_model(
                 strict=False,
             )
         if isinstance(response_format, type) and issubclass(response_format, BaseModel):
-            return response_format.model_validate(dict_)
+            # Isolated from the extraction steps above: by here the JSON was
+            # recovered, so anything raised is the schema rejecting the data.
+            try:
+                return response_format.model_validate(dict_)
+            except PydanticValidationError as e:
+                raise SchemaRejectedError(f"Failed to parse text: {e}", validation_error=e) from e
         return dict_
 
+    except ParseError:
+        raise
     except Exception as e:
-        raise ValueError(f"Failed to parse text: {e}") from e
+        raise ExtractionError(f"Failed to parse text: {e}") from e

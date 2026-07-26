@@ -24,6 +24,80 @@ if TYPE_CHECKING:
 
 HandleValidation = Literal["raise", "return_value", "return_none"]
 
+# Why a response could not be turned into the requested model. These two need
+# opposite fixes from the caller — "extraction" means the text never yielded
+# JSON, so the prompt or the model is at fault; "validation" means the JSON was
+# recovered intact and the schema refused it, so the schema or the data is.
+# Collapsing them into one string return makes a schema mismatch look like a
+# parsing bug, which costs a diagnostic round trip.
+ParseFailureKind = Literal["extraction", "validation"]
+
+
+class ParseError(ValueError):
+    """A response could not be turned into the requested model.
+
+    Subclasses ``ValueError`` so existing ``except ValueError`` handlers keep
+    working; ``kind`` is what lets a caller tell the two causes apart.
+    """
+
+    kind: ClassVar[ParseFailureKind]
+
+    def __init__(self, message: str, *, validation_error: Exception | None = None):
+        super().__init__(message)
+        self.validation_error = validation_error
+
+
+class ExtractionError(ParseError):
+    """No JSON could be recovered from the text at all."""
+
+    kind: ClassVar[ParseFailureKind] = "extraction"
+
+
+class SchemaRejectedError(ParseError):
+    """JSON was recovered intact, but it does not satisfy the response model.
+
+    ``validation_error`` carries the underlying pydantic error, which names the
+    offending field and value.
+    """
+
+    kind: ClassVar[ParseFailureKind] = "validation"
+
+
+class UnparsedResponse(str):
+    """The raw model text, returned when parsing gave up.
+
+    Subclasses ``str`` so callers that only ever wanted the text are unaffected
+    — equality, formatting and ``isinstance(x, str)`` all behave as before —
+    while ``failure_kind`` and ``validation_error`` make the reason reachable
+    without a second round trip.
+    """
+
+    __slots__ = ("failure_kind", "validation_error")
+
+    def __new__(
+        cls,
+        text: str,
+        *,
+        failure_kind: ParseFailureKind,
+        validation_error: Exception | None = None,
+    ) -> "UnparsedResponse":
+        obj = super().__new__(cls, text)
+        obj.failure_kind = failure_kind
+        obj.validation_error = validation_error
+        return obj
+
+    def __getnewargs_ex__(self) -> tuple[tuple[str], dict[str, Any]]:
+        # copy, deepcopy and pickle all rebuild a str subclass by calling
+        # __new__ with the arguments this returns. Without it they call
+        # __new__(text) alone and raise on the keyword-only argument -- so a
+        # plain str survives being copied while this one would not, which is
+        # exactly the kind of difference "it is still a str" is meant to rule
+        # out.
+        return (str(self),), {
+            "failure_kind": self.failure_kind,
+            "validation_error": self.validation_error,
+        }
+
 
 @dataclass(slots=True, frozen=True, init=False)
 class MorphParam(Params):
