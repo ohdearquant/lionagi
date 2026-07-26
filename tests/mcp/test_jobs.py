@@ -196,6 +196,11 @@ def test_kill_unknown_job(sandbox):
         {"status": "cancelled", "finished_at": "2026-01-01T00:00:00+00:00"},
         {"status": "timed_out", "finished_at": "2026-01-01T00:00:00+00:00"},
         {"status": "failed", "spawn_state": "failed", "finished_at": "2026-01-01T00:00:00+00:00"},
+        # No finished_at: a spawn failure is terminal on the spawn state alone,
+        # which is what `status` derives from it. Without this case the guard
+        # could drop its spawn-state arm and every other case here would still
+        # pass, putting kill and status back into disagreement.
+        {"status": "failed", "spawn_state": "failed"},
     ],
 )
 def test_kill_refuses_a_record_that_already_ended(sandbox, monkeypatch, recorded):
@@ -219,9 +224,15 @@ def test_kill_refuses_a_record_that_already_ended(sandbox, monkeypatch, recorded
     assert killpg_calls == [], "a job that already ended must not be signalled"
     assert out["killed"] is False
     assert recorded["status"] in out["reason"]
+    # The refusal reports the pid: a group that really did outlive its recorded
+    # end can only be found by an operator if this number survives the refusal.
+    assert out["pid"] == 4242
+    # kill and status must call the same record terminal. Whichever arm of the
+    # predicate this case exercises, disagreement here is the bug being guarded.
+    assert jobs.status(rid)["terminal"] is True
     after = jobs._read_job(rid)
     assert after["status"] == recorded["status"]
-    assert after["finished_at"] == recorded["finished_at"]
+    assert after.get("finished_at") == recorded.get("finished_at")
 
 
 def test_kill_signals_the_process_group_of_a_live_run(sandbox, monkeypatch):

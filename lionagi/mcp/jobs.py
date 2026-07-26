@@ -885,7 +885,19 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
     # relabel a run that completed or was cancelled as "killed".
     if _record_is_terminal(job):
         recorded = job.get("status", "unknown")
-        return {"run_id": run_id, "killed": False, "reason": f"already ended as {recorded}"}
+        # The pid rides along on the refusal. A record can be marked terminal
+        # while its group leader is still alive: the terminal status is persisted
+        # from the lifecycle transition, and the run's own teardown finishes
+        # after that. Refusing is still right, because this pid may equally have
+        # been reused by then and nothing here can tell the two apart. But an
+        # operator reaping a group that really did outlive its recorded end needs
+        # the number, and this is the last place it is reported.
+        return {
+            "run_id": run_id,
+            "killed": False,
+            "reason": f"already ended as {recorded}; pid not signalled because it may since have been reused",
+            "pid": job.get("pid"),
+        }
     pid = job.get("pid")
     if not pid or pid <= 1:  # never signal pgid 0/1 (self/init)
         return {"run_id": run_id, "killed": False, "reason": "no pid on record"}
