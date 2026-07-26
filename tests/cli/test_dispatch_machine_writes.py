@@ -174,6 +174,54 @@ def test_ack_reports_conflict_not_success_when_the_row_moved_under_it(monkeypatc
     assert envelope["error"]["detail"]["status"] == "expired"
 
 
+@pytest.mark.parametrize("verb", ["ack", "retry"])
+def test_a_lost_race_on_a_row_that_is_then_deleted_is_not_found_not_a_null_conflict(
+    monkeypatch, tmp_path, capfd, verb
+):
+    """Two things happened to the row, and the answer has to name the later one.
+
+    The transition is refused because the row moved, and by the time the outcome
+    is re-read the row is gone. Reporting `status_changed` with a null status
+    gives one value two meanings: a caller cannot tell a surviving conflicting
+    row from a deleted one, and null is also what a genuinely absent status would
+    look like. The exception path already answers `not_found` for this state; this
+    is the same state reached through the guarded write.
+    """
+    db_path = _redirect_state_db(monkeypatch, tmp_path)
+    dispatch_id = asyncio.run(
+        _seed(db_path, kind="terminal_notify", deliver_to="seat-1", ack_required=True)
+    )
+    token = asyncio.run(_row(db_path, dispatch_id))["ack_token"]
+    if verb == "retry":
+        asyncio.run(_force_status(db_path, dispatch_id, "dead_letter"))
+
+    from lionagi.dispatch import outbox, purge_dispatch
+    from lionagi.state.db import StateDB
+
+    real_transition = outbox.transition
+
+    async def vanishing_transition(db, request, **kwargs):
+        # The row is deleted after the library read it and before its guarded
+        # write lands, so the write matches nothing and the re-read finds nothing.
+        # A real purge rather than a stubbed absence, so `get_dispatch` is
+        # answering about a store that genuinely no longer holds the row.
+        async with StateDB(db_path) as other:
+            await purge_dispatch(other, dispatch_id)
+        return await real_transition(db, request, **kwargs)
+
+    monkeypatch.setattr(outbox, "transition", vanishing_transition)
+    argv = ["dispatch", verb, dispatch_id] + ([token] if verb == "ack" else [])
+    rc, envelope = _run(argv, capfd)
+
+    assert envelope["ok"] is False
+    assert envelope["error"]["kind"] == "not_found", (
+        f"a deleted row was reported as {envelope['error']['kind']}: {envelope['error']}"
+    )
+    assert envelope["error"]["detail"] is None or "status" not in (
+        envelope["error"]["detail"] or {}
+    ), "an absent row was given a status field"
+
+
 # ── retry ────────────────────────────────────────────────────────────────────
 
 

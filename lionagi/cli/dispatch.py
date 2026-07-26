@@ -99,9 +99,15 @@ async def _ack_outcome(db: Any, dispatch_id: str, ack_token: str) -> dict[str, A
         return {"outcome": "acked"}
     # The transition was refused because the row left the status it was read in.
     # Its current status is the useful thing to report, so it is re-read rather
-    # than described.
+    # than described. A row that is gone by the time of the re-read is not a
+    # conflict with a missing status; it is an absence, and reporting it as
+    # `status_changed` with a null status would give one value two meanings and
+    # leave the caller unable to tell a surviving conflicting row from a deleted
+    # one. Same answer the exception path above gives for the same state.
     row = await get_dispatch(db, dispatch_id)
-    return {"outcome": "status_changed", "status": None if row is None else row["status"]}
+    if row is None:
+        return {"outcome": "not_found"}
+    return {"outcome": "status_changed", "status": row["status"]}
 
 
 async def _retry_outcome(db: Any, dispatch_id: str) -> dict[str, Any]:
@@ -121,7 +127,9 @@ async def _retry_outcome(db: Any, dispatch_id: str) -> dict[str, Any]:
     if applied:
         return {"outcome": "retrying"}
     row = await get_dispatch(db, dispatch_id)
-    return {"outcome": "status_changed", "status": None if row is None else row["status"]}
+    if row is None:
+        return {"outcome": "not_found"}
+    return {"outcome": "status_changed", "status": row["status"]}
 
 
 # The human paths below deliberately keep raising on a precondition the library
@@ -492,11 +500,16 @@ def _refuse(refusals: dict[str, tuple[str, str]], outcome: dict[str, Any], dispa
     from .machine import MachineError
 
     kind, template = refusals[outcome["outcome"]]
-    status = outcome.get("status")
+    detail: dict[str, Any] = {"dispatch_id": dispatch_id, "outcome": outcome["outcome"]}
+    # A row that is gone has no status, and carrying a null one would say it has a
+    # status that could not be determined. The two are different answers, and the
+    # caller reading this detail is the one that cannot tell them apart.
+    if "status" in outcome:
+        detail["status"] = outcome["status"]
     return MachineError(
         kind,
-        template.format(id=dispatch_id, status=status),
-        {"dispatch_id": dispatch_id, "status": status, "outcome": outcome["outcome"]},
+        template.format(id=dispatch_id, status=outcome.get("status")),
+        detail,
     )
 
 
