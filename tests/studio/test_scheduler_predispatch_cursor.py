@@ -352,3 +352,192 @@ async def test_cancellation_after_launch_still_records_a_cancelled_run():
     assert cancelled[0].kwargs["reason_code"] == RunReasons.CANCELLED_SYSTEM
     fields = svc.create_schedule_run_and_advance.await_args_list[0].kwargs["schedule_fields"]
     assert fields["github_cursor"] == FIRST_EVENT_AT
+
+
+# ---------------------------------------------------------------------------
+# The refusal is not always a property of the schedule: bounded retry
+# ---------------------------------------------------------------------------
+
+
+def _poison_command_schedule(**overrides) -> dict:
+    """A command schedule whose one argument is rendered from the event's own
+    PR title -- so whether argv can be built at all depends on which event is
+    being fired, not on the schedule alone."""
+    base = _minimal_schedule(
+        action_kind="command",
+        action_command="echo",
+        action_command_args=["{{pr_title}}"],
+        action_extra_args=[],
+    )
+    base.update(overrides)
+    return base
+
+
+def _titled(pr_number: int, updated_at: str, title: str) -> GithubPollItem:
+    item = _item(pr_number, updated_at)
+    item.event["pr_title"] = title
+    return item
+
+
+# Renders to a leading '-', which build_argv rejects as flag injection.
+POISON_TITLE = "-dangerous"
+SAFE_TITLE = "a safe title"
+
+
+@pytest.fixture
+def _command_allowlisted(monkeypatch):
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "echo")
+
+
+@pytest.mark.asyncio
+async def test_event_specific_argv_failure_retries_before_the_limit(_command_allowlisted):
+    """Event 1's title cannot be rendered into an argument; event 2's can.
+    Below the refusal limit the poll still holds the cursor at event 1 and
+    stops, so the refusal is retried loudly rather than swallowed."""
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _poison_command_schedule()
+
+    spawn = AsyncMock(return_value=(0, ""))
+    with (
+        _poll(
+            _titled(1, FIRST_EVENT_AT, POISON_TITLE),
+            _titled(2, SECOND_EVENT_AT, SAFE_TITLE),
+        ),
+        patch("lionagi.studio.scheduler.subprocess.spawn_and_wait", new=spawn),
+    ):
+        await engine._tick_github(schedule, now=10_000.0)
+
+    spawn.assert_not_awaited()
+    assert _cursor_values_written(svc) == []
+    # The streak is recorded against the event it is holding back, so a later
+    # poll can tell a repeat of the same refusal from a fresh one.
+    streak = [
+        c for c in svc.update_schedule.await_args_list if "predispatch_refusal_count" in c.kwargs
+    ]
+    assert len(streak) == 1
+    assert streak[0].kwargs["predispatch_refusal_count"] == 1
+    assert streak[0].kwargs["predispatch_refusal_event"] == FIRST_EVENT_AT
+
+
+@pytest.mark.asyncio
+async def test_event_specific_argv_failure_progresses_at_the_limit(_command_allowlisted):
+    """At the limit the same refusal is taken as terminal for that one event:
+    the cursor moves past it and the next event -- which renders fine -- is
+    dispatched, so one poison title cannot block the queue behind it."""
+    from lionagi.studio.scheduler.engine import _MAX_PREDISPATCH_REFUSALS
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _poison_command_schedule(
+        predispatch_refusal_event=FIRST_EVENT_AT,
+        predispatch_refusal_count=_MAX_PREDISPATCH_REFUSALS - 1,
+    )
+
+    spawn = AsyncMock(return_value=(0, ""))
+    with (
+        _poll(
+            _titled(1, FIRST_EVENT_AT, POISON_TITLE),
+            _titled(2, SECOND_EVENT_AT, SAFE_TITLE),
+        ),
+        patch("lionagi.studio.scheduler.subprocess.spawn_and_wait", new=spawn),
+    ):
+        await engine._tick_github(schedule, now=10_000.0)
+
+    # Event 2 actually ran, with its own rendered argument.
+    spawn.assert_awaited_once()
+    assert spawn.await_args.args[0] == ["echo", SAFE_TITLE]
+    # The cursor is now past BOTH events -- event 1 because its refusal was
+    # taken as terminal, event 2 because it was dispatched. (Event 1's own
+    # advance is never written on its own: event 2's fire commits the later
+    # value in the same poll.)
+    written = _cursor_values_written(svc)
+    assert written
+    assert all(v == SECOND_EVENT_AT for v in written)
+    assert SECOND_EVENT_AT > FIRST_EVENT_AT
+    # The streak is cleared once the cursor is past the event it counted.
+    cleared = [
+        c
+        for c in svc.update_schedule.await_args_list
+        if c.kwargs.get("predispatch_refusal_count") == 0
+    ]
+    assert cleared
+    assert cleared[0].kwargs["predispatch_refusal_event"] is None
+
+
+# ---------------------------------------------------------------------------
+# Committed occurrence, no launch: the row stays in the recovery lane
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pre_launch_status_write_failure_leaves_the_run_recoverable():
+    """The running-status write between the occurrence commit and the spawn is
+    a separate awaited call. If it raises, the cursor is already spent, so
+    finalizing the run would strand the event with nothing ever launched for
+    it. The row must stay in the undispatched-recovery lane instead."""
+    svc = _make_svc()
+
+    async def _fail_the_pre_launch_status(entity_type, entity_id, **kwargs):
+        if entity_type == "schedule_run" and kwargs.get("new_status") == "running":
+            raise RuntimeError("state service unavailable")
+
+    svc.update_status = AsyncMock(side_effect=_fail_the_pre_launch_status)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule()
+
+    spawn = AsyncMock(return_value=(0, ""))
+    with (
+        _poll(_item(1, FIRST_EVENT_AT)),
+        _build_argv_ok(),
+        patch("lionagi.studio.scheduler.subprocess.spawn_and_wait", new=spawn),
+    ):
+        await engine._tick_github(schedule, now=10_000.0)
+
+    spawn.assert_not_awaited()
+    # Committed as running with the cursor advance, and never stamped
+    # dispatched -- exactly the shape startup recovery scans for.
+    inserted = svc.create_schedule_run_and_advance.await_args_list[0].args[0]
+    assert inserted["status"] == "running"
+    assert inserted.get("dispatched_at") is None
+    # Only this event's own advance, committed with the occurrence (the
+    # trailing batched write re-states the same value).
+    assert set(_cursor_values_written(svc)) == {FIRST_EVENT_AT}
+    # Nothing terminal was written for it, so it is still in the lane.
+    assert _run_status_calls(svc, "failed") == []
+    assert _run_status_calls(svc, "cancelled") == []
+
+
+@pytest.mark.asyncio
+async def test_run_undispatched_by_a_pre_launch_failure_is_refired_on_startup():
+    """The other half of the same claim: a row left that way is re-fired from
+    its own trigger context by the startup scan, so the event is not lost."""
+    svc = _make_svc()
+    schedule = _minimal_schedule()
+    svc.get_schedule = AsyncMock(return_value={**schedule, "enabled": 1})
+    svc.list_undispatched_schedule_runs = AsyncMock(
+        return_value=[
+            {
+                "id": "run-stranded",
+                "schedule_id": schedule["id"],
+                "chain_depth": 0,
+                "trigger_context": {"github_events": [_item(1, FIRST_EVENT_AT).event]},
+            }
+        ]
+    )
+    engine = SchedulerEngine(svc=svc)
+
+    spawn = AsyncMock(return_value=(0, ""))
+    with (
+        _build_argv_ok(),
+        patch("lionagi.studio.scheduler.subprocess.spawn_and_wait", new=spawn),
+    ):
+        await engine._recover_undispatched_fires()
+        await asyncio.gather(*list(engine._fire_tasks), return_exceptions=True)
+
+    spawn.assert_awaited_once()
+    # Re-fired atomically with tombstoning the stranded row it replaces.
+    svc.tombstone_and_replace_schedule_run.assert_awaited_once()
+    orphan_id, replacement = svc.tombstone_and_replace_schedule_run.await_args.args
+    assert orphan_id == "run-stranded"
+    assert replacement["trigger_context"]["github_events"][0]["pr_number"] == 1

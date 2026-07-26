@@ -116,6 +116,10 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # and the consecutive-401 counter (resets only on a healthy read).
         ("last_healthy_poll_at", "REAL"),
         ("poller_consecutive_401", "INTEGER NOT NULL DEFAULT 0"),
+        # Bounded retry for a fire that refuses before dispatching: which
+        # event the streak applies to, and how many times it has refused.
+        ("predispatch_refusal_event", "TEXT"),
+        ("predispatch_refusal_count", "INTEGER NOT NULL DEFAULT 0"),
         # ADR-0070 delta 1: persisted per-schedule execution root, captured
         # once at creation. NULL on rows created before this migration.
         ("action_cwd", "TEXT"),

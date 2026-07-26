@@ -546,6 +546,9 @@ schedules = Table(
     # Observer self-health (github_poll poller); see schema.sql.
     Column("last_healthy_poll_at", Float),
     Column("poller_consecutive_401", Integer, nullable=False, server_default="0"),
+    # Bounded retry for a pre-dispatch refusal; see schema.sql.
+    Column("predispatch_refusal_event", Text),
+    Column("predispatch_refusal_count", Integer, nullable=False, server_default="0"),
     # Declarative ScheduleSet layer: versioned document identity, resolved
     # target/trigger snapshot + digest, and set ownership. NULL on every row
     # created before this layer (legacy) or by an unmanaged quick-create.

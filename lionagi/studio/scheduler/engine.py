@@ -47,6 +47,15 @@ _TICK_INTERVAL = 30  # seconds
 # this many deferrals (the first deferral always emits), so sustained
 # saturation doesn't spam schedule_runs.
 _DEFERRED_RECORD_EVERY = 10
+# How many consecutive times one github_poll event may refuse before dispatch
+# while still holding github_cursor back for it. A pre-dispatch refusal is not
+# necessarily a property of the schedule: the action's prompt and command
+# arguments are rendered per event, so one PR's title or author can fail argv
+# construction where the next PR's would not. Retrying loudly a few times keeps
+# a genuinely fixable misconfiguration re-offered; at this count the refusal is
+# recorded as terminal for that event and the cursor moves past it, so one
+# poison event cannot block the queue behind it forever.
+_MAX_PREDISPATCH_REFUSALS = 3
 
 
 def _register_schedule_notify(
@@ -1315,21 +1324,52 @@ class SchedulerEngine:
                     )
                     if not fired:
                         # The fire refused before it started a process, so
-                        # its cursor advance was never committed. Leave the
-                        # cursor pointing at this event -- nothing ran, so
-                        # re-offering it next poll is not a re-execution.
-                        # Stop here rather than trying the rest: a
-                        # pre-dispatch refusal is a property of the schedule
-                        # (an unresolvable execution root, an action that
-                        # cannot be turned into a command line), so the
-                        # remaining events would refuse identically and
-                        # each would burn a rate-limit and max_runs unit
-                        # doing it.
-                        drop_reason = "an earlier event refused before dispatch"
-                        dropped_prs = [
-                            e.event.get("pr_number") for e in polled[idx:] if e.dispatchable
-                        ]
-                        break
+                        # its cursor advance was never committed. Nothing
+                        # ran, so re-offering this event next poll is not a
+                        # re-execution -- but only up to a bound. A refusal
+                        # can be a property of the schedule (an unresolvable
+                        # execution root) OR of this one event's rendered
+                        # values (a PR title that cannot be turned into a
+                        # command argument), and holding the cursor forever
+                        # for the second kind blocks every later event
+                        # behind it. So: retry the same event loudly up to
+                        # _MAX_PREDISPATCH_REFUSALS, then take the refusal
+                        # as terminal for that event and step past it.
+                        refusals = await self._record_predispatch_refusal(schedule, item.updated_at)
+                        if refusals < _MAX_PREDISPATCH_REFUSALS:
+                            # Stop rather than trying the rest: if the cause
+                            # is the schedule, the remaining events refuse
+                            # identically and each burns a rate-limit and
+                            # max_runs unit doing it.
+                            drop_reason = (
+                                f"an earlier event refused before dispatch "
+                                f"({refusals}/{_MAX_PREDISPATCH_REFUSALS} attempts)"
+                            )
+                            dropped_prs = [
+                                e.event.get("pr_number") for e in polled[idx:] if e.dispatchable
+                            ]
+                            break
+                        _log.warning(
+                            "Schedule %s (%s): event (PR %s, updated_at %s) refused "
+                            "before dispatch %d times; recording the refusal as "
+                            "terminal for it and advancing the cursor past it so "
+                            "later events are not blocked behind it",
+                            schedule.get("name"),
+                            sid,
+                            item.event.get("pr_number"),
+                            item.updated_at,
+                            refusals,
+                        )
+                        cursor = item.updated_at
+                        await self._clear_predispatch_refusals(schedule)
+                        # The refusing fire already wrote its failed run row
+                        # without the cursor advance, so the advance rides
+                        # the trailing batched write below rather than that
+                        # transaction. A crash in between simply re-offers
+                        # the event, which is what every earlier attempt
+                        # already did.
+                        continue
+                    await self._clear_predispatch_refusals(schedule)
                     # Track locally too, for the batched trailing-write
                     # safety net below (covers only non-dispatched/filtered
                     # items after the last fire, or an all-filtered poll
@@ -1377,6 +1417,49 @@ class SchedulerEngine:
                 pre_rate_claim.release()
             if pre_slot_claim is not None:
                 pre_slot_claim.release()
+
+    async def _record_predispatch_refusal(self, schedule: dict, event_cursor: str) -> int:
+        """Count one pre-dispatch refusal of the event at *event_cursor* and
+        return the new consecutive total.
+
+        The streak is keyed to the event it is holding the cursor back for,
+        so a refusal of a different event starts over at 1 -- the bound is
+        per event, not a running tally of everything the schedule ever
+        refused. Persisted on the schedule row (like the poller's
+        consecutive-401 counter) because the retries are spread across
+        polls and process restarts, not held in one loop.
+        """
+        prior = schedule.get("predispatch_refusal_count") or 0
+        if schedule.get("predispatch_refusal_event") != event_cursor:
+            prior = 0
+        count = prior + 1
+        await self._svc.update_schedule(
+            schedule["id"],
+            predispatch_refusal_event=event_cursor,
+            predispatch_refusal_count=count,
+        )
+        # Keep this tick's snapshot in step, so a second refusal within the
+        # same poll counts from the value just written.
+        schedule["predispatch_refusal_event"] = event_cursor
+        schedule["predispatch_refusal_count"] = count
+        return count
+
+    async def _clear_predispatch_refusals(self, schedule: dict) -> None:
+        """Drop the pre-dispatch refusal streak -- called once the cursor
+        moves past the event it was counting, whether because a fire
+        dispatched or because the bound was reached and the refusal was
+        taken as terminal."""
+        if not schedule.get("predispatch_refusal_count") and not schedule.get(
+            "predispatch_refusal_event"
+        ):
+            return
+        await self._svc.update_schedule(
+            schedule["id"],
+            predispatch_refusal_event=None,
+            predispatch_refusal_count=0,
+        )
+        schedule["predispatch_refusal_event"] = None
+        schedule["predispatch_refusal_count"] = 0
 
     async def _reserve_max_runs_budget(self, schedule: dict) -> tuple[bool, _MaxRunsClaim | None]:
         """Atomically claim one top-level fire against schedule['max_runs'].
@@ -1941,9 +2024,8 @@ class SchedulerEngine:
         through to _fire_inner() (github cursor fold-in and recovery
         re-fire, respectively -- see its docstring).
 
-        Returns _fire_inner()'s dispatched flag: True once an external
-        process was confirmed to exist, False for a refusal that happened
-        before anything was dispatched.
+        Returns _fire_inner()'s flag: False for a refusal that happened
+        before anything was durably committed, True otherwise.
         """
         try:
             return await self._fire_inner(
@@ -2082,9 +2164,12 @@ class SchedulerEngine:
         extra_schedule_fields: dict[str, Any] | None = None,
         supersedes_run_id: str | None = None,
     ) -> bool:
-        """Fire one occurrence of *schedule*. Returns True once an external
-        process was confirmed to exist, False if the fire refused before
-        dispatching one.
+        """Fire one occurrence of *schedule*. Returns False only when the
+        fire refused before anything was durably committed for it, so the
+        caller may keep offering the trigger; True once the occurrence (and
+        with it any *extra_schedule_fields* cursor advance) is committed,
+        whether or not a process ultimately ran -- a commit with no launch
+        is re-fired by startup recovery, not by the caller.
 
         PRE-DISPATCH REFUSALS DO NOT CONSUME THE TRIGGER. Everything that
         can refuse without starting a process -- resolving the `li`
@@ -2119,6 +2204,12 @@ class SchedulerEngine:
         # confirmed to exist. Every exit path reads it to tell "nothing was
         # started" apart from "something was started and then failed".
         dispatched = False
+        # Flipped once the occurrence transaction commits -- the point past
+        # which the trigger (and, for a github_poll, its cursor advance) is
+        # durably spent. Between it and *dispatched* lies the window where a
+        # failure must leave the row for startup recovery instead of
+        # finalizing it.
+        occurrence_committed = False
         _tmp_path: str | None = None
 
         inv_id = uuid.uuid4().hex[:12]
@@ -2369,6 +2460,7 @@ class SchedulerEngine:
             if not written_occurrence:
                 await self._abandon_superseded_recovery_fire(inv_id, orphan_id=supersedes_run_id)
                 return False
+            occurrence_committed = True
             if rate_limit_claim is not None:
                 # The durable running row now owns the rolling-window slot.
                 rate_limit_claim.release()
@@ -2601,6 +2693,29 @@ class SchedulerEngine:
                 _log.exception("Failed to record cancellation for run %s during shutdown", run_id)
             raise
         except Exception as exc:
+            if occurrence_committed and not dispatched:
+                # Failed after the occurrence (and any cursor advance)
+                # committed but before any process existed -- the same
+                # window the cancellation branch above leaves alone, and
+                # reachable by any awaited call in it, the pre-launch
+                # running-status write included. Finalizing the row here
+                # would take it out of the undispatched-recovery lane while
+                # the trigger is already spent, so nothing would ever run
+                # for this event. Leaving it "running" with dispatched_at
+                # NULL is byte-for-byte the state a crash here leaves, and
+                # _recover_undispatched_fires() re-fires it from its own
+                # trigger_context at the next startup. The caller is told
+                # the trigger was consumed (True), because the cursor did
+                # advance and the work is not lost -- it is queued for
+                # recovery, not refused.
+                _log.exception(
+                    "Schedule fire %s (run %s) failed after its occurrence "
+                    "committed but before its process was launched; leaving the "
+                    "run undispatched for startup recovery",
+                    schedule.get("name"),
+                    run_id,
+                )
+                return True
             if isinstance(exc, SchedulerCwdInheritRefusedError):
                 # A deliberate fail-closed refusal, not an internal error: the
                 # message already names the configured root and the daemon

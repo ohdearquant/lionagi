@@ -694,6 +694,13 @@ async def test_fire_nonzero_exit_mints_schedule_run_failed():
 async def test_fire_inner_exception_mints_schedule_run_failed():
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
+    async def _raise_after_launch(*args, on_launched=None, **kwargs):
+        # The child existed before the failure, so this is a terminal failed
+        # run rather than an undispatched one left for startup recovery.
+        if on_launched is not None:
+            await on_launched()
+        raise RuntimeError("unexpected")
+
     svc = _make_svc()
     bus = SchedulerSignalBus()
     captured: list = []
@@ -708,7 +715,7 @@ async def test_fire_inner_exception_mints_schedule_run_failed():
         ),
         patch(
             "lionagi.studio.scheduler.subprocess.spawn_and_wait",
-            new=AsyncMock(side_effect=RuntimeError("unexpected")),
+            new=AsyncMock(side_effect=_raise_after_launch),
         ),
     ):
         await engine._fire(schedule, "run-005", trigger_context={"scheduled": True})

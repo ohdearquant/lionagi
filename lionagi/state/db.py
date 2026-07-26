@@ -2941,6 +2941,8 @@ class StateDB:
             "last_alert_at",
             "last_healthy_poll_at",
             "poller_consecutive_401",
+            "predispatch_refusal_event",
+            "predispatch_refusal_count",
             "spec_version",
             "managed_by",
             "owner_key",

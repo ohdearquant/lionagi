@@ -671,6 +671,8 @@ _SCHEDULE_DETAIL_KEYS = sorted(
         "owner_key",
         "poll_interval_sec",
         "poller_consecutive_401",
+        "predispatch_refusal_count",
+        "predispatch_refusal_event",
         "project",
         "rate_limit",
         "recent_runs",
