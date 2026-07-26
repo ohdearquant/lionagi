@@ -114,6 +114,46 @@ def test_ops_over_the_documented_maximum_is_an_error_not_a_truncation():
         call(ops=over)
 
 
+# ── help and ops are separate calls ──────────────────────────────────────────
+#
+# The two answers have different shapes, so there is no reply that could carry
+# both. Running the ops and dropping the catalog, or the reverse, would look
+# like success to a caller whose other half never happened — so the pair is
+# refused by name instead.
+
+
+def test_help_alongside_ops_is_refused_and_names_both_parameters():
+    with pytest.raises(ValueError) as refusal:
+        call(help=True, ops=[{"op": "server.info"}])
+    message = str(refusal.value)
+    assert "help" in message and "ops" in message
+
+
+def test_help_alongside_ops_refuses_before_any_op_runs(submitted):
+    with pytest.raises(ValueError):
+        call(
+            help=True,
+            ops=[spawn_op("agent.submit", {"prompt": "hi", "agent": "implementer"})],
+        )
+    assert submitted == {}
+
+
+def test_help_alone_still_answers_with_the_catalog():
+    answer = call(help=True)
+    assert answer["verbs"]
+    assert "ops" not in answer
+
+
+def test_ops_alone_still_run():
+    answer = call(ops=[{"op": "server.info"}])
+    assert answer["status"] == "success"
+    assert answer["ops"][0]["ok"] is True
+
+
+def test_help_with_an_empty_ops_list_is_a_plain_help_call():
+    assert call(help=True, ops=[]) == call(help=True)
+
+
 # ── closed validation, and the schema that comes back with the refusal ───────
 #
 # These request the submit fixture even though none of them should reach it: if
