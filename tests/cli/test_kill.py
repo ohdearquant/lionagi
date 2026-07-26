@@ -372,6 +372,39 @@ async def test_kill_cancels_session_whose_child_is_an_unreaped_zombie(
         child.wait()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="a zombie is a POSIX process state")
+def test_terminate_pid_reports_an_unreaped_process_dead_with_no_identity_to_check():
+    """The same window, reached where there is nothing to identify the pid by.
+
+    `_terminate_pid` is also called with no expected command — killing by pid,
+    and every liveness poll inside the grace loop. On that path the identity
+    classifier never runs, so its verdict cannot be what saves this: with only
+    `kill -0` to go on, an unreaped process looks alive forever and the caller
+    would SIGTERM a corpse and then sit out the whole grace window waiting for
+    a flag that can never flip.
+    """
+    sid = str(uuid.uuid4())
+    child = _spawn_marked_child(sid)
+    assert child.pid > 1
+
+    try:
+        assert _await(lambda: _pid_alive(child.pid)), "child never started"
+        os.kill(child.pid, signal.SIGTERM)
+        assert _await(lambda: _is_zombie(child.pid)), (
+            "child did not become a zombie — this environment reaps children "
+            "on its own and cannot exercise the window"
+        )
+        assert _pid_alive(child.pid) is True, "a zombie still answers kill -0"
+
+        started = time.monotonic()
+        assert _terminate_pid(child.pid, grace_seconds=5.0) == "already_dead"
+        assert time.monotonic() - started < 1.0, "it waited out a grace window for a dead process"
+    finally:
+        if child.poll() is None and child.pid > 1:
+            child.kill()
+        child.wait()
+
+
 def _mock_psutil(
     monkeypatch: pytest.MonkeyPatch,
     *,
