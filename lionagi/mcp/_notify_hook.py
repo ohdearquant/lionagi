@@ -218,6 +218,15 @@ def main(argv: list[str] | None = None) -> int:
         args.command or os.environ.get("LIONAGI_MCP_NOTIFY_COMMAND"),
         cwd=(job or {}).get("cwd"),
     )
+    if template and not sender and any("{sender}" in tok for tok in template):
+        # The command asks who the notice is from and there is no answer. An
+        # empty string is not one: it puts a blank where an identity belongs,
+        # and a delivery tool that accepts it — or falls back to resolving a
+        # sender from its own working directory — signs the notice with a seat
+        # that did not send it, silently. Unusable in the same sense as a
+        # template that cannot be parsed, and recorded the same way.
+        template, unusable = None, "delivery_command_needs_a_sender_and_none_was_given"
+
     if template:
         fields = {
             "run_id": args.run_id,

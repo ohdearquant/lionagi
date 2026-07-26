@@ -40,3 +40,113 @@ def test_hook_command_omits_the_sender_when_none_is_given():
     --sender token, which the hook would read as an explicit empty identity."""
     template = jobs._notify_template("run-1", "seat-b", None, None)
     assert "--sender" not in template
+
+
+def _job(monkeypatch, tmp_path):
+    from lionagi.mcp import config
+
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
+    monkeypatch.delenv("LIONAGI_MCP_NOTIFY_COMMAND", raising=False)
+    monkeypatch.delenv("LIONAGI_MCP_NOTIFY_SENDER", raising=False)
+    rid = jobs.new_run_id()
+    jobs._write_job(
+        {
+            "run_id": rid,
+            "pid": 1,
+            "kind": "agent",
+            "label": "t",
+            "cwd": None,
+            "status": "running",
+            "log": None,
+        }
+    )
+    return rid
+
+
+def test_no_delivery_runs_when_the_template_needs_a_sender_and_none_was_given(
+    monkeypatch, tmp_path
+):
+    """A command that asks who the notice is from cannot be run without an answer.
+
+    Substituting an empty string hands the delivery tool a blank where an
+    identity belongs, and a tool that accepts it — or resolves a sender of its
+    own — signs the notice with the wrong seat. Nothing is spawned; the reason
+    is recorded, so job_status shows a notifier that could not deliver rather
+    than the silence of one never asked.
+    """
+    rid = _job(monkeypatch, tmp_path)
+    spawned: list = []
+    monkeypatch.setattr(
+        _notify_hook.subprocess, "run", lambda *a, **k: spawned.append(a) or _Completed()
+    )
+
+    rc = _notify_hook.main(
+        [
+            "--run-id",
+            rid,
+            "--status",
+            "completed",
+            "--command",
+            '["notify", "--from", "{sender}", "--to", "seat-b"]',
+        ]
+    )
+
+    assert rc == 0
+    assert spawned == []  # the point: no process was started
+    rec = jobs._read_job(rid)
+    assert rec["notify_delivery"]["attempted"] is False
+    assert rec["notify_delivery"]["error"] == "delivery_command_needs_a_sender_and_none_was_given"
+
+
+def test_a_template_that_needs_a_sender_delivers_when_one_is_given(monkeypatch, tmp_path):
+    """The guard is on the missing sender alone, not on the placeholder."""
+    rid = _job(monkeypatch, tmp_path)
+    spawned: list = []
+
+    def fake_run(argv, **kw):
+        spawned.append(argv)
+        return _Completed()
+
+    monkeypatch.setattr(_notify_hook.subprocess, "run", fake_run)
+
+    rc = _notify_hook.main(
+        [
+            "--run-id",
+            rid,
+            "--status",
+            "completed",
+            "--sender",
+            "seat-a",
+            "--command",
+            '["notify", "--from", "{sender}"]',
+        ]
+    )
+
+    assert rc == 0
+    assert spawned == [["notify", "--from", "seat-a"]]
+
+
+def test_a_template_without_the_placeholder_is_unaffected_by_a_missing_sender(
+    monkeypatch, tmp_path
+):
+    """A non-regression guard: a command that never asks who it is from still
+    delivers with no sender supplied."""
+    rid = _job(monkeypatch, tmp_path)
+    spawned: list = []
+
+    def fake_run(argv, **kw):
+        spawned.append(argv)
+        return _Completed()
+
+    monkeypatch.setattr(_notify_hook.subprocess, "run", fake_run)
+
+    rc = _notify_hook.main(
+        ["--run-id", rid, "--status", "completed", "--command", '["notify", "{run_id}"]']
+    )
+
+    assert rc == 0
+    assert spawned == [["notify", rid]]
+
+
+class _Completed:
+    returncode = 0

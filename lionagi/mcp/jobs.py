@@ -587,20 +587,46 @@ def submit(
     # An agent leg discovers MCP servers from the directory it is told to work
     # in, which for a detached run is a checkout and not the directory holding
     # this server's config. Resolve it here, where the submitting directory is
-    # still the one in effect, and name the file on the child's command line.
+    # still the one in effect, and hand the resolved set to the child.
     # Both outcomes are reported on the handle: a leg that starts without the
     # tools its brief assumes should be visible at submit, not deduced later
     # from its own confused output.
+    #
+    # The servers are read here and written into this run's own directory, and
+    # that copy is what the child is pointed at. Naming the discovered file
+    # instead would leave the run's tool surface tied to a file anyone may edit
+    # between submission and execution — and a run that resumes hours later
+    # would re-read it again, so the same submission could start with a
+    # different set of tools every time. A file only this run writes cannot
+    # change under it, and staying a path keeps the child's existing flag
+    # working. A config that exists but cannot be used fails the submission,
+    # because a child that discovers the problem reports it minutes later and
+    # only in its own log, while the submitter was told the run started.
     mcp_config_path: str | None = None
+    mcp_config_source: str | None = None
     mcp_config_reason: str | None = None
+    mcp_servers: dict[str, Any] | None = None
     if kind == "agent" and not any(tok == "--mcp-config" for tok in options):
-        from lionagi.cli._mcp_resolve import discover_mcp_config
+        from lionagi.cli._mcp_resolve import McpConfigError, resolve_spawn_mcp_servers
 
-        found = discover_mcp_config(os.getcwd())
-        if found is None:
-            mcp_config_reason = f"no_mcp_config_found_at_or_above:{os.getcwd()}"
+        launch_dir = os.getcwd()
+        resolution = resolve_spawn_mcp_servers(launch_dir=launch_dir)
+        if resolution.servers is None:
+            if resolution.reason and resolution.reason.startswith("mcp_config_unusable:"):
+                raise McpConfigError(
+                    f"cannot submit this agent run: the MCP config found at "
+                    f"{resolution.source} cannot be used "
+                    f"({resolution.reason.split(':', 1)[1].strip()})"
+                )
+            mcp_config_reason = (
+                f"{resolution.reason}_at_or_above:{launch_dir}"
+                if resolution.reason == "no_mcp_config_found"
+                else resolution.reason
+            )
         else:
-            mcp_config_path = str(found)
+            mcp_servers = resolution.servers
+            mcp_config_source = str(resolution.source) if resolution.source else None
+            mcp_config_path = str(d / "mcp-servers.json")
             options = ["--mcp-config", mcp_config_path, *options]
 
     # Wire the CLI's terminal hook back to the MCP server so we record a reliable
@@ -627,6 +653,8 @@ def submit(
     d.mkdir(parents=True, exist_ok=True)
     if prompt_path is not None:
         prompt_path.write_text(prompt)
+    if mcp_servers is not None and mcp_config_path is not None:
+        Path(mcp_config_path).write_text(json.dumps({"mcpServers": mcp_servers}, indent=2))
 
     # Persist the record BEFORE spawning, so the child's terminal --notify hook
     # always finds a record to mark. mark_terminal no-ops on a missing record, so
@@ -650,6 +678,7 @@ def submit(
         "notify_target": notify_target,
         "notify_sender": notify_sender,
         "mcp_config": mcp_config_path,
+        "mcp_config_source": mcp_config_source,
         "mcp_config_reason": mcp_config_reason,
         "submitted_at": _now_iso(),
         "finished_at": None,
@@ -710,6 +739,7 @@ def submit(
         "spawn_state": latest["spawn_state"],
         "log": str(log_path),
         "mcp_config": mcp_config_path,
+        "mcp_config_source": mcp_config_source,
         "mcp_config_reason": mcp_config_reason,
         "notify_sender": notify_sender,
     }
