@@ -593,13 +593,16 @@ def submit(
                 positionals = ["--"]
             positionals.append(prompt)
 
-    # An agent leg discovers MCP servers from the directory it is told to work
-    # in, which for a detached run is a checkout and not the directory holding
-    # this server's config. Resolve it here, where the submitting directory is
-    # still the one in effect, and hand the resolved set to the child.
-    # Both outcomes are reported on the handle: a leg that starts without the
+    # A run discovers MCP servers from the directory it is told to work in,
+    # which for a detached run is a checkout and not the directory holding this
+    # server's config. Resolve it here, where the submitting directory is still
+    # the one in effect, and hand the resolved set to the child.
+    # Both outcomes are reported on the handle: a run that starts without the
     # tools its brief assumes should be visible at submit, not deduced later
-    # from its own confused output.
+    # from its own confused output. An orchestration builds many workers from
+    # the one set its process holds, so leaving the choice to whatever each
+    # provider CLI finds for itself scatters the same question across every
+    # worker and answers it where nobody is looking.
     #
     # The servers are read here and written into this run's own directory, and
     # that copy is what the child is pointed at. Naming the discovered file
@@ -621,11 +624,11 @@ def submit(
     mcp_config_source: str | None = None
     mcp_config_reason: str | None = None
     mcp_servers: dict[str, Any] | None = None
-    if kind == "agent" and no_mcp_config:
+    if no_mcp_config:
         # The caller asked for no servers. That is an answer, not an absence, so
         # nothing is resolved and the handle says whose decision it was.
         mcp_config_reason = "mcp_disabled_by_caller"
-    elif kind == "agent" and mcp_config is not None:
+    elif mcp_config is not None:
         # The caller named the file, and their flag is already on the line. No
         # snapshot is taken and none is prepended: a second --mcp-config would
         # let the parser pick between them, and the handle would go on naming
@@ -635,7 +638,7 @@ def submit(
         mcp_config_path = mcp_config
         mcp_config_source = mcp_config
         mcp_config_reason = "mcp_config_named_by_caller"
-    elif kind == "agent":
+    else:
         from lionagi.cli._mcp_resolve import McpConfigError, resolve_spawn_mcp_servers
 
         launch_dir = os.getcwd()

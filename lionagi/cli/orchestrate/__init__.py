@@ -494,6 +494,37 @@ def _interpolate_prompt(template: str, positional: str | None, playbook_args: di
     return re.sub(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", _sub, template)
 
 
+def _add_mcp_config_args(parser: argparse.ArgumentParser) -> None:
+    """Where this run's workers get their MCP servers from.
+
+    An orchestration builds every worker from the one set its own process
+    resolved, so the answer is given once here rather than left to each
+    provider CLI to find for itself from a directory the caller never chose.
+    """
+    parser.add_argument(
+        "--mcp-config",
+        dest="mcp_config",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Read this MCP config and hand its servers to every worker this run "
+            "builds. By default the nearest .mcp.json at or above the directory "
+            "this command was run in is used, so the workers' tools come from "
+            "the submission rather than from --cwd. The file is read once, at "
+            "startup."
+        ),
+    )
+    parser.add_argument(
+        "--no-mcp-config",
+        dest="no_mcp_config",
+        action="store_true",
+        help=(
+            "Hand the workers no MCP servers, and say so deliberately instead "
+            "of arriving there by an empty search."
+        ),
+    )
+
+
 def add_orchestrate_subparser(
     subparsers: argparse._SubParsersAction,
 ) -> dict[str, argparse.ArgumentParser]:
@@ -624,6 +655,7 @@ def add_orchestrate_subparser(
         ),
     )
 
+    _add_mcp_config_args(fo)
     add_common_cli_args(fo)
 
     fl = orch_sub.add_parser(
@@ -836,6 +868,7 @@ def add_orchestrate_subparser(
             "restore. Without this flag such ops refuse loudly, naming them."
         ),
     )
+    _add_mcp_config_args(fl)
     add_common_cli_args(fl)
 
     # `li o ctl status <id>` aliases the same status renderer as `li agent
@@ -1014,6 +1047,8 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 project=getattr(args, "project", None),
                 pack=getattr(args, "pack", None),
                 notify=getattr(args, "notify", None),
+                mcp_config=getattr(args, "mcp_config", None),
+                no_mcp_config=getattr(args, "no_mcp_config", False),
             ),
             verbose=args.verbose,
             # planning produced no usable assignments — fail loud with actionable message
@@ -1239,6 +1274,8 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 project=getattr(args, "project", None),
                 pack=getattr(args, "pack", None),
                 notify=getattr(args, "notify", None),
+                mcp_config=getattr(args, "mcp_config", None),
+                no_mcp_config=getattr(args, "no_mcp_config", False),
             ),
             verbose=args.verbose,
             # planning produced no usable DAG — fail loud with actionable message

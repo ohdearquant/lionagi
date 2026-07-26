@@ -1674,6 +1674,8 @@ async def _run_flow(
     resume_checkpoint: dict | None = None,
     allow_degraded_context: bool = False,
     notify: str | None = None,
+    mcp_config: str | None = None,
+    no_mcp_config: bool = False,
     **legacy_kwargs,
 ) -> tuple[str, str]:
     """Returns (output, terminal_status)."""
@@ -1737,6 +1739,8 @@ async def _run_flow(
         fast=fast,
         total_budget=timeout,
         pack=pack,
+        mcp_config=mcp_config,
+        no_mcp_config=no_mcp_config,
     )
 
     # `--notify` is compatibility sugar over the terminal-callback registry:
