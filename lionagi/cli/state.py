@@ -1168,12 +1168,12 @@ def run_state(args: argparse.Namespace) -> int:
 
 
 async def _machine_ls_data(*, limit: int, status: str | None) -> dict[str, Any]:
-    from .machine import available, readonly_state_db, state_db_absent
+    from .machine import available, readonly_state_db
 
     result: dict[str, Any] = {"filters": {"status": status}, "limit": limit}
-    async with readonly_state_db() as db:
+    async with readonly_state_db() as (db, why):
         if db is None:
-            result["sessions"] = state_db_absent()
+            result["sessions"] = why
             return result
         rows = await _collect_sessions(db, limit=limit, status=status)
     result["sessions"] = available(rows)
@@ -1181,13 +1181,13 @@ async def _machine_ls_data(*, limit: int, status: str | None) -> dict[str, Any]:
 
 
 async def _machine_stats_data() -> dict[str, Any]:
-    from .machine import available, readonly_state_db, state_db_absent
+    from .machine import available, readonly_state_db
 
     sizes = _db_sizes()
     result: dict[str, Any] = {"database": sizes}
-    async with readonly_state_db() as db:
+    async with readonly_state_db() as (db, why):
         if db is None:
-            absent = state_db_absent()
+            absent = why
             result["row_counts"] = absent
             result["sessions_by_status"] = absent
             result["journal_mode"] = absent

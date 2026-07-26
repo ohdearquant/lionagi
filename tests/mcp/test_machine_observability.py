@@ -276,3 +276,60 @@ def test_the_verb_admits_only_parameters_its_machine_path_honours(verb):
     schema = dispatch.verb_schema(registered)
     assert registered.admits is not None, f"{verb} admits every projected parameter"
     assert set(schema["properties"]) <= set(registered.admits)
+
+
+# ── a store that exists but will not open ────────────────────────────────────
+
+
+@pytest.fixture
+def unreadable_store(home):
+    """A real state.db this process cannot open, restored on the way out."""
+    seed_invocation()
+    store = home / "state.db"
+    assert store.exists(), "the seed did not create a store"
+    original = store.stat().st_mode
+    store.chmod(0o000)
+    try:
+        try:
+            store.open("rb").close()
+        except OSError:
+            pass
+        else:
+            pytest.skip("this process can read a mode-000 file, so there is nothing to test")
+        yield store
+    finally:
+        store.chmod(original)
+
+
+@pytest.mark.parametrize(
+    "verb", ["monitor", "stats.runs", "invoke.list", "dispatch.ls", "state.ls", "state.stats"]
+)
+def test_a_store_that_will_not_open_is_not_an_implementation_crash(unreadable_store, verb):
+    """Existing-but-unopenable is a third answer, and it is the store's, not ours.
+
+    `internal` is this contract's word for our own bug, and a consumer is
+    entitled to treat it as one — to stop, to report the tool as broken. A
+    permission or a lock is none of those things: it is a routine condition of
+    reading someone else's file, the caller can act on it, and it says nothing
+    about whether the rows exist. Reporting it as `internal` also puts a driver
+    exception string into a versioned contract, where the next release of that
+    driver quietly changes it.
+    """
+    op = run_op(verb)
+    assert op["ok"] is True, op
+    wrapper = op["result"]["data"][AVAILABILITY_KEY[verb]]
+    assert wrapper["available"] is False, wrapper
+    assert wrapper["reason_code"] == "unreadable", wrapper
+
+
+def test_a_detail_read_refuses_rather_than_claiming_the_record_is_missing(unreadable_store):
+    """`not_found` would be a claim about the record. We never reached it.
+
+    A detail read has no availability wrapper to put this in, so it has to
+    refuse — but the refusal a caller acts on differently is `unavailable`. Told
+    `not_found`, a caller stops looking for a dispatch that may be sitting in
+    the store it could not open.
+    """
+    op = run_op("dispatch.show", {"id": "whatever"})
+    assert op["ok"] is False, op
+    assert op["error"]["kind"] == "unavailable", op["error"]

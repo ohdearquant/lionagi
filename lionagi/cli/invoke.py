@@ -279,15 +279,15 @@ _INVOCATION_FIELDS = (
 async def _machine_list_data(
     *, skill: str | None, status: str | None, limit: int
 ) -> dict[str, Any]:
-    from .machine import available, readonly_state_db, state_db_absent
+    from .machine import available, readonly_state_db
 
     result: dict[str, Any] = {
         "filters": {"skill": skill, "status": status},
         "limit": limit,
     }
-    async with readonly_state_db() as db:
+    async with readonly_state_db() as (db, why):
         if db is None:
-            result["invocations"] = state_db_absent()
+            result["invocations"] = why
             return result
         rows = await db.list_invocations(skill=skill, status=status, limit=limit)
     result["invocations"] = available(

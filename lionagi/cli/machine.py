@@ -29,7 +29,7 @@ import json
 import os
 import sys
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -51,6 +51,7 @@ __all__ = (
     "machine_subcommand",
     "readonly_state_db",
     "state_db_absent",
+    "store_unreachable",
     "reserve_stdout",
     "dispatch_machine",
     "handshake_data",
@@ -273,22 +274,42 @@ def machine_subcommand(
 
 
 @asynccontextmanager
-async def readonly_state_db() -> AsyncIterator[Any | None]:
-    """The lifecycle store open for reading, or ``None`` when it does not exist.
+async def readonly_state_db() -> AsyncIterator[tuple[Any | None, dict[str, Any] | None]]:
+    """The lifecycle store open for reading, paired with why it is not.
 
     Read-only at the connection, not by convention: the ordinary open reconciles
     the schema, so a reporting command that used it would write to the store it
-    is reporting on. ``None`` rather than an empty result, so a caller that has
-    never run anything is told the store is absent instead of being told there
-    are zero rows in a store that does not exist.
+    is reporting on.
+
+    Exactly one of the two is set. The reason travels with the ``None`` rather
+    than being reconstructed by the caller, because there is more than one way
+    to arrive here: the store may not exist yet, which is a definitive statement
+    that nothing has been recorded, or it may exist and refuse to open, which
+    says nothing at all about what it holds. A caller handed only ``None`` has
+    to guess between those, and every one of them guessed "absent".
+
+    A failure to open is a fact about the store, so it is reported rather than
+    raised. The guard covers the open alone — the caller's own body runs outside
+    it, and a bug in a reader still surfaces as the crash it is.
     """
     from lionagi.state.db import DEFAULT_DB_PATH, StateDB
 
     if not DEFAULT_DB_PATH.exists():
-        yield None
+        yield None, state_db_absent()
         return
-    async with StateDB(readonly=True) as db:
-        yield db
+    async with AsyncExitStack() as stack:
+        try:
+            db = await stack.enter_async_context(StateDB(readonly=True))
+            # The engine is lazy: it connects on the first statement, so without
+            # this the store's refusal would surface in the middle of a caller's
+            # query, where it is indistinguishable from that query being wrong.
+            # One trivial statement moves the failure to the moment this seam
+            # claims the store is open, which is what the claim has to mean.
+            await db.fetch_all("SELECT 1")
+        except Exception as exc:  # noqa: BLE001 — an unopenable store is an answer, not a crash
+            yield None, unavailable(REASON_UNREADABLE, f"{DEFAULT_DB_PATH}: {type(exc).__name__}")
+            return
+        yield db, None
 
 
 def state_db_absent() -> dict[str, Any]:
@@ -297,6 +318,23 @@ def state_db_absent() -> dict[str, Any]:
 
     return unavailable(
         REASON_NOT_FOUND, f"{DEFAULT_DB_PATH} does not exist; nothing has been recorded yet"
+    )
+
+
+def store_unreachable(why: dict[str, Any], subject: str) -> MachineError:
+    """The refusal a detail read makes when it never reached the store.
+
+    A detail read answers about one record, so it has no availability wrapper to
+    put this in and has to refuse. `not_found` stays `not_found` — with no store
+    there is definitively no such record — but a store that would not open is
+    `unavailable`, because the record may well be sitting in it.
+    """
+    reason = why.get("reason_code")
+    detail = why.get("detail")
+    if reason == REASON_NOT_FOUND:
+        return MachineError("not_found", f"{subject}: {detail}")
+    return MachineError(
+        "unavailable", f"{subject}: the lifecycle store could not be read ({detail})"
     )
 
 

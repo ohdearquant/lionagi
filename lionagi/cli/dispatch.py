@@ -296,12 +296,12 @@ _SHOW_FIELDS = (*_LIST_FIELDS, "ack_token", "payload")
 async def _machine_ls_data(*, status: str | None, limit: int) -> dict[str, Any]:
     from lionagi.dispatch import list_dispatches
 
-    from .machine import available, readonly_state_db, state_db_absent
+    from .machine import available, readonly_state_db
 
     result: dict[str, Any] = {"filters": {"status": status}, "limit": limit}
-    async with readonly_state_db() as db:
+    async with readonly_state_db() as (db, why):
         if db is None:
-            result["dispatches"] = state_db_absent()
+            result["dispatches"] = why
             return result
         rows = await list_dispatches(db, status=status, limit=limit)
     result["dispatches"] = available(
@@ -313,14 +313,11 @@ async def _machine_ls_data(*, status: str | None, limit: int) -> dict[str, Any]:
 async def _machine_show_data(dispatch_id: str) -> dict[str, Any]:
     from lionagi.dispatch import get_dispatch
 
-    from .machine import MachineError, readonly_state_db
+    from .machine import MachineError, readonly_state_db, store_unreachable
 
-    async with readonly_state_db() as db:
+    async with readonly_state_db() as (db, why):
         if db is None:
-            raise MachineError(
-                "not_found",
-                f"no dispatch {dispatch_id!r}: the lifecycle store does not exist yet",
-            )
+            raise store_unreachable(why, f"no dispatch {dispatch_id!r}")
         row = await get_dispatch(db, dispatch_id)
     if row is None:
         raise MachineError("not_found", f"no dispatch with id {dispatch_id!r}")

@@ -1750,7 +1750,7 @@ async def _machine_monitor_data(
     *, since_window: str | None, entity_type: str | None, project: str | None
 ) -> dict[str, Any]:
     from .machine import available as _available
-    from .machine import readonly_state_db, state_db_absent
+    from .machine import readonly_state_db
 
     since = _since_timestamp(since_window) if since_window else None
     filters = {
@@ -1759,10 +1759,10 @@ async def _machine_monitor_data(
         "type": entity_type,
         "project": project,
     }
-    async with readonly_state_db() as db:
+    async with readonly_state_db() as (db, why):
         if db is None:
             return {
-                "entities": state_db_absent(),
+                "entities": why,
                 "filters": filters,
                 "observed_at": time.time(),
             }

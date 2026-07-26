@@ -88,11 +88,16 @@ async def _query_run_stats(
 async def _run_stats_runs(*, since: float, group_by: list[str]) -> list[dict[str, Any]]:
     # readonly: a reporting command must never write to the DB it reports on,
     # even implicitly via schema-reconcile. See docs/internals/cli.md.
-    from .machine import readonly_state_db
+    from .machine import REASON_NOT_FOUND, readonly_state_db
 
-    async with readonly_state_db() as db:
+    async with readonly_state_db() as (db, why):
         if db is None:
-            return []
+            if why["reason_code"] == REASON_NOT_FOUND:
+                return []
+            # The human surface has nowhere to put an availability wrapper, and
+            # an empty table is the one thing it must not print here: it reads
+            # as "no runs" for a store that was never opened.
+            raise RuntimeError(f"the run store could not be read: {why['detail']}")
         return await _query_run_stats(db, since=since, group_by=group_by)
 
 
@@ -237,7 +242,7 @@ def _machine_rows(rows: list[dict[str, Any]], group_by: list[str]) -> list[dict[
 
 
 async def _machine_stats_runs_data(*, since_window: str, group_by: list[str]) -> dict[str, Any]:
-    from .machine import available, readonly_state_db, state_db_absent
+    from .machine import available, readonly_state_db
 
     since = _since_timestamp(since_window)
     result: dict[str, Any] = {
@@ -245,9 +250,9 @@ async def _machine_stats_runs_data(*, since_window: str, group_by: list[str]) ->
         "since": since_window,
         "since_epoch": since,
     }
-    async with readonly_state_db() as db:
+    async with readonly_state_db() as (db, why):
         if db is None:
-            result["groups"] = state_db_absent()
+            result["groups"] = why
             return result
         rows = await _query_run_stats(db, since=since, group_by=group_by)
     result["groups"] = available(_machine_rows(rows, group_by))
