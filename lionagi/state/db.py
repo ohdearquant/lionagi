@@ -1031,6 +1031,7 @@ class StateDB:
                             CREATE TABLE sessions_new (
                               id              TEXT    PRIMARY KEY,
                               cc_session_id   TEXT,
+                              run_id          TEXT,
                               created_at      REAL    NOT NULL,
                               node_metadata   JSON,
                               name            TEXT,

@@ -746,6 +746,33 @@ produced nothing.
 
 ---
 
+## `li lifecycle`
+
+Report what the lifecycle store records about one CLI run.
+
+```bash
+li lifecycle <run-id> --machine
+```
+
+This is the one path from a run id to the rows the lifecycle writers actually
+write. A normal teardown records an end; so does `li kill`, which writes the
+row and signals the process without touching the MCP job record or the run
+manifest. A caller holding only a run id and reading only those two would see a
+dead process with no recorded end, which is what an orphaned run looks like.
+
+The answer is read-only and carries its own availability. An established answer
+with `found: false` means no session was ever recorded under this id. An
+unavailable one means the store could not be read at all, which is not a
+statement about the run. A caller that collapsed the two would report a run as
+finished, or as never started, on the strength of a database it never opened.
+
+The store consulted is the one `LIONAGI_STATE_DB_URL` names when it is set, and
+the default otherwise — including for the question of whether a store exists at
+all, so a configured store is never reported missing because the default path
+is absent.
+
+---
+
 ## Machine mode: `--machine`
 
 Any command that reaches the dispatcher accepts `--machine`, which turns its
