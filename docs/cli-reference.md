@@ -737,7 +737,8 @@ li runs --machine [--limit N]
 Each entry carries the run id, its state root, its artifact root, and the
 artifacts found there. It reports which runs EXIST and what they left behind,
 not whether any of them finished or succeeded — for that, ask `li job status` or
-the MCP `job_status` tool, which carry the terminal and outcome derivations.
+the MCP `request` operation `job.status`, which carry the terminal and outcome
+derivations.
 
 The artifact list is wrapped in the availability shape, so a directory that could
 not be read is reported as unavailable with a reason rather than as a run that
