@@ -104,6 +104,11 @@ def verb_schema(verb: Verb, *, playbook: str | None = None) -> dict[str, Any]:
 
     required = [name for name in schema.get("required", []) if name in properties]
     required += [name for name in verb.requires if name not in required]
+    unenforced = [
+        name
+        for name in schema.get("x-required-unenforced", [])
+        if name in properties and name not in required
+    ]
     order = [name for name in schema.get("x-positional-order", []) if name in properties]
 
     out: dict[str, Any] = {
@@ -116,6 +121,8 @@ def verb_schema(verb: Verb, *, playbook: str | None = None) -> dict[str, Any]:
     }
     if required:
         out["required"] = required
+    if unenforced:
+        out["x-required-unenforced"] = unenforced
     if order:
         out["x-positional-order"] = order
     if verb.refuses:
@@ -130,12 +137,35 @@ def verb_schema(verb: Verb, *, playbook: str | None = None) -> dict[str, Any]:
 
 
 def catalog() -> dict[str, Any]:
-    """Every verb, with enough of a signature to write the common invocation."""
+    """Every verb, with enough of a signature to write the common invocation.
+
+    "Enough" is measured against the gate the call actually meets. A verb whose
+    ops must carry a ``schema_fingerprint`` gets that fingerprint here, because
+    an entry that lists a verb's parameters and withholds the one thing without
+    which the call is refused describes a call that cannot be made. The schema is
+    built anyway to read ``required`` off it, so the fingerprint is a hash of a
+    document already in hand and costs no extra work.
+
+    Where the schema depends on an argument, no fingerprint is quoted: the one
+    for the argument-free schema would be a value that never matches. The entry
+    names the parameter it varies with instead, so the caller knows to ask help
+    for that spelling rather than to retry with a stale string.
+    """
     entries: list[dict[str, Any]] = []
     for verb in VERBS.values():
         entry: dict[str, Any] = {"verb": verb.name, "available": True, "summary": verb.summary}
         try:
-            entry["required"] = list(verb_schema(verb).get("required", []))
+            schema = verb_schema(verb)
+            entry["required"] = list(schema.get("required", []))
+            unenforced = list(schema.get("x-required-unenforced", []))
+            if unenforced:
+                # Named apart from `required` because the parser will not refuse a
+                # call that omits these, and the schema may offer another way to
+                # supply the same thing. Reporting them inside `required` would
+                # make the schema and what is admitted two different contracts.
+                entry["required_unenforced"] = unenforced
+            if verb.executor == "spawn":
+                _describe_fingerprint(entry, verb, schema)
         except Exception as exc:  # noqa: BLE001 — one unreadable parser must not hide the rest
             entry["available"] = False
             entry["reason"] = f"schema generation failed: {type(exc).__name__}: {exc}"
@@ -158,9 +188,14 @@ def catalog() -> dict[str, Any]:
         "help_usage": (
             "help=true returns this catalog; help='<verb>' returns that verb's full "
             "parameter schema; help={'verb': '<verb>', 'playbook': '<name>'} resolves a "
-            "playbook's own declared arguments into the schema. A spawn verb's help also "
-            "returns a schema_fingerprint, which that verb's ops must carry: "
-            "{'op': 'agent.submit', 'args': {...}, 'schema_fingerprint': '<from help>'}."
+            "playbook's own declared arguments into the schema. An entry carrying a "
+            "schema_fingerprint names a verb whose ops must repeat it: "
+            "{'op': 'agent.submit', 'args': {...}, 'schema_fingerprint': '<from this entry>'}. "
+            "An entry carrying schema_fingerprint_varies_with names the parameters that "
+            "change the schema: pass one of them and the fingerprint to send is the one "
+            "help returns for that spelling, not the one quoted here. "
+            "required_unenforced names parameters the parser will not refuse a call for "
+            "omitting but the command cannot do its work without."
         ),
         "synonyms_removed_after": SYNONYM_REMOVAL_DATE,
     }
@@ -178,6 +213,23 @@ def schema_fingerprint(schema: dict[str, Any]) -> str:
     """
     body = json.dumps(schema, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(body.encode()).hexdigest()[:16]
+
+
+def _describe_fingerprint(entry: dict[str, Any], verb: Verb, schema: dict[str, Any]) -> None:
+    """Say what a fingerprint-gated verb's ops have to carry.
+
+    A playbook-aware verb is projected again once a playbook is named, so its
+    fingerprint is a function of that argument. When the playbook is optional the
+    argument-free schema is a real call and its fingerprint is quoted; when the
+    verb requires a playbook there is no such call, so quoting anything would
+    hand the caller a string that is guaranteed to be refused.
+    """
+    varies = ["playbook"] if verb.playbook_aware else []
+    if varies:
+        entry["schema_fingerprint_varies_with"] = varies
+    if any(name in verb.requires for name in varies):
+        return
+    entry["schema_fingerprint"] = schema_fingerprint(schema)
 
 
 def _require_fingerprint(name: str, verb: Verb, schema: dict[str, Any], supplied: Any) -> None:
