@@ -40,7 +40,9 @@ def li_command() -> list[str]:
     the one installed alongside the running interpreter — no working-tree
     hunting, no dependency resync on spawn. Resolution order:
 
-      1. ``LIONAGI_MCP_LI_BIN`` (explicit override, split on whitespace).
+      1. ``LIONAGI_MCP_LI_BIN`` (explicit override, split on whitespace). Used
+         verbatim, so a value that is not an absolute path is resolved by the
+         OS through ``PATH`` like any other bare command.
       2. The ``li`` console script next to ``sys.executable`` (same venv/bin),
          invoked by absolute path so it never depends on ``PATH``.
       3. ``<this-interpreter> -m lionagi.cli`` as a last resort.

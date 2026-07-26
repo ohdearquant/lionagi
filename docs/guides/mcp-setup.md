@@ -80,14 +80,15 @@ The server itself reads four variables. Every one of them is optional.
 | Variable | Effect | When unset |
 |----------|--------|------------|
 | `LIONAGI_HOME` | Root of all on-disk state. Runs go to `$LIONAGI_HOME/runs/`, the server's own job records to `$LIONAGI_HOME/mcp/jobs/`. | Defaults to `~/.lionagi`. The directory is created on first write; nothing fails if it does not exist yet. |
-| `LIONAGI_MCP_LI_BIN` | Explicit argv prefix for the `li` CLI the server spawns, split on whitespace. | The server uses the `li` script next to its own interpreter, by absolute path. Failing that, `<that interpreter> -m lionagi.cli`. `PATH` is never consulted, so leaving this unset is the normal case. |
+| `LIONAGI_MCP_LI_BIN` | Explicit argv prefix for the `li` CLI the server spawns, split on whitespace. A value that is not an absolute path (a bare `li`) is executed as-is, so the OS resolves it through `PATH` — give an absolute path unless you specifically want that. | The server uses the `li` script in its own interpreter's directory, by absolute path. Failing that, `<that interpreter> -m lionagi.cli`. Neither default consults `PATH`, so leaving this unset is the normal case. |
 | `LIONAGI_MCP_NOTIFY_TARGET` | Value substituted for the `{target}` placeholder in the terminal-run notification command. | The placeholder resolves to an empty string. |
 | `LIONAGI_MCP_NOTIFY_COMMAND` | JSON argv list delivering a notice when a background run reaches a terminal state. Overrides the configured `notify.on_terminal` adapter. | Falls back to lionagi's own `notify.on_terminal` setting. If that is unconfigured too, no notification is sent — deliberate silence, distinct from a notifier that was configured and failed, which is reported rather than swallowed. |
 
 `LIONAGI_RUN_ID` is also part of this surface, but it is **written** by the
 server into each run it spawns so the run id can be returned before the child
-starts. Setting it in the client environment would force every spawned run to
-share one id. Leave it alone.
+starts. The server sets it per run, overwriting whatever the client environment
+held, so a value you export here is not inherited by spawned runs — it is
+replaced. Leave it alone.
 
 Two further points about environment:
 
