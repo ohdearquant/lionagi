@@ -542,6 +542,8 @@ def submit(
     notify_command: str | None = None,
     notify_target: str | None = None,
     notify_sender: str | None = None,
+    mcp_config: str | None = None,
+    no_mcp_config: bool = False,
 ) -> dict[str, Any]:
     """Spawn a ``li`` run in the background and return its handle immediately.
 
@@ -554,6 +556,13 @@ def submit(
     per-submit delivery-argv override (JSON list); *notify_target* fills the
     ``{target}`` placeholder in the configured command. With neither and no
     configured default, the run simply records its status and delivers nothing.
+
+    *mcp_config* and *no_mcp_config* are the caller's own answer to where the
+    child's MCP servers come from, handed over as values rather than left to be
+    read back out of *flags*. Both are already rendered into *flags* by the
+    surface; they are repeated here because this function has to decide whether
+    to resolve a set of its own, and that is a decision about intent, not about
+    tokens.
     """
     if kind not in _KIND_ARGV:
         raise ValueError(f"unknown job kind {kind!r}; expected one of {sorted(_KIND_ARGV)}")
@@ -602,11 +611,31 @@ def submit(
     # working. A config that exists but cannot be used fails the submission,
     # because a child that discovers the problem reports it minutes later and
     # only in its own log, while the submitter was told the run started.
+    #
+    # A snapshot is taken only when the caller left the choice open. Whether
+    # they did is answered from the values they passed, never by looking through
+    # the tokens for a flag: those tokens are built by the same surface, in a
+    # form (`--flag=value`) chosen so that nothing downstream can take them
+    # apart, so a scan of them reports on spelling rather than on intent.
     mcp_config_path: str | None = None
     mcp_config_source: str | None = None
     mcp_config_reason: str | None = None
     mcp_servers: dict[str, Any] | None = None
-    if kind == "agent" and not any(tok == "--mcp-config" for tok in options):
+    if kind == "agent" and no_mcp_config:
+        # The caller asked for no servers. That is an answer, not an absence, so
+        # nothing is resolved and the handle says whose decision it was.
+        mcp_config_reason = "mcp_disabled_by_caller"
+    elif kind == "agent" and mcp_config is not None:
+        # The caller named the file, and their flag is already on the line. No
+        # snapshot is taken and none is prepended: a second --mcp-config would
+        # let the parser pick between them, and the handle would go on naming
+        # the one the child did not read. What the child reads is what the
+        # handle reports, and its source is the caller's own path, which this
+        # run does not own and cannot promise will hold still.
+        mcp_config_path = mcp_config
+        mcp_config_source = mcp_config
+        mcp_config_reason = "mcp_config_named_by_caller"
+    elif kind == "agent":
         from lionagi.cli._mcp_resolve import McpConfigError, resolve_spawn_mcp_servers
 
         launch_dir = os.getcwd()
