@@ -124,6 +124,11 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("resolved_target", "JSON"),
         ("resolved_digest", "TEXT"),
         ("resolved_timezone", "TEXT"),
+        # The zone a cron schedule was last actually resolved in, plus how
+        # that zone was arrived at. NULL on rows not resolved since this
+        # migration; the scheduler stamps them at startup and at each fire.
+        ("effective_timezone", "TEXT"),
+        ("effective_timezone_source", "TEXT"),
         # Terminal notification: filtered callback on the spawned invocation.
         ("notify_on", "JSON"),
         ("notify_command", "TEXT"),

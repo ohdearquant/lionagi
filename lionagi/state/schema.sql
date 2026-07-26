@@ -492,6 +492,17 @@ CREATE TABLE IF NOT EXISTS schedules (
   resolved_target     JSON,
   resolved_digest     TEXT,
   resolved_timezone   TEXT,
+  -- The zone this schedule's cron expression was last actually interpreted
+  -- in, and how that zone was arrived at (declared on this row, the
+  -- process-wide configured default and its own provenance, or a UTC
+  -- fallback). Written by the scheduler whenever it resolves a fire time and
+  -- never read back when resolving, so it records the outcome without being
+  -- able to change it. The name alone is not diagnostic -- a requested UTC
+  -- and a fallback UTC are the same string -- which is why the source is
+  -- stored beside it. NULL for triggers that resolve no wall-clock fields
+  -- (interval/at/github_poll) and for cron rows not yet armed or fired.
+  effective_timezone        TEXT,
+  effective_timezone_source TEXT,
   -- Terminal notification (declaration-layer `notify`): registers the
   -- existing run terminal-callback machinery on the invocation this
   -- schedule spawns, filtered to notify_on. Replaces on_fail for

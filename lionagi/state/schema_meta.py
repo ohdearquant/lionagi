@@ -556,6 +556,11 @@ schedules = Table(
     Column("resolved_target", JSON),
     Column("resolved_digest", Text),
     Column("resolved_timezone", Text),
+    # The zone this schedule's cron was last resolved in, and its provenance
+    # (declared / configured default / UTC fallback). Recorded by the
+    # scheduler at resolve time; never read back when resolving.
+    Column("effective_timezone", Text),
+    Column("effective_timezone_source", Text),
     # Terminal notification: registers the existing run terminal-callback
     # machinery on the spawned invocation, filtered to notify_on. NULL means
     # no callback.

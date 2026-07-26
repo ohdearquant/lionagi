@@ -2723,6 +2723,7 @@ class StateDB:
                 project, threshold_config, last_alert_at,
                 spec_version, managed_by, owner_key, authored_spec,
                 resolved_target, resolved_digest, resolved_timezone,
+                effective_timezone, effective_timezone_source,
                 notify_on, notify_command,
                 created_at, updated_at)
                VALUES (:id, :name, :description, :enabled, :trigger_type,
@@ -2737,6 +2738,7 @@ class StateDB:
                        :project, :threshold_config, :last_alert_at,
                        :spec_version, :managed_by, :owner_key, :authored_spec,
                        :resolved_target, :resolved_digest, :resolved_timezone,
+                       :effective_timezone, :effective_timezone_source,
                        :notify_on, :notify_command,
                        :created_at, :updated_at)"""
         ).bindparams(
@@ -2794,6 +2796,8 @@ class StateDB:
             "resolved_target": schedule.get("resolved_target"),
             "resolved_digest": schedule.get("resolved_digest"),
             "resolved_timezone": schedule.get("resolved_timezone"),
+            "effective_timezone": schedule.get("effective_timezone"),
+            "effective_timezone_source": schedule.get("effective_timezone_source"),
             "notify_on": schedule.get("notify_on"),
             "notify_command": schedule.get("notify_command"),
             "created_at": schedule.get("created_at", now),
@@ -2943,6 +2947,8 @@ class StateDB:
             "resolved_target",
             "resolved_digest",
             "resolved_timezone",
+            "effective_timezone",
+            "effective_timezone_source",
             "notify_on",
             "notify_command",
         }

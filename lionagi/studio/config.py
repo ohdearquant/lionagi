@@ -24,6 +24,19 @@ TZ_SOURCE_SCHEDULER_ENV = "env:LIONAGI_SCHEDULER_TZ"
 TZ_SOURCE_TZ_ENV = "env:TZ"
 TZ_SOURCE_SYSTEM_LOCALTIME = "system:localtime"
 TZ_SOURCE_UTC_FALLBACK = "fallback:utc"
+# A schedule row that names its own zone (the declarative layer's
+# ``resolved_timezone``) is resolved in that zone rather than the process-wide
+# default, so the two are different provenances for the same effective name.
+TZ_SOURCE_SCHEDULE_DECLARED = "schedule:resolved_timezone"
+# The requested name — from either of the two sources above — is not a zone
+# this host can load, so cron fields are being interpreted in UTC instead of
+# the zone that was asked for. Every other UTC in this vocabulary is a UTC
+# somebody chose; this one is the only one that means the request was lost.
+TZ_SOURCE_UTC_UNLOADABLE_NAME = "fallback:utc:unloadable-name"
+
+# The two sources that mean "UTC because nothing else could be resolved", as
+# opposed to "UTC because that is what was asked for".
+TZ_UTC_FALLBACK_SOURCES = frozenset({TZ_SOURCE_UTC_FALLBACK, TZ_SOURCE_UTC_UNLOADABLE_NAME})
 
 
 class SystemTimezoneUnreadableError(RuntimeError):
