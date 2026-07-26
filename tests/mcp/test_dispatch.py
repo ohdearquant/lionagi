@@ -165,6 +165,25 @@ def test_a_flag_that_is_legal_bare_takes_both_forms_it_declares(submitted, value
     assert expected in submitted["flags"]
 
 
+def test_a_json_encoded_flag_reaches_the_parser_encoded():
+    # The parser decodes this flag's single token from JSON, so the schema
+    # advertises the decoded shape while the rendered token has to be the
+    # encoding of it. Those are two halves of one contract held in two files:
+    # a test of the projection alone, or of the parser alone, passes while the
+    # round-trip is broken and every caller gets an unusable command line.
+    schema = call(help="schedule.create")["schema"]
+    assert schema["properties"]["action_command_args"]["x-json-encoded"] is True
+
+    argv = dispatch.render_argv(
+        schema, {"name": "n", "action_command_args": ["review-pr", "--repo", "{{r}}"]}
+    )
+
+    flag = next(t for t in argv if t.startswith("--action-command-args"))
+    # One token, so the values cannot be read as further options.
+    assert flag == f"--action-command-args={json.dumps(['review-pr', '--repo', '{{r}}'])}"
+    assert json.loads(flag.split("=", 1)[1]) == ["review-pr", "--repo", "{{r}}"]
+
+
 def test_a_flag_a_detached_run_cannot_honour_is_refused_with_its_reason(submitted):
     # Accepting it and dropping it would leave the caller believing it applied.
     answer = call(ops=[spawn_op("agent.submit", {"verbose": True})])
