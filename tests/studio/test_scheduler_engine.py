@@ -15,6 +15,21 @@ import pytest
 
 NY = ZoneInfo("America/New_York")
 
+
+async def _cancel_after_launch(*args, on_launched=None, **kwargs):
+    """spawn_and_wait double for a cancellation that arrives once the child
+    process already exists.
+
+    Calling ``on_launched`` first is what makes this the post-dispatch case:
+    something ran, so the run is recorded as cancelled and its trigger stays
+    consumed. A cancellation that arrives before the process exists takes the
+    other branch entirely.
+    """
+    if on_launched is not None:
+        await on_launched()
+    raise asyncio.CancelledError()
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -402,7 +417,7 @@ async def test_fire_cancellation_records_cancelled_run():
         ),
         patch(
             "lionagi.studio.scheduler.subprocess.spawn_and_wait",
-            new=AsyncMock(side_effect=asyncio.CancelledError()),
+            new=_cancel_after_launch,
         ),
     ):
         with pytest.raises(asyncio.CancelledError):
@@ -414,7 +429,10 @@ async def test_fire_cancellation_records_cancelled_run():
     # would keep its real status while that placeholder replaced the cause it
     # recorded. The text now rides the guarded write, so losing the race writes
     # nothing at all.
-    svc.update_schedule_run.assert_not_awaited()
+    # on_launched's dispatched_at stamp is the only update_schedule_run write;
+    # nothing writes a status or cause through it.
+    assert svc.update_schedule_run.await_count == 1
+    assert set(svc.update_schedule_run.await_args_list[0].kwargs) == {"dispatched_at"}
     cancelled_calls = [
         c for c in svc.update_status.await_args_list if c.kwargs.get("new_status") == "cancelled"
     ]
@@ -432,6 +450,14 @@ async def test_fire_inner_exception_records_failed_and_does_not_reraise():
     """Unexpected exception inside the main try block is caught, recorded, and swallowed."""
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
+    async def _raise_after_launch(*args, on_launched=None, **kwargs):
+        # Confirms the launch first: a failure of something that started is
+        # what gets recorded terminally. (An exception raised before any
+        # process exists instead leaves the run for startup recovery.)
+        if on_launched is not None:
+            await on_launched()
+        raise RuntimeError("unexpected")
+
     svc = _make_svc()
     engine = SchedulerEngine(svc=svc)
     schedule = _minimal_schedule()
@@ -443,7 +469,7 @@ async def test_fire_inner_exception_records_failed_and_does_not_reraise():
         ),
         patch(
             "lionagi.studio.scheduler.subprocess.spawn_and_wait",
-            new=AsyncMock(side_effect=RuntimeError("unexpected")),
+            new=AsyncMock(side_effect=_raise_after_launch),
         ),
     ):
         # Should not raise
@@ -775,7 +801,7 @@ async def test_fire_cancellation_schedule_run_cas_miss_does_not_skip_side_effect
         ),
         patch(
             "lionagi.studio.scheduler.subprocess.spawn_and_wait",
-            new=AsyncMock(side_effect=asyncio.CancelledError()),
+            new=_cancel_after_launch,
         ),
     ):
         with pytest.raises(asyncio.CancelledError):
@@ -2839,6 +2865,14 @@ async def test_fire_exception_records_the_real_exception_text_as_error_detail(st
     await _seed_schedule(state_db, schedule)
     run_id = "run-real-detail"
 
+    async def _raise_after_launch(*args, on_launched=None, **kwargs):
+        # A failure of something that started: that is what the handler
+        # records terminally (an exception before any process exists leaves
+        # the run undispatched for startup recovery instead).
+        if on_launched is not None:
+            await on_launched()
+        raise ModuleNotFoundError("No module named 'nope'")
+
     with (
         patch(
             "lionagi.studio.scheduler.subprocess.build_argv",
@@ -2846,7 +2880,7 @@ async def test_fire_exception_records_the_real_exception_text_as_error_detail(st
         ),
         patch(
             "lionagi.studio.scheduler.subprocess.spawn_and_wait",
-            new=AsyncMock(side_effect=ModuleNotFoundError("No module named 'nope'")),
+            new=AsyncMock(side_effect=_raise_after_launch),
         ),
     ):
         await engine._fire(schedule, run_id, trigger_context={"scheduled": True})

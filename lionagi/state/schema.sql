@@ -501,6 +501,17 @@ CREATE TABLE IF NOT EXISTS schedules (
   -- github_poll_consecutive_401 threshold metrics.
   last_healthy_poll_at    REAL,
   poller_consecutive_401  INTEGER NOT NULL DEFAULT 0,
+  -- Bounded retry for a github_poll fire that refuses before it dispatches
+  -- anything. Such a refusal holds github_cursor back so the event is
+  -- re-offered, but the refusal can be a property of that one event's
+  -- rendered values rather than of the schedule, so an unbounded hold would
+  -- block every later event forever. predispatch_refusal_event names the
+  -- event (its updated_at, the cursor value being held back) the streak
+  -- applies to and predispatch_refusal_count counts the consecutive
+  -- refusals of that same event; both reset when a different event refuses
+  -- or when a fire dispatches.
+  predispatch_refusal_event  TEXT,
+  predispatch_refusal_count  INTEGER NOT NULL DEFAULT 0,
   -- Declarative ScheduleSet layer: versioned document identity, resolved
   -- target/trigger snapshot + digest, and set ownership. NULL on every row
   -- created before this layer (legacy) or by an unmanaged quick-create.
