@@ -1806,12 +1806,18 @@ class SchedulerEngine:
         source: str,
         actor: str,
         metadata: dict | None = None,
+        extra_fields: dict | None = None,
     ) -> bool:
         """Write a terminal ``schedule_run``/``invocation`` status without
         crashing (or losing follow-on side effects) when the row is already
         terminal — a concurrent writer (e.g. the deadline reaper) may have
         finalized it first. Guarded on the row still being ``running``, so a
         lost race is a checked no-op rather than a raised exception.
+
+        *extra_fields* carries same-row columns (``ended_at``, ``error_detail``)
+        that belong to this finalization, so they ride the same guard and the
+        same transaction as the status: when the race is lost, the winner's
+        values stay intact instead of being overwritten by ours.
         """
         written = await self._svc.update_status(
             entity_type,
@@ -1824,6 +1830,7 @@ class SchedulerEngine:
             actor=actor,
             metadata=metadata,
             expected_statuses={"running"},
+            extra_fields=extra_fields,
         )
         if not written:
             _log.debug(
@@ -2516,11 +2523,6 @@ class SchedulerEngine:
                 _fire_exc_reason = RunReasons.FAILED_EXCEPTION
                 _log.exception("Error in schedule fire %s (run %s)", schedule.get("name"), run_id)
             _end_time = time.time()
-            await self._svc.update_schedule_run(
-                run_id,
-                ended_at=_end_time,
-                error_detail="Internal scheduler error",
-            )
             written = await self._guarded_terminal_status(
                 "schedule_run",
                 run_id,
@@ -2531,6 +2533,10 @@ class SchedulerEngine:
                 source="executor",
                 actor=run_id,
                 metadata={"exception_class": type(exc).__name__},
+                extra_fields={
+                    "ended_at": _end_time,
+                    "error_detail": f"{type(exc).__name__}: {exc}",
+                },
             )
             if written:
                 await self._dispatch_signal(
@@ -2548,7 +2554,6 @@ class SchedulerEngine:
             inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
                 self._svc, inv_id, fallback_status="failed", exception=exc
             )
-            await self._svc.update_invocation(inv_id, ended_at=_end_time)
             inv_written = await self._guarded_terminal_status(
                 "invocation",
                 inv_id,
@@ -2559,6 +2564,7 @@ class SchedulerEngine:
                 source="executor",
                 actor=inv_id,
                 metadata=inv_meta,
+                extra_fields={"ended_at": _end_time},
             )
             if inv_written:
                 await flush_run_telemetry(
