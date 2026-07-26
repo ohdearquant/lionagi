@@ -95,8 +95,8 @@ relative timestamps, formatted durations, or tables.
       "required": []
     }
   ],
-  "verb_count": 47,
-  "available_count": 36,
+  "verb_count": 68,
+  "available_count": 40,
   "max_ops": 8,
   "help_usage": "help=true returns this catalog; help='<verb>' returns that verb's full parameter schema; ...",
   "synonyms_removed_after": "2026-09-30"
@@ -130,16 +130,24 @@ resolves that playbook's own declared arguments into the schema.
 
 ## The catalog
 
-36 verbs are reachable. This list is generated from the registry:
+40 verbs are reachable. Both tables in this section are checked against the
+registry by the test suite, so a verb added or withdrawn without updating them
+fails a test rather than going unnoticed. The registry is the authority; ask it
+directly with:
 
 ```bash
 python -c "from lionagi.mcp import verbs as v; print(len(v.VERBS)); [print(n) for n in sorted(v.VERBS)]"
 ```
 
+<!-- mcp-catalog:available:start -->
+
 | Verb | Summary |
 |------|---------|
 | `agent.submit` | Run one agent on one task as a detached background run. |
+| `dispatch.ack` | Acknowledge a delivered dispatch with its ack token, so the queue stops redelivering it. A wrong token is refused without echoing the real one. |
 | `dispatch.ls` | Rows in the durable dispatch outbox, newest first, without their payloads. |
+| `dispatch.purge` | Delete one dispatch row by id, whatever its status, recording an audit row. Deleting by --status/--before is refused here: a sweep deletes rows the caller never named and reports a count for rows that can no longer be inspected. |
+| `dispatch.retry` | Return a failed or dead-lettered dispatch to pending so delivery is attempted again. |
 | `dispatch.show` | One dispatch row in full, including its payload and ack token. |
 | `doctor` | Environment checks and which of them failed. |
 | `fanout.submit` | Run N agents on one task in parallel, optionally synthesized. |
@@ -151,6 +159,7 @@ python -c "from lionagi.mcp import verbs as v; print(len(v.VERBS)); [print(n) fo
 | `job.output` | Console tail and artifact list of a background run. |
 | `job.status` | Current state of a background run: liveness, job record, CLI manifest. |
 | `job.wait` | Observe runs until terminal or the window closes; partial results, never a bool. |
+| `lifecycle` | What the lifecycle store records about one run: whether every session it opened has ended, and with what outcome. |
 | `monitor` | Entities in flight right now: sessions, invocations, shows, plays. |
 | `play.submit` | Run a saved playbook: a flow whose plan and prompt are already written down. |
 | `plugin.info` | One plugin's version, trust state, and everything its manifest declares. |
@@ -175,6 +184,8 @@ python -c "from lionagi.mcp import verbs as v; print(len(v.VERBS)); [print(n) fo
 | `stats.runs` | Run counts and first/last timestamps, grouped by project/kind/agent/model/status. |
 | `team.list` | Teams on disk with their members and message counts. |
 
+<!-- mcp-catalog:available:end -->
+
 There is deliberately **no parameter table here**. A verb's parameters are
 projected from the CLI parser at call time, so a table written by hand would
 drift away from what the server actually accepts. Ask for the parameters
@@ -183,27 +194,56 @@ against rather than a copy of it.
 
 ## Operations the surface does not offer
 
-Eleven further names are catalogued as **unavailable**, each with its reason.
-They are not omissions: a caller that asks what exists gets the name and why it
-cannot be called, which is a different answer from the name never having been
-considered.
+Twenty-eight further names are catalogued as **unavailable**, each with its
+reason. They are not omissions: a caller that asks what exists gets the name and
+why it cannot be called, which is a different answer from the name never having
+been considered. The right-hand column below abbreviates the reason; `help=true`
+returns each one in full.
 
-| Verb | Summary |
-|------|---------|
-| `schedule.apply` | Reconcile a whole ScheduleSet file into the store, atomically. |
-| `schedule.run` | One schedule run. |
-| `team.create`, `team.show`, `team.send`, `team.receive` | Messaging between agents working as a team. |
-| `state.doctor` | Read-only inspection of the lifecycle store. |
-| `dispatch.ack`, `dispatch.retry`, `dispatch.purge` | The outbound dispatch queue. |
-| `plugin.list` | Installed plugin bundles and their trust state. |
+<!-- mcp-catalog:unavailable:start -->
 
-Most share one reason: the CLI path emits no versioned machine result
-(`li <path> --machine`), so there is nothing to return that is not scraped
-console text. Scraping would make a command's console wording an API contract,
-so the fix belongs in the CLI, where the command gains a machine-result seam.
-The rest carry their own reason: `schedule.run` is already covered by
-`schedule.runs`, `schedule.apply` has no decided machine-result shape yet, and
-`plugin.list` prunes trust records as part of listing, which is a write.
+| Verb | Summary | Not offered because |
+|------|---------|---------------------|
+| `casts` | The built-in roles and modes an agent can be composed from. | no machine result |
+| `orchestrate.ctl.status` | What a running flow's control plane reports about it. | no machine result |
+| `state.doctor` | Read-only inspection of the lifecycle store. | no machine result |
+| `team.create` | Messaging between agents working as a team. | no machine result |
+| `team.receive` | Messaging between agents working as a team. | no machine result |
+| `team.send` | Messaging between agents working as a team. | no machine result |
+| `team.show` | Messaging between agents working as a team. | no machine result |
+| `state.checkpoint` | Writes against the lifecycle store. | invalidating write |
+| `state.import` | Writes against the lifecycle store. | invalidating write |
+| `state.import-teams` | Writes against the lifecycle store. | invalidating write |
+| `state.prune` | Writes against the lifecycle store. | invalidating write |
+| `state.vacuum` | Writes against the lifecycle store. | invalidating write |
+| `hooks.import` | Importing hook commands from another tool's config. | grants privilege |
+| `plugin.disable` | Plugin bundle enablement. | grants privilege |
+| `plugin.enable` | Plugin bundle enablement. | grants privilege |
+| `plugin.list` | Installed plugin bundles and their trust state. | grants privilege |
+| `orchestrate.ctl.msg` | The running-flow control plane. | effect lands elsewhere |
+| `orchestrate.ctl.pause` | The running-flow control plane. | effect lands elsewhere |
+| `orchestrate.ctl.resume` | The running-flow control plane. | effect lands elsewhere |
+| `invoke.end` | Opening and closing a skill-level orchestration record. | no caller identity |
+| `invoke.start` | Opening and closing a skill-level orchestration record. | no caller identity |
+| `mirror` | Mirror Claude Code sessions into Studio, live. | a process, not a call |
+| `studio.start` | The Studio server. | a process, not a call |
+| `engine.run` | Run a domain-specific multi-agent pipeline. | spawns without a job record |
+| `kill` | Terminate a run, session, play or show by id. | no identity to correlate |
+| `mcp` | Serve this surface over stdio. | it is this server |
+| `schedule.apply` | Reconcile a whole ScheduleSet file into the store, atomically. | shape undecided |
+| `schedule.run` | One schedule run. | already covered |
+
+<!-- mcp-catalog:unavailable:end -->
+
+The largest group is *no machine result*: the CLI path emits no versioned
+machine result (`li <path> --machine`), so there is nothing to return that is
+not scraped console text. Scraping would make a command's console wording an API
+contract, so the fix belongs in the CLI, where the command gains a machine-result
+seam. The others are refusals on their own terms rather than gaps waiting to be
+filled — a write whose effect no machine result can describe, a path that would
+grant the calling agent a right it did not have, a control-plane signal whose
+effect lands on a running flow rather than in a reply, or a long-lived process
+that never returns at all.
 
 Asking for one of these inside `ops` returns a catalogued answer rather than a
 bare unknown-verb error: the op comes back `ok=false` with an `unavailable`
