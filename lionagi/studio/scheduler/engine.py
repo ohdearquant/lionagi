@@ -2032,7 +2032,6 @@ class SchedulerEngine:
             inv_id,
             orphan_id,
         )
-        await self._svc.update_invocation(inv_id, ended_at=time.time())
         await self._guarded_terminal_status(
             "invocation",
             inv_id,
@@ -2046,6 +2045,7 @@ class SchedulerEngine:
             evidence_refs=[{"kind": "schedule_run", "id": orphan_id}],
             source="system",
             actor="scheduler_startup_recovery",
+            extra_fields={"ended_at": time.time()},
         )
 
     async def _fire_inner(
@@ -2222,7 +2222,6 @@ class SchedulerEngine:
                 inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
                     self._svc, inv_id, fallback_status="failed", exception=exc
                 )
-                await self._svc.update_invocation(inv_id, ended_at=_end_time)
                 inv_written = await self._guarded_terminal_status(
                     "invocation",
                     inv_id,
@@ -2233,6 +2232,7 @@ class SchedulerEngine:
                     source="executor",
                     actor=inv_id,
                     metadata=inv_meta,
+                    extra_fields={"ended_at": _end_time},
                 )
                 if inv_written:
                     await flush_run_telemetry(
@@ -2355,12 +2355,6 @@ class SchedulerEngine:
                 reason_code = RunReasons.FAILED_EXIT_NONZERO
                 reason_summary = f"Scheduled process exited non-zero: {exit_code}."
 
-            await self._svc.update_schedule_run(
-                run_id,
-                exit_code=exit_code,
-                ended_at=end_time,
-                error_detail=stderr_tail if exit_code != 0 else None,
-            )
             written = await self._guarded_terminal_status(
                 "schedule_run",
                 run_id,
@@ -2371,6 +2365,11 @@ class SchedulerEngine:
                 source="executor",
                 actor=run_id,
                 metadata={"exit_code": exit_code},
+                extra_fields={
+                    "exit_code": exit_code,
+                    "ended_at": end_time,
+                    "error_detail": stderr_tail if exit_code != 0 else None,
+                },
             )
             if written:
                 await self._dispatch_signal(
@@ -2388,7 +2387,6 @@ class SchedulerEngine:
             inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
                 self._svc, inv_id, fallback_status=status, exit_code=exit_code
             )
-            await self._svc.update_invocation(inv_id, ended_at=end_time)
             inv_written = await self._guarded_terminal_status(
                 "invocation",
                 inv_id,
@@ -2398,6 +2396,7 @@ class SchedulerEngine:
                 evidence_refs=inv_ev,
                 source="executor",
                 actor=inv_id,
+                extra_fields={"ended_at": end_time},
                 metadata=inv_meta,
             )
             if inv_written:
@@ -2454,11 +2453,6 @@ class SchedulerEngine:
             _log.info("Schedule fire cancelled %s (run %s)", schedule.get("name"), run_id)
             _end_time = time.time()
             try:
-                await self._svc.update_schedule_run(
-                    run_id,
-                    ended_at=_end_time,
-                    error_detail="Scheduler shutdown",
-                )
                 written = await self._guarded_terminal_status(
                     "schedule_run",
                     run_id,
@@ -2468,6 +2462,10 @@ class SchedulerEngine:
                     evidence_refs=[{"kind": "schedule", "id": sid}],
                     source="executor",
                     actor=run_id,
+                    extra_fields={
+                        "ended_at": _end_time,
+                        "error_detail": "Scheduler shutdown",
+                    },
                 )
                 if written:
                     await self._dispatch_signal(
@@ -2484,7 +2482,6 @@ class SchedulerEngine:
                 inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
                     self._svc, inv_id, fallback_status="cancelled"
                 )
-                await self._svc.update_invocation(inv_id, ended_at=_end_time)
                 inv_written = await self._guarded_terminal_status(
                     "invocation",
                     inv_id,
@@ -2495,6 +2492,7 @@ class SchedulerEngine:
                     source="executor",
                     actor=inv_id,
                     metadata=inv_meta,
+                    extra_fields={"ended_at": _end_time},
                 )
                 if inv_written:
                     await flush_run_telemetry(
