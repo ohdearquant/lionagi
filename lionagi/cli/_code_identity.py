@@ -245,10 +245,20 @@ def _worktree_fingerprint(
 
     The inode is in the mark so that replacing a file by renaming another over it
     stays visible even when the replacement matches on every other field. The cost
-    is that a filesystem which does not hold inode numbers stable across stats
-    would read as an edit that did not happen; the digest is only ever compared
-    within one process against one tree, which is the narrow condition that makes
-    that safe to rely on.
+    is real and is not bounded by anything this module controls: on a filesystem
+    that hands back a fresh synthetic inode for an unchanged path, which some
+    network and userspace filesystems do, two readings of a tree nobody touched
+    disagree, and the answer is an edit that did not happen. Staying inside one
+    process and one tree does not constrain that, because it says nothing about
+    what the filesystem returns from two separate stats.
+
+    That direction of error is the deliberate one. This surface exists so an
+    operator asking "is the code I am running the code I think I am running"
+    cannot be told a reassuring falsehood, and between an edit reported that did
+    not happen and an edit missed that did, only the second defeats the purpose.
+    An operator who looks and finds nothing has lost a minute; one who was told
+    nothing moved is left with the exact wrong belief this module was written to
+    prevent.
     """
     digest = hashlib.sha256(porcelain.encode(errors="replace"))
     if porcelain:
