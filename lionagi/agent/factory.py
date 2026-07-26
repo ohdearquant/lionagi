@@ -614,11 +614,18 @@ def _forward_mcp_to_cli_request(
         if mcp_path is not None:
             import logging
 
+            # Scope the claim to what this call can see: one branch, whose
+            # provider was resolved from this one spec. Sibling branches in the
+            # same run resolve their own providers and are not observable here,
+            # so saying "this run" would overstate a per-branch fact.
             logging.getLogger(__name__).warning(
                 "MCP config present in AgentSpec but the active provider (%s) has "
                 "no MCP passthrough; MCP servers will not be reachable for this "
-                "run.",
+                "branch (role %s, branch %s). Other branches resolve their own "
+                "providers and are not covered by this warning.",
                 provider,
+                spec.profile.role.name,
+                branch.id,
             )
         # No MCP-capable request model for this provider to forward into,
         # so this stays a silent no-op (mirrors _load_mcp's own shape).
@@ -638,12 +645,15 @@ def _forward_mcp_to_cli_request(
             import logging
 
             logging.getLogger(__name__).warning(
-                "Could not read/parse MCP config %r for forwarding to the "
-                "claude_code CLI request (%s: %s); MCP servers will not be "
-                "reachable for this run.",
+                "Could not read/parse MCP config %r for forwarding to the %s "
+                "CLI request (%s: %s); MCP servers will not be reachable for "
+                "this branch (role %s, branch %s).",
                 mcp_path,
+                provider,
                 type(exc).__name__,
                 exc,
+                spec.profile.role.name,
+                branch.id,
             )
             if spec.mcp_config_path:
                 # An explicitly configured path failing to parse is a

@@ -1259,10 +1259,14 @@ async def test_forward_mcp_gemini_provider_warns_and_noops(tmp_path, caplog):
         branch = await create_agent(config, load_settings=False)
 
     assert "mcp_servers" not in branch.chat_model.endpoint.config.kwargs
-    assert any(
-        "no MCP passthrough" in rec.message and "gemini_code" in rec.message
-        for rec in caplog.records
-    )
+    messages = [rec.getMessage() for rec in caplog.records if "no MCP passthrough" in rec.message]
+    assert len(messages) == 1
+    # This function sees one branch's provider. Sibling branches in the same
+    # run resolve their own, so the text must not claim the run.
+    assert "gemini_code" in messages[0]
+    assert "this branch" in messages[0]
+    assert "this run" not in messages[0]
+    assert str(branch.id) in messages[0]
 
 
 async def test_forward_mcp_gated_by_trust_project_settings_for_project_scope(tmp_path, monkeypatch):

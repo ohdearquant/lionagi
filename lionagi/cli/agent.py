@@ -309,8 +309,9 @@ def _report_mcp_resolution(resolution: McpResolution, *, provider: str, cwd: str
         if resolution.servers is not None:
             warn(
                 f"MCP servers resolved from {resolution.source} are not carried to "
-                f"provider {provider!r}: only the Claude CLI lane accepts a server "
-                "set per request. This leg gets whatever that CLI discovers for itself."
+                f"provider {provider!r}: this spawn path only hands a resolved server "
+                "set to the Claude CLI lane. This leg gets whatever its own provider "
+                "resolves for itself."
             )
         return
 
