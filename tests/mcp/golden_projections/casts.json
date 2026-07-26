@@ -1,0 +1,25 @@
+{
+  "path": "casts",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "modes": {
+        "default": false,
+        "description": "List the behavior overlays (modes) instead of the personas (roles). Only affects the bare listing; ignored when a name is given.",
+        "type": "boolean",
+        "x-flag": "--modes"
+      },
+      "name": {
+        "description": "Role or mode to print in full, including its prompt body. Looked up in both catalogs, so you need not know which it is. Omit it to list names only.",
+        "type": "string",
+        "x-positional": true
+      }
+    },
+    "title": "casts",
+    "type": "object",
+    "x-positional-order": [
+      "name"
+    ]
+  },
+  "stage": "static"
+}

@@ -16,13 +16,19 @@ def add_casts_subparser(subparsers: argparse._SubParsersAction) -> None:
         "name",
         nargs="?",
         default=None,
-        help="role or mode name; omit to list all",
+        help=(
+            "Role or mode to print in full, including its prompt body. Looked up in both "
+            "catalogs, so you need not know which it is. Omit it to list names only."
+        ),
     )
     p.add_argument(
         "--modes",
         action="store_true",
         default=False,
-        help="list modes instead of roles when no name is given",
+        help=(
+            "List the behavior overlays (modes) instead of the personas (roles). "
+            "Only affects the bare listing; ignored when a name is given."
+        ),
     )
 
 

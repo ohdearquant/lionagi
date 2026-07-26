@@ -151,6 +151,10 @@ sessions = Table(
     metadata,
     Column("id", Text, primary_key=True),
     Column("cc_session_id", Text),
+    # The CLI run this session belongs to, recorded at creation. Without it a
+    # run_id cannot reach the lifecycle row, so nothing that writes only the
+    # row (a kill, for one) is visible to a reader holding a run_id.
+    Column("run_id", Text),
     Column("created_at", Float, nullable=False),
     Column("node_metadata", JSON),
     Column("name", Text),
@@ -215,6 +219,11 @@ sessions = Table(
     Column("duration_ms", Float),
 )
 
+# first_msg_id / last_msg_id are child keys of messages(id): these serve the
+# search sqlite runs when a message row is deleted, not any query.
+Index("idx_sessions_first_msg_id", sessions.c.first_msg_id)
+Index("idx_sessions_last_msg_id", sessions.c.last_msg_id)
+Index("idx_sessions_progression_id", sessions.c.progression_id)
 Index("idx_sessions_updated", sessions.c.updated_at)
 Index("idx_sessions_status_updated", sessions.c.status, sessions.c.updated_at)
 Index(
@@ -271,6 +280,8 @@ branches = Table(
 )
 
 Index("idx_branches_session", branches.c.session_id)
+Index("idx_branches_system_msg_id", branches.c.system_msg_id)
+Index("idx_branches_progression_id", branches.c.progression_id)
 
 # ── definitions ───────────────────────────────────────────────────────────────
 
@@ -552,6 +563,11 @@ schedules = Table(
     Column("resolved_target", JSON),
     Column("resolved_digest", Text),
     Column("resolved_timezone", Text),
+    # The zone this schedule's cron was last resolved in, and its provenance
+    # (declared / configured default / UTC fallback). Recorded by the
+    # scheduler at resolve time; never read back when resolving.
+    Column("effective_timezone", Text),
+    Column("effective_timezone_source", Text),
     # Terminal notification: registers the existing run terminal-callback
     # machinery on the spawned invocation, filtered to notify_on. NULL means
     # no callback.

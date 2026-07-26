@@ -9,6 +9,9 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
     "sessions": [
         ("updated_at", "REAL"),
         ("cc_session_id", "TEXT"),
+        # The CLI run this session belongs to; NULL on rows created before
+        # this migration and on sessions that were not started by a run.
+        ("run_id", "TEXT"),
         ("playbook_name", "TEXT"),
         ("agent_name", "TEXT"),
         ("invocation_kind", "TEXT"),
@@ -46,9 +49,17 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("total_cost_usd", "REAL"),
         ("num_turns", "INTEGER"),
         ("duration_ms", "REAL"),
+        # Reconciled here so the indexes below have columns to be built on;
+        # a store old enough to predate them must still open.
+        ("first_msg_id", "TEXT"),
+        ("last_msg_id", "TEXT"),
+        ("progression_id", "TEXT"),
     ],
     "branches": [
         ("system_msg_id", "TEXT"),
+        # Reconciled here so the index below it has a column to be built on;
+        # a store old enough to predate the column must still open.
+        ("progression_id", "TEXT"),
         # Per-branch provenance.
         ("model", "TEXT"),
         ("provider", "TEXT"),
@@ -121,6 +132,11 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("resolved_target", "JSON"),
         ("resolved_digest", "TEXT"),
         ("resolved_timezone", "TEXT"),
+        # The zone a cron schedule was last actually resolved in, plus how
+        # that zone was arrived at. NULL on rows not resolved since this
+        # migration; the scheduler stamps them at startup and at each fire.
+        ("effective_timezone", "TEXT"),
+        ("effective_timezone_source", "TEXT"),
         # Terminal notification: filtered callback on the spawned invocation.
         ("notify_on", "JSON"),
         ("notify_command", "TEXT"),
@@ -194,17 +210,36 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
 
 # metadata.create_all() skips indexes when their table already exists. Keep
 # dialect-specific, idempotent DDL here for indexes introduced after deployment.
+# Child keys of messages(id). Without an index on the referring column,
+# deleting a message costs a scan of the referring table per deleted row, so
+# a prune pays for the whole store once per message it removes. These exist
+# for that search, not for any query. See schema.sql for the measurement.
+_MESSAGE_POINTER_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_sessions_first_msg_id ON sessions(first_msg_id)",
+    "CREATE INDEX IF NOT EXISTS idx_sessions_last_msg_id ON sessions(last_msg_id)",
+    "CREATE INDEX IF NOT EXISTS idx_branches_system_msg_id ON branches(system_msg_id)",
+    # Same shape one level up: progressions(id) is the parent of these two.
+    "CREATE INDEX IF NOT EXISTS idx_sessions_progression_id ON sessions(progression_id)",
+    "CREATE INDEX IF NOT EXISTS idx_branches_progression_id ON branches(progression_id)",
+)
+
 MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
     "sqlite": (
         "CREATE INDEX IF NOT EXISTS idx_sessions_cc_session "
         "ON sessions(cc_session_id) WHERE cc_session_id IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_schedules_owner_key "
         "ON schedules(owner_key) WHERE owner_key IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_sessions_run_id "
+        "ON sessions(run_id) WHERE run_id IS NOT NULL",
+        *_MESSAGE_POINTER_INDEXES,
     ),
     "postgresql": (
         "CREATE INDEX IF NOT EXISTS idx_sessions_cc_session "
         "ON sessions(cc_session_id) WHERE cc_session_id IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_schedules_owner_key "
         "ON schedules(owner_key) WHERE owner_key IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_sessions_run_id "
+        "ON sessions(run_id) WHERE run_id IS NOT NULL",
+        *_MESSAGE_POINTER_INDEXES,
     ),
 }

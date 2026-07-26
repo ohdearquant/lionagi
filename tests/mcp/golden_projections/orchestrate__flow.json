@@ -1,0 +1,238 @@
+{
+  "path": "orchestrate flow",
+  "schema": {
+    "additionalProperties": false,
+    "description": "Orchestrator analyzes the task, composes a DAG of agents with dependency edges, and executes with automatic parallelism where dependencies allow. Flags may appear anywhere relative to the positionals.",
+    "properties": {
+      "agent": {
+        "description": "Load orchestrator profile by name \u2014 resolves .lionagi/agents/<NAME>/<NAME>.md first, then .lionagi/agents/<NAME>.md.",
+        "type": "string",
+        "x-aliases": [
+          "-a"
+        ],
+        "x-flag": "--agent"
+      },
+      "allow_degraded_context": {
+        "default": false,
+        "description": "With --resume: proceed even when a pending op declared inherit_context \u2014 it runs against an empty branch instead of its predecessor's conversation history, which resume does not restore. Without this flag such ops refuse loudly, naming them.",
+        "type": "boolean",
+        "x-flag": "--allow-degraded-context"
+      },
+      "background": {
+        "default": false,
+        "description": "Run flow in background. Requires --save. Check output in save dir.",
+        "type": "boolean",
+        "x-flag": "--background"
+      },
+      "bare": {
+        "default": false,
+        "description": "Ignore agent profiles \u2014 all workers use the CLI model spec. Roles define behavioral focus only, no profile system prompts.",
+        "type": "boolean",
+        "x-flag": "--bare"
+      },
+      "bypass": {
+        "default": false,
+        "description": "Bypass all codex approvals and sandbox (for cloud/codespace environments).",
+        "type": "boolean",
+        "x-flag": "--bypass"
+      },
+      "cwd": {
+        "description": "Directory the agent's process runs in \u2014 the repo or worktree it acts on. Defaults to the current directory.",
+        "type": "string",
+        "x-flag": "--cwd"
+      },
+      "dry_run": {
+        "default": false,
+        "description": "Plan the DAG but don't execute. Shows agents, deps, and model resolution.",
+        "type": "boolean",
+        "x-flag": "--dry-run"
+      },
+      "effort": {
+        "description": "Override effort (overrides spec suffix). claude: low|medium|high|xhigh|max. codex: none|minimal|low|medium|high|xhigh|max|ultra (max/ultra clamp per model support). gemini-code/gemini-cli: folded into --model as Low|Medium|High (Gemini 3.1 Pro has no Medium).",
+        "type": "string",
+        "x-flag": "--effort"
+      },
+      "fast": {
+        "default": false,
+        "description": "Route codex requests through OpenAI's priority service tier (lower latency; requires account eligibility). Does not change model or reasoning effort.",
+        "type": "boolean",
+        "x-flag": "--fast"
+      },
+      "file": {
+        "description": "Load flow spec from YAML or JSON file. File values serve as defaults; CLI flags override them. Prompt can come from the file (prompt: key) or as a positional argument.",
+        "type": "string",
+        "x-aliases": [
+          "-f"
+        ],
+        "x-flag": "--file"
+      },
+      "invocation": {
+        "description": "Parent invocation id (from `li invoke start`). Groups this session under a skill orchestration record. Optional.",
+        "type": "string",
+        "x-flag": "--invocation"
+      },
+      "max_concurrent": {
+        "default": 0,
+        "description": "Cap on agents running at the same time within one phase. 0, the default, runs the whole phase at once \u2014 lower it to stay under a provider's rate limit.",
+        "type": "integer",
+        "x-flag": "--max-concurrent"
+      },
+      "max_ops": {
+        "default": 0,
+        "description": "Cap total ops (nodes in the planned DAG). 0 = unlimited. `--max-agents` is a deprecated alias \u2014 prefer `--max-ops`.",
+        "type": "integer",
+        "x-aliases": [
+          "--max-agents"
+        ],
+        "x-flag": "--max-ops"
+      },
+      "notify": {
+        "description": "Shell command template run once this run reaches its terminal status. Overrides .lionagi/settings.yaml notify.on_terminal. Substitutes {payload} (full JSON), {status}, {invocation_id}.",
+        "type": "string",
+        "x-flag": "--notify"
+      },
+      "output": {
+        "default": "text",
+        "description": "Result format: 'text' (default) for reading, 'json' for a machine-readable run.",
+        "enum": [
+          "text",
+          "json"
+        ],
+        "type": "string",
+        "x-flag": "--output"
+      },
+      "pack": {
+        "description": "Path to a YAML routing pack. Provides per-role model/effort when --workers is absent. --workers overrides pack routing.",
+        "type": "string",
+        "x-flag": "--pack"
+      },
+      "playbook": {
+        "description": "Load playbook from ~/.lionagi/playbooks/<NAME>.playbook.yaml. Playbooks may declare args: schema, artifacts: contracts, or argument-hint: placeholders for prompt template values.",
+        "type": "string",
+        "x-aliases": [
+          "-p"
+        ],
+        "x-flag": "--playbook"
+      },
+      "project": {
+        "description": "Explicit project name for this session. Overrides auto-detection from .lionagi/config.toml or git remote.",
+        "type": "string",
+        "x-flag": "--project"
+      },
+      "query": {
+        "description": "Orchestrator model spec followed by the task prompt. Model is optional when -a/--agent provides one; a single positional is treated as the prompt. The prompt itself may instead come from -f/--file or -p/--playbook.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array",
+        "x-positional": true
+      },
+      "reactive": {
+        "description": "Who may grow the live DAG by emitting a SpawnRequest: 'all' (default \u2014 every worker), 'off' (flat batch DAG, no spawning), or a comma-separated list of roles (e.g. 'critic,evaluator') that alone may spawn. Caps still apply via --max-ops.",
+        "type": "string",
+        "x-flag": "--reactive"
+      },
+      "resume": {
+        "description": "Resume a checkpointed flow from a prior process (by run id, or any session/invocation/play id backed by one). Replays the persisted plan verbatim \u2014 no planner call, no other flow flags read (model/prompt/playbook/etc. all come from the checkpoint). Distinct from `li o ctl resume`, which un-pauses a still-running session.",
+        "type": "string",
+        "x-flag": "--resume"
+      },
+      "resume_on_timeout": {
+        "default": false,
+        "description": "If the run terminates on --timeout, automatically fire one resume of the same session with 'continue and conclude the task' and report the combined result. Bounded to a single auto-resume; a timeout on the resumed leg terminates normally. Same effect as an agent profile's 'resume_on_timeout: once'.",
+        "type": "boolean",
+        "x-flag": "--resume-on-timeout"
+      },
+      "save": {
+        "description": "Directory to write each agent's output and the run's artifacts into. Required by --background, which has nowhere else to report.",
+        "type": "string",
+        "x-flag": "--save"
+      },
+      "show_graph": {
+        "default": false,
+        "description": "Render DAG as matplotlib visualization. With --save, saves PNG to save dir.",
+        "type": "boolean",
+        "x-flag": "--show-graph"
+      },
+      "team_attach": {
+        "description": "Attach to a team by NAME \u2014 upsert semantics: load existing team if found (preserving message history), else create fresh. Mutually exclusive with --team-mode.",
+        "type": "string",
+        "x-flag": "--team-attach"
+      },
+      "team_max_rounds": {
+        "default": 2,
+        "description": "In team mode (reactive), how many extra wakeup rounds the coordinator may run after all currently-running workers signal done, to deliver unread teammate messages before the run wraps up (default: 2).",
+        "type": "integer",
+        "x-flag": "--team-max-rounds"
+      },
+      "team_mode": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "const": true
+          }
+        ],
+        "description": "Create a FRESH team for this flow (new UUID every invocation). Bare flag uses 'flow' as the name.",
+        "x-bare-value": "flow",
+        "x-flag": "--team-mode"
+      },
+      "theme": {
+        "description": "Pick the colour scheme printed output is tuned for: 'light' or 'dark' terminal.",
+        "enum": [
+          "light",
+          "dark"
+        ],
+        "type": "string",
+        "x-flag": "--theme"
+      },
+      "timeout": {
+        "description": "Hard wall-clock timeout in seconds. When set, a [DEADLINE] preamble is injected into the agent's prompt so the agent knows its time budget and can pace reasoning accordingly.",
+        "type": "integer",
+        "x-flag": "--timeout"
+      },
+      "verbose": {
+        "default": false,
+        "description": "Stream the agent's output as it is produced instead of printing only the final result, and silence the progress lines that would interleave with it.",
+        "type": "boolean",
+        "x-aliases": [
+          "-v"
+        ],
+        "x-flag": "--verbose"
+      },
+      "with_synthesis": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "const": true
+          }
+        ],
+        "default": false,
+        "description": "Run a final pass merging the DAG's results into one answer. Bare flag uses the orchestrator model; with an argument, that model instead.",
+        "x-bare-value": true,
+        "x-flag": "--with-synthesis"
+      },
+      "workers": {
+        "description": "Comma-separated worker model specs (assignment i uses pool[i % len]). Overrides the per-role model while KEEPING each role's profile/system prompt \u2014 unlike --bare, which also drops profiles. Enables mixed-model flows (cheap roles + expensive roles).",
+        "type": "string",
+        "x-flag": "--workers"
+      },
+      "yolo": {
+        "default": false,
+        "description": "Auto-approve the agent's tool calls, so an unattended run is never left waiting.",
+        "type": "boolean",
+        "x-flag": "--yolo"
+      }
+    },
+    "title": "orchestrate flow",
+    "type": "object",
+    "x-playbook-arguments": "This command accepts arguments declared by the playbook named in 'playbook'. Ask for this schema again with that playbook named to see them.",
+    "x-positional-order": [
+      "query"
+    ]
+  },
+  "stage": "base"
+}

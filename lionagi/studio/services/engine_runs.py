@@ -11,11 +11,9 @@ from typing import Any
 from fastapi import Query
 
 from lionagi._errors import NotFoundError
-from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+from lionagi.state.db import StateDB, state_db_known_absent
 
 from ..registry import studio_route
-
-_DB = str(DEFAULT_DB_PATH)
 
 
 def _parse_spec_json(raw: Any) -> Any:
@@ -36,10 +34,10 @@ async def list_engine_runs(
     offset: int = 0,
 ) -> list[dict[str, Any]]:
     """Return engine run rows, newest-first, with optional filters."""
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return []
 
-    async with StateDB(_DB) as db:
+    async with StateDB() as db:
         rows = await db.list_engine_runs(
             kind=kind,
             status=status,
@@ -55,10 +53,10 @@ async def list_engine_runs(
 
 async def get_engine_run(run_id: str) -> dict[str, Any] | None:
     """Return a single engine run row as a dict, or None if not found."""
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return None
 
-    async with StateDB(_DB) as db:
+    async with StateDB() as db:
         row = await db.get_engine_run(run_id)
 
     if row is None:

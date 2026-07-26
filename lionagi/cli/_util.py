@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,114 @@ EXIT_CODE_BY_STATUS: dict[str, int] = {
     "aborted": 130,
     "cancelled": 143,
 }
+
+# A run never reaches a status when the environment cannot import what the CLI
+# needs, so this code deliberately sits outside the map above. It exists to be
+# distinguishable: an installation missing a dependency previously exited 1
+# with a traceback, which is the same thing a run that started and failed
+# reports, so a wrapper reading only the exit status could not tell a broken
+# environment from a genuine failure and would attribute the outage to whatever
+# the agent had been asked to do. 78 is EX_CONFIG from sysexits, meaning
+# something was found in an unconfigured state, and it collides with no status
+# above.
+EXIT_CODE_ENVIRONMENT_ERROR = 78
+
+# Whether this invocation got as far as allocating a run.
+#
+# The code above may only be reported while this is false. A missing import can
+# surface at two very different moments: before anything started, where nothing
+# ran and the environment is the whole story, and part-way through a command
+# that already allocated a run, where a run id, a run directory and a manifest
+# exist on disk. Reporting the second as an unusable environment is the same
+# misattribution the exit code exists to prevent, pointed the other way: it
+# tells a caller nothing was executed while durable state is sitting in the runs
+# directory waiting to be read.
+#
+# The flag is set inside `allocate_run` rather than at each of its callers, so a
+# future caller is covered without having to know this exists.
+#
+# It is deliberately process-wide, and NOT a thread-local or a ContextVar, even
+# though the fact it records is invocation-scoped. `run_async` drives every
+# command's async body on its own thread with its own event loop, so allocation
+# happens on a different thread — and in a fresh context — from the one the
+# entry point returns on. Either narrower scope would therefore be invisible to
+# the reader and would report "no run was started" while a run exists, which is
+# precisely the false claim this guards against. The narrower scope looks safer
+# and is the more dangerous of the two.
+#
+# What process-wide state costs is precision when two invocations overlap inside
+# one process, which is not a supported entry point but also must not be allowed
+# to produce a lie. The two directions are not equally bad. Seeing another
+# invocation's allocation only re-raises, which is the behaviour that predates
+# this code: ambiguous, not untrue. Losing an allocation, on the other hand,
+# asserts that nothing ran when something did. So the reset is what needs
+# guarding, and it only happens when no other invocation is in flight; anything
+# less certain leaves the flag alone and degrades to the older behaviour.
+#
+# The remaining imprecision is stated rather than left to be rediscovered: while
+# two invocations overlap, one that dies on a missing import before allocating
+# anything can see the other's allocation and re-raise instead of reporting 78.
+# That is the degraded-to-older-behaviour direction, and it is accepted. Fixing
+# it needs the allocation to be attributable to an invocation, and allocation
+# happens on a thread this code did not create, so attribution means propagating
+# an invocation token through `run_async` into every command's async body. That
+# is a change to a shared concurrency primitive on behalf of an entry point that
+# is not supported, to convert an ambiguous report into a precise one. If
+# concurrent in-process invocation ever becomes supported, this is the thing to
+# revisit, and the token is the design to revisit it with.
+_allocation_lock = threading.Lock()
+_invocations_in_flight = 0
+_run_allocated = False
+
+
+def mark_run_allocated() -> None:
+    """Record that a run directory now exists for this invocation."""
+    global _run_allocated
+    with _allocation_lock:
+        _run_allocated = True
+
+
+def begin_invocation() -> None:
+    """Enter an invocation, resetting the marker when it is safe to.
+
+    The question the flag answers is whether *this* invocation allocated a run,
+    so a process that calls the entry point more than once - the test suite
+    does, and so would any in-process embedding - must not carry the first run's
+    allocation into the second. Resetting unconditionally would do that, but it
+    would also let a second invocation erase a first one's allocation while the
+    first is still running, so the reset is skipped whenever anything else is in
+    flight.
+    """
+    global _invocations_in_flight, _run_allocated
+    with _allocation_lock:
+        if _invocations_in_flight == 0:
+            _run_allocated = False
+        _invocations_in_flight += 1
+
+
+def end_invocation() -> None:
+    """Leave an invocation, so a later one can reset the marker again."""
+    global _invocations_in_flight
+    with _allocation_lock:
+        if _invocations_in_flight > 0:
+            _invocations_in_flight -= 1
+
+
+def clear_run_allocation() -> None:
+    """Reset both the marker and the in-flight count.
+
+    For tests and embeddings that need a known starting state, rather than for
+    the entry point, which goes through `begin_invocation`.
+    """
+    global _run_allocated, _invocations_in_flight
+    with _allocation_lock:
+        _run_allocated = False
+        _invocations_in_flight = 0
+
+
+def run_was_allocated() -> bool:
+    with _allocation_lock:
+        return _run_allocated
 
 
 def validate_cwd_exists(cwd: str | None, *, flag: str = "--cwd") -> str | None:

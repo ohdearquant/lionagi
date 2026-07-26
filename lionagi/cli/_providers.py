@@ -56,6 +56,7 @@ __all__ = (
     "build_deadline_preamble",
     "list_agents",
     "load_agent_profile",
+    "profile_config",
     "_parse_profile",
     "_resolve_profile_path",
     "_validate_bare_name",
@@ -197,7 +198,11 @@ def resolve_model_spec(spec: str) -> tuple[str, str]:
 
 def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
     """Add shared CLI flags to any subparser."""
-    parser.add_argument("--yolo", action="store_true", help="Auto-approve tool calls.")
+    parser.add_argument(
+        "--yolo",
+        action="store_true",
+        help="Auto-approve the agent's tool calls, so an unattended run is never left waiting.",
+    )
     parser.add_argument(
         "--bypass",
         action="store_true",
@@ -212,8 +217,21 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
             "Does not change model or reasoning effort."
         ),
     )
-    parser.add_argument("-v", "--verbose", action="store_true", help="Stream real-time output.")
-    parser.add_argument("--theme", choices=("light", "dark"), default=None, help="Terminal theme.")
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help=(
+            "Stream the agent's output as it is produced instead of printing only the final "
+            "result, and silence the progress lines that would interleave with it."
+        ),
+    )
+    parser.add_argument(
+        "--theme",
+        choices=("light", "dark"),
+        default=None,
+        help="Pick the colour scheme printed output is tuned for: 'light' or 'dark' terminal.",
+    )
     parser.add_argument(
         "--effort",
         metavar="LEVEL",
@@ -231,7 +249,10 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
         "--cwd",
         metavar="DIR",
         default=None,
-        help="Working directory for CLI endpoints.",
+        help=(
+            "Directory the agent's process runs in — the repo or worktree it acts on. "
+            "Defaults to the current directory."
+        ),
     )
     parser.add_argument(
         "--timeout",
@@ -350,6 +371,17 @@ def _unreadable_symlink_target(path: Path) -> str | None:
         return "<unreadable>"
 
 
+def _profile_path_candidates(agents_dir: Path, name: str) -> tuple[Path, ...]:
+    """Where NAME may live in one agents dir, in the order resolution tries them.
+
+    Two layouts share a directory, so a root can hold more than one declaration
+    of the same name. Anything reporting which files declare a profile has to
+    walk the same candidates in the same order as the resolver, or it reports a
+    displaced file in one root while missing one in another.
+    """
+    return (agents_dir / name / f"{name}.md", agents_dir / f"{name}.md")
+
+
 def _resolve_profile_path(
     agents_dir: Path,
     name: str,
@@ -357,8 +389,7 @@ def _resolve_profile_path(
     unreadable_symlinks: list[tuple[Path, str]] | None = None,
 ) -> Path | None:
     """Return profile path for NAME, recording unreadable candidate symlinks."""
-    candidates = (agents_dir / name / f"{name}.md", agents_dir / f"{name}.md")
-    for candidate in candidates:
+    for candidate in _profile_path_candidates(agents_dir, name):
         if candidate.is_file():
             return candidate
         target = _unreadable_symlink_target(candidate)
@@ -406,29 +437,32 @@ def list_agents() -> list[str]:
     return sorted(seen)
 
 
-def build_agent_profile_catalog() -> dict[str, dict[str, Any]]:
-    """Index discoverable profiles by name and resolved runtime configuration.
+def profile_config(profile: AgentProfile) -> dict[str, Any]:
+    """The runtime configuration a loaded profile contributes, as plain JSON values.
 
-    Prompt bodies are deliberately omitted: the catalog is a discovery surface,
-    not a second path for exposing or copying profile instructions.
+    The one place that decides which fields a discovery surface reports — and
+    which it withholds. Prompt bodies are deliberately absent: discovery is not a
+    second path for exposing or copying profile instructions. Every reader of the
+    roster goes through here so they cannot disagree about either half.
     """
-    catalog: dict[str, dict[str, Any]] = {}
-    for name in list_agents():
-        profile = load_agent_profile(name)
-        catalog[name] = {
-            "model": profile.model,
-            "effort": profile.effort,
-            "role": profile.extra.get("role"),
-            "pack": profile.extra.get("pack"),
-            "yolo": profile.yolo,
-            "bypass": profile.bypass,
-            "fast_mode": profile.fast_mode,
-            "lion_system": profile.lion_system,
-            "khive_injection": profile.khive_injection,
-            "timeout": profile.timeout,
-            "resume_on_timeout": profile.resume_on_timeout,
-        }
-    return catalog
+    return {
+        "model": profile.model,
+        "effort": profile.effort,
+        "role": profile.extra.get("role"),
+        "pack": profile.extra.get("pack"),
+        "yolo": profile.yolo,
+        "bypass": profile.bypass,
+        "fast_mode": profile.fast_mode,
+        "lion_system": profile.lion_system,
+        "khive_injection": profile.khive_injection,
+        "timeout": profile.timeout,
+        "resume_on_timeout": profile.resume_on_timeout,
+    }
+
+
+def build_agent_profile_catalog() -> dict[str, dict[str, Any]]:
+    """Index discoverable profiles by name and resolved runtime configuration."""
+    return {name: profile_config(load_agent_profile(name)) for name in list_agents()}
 
 
 def _resolve_plugin_profile_path(name: str) -> Path | None:

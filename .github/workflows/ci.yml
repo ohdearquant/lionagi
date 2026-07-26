@@ -48,6 +48,47 @@ jobs:
     - name: Lint publication hygiene
       run: scripts/ci.sh lint-hygiene
 
+  core-install:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install uv
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+    # The other Python jobs all install extras, most with --all-extras and the
+    # studio job with --extra studio. Under any of them a module which is
+    # imported on a core path, but only ever supplied by some extra's
+    # transitive tree, is indistinguishable from a properly declared
+    # dependency: it is always present, so nothing ever fails. Installing the
+    # base dependency set by itself is the only configuration in which that
+    # distinction is observable, which is why this job exists separately
+    # rather than as another step somewhere green.
+    - name: Install with no extras
+      run: |
+        uv venv
+        uv pip install .
+    # Starting the CLI traverses the real import chain rather than a subset a
+    # test happens to reach, so an undeclared import on a startup path fails
+    # here instead of in a seat's environment.
+    - name: Core surface starts without extras
+      run: |
+        .venv/bin/li --version
+        .venv/bin/python - <<'PY'
+        import importlib
+
+        for module in (
+            "lionagi",
+            "lionagi.cli.main",
+            "lionagi.operations.flow",
+            "lionagi.session.branch",
+            "lionagi.session.session",
+            "lionagi.service.imodel",
+        ):
+            importlib.import_module(module)
+        print("core surface imported with base dependencies only")
+        PY
+
   docs:
     needs: changes
     # The `needs: changes` edge exists only so the ADR steps below can read
@@ -424,7 +465,7 @@ jobs:
   # path-filter job itself succeeded and reported no Studio image inputs changed.
   ci-gate:
     if: ${{ always() }}
-    needs: [lint, docs, test, frontend, studio-e2e, changes, studio-docker, vscode, marketplace]
+    needs: [lint, core-install, docs, test, frontend, studio-e2e, changes, studio-docker, vscode, marketplace]
     runs-on: ubuntu-latest
     steps:
     - name: Check aggregate result
@@ -439,6 +480,7 @@ jobs:
         needs = json.loads(os.environ["NEEDS_CONTEXT"])
         hard_gates = [
             "lint",
+            "core-install",
             "docs",
             "test",
             "frontend",

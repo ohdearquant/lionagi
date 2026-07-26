@@ -1,13 +1,50 @@
-# ADR-0066: `li mcp` v2 verb surface — discrete core plus one generated dispatch
+# ADR-0066: `li mcp` v2 verb surface — one tool, generated per-verb schemas
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Aspirational
 - **Area**: cli-surface
-- **Date**: 2026-07-24
+- **Date**: 2026-07-24 (amended 2026-07-25 twice — D1, D2, D3 and D7, see Amendment history)
 - **Relations**: builds on ADR-0095 (run-terminal callbacks — the `notify.on_terminal`
   layer the MCP submits ride) and ADR-0104 (`li kill` transitive play reaping and
   terminal-notify on kill, whose semantics the kill verb must inherit rather than
   re-implement); none superseded
+
+## Amendment history
+
+**2026-07-25 — Accepted.** The status field is the authority on a document's stage and nothing
+infers acceptance from an edit, including an edit by the author of the decision. Recorded here
+rather than derived: the first amendment below was authored in place at `e082e02f0`, and the
+second was gated separately before landing.
+
+**2026-07-25 — Amendment 2: `extra_args` removed from D3 and D7; D2 requires a schema
+fingerprint on spawn verbs.** The escape hatch is deleted rather than retained, because
+retention is a standing obligation to re-prove that no opaque token sequence introduces a new
+command boundary, and D2/D3 removed the premise that made the hatch useful. The fingerprint
+makes schema agreement a property of the protocol: a spawn op carries the fingerprint targeted
+help returned, so the schema a caller validated against is the schema that runs. Its guarantee
+is stated at the strength it actually has — agreement always, exposure only for the caller that
+fetched it, since a fingerprint can be inherited.
+
+**2026-07-25 — D1 reversed from a discrete core to a single tool; D2 extended.** The
+original D1 kept nine high-frequency operations as individually advertised tools alongside
+one dispatch verb. That is now one tool with every operation behind it as a namespaced verb.
+D2 gains two requirements that make the single surface usable: catalog entries carry one-line
+signatures rather than bare names, and a rejected op returns the schema it was judged
+against.
+
+Three drivers, in the order they carry weight:
+
+1. **Internal inconsistency.** D2 requires on-demand schema resolution because advertised
+   schemas are expensive. The original D1 then exempted the nine most expensive schemas from
+   that rule. The amendment applies D2 to the surface it was written for.
+2. **Measured cost.** The v1 server's seven tools advertise 8,683 bytes, roughly 2,170
+   tokens, into every session of every caller; the three submit tools are 81% of it. A
+   discrete core lands near 13KB, and one tool per CLI subcommand near 72KB.
+3. **Precedent.** Single-tool MCP surfaces fronting several times this verb count are in
+   daily production use without ergonomic complaint.
+
+Also corrected: the original D1 headed its list "Discrete core (10 tools)" while enumerating
+nine. The superseded shape was nine discrete tools plus `request`.
 
 ## Depth contract
 
@@ -16,6 +53,10 @@ surface measurements below were taken from the built parsers at commit `44ec7790
 kill semantics in D5 were verified by source read of `cli/kill.py` at the same commit, not
 from the prose of the ADR that introduced them. Where a claim depends on an existing
 contract, the contract is named with its file.
+
+The amendment's byte figures were taken by an MCP `tools/list` handshake against the running
+v1 server, not estimated from source. The gate 1 parser inventory recorded below was taken by
+driving `cli/main.py`'s own `_build_parser` seam rather than a reconstruction of it.
 
 ## Context
 
@@ -45,37 +86,72 @@ prompts carrying arbitrary quotes and newlines.
 
 ## Decision
 
-### D1 — Discrete core, one dispatch verb for the long tail
+### D1 — One tool, every operation a namespaced verb behind it
 
-Keep discrete tools for the high-frequency operations, and add exactly one dispatch verb for
-everything else.
+The server advertises exactly one tool. Every operation is a verb reached through it.
 
-Discrete core (10 tools):
+```text
+request(ops=[{op, args}, ...], help?)
+```
 
-- `submit_agent`, `submit_flow`, `submit_fanout` — unchanged from v1.
-- `submit_play` — new. Playbooks are a first-class spawn surface (`li play <name>`) and are
-  used as heavily as flows; leaving them unreachable forces callers to hand-expand a
-  playbook into a flow invocation.
-- `wait` — new. See D6.
-- `job_status`, `job_output`, `job_kill`, `jobs_list` — unchanged from v1.
+Verbs are namespaced strings that mirror the CLI's own structure:
 
-Long tail (one tool): `request(ops=[{tool, args}], help?)`, covering `schedule_*`, `team_*`,
-`monitor`, `stats`, `state` (read-only subset), `dispatch`, and future additions.
+- spawn: `agent.submit`, `flow.submit`, `fanout.submit`, `play.submit`
+- observe: `job.status`, `job.output`, `job.list`, `job.wait`
+- control: `job.kill`
+- long tail: `schedule.*`, `team.*`, `state.*` (read-only subset), `dispatch.*`, `monitor`,
+  `stats`, and future additions
 
-**Dispatch is JSON-form only.** `ops` is a list of objects, never a string to be parsed:
+`play.submit` and `job.wait` are new; the rest are v1's seven operations renamed into the
+namespace. Nothing that was reachable becomes unreachable.
+
+**The tool-level change is a clean break; the verb-level change is not.** v1's seven tools
+cease to exist when this ships. They are not kept as thin shims for a deprecation window,
+because those shims *are* the advertised schema this decision exists to delete — a window
+would pay the full cost for its whole duration and deliver the benefit only at its end.
+Clients pick up the new surface by reloading, which is one action rather than a migration.
+
+Verb-level continuity is cheap and is kept: v1's operation names (`submit_agent`,
+`job_status`, and the rest) are accepted as synonyms inside `ops`, resolved to their
+namespaced form before dispatch, and **absent from the catalog** so they are never
+advertised or taught. They exist for callers already scripted against the old names. They
+are accepted for exactly one release and removed in the first minor release after the one
+that introduces this surface, and no later than 2026-09-30.
+
+**Ops are JSON, never a DSL string.** `ops` is a list of objects:
 
 ```json
-{"ops": [{"tool": "schedule_list", "args": {"limit": 20}}]}
+{"ops": [{"op": "schedule.list", "args": {"limit": 20}}]}
 ```
 
 A string-DSL escape hatch is explicitly rejected. The payloads this surface carries are
 prompts — arbitrary text with quotes, newlines, and braces — and any DSL would require
 hand-rolled escaping at every call site for no gain over JSON the client already speaks.
+A string-DSL dispatch form reads cleanly on surfaces whose argument values are short
+structured scalars. It is the wrong borrowing here, because on this surface the argument
+value *is* the prompt.
 
-**Why both.** Discrete tools give the operations a caller uses constantly a first-class,
-individually-documented signature. The dispatch verb keeps the tool list small and bounded
-while the reachable surface grows with the CLI. The split point is frequency, not
-capability.
+**Why one and not a discrete core.** An advertised tool schema is not free. It is sent to
+the model on every request, in every session, by every caller, forever. Measured against the
+v1 server: seven tools advertise 8,683 bytes, roughly 2,170 tokens, and 81% of that is the
+three submit tools alone at 19-20 parameters each. A discrete core of nine or ten lands near
+13KB. Giving each of the CLI's ~60 addressable operations its own tool would land near 72KB,
+past the point at which a flattened parameter surface has already been observed to exceed
+what a client will accept.
+
+The deciding argument is internal consistency rather than the byte count. D2 requires
+schemas to be resolved on demand *because* schemas are expensive. A discrete core exempts
+the ten most expensive schemas from the rule that exists to control exactly that cost. One
+uniform surface applies D2 to everything it was written for.
+
+Keeping a single "hot" verb as a discrete tool is rejected for the same reason: it reopens
+the exemption argument for every verb that later becomes frequent, and the uniformity is the
+property worth having.
+
+The ergonomics are not speculative. Single-tool MCP surfaces fronting dozens of namespaced
+verbs are already in daily production use, and remain fluent at a verb count several times
+larger than the one proposed here. The prior is that a single dispatch tool over a verb
+space this size works, not that it is a risk being taken.
 
 ### D2 — `help` returns a live, parser-derived schema, resolved on demand
 
@@ -88,15 +164,65 @@ the reason a dispatch verb is acceptable at all: without a live schema, `request
 would be an undiscoverable string interface.
 
 **Help is selective, and the schema is never published eagerly.** With no target, `help`
-returns the allowed-verb catalog with compact one-line summaries. With a verb named, it
-returns that verb's full schema. The MCP tool's own advertised schema stays small: it
-describes `ops` and `help`, not the union of every reachable verb's parameters.
+returns the allowed-verb catalog. With a verb named, it returns that verb's full schema. The
+MCP tool's own advertised schema stays small: it describes `ops` and `help`, not the union of
+every reachable verb's parameters.
 
 This is a hard constraint, not a preference. Flattening a large parameter surface into a
 single advertised schema is a known failure mode — a schema that grows into the tens of
 kilobytes is sent to the model on every request and can exceed what a client will accept,
 which takes down the whole tool rather than degrading one verb. Discovery must therefore be
 a call, not a payload.
+
+**The catalog carries one-line signatures, not bare verb names.** A list of names tells a
+caller what exists and not how to invoke it, which forces a second call before any first
+call. A signature — the verb, its required parameters, and a one-line summary — is enough to
+write the common invocation directly, and still costs a fraction of a full schema. Full
+parameter detail stays per-verb and on demand.
+
+**A rejected op returns the schema it was judged against.** When an op fails argument
+validation, the error carries that verb's expected schema inline. The first mistake then
+costs one round-trip and teaches the shape, instead of costing a rejection followed by a
+separate `help` call. This is what makes a single dispatch tool fluent in practice rather
+than merely compact: the surface repairs the caller as it refuses them. Closed validation
+(D7) supplies the rejection; this decides what the rejection must contain.
+
+**Spawn verbs require the fingerprint that targeted help returns.** `help="<verb>"` returns,
+alongside the verb's full projected schema, a `schema_fingerprint` derived from that schema's
+content. An op naming a spawn verb (`agent.submit`, `flow.submit`, `fanout.submit`,
+`play.submit`) must carry the current `schema_fingerprint` for that verb; an op without one,
+or with one that no longer matches, is rejected.
+
+Collapsing the surface to one tool makes discovery a call. It does not make discovery happen.
+A caller can read a one-line catalog signature and invoke a thirty-parameter verb having never
+seen the rest of it, which is the condition this surface exists to end.
+
+State the guarantee at its real strength. The fingerprint proves that the schema the caller
+validated against is the schema that will run: agreement at spawn time, staleness impossible.
+For a caller that fetched it, it also proves exposure — the parameters were in that caller's
+context before it was allowed to spawn. It does **not** prove exposure in general, because a
+fingerprint is a transferable string: a parent that pastes the current value into every
+spawn-prompt template passes children through the gate who never saw the schema, which is
+shallow usage reproduced one layer up. The mitigation for that is convention, not protocol —
+spawn prompts do not carry fingerprints — and staleness-rejection alone justifies the
+round-trip. Before proposing a gate, ask who controls its input: here the caller does, so this
+gate proves a fetch happened, not that anything was read.
+
+**The rejection carries its own remedy, in band.** A rejected op returns the exact `help` call
+to make and the current fingerprint in the same response. Recovery is one step. A rejection
+that reports only "stale fingerprint" strands precisely the naive caller the requirement exists
+to protect. This is the same distinction that makes per-call rejection acceptable where
+server-level refusal is not: refusing to serve because the server is behind fails toward
+darkness, while an op-level rejection whose recovery is one in-band call fails toward a
+round-trip.
+
+**Scope is spawn only, and the exclusions are deliberate.** `job.kill` is exempt: it is an
+emergency operation with a trivial argument surface, and gating the stop of a runaway run
+behind a discovery round-trip is the one place this friction could cost something real. The
+read verbs (`job.status`, `job.output`, `job.list`, `job.wait`) are exempt: their argument
+surfaces are small and a wrong read is self-correcting. Widening the requirement to control or
+read verbs needs its own decision, because the argument that justifies it on spawn — a wide
+parameter surface where a silently missed parameter does real damage — does not hold there.
 
 Generation mechanics are decided in D3.
 
@@ -143,12 +269,31 @@ of a playbook and executed against another must be told so where it will actuall
 A static union over every installed playbook is rejected: it is stale the moment a playbook
 is edited, and it reintroduces exactly the schema-size problem D2 exists to prevent.
 
-**`extra_args` coexists with closed validation as a declared escape hatch.** Structured
-parameters stay closed and typos are rejected. `extra_args` is opaque argv by contract, is
-logged with secrets redacted, and marks its result as having bypassed validation. It is
-**not** accepted by the generic dispatch verb, and on the submit verbs it is checked so it
-cannot introduce a new command boundary — otherwise the D8 fence would be bypassable
-through argv.
+**`extra_args` is not accepted anywhere on this surface.** Structured parameters are closed
+and typos are rejected; there is no opaque argv channel alongside them.
+
+The escape hatch existed to reach flags the schema did not model. D2 and D3 remove the
+premise: the schema is projected from the parser the CLI itself builds, so a flag that exists
+is a flag the schema models, and one that is not projectable is unavailable by decision rather
+than reachable by accident. What remains of the hatch is only its cost.
+
+That cost is a fence obligation. D8 is an allowlist, and an argv channel is a second way into
+the same executable that the allowlist does not describe. Keeping it means every release must
+re-establish that no sequence of opaque tokens introduces a new command boundary — a proof
+about string parsing that has to hold forever and is one argparse behaviour change from being
+wrong. Deleting the channel discharges the obligation instead of re-proving it. This is not a
+hypothetical class: a caller value reaching argv's option position was found and fixed on the
+implementing change, in the rendering of *typed* parameters, where the schema is known.
+
+The concrete loss is one real use: passing a prompt file as `["--prompt-file", "/abs/path"]`
+because no typed parameter existed. That becomes a typed `prompt_file` parameter, read and
+snapshotted at submit time, which is strictly better than the argv form it replaces — the
+caller gets validation and a defined read moment rather than a flag appended to a command
+line. It lands with the same change that removes the hatch, on every spawn verb.
+
+**Why this is written down rather than left as an implementation choice.** A future reader
+comparing the code to an ADR that still declared an escape hatch would restore it to match,
+and reopen the argv path the fence does not describe. The reasoning is the load-bearing part.
 
 **Why runtime rather than the alternatives.** A build-time artifact cannot model
 user-installed or user-edited playbooks, so it proves only the source tree and not the
@@ -207,7 +352,7 @@ v1's `job_kill` signals the detached process group directly
 (`os.killpg(os.getpgid(pid), sig)`). That is correct for a single `li agent` job, where the
 detached child leads its own process group and the whole tree shares the pgid.
 
-It is not sufficient once `submit_play` exists. `li kill` performs transitive
+It is not sufficient once `play.submit` exists. `li kill` performs transitive
 `play → session → invocation` reaping, implied for plays without `--recursive`
 (`cli/kill.py:246` resolves the play's session via `plays.session_id`, `:258` recurses into
 that session's children, `:287-306` walks the frontier transitively, `:491` invokes the walk
@@ -232,7 +377,7 @@ the processes while leaving the lifecycle rows claiming otherwise — reproducin
 state/process split ADR-0104 was written to eliminate. A visible, reconcilable failure is
 strictly better than an invisible divergence.
 
-Consequently, `submit_play` and every new submit path must **persist the entity identity**
+Consequently, `play.submit` and every new spawn path must **persist the entity identity**
 needed for a lifecycle-safe kill, not merely the pid and the MCP `run_id`. The sidecar may
 cache that identity as process bookkeeping; it must not invent lifecycle status.
 
@@ -247,9 +392,9 @@ marks the show row terminal and does not reap its plays or their workers
 verb that silently half-stops a tree is worse than no verb; if a show-level operation is
 added later, it must either recurse properly or fail explicitly.
 
-### D6 — `wait` is a bounded observation with partial results
+### D6 — `job.wait` is a bounded observation with partial results
 
-`wait` takes ids, a maximum wait, and a poll interval. The server clamps both numbers to
+`job.wait` takes ids, a maximum wait, and a poll interval. The server clamps both numbers to
 documented bounds and echoes the effective values back:
 
 ```json
@@ -272,15 +417,15 @@ other ids from being observed.
 
 **Lifecycle state is the single authority.** Terminal status and reason come from the same
 cross-kind resolver `li wait` uses, not from the MCP job sidecar. The sidecar is
-authoritative for its own narrow job bookkeeping, but `wait` accepts ids the MCP never
+authoritative for its own narrow job bookkeeping, but `job.wait` accepts ids the MCP never
 submitted, and a universal verb cannot pick its source of truth based on who submitted the
 work — the same id would then answer differently depending on provenance. Sidecar data
 (pid, console path, notify-delivery outcome) may ride along as auxiliary metadata; it never
 overrides lifecycle status.
 
-**`wait` and terminal-notify are complementary, not competing.** Use notify when the run is
-expected to outlive a normal call or when the caller can receive a push. Use `wait` for a
-bounded synchronization point, to join several children, or to reconcile after a
+**`job.wait` and terminal-notify are complementary, not competing.** Use notify when the run
+is expected to outlive a normal call or when the caller can receive a push. Use `job.wait`
+for a bounded synchronization point, to join several children, or to reconcile after a
 notification that never arrived. A notification is a prompt to read state, not proof of
 terminal state.
 
@@ -290,7 +435,7 @@ rather than being simulated by it.
 
 ### D7 — Response conventions
 
-These apply uniformly to every verb, discrete and dispatched.
+These apply uniformly to every verb.
 
 - **Raw machine JSON.** No humanized fields — no relative timestamps ("2 minutes ago"), no
   pretty-printed durations, no formatted tables. Every consumer of this surface is a
@@ -298,12 +443,11 @@ These apply uniformly to every verb, discrete and dispatched.
   are given.
 - **Closed argument validation.** An unknown or misspelled parameter is rejected loudly,
   echoing the offending name back. Silently ignoring an unrecognized argument turns a typo
-  into a wrong-but-successful call. `--extra-args` remains the documented escape hatch for
-  passing through flags the schema does not model, and its use is logged — on the submit
-  verbs that accept it, not on the generic dispatch verb, which rejects `extra_args`
-  outright per D3.
-- **Per-op error envelope.** Each op returns `{ok, tool, ...}`; a failing op returns
-  `{ok: false, tool, error}`. The outer call returns an overall `status` of `success` or
+  into a wrong-but-successful call. There is no `extra_args` escape hatch beside it: per D3
+  the schema is projected from the parser, so a flag the schema does not model is one the
+  surface does not reach.
+- **Per-op error envelope.** Each op returns `{ok, op, ...}`; a failing op returns
+  `{ok: false, op, error}` carrying that verb's expected schema per D2. The outer call returns an overall `status` of `success` or
   `partial` and **never throws for a per-op failure**. Callers check per-op `ok`.
 - **Batch with an explicit cap.** `ops` accepts multiple entries from day one, with a
   documented maximum. Exceeding it is an explicit error, never a silent truncation.
@@ -311,7 +455,7 @@ These apply uniformly to every verb, discrete and dispatched.
 ### D8 — Visibility fence for privilege-granting operations
 
 `state migrate`, `plugin trust`, and `hooks trust` are **not** reachable from the MCP
-surface — not as discrete verbs, not through `request(...)`.
+surface — not as verbs, not through any `ops` entry.
 
 MCP callers are agents. "An agent may mark a plugin as trusted" is self-authorizing
 privilege escalation: the thing being granted trust and the thing granting it are the same
@@ -337,32 +481,56 @@ control stays in lionagi), which already exists and requires no coupling.
 These are measurements and seams the decisions above depend on. Each is a gate, not a
 follow-up.
 
-1. **Parser inventory.** Before committing to D3's bounded subset, inventory the argparse
-   actions across the candidate verbs. If materially more than a tenth of them need
-   semantics the bounded projector cannot represent, D3's cost/benefit changes and the
-   declarative-registry alternative deserves re-examination.
+1. **Parser inventory.** ✅ **Satisfied 2026-07-25.** Measured: 316 argparse actions across
+   70 parser paths in 18 command groups, every group building without error. Of those
+   actions, none use an action class outside D3's bounded subset (0.0%), and one uses a
+   non-scalar `type=` callable (0.3%). The gate's threshold was materially more than a
+   tenth; the measurement is two orders of magnitude below it, so D3 stands and the
+   declarative-registry alternative does not need re-examination.
+
+   One implementation constraint fell out of the measurement: the per-command
+   `parser_factory` return values are **not** uniform — `orchestrate` returns a dict where
+   others return a parser — so the projector must walk the root parser's registered
+   subparsers action rather than whatever the factory hands back. Walking factory returns
+   covers 16 of the 70 paths and raises on `orchestrate`.
 2. **The shared machine-result seam.** D4 admits a verb only once its CLI path emits a
    versioned machine result. That seam is CLI work that precedes the allowlist, and it may
    be larger than v2's other parts. It is deliberately not compensated for with human-text
    parsing.
 3. **Durable entity identity on submit records.** D5's kill delegation requires it, so it
-   lands before `submit_play` is promoted.
+   lands before `play.submit` is promoted.
 4. **Response-size ceiling test.** D2's selectivity needs a test that fails if the
    advertised tool schema grows past a fixed bound.
 
 ## Consequences
 
-- The tool list stays at 10 discrete verbs plus `request`, regardless of how much of the
-  CLI becomes reachable. Client-side tool-selection cost stays flat as coverage grows.
+- The tool list stays at exactly one, regardless of how much of the CLI becomes reachable.
+  Client-side tool-selection cost and advertised-schema cost both stay flat as coverage
+  grows, rather than growing with it.
 - `request(help=true)` becomes load-bearing documentation. If schema generation breaks, the
   dispatch surface becomes undiscoverable — so its generation needs a test that fails when
   the parser internals it reads change shape.
-- `submit_play` and `wait` close the two largest gaps: playbooks were unreachable, and
+- `play.submit` and `job.wait` close the two largest gaps: playbooks were unreachable, and
   completion was pollable but not waitable.
 - Kill delegation means the MCP inherits `li kill`'s semantics including its deferrals. The
   show-level gap is documented rather than papered over.
 - The visibility fence means some CLI capability is permanently out of reach from MCP. That
   is the intent, not a limitation to be lifted later without a decision.
+- **Tool-name-keyed policy loses its signal, and this is the largest hidden cost of the
+  shape.** External layers that gate, audit, or annotate MCP calls commonly key on the tool
+  name: permission prompts, allowlists, audit filters, and hooks that rewrite arguments
+  before a call. Against a surface with one tool, the name no longer distinguishes reading
+  a job's status from spawning twenty agents, so every such layer must either inspect
+  `ops[].op` or treat the whole surface as one undifferentiated capability. Anything that
+  cannot be made payload-aware degrades to all-or-nothing.
+
+  This is a real and permanent trade, not a migration detail. It is accepted here because a
+  payload-aware check is strictly more precise than a name match — it can distinguish verbs
+  that a name match never could, since one tool name was already covering several
+  operations — and because the alternative preserves the signal only by paying the
+  advertised-schema cost this decision exists to remove. Adopters of this shape should
+  expect to rewrite tool-name-based policy before cutover, not after: a policy layer that
+  silently stops matching does not fail loudly, it fails open.
 
 ## Alternatives considered
 
@@ -370,9 +538,21 @@ follow-up.
 degrades client tool-selection, and every CLI addition becomes an MCP change. The dispatch
 verb absorbs growth without a surface change.
 
-**A single dispatch verb with no discrete tools.** Rejected: the operations used constantly
-(the submits, job status) deserve first-class signatures, and forcing them through a generic
-envelope adds a layer of indirection to the hot path for uniformity's sake.
+**A discrete core of high-frequency tools alongside the dispatch verb.** This was the
+original decision here, and it was reversed. The case for it was that constantly-used
+operations deserve first-class, individually-advertised signatures rather than a layer of
+indirection on the hot path.
+
+It was rejected on measurement and on consistency. The advertised schema for that core is
+paid on every request of every session by every caller, and the three submit verbs alone
+account for 81% of the v1 server's 8,683 advertised bytes. More decisively, D2 requires
+on-demand resolution because schemas are expensive, and a discrete core exempts the most
+expensive schemas from precisely that rule. The hot-path concern is real but is answered by
+D2's catalog signatures and schema-bearing rejections rather than by permanent advertisement,
+and single-tool surfaces at several times this verb count show the ergonomic holds.
+
+**A single hot verb kept discrete (two tools).** Rejected: it reopens the exemption argument
+for every verb that later becomes frequent. Uniformity is the property being bought.
 
 **A string-DSL escape hatch alongside JSON dispatch.** Rejected: the payloads are free-text
 prompts; a DSL makes every call a quoting problem and needs hand-rolled escaping for text
@@ -397,7 +577,7 @@ has one.
 a visible, reconcilable lifecycle failure into a silent process/state divergence — the exact
 condition ADR-0104 removed.
 
-**Selecting `wait`'s source of truth by provenance** (sidecar for MCP-submitted jobs,
+**Selecting `job.wait`'s source of truth by provenance** (sidecar for MCP-submitted jobs,
 lifecycle state otherwise). Rejected under D6: the same id would answer differently
 depending on who submitted it.
 

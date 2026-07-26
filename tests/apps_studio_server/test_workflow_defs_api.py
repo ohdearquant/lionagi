@@ -10,6 +10,8 @@ from typing import Any
 
 import pytest
 
+import lionagi.state.db as state_db_mod
+
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 pytest.importorskip("fastapi", reason="studio extra not installed")
 
@@ -41,7 +43,7 @@ def patched_svc(tmp_path: Path, monkeypatch):
     import lionagi.studio.services.workflow_defs as svc
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr(svc, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
     return svc, db_path
 

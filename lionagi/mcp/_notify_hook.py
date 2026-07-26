@@ -6,8 +6,8 @@ The CLI runs this once a background run reaches a terminal status. It does two
 things, both best-effort (the run has already finished, so nothing here may
 raise into the CLI's terminal path):
 
-1. Records the terminal status on the MCP job record, so ``job_status`` /
-   ``jobs_list`` report an authoritative ``completed`` / ``failed`` / ``killed``
+1. Records the terminal status on the MCP job record, so ``job.status`` /
+   ``job.list`` report an authoritative ``completed`` / ``failed`` / ``killed``
    / ``timeout`` instead of only inferring ``exited`` from a gone pid.
 
 2. Delivers a terminal notice through a *configured command*, never a

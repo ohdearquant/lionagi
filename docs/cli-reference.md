@@ -699,6 +699,116 @@ rather than silently lost.
 
 ---
 
+## `li handshake`
+
+Report what this installation is, for a program deciding whether it can talk to
+it. Pair it with `--machine`, since a program is the only caller this is for.
+
+```bash
+li handshake --machine
+```
+
+```json
+{"ok": true, "contract_version": 1,
+ "data": {"contract_version": 1, "min_supported_version": 1,
+          "implementation": "lionagi", "implementation_version": "0.30.2",
+          "module": "/path/to/lionagi/cli"},
+ "error": null}
+```
+
+`contract_version` is the machine-result contract this build speaks and
+`min_supported_version` is the oldest it still accepts. A caller checks both
+once at startup, then validates `contract_version` on every envelope afterwards
+— the binary at a pinned path is replaced during normal operation, so a
+handshake governs registration and never stands in for per-response checking.
+
+`module` is where the code being served actually lives, which answers "is this
+the checkout I think it is" without guessing from a version number.
+
+---
+
+## `li runs`
+
+List the runs recorded on disk and what each one wrote.
+
+```bash
+li runs --machine [--limit N]
+```
+
+Each entry carries the run id, its state root, its artifact root, and the
+artifacts found there. It reports which runs EXIST and what they left behind,
+not whether any of them finished or succeeded — for that, ask `li job status` or
+the MCP `job_status` tool, which carry the terminal and outcome derivations.
+
+The artifact list is wrapped in the availability shape, so a directory that could
+not be read is reported as unavailable with a reason rather than as a run that
+produced nothing.
+
+---
+
+## `li lifecycle`
+
+Report what the lifecycle store records about one CLI run.
+
+```bash
+li lifecycle <run-id> --machine
+```
+
+This is the one path from a run id to the rows the lifecycle writers actually
+write. A normal teardown records an end; so does `li kill`, which writes the
+row and signals the process without touching the MCP job record or the run
+manifest. A caller holding only a run id and reading only those two would see a
+dead process with no recorded end, which is what an orphaned run looks like.
+
+The answer is read-only and carries its own availability. An established answer
+with `found: false` means no session was ever recorded under this id. An
+unavailable one means the store could not be read at all, which is not a
+statement about the run. A caller that collapsed the two would report a run as
+finished, or as never started, on the strength of a database it never opened.
+
+The store consulted is the one `LIONAGI_STATE_DB_URL` names when it is set, and
+the default otherwise — including for the question of whether a store exists at
+all, so a configured store is never reported missing because the default path
+is absent.
+
+---
+
+## Machine mode: `--machine`
+
+Any command that reaches the dispatcher accepts `--machine`, which turns its
+output into exactly one JSON object on stdout:
+
+```json
+{"ok": true, "contract_version": 1, "data": {...}, "error": null}
+```
+
+Exactly one of `data` and `error` is present, and `error.kind` is a closed set a
+caller may branch on. Diagnostics, progress and warnings go to stderr, so stdout
+carries the object and nothing else — a caller can parse it without scanning for
+where the JSON starts.
+
+Anything derived from a read that can fail is wrapped rather than flattened:
+
+```json
+{"available": false, "value": null, "reason_code": "unreadable",
+ "detail": "permission denied"}
+```
+
+This keeps "there are no artifacts" and "the artifacts directory could not be
+read" from sharing an encoding, which is the difference between a caller
+reporting an empty result and reporting a broken one.
+
+Check the exit status before parsing. **78 means nothing executed** — the
+environment could not run the work at all — and stdout must not be parsed on it,
+because attributing an environment fault to the submitted work is the
+misattribution the code exists to prevent.
+
+The full contract, including how `status`, `terminal` and `outcome` divide the
+question of whether a run is over, is in
+[ADR-0106](adr/ADR-0106-lion-machine-result-contract-v1.md).
+
+---
+
 ## `li engine run`
 
 Run a domain-specific multi-agent engine pipeline without writing Python. Progress

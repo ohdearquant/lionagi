@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from lionagi._paths import RUNS_ROOT, ensure_lionagi_dir
-from lionagi.cli._util import AmbiguousIdError
+from lionagi.cli._util import AmbiguousIdError, mark_run_allocated
 from lionagi.libs.path_safety import validate_path_component
 from lionagi.ln._utils import now_utc
 from lionagi.providers._provider_errors import ProviderError
@@ -38,6 +38,7 @@ __all__ = (
     "save_last_branch_pointer",
     "list_runs",
     "current_run_id",
+    "active_run_id",
     "resolve_run_reason",
     "setup_agent_persist",
     "teardown_persist",
@@ -57,6 +58,23 @@ def _new_run_id() -> str:
 def current_run_id() -> str | None:
     """Return the run_id inherited from the environment (subprocess case)."""
     return os.environ.get(_RUN_ID_ENV_VAR) or None
+
+
+# The run this process most recently allocated. Kept here rather than in the
+# environment because allocate_run() reads the environment to *inherit* an id,
+# so exporting one would make a second allocation in the same process silently
+# reuse the first run's directory.
+_ALLOCATED_RUN_ID: str | None = None
+
+
+def active_run_id() -> str | None:
+    """The run_id of the run this process is recording under, if any.
+
+    The run this process allocated, falling back to one inherited from a
+    parent. None when nothing has allocated a run yet — an embedded caller,
+    or the window before ``allocate_run`` runs.
+    """
+    return _ALLOCATED_RUN_ID or current_run_id()
 
 
 def _atomic_write_json(path: Path, payload: dict) -> None:
@@ -209,7 +227,10 @@ def allocate_run(
     run_id: str | None = None,
 ) -> RunDir:
     """Allocate a run dir, inheriting run_id from LIONAGI_RUN_ID env var if set (subprocess handoff)."""
+    global _ALLOCATED_RUN_ID
+
     rid = run_id or current_run_id() or _new_run_id()
+    _ALLOCATED_RUN_ID = rid
     state_root = RUNS_ROOT / rid
 
     if save_dir is not None:
@@ -220,6 +241,11 @@ def allocate_run(
     run = RunDir(run_id=rid, state_root=state_root, artifact_root=artifact_root)
     run.ensure_state_dirs()
     run.ensure_artifact_root()
+    # From here on there is durable state on disk under this run id, so a later
+    # failure is a failed run and must not be reported as an unusable
+    # environment. Marked here rather than at the call sites so every caller,
+    # including ones added later, is covered.
+    mark_run_allocated()
     run.write_manifest(
         {
             "status": "running",
@@ -1168,6 +1194,7 @@ async def setup_agent_persist(
             await db.create_session(
                 {
                     "id": session_id,
+                    "run_id": active_run_id(),
                     "created_at": session_dict["created_at"],
                     "node_metadata": _node_meta,
                     "name": session_dict.get("name"),

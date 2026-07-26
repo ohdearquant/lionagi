@@ -1173,7 +1173,7 @@ def test_invalid_scheduler_tz_falls_back_to_utc(monkeypatch, caplog):
     assert next_at is not None
     got_utc = datetime.fromtimestamp(next_at, tz=timezone.utc)
     assert got_utc == datetime(2026, 7, 2, 18, 0, 0, tzinfo=timezone.utc)
-    assert any("Invalid scheduler timezone" in r.message for r in caplog.records)
+    assert any("is not a zone this host can load" in r.getMessage() for r in caplog.records)
 
 
 def test_compute_next_fire_cron_prefers_resolved_timezone_over_scheduler_tz(monkeypatch):
@@ -1422,7 +1422,15 @@ async def test_recompute_next_fire_persists_and_logs_on_shift(monkeypatch, caplo
 
     assert new is not None
     assert new != 100.0
-    svc.update_schedule.assert_awaited_once_with(schedule["id"], next_fire_at=new)
+    # The same write also carries the zone the new value was resolved in, so
+    # a shifted fire time and the interpretation that produced it land
+    # together rather than as two separately-discoverable facts.
+    svc.update_schedule.assert_awaited_once_with(
+        schedule["id"],
+        next_fire_at=new,
+        effective_timezone="America/New_York",
+        effective_timezone_source=studio_config.SCHEDULER_TZ_SOURCE,
+    )
     shift_logs = [r for r in caplog.records if "next_fire_at shifted" in r.message]
     assert len(shift_logs) == 1
 

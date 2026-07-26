@@ -47,6 +47,9 @@ from .._runs import (
     save_last_branch_pointer,
     teardown_persist,
 )
+from .._runs import (
+    active_run_id as _active_run_id,
+)
 from .._util import validate_cwd_exists
 
 __all__ = (
@@ -1059,6 +1062,7 @@ async def setup_orchestration_persist(
         await db.create_session(
             {
                 "id": session_id,
+                "run_id": _active_run_id(),
                 "created_at": session_dict["created_at"],
                 "node_metadata": _node_meta,
                 "name": session_dict.get("name"),

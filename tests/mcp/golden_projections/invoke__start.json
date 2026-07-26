@@ -1,0 +1,34 @@
+{
+  "path": "invoke start",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "metadata": {
+        "description": "Skill-specific JSON to attach (e.g. show plan, review rounds). Stored verbatim; rendered as-is on the invocation detail page.",
+        "type": "string",
+        "x-flag": "--metadata"
+      },
+      "plugin": {
+        "description": "Marketplace plugin packaging that skill, when the skill came from one.",
+        "type": "string",
+        "x-flag": "--plugin"
+      },
+      "prompt": {
+        "description": "The request that triggered this work, stored as free text for later reading.",
+        "type": "string",
+        "x-flag": "--prompt"
+      },
+      "skill": {
+        "description": "Name of the orchestration being recorded, e.g. 'show', 'codex-pr-review' or 'reprompt'. Every session spawned under this id groups by it.",
+        "type": "string",
+        "x-flag": "--skill"
+      }
+    },
+    "required": [
+      "skill"
+    ],
+    "title": "invoke start",
+    "type": "object"
+  },
+  "stage": "static"
+}

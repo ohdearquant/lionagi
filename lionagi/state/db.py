@@ -115,6 +115,49 @@ def _default_reason_code_for_entity_status(entity_type: str, status: str) -> str
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
 
+
+def state_db_file() -> Path | None:
+    """The local file a default ``StateDB()`` would open, if it opens one at all.
+
+    Resolved the same way ``StateDB.__init__`` resolves it, so the two cannot
+    disagree about which store is in play. Returns None when the configured
+    store is not a local file — a server, or an in-memory database — because
+    then there is no path to report and nothing a filesystem check can say
+    about it.
+    """
+    raw = settings.LIONAGI_STATE_DB_URL
+    if raw is None:
+        raw = DEFAULT_DB_PATH
+    url = normalize_state_db_url(raw)
+    if dialect_of(url) != "sqlite":
+        return None
+    from sqlalchemy.engine import make_url
+
+    database = make_url(url).database
+    if not database or database == ":memory:":
+        return None
+    return Path(database)
+
+
+def state_db_known_absent() -> bool:
+    """Whether the store a default ``StateDB()`` would open is known not to exist.
+
+    Callers use this to tell "there is no store, so there is no record of
+    anything" apart from "the store is there and something went wrong reading
+    it". Those are different answers and a caller acts differently on each, so
+    the check has to be about the store that will actually be opened. Testing
+    ``DEFAULT_DB_PATH`` instead asks about a file that need not be involved:
+    ``LIONAGI_STATE_DB_URL`` moves the store elsewhere, and then the default
+    path is absent while every row being asked about exists.
+
+    Only a positive answer is confident. Where existence is not a filesystem
+    question this reports False and leaves the open attempt to give the real
+    answer.
+    """
+    path = state_db_file()
+    return path is not None and not path.exists()
+
+
 # The single definition of which schedule_run statuses count as "fired and
 # resolved" for budget bookkeeping (max_runs, one-shot auto-disable). The
 # scheduler service layer must observe the same set — both its defaults and
@@ -988,6 +1031,7 @@ class StateDB:
                             CREATE TABLE sessions_new (
                               id              TEXT    PRIMARY KEY,
                               cc_session_id   TEXT,
+                              run_id          TEXT,
                               created_at      REAL    NOT NULL,
                               node_metadata   JSON,
                               name            TEXT,
@@ -1913,7 +1957,7 @@ class StateDB:
         async with self._tx() as conn:
             result = await conn.execute(
                 text(
-                    """INSERT INTO sessions (id, cc_session_id, created_at, node_metadata, name, "user",
+                    """INSERT INTO sessions (id, cc_session_id, run_id, created_at, node_metadata, name, "user",
                        progression_id, first_msg_id, last_msg_id, updated_at,
                        playbook_name, agent_name, invocation_kind, show_topic,
                        show_play_name, artifacts_path, artifact_contract_json,
@@ -1921,7 +1965,7 @@ class StateDB:
                        status, started_at, ended_at, last_message_at, invocation_id,
                        model, provider, effort, agent_hash,
                        project, project_source)
-                       VALUES (:id, :cc_session_id, :created_at, :node_metadata, :name, :user,
+                       VALUES (:id, :cc_session_id, :run_id, :created_at, :node_metadata, :name, :user,
                                :progression_id, :first_msg_id, :last_msg_id, :updated_at,
                                :playbook_name, :agent_name, :invocation_kind, :show_topic,
                                :show_play_name, :artifacts_path, :artifact_contract_json,
@@ -1938,6 +1982,7 @@ class StateDB:
                 {
                     "id": session["id"],
                     "cc_session_id": session.get("cc_session_id"),
+                    "run_id": session.get("run_id"),
                     "created_at": session.get("created_at", now),
                     "node_metadata": session.get("node_metadata"),
                     "name": session.get("name"),
@@ -2008,6 +2053,29 @@ class StateDB:
                 .first()
             )
         return self._row_to_dict(row) if row else None
+
+    async def get_sessions_for_run(self, run_id: str) -> list[dict[str, Any]]:
+        """Every session recorded against CLI run *run_id*, oldest first.
+
+        A list rather than one row: one run can persist more than one session,
+        and a caller deciding whether the run is over has to see all of them.
+        An empty list means no session was ever recorded under this run id.
+        """
+        async with self._read() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT * FROM sessions WHERE run_id = :run_id "
+                            "ORDER BY created_at ASC, id ASC"
+                        ),
+                        {"run_id": run_id},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [self._row_to_dict(row) for row in rows]
 
     async def get_session_by_cc_id(self, cc_session_id: str) -> dict[str, Any] | None:
         async with self._read() as conn:
@@ -2655,6 +2723,7 @@ class StateDB:
                 project, threshold_config, last_alert_at,
                 spec_version, managed_by, owner_key, authored_spec,
                 resolved_target, resolved_digest, resolved_timezone,
+                effective_timezone, effective_timezone_source,
                 notify_on, notify_command,
                 created_at, updated_at)
                VALUES (:id, :name, :description, :enabled, :trigger_type,
@@ -2669,6 +2738,7 @@ class StateDB:
                        :project, :threshold_config, :last_alert_at,
                        :spec_version, :managed_by, :owner_key, :authored_spec,
                        :resolved_target, :resolved_digest, :resolved_timezone,
+                       :effective_timezone, :effective_timezone_source,
                        :notify_on, :notify_command,
                        :created_at, :updated_at)"""
         ).bindparams(
@@ -2726,6 +2796,8 @@ class StateDB:
             "resolved_target": schedule.get("resolved_target"),
             "resolved_digest": schedule.get("resolved_digest"),
             "resolved_timezone": schedule.get("resolved_timezone"),
+            "effective_timezone": schedule.get("effective_timezone"),
+            "effective_timezone_source": schedule.get("effective_timezone_source"),
             "notify_on": schedule.get("notify_on"),
             "notify_command": schedule.get("notify_command"),
             "created_at": schedule.get("created_at", now),
@@ -2875,6 +2947,8 @@ class StateDB:
             "resolved_target",
             "resolved_digest",
             "resolved_timezone",
+            "effective_timezone",
+            "effective_timezone_source",
             "notify_on",
             "notify_command",
         }
@@ -3595,7 +3669,9 @@ class StateDB:
         #
         # Also surface the schedule_run that fired this invocation (exit_code,
         # error_detail) so the UI can show why a scheduled run failed without
-        # a second round-trip. Unlike the sessions join above, this uses
+        # a second round-trip. action_kind comes from the same subquery: it is
+        # a property of the fired occurrence, not a column on invocations, and
+        # the lifecycle reaper's policy is per-kind. Unlike the sessions join above, this uses
         # correlated scalar subqueries rather than a ranked derived table:
         # ORDER BY + LIMIT/OFFSET on inv.updated_at narrows to the emitted
         # page first (sorting only invocations, not schedule_runs), and each
@@ -3613,7 +3689,11 @@ class StateDB:
             "  ( SELECT sr.error_detail FROM schedule_runs sr "
             "    WHERE sr.invocation_id = inv.id "
             "    ORDER BY COALESCE(sr.created_at, 0) DESC, sr.id DESC LIMIT 1 "
-            "  ) AS schedule_run_error_detail "
+            "  ) AS schedule_run_error_detail, "
+            "  ( SELECT sr.action_kind FROM schedule_runs sr "
+            "    WHERE sr.invocation_id = inv.id "
+            "    ORDER BY COALESCE(sr.created_at, 0) DESC, sr.id DESC LIMIT 1 "
+            "  ) AS action_kind "
             "FROM invocations inv "
             "LEFT JOIN ( "
             "  SELECT invocation_id, project, project_source FROM ( "

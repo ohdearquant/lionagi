@@ -10,7 +10,7 @@ from typing import Any
 from fastapi import Query
 
 from lionagi._errors import NotFoundError
-from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+from lionagi.state.db import StateDB, state_db_known_absent
 
 from ..registry import studio_route
 from ._io import parse_json_col as _parse_json_col
@@ -23,7 +23,7 @@ async def list_invocations(
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return []
     async with StateDB() as db:
         rows = await db.list_invocations(skill=skill, status=status, limit=limit, offset=offset)
@@ -65,7 +65,7 @@ async def list_invocations(
 
 
 async def get_invocation(invocation_id: str) -> dict[str, Any] | None:
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return None
     async with StateDB() as db:
         row = await db.get_invocation(invocation_id)
@@ -145,7 +145,7 @@ def _serialize_artifact(row: dict[str, Any]) -> dict[str, Any]:
 
 
 async def list_artifacts_for_session(session_id: str) -> list[dict[str, Any]]:
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return []
     async with StateDB() as db:
         rows = await db.list_artifacts_for_session(session_id)
@@ -153,7 +153,7 @@ async def list_artifacts_for_session(session_id: str) -> list[dict[str, Any]]:
 
 
 async def get_artifact(artifact_id: str) -> dict[str, Any] | None:
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return None
     async with StateDB() as db:
         row = await db.get_artifact(artifact_id)

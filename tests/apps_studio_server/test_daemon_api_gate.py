@@ -42,6 +42,7 @@ import pytest
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
+import lionagi.state.db as state_db_mod
 from lionagi.state.db import StateDB  # noqa: E402
 
 from ._helpers import run_async  # noqa: E402
@@ -68,6 +69,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/admin/doctor"),
     ("GET", "/api/admin/events"),
     ("GET", "/api/admin/health"),
+    ("GET", "/api/admin/readiness"),
     ("GET", "/api/agents/"),
     ("GET", "/api/agents/{name}"),
     ("GET", "/api/approvals/evidence/verify"),
@@ -235,7 +237,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 99
+    assert len(_GOLDEN_ROUTES) == 100
 
 
 def _compiled_match_shape(path_template: str) -> str:
@@ -349,7 +351,6 @@ def test_api_prefix_appears_exactly_once_in_every_route_path():
 
 def _patch_db(monkeypatch, db_path: Path) -> None:
     """Point every service module's DB reference at a fresh temp path; must run before any seeding call since StateDB() re-reads DEFAULT_DB_PATH fresh per instantiation, and admin.py/sessions.py additionally cache the path in their own module-level `_DB`."""
-    import lionagi.state.db as state_db_mod
     import lionagi.studio.services.admin as admin_mod
     import lionagi.studio.services.db_maintenance as db_maintenance_mod
     import lionagi.studio.services.schedules as schedules_mod
@@ -376,10 +377,10 @@ def _patch_db(monkeypatch, db_path: Path) -> None:
     monkeypatch.setattr(admin_mod, "_DB", str(db_path))
     monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
-    monkeypatch.setattr(schedules_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     # db_maintenance imports DEFAULT_DB_PATH by value, so the state_db_mod
     # patch above never reaches its own module-level binding.
-    monkeypatch.setattr(db_maintenance_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
 
 def _make_client() -> TestClient:
@@ -439,7 +440,12 @@ def test_admin_health_response_shape(tmp_path, monkeypatch):
 
     r = client.get("/api/admin/health")
     assert r.status_code == 200
-    assert sorted(r.json().keys()) == ["db", "diagnostic_run_at", "sessions"]
+    assert sorted(r.json().keys()) == [
+        "db",
+        "diagnostic_run_at",
+        "scheduler_timezone",
+        "sessions",
+    ]
 
 
 def test_admin_events_response_shape(tmp_path, monkeypatch):
@@ -572,7 +578,14 @@ def test_sessions_list_response_shape(tmp_path, monkeypatch):
 
     r = client.get("/api/sessions/")
     assert r.status_code == 200
-    assert sorted(r.json().keys()) == ["sessions"]
+    # The listing is bounded, so it also reports what it left out.
+    assert sorted(r.json().keys()) == [
+        "limit",
+        "offset",
+        "sessions",
+        "total",
+        "truncated",
+    ]
 
 
 def test_sessions_detail_response_shape(tmp_path, monkeypatch):
@@ -632,6 +645,8 @@ _SCHEDULE_DETAIL_KEYS = sorted(
         "created_at",
         "cron_expr",
         "description",
+        "effective_timezone",
+        "effective_timezone_source",
         "enabled",
         "github_cursor",
         "github_filter",

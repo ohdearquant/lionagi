@@ -87,7 +87,11 @@ def inject_playbook_schema_into_parser(
             )
             continue
         type_str = field.get("type", "str")
-        help_text = field.get("help", "")
+        # A playbook that declares no help for its own argument still gets a line worth
+        # reading, rather than a blank column in `--help`.
+        help_text = field.get("help") or (
+            f"Playbook argument {arg_name!r} ({type_str}), declared by this playbook's args: block."
+        )
         if type_str == "bool":
             flow_parser.add_argument(
                 cli_flag,
@@ -540,13 +544,19 @@ def add_orchestrate_subparser(
         "--num-workers",
         type=int,
         default=3,
-        help="Maximum assignments generated (default: 3).",
+        help=(
+            "Maximum assignments the orchestrator generates (default 3). It may generate fewer "
+            "if the task does not divide that far, and --workers specs beyond this cap go unused."
+        ),
     )
     fo.add_argument(
         "--workers",
         metavar="M1,M2,...",
         default=None,
-        help="Worker model pool, assigned round-robin (each spec can include effort).",
+        help=(
+            "Comma-separated worker model specs, assigned round-robin (each may carry an effort "
+            "suffix). This is how one fanout mixes cheap and expensive models across workers."
+        ),
     )
     fo.add_argument(
         "--pack",
@@ -561,7 +571,10 @@ def add_orchestrate_subparser(
         "--max-concurrent",
         type=int,
         default=0,
-        help="Max concurrent workers (default: all).",
+        help=(
+            "Cap on workers running at the same time. 0, the default, runs them all at once — "
+            "lower it to stay under a provider's rate limit."
+        ),
     )
     fo.add_argument(
         "--with-synthesis",
@@ -569,24 +582,33 @@ def add_orchestrate_subparser(
         const=True,
         default=False,
         metavar="MODEL",
-        help="Enable synthesis. Bare flag uses orchestrator model; with arg uses that model.",
+        help=(
+            "Run a final pass merging the workers' results into one answer. Bare flag uses the "
+            "orchestrator model; with an argument, that model instead."
+        ),
     )
     fo.add_argument(
         "--synthesis-prompt",
         default=None,
-        help="Custom synthesis instruction.",
+        help=(
+            "What the merged answer should be — a ranked list, a decision, a single patch. "
+            "Implies synthesis."
+        ),
     )
     fo.add_argument(
         "--output",
         choices=("text", "json"),
         default="text",
-        help="Output format (default: text).",
+        help="Result format: 'text' (default) for reading, 'json' for a machine-readable run.",
     )
     fo.add_argument(
         "--save",
         metavar="DIR",
         default=None,
-        help="Save outputs to directory.",
+        help=(
+            "Directory to write each worker's output and the run's artifacts into. Without it "
+            "they land in the run's own artifacts directory."
+        ),
     )
 
     fo.add_argument(
@@ -663,25 +685,34 @@ def add_orchestrate_subparser(
         const=True,
         default=False,
         metavar="MODEL",
-        help="Enable final synthesis. Bare flag uses orchestrator model.",
+        help=(
+            "Run a final pass merging the DAG's results into one answer. Bare flag uses the "
+            "orchestrator model; with an argument, that model instead."
+        ),
     )
     fl.add_argument(
         "--max-concurrent",
         type=int,
         default=0,
-        help="Max concurrent agents within a phase (default: all).",
+        help=(
+            "Cap on agents running at the same time within one phase. 0, the default, runs the "
+            "whole phase at once — lower it to stay under a provider's rate limit."
+        ),
     )
     fl.add_argument(
         "--output",
         choices=("text", "json"),
         default="text",
-        help="Output format (default: text).",
+        help="Result format: 'text' (default) for reading, 'json' for a machine-readable run.",
     )
     fl.add_argument(
         "--save",
         metavar="DIR",
         default=None,
-        help="Save outputs to directory.",
+        help=(
+            "Directory to write each agent's output and the run's artifacts into. Required by "
+            "--background, which has nowhere else to report."
+        ),
     )
     fl.add_argument(
         "--team-mode",
@@ -824,9 +855,18 @@ def add_orchestrate_subparser(
             "/ `li play status` when the kind is known."
         ),
     )
-    ctl_status.add_argument("id", help="Session, invocation, or play ID (or short prefix).")
     ctl_status.add_argument(
-        "--json", action="store_true", dest="as_json", help="Emit a stable JSON object."
+        "id",
+        help=(
+            "Session, invocation or play id to report on — full, or an unambiguous prefix. "
+            "Required here: this command has no 'latest run' default."
+        ),
+    )
+    ctl_status.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="Print one JSON object with stable keys instead of the human table, for scripting.",
     )
 
     ctl_pause = ctl_sub.add_parser(
@@ -837,14 +877,26 @@ def add_orchestrate_subparser(
             "it at the next op boundary (idempotent — safe to queue more than once)."
         ),
     )
-    ctl_pause.add_argument("id", help="Session, invocation, or play ID (or short prefix).")
+    ctl_pause.add_argument(
+        "id",
+        help=(
+            "Running flow to pause, by session, invocation or play id (full, or an unambiguous "
+            "prefix). The pause lands at the next op boundary, not mid-op."
+        ),
+    )
 
     ctl_resume = ctl_sub.add_parser(
         "resume",
         help="Queue a resume for a paused flow.",
         description="Queues a resume control row, releasing a pending pause gate.",
     )
-    ctl_resume.add_argument("id", help="Session, invocation, or play ID (or short prefix).")
+    ctl_resume.add_argument(
+        "id",
+        help=(
+            "Paused flow to release, by session, invocation or play id (full, or an unambiguous "
+            "prefix)."
+        ),
+    )
 
     ctl_msg = ctl_sub.add_parser(
         "msg",
@@ -855,8 +907,20 @@ def add_orchestrate_subparser(
             "Op-mode injection (--as-op) is not supported by this command yet."
         ),
     )
-    ctl_msg.add_argument("id", help="Session, invocation, or play ID (or short prefix).")
-    ctl_msg.add_argument("text", help="Message text to inject into the flow context.")
+    ctl_msg.add_argument(
+        "id",
+        help=(
+            "Running flow to message, by session, invocation or play id (full, or an unambiguous "
+            "prefix)."
+        ),
+    )
+    ctl_msg.add_argument(
+        "text",
+        help=(
+            "Message merged into the flow's workspace context. Ops already started will not see "
+            "it; every op that has not started yet will."
+        ),
+    )
 
     return {"fanout": fo, "flow": fl, "ctl": ctl}
 

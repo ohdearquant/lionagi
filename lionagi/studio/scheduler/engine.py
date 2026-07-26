@@ -10,6 +10,7 @@ import logging
 import os
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -191,20 +192,63 @@ class _ThresholdCooldownClaim:
         self._engine._threshold_pending.discard(self._schedule_id)
 
 
-def _resolve_scheduler_tzinfo(tz_name: str) -> ZoneInfo:
-    """Resolve the configured scheduler timezone name to a ZoneInfo.
+@dataclass(frozen=True)
+class ScheduleTimezone:
+    """The zone one schedule's cron fields are interpreted in, plus its provenance.
 
-    Falls back to UTC (with a warning) if the configured name isn't a valid
-    IANA zone — an invalid config must never crash cron resolution.
+    ``name`` alone is not diagnostic. A UTC an operator asked for and a UTC
+    that is all the resolver could produce are the same three letters, and
+    only the second one means every cron row is firing on an hour nobody
+    chose. ``source`` is what tells them apart -- see the ``TZ_SOURCE_*``
+    vocabulary in ``lionagi.studio.config``.
     """
+
+    name: str
+    source: str
+    tzinfo: ZoneInfo
+
+
+def resolve_schedule_timezone(schedule: dict) -> ScheduleTimezone:
+    """Resolve the zone *schedule*'s cron expression is interpreted in.
+
+    A row that names its own zone (``resolved_timezone``, set by the
+    declarative apply path) is resolved in that zone; a row that names none
+    falls back to the process-wide configured default, whose own provenance
+    (``SCHEDULER_TZ_SOURCE``) is carried through unchanged rather than
+    flattened into "configured". Either requested name that this host cannot
+    load resolves to UTC with a warning -- an unloadable name must never
+    crash cron resolution -- and that UTC is reported under its own source so
+    it stays distinguishable from a UTC that was actually requested.
+
+    Resolution is a pure read: nothing here consults or is influenced by the
+    ``effective_timezone``/``effective_timezone_source`` columns that record
+    its outcome, so recording the outcome cannot change it.
+    """
+    from lionagi.studio.config import (
+        SCHEDULER_TZ,
+        SCHEDULER_TZ_SOURCE,
+        TZ_SOURCE_SCHEDULE_DECLARED,
+        TZ_SOURCE_UTC_UNLOADABLE_NAME,
+    )
+
+    declared = schedule.get("resolved_timezone")
+    if declared:
+        requested, source = declared, TZ_SOURCE_SCHEDULE_DECLARED
+    else:
+        requested, source = SCHEDULER_TZ, SCHEDULER_TZ_SOURCE
     try:
-        return ZoneInfo(tz_name)
+        return ScheduleTimezone(requested, source, ZoneInfo(requested))
     except (ZoneInfoNotFoundError, ValueError):
         _log.warning(
-            "Invalid scheduler timezone %r (LIONAGI_SCHEDULER_TZ); falling back to UTC.",
-            tz_name,
+            "Schedule %s: timezone %r (from %s) is not a zone this host can "
+            "load; interpreting its cron expression in UTC instead. Every "
+            "fire time this schedule computes is shifted by the offset of "
+            "the zone that was asked for.",
+            schedule.get("id"),
+            requested,
+            source,
         )
-        return ZoneInfo("UTC")
+        return ScheduleTimezone("UTC", TZ_SOURCE_UTC_UNLOADABLE_NAME, ZoneInfo("UTC"))
 
 
 class SchedulerCwdInheritRefusedError(RuntimeError):
@@ -446,9 +490,93 @@ class SchedulerEngine:
     async def start(self) -> None:
         _log.info("Scheduler engine starting")
         self._stopping = False
+        self._log_scheduler_timezone()
         await self._backfill_action_cwd()
+        await self._stamp_effective_timezones()
         await self._recompute_armed_cron_schedules()
         self._task = asyncio.create_task(self._tick_loop())
+
+    def _log_scheduler_timezone(self) -> None:
+        """Say the effective cron timezone out loud, once, at startup.
+
+        The zone is resolved at import and frozen for the life of the
+        process, so nothing later in a daemon's lifetime restates it. A
+        resolution that fell back to UTC moved every cron schedule in the
+        process by the host's offset, which is a fleet-wide change with no
+        other symptom than jobs running early, so it is logged at warning
+        level rather than left for whoever goes looking.
+        """
+        from lionagi.studio.config import TZ_UTC_FALLBACK_SOURCES, scheduler_timezone_report
+
+        report = scheduler_timezone_report()
+        if report["source"] in TZ_UTC_FALLBACK_SOURCES:
+            _log.warning(
+                "Scheduler cron timezone FELL BACK to %s (source=%s, from=%s) -- "
+                "this is not a configured zone, and every cron schedule without "
+                "its own declared timezone is being interpreted in it. Set "
+                "LIONAGI_SCHEDULER_TZ to an IANA zone name to choose one.",
+                report["name"],
+                report["source"],
+                report["source_detail"],
+            )
+        else:
+            _log.info(
+                "Scheduler cron timezone: %s (source=%s, from=%s). Cron "
+                "schedules without their own declared timezone are "
+                "interpreted in this zone.",
+                report["name"],
+                report["source"],
+                report["source_detail"],
+            )
+
+    async def _stamp_effective_timezones(self) -> None:
+        """Record, on every cron schedule row, the zone it is actually being
+        interpreted in and how that zone was arrived at.
+
+        The startup log line says this once for the process default; this
+        says it per row, which is what makes it answerable after the fact
+        and per schedule -- a row carrying its own declared zone and a row
+        riding the process default resolve differently, and only the row
+        knows which it is. Rows are also stamped as they arm and as they
+        fire; this pass exists so a daemon that resolves its zone
+        differently from the previous run corrects every row at startup
+        rather than only the ones that happen to fire afterwards.
+
+        Idempotent: a row whose stamp already matches is left untouched, so
+        re-running this on every startup writes nothing once the fleet has
+        converged.
+        """
+        try:
+            schedules = await self._svc.list_schedules()
+        except Exception:
+            _log.exception("Failed to load schedules for startup timezone stamping")
+            return
+        for s in schedules:
+            fields = self._effective_timezone_fields(s)
+            if not fields or all(s.get(key) == value for key, value in fields.items()):
+                continue
+            try:
+                await self._svc.update_schedule(s["id"], **fields)
+            except Exception:
+                _log.exception("Failed to stamp effective timezone for schedule %s", s.get("id"))
+
+    def _effective_timezone_fields(self, schedule: dict) -> dict[str, str]:
+        """The columns recording how *schedule*'s fire times were resolved.
+
+        Empty for any trigger that resolves no wall-clock fields (interval,
+        at, github_poll): those compute a fire time from an offset, so there
+        is no zone in play and stamping one would invent a fact. Purely an
+        output -- ``resolve_schedule_timezone()`` never reads these back, so
+        merging them into a write cannot change what the next resolution
+        produces.
+        """
+        if schedule.get("trigger_type") != "cron" or not schedule.get("cron_expr"):
+            return {}
+        resolution = resolve_schedule_timezone(schedule)
+        return {
+            "effective_timezone": resolution.name,
+            "effective_timezone_source": resolution.source,
+        }
 
     async def _backfill_action_cwd(self) -> None:
         """One-shot startup backfill: give pre-migration schedules a persisted execution root.
@@ -582,7 +710,9 @@ class SchedulerEngine:
             return None
         if old is not None and abs(new - old) < 1e-6:
             return new
-        await self._svc.update_schedule(schedule["id"], next_fire_at=new)
+        await self._svc.update_schedule(
+            schedule["id"], next_fire_at=new, **self._effective_timezone_fields(schedule)
+        )
         if old is not None:
             from lionagi.studio.config import SCHEDULER_TZ
 
@@ -995,7 +1125,11 @@ class SchedulerEngine:
                     elif nfa is None:
                         next_at = self._compute_next_fire(s, now)
                         if next_at:
-                            await self._svc.update_schedule(s["id"], next_fire_at=next_at)
+                            await self._svc.update_schedule(
+                                s["id"],
+                                next_fire_at=next_at,
+                                **self._effective_timezone_fields(s),
+                            )
             except Exception:
                 _log.exception("Error evaluating schedule %s", s.get("name"))
 
@@ -2004,6 +2138,7 @@ class SchedulerEngine:
                 failed_schedule_fields.update(
                     self._threshold_alert_update_fields(schedule, chain_depth, now)
                 )
+                failed_schedule_fields.update(self._effective_timezone_fields(schedule))
                 if extra_schedule_fields:
                     failed_schedule_fields.update(extra_schedule_fields)
                 # Occurrence-insert + cursor-advance atomic even on this
@@ -2122,6 +2257,7 @@ class SchedulerEngine:
             update_fields: dict[str, Any] = {"last_fired_at": now}
             update_fields.update(self._next_fire_field(schedule, next_at))
             update_fields.update(self._threshold_alert_update_fields(schedule, chain_depth, now))
+            update_fields.update(self._effective_timezone_fields(schedule))
             if extra_schedule_fields:
                 update_fields.update(extra_schedule_fields)
 
@@ -2464,8 +2600,6 @@ class SchedulerEngine:
             try:
                 from croniter import croniter
 
-                from lionagi.studio.config import SCHEDULER_TZ
-
                 # Resolve the cron expression's wall-clock fields in the
                 # schedule's own declared timezone when it has one (set by
                 # the declarative apply path); legacy rows with no
@@ -2473,9 +2607,9 @@ class SchedulerEngine:
                 # default. croniter honors DST transitions when given a
                 # tz-aware start_time; get_next(float) still returns an
                 # absolute UTC epoch, which is what next_fire_at stores.
-                tz_name = schedule.get("resolved_timezone") or SCHEDULER_TZ
-                tz = _resolve_scheduler_tzinfo(tz_name)
-                start = datetime.fromtimestamp(ref_time, tz=tz)
+                start = datetime.fromtimestamp(
+                    ref_time, tz=resolve_schedule_timezone(schedule).tzinfo
+                )
                 return croniter(expr, start_time=start).get_next(float)
             except Exception:
                 _log.exception("Invalid cron expression: %s", expr)

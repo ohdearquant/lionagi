@@ -86,13 +86,18 @@ async def _query_run_stats(
 
 
 async def _run_stats_runs(*, since: float, group_by: list[str]) -> list[dict[str, Any]]:
-    from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+    # readonly: a reporting command must never write to the DB it reports on,
+    # even implicitly via schema-reconcile. See docs/internals/cli.md.
+    from .machine import REASON_NOT_FOUND, readonly_state_db
 
-    if not DEFAULT_DB_PATH.exists():
-        return []
-    # readonly=True: a reporting command must never write to the DB it
-    # reports on, even implicitly via schema-reconcile. See docs/internals/cli.md.
-    async with StateDB(readonly=True) as db:
+    async with readonly_state_db() as (db, why):
+        if db is None:
+            if why["reason_code"] == REASON_NOT_FOUND:
+                return []
+            # The human surface has nowhere to put an availability wrapper, and
+            # an empty table is the one thing it must not print here: it reads
+            # as "no runs" for a store that was never opened.
+            raise RuntimeError(f"the run store could not be read: {why['detail']}")
         return await _query_run_stats(db, since=since, group_by=group_by)
 
 
@@ -210,3 +215,72 @@ def run_stats(args: argparse.Namespace) -> int:
     else:
         print(_format_stats_table(rows, group_by))
     return 0
+
+
+# ── machine result ────────────────────────────────────────────────────────────
+
+
+def _machine_rows(rows: list[dict[str, Any]], group_by: list[str]) -> list[dict[str, Any]]:
+    """One aggregate per group, timestamps left as the epoch seconds stored.
+
+    The group keys stay nullable and stay null: a row whose project column is
+    empty is a run that recorded no project, which is a different fact from a
+    run in a project literally named "(none)", and the table's placeholder for
+    it is a rendering choice that must not reach a machine caller.
+    """
+    return [
+        {
+            "group": {key: row.get(key) for key in group_by},
+            "run_count": row["run_count"],
+            "completed": row["completed"] or 0,
+            "failed": row["failed"] or 0,
+            "first_at": row["first_at"],
+            "last_at": row["last_at"],
+        }
+        for row in rows
+    ]
+
+
+async def _machine_stats_runs_data(*, since_window: str, group_by: list[str]) -> dict[str, Any]:
+    from .machine import available, readonly_state_db
+
+    since = _since_timestamp(since_window)
+    result: dict[str, Any] = {
+        "group_by": group_by,
+        "since": since_window,
+        "since_epoch": since,
+    }
+    async with readonly_state_db() as (db, why):
+        if db is None:
+            result["groups"] = why
+            return result
+        rows = await _query_run_stats(db, since=since, group_by=group_by)
+    result["groups"] = available(_machine_rows(rows, group_by))
+    return result
+
+
+def _machine_runs(argv: list[str]) -> dict[str, Any]:
+    from lionagi.ln.concurrency import run_async
+
+    from .machine import MachineError, machine_parser, parse_machine_argv
+
+    parser = machine_parser("li stats runs")
+    parser.add_argument("--since", default="7d", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--group-by", dest="group_by", default=_DEFAULT_GROUP_BY, help=argparse.SUPPRESS
+    )
+    args = parse_machine_argv(parser, argv)
+
+    try:
+        group_by = _validate_group_by(args.group_by)
+        _reject_non_positive_since(args.since)
+        return run_async(_machine_stats_runs_data(since_window=args.since, group_by=group_by))
+    except ValueError as exc:
+        raise MachineError("invalid_input", str(exc)) from exc
+
+
+def machine_result(argv: list[str]) -> dict[str, Any]:
+    """`li stats <sub> --machine`."""
+    from .machine import machine_subcommand
+
+    return machine_subcommand("stats", argv, {"runs": _machine_runs}, without_seam={})

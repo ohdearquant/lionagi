@@ -751,15 +751,20 @@ def _show_project_matches(show: dict[str, Any], project: str) -> bool:
     return derived == project
 
 
-async def _gather_table_rows(
+async def _gather_entities(
     db: Any,
     *,
     since: float | None,
     entity_type: str | None,
     project: str | None,
-) -> list[dict[str, Any]]:
-    """Collect entity rows across all tables and convert to table-row dicts."""
-    rows: list[dict[str, Any]] = []
+) -> list[tuple[str, dict[str, Any]]]:
+    """Every in-flight row the views draw from, each paired with its kind.
+
+    Selection lives here and rendering lives in the callers, so the table and
+    the machine result answer with the same set of entities rather than with two
+    independently maintained ideas of what is running.
+    """
+    rows: list[tuple[str, dict[str, Any]]] = []
 
     sessions: list[dict[str, Any]] = []
     if entity_type in (None, "session", "agent", "play_session", "play"):
@@ -778,21 +783,41 @@ async def _gather_table_rows(
         play_session_ids = {p["session_id"] for p in plays if p.get("session_id")}
         sessions = [s for s in sessions if s["id"] not in play_session_ids]
 
-    rows.extend(_session_to_row(s) for s in sessions)
+    rows.extend(("session", s) for s in sessions)
 
     if entity_type in (None, "invocation"):
         invocations = await _query_running_invocations(db, since=since)
-        rows.extend(_invocation_to_row(i) for i in invocations)
+        rows.extend(("invocation", i) for i in invocations)
 
     if entity_type in (None, "show"):
         shows = await _query_active_shows(db, since=since)
         if project:
             shows = [s for s in shows if _show_project_matches(s, project)]
-        rows.extend(_show_to_row(s) for s in shows)
+        rows.extend(("show", s) for s in shows)
 
-    rows.extend(_play_to_row(p) for p in plays)
+    rows.extend(("play", p) for p in plays)
 
     return rows
+
+
+_ROW_BUILDERS = {
+    "session": _session_to_row,
+    "invocation": _invocation_to_row,
+    "show": _show_to_row,
+    "play": _play_to_row,
+}
+
+
+async def _gather_table_rows(
+    db: Any,
+    *,
+    since: float | None,
+    entity_type: str | None,
+    project: str | None,
+) -> list[dict[str, Any]]:
+    """Collect entity rows across all tables and convert to table-row dicts."""
+    entities = await _gather_entities(db, since=since, entity_type=entity_type, project=project)
+    return [_ROW_BUILDERS[kind](row) for kind, row in entities]
 
 
 # ── Async main routines ───────────────────────────────────────────────────────
@@ -805,9 +830,9 @@ async def _run_table(
     project: str | None,
 ) -> str:
     try:
-        from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+        from lionagi.state.db import StateDB, state_db_known_absent
 
-        if not DEFAULT_DB_PATH.exists():
+        if state_db_known_absent():
             return _dim("(no state.db — run `li agent` at least once)")
         async with StateDB() as db:
             rows = await _gather_table_rows(
@@ -820,9 +845,9 @@ async def _run_table(
 
 async def _run_detail(entity_id: str) -> str:
     try:
-        from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+        from lionagi.state.db import StateDB, state_db_known_absent
 
-        if not DEFAULT_DB_PATH.exists():
+        if state_db_known_absent():
             return _red(f"state.db not found — cannot look up {entity_id!r}")
         async with StateDB() as db:
             result = await _find_entity(db, entity_id)
@@ -1310,12 +1335,12 @@ def _dispatch_wait(
     """Block until every id in `ids` reaches a terminal schedule_run status;
     see docs/internals/cli.md for chain-following and max_wait semantics."""
     from lionagi.ln.concurrency import run_async
-    from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+    from lionagi.state.db import StateDB, state_db_known_absent
 
     from ._logging import log_error
     from .status import EXIT_RUNNING, EXIT_UNKNOWN
 
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         log_error("state.db not found — no schedule runs recorded yet")
         return EXIT_UNKNOWN
 
@@ -1451,19 +1476,25 @@ def run_monitor_wait(argv: list[str]) -> int:
     parser.add_argument(
         "ids",
         nargs="+",
-        help="schedule_run ID(s) (or short prefixes) to wait for. Comma- or space-separated.",
+        help=(
+            "schedule_run ids to wait for, full or by unique prefix, comma- or space-separated. "
+            "An id matching nothing is reported as unresolved rather than holding up the wait."
+        ),
     )
     parser.add_argument(
         "--interval",
         type=float,
         default=3.0,
         metavar="SECS",
-        help="Poll interval in seconds (default 3).",
+        help="Seconds between state.db polls while waiting (default 3). Must be positive.",
     )
     parser.add_argument(
         "--follow",
         action="store_true",
-        help="Keep watching for new schedule_runs after the initial set drains.",
+        help=(
+            "Keep discovering schedule_runs created after the initial set drains, instead of "
+            "exiting once it is empty. Never ends on its own — pair it with --max-wait."
+        ),
     )
     parser.add_argument(
         "--no-chain",
@@ -1522,20 +1553,26 @@ def add_monitor_subparser(subparsers: argparse._SubParsersAction) -> None:
         "id",
         nargs="?",
         default=None,
-        help="Entity ID (or prefix) to show detail view for. Omit for table view.",
+        help=(
+            "Run, session, play or show to open in the detail view — full id, or an unambiguous "
+            "prefix. Omit it for the table of everything in flight."
+        ),
     )
     mon.add_argument(
         "--watch",
         "-w",
         action="store_true",
-        help="Live-refresh the view every REFRESH seconds (default 2).",
+        help=(
+            "Redraw the view every --refresh seconds until interrupted, instead of printing one "
+            "snapshot and exiting."
+        ),
     )
     mon.add_argument(
         "--refresh",
         type=int,
         default=2,
         metavar="SECS",
-        help="Refresh interval for --watch mode (default 2).",
+        help="Seconds between redraws under --watch (default 2). Ignored without it.",
     )
     mon.add_argument(
         "--since",
@@ -1552,13 +1589,16 @@ def add_monitor_subparser(subparsers: argparse._SubParsersAction) -> None:
         dest="entity_type",
         default=None,
         choices=["session", "invocation", "show", "play"],
-        help="Filter table to a single entity type.",
+        help="Narrow the table to one kind of entity: session, invocation, show or play.",
     )
     mon.add_argument(
         "--project",
         "-p",
         default=None,
-        help="Filter sessions and plays by project name.",
+        help=(
+            "Filter sessions and plays to one project name, matched exactly — the same name the "
+            "table's project column shows."
+        ),
     )
     mon.add_argument(
         "--run",
@@ -1578,12 +1618,18 @@ def add_monitor_subparser(subparsers: argparse._SubParsersAction) -> None:
         type=float,
         default=3.0,
         metavar="SECS",
-        help="Poll interval in seconds for --run mode (default 3). Independent of --refresh.",
+        help=(
+            "Seconds between state.db polls in --run mode (default 3). Independent of --refresh, "
+            "which paces the table redraw."
+        ),
     )
     mon.add_argument(
         "--follow",
         action="store_true",
-        help="With --run: keep watching for new schedule_runs after the initial set drains.",
+        help=(
+            "With --run: keep discovering schedule_runs created after the initial set drains, "
+            "instead of exiting once it is empty. Never ends on its own — pair with --max-wait."
+        ),
     )
     mon.add_argument(
         "--no-chain",
@@ -1667,3 +1713,94 @@ def run_monitor(args: argparse.Namespace) -> int:
 
     print(output)
     return 0
+
+
+# ── machine result ────────────────────────────────────────────────────────────
+
+# Every entity carries these; a caller reads `kind` and knows which of the
+# per-kind blocks below it also has. Timestamps are epoch seconds exactly as the
+# store holds them — an elapsed string would be this module's arithmetic against
+# a clock the caller cannot see, and `observed_at` lets the caller do that sum
+# itself against a moment it was told.
+_ENTITY_CORE = ("id", "status", "started_at", "ended_at", "updated_at")
+
+_ENTITY_EXTRA: dict[str, tuple[str, ...]] = {
+    "session": (
+        "project",
+        "invocation_kind",
+        "agent_name",
+        "playbook_name",
+        "current_phase",
+        "branch_count",
+    ),
+    "invocation": ("skill", "plugin"),
+    "show": ("repo", "topic"),
+    "play": ("name", "session_id", "show_id", "session_project", "branch_count"),
+}
+
+
+def _machine_entity(kind: str, row: dict[str, Any]) -> dict[str, Any]:
+    entity: dict[str, Any] = {"kind": kind}
+    for field in (*_ENTITY_CORE, *_ENTITY_EXTRA[kind]):
+        entity[field] = row.get(field)
+    return entity
+
+
+async def _machine_monitor_data(
+    *, since_window: str | None, entity_type: str | None, project: str | None
+) -> dict[str, Any]:
+    from .machine import available as _available
+    from .machine import readonly_state_db
+
+    since = _since_timestamp(since_window) if since_window else None
+    filters = {
+        "since": since_window,
+        "since_epoch": since,
+        "type": entity_type,
+        "project": project,
+    }
+    async with readonly_state_db() as (db, why):
+        if db is None:
+            return {
+                "entities": why,
+                "filters": filters,
+                "observed_at": time.time(),
+            }
+        entities = await _gather_entities(db, since=since, entity_type=entity_type, project=project)
+    return {
+        "entities": _available([_machine_entity(kind, row) for kind, row in entities]),
+        "filters": filters,
+        "observed_at": time.time(),
+    }
+
+
+def machine_result(argv: list[str]) -> dict[str, Any]:
+    """`li monitor --machine` — the in-flight table, one entity per entry.
+
+    The detail view is not reachable here: it answers about one entity with a
+    different shape entirely, and a payload whose fields depend on whether an id
+    was passed is one a caller cannot branch on. It stays a separate decision.
+    """
+    from lionagi.ln.concurrency import run_async
+
+    from .machine import MachineError, machine_parser, parse_machine_argv
+
+    parser = machine_parser("li monitor")
+    parser.add_argument("--since", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--type", dest="entity_type", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--project", "-p", default=None, help=argparse.SUPPRESS)
+    args = parse_machine_argv(parser, argv)
+
+    if args.entity_type is not None and args.entity_type not in _ENTITY_EXTRA:
+        raise MachineError(
+            "invalid_input",
+            f"--type must be one of {', '.join(sorted(_ENTITY_EXTRA))}; got {args.entity_type!r}",
+        )
+    try:
+        return run_async(
+            _machine_monitor_data(
+                since_window=args.since, entity_type=args.entity_type, project=args.project
+            )
+        )
+    except ValueError as exc:
+        raise MachineError("invalid_input", str(exc)) from exc
