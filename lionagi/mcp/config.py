@@ -49,9 +49,15 @@ def li_command() -> list[str]:
     if override:
         return override.split()
 
-    bin_li = Path(sys.executable).resolve().parent / "li"
-    if bin_li.exists():
-        return [str(bin_li)]
+    # A venv's bin/python is a symlink to the base interpreter, so resolving it
+    # before looking for the sibling script searches the base installation's
+    # bin and misses the `li` the venv itself installed. Try the interpreter's
+    # own directory first, and the resolved one only as a fallback.
+    interpreter = Path(sys.executable)
+    for bindir in (interpreter.parent, interpreter.resolve().parent):
+        bin_li = bindir / "li"
+        if bin_li.exists():
+            return [str(bin_li)]
 
     return [sys.executable, "-m", "lionagi.cli"]
 
