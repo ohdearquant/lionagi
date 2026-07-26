@@ -68,6 +68,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/admin/doctor"),
     ("GET", "/api/admin/events"),
     ("GET", "/api/admin/health"),
+    ("GET", "/api/admin/readiness"),
     ("GET", "/api/agents/"),
     ("GET", "/api/agents/{name}"),
     ("GET", "/api/approvals/evidence/verify"),
@@ -235,7 +236,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 99
+    assert len(_GOLDEN_ROUTES) == 100
 
 
 def _compiled_match_shape(path_template: str) -> str:
@@ -577,7 +578,14 @@ def test_sessions_list_response_shape(tmp_path, monkeypatch):
 
     r = client.get("/api/sessions/")
     assert r.status_code == 200
-    assert sorted(r.json().keys()) == ["sessions"]
+    # The listing is bounded, so it also reports what it left out.
+    assert sorted(r.json().keys()) == [
+        "limit",
+        "offset",
+        "sessions",
+        "total",
+        "truncated",
+    ]
 
 
 def test_sessions_detail_response_shape(tmp_path, monkeypatch):

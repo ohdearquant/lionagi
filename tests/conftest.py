@@ -21,6 +21,41 @@ def pytest_collection_modifyitems(items):
     apply_quarantine_markers(items, _QUARANTINE, pytest.mark.flaky_quarantine)
 
 
+@pytest.fixture(autouse=True)
+def _keep_the_interpreter_default_sigpipe():
+    """Stop one test's signal policy from following every later test.
+
+    The CLI sets ``SIGPIPE`` to ``SIG_DFL`` on entry, which is right for a
+    command in a pipeline: ``li ... | head`` should die quietly when head
+    leaves rather than spew a traceback. But ``signal.signal`` is
+    process-wide and permanent, and a test that drives the CLI in-process
+    hands that disposition to every test that runs after it in the same
+    worker.
+
+    Python's own default is ``SIG_IGN``, which turns a write to a broken pipe
+    into an ``OSError`` that the writer can catch. Several things running
+    under test rely on that, asyncio among them: closing an event loop
+    closes the read end of its self-pipe before the write end, so a thread
+    handing back a result in that window writes to a pipe whose peer is
+    already gone. Asyncio expects the ``OSError`` and swallows it. Under
+    ``SIG_DFL`` the kernel delivers the signal first and the process is gone
+    instead, taking its buffered output with it -- no traceback, no failing
+    assertion, just a worker that stopped, blamed on whichever test it
+    happened to be holding.
+
+    Restoring the disposition after each test costs nothing and keeps that
+    failure inside the test that actually changes the policy.
+    """
+    import signal
+
+    previous = signal.getsignal(signal.SIGPIPE)
+    try:
+        yield
+    finally:
+        if signal.getsignal(signal.SIGPIPE) is not previous:
+            signal.signal(signal.SIGPIPE, previous)
+
+
 # Hypothesis: coverage instrumentation (5-10x slowdown) makes the default
 # 200ms deadline trip on async property tests. Register a "ci" profile with
 # no deadline and load it whenever coverage is active or CI=true.
