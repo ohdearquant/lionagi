@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
 from lionagi.service.providers import EFFORT_LEVELS as _VALID_EFFORT_LEVELS
-from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+from lionagi.state.db import StateDB, state_db_known_absent
 
 from ..registry import studio_route
 from . import run_view
@@ -442,7 +442,7 @@ async def list_schedules(
     trigger_type: str | None = None,
     project: str | None = None,
 ) -> list[dict[str, Any]]:
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return []
     async with StateDB() as db:
         rows = await db.list_schedules(enabled=enabled, trigger_type=trigger_type, project=project)
@@ -459,7 +459,7 @@ async def list_schedules(
 
 
 async def get_schedule(schedule_id: str) -> dict[str, Any] | None:
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return None
     async with StateDB() as db:
         row = await db.get_schedule(schedule_id)
@@ -477,7 +477,7 @@ async def get_schedule(schedule_id: str) -> dict[str, Any] | None:
 
 
 async def get_schedule_by_name(name: str) -> dict[str, Any] | None:
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return None
     async with StateDB() as db:
         return await db.get_schedule_by_name(name)
@@ -707,7 +707,7 @@ async def list_schedule_runs(
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return []
     async with StateDB() as db:
         return await db.list_schedule_runs(schedule_id, status=status, limit=limit, offset=offset)
@@ -721,7 +721,7 @@ async def list_schedule_run_views(
     offset: int = 0,
 ) -> list[dict[str, Any]]:
     """RunView list — each row additionally carries a reconciled ``outcome``."""
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return []
     async with StateDB() as db:
         return await run_view.list_run_views(
@@ -730,7 +730,7 @@ async def list_schedule_run_views(
 
 
 async def get_schedule_run(run_id: str) -> dict[str, Any] | None:
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return None
     async with StateDB() as db:
         run = await db.get_schedule_run(run_id)
@@ -754,7 +754,7 @@ async def get_schedule_run(run_id: str) -> dict[str, Any] | None:
 
 async def get_schedule_status(schedule_id: str) -> dict[str, Any] | None:
     """'Did it work?' view: schedule header + latest RunView + shared exit code."""
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return None
     async with StateDB() as db:
         return await run_view.get_schedule_status_view(db, schedule_id)

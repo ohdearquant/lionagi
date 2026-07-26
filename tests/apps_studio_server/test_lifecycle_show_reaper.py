@@ -11,6 +11,7 @@ import time
 import uuid
 from pathlib import Path
 
+import lionagi.state.db as state_db_mod
 from lionagi.state.db import StateDB
 
 from ._helpers import run_async
@@ -20,14 +21,13 @@ from ._helpers import run_async
 
 def _monkey_db(monkeypatch, db_path: Path) -> None:
     """Point all relevant modules at a temp DB path."""
-    import lionagi.state.db as state_db_mod
     import lionagi.studio.services.admin as admin_mod
     import lionagi.studio.services.lifecycle as lifecycle_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(admin_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(admin_mod, "_DB", str(db_path))
-    monkeypatch.setattr(lifecycle_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
 
 async def _seed_show(
@@ -359,8 +359,6 @@ def test_reap_stale_shows_version_guard_skips_claimed_row(tmp_path, monkeypatch)
     _monkey_db(monkeypatch, db_path)
 
     show_id = run_async(_seed_show(db_path, show_dir, updated_at=_STALE))
-
-    import lionagi.state.db as state_db_mod
 
     original_update_status = state_db_mod.StateDB.update_status
     claimed = {"done": False}

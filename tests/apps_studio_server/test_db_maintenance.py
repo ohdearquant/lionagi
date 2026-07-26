@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import lionagi.state.db as state_db_mod
 from lionagi.state.db import StateDB
 
 from ._helpers import run_async
@@ -61,11 +62,10 @@ async def _make_schedule_run(db: StateDB, *, status: str, fired_at: float) -> st
 
 
 def _patch_db(monkeypatch, db_path: Path) -> None:
-    import lionagi.state.db as state_db_mod
     from lionagi.studio.services import db_maintenance as maint
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(maint, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
 
 # ── checkpoint tests ──────────────────────────────────────────────────────────
@@ -77,7 +77,6 @@ def test_checkpoint_writes_admin_event(tmp_path, monkeypatch):
 
     db_path = tmp_path / "state.db"
     _patch_db(monkeypatch, db_path)
-    import lionagi.state.db as state_db_mod
 
     fixed_now = 1_000_000.0
     monkeypatch.setattr(state_db_mod, "time", SimpleNamespace(time=lambda: fixed_now))
@@ -137,7 +136,6 @@ def test_stats_endpoint_exposes_checkpoint_and_size_fields(tmp_path, monkeypatch
     pytest.importorskip("fastapi", reason="studio extra not installed")
     from fastapi.testclient import TestClient
 
-    import lionagi.state.db as state_db_mod
     import lionagi.studio.services.sessions as sessions_mod
     import lionagi.studio.services.stats as stats_mod
     from lionagi.studio.services import db_maintenance as maint
@@ -148,7 +146,7 @@ def test_stats_endpoint_exposes_checkpoint_and_size_fields(tmp_path, monkeypatch
     monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
     monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(stats_mod, "_DB", str(db_path))
-    monkeypatch.setattr(maint, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     run_async(_make_session_in(db_path, status="running", started_at=time.time()))
     run_async(maint.checkpoint_state_db(actor="test"))
@@ -603,7 +601,6 @@ def test_prune_old_data_endpoint(tmp_path, monkeypatch):
     pytest.importorskip("fastapi", reason="studio extra not installed")
     from fastapi.testclient import TestClient
 
-    import lionagi.state.db as state_db_mod
     import lionagi.studio.services.sessions as sessions_mod
     import lionagi.studio.services.stats as stats_mod
     from lionagi.studio.services import db_maintenance as maint
@@ -614,7 +611,7 @@ def test_prune_old_data_endpoint(tmp_path, monkeypatch):
     monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
     monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(stats_mod, "_DB", str(db_path))
-    monkeypatch.setattr(maint, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     run_async(_make_session_in(db_path, status="completed", started_at=time.time() - 40 * 86400))
 

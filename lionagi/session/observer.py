@@ -332,11 +332,11 @@ class SessionObserver(Observer):
                     )
                 else:
                     # Fallback: open a fresh connection (standalone / test use).
-                    from lionagi.state.db import DEFAULT_DB_PATH, StateDB  # noqa: PLC0415
+                    from lionagi.state.db import StateDB, state_db_known_absent  # noqa: PLC0415
 
-                    if not DEFAULT_DB_PATH.exists():
+                    if state_db_known_absent():
                         return
-                    async with StateDB(DEFAULT_DB_PATH) as _db:
+                    async with StateDB() as _db:
                         await _db.insert_session_signal(
                             session_id=session_id,
                             kind=kind,

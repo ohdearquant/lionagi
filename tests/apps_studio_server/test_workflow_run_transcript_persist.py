@@ -26,6 +26,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+import lionagi.state.db as state_db_mod
+
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 pytest.importorskip("fastapi", reason="studio extra not installed")
 
@@ -126,8 +128,8 @@ def patched_env(tmp_path: Path, monkeypatch):
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(wf_svc, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(engine_defs_svc, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(sessions_svc, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(sessions_svc, "_DB", str(db_path))
 

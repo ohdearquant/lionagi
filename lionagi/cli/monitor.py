@@ -830,9 +830,9 @@ async def _run_table(
     project: str | None,
 ) -> str:
     try:
-        from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+        from lionagi.state.db import StateDB, state_db_known_absent
 
-        if not DEFAULT_DB_PATH.exists():
+        if state_db_known_absent():
             return _dim("(no state.db — run `li agent` at least once)")
         async with StateDB() as db:
             rows = await _gather_table_rows(
@@ -845,9 +845,9 @@ async def _run_table(
 
 async def _run_detail(entity_id: str) -> str:
     try:
-        from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+        from lionagi.state.db import StateDB, state_db_known_absent
 
-        if not DEFAULT_DB_PATH.exists():
+        if state_db_known_absent():
             return _red(f"state.db not found — cannot look up {entity_id!r}")
         async with StateDB() as db:
             result = await _find_entity(db, entity_id)
@@ -1335,12 +1335,12 @@ def _dispatch_wait(
     """Block until every id in `ids` reaches a terminal schedule_run status;
     see docs/internals/cli.md for chain-following and max_wait semantics."""
     from lionagi.ln.concurrency import run_async
-    from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+    from lionagi.state.db import StateDB, state_db_known_absent
 
     from ._logging import log_error
     from .status import EXIT_RUNNING, EXIT_UNKNOWN
 
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         log_error("state.db not found — no schedule runs recorded yet")
         return EXIT_UNKNOWN
 

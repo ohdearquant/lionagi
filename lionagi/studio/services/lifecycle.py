@@ -9,7 +9,7 @@ import os
 import time
 from pathlib import Path
 
-from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+from lionagi.state.db import StateDB, state_db_known_absent
 from lionagi.state.reasons import RunReasons, SessionReasons, ShowReasons
 
 from . import admin as admin_svc
@@ -73,7 +73,7 @@ async def reap_stale_invocations(
     if zero_session_grace_seconds is None:
         zero_session_grace_seconds = ZERO_SESSION_GRACE_SECONDS
 
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return 0
 
     now = time.time()
@@ -181,7 +181,7 @@ async def reap_null_status_sessions(*, stale_hours: float | None = None) -> int:
         stale_hours = PHANTOM_STALE_HOURS
     stale_seconds = stale_hours * 3600
 
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return 0
 
     now = time.time()
@@ -260,7 +260,7 @@ async def reap_phantom_sessions(
     if stale_hours is None:
         stale_hours = PHANTOM_STALE_HOURS
 
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return 0
 
     phantoms = await admin_svc.list_phantom_sessions(stale_hours=stale_hours)
@@ -353,7 +353,7 @@ async def reap_stale_plays(*, stale_hours: float | None = None) -> int:
         stale_hours = PLAY_STALE_HOURS
     stale_seconds = stale_hours * 3600
 
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return 0
 
     now = time.time()
@@ -500,7 +500,7 @@ async def reap_stale_schedule_runs(*, stale_hours: float | None = None) -> int:
         stale_hours = SCHEDULE_RUN_STALE_HOURS
     stale_seconds = stale_hours * 3600
 
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return 0
 
     now = time.time()
@@ -629,7 +629,7 @@ async def reap_stale_shows(*, stale_hours: float | None = None) -> int:
         stale_hours = SHOW_STALE_HOURS
     stale_seconds = stale_hours * 3600
 
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return 0
 
     now = time.time()

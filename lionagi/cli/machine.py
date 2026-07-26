@@ -295,9 +295,12 @@ async def readonly_state_db() -> AsyncIterator[tuple[Any | None, dict[str, Any] 
     raised. The guard covers the open alone — the caller's own body runs outside
     it, and a bug in a reader still surfaces as the crash it is.
     """
-    from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+    from lionagi.state.db import StateDB, state_db_known_absent
 
-    if not DEFAULT_DB_PATH.exists():
+    # Asked of the configured store, not of the default path: the open below
+    # honours LIONAGI_STATE_DB_URL, so a guard that consulted the file would
+    # report "nothing recorded" for a store that is full of rows.
+    if state_db_known_absent():
         yield None, state_db_absent()
         return
     async with AsyncExitStack() as stack:
@@ -310,17 +313,22 @@ async def readonly_state_db() -> AsyncIterator[tuple[Any | None, dict[str, Any] 
             # claims the store is open, which is what the claim has to mean.
             await db.fetch_all("SELECT 1")
         except Exception as exc:  # noqa: BLE001 — an unopenable store is an answer, not a crash
-            yield None, unavailable(REASON_UNREADABLE, f"{DEFAULT_DB_PATH}: {type(exc).__name__}")
+            yield None, unavailable(REASON_UNREADABLE, f"{StateDB().url}: {type(exc).__name__}")
             return
         yield db, None
 
 
 def state_db_absent() -> dict[str, Any]:
-    """The unavailability every store-backed reader reports when there is no store."""
-    from lionagi.state.db import DEFAULT_DB_PATH
+    """The unavailability every store-backed reader reports when there is no store.
+
+    Names the store that was actually consulted. Naming the default path while a
+    URL is configured sends the reader to a file that is not the one their
+    command would have read.
+    """
+    from lionagi.state.db import StateDB
 
     return unavailable(
-        REASON_NOT_FOUND, f"{DEFAULT_DB_PATH} does not exist; nothing has been recorded yet"
+        REASON_NOT_FOUND, f"{StateDB().url} does not exist; nothing has been recorded yet"
     )
 
 

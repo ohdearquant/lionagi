@@ -20,7 +20,7 @@ from sqlalchemy.exc import OperationalError as _SAOperationalError
 from lionagi.cli._util import pid_alive as _pid_is_live
 from lionagi.ln import now_utc
 from lionagi.state.db import ADMIN_TRANSITION_TARGETS as _ADMIN_TRANSITION_TARGETS
-from lionagi.state.db import DEFAULT_DB_PATH
+from lionagi.state.db import DEFAULT_DB_PATH, state_db_known_absent
 from lionagi.state.reasons import RunReasons, SessionReasons, validate_reason_code
 
 from ..registry import studio_route
@@ -547,7 +547,7 @@ async def transition_sessions(
     evidence_refs = list(evidence_refs or [])
     if not session_ids:
         return {"transitioned": [], "skipped": [], "event_id": None}
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return {"transitioned": [], "skipped": session_ids, "event_id": None}
 
     from lionagi.state.db import StateDB
@@ -726,7 +726,7 @@ async def list_admin_events(
     target_id: str | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return []
     from lionagi.state.db import StateDB
 

@@ -13,7 +13,7 @@ from fastapi import HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
-from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+from lionagi.state.db import StateDB, state_db_known_absent
 
 from ..registry import studio_route
 
@@ -139,14 +139,14 @@ def _validate_name(name: str) -> None:
 
 
 async def list_workflow_defs(*, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return []
     async with StateDB() as db:
         return await db.list_workflow_defs(limit=limit, offset=offset)
 
 
 async def get_workflow_def(def_id: str) -> dict[str, Any] | None:
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return None
     async with StateDB() as db:
         return await db.get_workflow_def(def_id)

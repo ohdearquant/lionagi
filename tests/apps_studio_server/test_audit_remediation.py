@@ -13,6 +13,8 @@ import pytest
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
+import lionagi.state.db as state_db_mod
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -760,13 +762,12 @@ def _real_svc_client(monkeypatch, tmp_path: Path) -> TestClient:
     """Return a TestClient backed by the real service layer + temp DB."""
     from fastapi.testclient import TestClient
 
-    import lionagi.state.db as state_db_mod
     import lionagi.studio.services.schedules as sched_svc_mod
     from lionagi.studio.app import app
 
     db_file = tmp_path / "test_state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_file)
-    monkeypatch.setattr(sched_svc_mod, "DEFAULT_DB_PATH", db_file)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_file)
     return TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
 
 
@@ -1189,12 +1190,11 @@ class TestGithubRepoRealServiceValidation:
 
         # 1. Build the temp DB and wire the app to it.
         db_file = tmp_path / "test_state.db"
-        import lionagi.state.db as state_db_mod
         import lionagi.studio.services.schedules as sched_svc_mod
         from lionagi.studio.app import app
 
         monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_file)
-        monkeypatch.setattr(sched_svc_mod, "DEFAULT_DB_PATH", db_file)
+        monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_file)
 
         # 2. Use the real service to create the schema (create a throw-away schedule).
         from fastapi.testclient import TestClient

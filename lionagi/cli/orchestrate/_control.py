@@ -53,9 +53,9 @@ async def _resolve_session(db: Any, entity_id: str) -> dict[str, Any] | None:
 async def _enqueue_control_inner(
     *, entity_id: str, verb: str, payload: dict[str, Any] | None
 ) -> tuple[str, int]:
-    from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+    from lionagi.state.db import StateDB, state_db_known_absent
 
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return "state.db not found — no runs recorded yet", EXIT_UNKNOWN
 
     async with StateDB() as db:

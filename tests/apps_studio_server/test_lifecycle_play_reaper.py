@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import lionagi.state.db as state_db_mod
 from lionagi.state.db import StateDB
 
 from ._helpers import run_async
@@ -19,14 +20,13 @@ from ._helpers import run_async
 
 def _monkey_db(monkeypatch, db_path: Path) -> None:
     """Point all relevant modules at a temp DB path."""
-    import lionagi.state.db as state_db_mod
     import lionagi.studio.services.admin as admin_mod
     import lionagi.studio.services.lifecycle as lifecycle_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(admin_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(admin_mod, "_DB", str(db_path))
-    monkeypatch.setattr(lifecycle_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
 
 async def _seed_show(db_path: Path, *, show_id: str | None = None, status: str = "active") -> str:
@@ -318,8 +318,6 @@ def test_reap_stale_plays_cas_guard_skips_concurrently_transitioned_row(tmp_path
         _seed_play(db_path, show_id, status="running", session_id=None, updated_at=_STALE)
     )
 
-    import lionagi.state.db as state_db_mod
-
     original_update_status = state_db_mod.StateDB.update_status
     flipped = {"done": False}
 
@@ -353,8 +351,6 @@ def test_reap_stale_plays_skips_row_claimed_between_scan_and_write(tmp_path, mon
     play_id = run_async(
         _seed_play(db_path, show_id, status="prepared", session_id=None, updated_at=_STALE)
     )
-
-    import lionagi.state.db as state_db_mod
 
     original_fetch_one = state_db_mod.StateDB.fetch_one
     claimed = {"done": False}
@@ -396,8 +392,6 @@ def test_reap_stale_plays_version_guard_skips_claim_after_revalidation(tmp_path,
     play_id = run_async(
         _seed_play(db_path, show_id, status="running", session_id=None, updated_at=_STALE)
     )
-
-    import lionagi.state.db as state_db_mod
 
     original_update_status = state_db_mod.StateDB.update_status
     claimed = {"done": False}
