@@ -129,9 +129,13 @@ def _profile_summary(profile: AgentProfile) -> str:
 def _role_blurb(role: str, default_model: str) -> str:
     """Roster line body: what the role is for, and what it will run on.
 
-    A built-in role's description is written as selection guidance, so it is
-    preferred over the profile body even when both exist; the profile still
-    contributes the model.
+    The description has to match the body that will actually run, or the
+    roster describes one thing while the worker does another. A profile that
+    defines its own system prompt replaces the built-in role body entirely, so
+    for those the profile's summary is the accurate description. A profile that
+    only sets a model or effort leaves the built-in body in place and has no
+    summary of its own to offer, so those fall through to the built-in
+    description on their own.
     """
     try:
         profile = load_agent_profile(role)
@@ -140,12 +144,12 @@ def _role_blurb(role: str, default_model: str) -> str:
 
     from lionagi.casts.pattern import Role
 
-    try:
-        summary = _first_sentence(Role.load(role).description)
-    except ValueError:
-        summary = ""
-    if not summary and profile is not None:
-        summary = _first_sentence(_profile_summary(profile))
+    summary = _first_sentence(_profile_summary(profile)) if profile is not None else ""
+    if not summary:
+        try:
+            summary = _first_sentence(Role.load(role).description)
+        except ValueError:
+            summary = ""
 
     if profile is None:
         return summary

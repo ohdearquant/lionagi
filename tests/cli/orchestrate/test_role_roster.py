@@ -27,14 +27,30 @@ def stub_profiles(monkeypatch):
 
 
 class TestRoleBlurb:
-    def test_builtin_with_profile_keeps_description_and_names_model(self, stub_profiles):
+    def test_profile_body_describes_the_role_it_replaces(self, stub_profiles):
+        """A profile that defines a body replaces the built-in role body, so the
+        roster must describe the profile rather than the role it shadowed."""
         from lionagi.casts.pattern import Role
 
         stub_profiles["critic"] = AgentProfile(
             name="critic",
             raw_body="# Critic\n\n**Mission**: gate the release.",
+            system_prompt="# Critic\n\n**Mission**: gate the release.",
             model="codex/gpt-5",
         )
+        blurb = orch._role_blurb("critic", "openai/gpt-4.1-mini")
+
+        assert "gate the release" in blurb
+        assert "(model: codex/gpt-5)" in blurb
+        opening = Role.load("critic").description.split(". ", 1)[0]
+        assert opening[:60] not in blurb
+
+    def test_profile_that_only_sets_a_model_keeps_the_builtin_description(self, stub_profiles):
+        """Such a profile leaves the built-in body composing, so the built-in
+        description is the accurate one; the profile still names the model."""
+        from lionagi.casts.pattern import Role
+
+        stub_profiles["critic"] = AgentProfile(name="critic", model="codex/gpt-5")
         blurb = orch._role_blurb("critic", "openai/gpt-4.1-mini")
 
         opening = Role.load("critic").description.split(". ", 1)[0]
