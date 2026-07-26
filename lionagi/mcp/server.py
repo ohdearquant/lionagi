@@ -65,7 +65,9 @@ async def request(
     a one-line summary, and — for the verbs whose ops must carry one — the
     ``schema_fingerprint`` to send with the call, which is enough to write the
     common call without a second round-trip. ``help='<verb>'`` returns that
-    verb's full schema.
+    verb's full schema. Ask for help in its own call: a catalog and a list of op
+    results are different shapes, so one reply cannot carry both, and a request
+    that asks for both is refused rather than answered in half.
 
     Results come back as ``{'status': 'success'|'partial', 'ops': [...]}``, one
     entry per op in the order given, each ``{'ok': true, 'op', 'result'}`` or
