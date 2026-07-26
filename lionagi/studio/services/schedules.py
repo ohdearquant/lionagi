@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
 from lionagi.service.providers import EFFORT_LEVELS as _VALID_EFFORT_LEVELS
@@ -800,6 +800,12 @@ async def get_schedule_status(schedule_id: str) -> dict[str, Any] | None:
 
 
 class CreateScheduleRequest(BaseModel):
+    # An unknown key is a caller mistake, and silently dropping it means the
+    # request reports success for a change that never happened. The schedule
+    # declaration models next door already forbid extras; these two were the
+    # holdouts.
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     description: str | None = None
     trigger_type: str
@@ -832,6 +838,12 @@ class CreateScheduleRequest(BaseModel):
 
 
 class UpdateScheduleRequest(BaseModel):
+    # An unknown key is a caller mistake, and silently dropping it means the
+    # request reports success for a change that never happened. The schedule
+    # declaration models next door already forbid extras; these two were the
+    # holdouts.
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = None
     description: str | None = None
     trigger_type: str | None = None
@@ -935,7 +947,10 @@ async def update_schedule_route(schedule_id: str, body: UpdateScheduleRequest) -
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not ok:
         raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' not found")
-    return {"ok": True}
+    # Naming what was applied: an empty body is a legitimate no-op on an
+    # existing schedule, but a bare "ok" reads the same as a change that
+    # landed. The caller can tell the two apart from the list.
+    return {"ok": True, "updated": sorted(fields)}
 
 
 @studio_route(

@@ -493,7 +493,7 @@ async def test_patch_route_all_null_body_no_longer_404s(temp_db_path):
 
     body = UpdateScheduleRequest(description=None)
     result = await update_schedule_route(sid, body)
-    assert result == {"ok": True}
+    assert result == {"ok": True, "updated": ["description"]}
 
     from lionagi.studio.services.schedules import get_schedule
 

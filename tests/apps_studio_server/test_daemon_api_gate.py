@@ -823,11 +823,33 @@ def test_schedules_patch_success_response_shape(tmp_path, monkeypatch):
 
     r = client.patch(f"/api/schedules/{schedule_id}", json={"description": "gate patch"})
     assert r.status_code == 200
-    assert r.json() == {"ok": True}
+    assert r.json() == {"ok": True, "updated": ["description"]}
 
     # The write actually landed, not just an accepted-and-dropped no-op.
     detail = client.get(f"/api/schedules/{schedule_id}")
     assert detail.json()["description"] == "gate patch"
+
+
+def test_schedules_patch_refuses_a_field_it_cannot_apply(tmp_path, monkeypatch):
+    """The same regression one level down: accepted, dropped, reported ok.
+
+    ``enabled`` is settable in the store and has its own routes, but is not on
+    the PATCH model. Before this was forbidden the request answered 200 ok and
+    changed nothing, so an operator disabling a schedule this way believed it
+    was off while it kept firing.
+    """
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    schedule_id = _create_gate_schedule(db_path)
+    client = _make_client()
+
+    r = client.patch(f"/api/schedules/{schedule_id}", json={"enabled": False})
+    assert r.status_code == 422
+    assert "enabled" in r.text
+
+    # And the schedule is untouched, rather than half-applied.
+    detail = client.get(f"/api/schedules/{schedule_id}")
+    assert detail.json()["enabled"] in (1, True)
 
 
 def test_schedules_delete_success_response_shape(tmp_path, monkeypatch):
