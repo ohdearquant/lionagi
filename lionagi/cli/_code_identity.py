@@ -17,6 +17,16 @@ current position is read too, and reported beside it: when the two disagree the
 checkout moved after this process loaded, and that divergence is itself the fact
 an operator needs, so it is named in the payload rather than left to be inferred.
 
+A tree can also part from the running code without its commit changing at all,
+because an uncommitted edit moves the files and leaves the commit id alone. Two
+things follow. A commit id does not describe a dirty tree in the first place, so
+a snapshot taken over uncommitted changes can only ever be a partial identity and
+says so. And to notice an edit made afterwards, the snapshot carries a digest of
+the tree's uncommitted state — its shape, never its content — which is compared
+live exactly as the commit is. The two kinds of movement stay separate in the
+payload: moving the checkout and editing files under it are different operator
+actions with different remedies, and one boolean cannot carry both.
+
 Failure is closed: a tree whose git state cannot be read is ``unknown``, never
 ``ok``. "Cannot tell" and "nothing wrong" are different answers, and a git call
 that could not run at all is a third thing again — it is not evidence that the
@@ -25,6 +35,7 @@ tree lacks an upstream, so it never falls through to the fallback comparison.
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -52,6 +63,11 @@ GIT_TIMEOUT_SECONDS = 5.0
 IDENTITY_BUDGET_SECONDS = 6.0
 
 _SHORT_SHA = 12
+
+# The digest is only ever compared against another digest of the same tree, so it
+# needs to be long enough that an accidental collision is not a concern and short
+# enough to read in a payload.
+_FINGERPRINT_CHARS = 16
 
 # Return codes for calls that never produced one: git could not be run at all,
 # or the allowance was already spent before this call's turn came.
@@ -150,6 +166,32 @@ def _comparison_ref(tree: Path, budget: _Budget) -> tuple[str | None, str, str |
     return None, "none", err or "no upstream configured and origin/HEAD does not resolve", True
 
 
+def _worktree_fingerprint(
+    tree: Path, porcelain: str, budget: _Budget
+) -> tuple[str | None, str | None]:
+    """A digest of what is uncommitted in *tree*, or why one could not be taken.
+
+    Enough to tell whether the uncommitted state changed between two readings,
+    and deliberately not enough to reconstruct it: the digest is over the status
+    listing and the diff against HEAD, and only the digest is kept.
+
+    A clean tree needs no diff — an empty status listing is already the whole
+    answer, and skipping the call keeps the common case off the allowance.
+
+    Two edits are invisible to this: a change inside a directory git reports as
+    untracked as a whole, and a change to a file already listed as a modified
+    binary, since the diff names those rather than rendering them.
+    """
+    digest = hashlib.sha256(porcelain.encode(errors="replace"))
+    if porcelain:
+        rc, diff, err = _git(tree, "diff", "HEAD", budget=budget)
+        if rc != 0:
+            return None, f"could not read the uncommitted changes: {err or 'no output'}"
+        digest.update(b"\x00")
+        digest.update(diff.encode(errors="replace"))
+    return digest.hexdigest()[:_FINGERPRINT_CHARS], None
+
+
 def git_identity(tree: Path, budget: _Budget | None = None) -> dict[str, Any]:
     """Where *tree* sits in git history now, or why that could not be established.
 
@@ -188,6 +230,11 @@ def _read_git_identity(tree: Path, budget: _Budget) -> dict[str, Any]:
     if rc != 0:
         return {"status": "unknown", "detail": f"could not read working tree: {err}"}
     identity["dirty"] = bool(porcelain)
+
+    fingerprint, fingerprint_detail = _worktree_fingerprint(tree, porcelain, budget)
+    identity["worktree_fingerprint"] = fingerprint
+    if fingerprint_detail is not None:
+        identity["worktree_fingerprint_detail"] = fingerprint_detail
 
     ref, source, why, asked = _comparison_ref(tree, budget)
     if not asked:
@@ -302,6 +349,49 @@ def _checkout_movement(
     return False, None
 
 
+def _worktree_movement(
+    snapshot: dict[str, Any], live: dict[str, Any], commit_moved: bool | None
+) -> tuple[bool | None, str | None]:
+    """Whether the files under this process were edited since it loaded its code.
+
+    This is the movement that leaves the commit alone, so nothing about the commit
+    can answer it — only the two digests can. When either is missing the answer is
+    ``None``, because a digest that was never taken cannot show a tree standing
+    still.
+
+    A digest is taken against HEAD, so once the checkout has moved the two are
+    measured from different commits and are not comparable. That case is already
+    reported as a moved checkout; claiming anything about the files on top of it
+    would be claiming more than was measured.
+    """
+    if live is snapshot:
+        return False, None
+    if commit_moved is not False:
+        return None, (
+            "the uncommitted state cannot be compared across a checkout that moved or "
+            "whose position is unknown — the two readings are measured from different "
+            "commits"
+        )
+
+    before = snapshot.get("worktree_fingerprint")
+    after = live.get("worktree_fingerprint")
+    if before is None or after is None:
+        missing = snapshot if before is None else live
+        which = "when this process loaded" if before is None else "now"
+        return None, (
+            f"the uncommitted state of the tree could not be read {which}: "
+            f"{missing.get('worktree_fingerprint_detail', 'no detail')}"
+        )
+    if before != after:
+        return True, (
+            f"the working tree at {snapshot.get('toplevel')} was edited after this "
+            f"process loaded its code — commit {snapshot.get('commit_short')} is "
+            "unchanged, so the edit is invisible to the commit id, and the modules "
+            "answering here are the ones read before it"
+        )
+    return False, None
+
+
 def _distribution_version() -> tuple[str | None, str | None]:
     from importlib.metadata import PackageNotFoundError
     from importlib.metadata import version as dist_version
@@ -330,6 +420,8 @@ def _drift(
     live: dict[str, Any] | None = None,
     moved: bool | None = False,
     movement_detail: str | None = None,
+    worktree_edited: bool | None = False,
+    worktree_detail: str | None = None,
 ) -> dict[str, Any]:
     """The verdict on *git*, the position of the code this process actually loaded.
 
@@ -337,6 +429,14 @@ def _drift(
     against a fresher view of the remote, so it is the better source for how far
     behind the loaded code is. When it has moved, the live reading is about some
     other commit and only the snapshot speaks for what is running.
+
+    Uncommitted changes present when the snapshot was taken make the verdict
+    ``unknown`` rather than ``ok``. Not because something is known to be wrong —
+    the edits may be exactly what the operator intended to run — but because the
+    commit id, which is the whole of what this surface can report, is then not a
+    description of the loaded code. Saying ``ok`` there would be answering a
+    question ("does the reported identity match what is running?") that the
+    reading cannot reach.
     """
     reasons: list[str] = []
     unknowns: list[str] = []
@@ -352,6 +452,18 @@ def _drift(
         reasons.append(movement_detail)
     elif moved is None and movement_detail:
         unknowns.append(movement_detail)
+
+    if worktree_edited is True and worktree_detail:
+        reasons.append(worktree_detail)
+    elif worktree_edited is None and worktree_detail:
+        unknowns.append(worktree_detail)
+
+    if git.get("dirty") is True:
+        unknowns.append(
+            f"the tree this process loaded from had uncommitted changes at "
+            f"{git.get('commit_short', 'the captured commit')}, so that commit does not "
+            "describe the code being run — some of it was only ever on disk"
+        )
 
     position = git
     if moved is False and live is not None and live.get("status") == "ok":
@@ -389,6 +501,11 @@ def code_identity() -> dict[str, Any]:
     position captured when this process first looked, which is what it loaded;
     ``git_live`` is the tree as it stands now. On the call that takes the
     snapshot the two are one reading and are reported as such.
+
+    ``checkout_moved`` and ``worktree_edited`` are separate answers to separate
+    questions — the checkout was moved to another commit, and the files were
+    edited where they stand — because the operator who caused one did not do the
+    other, and undoing them is not the same act.
     """
     from lionagi.version import __version__
 
@@ -403,6 +520,7 @@ def code_identity() -> dict[str, Any]:
         live = snapshot
 
     moved, movement_detail = _checkout_movement(snapshot, live)
+    worktree_edited, worktree_detail = _worktree_movement(snapshot, live, moved)
     distribution_version, distribution_detail = _distribution_version()
     verb_count, verb_detail = _verb_count()
 
@@ -415,6 +533,7 @@ def code_identity() -> dict[str, Any]:
         "git_snapshot_taken_at": snapshot.get("observed_at"),
         "git_live": live,
         "checkout_moved": moved,
+        "worktree_edited": worktree_edited,
         "drift": _drift(
             snapshot,
             __version__,
@@ -422,10 +541,14 @@ def code_identity() -> dict[str, Any]:
             live=live,
             moved=moved,
             movement_detail=movement_detail,
+            worktree_edited=worktree_edited,
+            worktree_detail=worktree_detail,
         ),
     }
     if movement_detail is not None:
         identity["checkout_moved_detail"] = movement_detail
+    if worktree_detail is not None:
+        identity["worktree_edited_detail"] = worktree_detail
     if distribution_detail is not None:
         identity["distribution_detail"] = distribution_detail
     if verb_detail is not None:

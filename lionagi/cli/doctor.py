@@ -176,6 +176,9 @@ def _check_code_identity() -> dict[str, str]:
             position += f" on {git['branch']}"
         else:
             position += " (detached)"
+        if git.get("dirty"):
+            # A commit id next to a dirty tree reads as the whole story; it isn't.
+            position += " with uncommitted changes"
         where += f", git {position}"
         # The position is the one read when this process started, not the tree's
         # position now, so it is quoted with the time it was true of.

@@ -300,6 +300,146 @@ def test_the_snapshot_answers_when_the_checkout_has_moved() -> None:
     assert any("24 commit(s) behind" in reason for reason in drift["reasons"])
 
 
+# ── the tree moving without the commit moving ────────────────────────────────
+
+
+def test_a_dirty_tree_is_fingerprinted_and_a_clean_one_is_too(checkout_behind: Path) -> None:
+    """The digest is a value on every readable tree, so it can always be compared."""
+    clean = git_identity(checkout_behind)["worktree_fingerprint"]
+    assert clean
+
+    (checkout_behind / "first").write_text("edited")
+    dirty = git_identity(checkout_behind)["worktree_fingerprint"]
+    assert dirty
+    assert dirty != clean
+
+
+def test_editing_an_already_modified_file_changes_the_fingerprint(
+    checkout_behind: Path,
+) -> None:
+    """The status listing alone would not move here — the path and its code are the same."""
+    (checkout_behind / "first").write_text("one")
+    before = git_identity(checkout_behind)
+    (checkout_behind / "first").write_text("two")
+    after = git_identity(checkout_behind)
+
+    assert before["dirty"] is True
+    assert after["dirty"] is True
+    assert before["worktree_fingerprint"] != after["worktree_fingerprint"]
+
+
+def test_a_fingerprint_that_could_not_be_taken_is_none_with_a_reason(
+    checkout_behind: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (checkout_behind / "first").write_text("edited")
+    real_run = subprocess.run
+
+    def _diff_fails(argv: list[str], **kwargs: object):
+        if argv[3:5] == ["diff", "HEAD"]:
+            raise subprocess.TimeoutExpired(argv, 5.0)
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(_code_identity.subprocess, "run", _diff_fails)
+
+    git = git_identity(checkout_behind)
+    assert git["worktree_fingerprint"] is None
+    assert "TimeoutExpired" in git["worktree_fingerprint_detail"]
+
+
+def test_an_edit_under_the_process_is_reported_though_the_commit_never_moved(
+    loaded_from: Path,
+) -> None:
+    """The case that used to read as a clean `ok`: same commit, different files."""
+    before = code_identity()
+    assert before["worktree_edited"] is False
+
+    (loaded_from / "first").write_text("edited under the running process")
+
+    after = code_identity()
+    assert after["git"]["commit"] == after["git_live"]["commit"]
+    assert after["checkout_moved"] is False
+    assert after["worktree_edited"] is True
+    assert "was edited after this process loaded" in after["worktree_edited_detail"]
+    assert after["drift"]["status"] == "drift"
+    assert any("was edited after this process loaded" in r for r in after["drift"]["reasons"])
+
+
+def test_the_two_kinds_of_movement_are_reported_separately(loaded_from: Path) -> None:
+    """Moving the checkout is one operator action; editing files is another."""
+    code_identity()
+    _git(loaded_from, "merge", "--ff-only", "origin/main")
+
+    after = code_identity()
+    assert after["checkout_moved"] is True
+    assert after["worktree_edited"] is None, "not comparable across a commit change"
+    assert "different commits" in after["worktree_edited_detail"]
+    assert any("different commits" in u for u in after["drift"]["unknown"])
+
+
+def test_a_missing_fingerprint_is_unknown_movement_not_a_still_tree() -> None:
+    edited, detail = _code_identity._worktree_movement(
+        {"status": "ok", "commit": "a" * 40, "worktree_fingerprint": None},
+        {"status": "ok", "commit": "a" * 40, "worktree_fingerprint": "beef"},
+        False,
+    )
+    assert edited is None
+    assert "when this process loaded" in detail
+
+
+def test_a_dirty_snapshot_is_unknown_not_ok() -> None:
+    """A commit id cannot describe a tree with changes that are not in it."""
+    git = {
+        "status": "ok",
+        "behind": 0,
+        "comparison_ref": "origin/main",
+        "commit_short": "abc123def456",
+        "dirty": True,
+    }
+    drift = _code_identity._drift(git, "0.1.0", "0.1.0")
+    assert drift["status"] == "unknown"
+    assert any("uncommitted changes" in u for u in drift["unknown"])
+
+
+def test_a_clean_snapshot_at_its_ref_is_still_ok() -> None:
+    """The dirty rule must not swallow the one state that is genuinely fine."""
+    git = {"status": "ok", "behind": 0, "comparison_ref": "origin/main", "dirty": False}
+    assert _code_identity._drift(git, "0.1.0", "0.1.0")["status"] == "ok"
+
+
+def test_a_dirty_tree_read_end_to_end_does_not_claim_ok(loaded_from: Path) -> None:
+    """Before anything moves at all: dirty at snapshot time is already not `ok`."""
+    (loaded_from / "first").write_text("uncommitted when the process started")
+
+    identity = code_identity()
+    assert identity["git"]["dirty"] is True
+    assert identity["checkout_moved"] is False
+    assert identity["drift"]["status"] != "ok"
+    assert any("uncommitted changes" in u for u in identity["drift"]["unknown"])
+
+
+def test_doctor_says_the_tree_was_dirty_beside_the_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        _code_identity,
+        "code_identity",
+        lambda: _identity(
+            "unknown",
+            git={
+                "status": "ok",
+                "commit_short": "abc123def456",
+                "branch": None,
+                "detached": True,
+                "dirty": True,
+            },
+        ),
+    )
+    assert (
+        "abc123def456 (detached) with uncommitted changes"
+        in (doctor._check_code_identity()["detail"])
+    )
+
+
 def test_code_identity_reports_this_process() -> None:
     identity = code_identity()
     assert identity["version"]
