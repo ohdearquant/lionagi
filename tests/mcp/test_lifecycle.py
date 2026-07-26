@@ -67,10 +67,15 @@ def home(monkeypatch, tmp_path):
     """A whole lionagi home of our own, for this process and every child."""
     monkeypatch.setenv("LIONAGI_HOME", str(tmp_path))
     # Children are launched by absolute script path, so their `sys.path[0]` is
-    # the directory that script sits in and the checkout under test is not on
-    # it. Without this they import whatever `lionagi` the interpreter's
-    # environment already has installed, which is a different tree — and then
-    # the end-to-end tests here run a CLI that is not the one being changed.
+    # the directory that script sits in, and this checkout is not on it. They
+    # then import whichever `lionagi` the interpreter's environment resolves,
+    # which is the same one only when the installed distribution happens to
+    # point here. Develop in a second checkout — a worktree, say — and it points
+    # at the first, so these end-to-end tests exercise a CLI that is not the one
+    # being changed, and do it silently.
+    #
+    # To see the difference, run any script by absolute path with and without
+    # this variable and print `lionagi.__file__`.
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[2]))
     monkeypatch.delenv("LIONAGI_SESSION_ID", raising=False)
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "mcp" / "jobs")
