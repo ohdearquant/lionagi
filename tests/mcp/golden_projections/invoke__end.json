@@ -1,0 +1,40 @@
+{
+  "path": "invoke end",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "invocation_id": {
+        "description": "The id printed by `li invoke start`. An invocation never closed stays 'running' forever.",
+        "type": "string",
+        "x-positional": true
+      },
+      "metadata": {
+        "description": "JSON merged key-by-key into the invocation's existing metadata, so anything written during the run survives unless this overwrites that key.",
+        "type": "string",
+        "x-flag": "--metadata"
+      },
+      "status": {
+        "default": "completed",
+        "description": "How the work ended, which also fixes the reason stored with it: 'completed' for success, 'failed' for an exception, 'timed_out' for a deadline, 'aborted' for a user interrupt, 'cancelled' for a system cancellation. Later listings and dashboards filter on this, so leaving the default on work that did not succeed records it as a success.",
+        "enum": [
+          "completed",
+          "failed",
+          "timed_out",
+          "aborted",
+          "cancelled"
+        ],
+        "type": "string",
+        "x-flag": "--status"
+      }
+    },
+    "required": [
+      "invocation_id"
+    ],
+    "title": "invoke end",
+    "type": "object",
+    "x-positional-order": [
+      "invocation_id"
+    ]
+  },
+  "stage": "static"
+}

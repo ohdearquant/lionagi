@@ -32,41 +32,6 @@ from lionagi.mcp.projection import (
 
 GOLDEN_DIR = Path(__file__).parent / "golden_projections"
 
-# One per shape worth pinning: positionals with nargs, repeated flags, enums,
-# int/float scalars, a mutually exclusive group, and the playbook-bearing pair.
-GOLDEN_VERBS = (
-    "agent",
-    "casts",
-    "dispatch ls",
-    "doctor",
-    "invoke start",
-    "kill",
-    "monitor",
-    "orchestrate fanout",
-    "orchestrate flow",
-    "plugin list",
-    "schedule create",
-    "state ls",
-    "stats runs",
-    "studio start",
-    "team send",
-    # The observability reads: every one of these is a path the surface now
-    # dispatches, so an argparse change under it must fail here rather than
-    # quietly reshape a schema a caller validated against.
-    "dispatch show",
-    "invoke list",
-    "lifecycle",
-    "plugin info",
-    "state stats",
-    "team list",
-    # The queue's writes. A golden matters more here than on a read: a caller acts
-    # on the schema, so an argparse change that silently made `token` optional or
-    # renamed `--dry-run` would turn a refused call into a destructive one.
-    "dispatch ack",
-    "dispatch retry",
-    "dispatch purge",
-)
-
 # Everything the MCP surface is a candidate to dispatch. `mirror` is
 # deliberately absent — see test_mirror_since_is_unrepresentable.
 CANDIDATE_VERBS = (
@@ -107,6 +72,13 @@ CANDIDATE_VERBS = (
     "team send",
     "team show",
 )
+
+# Every dispatchable path is pinned, not a sample of them. A caller acts on the
+# schema it is handed, so an argparse change under any of these must fail here
+# with a diff rather than quietly reshape a schema someone already validated
+# against. `lifecycle` and `studio start` are pinned too: neither is a dispatch
+# candidate, but both project and both are read by the surface.
+GOLDEN_VERBS = CANDIDATE_VERBS + ("lifecycle", "studio start")
 
 
 def _golden_path(verb: str) -> Path:

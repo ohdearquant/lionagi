@@ -30,12 +30,12 @@
         "x-flag": "--action-kind"
       },
       "agent": {
-        "description": "Agent profile name.",
+        "description": "Agent profile to run, resolved the same way `li agent --agent` resolves it. Supplies the system prompt, model and effort the fire runs with.",
         "type": "string",
         "x-flag": "--agent"
       },
       "cron": {
-        "description": "Cron expression, e.g. \"0 * * * *\".",
+        "description": "Cron expression, e.g. \"0 * * * *\". Required when --trigger-type is cron, which is the default; ignored for other trigger types.",
         "type": "string",
         "x-flag": "--cron"
       },
@@ -65,7 +65,7 @@
         "x-flag": "--github-repo"
       },
       "interval": {
-        "description": "Interval in seconds.",
+        "description": "Seconds between fires. Required when --trigger-type is interval; ignored for other trigger types.",
         "type": "integer",
         "x-flag": "--interval"
       },
@@ -90,7 +90,7 @@
         "x-flag": "--model"
       },
       "name": {
-        "description": "Schedule name.",
+        "description": "Unique name identifying this schedule. Reused as the display label in listings; a name already in use is rejected rather than overwritten.",
         "type": "string",
         "x-positional": true
       },
@@ -121,12 +121,12 @@
         "x-flag": "--poll-interval"
       },
       "project": {
-        "description": "Project name.",
+        "description": "Project this schedule's runs are recorded under. Defaults to the project detected from the execution root.",
         "type": "string",
         "x-flag": "--project"
       },
       "prompt": {
-        "description": "Prompt for agent action.",
+        "description": "Instruction the scheduled agent runs at each fire. Required when --action-kind is agent, which is the default. A profile named by --agent supplies the model and settings, never this instruction, so a schedule created without it fires and fails.",
         "type": "string",
         "x-flag": "--prompt"
       },
