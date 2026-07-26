@@ -52,6 +52,7 @@ __all__ = (
     "resolve_model_spec",
     "resolve_persisted_effort",
     "AgentProfile",
+    "AmbiguousProfileNameError",
     "build_agent_profile_catalog",
     "build_deadline_preamble",
     "list_agents",
@@ -378,15 +379,33 @@ def _unreadable_symlink_target(path: Path) -> str | None:
         return "<unreadable>"
 
 
+class AmbiguousProfileNameError(ValueError):
+    """One agents dir declares a name under both '-' and '_' spellings."""
+
+
+def _name_spellings(name: str) -> tuple[str, ...]:
+    """NAME plus its separator spellings, requested spelling first.
+
+    '-' and '_' are interchangeable in a profile name, so a role written
+    ``postmortem-lead`` everywhere else still finds ``postmortem_lead.md``.
+    """
+    return tuple(dict.fromkeys((name, name.replace("-", "_"), name.replace("_", "-"))))
+
+
 def _profile_path_candidates(agents_dir: Path, name: str) -> tuple[Path, ...]:
     """Where NAME may live in one agents dir, in the order resolution tries them.
 
-    Two layouts share a directory, so a root can hold more than one declaration
-    of the same name. Anything reporting which files declare a profile has to
-    walk the same candidates in the same order as the resolver, or it reports a
-    displaced file in one root while missing one in another.
+    Two layouts share a directory, and either may spell the name with '-' or
+    '_', so a root can hold more than one declaration of the same name.
+    Anything reporting which files declare a profile has to walk the same
+    candidates in the same order as the resolver, or it reports a displaced
+    file in one root while missing one in another.
     """
-    return (agents_dir / name / f"{name}.md", agents_dir / f"{name}.md")
+    return tuple(
+        path
+        for spelling in _name_spellings(name)
+        for path in (agents_dir / spelling / f"{spelling}.md", agents_dir / f"{spelling}.md")
+    )
 
 
 def _resolve_profile_path(
@@ -395,14 +414,39 @@ def _resolve_profile_path(
     *,
     unreadable_symlinks: list[tuple[Path, str]] | None = None,
 ) -> Path | None:
-    """Return profile path for NAME, recording unreadable candidate symlinks."""
-    for candidate in _profile_path_candidates(agents_dir, name):
-        if candidate.is_file():
-            return candidate
-        target = _unreadable_symlink_target(candidate)
-        if target is not None and unreadable_symlinks is not None:
-            unreadable_symlinks.append((candidate, target))
-    return None
+    """Return profile path for NAME, recording unreadable candidate symlinks.
+
+    The spelling actually asked for wins outright when it exists. Only a
+    request that does *not* name an existing file falls back to the other
+    separator spelling, so a directory deliberately holding two profiles that
+    differ only in separator keeps resolving both, exactly as it did before
+    the spellings became interchangeable.
+
+    Failing that, two spellings matching one request in a single directory are
+    an error rather than a ranking: whichever one lost would be invisible to
+    the caller. Two spellings in *different* roots are ordinary shadowing,
+    decided by root order, and are resolved by the caller walking the roots.
+    """
+    resolved: dict[str, Path] = {}
+    for spelling in _name_spellings(name):
+        for candidate in (agents_dir / spelling / f"{spelling}.md", agents_dir / f"{spelling}.md"):
+            if candidate.is_file():
+                resolved.setdefault(spelling, candidate)
+                continue
+            target = _unreadable_symlink_target(candidate)
+            if target is not None and unreadable_symlinks is not None:
+                unreadable_symlinks.append((candidate, target))
+
+    if name in resolved:
+        return resolved[name]
+    if len(resolved) > 1:
+        matched = ", ".join(str(p) for p in resolved.values())
+        raise AmbiguousProfileNameError(
+            f"Agent profile name '{name}' is ambiguous in {agents_dir}: "
+            f"'-' and '_' are interchangeable, and both spellings exist ({matched}). "
+            "Rename or remove one of them."
+        )
+    return next(iter(resolved.values()), None)
 
 
 def _plugin_agent_profiles() -> dict[str, tuple[str, Path]]:
