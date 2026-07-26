@@ -637,6 +637,8 @@ _SCHEDULE_DETAIL_KEYS = sorted(
         "created_at",
         "cron_expr",
         "description",
+        "effective_timezone",
+        "effective_timezone_source",
         "enabled",
         "github_cursor",
         "github_filter",
