@@ -195,8 +195,7 @@ def _resolved_next_fire(row: dict[str, Any]) -> dict[str, Any]:
     can see whether it got 09:00 local.
     """
     try:
-        from lionagi.studio.config import SCHEDULER_TZ
-        from lionagi.studio.scheduler.engine import _resolve_scheduler_tzinfo, scheduler
+        from lionagi.studio.scheduler.engine import resolve_schedule_timezone, scheduler
     except Exception as exc:  # noqa: BLE001 — an unimportable resolver is not a create failure
         return unavailable("unresolved", f"the scheduler's resolver is unavailable here: {exc}")
 
@@ -207,15 +206,18 @@ def _resolved_next_fire(row: dict[str, Any]) -> dict[str, Any]:
             f"the scheduler's resolver returned no next occurrence for trigger_type "
             f"{row.get('trigger_type')!r}",
         )
-    tz_name = row.get("resolved_timezone") or SCHEDULER_TZ
-    tz = _resolve_scheduler_tzinfo(tz_name)
+    # The row's own zone if it declares one, else the configured default, with
+    # an unloadable name falling back to UTC rather than raising. Asking the
+    # scheduler's resolver for that is what keeps the zone reported here the
+    # same one the fire is actually computed in.
+    zone = resolve_schedule_timezone(row)
     from datetime import datetime
 
     return available(
         {
             "epoch": epoch,
-            "rfc3339": datetime.fromtimestamp(epoch, tz=tz).isoformat(timespec="seconds"),
-            "timezone": str(tz),
+            "rfc3339": datetime.fromtimestamp(epoch, tz=zone.tzinfo).isoformat(timespec="seconds"),
+            "timezone": zone.name,
         }
     )
 
