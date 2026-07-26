@@ -1,0 +1,10 @@
+{
+  "path": "schedule limits",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {},
+    "title": "schedule limits",
+    "type": "object"
+  },
+  "stage": "static"
+}

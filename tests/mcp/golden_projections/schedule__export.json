@@ -1,0 +1,27 @@
+{
+  "path": "schedule export",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "legacy": {
+        "default": false,
+        "description": "Convert chain-free legacy rows (managed_by is null, i.e. rows predating the declaration layer) instead of declaration/cli-managed rows. A row with on_success/on_fail is reported BLOCKED and omitted.",
+        "type": "boolean",
+        "x-flag": "--legacy"
+      },
+      "output": {
+        "description": "Write the ScheduleSet YAML here (default: stdout).",
+        "type": "string",
+        "x-flag": "--output"
+      },
+      "report": {
+        "description": "Write the human-readable conversion report here (default: stderr).",
+        "type": "string",
+        "x-flag": "--report"
+      }
+    },
+    "title": "schedule export",
+    "type": "object"
+  },
+  "stage": "static"
+}

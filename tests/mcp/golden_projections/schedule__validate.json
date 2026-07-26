@@ -1,0 +1,28 @@
+{
+  "path": "schedule validate",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "as_json": {
+        "default": false,
+        "description": "Emit JSON.",
+        "type": "boolean",
+        "x-flag": "--json"
+      },
+      "file": {
+        "description": "Path to a ScheduleSet YAML file.",
+        "type": "string",
+        "x-positional": true
+      }
+    },
+    "required": [
+      "file"
+    ],
+    "title": "schedule validate",
+    "type": "object",
+    "x-positional-order": [
+      "file"
+    ]
+  },
+  "stage": "static"
+}

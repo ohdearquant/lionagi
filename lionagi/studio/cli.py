@@ -1712,7 +1712,9 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         epilog="Example: li schedule get sched-abc123",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    get_p.add_argument("id", help="Schedule ID.")
+    get_p.add_argument(
+        "id", help="Id of the schedule, as returned by `li schedule list` in its `id` field."
+    )
 
     # limits
     sched_sub.add_parser(
@@ -1741,7 +1743,13 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    create_p.add_argument("name", help="Schedule name.")
+    create_p.add_argument(
+        "name",
+        help=(
+            "Unique name identifying this schedule. Reused as the display label in "
+            "listings; a name already in use is rejected rather than overwritten."
+        ),
+    )
     create_p.add_argument(
         "--trigger-type",
         dest="trigger_type",
@@ -1749,8 +1757,23 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         choices=("cron", "interval", "github", "github_poll"),
         help="Trigger type (default: cron). 'github' is an alias for 'github_poll'.",
     )
-    create_p.add_argument("--cron", metavar="EXPR", help='Cron expression, e.g. "0 * * * *".')
-    create_p.add_argument("--interval", type=int, metavar="SECONDS", help="Interval in seconds.")
+    create_p.add_argument(
+        "--cron",
+        metavar="EXPR",
+        help=(
+            'Cron expression, e.g. "0 * * * *". Required when --trigger-type is cron, '
+            "which is the default; ignored for other trigger types."
+        ),
+    )
+    create_p.add_argument(
+        "--interval",
+        type=int,
+        metavar="SECONDS",
+        help=(
+            "Seconds between fires. Required when --trigger-type is interval; "
+            "ignored for other trigger types."
+        ),
+    )
     create_p.add_argument(
         "--github-repo",
         dest="github_repo",
@@ -1796,9 +1819,22 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         choices=tuple(sorted(_VALID_ACTION_KINDS | set(_ALIAS_ACTION_KINDS))),
         help="Stored action kind or accepted alias (default: agent).",
     )
-    create_p.add_argument("--prompt", help="Prompt for agent action.")
+    create_p.add_argument(
+        "--prompt",
+        help=(
+            "Instruction the scheduled agent runs at each fire. Required when "
+            "--action-kind is agent, which is the default, unless --agent names a "
+            "profile that carries its own prompt."
+        ),
+    )
     create_p.add_argument("--model", help="Model spec for agent action.")
-    create_p.add_argument("--agent", help="Agent profile name.")
+    create_p.add_argument(
+        "--agent",
+        help=(
+            "Agent profile to run, resolved the same way `li agent --agent` resolves "
+            "it. Supplies the system prompt, model and effort the fire runs with."
+        ),
+    )
     create_p.add_argument("--playbook", help="Playbook name (for action-kind=play/playbook).")
     create_p.add_argument(
         "--flow-yaml",
@@ -1827,7 +1863,13 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
             '\'["review-pr", "--pr", "{{pr_number}}"]\'.'
         ),
     )
-    create_p.add_argument("--project", help="Project name.")
+    create_p.add_argument(
+        "--project",
+        help=(
+            "Project this schedule's runs are recorded under. Defaults to the project "
+            "detected from the execution root."
+        ),
+    )
     create_p.add_argument(
         "--cwd",
         metavar="PATH",
@@ -1997,7 +2039,9 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
             epilog=f"Example: {example}",
             formatter_class=argparse.RawDescriptionHelpFormatter,
         )
-        p.add_argument("id", help="Schedule ID.")
+        p.add_argument(
+            "id", help="Id of the schedule, as returned by `li schedule list` in its `id` field."
+        )
 
     # trigger
     trigger_p = sched_sub.add_parser(
@@ -2006,7 +2050,9 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         epilog="Example: li schedule trigger sched-abc123 --wait",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    trigger_p.add_argument("id", help="Schedule ID.")
+    trigger_p.add_argument(
+        "id", help="Id of the schedule, as returned by `li schedule list` in its `id` field."
+    )
     trigger_p.add_argument(
         "--wait",
         action="store_true",
@@ -2025,7 +2071,9 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         epilog="Example: li schedule runs sched-abc123 --status failed --limit 5",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    runs_p.add_argument("id", help="Schedule ID.")
+    runs_p.add_argument(
+        "id", help="Id of the schedule, as returned by `li schedule list` in its `id` field."
+    )
     runs_p.add_argument(
         "--limit",
         type=int,
@@ -2058,7 +2106,9 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         epilog="Example: li schedule status sched-abc123 --wait",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    status_p.add_argument("id", help="Schedule ID.")
+    status_p.add_argument(
+        "id", help="Id of the schedule, as returned by `li schedule list` in its `id` field."
+    )
     status_p.add_argument(
         "--wait", action="store_true", help="Wait for the latest in-flight run to finish first."
     )

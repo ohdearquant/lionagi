@@ -1,0 +1,34 @@
+{
+  "path": "schedule status",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "as_json": {
+        "default": false,
+        "description": "Emit JSON.",
+        "type": "boolean",
+        "x-flag": "--json"
+      },
+      "id": {
+        "description": "Id of the schedule, as returned by `li schedule list` in its `id` field.",
+        "type": "string",
+        "x-positional": true
+      },
+      "wait": {
+        "default": false,
+        "description": "Wait for the latest in-flight run to finish first.",
+        "type": "boolean",
+        "x-flag": "--wait"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "title": "schedule status",
+    "type": "object",
+    "x-positional-order": [
+      "id"
+    ]
+  },
+  "stage": "static"
+}

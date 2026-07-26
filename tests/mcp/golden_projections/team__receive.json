@@ -1,0 +1,27 @@
+{
+  "path": "team receive",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "member": {
+        "description": "Read as this member: returns only their unread mail and marks it read. Omit it to dump every message and mark nothing read.",
+        "type": "string",
+        "x-flag": "--as"
+      },
+      "team": {
+        "description": "Team to read from \u2014 its id, its name, or an unambiguous id prefix.",
+        "type": "string",
+        "x-aliases": [
+          "-t"
+        ],
+        "x-flag": "--team"
+      }
+    },
+    "required": [
+      "team"
+    ],
+    "title": "team receive",
+    "type": "object"
+  },
+  "stage": "static"
+}

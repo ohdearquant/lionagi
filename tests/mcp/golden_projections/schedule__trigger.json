@@ -1,0 +1,28 @@
+{
+  "path": "schedule trigger",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "description": "Id of the schedule, as returned by `li schedule list` in its `id` field.",
+        "type": "string",
+        "x-positional": true
+      },
+      "wait": {
+        "default": false,
+        "description": "Block until the fired occurrence reaches a terminal status (retries a short grace period first, since the occurrence row isn't durably written until just after this returns a run id), then print its outcome and exit non-zero on failure.",
+        "type": "boolean",
+        "x-flag": "--wait"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "title": "schedule trigger",
+    "type": "object",
+    "x-positional-order": [
+      "id"
+    ]
+  },
+  "stage": "static"
+}

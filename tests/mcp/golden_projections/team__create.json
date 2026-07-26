@@ -1,0 +1,31 @@
+{
+  "path": "team create",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "members": {
+        "description": "Comma-separated member names. Only these names can send or receive as themselves; a message from or to anyone else still goes through, with a warning.",
+        "type": "string",
+        "x-aliases": [
+          "-m"
+        ],
+        "x-flag": "--members"
+      },
+      "name": {
+        "description": "Name for the new team. Every other team command accepts it in place of the team id.",
+        "type": "string",
+        "x-positional": true
+      }
+    },
+    "required": [
+      "name",
+      "members"
+    ],
+    "title": "team create",
+    "type": "object",
+    "x-positional-order": [
+      "name"
+    ]
+  },
+  "stage": "static"
+}
