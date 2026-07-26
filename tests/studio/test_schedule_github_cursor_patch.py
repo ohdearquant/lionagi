@@ -204,3 +204,184 @@ def test_update_rejects_a_malformed_cursor_before_any_write():
 
 def test_update_rejects_an_impossible_cursor_before_any_write():
     _expect_rejected({"github_cursor": "2026-02-30T00:00:00Z"}, "not a real timestamp")
+
+
+# ---------------------------------------------------------------------------
+# The interleaving: an operator PATCH vs an in-flight poll, against a real store
+# ---------------------------------------------------------------------------
+
+from lionagi.state.db import StateDB  # noqa: E402
+
+
+def _gh_schedule(sid: str, cursor: str | None) -> dict:
+    return {
+        "id": sid,
+        "name": f"gh-{sid}",
+        "trigger_type": "github_poll",
+        "github_repo": "owner/name",
+        "github_filter": {"event": "pr_merged"},
+        "github_cursor": cursor,
+        "action_kind": "agent",
+        "action_prompt": "review",
+        "enabled": 1,
+        "missed_fire_policy": "skip",
+    }
+
+
+def _run_row(run_id: str, sid: str) -> dict:
+    return {
+        "id": run_id,
+        "schedule_id": sid,
+        "trigger_context": {"source": "github_poll"},
+        "action_kind": "agent",
+        "action_args": {"prompt": "review"},
+        "status": "running",
+        "fired_at": 1000.0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_operator_patch_survives_an_in_flight_polls_cursor_write(tmp_path):
+    """The race the patchable cursor creates, and the reason for the guard.
+
+    A tick reads the schedule at its start and writes the cursor back much
+    later, so its value is a snapshot. If an operator moves the cursor forward
+    in between -- the whole point of the field -- an unguarded write from that
+    tick puts it back, and the backlog the operator declined becomes eligible
+    again on the next scan. Silent: the PATCH returned 200 and the run row is
+    perfectly valid.
+    """
+    db_path = tmp_path / "state.db"
+    sid = "sched-race"
+    async with StateDB(db_path) as db:
+        await db.create_schedule(_gh_schedule(sid, "2026-07-20T00:00:00Z"))
+
+    # Operator declines the backlog while a poll is in flight.
+    async with StateDB(db_path) as db:
+        await db.update_schedule(sid, github_cursor="2026-08-01T00:00:00Z")
+
+    # The in-flight tick now lands, carrying the value it computed from the
+    # cursor it read before the PATCH.
+    async with StateDB(db_path) as db:
+        await db.create_schedule_run_and_advance(
+            _run_row("run-race", sid),
+            schedule_id=sid,
+            schedule_fields={"github_cursor": "2026-07-21T00:00:00Z", "last_fired_at": 1000.0},
+        )
+
+    async with StateDB(db_path) as db:
+        schedule = await db.get_schedule(sid)
+        runs = await db.list_schedule_runs(sid)
+
+    assert schedule["github_cursor"] == "2026-08-01T00:00:00Z", (
+        "a stale poll walked the operator's cursor backwards"
+    )
+    # The occurrence still had to be recorded: the event DID fire, and a
+    # refused cursor advance must not discard the record of it.
+    assert len(runs) == 1
+    # Sibling fields in the same statement land regardless of the guard.
+    assert schedule["last_fired_at"] == 1000.0
+
+
+@pytest.mark.asyncio
+async def test_normal_forward_advance_is_unaffected_by_the_guard(tmp_path):
+    """The guard must not break the ordinary case it wraps."""
+    db_path = tmp_path / "state.db"
+    sid = "sched-fwd"
+    async with StateDB(db_path) as db:
+        await db.create_schedule(_gh_schedule(sid, "2026-07-20T00:00:00Z"))
+        await db.create_schedule_run_and_advance(
+            _run_row("run-fwd", sid),
+            schedule_id=sid,
+            schedule_fields={"github_cursor": "2026-07-22T00:00:00Z"},
+        )
+        schedule = await db.get_schedule(sid)
+    assert schedule["github_cursor"] == "2026-07-22T00:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_guard_advances_from_a_null_cursor(tmp_path):
+    """A NULL cursor is below everything; ``NULL < x`` is NULL, not true, so
+    the explicit IS NULL branch is what makes a first advance work at all."""
+    db_path = tmp_path / "state.db"
+    sid = "sched-null"
+    async with StateDB(db_path) as db:
+        await db.create_schedule(_gh_schedule(sid, None))
+        await db.create_schedule_run_and_advance(
+            _run_row("run-null", sid),
+            schedule_id=sid,
+            schedule_fields={"github_cursor": "2026-07-22T00:00:00Z"},
+        )
+        schedule = await db.get_schedule(sid)
+    assert schedule["github_cursor"] == "2026-07-22T00:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_operator_path_is_not_guarded_so_a_replay_is_still_possible(tmp_path):
+    """The guard is the ENGINE's invariant, not the operator's.
+
+    Moving the cursor backwards to replay a band is a legitimate action and
+    must not be silently ignored -- which is exactly what a guard applied to
+    both writers would do.
+    """
+    db_path = tmp_path / "state.db"
+    sid = "sched-replay"
+    async with StateDB(db_path) as db:
+        await db.create_schedule(_gh_schedule(sid, "2026-07-25T00:00:00Z"))
+        await db.update_schedule(sid, github_cursor="2026-07-01T00:00:00Z")
+        schedule = await db.get_schedule(sid)
+    assert schedule["github_cursor"] == "2026-07-01T00:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_guard_is_inert_for_schedules_with_no_cursor_field(tmp_path):
+    """Non-github schedules go through the same statement builder."""
+    db_path = tmp_path / "state.db"
+    sid = "sched-cron"
+    async with StateDB(db_path) as db:
+        await db.create_schedule(
+            {
+                "id": sid,
+                "name": "cron-x",
+                "trigger_type": "cron",
+                "cron_expr": "0 * * * *",
+                "action_kind": "agent",
+                "action_prompt": "ping",
+                "enabled": 1,
+                "missed_fire_policy": "skip",
+                "next_fire_at": 1000.0,
+            }
+        )
+        await db.create_schedule_run_and_advance(
+            _run_row("run-cron", sid),
+            schedule_id=sid,
+            schedule_fields={"next_fire_at": 2000.0, "last_fired_at": 1000.0},
+        )
+        schedule = await db.get_schedule(sid)
+    assert schedule["next_fire_at"] == 2000.0
+    assert schedule["last_fired_at"] == 1000.0
+
+
+def test_guarded_statement_compiles_on_both_dialects():
+    """The guard repeats one bound parameter three times in a single statement.
+
+    SQLite renders positional placeholders and PostgreSQL renders named ones,
+    so the repetition is the part worth pinning: it is where a hand-written
+    predicate would break on one backend and not the other. The PostgreSQL
+    integration tests need a driver that is not installed in every
+    environment, so this compiles the statement instead of executing it --
+    which checks the parameter shape, not the runtime semantics.
+    """
+    from sqlalchemy.dialects import postgresql, sqlite
+
+    from lionagi.state.db import StateDB as _StateDB
+
+    stmt, _params = _StateDB._build_update_schedule_stmt(
+        "sid",
+        {"github_cursor": "2026-07-22T00:00:00Z", "last_fired_at": 1.0},
+        guard_cursor_forward=True,
+    )
+    for dialect in (sqlite.dialect(), postgresql.dialect()):
+        sql = str(stmt.compile(dialect=dialect))
+        assert "CASE WHEN github_cursor IS NULL" in sql
+        assert '"last_fired_at"' in sql  # sibling fields still assigned plainly
