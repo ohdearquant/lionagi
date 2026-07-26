@@ -720,7 +720,14 @@ async def test_fire_inner_exception_mints_schedule_run_failed():
 
 @pytest.mark.asyncio
 async def test_fire_cancellation_mints_schedule_run_cancelled():
+    """A cancellation that arrives once the child process exists still mints
+    the cancelled signal — something ran, so the run is recorded terminally."""
     from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    async def _cancel_after_launch(*args, on_launched=None, **kwargs):
+        if on_launched is not None:
+            await on_launched()
+        raise asyncio.CancelledError()
 
     svc = _make_svc()
     bus = SchedulerSignalBus()
@@ -736,7 +743,7 @@ async def test_fire_cancellation_mints_schedule_run_cancelled():
         ),
         patch(
             "lionagi.studio.scheduler.subprocess.spawn_and_wait",
-            new=AsyncMock(side_effect=asyncio.CancelledError()),
+            new=_cancel_after_launch,
         ),
     ):
         with pytest.raises(asyncio.CancelledError):

@@ -421,6 +421,11 @@ class TestFireCancellationRecorded:
         async def blocking_spawn(
             argv, inv_id, *, tmp_path=None, cwd=None, action_kind=None, on_launched=None
         ):
+            # The real spawn_and_wait confirms the child exists before it waits
+            # on it. That confirmation is what makes this the in-flight case:
+            # something is running, so cancelling it has to be recorded.
+            if on_launched is not None:
+                await on_launched()
             started.set()
             await asyncio.Event().wait()  # block until the _fire task is cancelled
 
