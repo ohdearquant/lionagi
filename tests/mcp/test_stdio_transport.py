@@ -115,8 +115,9 @@ def test_missing_fingerprint_error_states_the_op_level_shape(mcp: StdioMCPClient
 def test_fingerprint_inside_args_is_refused_as_a_wrong_place(mcp: StdioMCPClient) -> None:
     """Putting it in ``args`` used to repeat the same refusal verbatim.
 
-    Same text for "you did not send it" and "you sent it in the wrong place"
-    reads as an idempotent failure, which is what cost the diagnosis.
+    Identical text for "you did not send it" and "you sent it in the wrong
+    place" reads as an idempotent failure, so a caller retries the shape it
+    already sent instead of moving the field.
     """
     fingerprint = mcp.request(help="agent.submit")["schema_fingerprint"]
     result = mcp.op("agent.submit", {"prompt": "unused", "schema_fingerprint": fingerprint})
