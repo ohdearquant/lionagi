@@ -56,6 +56,7 @@ __all__ = (
     "build_deadline_preamble",
     "list_agents",
     "load_agent_profile",
+    "profile_config",
     "_parse_profile",
     "_resolve_profile_path",
     "_validate_bare_name",
@@ -426,29 +427,32 @@ def list_agents() -> list[str]:
     return sorted(seen)
 
 
-def build_agent_profile_catalog() -> dict[str, dict[str, Any]]:
-    """Index discoverable profiles by name and resolved runtime configuration.
+def profile_config(profile: AgentProfile) -> dict[str, Any]:
+    """The runtime configuration a loaded profile contributes, as plain JSON values.
 
-    Prompt bodies are deliberately omitted: the catalog is a discovery surface,
-    not a second path for exposing or copying profile instructions.
+    The one place that decides which fields a discovery surface reports — and
+    which it withholds. Prompt bodies are deliberately absent: discovery is not a
+    second path for exposing or copying profile instructions. Every reader of the
+    roster goes through here so they cannot disagree about either half.
     """
-    catalog: dict[str, dict[str, Any]] = {}
-    for name in list_agents():
-        profile = load_agent_profile(name)
-        catalog[name] = {
-            "model": profile.model,
-            "effort": profile.effort,
-            "role": profile.extra.get("role"),
-            "pack": profile.extra.get("pack"),
-            "yolo": profile.yolo,
-            "bypass": profile.bypass,
-            "fast_mode": profile.fast_mode,
-            "lion_system": profile.lion_system,
-            "khive_injection": profile.khive_injection,
-            "timeout": profile.timeout,
-            "resume_on_timeout": profile.resume_on_timeout,
-        }
-    return catalog
+    return {
+        "model": profile.model,
+        "effort": profile.effort,
+        "role": profile.extra.get("role"),
+        "pack": profile.extra.get("pack"),
+        "yolo": profile.yolo,
+        "bypass": profile.bypass,
+        "fast_mode": profile.fast_mode,
+        "lion_system": profile.lion_system,
+        "khive_injection": profile.khive_injection,
+        "timeout": profile.timeout,
+        "resume_on_timeout": profile.resume_on_timeout,
+    }
+
+
+def build_agent_profile_catalog() -> dict[str, dict[str, Any]]:
+    """Index discoverable profiles by name and resolved runtime configuration."""
+    return {name: profile_config(load_agent_profile(name)) for name in list_agents()}
 
 
 def _resolve_plugin_profile_path(name: str) -> Path | None:
