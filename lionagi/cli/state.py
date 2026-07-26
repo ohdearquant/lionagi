@@ -36,6 +36,7 @@ __all__ = [
     # CLI entrypoints
     "add_state_subparser",
     "run_state",
+    "machine_result",
 ]
 
 
@@ -299,43 +300,94 @@ def _format_bytes(n: int) -> str:
     return f"{n:.1f} TiB"
 
 
+async def _collect_sessions(db: Any, *, limit: int, status: str | None) -> list[dict[str, Any]]:
+    """Sessions newest-first, each with its branch and message counts.
+
+    The one query the listing runs, so the printed table and the machine result
+    report the same rows and the same counts rather than two readings of the
+    store taken by two pieces of code.
+    """
+    from sqlalchemy import text
+
+    async with db._read() as conn:
+        if status:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT id, name, status, updated_at FROM sessions "
+                            "WHERE status = :st ORDER BY updated_at DESC LIMIT :lim"
+                        ),
+                        {"st": status, "lim": limit},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        else:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT id, name, status, updated_at FROM sessions "
+                            "ORDER BY updated_at DESC LIMIT :lim"
+                        ),
+                        {"lim": limit},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+
+    collected: list[dict[str, Any]] = []
+    for row in rows:
+        sid = row["id"]
+        async with db._read() as conn:
+            bc = (
+                (
+                    await conn.execute(
+                        text("SELECT COUNT(*) AS n FROM branches WHERE session_id = :sid"),
+                        {"sid": sid},
+                    )
+                )
+                .mappings()
+                .first()["n"]
+            )
+
+            prog_row = (
+                (
+                    await conn.execute(
+                        text("SELECT progression_id FROM sessions WHERE id = :id"),
+                        {"id": sid},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        msg_count = 0
+        if prog_row and prog_row["progression_id"]:
+            prog_data = await db.get_progression(prog_row["progression_id"])
+            msg_count = len(prog_data)
+        collected.append(
+            {
+                "id": sid,
+                "name": row["name"],
+                "status": row["status"],
+                "updated_at": row["updated_at"],
+                "branch_count": bc,
+                "message_count": msg_count,
+            }
+        )
+    return collected
+
+
 async def _list_sessions(*, limit: int = 50, status: str | None = None) -> None:
     import time
-
-    from sqlalchemy import text
 
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
-        async with db._read() as conn:
-            if status:
-                rows = (
-                    (
-                        await conn.execute(
-                            text(
-                                "SELECT id, name, status, updated_at FROM sessions "
-                                "WHERE status = :st ORDER BY updated_at DESC LIMIT :lim"
-                            ),
-                            {"st": status, "lim": limit},
-                        )
-                    )
-                    .mappings()
-                    .all()
-                )
-            else:
-                rows = (
-                    (
-                        await conn.execute(
-                            text(
-                                "SELECT id, name, status, updated_at FROM sessions "
-                                "ORDER BY updated_at DESC LIMIT :lim"
-                            ),
-                            {"lim": limit},
-                        )
-                    )
-                    .mappings()
-                    .all()
-                )
+        rows = await _collect_sessions(db, limit=limit, status=status)
 
         if not rows:
             print("(no sessions in state.db)")
@@ -348,117 +400,131 @@ async def _list_sessions(*, limit: int = 50, status: str | None = None) -> None:
         print(header)
         print("-" * len(header))
         for row in rows:
-            sid = row["id"]
             name = (row["name"] or "")[:16]
             sstat = (row["status"] or "")[:10]
             updated = row["updated_at"]
             updated_str = (
                 time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(updated)) if updated else ""
             )
+            print(
+                f"{row['id']:<36}  {name:<16}  {sstat:<10}  "
+                f"{row['branch_count']:>8}  {row['message_count']:>8}  {updated_str:<20}"
+            )
 
-            async with db._read() as conn:
-                bc = (
-                    (
-                        await conn.execute(
-                            text("SELECT COUNT(*) AS n FROM branches WHERE session_id = :sid"),
-                            {"sid": sid},
-                        )
+
+# The tables a size report counts, and the pragmas it reads, in the order both
+# are printed. Named once so the machine result and the printout cannot come to
+# describe different databases.
+_STATS_TABLES = (
+    "messages",
+    "progressions",
+    "sessions",
+    "branches",
+    "definitions",
+    "shows",
+    "plays",
+)
+
+_STATS_PRAGMAS = (
+    "journal_mode",
+    "wal_autocheckpoint",
+    "busy_timeout",
+    "synchronous",
+    "foreign_keys",
+)
+
+
+def _db_sizes() -> dict[str, Any]:
+    from lionagi.state.db import DEFAULT_DB_PATH
+
+    wal_path = DEFAULT_DB_PATH.with_name(DEFAULT_DB_PATH.name + "-wal")
+    return {
+        "path": str(DEFAULT_DB_PATH),
+        "exists": DEFAULT_DB_PATH.exists(),
+        "size_bytes": DEFAULT_DB_PATH.stat().st_size if DEFAULT_DB_PATH.exists() else 0,
+        "wal_size_bytes": wal_path.stat().st_size if wal_path.exists() else 0,
+    }
+
+
+async def _collect_stats(db: Any) -> dict[str, Any]:
+    """Row counts, the session status distribution, and the SQLite pragmas."""
+    from sqlalchemy import text
+
+    counts: dict[str, int] = {}
+    for table in _STATS_TABLES:
+        async with db._read() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text(f"SELECT COUNT(*) AS n FROM {table}")  # noqa: S608
                     )
-                    .mappings()
-                    .first()["n"]
                 )
+                .mappings()
+                .first()
+            )
+        counts[table] = row["n"]
 
-                prog_row = (
-                    (
-                        await conn.execute(
-                            text("SELECT progression_id FROM sessions WHERE id = :id"),
-                            {"id": sid},
-                        )
+    async with db._read() as conn:
+        status_rows = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT status AS s, COUNT(*) AS n "
+                        "FROM sessions GROUP BY status ORDER BY n DESC"
                     )
-                    .mappings()
-                    .first()
                 )
-            msg_count = 0
-            if prog_row and prog_row["progression_id"]:
-                prog_data = await db.get_progression(prog_row["progression_id"])
-                msg_count = len(prog_data)
+            )
+            .mappings()
+            .all()
+        )
 
-            print(f"{sid:<36}  {name:<16}  {sstat:<10}  {bc:>8}  {msg_count:>8}  {updated_str:<20}")
+    pragmas: dict[str, Any] = {}
+    for pragma in _STATS_PRAGMAS:
+        async with db._read() as conn:
+            row = (await conn.execute(text(f"PRAGMA {pragma}"))).first()
+        pragmas[pragma] = row[0] if row else None
+
+    return {
+        "row_counts": counts,
+        # A list of pairs, not an object: a session whose status was never
+        # recorded is a null key, and the printout's "(null)" placeholder for it
+        # would be indistinguishable from a status literally spelled that way.
+        "sessions_by_status": [{"status": r["s"], "count": r["n"]} for r in status_rows],
+        "pragmas": pragmas,
+    }
 
 
 async def _print_stats() -> None:
     from lionagi.state.db import DEFAULT_DB_PATH, StateDB
 
-    db_path = DEFAULT_DB_PATH
-    db_size = db_path.stat().st_size if db_path.exists() else 0
-    wal_path = db_path.with_name(db_path.name + "-wal")
-    wal_size = wal_path.stat().st_size if wal_path.exists() else 0
+    sizes = _db_sizes()
 
-    print(f"state.db path:   {db_path}")
-    print(f"state.db size:   {_format_bytes(db_size)}")
-    print(f"state.db-wal:    {_format_bytes(wal_size)}")
+    print(f"state.db path:   {DEFAULT_DB_PATH}")
+    print(f"state.db size:   {_format_bytes(sizes['size_bytes'])}")
+    print(f"state.db-wal:    {_format_bytes(sizes['wal_size_bytes'])}")
     print()
 
-    if not db_path.exists():
+    if not sizes["exists"]:
         print("(no state.db yet — first run will create it)")
         return
 
-    from sqlalchemy import text
-
     async with StateDB() as db:
-        print("Row counts:")
-        for table in (
-            "messages",
-            "progressions",
-            "sessions",
-            "branches",
-            "definitions",
-            "shows",
-            "plays",
-        ):
-            async with db._read() as conn:
-                row = (
-                    (
-                        await conn.execute(
-                            text(f"SELECT COUNT(*) AS n FROM {table}")  # noqa: S608
-                        )
-                    )
-                    .mappings()
-                    .first()
-                )
-            print(f"  {table:<14} {row['n']:>10}")
-        print()
+        collected = await _collect_stats(db)
 
-        async with db._read() as conn:
-            rows = (
-                (
-                    await conn.execute(
-                        text(
-                            "SELECT COALESCE(status, '(null)') AS s, COUNT(*) AS n "
-                            "FROM sessions GROUP BY status ORDER BY n DESC"
-                        )
-                    )
-                )
-                .mappings()
-                .all()
-            )
-        print("Sessions by status:")
-        for row in rows:
-            print(f"  {row['s']:<14} {row['n']:>10}")
-        print()
+    print("Row counts:")
+    for table, n in collected["row_counts"].items():
+        print(f"  {table:<14} {n:>10}")
+    print()
 
-        print("PRAGMAs:")
-        for pragma in (
-            "journal_mode",
-            "wal_autocheckpoint",
-            "busy_timeout",
-            "synchronous",
-            "foreign_keys",
-        ):
-            async with db._read() as conn:
-                row = (await conn.execute(text(f"PRAGMA {pragma}"))).first()
-            val = row[0] if row else "?"
-            print(f"  {pragma:<22} {val}")
+    print("Sessions by status:")
+    for entry in collected["sessions_by_status"]:
+        label = "(null)" if entry["status"] is None else entry["status"]
+        print(f"  {label:<14} {entry['count']:>10}")
+    print()
+
+    print("PRAGMAs:")
+    for pragma, value in collected["pragmas"].items():
+        print(f"  {pragma:<22} {'?' if value is None else value}")
 
 
 async def _checkpoint(mode: str) -> str:
@@ -592,7 +658,7 @@ async def _doctor(
     from sqlalchemy import text
 
     from lionagi.cli._util import pid_alive
-    from lionagi.cli.kill import _check_pid_identity_tristate, _read_pid_from_entity
+    from lionagi.cli.kill import _check_pid_identity, _read_pid_from_entity
 
     async with StateDB() as db:
         async with db._read() as conn:
@@ -641,7 +707,7 @@ async def _doctor(
                     expected_create_time = float(raw_ct) if raw_ct is not None else None
                 except (TypeError, ValueError):
                     expected_create_time = None
-                verdict = _check_pid_identity_tristate(
+                verdict = _check_pid_identity(
                     pid,
                     "lionagi",
                     expected_session_id=row["id"],
@@ -649,7 +715,9 @@ async def _doctor(
                 )
                 # "unverifiable" means the process could not be inspected, not
                 # that it is gone; skipping it leaves a row for the next run
-                # rather than reaping one out from under a worker.
+                # rather than reaping one out from under a worker. "zombie" is
+                # the opposite: the process has exited and is only waiting to
+                # be reaped, so the row is stale and belongs in the sweep.
                 if verdict in ("ours", "unverifiable"):
                     skipped += 1
                     continue
@@ -1096,3 +1164,89 @@ def run_state(args: argparse.Namespace) -> int:
         return 0
 
     return 1
+
+
+# ── machine result ────────────────────────────────────────────────────────────
+
+
+async def _machine_ls_data(*, limit: int, status: str | None) -> dict[str, Any]:
+    from .machine import available, readonly_state_db
+
+    result: dict[str, Any] = {"filters": {"status": status}, "limit": limit}
+    async with readonly_state_db() as (db, why):
+        if db is None:
+            result["sessions"] = why
+            return result
+        rows = await _collect_sessions(db, limit=limit, status=status)
+    result["sessions"] = available(rows)
+    return result
+
+
+async def _machine_stats_data() -> dict[str, Any]:
+    from .machine import available, readonly_state_db
+
+    sizes = _db_sizes()
+    result: dict[str, Any] = {"database": sizes}
+    async with readonly_state_db() as (db, why):
+        if db is None:
+            absent = why
+            result["row_counts"] = absent
+            result["sessions_by_status"] = absent
+            result["journal_mode"] = absent
+            return result
+        collected = await _collect_stats(db)
+    result["row_counts"] = available(collected["row_counts"])
+    result["sessions_by_status"] = available(collected["sessions_by_status"])
+    # Only the one pragma that describes the database rather than the connection
+    # that asked. busy_timeout, synchronous and the rest are settings of whichever
+    # connection reads them, so reporting them here would hand a caller this
+    # reader's configuration under a name that reads like the store's.
+    result["journal_mode"] = available(collected["pragmas"]["journal_mode"])
+    return result
+
+
+def _machine_ls(argv: list[str]) -> dict[str, Any]:
+    from lionagi.ln.concurrency import run_async
+
+    from .machine import MachineError, machine_parser, parse_machine_argv
+
+    parser = machine_parser("li state ls")
+    parser.add_argument("--limit", type=int, default=50, help=argparse.SUPPRESS)
+    parser.add_argument("--status", default=None, help=argparse.SUPPRESS)
+    args = parse_machine_argv(parser, argv)
+    if args.limit < 1:
+        raise MachineError("invalid_input", "--limit must be at least 1")
+    return run_async(_machine_ls_data(limit=args.limit, status=args.status))
+
+
+def _machine_stats(argv: list[str]) -> dict[str, Any]:
+    from lionagi.ln.concurrency import run_async
+
+    from .machine import MachineError
+
+    if argv:
+        raise MachineError("invalid_input", f"li state stats takes no arguments: {' '.join(argv)}")
+    return run_async(_machine_stats_data())
+
+
+def machine_result(argv: list[str]) -> dict[str, Any]:
+    """`li state <sub> --machine`.
+
+    `migrate` is not among the subcommands routed here and is not reachable from
+    the MCP surface at all; it rewrites the store every other reader reports on.
+    """
+    from .machine import machine_subcommand
+
+    return machine_subcommand(
+        "state",
+        argv,
+        {"ls": _machine_ls, "stats": _machine_stats},
+        without_seam={
+            "import": "it loads run directories into the store, which is a write",
+            "import-teams": "it loads team files into the store, which is a write",
+            "checkpoint": "it checkpoints the write-ahead log",
+            "vacuum": "it rebuilds the database file",
+            "prune": "it deletes rows",
+            "doctor": "it sweeps stale rows to a new status, which is a write",
+        },
+    )

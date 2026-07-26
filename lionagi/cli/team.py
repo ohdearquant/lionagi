@@ -633,3 +633,67 @@ def run_team(args: argparse.Namespace) -> int:
         return cmd_receive(args)
     log_error(f"Unknown team command: {cmd}")
     return 1
+
+
+# ── machine result ────────────────────────────────────────────────────────────
+
+
+def _machine_list_data() -> dict[str, Any]:
+    from .machine import REASON_UNREADABLE, available, list_directory, unavailable
+
+    # Read without creating: the human path ensures the directory exists as a
+    # side effect of being about to write to it, and a listing has nothing to
+    # write. A directory that was never created is a definitive zero teams,
+    # which is what the human path also reports once it has made one.
+    listing = list_directory(TEAMS_DIR, missing_is_empty=True)
+    if not listing["available"]:
+        return {"teams": listing, "unreadable": []}
+
+    teams: list[dict[str, Any]] = []
+    unreadable: list[dict[str, Any]] = []
+    for path in sorted(TEAMS_DIR.glob("*.json")):
+        data = read_team_json(path)
+        if data is None:
+            # The printed listing skips these silently. A machine caller is told,
+            # because "four teams" and "four teams and one file I could not read"
+            # are different answers and only one of them is complete.
+            unreadable.append(unavailable(REASON_UNREADABLE, str(path)))
+            continue
+        teams.append(
+            {
+                "id": data.get("id"),
+                "name": data.get("name"),
+                "members": data.get("members") or [],
+                "created_at": data.get("created_at"),
+                "message_count": len(data.get("messages") or []),
+                "path": str(path),
+            }
+        )
+    teams.sort(key=lambda t: (t["name"] or "", t["id"] or ""))
+    return {"teams": available(teams), "unreadable": unreadable}
+
+
+def _machine_list(argv: list[str]) -> dict[str, Any]:
+    from .machine import MachineError
+
+    if argv:
+        raise MachineError("invalid_input", f"li team list takes no arguments: {' '.join(argv)}")
+    return _machine_list_data()
+
+
+def machine_result(argv: list[str]) -> dict[str, Any]:
+    """`li team <sub> --machine`."""
+    from .machine import machine_subcommand
+
+    return machine_subcommand(
+        "team",
+        argv,
+        {"list": _machine_list, "ls": _machine_list},
+        without_seam={
+            "create": "it writes a new team file",
+            "show": "it prints a team's messages for a human reader",
+            "send": "it appends a message to a team file",
+            "receive": "it marks the messages it returns as read, which is a write",
+            "recv": "it marks the messages it returns as read, which is a write",
+        },
+    )

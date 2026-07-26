@@ -241,6 +241,13 @@ _COMMAND_REGISTRY = (
         "run_runs",
     ),
     _CommandSpec(
+        "lifecycle",
+        "Report the recorded lifecycle state of a run.",
+        _load_machine,
+        "add_lifecycle_subparser",
+        "run_lifecycle",
+    ),
+    _CommandSpec(
         "mcp",
         "Serve the lionagi MCP server (background job submit/query) over stdio.",
         _load_mcp,
@@ -337,6 +344,10 @@ def run_handshake(args: argparse.Namespace) -> int:
 
 def run_runs(args: argparse.Namespace) -> int:
     return _load_machine().run_runs(args)
+
+
+def run_lifecycle(args: argparse.Namespace) -> int:
+    return _load_machine().run_lifecycle(args)
 
 
 def run_hooks(args: argparse.Namespace) -> int:
@@ -610,8 +621,6 @@ def _get_version() -> str:
 
 
 def _run(argv: list[str] | None = None) -> int:
-    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
-
     # Resolve verbose before any CLI code emits (argparse hasn't run yet).
     _argv = argv if argv is not None else sys.argv[1:]
     # Scan only before the '--' sentinel so a scheduled action_prompt
@@ -632,6 +641,24 @@ def _run(argv: list[str] | None = None) -> int:
     if "--machine" in _pre_sentinel:
         machine = _load_machine()
         return machine.dispatch_machine(machine.strip_machine_flag(_argv))
+
+    # From here on the reader is a person, usually with a pager: `li ... | head`
+    # should stop quietly rather than print a BrokenPipeError traceback, which
+    # is what the default disposition buys.
+    #
+    # The machine path above is deliberately left with the interpreter's own
+    # setting, where SIGPIPE is ignored and EPIPE arrives as a catchable OSError.
+    # Its caller reads the whole stream, so there is no pager to be quiet for,
+    # and this surface promises exactly one thing: every call answers with an
+    # envelope. Under the default disposition that promise is not ours to keep —
+    # any EPIPE anywhere in the process kills it outright, with no envelope and
+    # nothing on stderr, and not every write is one the command made. A database
+    # driver's worker thread signalling a result to an event loop that is closing
+    # underneath it writes to that loop's own wakeup socket, and if the loop got
+    # there first the write is on a socket whose other end is already gone. That
+    # is a routine internal race the interpreter absorbs; only the default
+    # disposition turns it into a command that stopped answering.
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
     # Same pre-argparse scan, so a project-scoped .lionagi/settings.yaml
     # next to a `--cwd DIR` target isn't missed in favor of the shell's cwd.

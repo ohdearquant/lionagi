@@ -28,8 +28,9 @@ import argparse
 import json
 import os
 import sys
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,12 @@ __all__ = (
     "unavailable",
     "read_json_file",
     "list_directory",
+    "machine_parser",
+    "parse_machine_argv",
+    "machine_subcommand",
+    "readonly_state_db",
+    "state_db_absent",
+    "store_unreachable",
     "reserve_stdout",
     "dispatch_machine",
     "handshake_data",
@@ -52,6 +59,9 @@ __all__ = (
     "run_handshake",
     "add_runs_subparser",
     "run_runs",
+    "lifecycle_data",
+    "add_lifecycle_subparser",
+    "run_lifecycle",
 )
 
 # The one place the current contract version lives. Incremented only by a change
@@ -188,6 +198,147 @@ def list_directory(path: Path, *, missing_is_empty: bool = False) -> dict[str, A
     except OSError as exc:
         return unavailable(REASON_UNREADABLE, f"{path}: {exc.strerror or exc}")
     return available(names)
+
+
+# ── argument parsing on the machine channel ─────────────────────────────────
+
+
+class _MachineArgumentParser(argparse.ArgumentParser):
+    """An argparse parser that refuses inside the envelope instead of exiting.
+
+    ``ArgumentParser.error`` prints usage and raises ``SystemExit``, which no
+    ``except Exception`` catches — the process would end having written a usage
+    message to stderr and no envelope at all, which reads to a machine caller as
+    a command that stopped answering rather than one that refused.
+    """
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        raise MachineError("invalid_input", message)
+
+
+def machine_parser(prog: str) -> argparse.ArgumentParser:
+    """A parser for one machine command's arguments.
+
+    Deliberately separate from the human-facing parser the same command
+    registers: this one is reached with ``--machine`` already stripped and
+    answers only what the machine path honours, so a flag that shapes the human
+    printout is refused here rather than accepted and ignored.
+    """
+    return _MachineArgumentParser(prog=prog, add_help=False)
+
+
+def parse_machine_argv(parser: argparse.ArgumentParser, argv: list[str]) -> argparse.Namespace:
+    known, extras = parser.parse_known_args(argv)
+    if extras:
+        raise MachineError("invalid_input", f"unrecognized arguments: {' '.join(extras)}")
+    return known
+
+
+def machine_subcommand(
+    command: str,
+    argv: list[str],
+    handlers: Mapping[str, Callable[[list[str]], dict[str, Any]]],
+    *,
+    without_seam: Mapping[str, str],
+) -> dict[str, Any]:
+    """Route ``li <command> <sub>`` to the subcommand's machine payload.
+
+    Three answers, kept apart: a name that is not a subcommand of this command
+    is bad input, a real subcommand with no machine result is unavailable and
+    says why, and a qualified one runs. Collapsing the middle case into "no such
+    subcommand" would tell a caller the capability does not exist when what is
+    missing is only this surface's route to it.
+
+    *without_seam* carries a reason per subcommand rather than a list of names,
+    because the reasons differ — one command prints prose, the next writes to
+    the store — and one sentence covering both would be true of neither.
+    """
+    if not argv:
+        raise MachineError(
+            "invalid_input",
+            f"li {command} needs a subcommand; these answer on the machine "
+            f"channel: {', '.join(sorted(handlers))}",
+        )
+    sub, rest = argv[0], argv[1:]
+    handler = handlers.get(sub)
+    if handler is not None:
+        return handler(rest)
+    reason = without_seam.get(sub)
+    if reason is not None:
+        raise MachineError(
+            "unavailable",
+            f"`li {command} {sub}` has no machine result in contract version "
+            f"{CONTRACT_VERSION}: {reason}",
+        )
+    raise MachineError("invalid_input", f"no such subcommand: {command} {sub}")
+
+
+# ── the lifecycle store, opened for reading only ────────────────────────────
+
+
+@asynccontextmanager
+async def readonly_state_db() -> AsyncIterator[tuple[Any | None, dict[str, Any] | None]]:
+    """The lifecycle store open for reading, paired with why it is not.
+
+    Read-only at the connection, not by convention: the ordinary open reconciles
+    the schema, so a reporting command that used it would write to the store it
+    is reporting on.
+
+    Exactly one of the two is set. The reason travels with the ``None`` rather
+    than being reconstructed by the caller, because there is more than one way
+    to arrive here: the store may not exist yet, which is a definitive statement
+    that nothing has been recorded, or it may exist and refuse to open, which
+    says nothing at all about what it holds. A caller handed only ``None`` has
+    to guess between those, and every one of them guessed "absent".
+
+    A failure to open is a fact about the store, so it is reported rather than
+    raised. The guard covers the open alone — the caller's own body runs outside
+    it, and a bug in a reader still surfaces as the crash it is.
+    """
+    from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+
+    if not DEFAULT_DB_PATH.exists():
+        yield None, state_db_absent()
+        return
+    async with AsyncExitStack() as stack:
+        try:
+            db = await stack.enter_async_context(StateDB(readonly=True))
+            # The engine is lazy: it connects on the first statement, so without
+            # this the store's refusal would surface in the middle of a caller's
+            # query, where it is indistinguishable from that query being wrong.
+            # One trivial statement moves the failure to the moment this seam
+            # claims the store is open, which is what the claim has to mean.
+            await db.fetch_all("SELECT 1")
+        except Exception as exc:  # noqa: BLE001 — an unopenable store is an answer, not a crash
+            yield None, unavailable(REASON_UNREADABLE, f"{DEFAULT_DB_PATH}: {type(exc).__name__}")
+            return
+        yield db, None
+
+
+def state_db_absent() -> dict[str, Any]:
+    """The unavailability every store-backed reader reports when there is no store."""
+    from lionagi.state.db import DEFAULT_DB_PATH
+
+    return unavailable(
+        REASON_NOT_FOUND, f"{DEFAULT_DB_PATH} does not exist; nothing has been recorded yet"
+    )
+
+
+def store_unreachable(why: dict[str, Any], subject: str) -> MachineError:
+    """The refusal a detail read makes when it never reached the store.
+
+    A detail read answers about one record, so it has no availability wrapper to
+    put this in and has to refuse. `not_found` stays `not_found` — with no store
+    there is definitively no such record — but a store that would not open is
+    `unavailable`, because the record may well be sitting in it.
+    """
+    reason = why.get("reason_code")
+    detail = why.get("detail")
+    if reason == REASON_NOT_FOUND:
+        return MachineError("not_found", f"{subject}: {detail}")
+    return MachineError(
+        "unavailable", f"{subject}: the lifecycle store could not be read ({detail})"
+    )
 
 
 # ── stdout reservation ──────────────────────────────────────────────────────
@@ -336,6 +487,133 @@ def runs_data(limit: int = _DEFAULT_RUNS_LIMIT) -> dict[str, Any]:
     return {"runs": available(entries), "truncated": truncated, "limit": limit}
 
 
+# Session statuses that mean the run was stopped on purpose, and the one that
+# means the work came out right. Both are read off the lifecycle vocabulary the
+# StateDB owns; everything else terminal is a failure. This mapping lives here,
+# on the side that owns the vocabulary, so a consumer never keeps a copy.
+_CANCELLED_SESSION_STATUSES = frozenset({"cancelled", "aborted"})
+_SUCCEEDED_SESSION_STATUSES = frozenset({"completed"})
+
+
+def _lifecycle_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Fold a run's session rows into one answer about the run.
+
+    `found` and `terminal` are separate questions and stay separate: no rows
+    means nothing was ever recorded, which is not the same fact as rows that
+    record no end. `terminal` needs every row to have ended, because a run that
+    persisted two sessions is over only when both are.
+    """
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+
+    sessions = [
+        {
+            "session_id": row.get("id"),
+            "status": row.get("status"),
+            "terminal": row.get("status") in SESSION_TERMINAL_STATUSES,
+            "started_at": row.get("started_at"),
+            "ended_at": row.get("ended_at"),
+            "reason_code": row.get("status_reason_code"),
+            "reason_summary": row.get("status_reason_summary"),
+        }
+        for row in rows
+    ]
+    if not sessions:
+        return {
+            "found": False,
+            "terminal": False,
+            "status": None,
+            "outcome": None,
+            "reason_code": None,
+            "reason_summary": None,
+            "ended_at": None,
+            "sessions": [],
+        }
+
+    terminal = all(entry["terminal"] for entry in sessions)
+    if not terminal:
+        governing = next(entry for entry in sessions if not entry["terminal"])
+        return {
+            "found": True,
+            "terminal": False,
+            "status": governing["status"],
+            "outcome": None,
+            "reason_code": governing["reason_code"],
+            "reason_summary": governing["reason_summary"],
+            "ended_at": None,
+            "sessions": sessions,
+        }
+
+    statuses = {entry["status"] for entry in sessions}
+    if statuses & _CANCELLED_SESSION_STATUSES:
+        outcome = "cancelled"
+        governing = next(
+            entry for entry in sessions if entry["status"] in _CANCELLED_SESSION_STATUSES
+        )
+    elif statuses <= _SUCCEEDED_SESSION_STATUSES:
+        outcome = "succeeded"
+        governing = sessions[-1]
+    else:
+        outcome = "failed"
+        governing = next(
+            entry for entry in sessions if entry["status"] not in _SUCCEEDED_SESSION_STATUSES
+        )
+    ends = [entry["ended_at"] for entry in sessions if entry["ended_at"] is not None]
+    return {
+        "found": True,
+        "terminal": True,
+        "status": governing["status"],
+        "outcome": outcome,
+        "reason_code": governing["reason_code"],
+        "reason_summary": governing["reason_summary"],
+        "ended_at": max(ends) if ends else None,
+        "sessions": sessions,
+    }
+
+
+def lifecycle_data(run_id: str) -> dict[str, Any]:
+    """What the lifecycle store records about CLI run *run_id*.
+
+    This is the one machine-qualified path from a run_id to the rows the
+    lifecycle writers — a normal teardown, and `li kill` — actually write. It
+    reads only; nothing here changes a run.
+
+    `lifecycle` carries its own availability, and the distinction is the whole
+    point: an established answer with `found: false` means no session was ever
+    recorded under this id, while an unavailable one means the store could not
+    be read at all. A caller that collapsed the two would report a run as
+    finished, or as never started, on the strength of a database it never
+    opened.
+    """
+    from lionagi.ln.concurrency import run_async
+    from lionagi.state.db import StateDB, state_db_file, state_db_known_absent
+
+    if state_db_known_absent():
+        # No store at all is not evidence about one run: it is the absence of
+        # every record, including the ones that would answer this question.
+        #
+        # Asked of the store this read will actually open, not of the default
+        # path. `LIONAGI_STATE_DB_URL` moves the store, and a check against the
+        # default would then report every run in a configured store as
+        # unreadable while the reader beside it opens that store and finds them.
+        return {
+            "run_id": run_id,
+            "lifecycle": unavailable(REASON_NOT_FOUND, f"{state_db_file()} does not exist"),
+        }
+
+    async def _read() -> list[dict[str, Any]]:
+        async with StateDB() as db:
+            return await db.get_sessions_for_run(run_id)
+
+    try:
+        rows = run_async(_read())
+    except Exception as exc:  # noqa: BLE001 — an unreadable store is an answer, not a crash
+        return {
+            "run_id": run_id,
+            "lifecycle": unavailable(REASON_UNREADABLE, f"{type(exc).__name__}: {exc}"),
+        }
+    return {"run_id": run_id, "lifecycle": available(_lifecycle_summary(rows))}
+
+
 # ── Machine dispatch ────────────────────────────────────────────────────────
 
 
@@ -374,6 +652,21 @@ def _machine_schedule(argv: list[str]) -> dict[str, Any]:
     return dispatch_schedule(argv)
 
 
+def _machine_lifecycle(argv: list[str]) -> dict[str, Any]:
+    parser = argparse.ArgumentParser(prog="li lifecycle", add_help=False)
+    parser.add_argument(
+        "run_id",
+        nargs="?",
+        help="The run id to report the recorded lifecycle state of.",
+    )
+    known, extras = parser.parse_known_args(argv)
+    if extras:
+        raise MachineError("invalid_input", f"unrecognized arguments: {' '.join(extras)}")
+    if not known.run_id or not known.run_id.strip():
+        raise MachineError("invalid_input", "li lifecycle needs a run id")
+    return lifecycle_data(known.run_id.strip())
+
+
 def _reject_extra_arguments(name: str, argv: list[str]) -> None:
     if argv:
         raise MachineError("invalid_input", f"li {name} takes no arguments: {' '.join(argv)}")
@@ -384,6 +677,24 @@ _MACHINE_COMMANDS: dict[str, Callable[[list[str]], dict[str, Any]]] = {
     "doctor": _machine_doctor,
     "runs": _machine_runs,
     "schedule": _machine_schedule,
+    "lifecycle": _machine_lifecycle,
+}
+
+# Commands whose machine result is defined beside the command it mirrors rather
+# than here, because a payload that lives in another file drifts from the
+# printout it is supposed to be the machine form of. Each module exposes
+# ``machine_result(argv)`` and routes its own subcommands. The alias spellings
+# are registered too: `li mon --machine` reaches the same parser `li mon` does,
+# so it must reach the same result.
+_MACHINE_MODULES: dict[str, str] = {
+    "monitor": ".monitor",
+    "mon": ".monitor",
+    "stats": ".stats",
+    "invoke": ".invoke",
+    "dispatch": ".dispatch",
+    "state": ".state",
+    "team": ".team",
+    "plugin": ".plugin",
 }
 
 
@@ -450,6 +761,10 @@ def _run_machine_command(argv: list[str]) -> dict[str, Any]:
     if handler is not None:
         return handler(rest)
 
+    module_name = _MACHINE_MODULES.get(name)
+    if module_name is not None:
+        return import_module(module_name, __package__).machine_result(rest)
+
     from .main import _COMMAND_BY_NAME
 
     if name in _COMMAND_BY_NAME or name in ("play", "skill", "wait"):
@@ -510,4 +825,42 @@ def run_runs(args: argparse.Namespace) -> int:
         print(f"{entry['run_id']}  {summary}")
     if data["truncated"]:
         print(f"(truncated at {data['limit']}; pass --limit for more)")
+    return 0
+
+
+def add_lifecycle_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p = subparsers.add_parser(
+        "lifecycle",
+        help="Report the recorded lifecycle state of a run.",
+        description=(
+            "Read-only: what the lifecycle store records about one run id — whether a "
+            "session was ever recorded for it, whether every one of them has ended, and "
+            "with what outcome. A run stopped by `li kill` reads as cancelled here. "
+            "Add --machine for the contract envelope on stdout."
+        ),
+    )
+    p.add_argument("run_id", help="The run id to report on.")
+    p.add_argument("--machine", action="store_true", help="Emit the machine-result envelope.")
+
+
+def run_lifecycle(args: argparse.Namespace) -> int:
+    from ._logging import log_error
+
+    data = lifecycle_data(args.run_id)
+    state = data["lifecycle"]
+    if not state["available"]:
+        log_error(f"could not read the lifecycle store ({state['reason_code']}): {state['detail']}")
+        return 1
+    value = state["value"]
+    if not value["found"]:
+        print(f"{data['run_id']}: no session recorded for this run")
+        return 1
+    print(f"{data['run_id']}: {value['status']}")
+    print(f"terminal: {value['terminal']}")
+    if value["terminal"]:
+        print(f"outcome: {value['outcome']}")
+    if value["reason_code"]:
+        print(f"reason: {value['reason_code']} — {value['reason_summary'] or ''}".rstrip(" —"))
+    for entry in value["sessions"]:
+        print(f"  session {entry['session_id']}  {entry['status']}")
     return 0

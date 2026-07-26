@@ -9,6 +9,9 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
     "sessions": [
         ("updated_at", "REAL"),
         ("cc_session_id", "TEXT"),
+        # The CLI run this session belongs to; NULL on rows created before
+        # this migration and on sessions that were not started by a run.
+        ("run_id", "TEXT"),
         ("playbook_name", "TEXT"),
         ("agent_name", "TEXT"),
         ("invocation_kind", "TEXT"),
@@ -200,11 +203,15 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         "ON sessions(cc_session_id) WHERE cc_session_id IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_schedules_owner_key "
         "ON schedules(owner_key) WHERE owner_key IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_sessions_run_id "
+        "ON sessions(run_id) WHERE run_id IS NOT NULL",
     ),
     "postgresql": (
         "CREATE INDEX IF NOT EXISTS idx_sessions_cc_session "
         "ON sessions(cc_session_id) WHERE cc_session_id IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_schedules_owner_key "
         "ON schedules(owner_key) WHERE owner_key IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_sessions_run_id "
+        "ON sessions(run_id) WHERE run_id IS NOT NULL",
     ),
 }

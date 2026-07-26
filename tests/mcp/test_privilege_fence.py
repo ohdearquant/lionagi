@@ -46,6 +46,11 @@ REVIEWED_PATHS = frozenset(
         "orchestrate fanout",
         "orchestrate flow",
         "runs",
+        "dispatch ls",
+        "dispatch show",
+        "invoke list",
+        "monitor",
+        "plugin info",
         "schedule create",
         "schedule delete",
         "schedule disable",
@@ -58,6 +63,10 @@ REVIEWED_PATHS = frozenset(
         "schedule status",
         "schedule trigger",
         "schedule validate",
+        "state ls",
+        "state stats",
+        "stats runs",
+        "team list",
     }
 )
 

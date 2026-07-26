@@ -5,6 +5,9 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
+import subprocess
 import sys
 import time
 import uuid
@@ -12,6 +15,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import psutil
 import pytest
 import yaml
 
@@ -216,6 +220,9 @@ def test_terminate_pid_identity_mismatch_no_signal_sent(
     fake_psutil.Process.return_value = fake_proc
     fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
     fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    # Mirrors psutil: ZombieProcess is a NoSuchProcess subclass, so a double
+    # that omits it lets the code under test claim a distinction it never made.
+    fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
     monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
 
     result = _terminate_pid(42, grace_seconds=0.1, expected_cmd="lionagi")
@@ -237,12 +244,165 @@ def test_terminate_pid_identity_match_sends_signal(
     fake_psutil.Process.return_value = fake_proc
     fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
     fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    # Mirrors psutil: ZombieProcess is a NoSuchProcess subclass, so a double
+    # that omits it lets the code under test claim a distinction it never made.
+    fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
     monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
 
     result = _terminate_pid(42, grace_seconds=0.01, expected_cmd="lionagi")
     # SIGTERM must have been sent
     assert any(sig == __import__("signal").SIGTERM for _, sig in kill_calls)
     assert result in ("sigterm", "sigkill")
+
+
+# ── A real, unreaped child ────────────────────────────────────────────────────
+#
+# Everything below uses a process this test actually started. A SIGTERMed child
+# whose parent has not called wait() is a zombie: it holds its pid, so `kill -0`
+# keeps reporting it present, but it has no command line, no environment and no
+# way to be killed again. That is a third answer next to "this is our process"
+# and "this pid belongs to something else", and the kill path has to record the
+# cancellation for it instead of refusing.
+
+
+def _spawn_marked_child(session_id: str) -> subprocess.Popen:
+    """Start a sleeper carrying the session marker `li kill` identifies runs by."""
+    return subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", "import time; time.sleep(300)"],
+        env={**os.environ, "LIONAGI_SESSION_ID": session_id},
+    )
+
+
+def _await(predicate, timeout: float = 10.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _is_zombie(pid: int) -> bool:
+    try:
+        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    except psutil.ZombieProcess:
+        return True
+    except psutil.NoSuchProcess:
+        return False
+
+
+@pytest.mark.skipif(os.name != "posix", reason="zombies are a POSIX process state")
+async def test_kill_cancels_session_whose_child_is_an_unreaped_zombie(
+    temp_db_path: Path,
+):
+    """`li kill` against a SIGTERMed-but-unreaped child must persist the cancel.
+
+    This is the window a caller opens by starting a run and never waiting on
+    it: the process is gone, nobody has reaped it, and the row is still
+    'running'. Refusing here loses the cancellation for a run that has in fact
+    stopped.
+    """
+    sid = str(uuid.uuid4())
+    child = _spawn_marked_child(sid)
+    assert child.pid > 1
+
+    try:
+        assert _await(
+            lambda: _check_pid_identity(child.pid, "lionagi", expected_session_id=sid) == "ours"
+        ), "child never came up carrying its session marker"
+        create_time = psutil.Process(child.pid).create_time()
+
+        # While it is alive the identity check accepts it. Nothing about the
+        # arguments changes below, so whatever answer comes back after the
+        # SIGTERM differs only because the process died without being reaped.
+        assert (
+            _check_pid_identity(
+                child.pid,
+                "lionagi",
+                expected_session_id=sid,
+                expected_create_time=create_time,
+            )
+            == "ours"
+        )
+
+        async with StateDB() as db:
+            prog = str(uuid.uuid4())
+            await db.create_progression(prog)
+            await db.create_session(
+                {
+                    "id": sid,
+                    "progression_id": prog,
+                    "status": "running",
+                    "started_at": time.time(),
+                    "node_metadata": {"pid": child.pid, "pid_create_time": create_time},
+                }
+            )
+
+        os.kill(child.pid, signal.SIGTERM)
+        # Deliberately no child.wait()/poll(): an unreaped exit is the state
+        # under test, and reaping it here would test a pid that is simply gone.
+        assert _await(lambda: _is_zombie(child.pid)), (
+            "child did not become a zombie — this environment reaps children "
+            "on its own and cannot exercise the window"
+        )
+        assert _pid_alive(child.pid) is True, "a zombie still answers kill -0"
+        assert (
+            _check_pid_identity(
+                child.pid,
+                "lionagi",
+                expected_session_id=sid,
+                expected_create_time=create_time,
+            )
+            == "zombie"
+        )
+
+        rc = await _do_kill(sid, grace_seconds=0.5)
+        assert rc == 0, "a run that has already stopped is not a blocked kill"
+
+        async with StateDB() as db:
+            row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,))
+        assert row is not None
+        assert row["status"] == "cancelled", (
+            "the process is dead and the row must say so; leaving it 'running' "
+            "loses the cancellation"
+        )
+    finally:
+        if child.poll() is None and child.pid > 1:
+            child.kill()
+        child.wait()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="a zombie is a POSIX process state")
+def test_terminate_pid_reports_an_unreaped_process_dead_with_no_identity_to_check():
+    """The same window, reached where there is nothing to identify the pid by.
+
+    `_terminate_pid` is also called with no expected command — killing by pid,
+    and every liveness poll inside the grace loop. On that path the identity
+    classifier never runs, so its verdict cannot be what saves this: with only
+    `kill -0` to go on, an unreaped process looks alive forever and the caller
+    would SIGTERM a corpse and then sit out the whole grace window waiting for
+    a flag that can never flip.
+    """
+    sid = str(uuid.uuid4())
+    child = _spawn_marked_child(sid)
+    assert child.pid > 1
+
+    try:
+        assert _await(lambda: _pid_alive(child.pid)), "child never started"
+        os.kill(child.pid, signal.SIGTERM)
+        assert _await(lambda: _is_zombie(child.pid)), (
+            "child did not become a zombie — this environment reaps children "
+            "on its own and cannot exercise the window"
+        )
+        assert _pid_alive(child.pid) is True, "a zombie still answers kill -0"
+
+        started = time.monotonic()
+        assert _terminate_pid(child.pid, grace_seconds=5.0) == "already_dead"
+        assert time.monotonic() - started < 1.0, "it waited out a grace window for a dead process"
+    finally:
+        if child.poll() is None and child.pid > 1:
+            child.kill()
+        child.wait()
 
 
 def _mock_psutil(
@@ -265,6 +425,9 @@ def _mock_psutil(
     fake_psutil.Process.return_value = fake_proc
     fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
     fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    # Mirrors psutil: ZombieProcess is a NoSuchProcess subclass, so a double
+    # that omits it lets the code under test claim a distinction it never made.
+    fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
     monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
     return kill_calls
 
@@ -287,13 +450,13 @@ def test_identity_rejects_path_substring(monkeypatch: pytest.MonkeyPatch):
 def test_identity_accepts_dash_m_module(monkeypatch: pytest.MonkeyPatch):
     """``python -m lionagi.cli.main`` is a genuine invocation and is accepted."""
     _mock_psutil(monkeypatch, cmdline=["/usr/bin/python3", "-m", "lionagi.cli.main"])
-    assert _check_pid_identity(42, "lionagi") is True
+    assert _check_pid_identity(42, "lionagi") == "ours"
 
 
 def test_identity_accepts_li_entrypoint(monkeypatch: pytest.MonkeyPatch):
     """The ``li`` console-script entrypoint is accepted by executable basename."""
     _mock_psutil(monkeypatch, cmdline=["/opt/venv/bin/li", "kill", "abc123"])
-    assert _check_pid_identity(42, "lionagi") is True
+    assert _check_pid_identity(42, "lionagi") == "ours"
 
 
 def test_identity_accepts_shebang_launched_li(monkeypatch: pytest.MonkeyPatch):
@@ -302,7 +465,7 @@ def test_identity_accepts_shebang_launched_li(monkeypatch: pytest.MonkeyPatch):
         monkeypatch,
         cmdline=["/opt/.venv/bin/python3", "/opt/.venv/bin/li", "play", "abc123"],
     )
-    assert _check_pid_identity(42, "lionagi") is True
+    assert _check_pid_identity(42, "lionagi") == "ours"
 
 
 def test_identity_rejects_foreign_script_with_li_in_path(monkeypatch: pytest.MonkeyPatch):
@@ -311,7 +474,7 @@ def test_identity_rejects_foreign_script_with_li_in_path(monkeypatch: pytest.Mon
         monkeypatch,
         cmdline=["/usr/bin/python3", "/usr/local/bin/olia-tool", "run"],
     )
-    assert _check_pid_identity(42, "lionagi") is False
+    assert _check_pid_identity(42, "lionagi") == "not_ours"
 
 
 def test_identity_session_marker_match(monkeypatch: pytest.MonkeyPatch):
@@ -321,7 +484,7 @@ def test_identity_session_marker_match(monkeypatch: pytest.MonkeyPatch):
         cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
         environ={"LIONAGI_SESSION_ID": "run-123"},
     )
-    assert _check_pid_identity(42, "lionagi", expected_session_id="run-123") is True
+    assert _check_pid_identity(42, "lionagi", expected_session_id="run-123") == "ours"
 
 
 def test_identity_session_marker_mismatch_rejected(monkeypatch: pytest.MonkeyPatch):
@@ -335,7 +498,7 @@ def test_identity_session_marker_mismatch_rejected(monkeypatch: pytest.MonkeyPat
         cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
         environ={"LIONAGI_SESSION_ID": "other-run"},
     )
-    assert _check_pid_identity(42, "lionagi", expected_session_id="run-123") is False
+    assert _check_pid_identity(42, "lionagi", expected_session_id="run-123") == "not_ours"
 
 
 def test_identity_absent_marker_requires_create_time_match(monkeypatch: pytest.MonkeyPatch):
@@ -353,18 +516,18 @@ def test_identity_absent_marker_requires_create_time_match(monkeypatch: pytest.M
         create_time=500.0,
     )
     # No create_time recorded → cannot prove this run → skip.
-    assert _check_pid_identity(42, "lionagi", expected_session_id="run-123") is False
+    assert _check_pid_identity(42, "lionagi", expected_session_id="run-123") == "unverifiable"
     # create_time matches AND cmdline is lionagi → positively identified.
     assert (
         _check_pid_identity(
             42, "lionagi", expected_session_id="run-123", expected_create_time=500.0
         )
-        is True
+        == "ours"
     )
     # create_time differs → recycled PID → skip.
     assert (
         _check_pid_identity(42, "lionagi", expected_session_id="run-123", expected_create_time=1.0)
-        is False
+        == "not_ours"
     )
 
 
@@ -384,7 +547,7 @@ def test_identity_absent_marker_rejects_nonlionagi_cmdline(monkeypatch: pytest.M
         _check_pid_identity(
             42, "lionagi", expected_session_id="run-123", expected_create_time=500.0
         )
-        is False
+        == "not_ours"
     )
 
 
@@ -438,11 +601,11 @@ def test_identity_create_time_mismatch_rejected(monkeypatch: pytest.MonkeyPatch)
         cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
         create_time=100.0,
     )
-    assert _check_pid_identity(42, "lionagi", expected_create_time=999.0) is False
+    assert _check_pid_identity(42, "lionagi", expected_create_time=999.0) == "not_ours"
     # 0.5s apart → different process → reject (was accepted under the old 2s gate).
-    assert _check_pid_identity(42, "lionagi", expected_create_time=100.5) is False
+    assert _check_pid_identity(42, "lionagi", expected_create_time=100.5) == "not_ours"
     # within tick-rounding tolerance → accepted.
-    assert _check_pid_identity(42, "lionagi", expected_create_time=100.05) is True
+    assert _check_pid_identity(42, "lionagi", expected_create_time=100.05) == "ours"
 
 
 # ── current_pid_markers (launch-time recording) ───────────────────────────────
@@ -763,7 +926,7 @@ async def test_do_kill_all_stale_skips_live_pid(
 ):
     """Running session with a LIVE, identity-matching PID is not touched."""
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
-    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity_tristate", lambda *a, **kw: "ours")
+    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", lambda *a, **kw: "ours")
 
     old_start = time.time() - 7200
     async with StateDB() as db:
@@ -784,9 +947,7 @@ async def test_do_kill_all_stale_sweeps_reused_pid(
     """A live PID that no longer identifies as the tracked process (reused
     after the original died) must still be swept, not treated as live."""
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
-    monkeypatch.setattr(
-        "lionagi.cli.kill._check_pid_identity_tristate", lambda *a, **kw: "not_ours"
-    )
+    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", lambda *a, **kw: "not_ours")
 
     old_start = time.time() - 7200
     async with StateDB() as db:
@@ -875,6 +1036,9 @@ async def test_do_kill_all_stale_recycled_pid_swept_with_correlation(
     fake_psutil.Process.return_value = fake_proc
     fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
     fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    # Mirrors psutil: ZombieProcess is a NoSuchProcess subclass, so a double
+    # that omits it lets the code under test claim a distinction it never made.
+    fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
     monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
 
     old_start = time.time() - 7200
@@ -916,6 +1080,9 @@ async def test_do_kill_all_stale_matching_correlation_skips_live(
     fake_psutil.Process.return_value = fake_proc
     fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
     fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    # Mirrors psutil: ZombieProcess is a NoSuchProcess subclass, so a double
+    # that omits it lets the code under test claim a distinction it never made.
+    fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
     monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
 
     old_start = time.time() - 7200
@@ -948,10 +1115,9 @@ async def test_do_kill_all_stale_access_denied_not_cancelled(
     """A live pid we cannot inspect (psutil.AccessDenied) must be treated as
     still alive by the sweep, not cancelled out from under a running worker.
 
-    Discrimination: on unfixed code the sweep's bare `_check_pid_identity`
-    call collapses AccessDenied to False ("not ours"), so the row gets
-    cancelled while the process keeps running. Post-fix the tri-state check
-    reports "unverifiable" and the sweep skips it.
+    Discrimination: an identity check that collapses AccessDenied into "not
+    ours" gets the row cancelled while the process keeps running. The verdict
+    reports "unverifiable" instead and the sweep skips it.
     """
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
 
@@ -959,6 +1125,7 @@ async def test_do_kill_all_stale_access_denied_not_cancelled(
     fake_psutil = MagicMock()
     fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
     fake_psutil.AccessDenied = fake_access_denied
+    fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
     fake_psutil.Process.side_effect = fake_access_denied("no access")
     monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
 
@@ -988,6 +1155,7 @@ async def test_do_kill_all_stale_process_vanishing_mid_check_does_not_abort_swee
     fake_psutil = MagicMock()
     fake_psutil.NoSuchProcess = fake_no_such
     fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    fake_psutil.ZombieProcess = type("ZombieProcess", (fake_no_such,), {})
     fake_proc = MagicMock()
     fake_proc.environ.side_effect = fake_no_such("gone")
     fake_proc.cmdline.side_effect = fake_no_such("gone")
@@ -1483,9 +1651,6 @@ async def test_do_kill_all_stale_does_NOT_touch_play_at_all(
         assert row["status"] == "running"
 
 
-import signal  # noqa: E402
-
-
 class TestTerminatePidIdentityRevalidation:
     """SIGKILL is not survivable and gives the target no chance to identify
     itself, so escalation re-checks that the pid still belongs to the process
@@ -1501,7 +1666,7 @@ class TestTerminatePidIdentityRevalidation:
             identity_calls.append(pid)
             # first call (pre-SIGTERM) matches, later calls do not: the pid was
             # recycled while we waited out the grace window
-            return len(identity_calls) == 1
+            return "ours" if len(identity_calls) == 1 else "not_ours"
 
         monkeypatch.setattr(kill_mod, "_check_pid_identity", _identity)
 
@@ -1528,7 +1693,7 @@ class TestTerminatePidIdentityRevalidation:
         monkeypatch.setattr(kill_mod.os, "kill", lambda pid, sig: sent.append(sig))
         monkeypatch.setattr(kill_mod, "_pid_alive", lambda pid: True)
         monkeypatch.setattr(kill_mod.time, "sleep", lambda s: None)
-        monkeypatch.setattr(kill_mod, "_check_pid_identity", lambda *a, **kw: True)
+        monkeypatch.setattr(kill_mod, "_check_pid_identity", lambda *a, **kw: "ours")
 
         result = kill_mod._terminate_pid(4242, expected_cmd="li agent", grace_seconds=0.01)
 

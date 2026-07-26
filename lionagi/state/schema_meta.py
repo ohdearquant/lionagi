@@ -151,6 +151,10 @@ sessions = Table(
     metadata,
     Column("id", Text, primary_key=True),
     Column("cc_session_id", Text),
+    # The CLI run this session belongs to, recorded at creation. Without it a
+    # run_id cannot reach the lifecycle row, so nothing that writes only the
+    # row (a kill, for one) is visible to a reader holding a run_id.
+    Column("run_id", Text),
     Column("created_at", Float, nullable=False),
     Column("node_metadata", JSON),
     Column("name", Text),

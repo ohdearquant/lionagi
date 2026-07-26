@@ -107,6 +107,9 @@ CREATE INDEX IF NOT EXISTS idx_run_tags_tag ON run_tags(tag);
 CREATE TABLE IF NOT EXISTS sessions (
   id              TEXT    PRIMARY KEY,
   cc_session_id   TEXT,
+  -- The CLI run this session belongs to. NULL for a session no run started,
+  -- and for rows written before this column existed.
+  run_id          TEXT,
   created_at      REAL    NOT NULL,
   node_metadata   JSON,
   name            TEXT,
@@ -209,6 +212,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_project
   ON sessions(project) WHERE project IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_cc_session
   ON sessions(cc_session_id) WHERE cc_session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sessions_run_id
+  ON sessions(run_id) WHERE run_id IS NOT NULL;
 
 -- ── Branches ──────────────────────────────────────────────────────────────
 -- A progression with identity.  Branch config (provider, model,

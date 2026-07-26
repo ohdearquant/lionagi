@@ -1,0 +1,27 @@
+{
+  "path": "invoke list",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "limit": {
+        "default": 20,
+        "description": "Maximum rows to print, newest first (default 20).",
+        "type": "integer",
+        "x-flag": "--limit"
+      },
+      "skill": {
+        "description": "Show only invocations of this skill name, matched exactly.",
+        "type": "string",
+        "x-flag": "--skill"
+      },
+      "status": {
+        "description": "Show only invocations in this status: running, completed, failed, timed_out, aborted or cancelled.",
+        "type": "string",
+        "x-flag": "--status"
+      }
+    },
+    "title": "invoke list",
+    "type": "object"
+  },
+  "stage": "static"
+}

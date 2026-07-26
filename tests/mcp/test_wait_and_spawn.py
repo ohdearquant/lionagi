@@ -53,7 +53,8 @@ def _record(rid: str, **fields) -> None:
         ("completed", "succeeded", None),
         ("completed_empty", "failed", "no_artifacts"),
         ("timed_out", "failed", None),
-        ("cancelled", "failed", None),
+        ("cancelled", "cancelled", None),
+        ("aborted", "cancelled", None),
         ("a_status_this_build_never_heard_of", "failed", None),
     ],
 )

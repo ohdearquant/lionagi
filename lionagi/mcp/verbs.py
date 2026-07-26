@@ -75,10 +75,10 @@ FENCED_PATHS = ("state migrate", "plugin trust", "hooks trust")
 # never a truncation that would run some of a caller's batch and report success.
 MAX_OPS = 8
 
-# The reason every long-tail command shares today: `--machine` answers for three
-# commands, and the rest print for a human reader. The fix belongs in the CLI —
-# the command gains a machine-result seam — not in a parser of its console text,
-# which would make its wording an API contract.
+# The reason the remaining long-tail commands share: `--machine` answers for the
+# commands registered above, and the rest print for a human reader. The fix
+# belongs in the CLI — the command gains a machine-result seam — not in a parser
+# of its console text, which would make its wording an API contract.
 _NO_MACHINE_SEAM = (
     "the CLI path emits no versioned machine result (`li <path> --machine`), so "
     "there is nothing to return that is not scraped console text"
@@ -532,6 +532,93 @@ _REGISTERED: tuple[Verb, ...] = (
         # conversion report come back in the result instead.
         admits=("legacy",),
     ),
+    # ── observability reads ──────────────────────────────────────────────────
+    # Each of these admits only the parameters its machine path honours. A flag
+    # that shapes a human printout is left out: the parser would take it and the
+    # machine dispatcher would then refuse it, so admitting it advertises a
+    # parameter that cannot work.
+    Verb(
+        name="monitor",
+        summary="Entities in flight right now: sessions, invocations, shows, plays.",
+        executor="machine",
+        cli_path="monitor",
+        admits=("since", "entity_type", "project"),
+        refuses={
+            "id": (
+                "opens the detail view, whose result is a different shape entirely; "
+                "this verb answers with the table"
+            ),
+            "watch": "redraws a terminal until interrupted",
+            "refresh": "paces a redraw this verb does not do",
+            "run_ids": "waits for schedule runs to finish; use job.wait for a bounded wait",
+            "interval": "paces the wait this verb does not do",
+            "follow": "keeps a wait open indefinitely",
+            "chain": "shapes the wait this verb does not do",
+            "max_wait": "bounds the wait this verb does not do",
+        },
+    ),
+    Verb(
+        name="stats.runs",
+        summary="Run counts and first/last timestamps, grouped by project/kind/agent/model/status.",
+        executor="machine",
+        cli_path="stats runs",
+        admits=("since", "group_by"),
+        refuses={
+            "json": (
+                "shapes the human printout only; the machine result is already the "
+                "envelope and carries the same rows"
+            )
+        },
+    ),
+    Verb(
+        name="invoke.list",
+        summary="Recent skill-level invocations, newest first.",
+        executor="machine",
+        cli_path="invoke list",
+        admits=("skill", "status", "limit"),
+    ),
+    Verb(
+        name="dispatch.ls",
+        summary="Rows in the durable dispatch outbox, newest first, without their payloads.",
+        executor="machine",
+        cli_path="dispatch ls",
+        admits=("status", "limit"),
+    ),
+    Verb(
+        name="dispatch.show",
+        summary="One dispatch row in full, including its payload and ack token.",
+        executor="machine",
+        cli_path="dispatch show",
+        admits=("id",),
+    ),
+    Verb(
+        name="state.ls",
+        summary="Sessions in the lifecycle store with their branch and message counts.",
+        executor="machine",
+        cli_path="state ls",
+        admits=("limit", "status"),
+    ),
+    Verb(
+        name="state.stats",
+        summary="Store and write-ahead-log size, per-table row counts, session status spread.",
+        executor="machine",
+        cli_path="state stats",
+        admits=(),
+    ),
+    Verb(
+        name="team.list",
+        summary="Teams on disk with their members and message counts.",
+        executor="machine",
+        cli_path="team list",
+        admits=(),
+    ),
+    Verb(
+        name="plugin.info",
+        summary="One plugin's version, trust state, and everything its manifest declares.",
+        executor="machine",
+        cli_path="plugin info",
+        admits=("name",),
+    ),
 )
 
 
@@ -559,28 +646,32 @@ ABSENT: tuple[AbsentVerb, ...] = (
     ),
     *_absent(
         "team",
-        ("create", "list", "show", "send", "receive"),
+        ("create", "show", "send", "receive"),
         "Messaging between agents working as a team.",
     ),
     *_absent(
         "state",
-        ("ls", "stats", "doctor"),
+        ("doctor",),
         "Read-only inspection of the lifecycle store.",
     ),
     *_absent(
         "dispatch",
-        ("ls", "show", "ack", "retry", "purge"),
+        ("ack", "retry", "purge"),
         "The outbound dispatch queue.",
     ),
     AbsentVerb(
-        name="monitor",
-        summary="What is running right now, across sessions and invocations.",
-        reason=_NO_MACHINE_SEAM,
-    ),
-    AbsentVerb(
-        name="stats",
-        summary="Aggregate run counts and durations.",
-        reason=_NO_MACHINE_SEAM,
+        name="plugin.list",
+        summary="Installed plugin bundles and their trust state.",
+        # Not a missing seam: the listing garbage-collects trust records as part
+        # of listing, deleting the record of any plugin whose bundle directory
+        # has gone. That is a write, and what it writes to is the trust surface
+        # this surface is fenced away from, so a read-only variant of it would
+        # be a second command wearing the name of this one.
+        reason=(
+            "listing prunes trust records for plugins whose bundle directory is "
+            "gone, so it writes to user settings on the trust surface; a listing "
+            "that skipped the prune would not be this command"
+        ),
     ),
 )
 
