@@ -48,6 +48,14 @@ REVIEWED_PATHS = frozenset(
         "runs",
         "dispatch ls",
         "dispatch show",
+        # The queue's writes. Reviewed together because the caller that reads the
+        # queue from this surface is the one that has to resolve what it finds, and
+        # each acts on a single row the caller named: `ack` needs the row's own ack
+        # token, `retry` moves one row back to pending, `purge` deletes one row by id
+        # and refuses a criteria sweep.
+        "dispatch ack",
+        "dispatch retry",
+        "dispatch purge",
         "invoke list",
         # Read-only: reports what the lifecycle store already recorded about one
         # run id. It writes nothing and names no path of its own.

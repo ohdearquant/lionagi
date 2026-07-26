@@ -1,0 +1,29 @@
+{
+  "path": "dispatch ack",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "description": "Id of the dispatch to acknowledge, as listed by `li dispatch ls`.",
+        "type": "string",
+        "x-positional": true
+      },
+      "token": {
+        "description": "The ack_token this dispatch was delivered with, reported by `li dispatch show`. A mismatched token is refused, so an acknowledgement cannot be guessed.",
+        "type": "string",
+        "x-positional": true
+      }
+    },
+    "required": [
+      "id",
+      "token"
+    ],
+    "title": "dispatch ack",
+    "type": "object",
+    "x-positional-order": [
+      "id",
+      "token"
+    ]
+  },
+  "stage": "static"
+}
