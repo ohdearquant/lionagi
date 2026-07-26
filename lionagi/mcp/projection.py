@@ -37,6 +37,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+from lionagi.cli._argtypes import JsonArgument
+
 __all__ = (
     "SchemaProjectionError",
     "PlaybookResolutionError",
@@ -288,6 +290,12 @@ def _project_action(
             raise SchemaProjectionError(
                 path, f"append with nargs={nargs!r} nests arrays", action=label
             )
+        if isinstance(action.type, JsonArgument):
+            if nargs is not None or kind is _APPEND:
+                raise SchemaProjectionError(
+                    path, f"JSON-encoded value with nargs={nargs!r}", action=label
+                )
+            return _project_json_action(parser, action, action.type)
         item: dict[str, Any] = {"type": _scalar_type(path, action, label)}
         enum = _choices_enum(path, action, label)
         if enum is not None:
@@ -315,6 +323,13 @@ def _project_action(
     else:
         raise SchemaProjectionError(path, f"unknown action class {kind.__name__}", action=label)
 
+    return _annotate(schema, parser, action)
+
+
+def _annotate(
+    schema: dict[str, Any], parser: argparse.ArgumentParser, action: argparse.Action
+) -> dict[str, Any]:
+    """Add the parts every parameter carries: prose, default, and how it spells."""
     description = _description(parser, action)
     if description:
         schema["description"] = description
@@ -329,6 +344,21 @@ def _project_action(
         if aliases:
             schema["x-aliases"] = list(aliases)
     return schema
+
+
+def _project_json_action(
+    parser: argparse.ArgumentParser, action: argparse.Action, kind: JsonArgument
+) -> dict[str, Any]:
+    """A flag whose value the parser decodes from JSON, described as it decodes.
+
+    The advertised type is the *decoded* shape, because that is the shape the
+    argument accepts; ``x-json-encoded`` tells a renderer that the one argv
+    token this becomes has to be the encoding of it. Advertising ``string``
+    instead would name a type that no plain string satisfies.
+    """
+    schema = dict(kind.json_schema)
+    schema["x-json-encoded"] = True
+    return _annotate(schema, parser, action)
 
 
 def _accepts_no_values(action: argparse.Action) -> bool:

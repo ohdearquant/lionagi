@@ -10,8 +10,12 @@
       },
       "action_command_args": {
         "description": "action-kind=command argv, as a JSON array of {{var}} templates rendered from trigger_context at fire time, e.g. '[\"review-pr\", \"--pr\", \"{{pr_number}}\"]'.",
-        "type": "string",
-        "x-flag": "--action-command-args"
+        "items": {
+          "type": "string"
+        },
+        "type": "array",
+        "x-flag": "--action-command-args",
+        "x-json-encoded": true
       },
       "action_kind": {
         "default": "agent",
