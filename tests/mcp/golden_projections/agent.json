@@ -164,6 +164,9 @@
     "type": "object",
     "x-positional-order": [
       "query"
+    ],
+    "x-required-unenforced": [
+      "query"
     ]
   },
   "stage": "static"

@@ -232,6 +232,9 @@
     "x-playbook-arguments": "This command accepts arguments declared by the playbook named in 'playbook'. Ask for this schema again with that playbook named to see them.",
     "x-positional-order": [
       "query"
+    ],
+    "x-required-unenforced": [
+      "query"
     ]
   },
   "stage": "base"

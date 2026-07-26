@@ -61,9 +61,11 @@ async def request(
 ) -> dict[str, Any]:
     """Dispatch lionagi operations, or ask what operations exist.
 
-    Start with ``help=true``: it returns every verb with its required parameters
-    and a one-line summary, which is enough to write the common call without a
-    second round-trip. ``help='<verb>'`` returns that verb's full schema.
+    Start with ``help=true``: it returns every verb with its required parameters,
+    a one-line summary, and — for the verbs whose ops must carry one — the
+    ``schema_fingerprint`` to send with the call, which is enough to write the
+    common call without a second round-trip. ``help='<verb>'`` returns that
+    verb's full schema.
 
     Results come back as ``{'status': 'success'|'partial', 'ops': [...]}``, one
     entry per op in the order given, each ``{'ok': true, 'op', 'result'}`` or

@@ -368,7 +368,13 @@ def _accepts_no_values(action: argparse.Action) -> bool:
     but argparse marks the action required all the same and then never enforces
     it. Carrying that flag into the schema would tell a caller a parameter is
     mandatory when the parser itself does not think so, and the caller has no
-    way to check. The rule is stated about the action rather than read off
+    way to check. Such an action is still reported, under
+    ``x-required-unenforced``: the command is declared as being about this value,
+    and a caller told only ``required: []`` reads that as "a call with no
+    arguments is valid", which is a different and wronger claim than the one
+    ``required`` was dropped to avoid.
+
+    The rule is stated about the action rather than read off
     ``required``, because ``required`` is what is wrong here: Python 3.14 stopped
     setting it for exactly these actions, so trusting it makes the schema — and
     every golden pinned to it — say different things on different interpreters
@@ -399,6 +405,7 @@ def project_parser(parser: argparse.ArgumentParser, *, path: str) -> dict[str, A
 
     properties: dict[str, Any] = {}
     required: list[str] = []
+    unenforced: list[str] = []
     positionals: list[str] = []
 
     for action in parser._actions:
@@ -407,7 +414,9 @@ def project_parser(parser: argparse.ArgumentParser, *, path: str) -> dict[str, A
         if action.dest == argparse.SUPPRESS:
             continue
         properties[action.dest] = _project_action(path, parser, action)
-        if action.required and not _accepts_no_values(action):
+        if _accepts_no_values(action):
+            unenforced.append(action.dest)
+        elif action.required:
             required.append(action.dest)
         if not action.option_strings:
             positionals.append(action.dest)
@@ -422,6 +431,8 @@ def project_parser(parser: argparse.ArgumentParser, *, path: str) -> dict[str, A
         schema["description"] = parser.description.strip()
     if required:
         schema["required"] = required
+    if unenforced:
+        schema["x-required-unenforced"] = unenforced
     if positionals:
         schema["x-positional-order"] = positionals
     exclusive = _mutually_exclusive(parser)
