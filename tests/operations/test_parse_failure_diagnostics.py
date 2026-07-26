@@ -9,6 +9,9 @@ extraction path works, that the two causes stay distinguishable, and that the
 reformat retries do not reissue an identical request.
 """
 
+import copy
+import json
+import pickle
 from unittest.mock import patch
 
 import pytest
@@ -216,3 +219,61 @@ class TestOperateSurfacesTheDistinction:
 
         assert isinstance(exc_info.value, ExtractionError)
         assert exc_info.value.validation_error is None
+
+
+class TestUnparsedResponseIsStillAnOrdinaryString:
+    """The give-up path used to return a plain str, and callers rely on that.
+
+    Carrying the failure reason is only free if nothing a caller already did to
+    the returned text stops working. Copying is the case that is easy to miss:
+    a str subclass is rebuilt by calling ``__new__`` with the arguments
+    ``__getnewargs_ex__`` reports, so a keyword-only ``__new__`` without it
+    raises on ``copy``, ``deepcopy`` and ``pickle`` alike -- while the plain str
+    it replaced survives all three.
+    """
+
+    def _response(self, error: Exception | None = None) -> UnparsedResponse:
+        return UnparsedResponse(
+            "some model text", failure_kind="validation", validation_error=error
+        )
+
+    @pytest.mark.parametrize(
+        "roundtrip",
+        [copy.copy, copy.deepcopy, lambda value: pickle.loads(pickle.dumps(value))],
+        ids=["copy", "deepcopy", "pickle"],
+    )
+    def test_a_roundtrip_keeps_the_text_and_the_reason(self, roundtrip):
+        original = self._response(ValueError("boom"))
+        restored = roundtrip(original)
+
+        assert restored == original
+        assert type(restored) is UnparsedResponse
+        assert restored.failure_kind == "validation"
+        assert isinstance(restored.validation_error, ValueError)
+
+    @pytest.mark.parametrize(
+        "roundtrip",
+        [copy.copy, copy.deepcopy, lambda value: pickle.loads(pickle.dumps(value))],
+        ids=["copy", "deepcopy", "pickle"],
+    )
+    def test_a_roundtrip_survives_a_real_pydantic_error(self, roundtrip):
+        # The error actually attached in production is a pydantic
+        # ValidationError, not a ValueError anyone constructed in a test.
+        try:
+            Course.model_validate({"name": None, "credits": 3})
+        except Exception as validation_error:
+            original = self._response(validation_error)
+
+        restored = roundtrip(original)
+        assert restored == original
+        assert "name" in str(restored.validation_error)
+
+    def test_it_behaves_as_the_plain_string_it_replaced(self):
+        raw = "some model text"
+        response = self._response()
+
+        assert isinstance(response, str)
+        assert (response, hash(response), len(response)) == (raw, hash(raw), len(raw))
+        assert f"{response}" == raw
+        assert json.dumps(response) == json.dumps(raw)
+        assert {raw: "value"}[response] == "value"

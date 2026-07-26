@@ -86,6 +86,18 @@ class UnparsedResponse(str):
         obj.validation_error = validation_error
         return obj
 
+    def __getnewargs_ex__(self) -> tuple[tuple[str], dict[str, Any]]:
+        # copy, deepcopy and pickle all rebuild a str subclass by calling
+        # __new__ with the arguments this returns. Without it they call
+        # __new__(text) alone and raise on the keyword-only argument -- so a
+        # plain str survives being copied while this one would not, which is
+        # exactly the kind of difference "it is still a str" is meant to rule
+        # out.
+        return (str(self),), {
+            "failure_kind": self.failure_kind,
+            "validation_error": self.validation_error,
+        }
+
 
 @dataclass(slots=True, frozen=True, init=False)
 class MorphParam(Params):
