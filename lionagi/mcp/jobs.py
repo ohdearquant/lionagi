@@ -267,7 +267,12 @@ def _split_at_sentinel(flags: Sequence[str]) -> tuple[list[str], list[str]]:
     return tokens[:cut], tokens[cut:]
 
 
-def _notify_template(run_id: str, notify_target: str | None, notify_command: str | None) -> str:
+def _notify_template(
+    run_id: str,
+    notify_target: str | None,
+    notify_command: str | None,
+    notify_sender: str | None = None,
+) -> str:
     """Command the CLI runs on terminal status (records finished_at + delivery).
 
     Invokes the terminal hook module by absolute interpreter path with a
@@ -289,6 +294,8 @@ def _notify_template(run_id: str, notify_target: str | None, notify_command: str
         parts += ["--target", shlex.quote(notify_target)]
     if notify_command:
         parts += ["--command", shlex.quote(notify_command)]
+    if notify_sender:
+        parts += ["--sender", shlex.quote(notify_sender)]
     return " ".join(parts)
 
 
@@ -534,6 +541,7 @@ def submit(
     label: str | None = None,
     notify_command: str | None = None,
     notify_target: str | None = None,
+    notify_sender: str | None = None,
 ) -> dict[str, Any]:
     """Spawn a ``li`` run in the background and return its handle immediately.
 
@@ -576,9 +584,32 @@ def submit(
                 positionals = ["--"]
             positionals.append(prompt)
 
+    # An agent leg discovers MCP servers from the directory it is told to work
+    # in, which for a detached run is a checkout and not the directory holding
+    # this server's config. Resolve it here, where the submitting directory is
+    # still the one in effect, and name the file on the child's command line.
+    # Both outcomes are reported on the handle: a leg that starts without the
+    # tools its brief assumes should be visible at submit, not deduced later
+    # from its own confused output.
+    mcp_config_path: str | None = None
+    mcp_config_reason: str | None = None
+    if kind == "agent" and not any(tok == "--mcp-config" for tok in options):
+        from lionagi.cli._mcp_resolve import discover_mcp_config
+
+        found = discover_mcp_config(os.getcwd())
+        if found is None:
+            mcp_config_reason = f"no_mcp_config_found_at_or_above:{os.getcwd()}"
+        else:
+            mcp_config_path = str(found)
+            options = ["--mcp-config", mcp_config_path, *options]
+
     # Wire the CLI's terminal hook back to the MCP server so we record a reliable
     # finished_at/status (and fire the configured delivery) even across a restart.
-    options = ["--notify", _notify_template(run_id, notify_target, notify_command), *options]
+    options = [
+        "--notify",
+        _notify_template(run_id, notify_target, notify_command, notify_sender),
+        *options,
+    ]
 
     argv = [*config.li_command(), *_KIND_ARGV[kind], *options, *positionals]
 
@@ -617,6 +648,9 @@ def submit(
         "label": label,
         "notify_command": notify_command,
         "notify_target": notify_target,
+        "notify_sender": notify_sender,
+        "mcp_config": mcp_config_path,
+        "mcp_config_reason": mcp_config_reason,
         "submitted_at": _now_iso(),
         "finished_at": None,
         "status": "running",
@@ -675,6 +709,9 @@ def submit(
         "reason_code": derived["reason_code"],
         "spawn_state": latest["spawn_state"],
         "log": str(log_path),
+        "mcp_config": mcp_config_path,
+        "mcp_config_reason": mcp_config_reason,
+        "notify_sender": notify_sender,
     }
 
 

@@ -128,10 +128,17 @@ def build_chat_model(
     effort: str | None = None,
     fast: bool = False,
     bypass: bool = False,
+    mcp_servers: dict | None = None,
 ) -> iModel | str:
     """Legacy: for agent.py compat. Returns bare spec string when no flags."""
     effort = normalize_effort(effort)
     extra: dict = {}
+    if mcp_servers is not None:
+        # Only the Claude CLI lane carries a server set on the request; the
+        # other CLI providers read a user-level config no caller directory
+        # affects, so handing them this here would drop it without a word.
+        if provider in _CLAUDE_PROVIDER_NAMES:
+            extra["mcp_servers"] = mcp_servers
     if bypass:
         extra.update(PROVIDER_BYPASS_KWARGS.get(provider, {}))
     elif yolo:

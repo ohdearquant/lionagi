@@ -174,6 +174,18 @@ _NOTIFY_SEAT = {
     "x-server-owned": True,
 }
 
+_NOTIFY_SENDER = {
+    "type": "string",
+    "description": (
+        "Who the terminal notice is from. Fills the {sender} placeholder in the "
+        "delivery command and is published to it as LIONAGI_NOTIFY_SENDER. "
+        "Without it the notifier reports whatever identity it resolves from the "
+        "run's working directory, which is the directory's owner and not the "
+        "submitter."
+    ),
+    "x-server-owned": True,
+}
+
 _PLAYBOOK_FINGERPRINT = {
     "type": "string",
     "description": (
@@ -192,6 +204,7 @@ _SPAWN_SERVER_PARAMS: Mapping[str, dict[str, Any]] = {
     "label": _LABEL,
     "notify_command": _NOTIFY_COMMAND,
     "notify_seat": _NOTIFY_SEAT,
+    "notify_sender": _NOTIFY_SENDER,
 }
 
 _FLOW_SERVER_PARAMS: Mapping[str, dict[str, Any]] = {
