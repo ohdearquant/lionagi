@@ -185,3 +185,71 @@ async def test_a_server_url_does_not_answer_from_the_filesystem(absent_default, 
 
     with pytest.raises(Exception):  # noqa: B017 — any failure beats a silent []
         await svc.list_engine_defs()
+
+
+# ── the shared readonly seam ──────────────────────────────────────────────────
+# Several reporting commands stopped guarding for themselves and now go through
+# one helper. That concentrates the same question in one place: if the helper
+# asks the filesystem while opening the configured store, every reader that
+# migrated to it inherits the defect at once.
+
+
+@pytest.mark.asyncio
+async def test_the_readonly_seam_opens_a_moved_store_instead_of_reporting_it_absent(
+    moved_sqlite_url,
+):
+    from lionagi.cli.machine import readonly_state_db
+
+    name = f"seam-{uuid.uuid4().hex[:8]}"
+    await _seed_engine_def(name)
+
+    async with readonly_state_db() as (db, why):
+        assert why is None, why
+        assert db is not None
+        rows = await db.fetch_all("SELECT name FROM engine_defs", [])
+
+    assert name in {row["name"] for row in rows}
+
+
+@pytest.mark.asyncio
+async def test_the_readonly_seam_will_not_call_a_server_url_absent(absent_default, monkeypatch):
+    # Nothing here connects: the point is that "absent" must not be answerable
+    # from the filesystem for a store the filesystem knows nothing about. A
+    # failure to reach it is a different answer, and the reason says which.
+    from lionagi.cli.machine import REASON_NOT_FOUND, readonly_state_db
+
+    _set_url(monkeypatch, _SERVER_URL)
+
+    async with readonly_state_db() as (db, why):
+        if db is None:
+            assert why["reason_code"] != REASON_NOT_FOUND, why
+
+
+def test_the_absent_reason_names_the_store_that_was_consulted(moved_sqlite_url, absent_default):
+    from lionagi.cli.machine import state_db_absent
+
+    detail = state_db_absent()["detail"]
+    assert str(absent_default) not in detail
+    assert "moved" in detail
+
+
+def test_reported_sizes_describe_the_configured_store(moved_sqlite_url, tmp_path):
+    from lionagi.cli.state import _db_sizes
+
+    sizes = _db_sizes()
+    assert sizes["is_file"] is True
+    assert sizes["path"] == str(tmp_path / "moved" / "state.db")
+
+
+def test_a_store_with_no_file_reports_no_size_rather_than_zero(absent_default, monkeypatch):
+    # Zero would be a claim about an empty file. There is no file, so the honest
+    # answer is that the question does not apply -- and `is_file` is what lets a
+    # reader tell those apart instead of guessing from a bare 0.
+    from lionagi.cli.state import _db_sizes
+
+    _set_url(monkeypatch, _SERVER_URL)
+
+    sizes = _db_sizes()
+    assert sizes["is_file"] is False
+    assert sizes["size_bytes"] is None
+    assert sizes["wal_size_bytes"] is None
