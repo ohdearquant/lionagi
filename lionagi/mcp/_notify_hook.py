@@ -34,7 +34,7 @@ from typing import Any
 
 # The CLI runs this file's module by absolute interpreter path; lionagi is on
 # the path because that interpreter is the one lionagi is installed in.
-from . import jobs
+from . import config, jobs
 
 # A configured notifier's stdout/stderr is free text that can carry a
 # credential the command obtained anywhere, so it is never captured or logged:
@@ -138,6 +138,39 @@ def _deliver(argv: list[str], payload: dict[str, str]) -> dict[str, Any]:
     }
 
 
+def _note_failure_in_console_log(run_id: str, outcome: dict[str, Any]) -> None:
+    """Append one line to the run's own log when a configured delivery failed.
+
+    The outcome is already on the job record, but that record is only seen by
+    someone who thinks to query it. A run whose notice never arrived is
+    indistinguishable, in its log, from one still working: the log simply ends.
+    Ending it with a stated failure is what lets the log serve as the fallback
+    for a notice that did not.
+
+    Nothing about *why* it failed is available here by design -- the command's
+    output goes to DEVNULL because it is free text that can carry a credential
+    -- so the line reports the exit code and no more.
+
+    Best-effort like everything else in this hook: the run has already
+    finished, and a log that cannot be appended to must not turn a delivered
+    outcome into a crash.
+    """
+    if not outcome.get("attempted") and not outcome.get("error"):
+        return  # nothing was configured; silence is the documented default
+    if outcome.get("ok"):
+        return
+    detail = outcome.get("error") or f"exit code {outcome.get('exit_code')}"
+    try:
+        path = config.job_dir(run_id) / "console.log"
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(
+                f"\n[notify] terminal notice NOT delivered for run {run_id}: {detail}. "
+                f"This run finished; its completion signal did not.\n"
+            )
+    except OSError:
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="lionagi.mcp._notify_hook")
     ap.add_argument("--run-id", required=True)
@@ -170,6 +203,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         outcome = {"attempted": False}  # nothing configured — not a failure
     jobs.record_notify_delivery(args.run_id, outcome)
+    _note_failure_in_console_log(args.run_id, outcome)
     return 0
 
 

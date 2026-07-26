@@ -335,3 +335,87 @@ def test_unknown_run_id_is_noop(monkeypatch, tmp_path):
     rc = _notify_hook.main(["--run-id", "nope", "--status", "completed"])
     assert rc == 0
     assert calls == []
+
+
+def _console_log(run_id: str) -> str:
+    path = config.job_dir(run_id) / "console.log"
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def test_failed_delivery_ends_the_leg_log_with_a_stated_failure(job, monkeypatch):
+    """The log is the fallback for the notice, so it must say the notice died.
+
+    Without this the log of a run whose notice never arrived is
+    indistinguishable from the log of a run still working: it simply ends.
+    """
+    config.job_dir(job).mkdir(parents=True, exist_ok=True)
+    (config.job_dir(job) / "console.log").write_text("work happened\n", encoding="utf-8")
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(7))
+
+    command = json.dumps(["notify", "{status}"])
+    _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+
+    log = _console_log(job)
+    assert "work happened" in log  # appended, never rewritten
+    assert "NOT delivered" in log
+    assert "exit code 7" in log
+
+
+def test_spawn_error_is_named_in_the_leg_log(job, monkeypatch):
+    def boom(*_a, **_k):
+        raise OSError("no such command")
+
+    config.job_dir(job).mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(_notify_hook.subprocess, "run", boom)
+
+    command = json.dumps(["nonexistent-notifier", "{status}"])
+    _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+
+    assert "OSError" in _console_log(job)
+
+
+def test_a_configured_but_unusable_notifier_also_reaches_the_log(job, monkeypatch):
+    """Recorded as a failure on the job, so it must read as one in the log too."""
+    config.job_dir(job).mkdir(parents=True, exist_ok=True)
+    _no_settings_notifier(monkeypatch)
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(0))
+
+    _notify_hook.main(["--run-id", job, "--status", "completed", "--command", "not json ["])
+
+    assert "delivery_command_is_not_valid_json" in _console_log(job)
+
+
+def test_successful_delivery_writes_nothing_to_the_log(job, monkeypatch):
+    config.job_dir(job).mkdir(parents=True, exist_ok=True)
+    (config.job_dir(job) / "console.log").write_text("work happened\n", encoding="utf-8")
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(0))
+
+    command = json.dumps(["notify", "{status}"])
+    _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+
+    assert _console_log(job) == "work happened\n"
+
+
+def test_silence_by_choice_writes_nothing_to_the_log(job, monkeypatch):
+    """Nothing configured is the documented default, not a delivery failure."""
+    config.job_dir(job).mkdir(parents=True, exist_ok=True)
+    (config.job_dir(job) / "console.log").write_text("work happened\n", encoding="utf-8")
+    _no_settings_notifier(monkeypatch)
+
+    _notify_hook.main(["--run-id", job, "--status", "completed"])
+
+    assert _console_log(job) == "work happened\n"
+
+
+def test_an_unwritable_log_does_not_break_the_terminal_path(job, monkeypatch):
+    """The run already finished; a log that cannot be appended to is not fatal."""
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(7))
+    # A directory where the log file belongs: opening it for append raises an
+    # OSError from the real filesystem rather than from a patched stand-in.
+    (config.job_dir(job) / "console.log").mkdir(parents=True, exist_ok=True)
+
+    command = json.dumps(["notify", "{status}"])
+    rc = _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+
+    assert rc == 0
+    assert jobs._read_job(job)["notify_delivery"]["ok"] is False
