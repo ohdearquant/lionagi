@@ -143,6 +143,13 @@ async def store_probe(*, timeout_ms: int = STORE_PROBE_TIMEOUT_MS) -> dict[str, 
         return result
     finally:
         if conn is not None:
+            # Shielded because closing is itself an await, and this one can run
+            # with a cancellation already active around it — a caller that gave
+            # up on the probe, a request the client abandoned, a shutting-down
+            # daemon. Unshielded it is cancelled before it reaches the
+            # connection, and the worker thread lives on holding an open
+            # database until the loop closes underneath it. The wait is bounded
+            # by the busy timeout already set above.
             with CancelScope(shield=True):
                 await conn.close()
 

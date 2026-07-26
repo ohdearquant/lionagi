@@ -355,6 +355,14 @@ class TestStoreProbe:
         connection. The previous test cannot see this — there the probe absorbs
         its own timeout, so by the time cleanup runs nothing is cancelling any
         more and the close completes either way.
+
+        The assertion is deliberately immediate. Left alone the thread does go
+        away eventually: dropping the last reference to the connection runs a
+        finalizer that stops the worker once its statement gives up. Waiting for
+        that is what makes the difference invisible, and it is not the behaviour
+        being asked for — a finalizer completing a close against an event loop
+        that has since closed is the failure, not the recovery. What the probe
+        owes its caller is a connection already closed by the time it returns.
         """
         import threading
 
@@ -381,13 +389,12 @@ class TestStoreProbe:
 
             async def _abandon():
                 with anyio.move_on_after(0.05):
-                    # Long enough that the caller's deadline is the one that fires.
-                    await admin_svc.store_probe(timeout_ms=5000)
+                    # Long enough that the caller's deadline is the one that
+                    # fires, short enough that the cleanup's own bounded wait
+                    # for the locked read to give up does not dominate the test.
+                    await admin_svc.store_probe(timeout_ms=1000)
 
             anyio.run(_abandon)
-            deadline = time.monotonic() + 5
-            while _workers() > before and time.monotonic() < deadline:
-                time.sleep(0.05)
             assert _workers() == before, "a connection worker outlived an abandoned probe"
         finally:
             blocker.rollback()
