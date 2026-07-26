@@ -386,6 +386,134 @@ def test_a_missing_fingerprint_is_unknown_movement_not_a_still_tree() -> None:
     assert "when this process loaded" in detail
 
 
+def test_rewriting_an_untracked_file_that_already_existed_is_an_edit(
+    loaded_from: Path,
+) -> None:
+    """Neither the status listing nor the diff carries an untracked file's contents."""
+    scratch = loaded_from / "scratch.txt"
+    scratch.write_text("present before the process started")
+
+    before = code_identity()
+    assert before["git"]["dirty"] is True
+    assert before["worktree_edited"] is False
+
+    scratch.write_text("rewritten while the process was running")
+
+    after = code_identity()
+    assert after["checkout_moved"] is False
+    assert after["worktree_edited"] is True
+    assert "was edited after this process loaded" in after["worktree_edited_detail"]
+
+
+def test_an_edit_inside_an_untracked_directory_is_an_edit(loaded_from: Path) -> None:
+    """git collapses an untracked directory to one line; the listing alone cannot move."""
+    package = loaded_from / "plugins"
+    package.mkdir()
+    (package / "handler.py").write_text("def run(): return 1\n")
+
+    before = code_identity()
+    assert before["worktree_edited"] is False
+
+    (package / "handler.py").write_text("def run(): return 2\n")
+
+    after = code_identity()
+    assert after["checkout_moved"] is False
+    assert after["worktree_edited"] is True
+
+
+def test_a_new_file_inside_an_untracked_directory_is_an_edit(loaded_from: Path) -> None:
+    package = loaded_from / "plugins"
+    package.mkdir()
+    (package / "handler.py").write_text("def run(): return 1\n")
+
+    assert code_identity()["worktree_edited"] is False
+
+    (package / "extra.py").write_text("def also(): return 3\n")
+
+    assert code_identity()["worktree_edited"] is True
+
+
+def test_an_ignored_path_is_not_enumerated(checkout_behind: Path) -> None:
+    """The listing stays bounded: build output and virtualenvs are still excluded."""
+    (checkout_behind / ".gitignore").write_text("build/\n")
+    _git(checkout_behind, "add", ".gitignore")
+    _git(checkout_behind, "commit", "-m", "ignore build")
+    build = checkout_behind / "build"
+    build.mkdir()
+    (build / "artifact.bin").write_bytes(b"\x00" * 32)
+
+    before = git_identity(checkout_behind)
+    assert before["dirty"] is False
+
+    (build / "artifact.bin").write_bytes(b"\x01" * 64)
+
+    assert git_identity(checkout_behind)["worktree_fingerprint"] == before["worktree_fingerprint"]
+
+
+def test_a_path_that_cannot_be_stat_d_is_none_with_a_reason(
+    checkout_behind: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unreadable path is not evidence that the tree stood still."""
+    (checkout_behind / "scratch.txt").write_text("untracked")
+    real_lstat = Path.lstat
+
+    def _refuse(self: Path):
+        if self.name == "scratch.txt":
+            raise PermissionError(13, "Permission denied")
+        return real_lstat(self)
+
+    monkeypatch.setattr(Path, "lstat", _refuse)
+
+    git = git_identity(checkout_behind)
+    assert git["worktree_fingerprint"] is None
+    assert "scratch.txt" in git["worktree_fingerprint_detail"]
+    assert "PermissionError" in git["worktree_fingerprint_detail"]
+
+
+def test_a_stat_failure_makes_the_edit_answer_unknown_not_false(
+    loaded_from: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (loaded_from / "scratch.txt").write_text("untracked")
+    code_identity()
+
+    real_lstat = Path.lstat
+
+    def _refuse(self: Path):
+        if self.name == "scratch.txt":
+            raise PermissionError(13, "Permission denied")
+        return real_lstat(self)
+
+    monkeypatch.setattr(Path, "lstat", _refuse)
+
+    after = code_identity()
+    assert after["worktree_edited"] is None
+    assert "scratch.txt" in after["worktree_edited_detail"]
+    assert any("scratch.txt" in u for u in after["drift"]["unknown"])
+
+
+def test_a_deleted_path_is_measured_rather_than_read_as_unreadable(
+    loaded_from: Path,
+) -> None:
+    """A path git lists as deleted is absent by definition — absence is the reading."""
+    (loaded_from / "first").unlink()
+
+    before = code_identity()
+    assert before["git"]["dirty"] is True
+    assert before["worktree_edited"] is False
+
+    after = code_identity()
+    assert after["worktree_edited"] is False, "an absent path must not read as unknown"
+
+
+def test_a_renamed_path_does_not_stat_the_name_it_came_from(checkout_behind: Path) -> None:
+    """The origin path of a rename no longer exists; only the destination is on disk."""
+    _git(checkout_behind, "mv", "first", "renamed")
+
+    git = git_identity(checkout_behind)
+    assert git["worktree_fingerprint"] is not None
+    assert "worktree_fingerprint_detail" not in git
+
+
 def test_a_dirty_snapshot_is_unknown_not_ok() -> None:
     """A commit id cannot describe a tree with changes that are not in it."""
     git = {

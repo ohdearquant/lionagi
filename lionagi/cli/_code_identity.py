@@ -22,10 +22,17 @@ because an uncommitted edit moves the files and leaves the commit id alone. Two
 things follow. A commit id does not describe a dirty tree in the first place, so
 a snapshot taken over uncommitted changes can only ever be a partial identity and
 says so. And to notice an edit made afterwards, the snapshot carries a digest of
-the tree's uncommitted state — its shape, never its content — which is compared
-live exactly as the commit is. The two kinds of movement stay separate in the
-payload: moving the checkout and editing files under it are different operator
-actions with different remedies, and one boolean cannot carry both.
+the tree's uncommitted state — its shape and the size and modification time of
+every path git names, never its content — which is compared live exactly as the
+commit is. The two kinds of movement stay separate in the payload: moving the
+checkout and editing files under it are different operator actions with different
+remedies, and one boolean cannot carry both.
+
+What that digest can miss is stated where it is computed, and it comes to one
+thing: a rewrite that leaves both the size and the modification time untouched.
+Everything else an operator can do to a file under this process — including to an
+untracked file, to a file inside an untracked directory, and to a file git renders
+only as a modified binary — moves the digest.
 
 Failure is closed: a tree whose git state cannot be read is ``unknown``, never
 ``ok``. "Cannot tell" and "nothing wrong" are different answers, and a git call
@@ -166,21 +173,59 @@ def _comparison_ref(tree: Path, budget: _Budget) -> tuple[str | None, str, str |
     return None, "none", err or "no upstream configured and origin/HEAD does not resolve", True
 
 
+def _status_paths(porcelain: str) -> list[str]:
+    """The worktree paths a NUL-delimited status listing names, relative to the root.
+
+    Records are ``XY<space><path>``. A rename or copy carries the name it came
+    from as an extra field, which is dropped: that name is gone from the disk by
+    definition, so asking the filesystem about it would measure nothing.
+    """
+    fields = [field for field in porcelain.split("\x00") if field]
+    paths: list[str] = []
+    index = 0
+    while index < len(fields):
+        entry = fields[index]
+        index += 1
+        if len(entry) < 4:
+            continue
+        paths.append(entry[3:])
+        if "R" in entry[:2] or "C" in entry[:2]:
+            index += 1
+    return paths
+
+
 def _worktree_fingerprint(
-    tree: Path, porcelain: str, budget: _Budget
+    tree: Path, root: Path, porcelain: str, budget: _Budget
 ) -> tuple[str | None, str | None]:
     """A digest of what is uncommitted in *tree*, or why one could not be taken.
 
     Enough to tell whether the uncommitted state changed between two readings,
     and deliberately not enough to reconstruct it: the digest is over the status
-    listing and the diff against HEAD, and only the digest is kept.
+    listing, the diff against HEAD, and the size and modification time of every
+    path the listing names. No file is read, so a large file costs the same as a
+    small one and the digest never carries content.
+
+    The size and mtime are what make an ordinary edit visible when the other two
+    inputs cannot see it. Neither the listing nor the diff carries the contents of
+    an untracked file or of a file git renders as a modified binary, so for those
+    a rewrite in place leaves both byte-identical; the file's own metadata is the
+    only thing that moves. Untracked entries are enumerated as files rather than
+    collapsed directories for the same reason — otherwise a whole tree of code
+    hides behind one unchanging line. ``.gitignore`` still applies, so build
+    output and virtualenvs stay out and the listing stays bounded.
+
+    A path that is absent has been measured, not missed: git lists deletions, and
+    a deletion is exactly a path that is not there. Absence is recorded as such.
+    A path that exists and still cannot be read is a different matter and yields
+    no digest at all, so the caller reports "cannot tell" rather than "unchanged".
 
     A clean tree needs no diff — an empty status listing is already the whole
     answer, and skipping the call keeps the common case off the allowance.
 
-    Two edits are invisible to this: a change inside a directory git reports as
-    untracked as a whole, and a change to a file already listed as a modified
-    binary, since the diff names those rather than rendering them.
+    One edit remains invisible: a rewrite that leaves both the size and the
+    modification time as they were. That is a deliberate residual of measuring
+    metadata instead of content, and it is the price of a cost that does not grow
+    with the size of the tree.
     """
     digest = hashlib.sha256(porcelain.encode(errors="replace"))
     if porcelain:
@@ -189,6 +234,19 @@ def _worktree_fingerprint(
             return None, f"could not read the uncommitted changes: {err or 'no output'}"
         digest.update(b"\x00")
         digest.update(diff.encode(errors="replace"))
+        for relative in _status_paths(porcelain):
+            try:
+                stat = (root / relative).lstat()
+            except FileNotFoundError:
+                mark = "absent"
+            except OSError as exc:
+                return None, (
+                    f"could not read the state of {relative} under {root}: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+            else:
+                mark = f"{stat.st_size}:{stat.st_mtime_ns}"
+            digest.update(f"\x00{relative}\x00{mark}".encode(errors="replace"))
     return digest.hexdigest()[:_FINGERPRINT_CHARS], None
 
 
@@ -226,12 +284,17 @@ def _read_git_identity(tree: Path, budget: _Budget) -> dict[str, Any]:
     identity["detached"] = detached
     identity["branch"] = None if detached else branch
 
-    rc, porcelain, err = _git(tree, "status", "--porcelain", budget=budget)
+    # `-z` so a path with a newline or a quote in it stays one field, and
+    # `--untracked-files=all` so an untracked directory is listed as the files
+    # inside it rather than as a single line that an edit within cannot move.
+    rc, porcelain, err = _git(
+        tree, "status", "--porcelain", "-z", "--untracked-files=all", budget=budget
+    )
     if rc != 0:
         return {"status": "unknown", "detail": f"could not read working tree: {err}"}
     identity["dirty"] = bool(porcelain)
 
-    fingerprint, fingerprint_detail = _worktree_fingerprint(tree, porcelain, budget)
+    fingerprint, fingerprint_detail = _worktree_fingerprint(tree, Path(top), porcelain, budget)
     identity["worktree_fingerprint"] = fingerprint
     if fingerprint_detail is not None:
         identity["worktree_fingerprint_detail"] = fingerprint_detail
