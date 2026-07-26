@@ -133,7 +133,7 @@ class iModel:
         post_invoke_event_hook_timeout: float = 30.0,
         post_invoke_event_hook_params: dict = None,
         **kwargs,
-    ) -> tuple[HookEvent | None, APICalling]: ...
+    ) -> APICalling: ...
 
     def create_api_calling(
         self, include_token_usage_to_model: bool = False, **kwargs
@@ -145,9 +145,8 @@ class iModel:
     def copy(self, share_session: bool = False) -> iModel: ...
 ```
 
-The `create_event()` annotation currently claims a two-tuple, but every successful implementation
-path returns the `APICalling` alone. That mismatch is part of the shipped source, not a second
-supported result shape.
+The `create_event()` annotation and every successful implementation path return the
+`APICalling` alone.
 
 `iModelManager` is a string-keyed registry with two conventional keys and isolated concurrent
 shutdown (`lionagi/service/manager.py`; `iModelManager`):
