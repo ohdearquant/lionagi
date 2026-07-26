@@ -200,17 +200,24 @@ def _require_fingerprint(name: str, verb: Verb, schema: dict[str, Any], supplied
         "help": {"verb": name} if verb.playbook_aware else name,
         "schema_fingerprint": current,
     }
+    # Where the key goes is the part a caller gets wrong: put it inside `args`
+    # and it is simply not read, so this refusal repeats verbatim and the
+    # failure reads as idempotent rather than as a misplaced key. Spelling the
+    # whole op is the only form of the instruction that cannot be misread.
+    shape = f"{{'op': {name!r}, 'args': {{...}}, 'schema_fingerprint': {current!r}}}"
     if supplied is None:
         raise OpError(
             "stale_schema",
-            f"{name!r} needs the schema_fingerprint that help returns for it; "
-            f"ask for help={name!r} and send its schema_fingerprint with the op",
+            f"{name!r} needs the schema_fingerprint that help returns for it; ask for "
+            f"help={name!r} and send the fingerprint as a sibling of 'args', not a "
+            f"member of it: {shape}",
             remedy,
         )
     raise OpError(
         "stale_schema",
         f"{name!r} was called with schema_fingerprint {supplied!r}, which is not the "
-        f"current {current!r}; the parameters changed since that schema was read",
+        f"current {current!r}; the parameters changed since that schema was read. "
+        f"Re-read help={name!r} and send: {shape}",
         remedy,
     )
 
@@ -383,7 +390,11 @@ def render_argv(schema: dict[str, Any], args: dict[str, Any]) -> list[str]:
             positional[name] = value
             continue
         flag = spec["x-flag"]
-        if spec.get("type") == "boolean":
+        if spec.get("x-json-encoded"):
+            # The parser decodes this flag's single token from JSON, so the
+            # value the caller sent has to reach it encoded.
+            flags += _flag_tokens(name, flag, json.dumps(value))
+        elif spec.get("type") == "boolean":
             # A store_false action defaults to true and its flag turns it off, so
             # the flag belongs on the line exactly when the value differs from
             # what the parser would have chosen on its own.

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from lionagi._paths import ensure_lionagi_dir
+from lionagi.cli._argtypes import JsonArgument
 from lionagi.cli._logging import log_error, warn
 from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES
 
@@ -803,13 +804,8 @@ def build_create_body(args: argparse.Namespace) -> tuple[dict[str, Any] | None, 
     if getattr(args, "action_command", None):
         body["action_command"] = args.action_command
     if getattr(args, "action_command_args", None):
-        try:
-            parsed_command_args = json.loads(args.action_command_args)
-        except (ValueError, TypeError) as exc:
-            return None, f"--action-command-args must be valid JSON: {exc}"
-        if not isinstance(parsed_command_args, list):
-            return None, "--action-command-args must be a JSON array."
-        body["action_command_args"] = parsed_command_args
+        # Already a list: the argument's own type decoded and checked it.
+        body["action_command_args"] = args.action_command_args
     # ADR-0070 delta 1: persist a stable execution root instead of depending
     # on the daemon's cwd when it fires. An explicit --cwd always wins.
     if getattr(args, "cwd", None):
@@ -1821,6 +1817,7 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         "--action-command-args",
         dest="action_command_args",
         metavar="JSON",
+        type=JsonArgument({"type": "array", "items": {"type": "string"}}),
         help=(
             "action-kind=command argv, as a JSON array of {{var}} templates "
             "rendered from trigger_context at fire time, e.g. "
