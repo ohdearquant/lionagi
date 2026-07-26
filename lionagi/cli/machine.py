@@ -28,8 +28,9 @@ import argparse
 import json
 import os
 import sys
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,12 @@ __all__ = (
     "unavailable",
     "read_json_file",
     "list_directory",
+    "machine_parser",
+    "parse_machine_argv",
+    "machine_subcommand",
+    "readonly_state_db",
+    "state_db_absent",
+    "store_unreachable",
     "reserve_stdout",
     "dispatch_machine",
     "handshake_data",
@@ -191,6 +198,147 @@ def list_directory(path: Path, *, missing_is_empty: bool = False) -> dict[str, A
     except OSError as exc:
         return unavailable(REASON_UNREADABLE, f"{path}: {exc.strerror or exc}")
     return available(names)
+
+
+# ── argument parsing on the machine channel ─────────────────────────────────
+
+
+class _MachineArgumentParser(argparse.ArgumentParser):
+    """An argparse parser that refuses inside the envelope instead of exiting.
+
+    ``ArgumentParser.error`` prints usage and raises ``SystemExit``, which no
+    ``except Exception`` catches — the process would end having written a usage
+    message to stderr and no envelope at all, which reads to a machine caller as
+    a command that stopped answering rather than one that refused.
+    """
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        raise MachineError("invalid_input", message)
+
+
+def machine_parser(prog: str) -> argparse.ArgumentParser:
+    """A parser for one machine command's arguments.
+
+    Deliberately separate from the human-facing parser the same command
+    registers: this one is reached with ``--machine`` already stripped and
+    answers only what the machine path honours, so a flag that shapes the human
+    printout is refused here rather than accepted and ignored.
+    """
+    return _MachineArgumentParser(prog=prog, add_help=False)
+
+
+def parse_machine_argv(parser: argparse.ArgumentParser, argv: list[str]) -> argparse.Namespace:
+    known, extras = parser.parse_known_args(argv)
+    if extras:
+        raise MachineError("invalid_input", f"unrecognized arguments: {' '.join(extras)}")
+    return known
+
+
+def machine_subcommand(
+    command: str,
+    argv: list[str],
+    handlers: Mapping[str, Callable[[list[str]], dict[str, Any]]],
+    *,
+    without_seam: Mapping[str, str],
+) -> dict[str, Any]:
+    """Route ``li <command> <sub>`` to the subcommand's machine payload.
+
+    Three answers, kept apart: a name that is not a subcommand of this command
+    is bad input, a real subcommand with no machine result is unavailable and
+    says why, and a qualified one runs. Collapsing the middle case into "no such
+    subcommand" would tell a caller the capability does not exist when what is
+    missing is only this surface's route to it.
+
+    *without_seam* carries a reason per subcommand rather than a list of names,
+    because the reasons differ — one command prints prose, the next writes to
+    the store — and one sentence covering both would be true of neither.
+    """
+    if not argv:
+        raise MachineError(
+            "invalid_input",
+            f"li {command} needs a subcommand; these answer on the machine "
+            f"channel: {', '.join(sorted(handlers))}",
+        )
+    sub, rest = argv[0], argv[1:]
+    handler = handlers.get(sub)
+    if handler is not None:
+        return handler(rest)
+    reason = without_seam.get(sub)
+    if reason is not None:
+        raise MachineError(
+            "unavailable",
+            f"`li {command} {sub}` has no machine result in contract version "
+            f"{CONTRACT_VERSION}: {reason}",
+        )
+    raise MachineError("invalid_input", f"no such subcommand: {command} {sub}")
+
+
+# ── the lifecycle store, opened for reading only ────────────────────────────
+
+
+@asynccontextmanager
+async def readonly_state_db() -> AsyncIterator[tuple[Any | None, dict[str, Any] | None]]:
+    """The lifecycle store open for reading, paired with why it is not.
+
+    Read-only at the connection, not by convention: the ordinary open reconciles
+    the schema, so a reporting command that used it would write to the store it
+    is reporting on.
+
+    Exactly one of the two is set. The reason travels with the ``None`` rather
+    than being reconstructed by the caller, because there is more than one way
+    to arrive here: the store may not exist yet, which is a definitive statement
+    that nothing has been recorded, or it may exist and refuse to open, which
+    says nothing at all about what it holds. A caller handed only ``None`` has
+    to guess between those, and every one of them guessed "absent".
+
+    A failure to open is a fact about the store, so it is reported rather than
+    raised. The guard covers the open alone — the caller's own body runs outside
+    it, and a bug in a reader still surfaces as the crash it is.
+    """
+    from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+
+    if not DEFAULT_DB_PATH.exists():
+        yield None, state_db_absent()
+        return
+    async with AsyncExitStack() as stack:
+        try:
+            db = await stack.enter_async_context(StateDB(readonly=True))
+            # The engine is lazy: it connects on the first statement, so without
+            # this the store's refusal would surface in the middle of a caller's
+            # query, where it is indistinguishable from that query being wrong.
+            # One trivial statement moves the failure to the moment this seam
+            # claims the store is open, which is what the claim has to mean.
+            await db.fetch_all("SELECT 1")
+        except Exception as exc:  # noqa: BLE001 — an unopenable store is an answer, not a crash
+            yield None, unavailable(REASON_UNREADABLE, f"{DEFAULT_DB_PATH}: {type(exc).__name__}")
+            return
+        yield db, None
+
+
+def state_db_absent() -> dict[str, Any]:
+    """The unavailability every store-backed reader reports when there is no store."""
+    from lionagi.state.db import DEFAULT_DB_PATH
+
+    return unavailable(
+        REASON_NOT_FOUND, f"{DEFAULT_DB_PATH} does not exist; nothing has been recorded yet"
+    )
+
+
+def store_unreachable(why: dict[str, Any], subject: str) -> MachineError:
+    """The refusal a detail read makes when it never reached the store.
+
+    A detail read answers about one record, so it has no availability wrapper to
+    put this in and has to refuse. `not_found` stays `not_found` — with no store
+    there is definitively no such record — but a store that would not open is
+    `unavailable`, because the record may well be sitting in it.
+    """
+    reason = why.get("reason_code")
+    detail = why.get("detail")
+    if reason == REASON_NOT_FOUND:
+        return MachineError("not_found", f"{subject}: {detail}")
+    return MachineError(
+        "unavailable", f"{subject}: the lifecycle store could not be read ({detail})"
+    )
 
 
 # ── stdout reservation ──────────────────────────────────────────────────────
@@ -525,6 +673,23 @@ _MACHINE_COMMANDS: dict[str, Callable[[list[str]], dict[str, Any]]] = {
     "lifecycle": _machine_lifecycle,
 }
 
+# Commands whose machine result is defined beside the command it mirrors rather
+# than here, because a payload that lives in another file drifts from the
+# printout it is supposed to be the machine form of. Each module exposes
+# ``machine_result(argv)`` and routes its own subcommands. The alias spellings
+# are registered too: `li mon --machine` reaches the same parser `li mon` does,
+# so it must reach the same result.
+_MACHINE_MODULES: dict[str, str] = {
+    "monitor": ".monitor",
+    "mon": ".monitor",
+    "stats": ".stats",
+    "invoke": ".invoke",
+    "dispatch": ".dispatch",
+    "state": ".state",
+    "team": ".team",
+    "plugin": ".plugin",
+}
+
 
 def strip_machine_flag(argv: list[str]) -> list[str]:
     """Remove `--machine` from the tokens the dispatcher routes on.
@@ -588,6 +753,10 @@ def _run_machine_command(argv: list[str]) -> dict[str, Any]:
     handler = _MACHINE_COMMANDS.get(name)
     if handler is not None:
         return handler(rest)
+
+    module_name = _MACHINE_MODULES.get(name)
+    if module_name is not None:
+        return import_module(module_name, __package__).machine_result(rest)
 
     from .main import _COMMAND_BY_NAME
 

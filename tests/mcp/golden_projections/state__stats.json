@@ -1,0 +1,11 @@
+{
+  "path": "state stats",
+  "schema": {
+    "additionalProperties": false,
+    "description": "Report state.db + state.db-wal sizes, per-table row counts, session status distribution, and SQLite PRAGMAs (journal_mode, wal_autocheckpoint, busy_timeout). Use to spot growth and lock contention.",
+    "properties": {},
+    "title": "state stats",
+    "type": "object"
+  },
+  "stage": "static"
+}

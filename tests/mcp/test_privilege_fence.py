@@ -46,6 +46,15 @@ REVIEWED_PATHS = frozenset(
         "orchestrate fanout",
         "orchestrate flow",
         "runs",
+        "dispatch ls",
+        "dispatch show",
+        "invoke list",
+        "monitor",
+        "plugin info",
+        "state ls",
+        "state stats",
+        "stats runs",
+        "team list",
     }
 )
 
