@@ -55,6 +55,7 @@ GOLDEN_VERBS = (
     # quietly reshape a schema a caller validated against.
     "dispatch show",
     "invoke list",
+    "lifecycle",
     "plugin info",
     "state stats",
     "team list",

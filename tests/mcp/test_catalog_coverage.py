@@ -24,74 +24,163 @@ from lionagi.cli.main import _COMMAND_REGISTRY
 from lionagi.mcp.verbs import ABSENT, FENCED_PATHS, VERBS
 
 
-def _leaves(parser: argparse.ArgumentParser, prefix: str) -> list[str]:
-    """Every leaf command path under *parser*, spelled as it is typed."""
+def _leaves(parser: argparse.ArgumentParser, prefix: str) -> dict[str, str]:
+    """Every typed leaf spelling under *parser*, mapped to its canonical one.
+
+    Aliases are measured, not skipped. Dropping them would leave a command
+    reachable only under an alias invisible to this test, which is the shape of
+    silence it exists to catch. argparse keeps no canonical flag, so the first
+    name registered for a given parser object is taken as canonical — that is the
+    `name` argument of `add_parser`, with `aliases=` following it.
+    """
     subactions = [
         action
         for action in parser._actions  # noqa: SLF001 — the parser tree has no public reader
         if isinstance(action, argparse._SubParsersAction)  # noqa: SLF001
     ]
     if not subactions:
-        return [prefix]
-    found: list[str] = []
+        return {prefix: prefix}
+    found: dict[str, str] = {}
     for action in subactions:
-        seen: set[int] = set()
+        canonical_of: dict[int, str] = {}
         for name, sub in action.choices.items():
-            # Aliases point at the same parser object; count the command once.
-            if id(sub) in seen:
-                continue
-            seen.add(id(sub))
-            found.extend(_leaves(sub, f"{prefix} {name}"))
+            canonical_name = canonical_of.setdefault(id(sub), name)
+            for spelling, canonical in _leaves(sub, f"{prefix} {name}").items():
+                # Rewrite this level's segment back to the canonical spelling,
+                # leaving deeper levels' own canonicalisation intact.
+                found[spelling] = canonical.replace(
+                    f"{prefix} {name}", f"{prefix} {canonical_name}", 1
+                )
     return found
 
 
-def _cli_leaves() -> tuple[frozenset[str], dict[str, str]]:
-    """The CLI's leaf command paths, and the commands that would not build.
+def _cli_leaves() -> tuple[dict[str, str], dict[str, str]]:
+    """Every typed leaf spelling in the CLI, mapped to its canonical path.
 
-    A top-level command whose parser needs an uninstalled extra is reported
-    rather than skipped silently: its subcommands are invisible to this test, so
-    a gap under it would not be caught, and the caller deserves to know which
-    part of the surface went unmeasured.
+    Top-level aliases are included for the same reason as nested ones, and are
+    canonicalised to the registry's own `spec.name`.
     """
-    leaves: set[str] = set()
+    leaves: dict[str, str] = {}
     unbuildable: dict[str, str] = {}
     for spec in _COMMAND_REGISTRY:
         root = argparse.ArgumentParser(prog="li")
         subparsers = root.add_subparsers(dest="command")
         try:
             getattr(spec.loader(), spec.parser_factory)(subparsers)
-        except Exception as exc:  # noqa: BLE001 — a missing extra, not a catalog gap
+        except Exception as exc:  # noqa: BLE001 — recorded, and failed on by the caller
             unbuildable[spec.name] = f"{type(exc).__name__}: {exc}"
             continue
         for name, sub in subparsers.choices.items():
-            if name == spec.name:
-                leaves.update(_leaves(sub, spec.name))
-    return frozenset(leaves), unbuildable
+            if name not in (spec.name, *spec.aliases):
+                continue
+            for spelling, canonical in _leaves(sub, name).items():
+                leaves[spelling] = canonical.replace(name, spec.name, 1)
+    return leaves, unbuildable
+
+
+def _measured_surface() -> dict[str, str]:
+    """The leaf map, or a failure naming what went unmeasured.
+
+    A coverage gate that cannot see part of the surface must fail rather than
+    report on the part it can see. The earlier version printed the unbuildable
+    commands and passed, so a whole command tree could go unmeasured while this
+    file claimed the catalog covered everything. If an optional extra is missing,
+    that is the environment to fix — not a silence to inherit.
+    """
+    leaves, unbuildable = _cli_leaves()
+    assert unbuildable == {}, (
+        "these top-level commands' parsers would not build, so their subcommands "
+        f"went unmeasured and this gate cannot speak for them: {unbuildable}"
+    )
+    assert leaves, "no CLI commands were measured; the parser walk is broken"
+    return leaves
+
+
+# A fence for a capability that has no command yet. Kept deliberately: removing a
+# fence because its path is absent today is how the path comes back unfenced, and
+# store migration is exactly the capability that must not arrive reachable. Listed
+# here so that a *typo* or a retired path in FENCED_PATHS still fails the
+# existence check below instead of hiding inside a blanket exemption.
+PREEMPTIVE_FENCES = frozenset({"state migrate"})
 
 
 def test_every_cli_command_is_registered_or_named_absent():
-    leaves, unbuildable = _cli_leaves()
-    assert leaves, "no CLI commands were measured; the parser walk is broken"
+    leaves = _measured_surface()
 
     registered = {verb.cli_path for verb in VERBS.values() if verb.cli_path is not None}
     named_absent = {absent.cli_path for absent in ABSENT}
     # A fenced path is accounted for, and accounted for somewhere that deliberately
     # keeps it out of the catalog: naming it there would tell the caller it is
     # fenced from that the capability exists. That is not the silence this test is
-    # about, so it is subtracted rather than demanded as an absent entry.
+    # about, so it is subtracted rather than demanded as an absent entry. The
+    # subtraction is only safe because every fenced path is itself checked below.
     fenced = set(FENCED_PATHS)
 
-    silent = sorted(leaves - registered - named_absent - fenced)
+    # Coverage is asked of canonical paths: an alias and its canonical name are one
+    # parser, so one catalog entry answers for both. Asking of every spelling would
+    # demand an entry per alias, which is a second name for one operation.
+    silent = sorted(set(leaves.values()) - registered - named_absent - fenced)
     assert silent == [], (
         "these CLI commands are neither registered nor named absent, so the catalog "
         f"is silent about them: {silent}. Add a Verb if the path answers "
         "`--machine`, or an AbsentVerb with the reason it cannot."
     )
-    # Reported, not asserted: an extra that is absent here is an environment
-    # fact, and failing on it would make this test's verdict depend on which
-    # extras the runner installed.
-    if unbuildable:
-        print(f"unmeasured top-level commands: {unbuildable}")
+
+
+def test_an_alias_reaches_a_command_the_catalog_accounts_for():
+    """Aliases are in scope, and their treatment is stated rather than assumed.
+
+    `team ls`, `team recv`, `li o` and `li mon` are callable spellings. The policy
+    is that a spelling is covered by its canonical path's catalog entry, which
+    holds because they are the same parser. What this asserts is that every
+    spelling resolves to a canonical path the catalog accounts for — so a command
+    added only under an alias cannot slip through.
+    """
+    leaves = _measured_surface()
+    accounted = (
+        {verb.cli_path for verb in VERBS.values() if verb.cli_path is not None}
+        | {absent.cli_path for absent in ABSENT}
+        | set(FENCED_PATHS)
+    )
+    aliases = {
+        spelling: canonical for spelling, canonical in leaves.items() if spelling != canonical
+    }
+    assert aliases, "no aliases were measured; the canonicalisation is not being exercised"
+    unaccounted = sorted(
+        f"{spelling} -> {canonical}"
+        for spelling, canonical in aliases.items()
+        if canonical not in accounted
+    )
+    assert unaccounted == [], (
+        f"alias spellings resolving to nothing the catalog names: {unaccounted}"
+    )
+
+
+def test_every_fenced_path_is_a_real_command_or_a_declared_preemptive_fence():
+    """The fenced set is subtracted from coverage, so it must not be a place to hide.
+
+    Without this, adding a string to FENCED_PATHS silently waives coverage for it,
+    and a typo or a retired path is invisible because nothing ever checks that a
+    fenced string names anything.
+    """
+    leaves = _measured_surface()
+    canonical = set(leaves.values())
+    unreal = sorted(
+        path for path in FENCED_PATHS if path not in canonical and path not in PREEMPTIVE_FENCES
+    )
+    assert unreal == [], (
+        f"fenced paths that name no CLI command: {unreal}. Either the path is gone "
+        "and the fence should say so, or it is pre-emptive and belongs in "
+        "PREEMPTIVE_FENCES with the reason."
+    )
+    # The other direction: a pre-emptive fence whose command has since landed is
+    # no longer pre-emptive, and leaving it here would exempt a real command from
+    # the existence check for good.
+    landed = sorted(path for path in PREEMPTIVE_FENCES if path in canonical)
+    assert landed == [], (
+        f"these are declared pre-emptive but now exist as commands: {landed}; "
+        "drop them from PREEMPTIVE_FENCES so the fence is checked against the CLI"
+    )
 
 
 def test_no_absent_entry_names_a_command_that_is_gone():
@@ -101,19 +190,9 @@ def test_no_absent_entry_names_a_command_that_is_gone():
     question about a command that no longer exists, and the answer explains why
     it cannot be called rather than that there is nothing to call.
     """
-    leaves, unbuildable = _cli_leaves()
-    stale = []
-    for absent in ABSENT:
-        if absent.cli_path in leaves:
-            continue
-        # Its whole top-level command went unmeasured, so its absence here says
-        # nothing about whether the command exists.
-        if absent.cli_path.split()[0] in unbuildable:
-            continue
-        stale.append(absent.cli_path)
-    assert sorted(stale) == [], (
-        f"absent entries naming commands the CLI no longer has: {sorted(stale)}"
-    )
+    canonical = set(_measured_surface().values())
+    stale = sorted(absent.cli_path for absent in ABSENT if absent.cli_path not in canonical)
+    assert stale == [], f"absent entries naming commands the CLI no longer has: {stale}"
 
 
 def test_absent_names_do_not_collide_with_registered_ones():
