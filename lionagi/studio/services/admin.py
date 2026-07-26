@@ -12,6 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Literal
 
+import anyio
 from fastapi import HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
@@ -362,6 +363,38 @@ async def doctor(*, stale_hours: float = 1.0) -> dict[str, Any]:
     }
 
 
+async def _code_identity_report() -> dict[str, Any]:
+    """Which code this daemon is actually running, and whether it has fallen behind.
+
+    The daemon imports lionagi once, at start. With an editable install that
+    import resolves to a working tree, so which code is running is a property of
+    whatever commit that checkout sits on — a property nothing else in this
+    report can see. The version string cannot distinguish them: a stale tree and
+    a current one report the same one.
+
+    Read fresh on every call rather than cached at start, because the answer this
+    is asked for is "is the tree still current", and a value captured at start
+    can only ever say it was current then. The read shells out to git, so it runs
+    off the event loop and its own budget bounds it; a daemon must not stall on
+    its own health check.
+    """
+    try:
+        from lionagi.cli._code_identity import code_identity
+
+        return await anyio.to_thread.run_sync(code_identity)
+    except Exception as exc:  # noqa: BLE001 — an unanswerable check is unknown, never absent
+        # Reported rather than omitted: a missing key reads as "not checked",
+        # which is the same shape as "checked and current" to anything scanning
+        # this response.
+        return {
+            "drift": {
+                "status": "unknown",
+                "reasons": [],
+                "unknown": [f"could not establish code identity: {type(exc).__name__}: {exc}"],
+            }
+        }
+
+
 async def health_report() -> dict[str, Any]:
     """Composite session health snapshot for the admin console."""
     from collections import Counter
@@ -377,6 +410,7 @@ async def health_report() -> dict[str, Any]:
             "sessions": {"total": 0, "by_status": {}, "by_health": {}, "unhealthy": []},
             "db": db_health(),
             "scheduler_timezone": scheduler_timezone_report(),
+            "code_identity": await _code_identity_report(),
             "diagnostic_run_at": now_utc().isoformat(),
         }
 
@@ -493,6 +527,10 @@ async def health_report() -> dict[str, Any]:
         # value is frozen per process: nothing in the source tree or the host's
         # configuration can be read back from a running scheduler otherwise.
         "scheduler_timezone": scheduler_timezone_report(),
+        # The commit this daemon's code came from, and whether that checkout has
+        # since fallen behind the ref it tracks. Every scheduled run this daemon
+        # spawns executes the tree named here.
+        "code_identity": await _code_identity_report(),
         "diagnostic_run_at": now_utc().isoformat(),
     }
 
