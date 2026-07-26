@@ -6,6 +6,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-07-26
+
+### Upgrading from 0.30.2
+
+0.30.2 does not contain the MCP server. Its published wheel has no `lionagi/mcp/` files and its
+`li` entry point registers no `mcp` subcommand, so installing `lionagi[mcp]` at that version
+installs `fastmcp` and no server: the extra appears to succeed while `li mcp` fails with an
+invalid-choice error. The MCP client wrapper under `lionagi/service/connections/` is a separate,
+long-standing feature and is unaffected. 0.31.0 is the first release that ships the server.
+
 ### Added
 
 - `li mcp` serves an MCP server (over stdio) that submits `li` runs — agent, flow, and fanout —
