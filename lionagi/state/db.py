@@ -370,6 +370,7 @@ TEAM_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["team"]
 EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     "session": frozenset({"ended_at", "node_metadata"}),
     "invocation": frozenset({"ended_at"}),
+    "schedule_run": frozenset({"ended_at", "error_detail"}),
 }
 
 # ── ADR-0035 status vocabulary (valid, not just terminal) ──────────────

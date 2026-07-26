@@ -2595,3 +2595,122 @@ async def test_fire_command_kind_nonzero_exit_records_failed_status():
         if c.args[0] == "schedule_run" and c.kwargs.get("new_status") == "failed"
     ]
     assert failed_calls, "Expected update_status('schedule_run', ..., new_status='failed')"
+
+
+# ---------------------------------------------------------------------------
+# error_detail on the broad-except handler (real StateDB)
+# ---------------------------------------------------------------------------
+
+
+class _DbSvc:
+    """SchedulerStateService over one open StateDB (in-memory, one connection)."""
+
+    def __init__(self, db):
+        self._db = db
+
+    def __getattr__(self, name):
+        return getattr(self._db, name)
+
+    async def compute_files_overlap(self, invocation_id: str, *, top_n: int = 5) -> dict:
+        return {"count": 0, "top": []}
+
+
+async def _seed_schedule(db, schedule: dict) -> None:
+    await db.create_schedule(
+        {
+            "id": schedule["id"],
+            "name": schedule["name"],
+            "trigger_type": "interval",
+            "interval_sec": 3600,
+            "action_kind": schedule["action_kind"],
+        }
+    )
+
+
+@pytest.fixture
+async def state_db():
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+    yield state
+    await state.close()
+
+
+@pytest.mark.asyncio
+async def test_fire_exception_keeps_the_error_detail_a_prior_finalizer_wrote(state_db):
+    """A concurrent finalizer that already moved the run to a terminal status
+    owns its error_detail. The broad-except handler's write is guarded on the
+    row still being 'running', so a lost race must leave the winner's text in
+    place instead of replacing it with the handler's own."""
+    from lionagi.state.reasons import RunReasons
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _DbSvc(state_db)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule()
+    await _seed_schedule(state_db, schedule)
+    run_id = "run-race-detail"
+
+    async def _reaper_then_raise(*args, **kwargs):
+        # Stand in for the deadline reaper winning this row mid-fire: it
+        # finalizes with the real cause, then the fire path blows up.
+        await state_db.update_status(
+            "schedule_run",
+            run_id,
+            new_status="timed_out",
+            reason_code=RunReasons.TIMED_OUT_DEADLINE,
+            reason_summary="Run exceeded its deadline.",
+            evidence_refs=[],
+            source="system",
+            actor="reaper",
+            expected_statuses={"running"},
+            extra_fields={"error_detail": "TimeoutError: run exceeded its deadline"},
+        )
+        raise RuntimeError("spawn exploded")
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(side_effect=_reaper_then_raise),
+        ),
+    ):
+        await engine._fire(schedule, run_id, trigger_context={"scheduled": True})
+
+    row = await state_db.get_schedule_run(run_id)
+    assert row["error_detail"] == "TimeoutError: run exceeded its deadline"
+
+
+@pytest.mark.asyncio
+async def test_fire_exception_records_the_real_exception_text_as_error_detail(state_db):
+    """On the ordinary path (nothing else finalized the row) the handler owns
+    the record, and the error_detail it stores is the same text the signal
+    carries — real exception type and message, not a generic placeholder."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _DbSvc(state_db)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule()
+    await _seed_schedule(state_db, schedule)
+    run_id = "run-real-detail"
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(side_effect=ModuleNotFoundError("No module named 'nope'")),
+        ),
+    ):
+        await engine._fire(schedule, run_id, trigger_context={"scheduled": True})
+
+    row = await state_db.get_schedule_run(run_id)
+    assert row["status"] == "failed"
+    assert row["error_detail"] == "ModuleNotFoundError: No module named 'nope'"
+    assert row["ended_at"] is not None

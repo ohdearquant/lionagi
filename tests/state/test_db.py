@@ -1793,3 +1793,78 @@ async def test_readonly_rejects_write_attempt(tmp_path):
             await ro.execute("INSERT INTO schema_meta (key, value) VALUES ('x', 'y')")
     finally:
         await ro.close()
+
+
+# ── update_status extra_fields: schedule_run ────────────────────────────────
+
+
+async def _make_running_schedule_run(db) -> str:
+    schedule_id = uid()
+    await db.create_schedule(
+        {
+            "id": schedule_id,
+            "name": "extras",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    run_id = uid()
+    await db.create_schedule_run(
+        {
+            "id": run_id,
+            "schedule_id": schedule_id,
+            "trigger_context": {},
+            "action_kind": "agent",
+            "action_args": [],
+            "status": "running",
+            "fired_at": time.time(),
+        }
+    )
+    return run_id
+
+
+async def test_schedule_run_status_write_carries_ended_at_and_error_detail(db):
+    """A schedule_run's terminal write may set ended_at and error_detail in the
+    same guarded transaction as the status, so the two can never disagree."""
+    run_id = await _make_running_schedule_run(db)
+    ended = time.time()
+
+    assert await db.update_status(
+        "schedule_run",
+        run_id,
+        new_status="failed",
+        reason_code="run.failed.exception",
+        reason_summary="RuntimeError: boom",
+        source="executor",
+        actor="test",
+        expected_statuses={"running"},
+        extra_fields={"ended_at": ended, "error_detail": "RuntimeError: boom"},
+    )
+
+    row = await db.get_schedule_run(run_id)
+    assert row["status"] == "failed"
+    assert row["error_detail"] == "RuntimeError: boom"
+    assert row["ended_at"] == pytest.approx(ended)
+
+
+async def test_schedule_run_status_write_rejects_an_unlisted_extra_field(db):
+    """Only the columns declared for schedule_run ride a status write; anything
+    else is refused rather than written."""
+    run_id = await _make_running_schedule_run(db)
+
+    with pytest.raises(ValueError, match="extra_fields"):
+        await db.update_status(
+            "schedule_run",
+            run_id,
+            new_status="failed",
+            reason_code="run.failed.exception",
+            reason_summary="RuntimeError: boom",
+            source="executor",
+            actor="test",
+            expected_statuses={"running"},
+            extra_fields={"stderr_tail": "nope"},
+        )
+
+    row = await db.get_schedule_run(run_id)
+    assert row["status"] == "running"
