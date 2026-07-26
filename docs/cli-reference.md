@@ -634,41 +634,40 @@ li hooks trust --yes                     # record trust without the prompt
 
 ## `li mcp`
 
-Serve an [MCP](https://modelcontextprotocol.io) server over stdio that submits
-`li` runs as **detached background jobs** and exposes tools to query, tail, and
-stop them. Each `submit_*` tool mirrors a `li` command but returns a `run_id`
-immediately instead of blocking; the run keeps going in its own process group,
-so it survives an MCP-server restart. Requires the `mcp` extra
+Serve an [MCP](https://modelcontextprotocol.io) server over stdio. The server is
+a control plane over this CLI: it submits `li` runs as **detached background
+jobs** and answers questions about them, so a submit returns a `run_id`
+immediately instead of blocking and the run keeps going in its own process
+group, surviving an MCP-server restart. Requires the `mcp` extra
 (`pip install 'lionagi[mcp]'`). Source: `lionagi/mcp/`.
 
 ```bash
 li mcp            # serve over stdio (same as: python -m lionagi.mcp)
 ```
 
-Register it with any MCP client (e.g. an `.mcp.json`):
+The server advertises a **single** tool, `request`, and every operation is a
+namespaced verb passed to it. Seeing one entry in a client's `tools/list` is
+correct. Call `request` with `help=true` for the catalog of verbs.
+
+Register it with any MCP client (e.g. an `.mcp.json`). The key here is the local
+name your client uses to launch the server; the name the server reports over the
+protocol is `lion`:
 
 ```json
 {
   "mcpServers": {
-    "lionagi": { "command": "li", "args": ["mcp"] }
+    "lion": { "command": "li", "args": ["mcp"] }
   }
 }
 ```
 
-| Tool | Purpose |
-|------|---------|
-| `submit_agent` | Background `li agent` — returns `{run_id, pid, status}` |
-| `submit_flow` | Background `li o flow` (DAG orchestration) |
-| `submit_fanout` | Background `li o fanout` (flat parallel workers) |
-| `job_status RUN_ID` | Liveness + authoritative terminal status + CLI manifest |
-| `job_output RUN_ID` | Console (an agent's final response) + artifacts |
-| `job_kill RUN_ID` | Signal the run's whole process group |
-| `jobs_list` | Recent jobs, newest first; optional `status` filter |
-
 Job records live under `~/.lionagi/mcp/jobs/<run_id>/`; the authoritative run
-state is the CLI's own `~/.lionagi/runs/<run_id>/`. In `job_status`, the
-top-level `status` is authoritative — the embedded `run` manifest is advisory
-and its own `status` may lag.
+state is the CLI's own `~/.lionagi/runs/<run_id>/`. In `job.status`, the
+top-level `status` is authoritative: the embedded `run` manifest is advisory and
+its own `status` may lag.
+
+The verb catalog, the `request` result contract, and a worked submit-and-poll
+example are in the [MCP server reference](reference/mcp-server.md).
 
 ### Terminal notices
 
@@ -694,7 +693,7 @@ Or per submit: `notify` overrides the delivery command for one run (a JSON argv
 list), and `notify_seat` fills the `{target}` placeholder. The environment
 variables `LIONAGI_MCP_NOTIFY_COMMAND` and `LIONAGI_MCP_NOTIFY_TARGET` set a
 process-wide default. Delivery outcome is recorded on the job and surfaced in
-`job_status` (`notify_delivery`), so a notice that failed to send is visible
+`job.status` (`notify_delivery`), so a notice that failed to send is visible
 rather than silently lost.
 
 ---
@@ -738,7 +737,8 @@ li runs --machine [--limit N]
 Each entry carries the run id, its state root, its artifact root, and the
 artifacts found there. It reports which runs EXIST and what they left behind,
 not whether any of them finished or succeeded — for that, ask `li job status` or
-the MCP `job_status` tool, which carry the terminal and outcome derivations.
+the MCP `request` operation `job.status`, which carry the terminal and outcome
+derivations.
 
 The artifact list is wrapped in the availability shape, so a directory that could
 not be read is reported as unavailable with a reason rather than as a run that
