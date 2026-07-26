@@ -125,9 +125,19 @@ async def store_probe(*, timeout_ms: int = STORE_PROBE_TIMEOUT_MS) -> dict[str, 
     # slow verdict is — so its cleanup is the one part that must not be.
     conn = None
     try:
-        with move_on_after(timeout_ms / 1000) as scope:
+        # Connecting is shielded and sits outside the deadline. Opening a SQLite
+        # file takes no database lock — the first statement does — so the connect
+        # is not what a slow store makes slow, and bounding it buys nothing. What
+        # bounding it costs is the only way out of the leak: a connect cancelled
+        # midway leaves the driver's worker thread running while the connection
+        # object it would be closed through is discarded, so the close below
+        # returns at once and the thread outlives the probe unreachable. The
+        # remaining way for this to hang is a filesystem that will not answer,
+        # which the `store_present` check above already stands in front of.
+        with CancelScope(shield=True):
             conn = aiosqlite.connect(str(DEFAULT_DB_PATH))
             db = await conn
+        with move_on_after(timeout_ms / 1000) as scope:
             # The shared connection helper waits 5s on a lock, which would
             # outlast this probe's own deadline; the probe would rather
             # report "slow" than sit in SQLite's retry loop.

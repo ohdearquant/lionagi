@@ -271,7 +271,15 @@ class TestStoreProbe:
 
     def test_slow_store_reports_slow_not_unavailable(self, client, monkeypatch):
         """A store that answers, but not inside the probe's deadline, is a
-        distinct verdict from one that cannot be reached at all."""
+        distinct verdict from one that cannot be reached at all.
+
+        The double stalls on the first statement rather than on the connect,
+        because that is where a real store stalls: opening a SQLite file takes
+        no database lock, so a connect against a store held by someone else
+        still succeeds and it is the statement afterwards that waits. A double
+        that hung at the connect would be testing a deadline over a call that
+        cannot be slow for the reason this verdict exists.
+        """
         import anyio
 
         class _SlowConnection:
@@ -280,11 +288,14 @@ class TestStoreProbe:
             # `async with` would still pass while the code under test stopped
             # using it.
             def __await__(self):
-                async def _hang():
-                    await anyio.sleep(5)
-                    raise AssertionError("probe should have given up before this")
+                async def _connect():
+                    return self
 
-                return _hang().__await__()
+                return _connect().__await__()
+
+            async def execute(self, *args):
+                await anyio.sleep(5)
+                raise AssertionError("probe should have given up before this")
 
             async def close(self):
                 return None
@@ -399,6 +410,58 @@ class TestStoreProbe:
         finally:
             blocker.rollback()
             blocker.close()
+
+    def test_a_connect_is_never_abandoned_partway(self, seeded, monkeypatch):
+        """Whatever else is cancelled, the connect runs to completion.
+
+        This is the leak the two tests above cannot see. A connection is closed
+        through the object the connect returns, so a connect cancelled midway
+        leaves the driver's worker thread running with nothing left to reach it
+        by: the close that follows finds no connection and returns at once,
+        reporting success while the thread is still there. Later it completes
+        against an event loop that has closed, from a thread nobody is
+        watching.
+
+        Asserted on the connect rather than on a thread count because the
+        window is a race — it needs the caller to give up during the connect
+        specifically, which no test can schedule reliably against a real
+        connection. What can be pinned is the property that closes the window.
+        """
+        import anyio
+
+        finished = []
+
+        class _SlowToConnect:
+            def __await__(self):
+                async def _connect():
+                    await anyio.sleep(0.2)
+                    finished.append(True)
+                    return self
+
+                return _connect().__await__()
+
+            async def execute(self, *args):
+                return self
+
+            async def fetchone(self):
+                return (0,)
+
+            async def close(self):
+                return None
+
+        import aiosqlite
+
+        from lionagi.studio.services import admin as admin_svc
+
+        monkeypatch.setattr(aiosqlite, "connect", lambda *a, **kw: _SlowToConnect())
+
+        async def _abandon():
+            # Fires while the connect is still in flight.
+            with anyio.move_on_after(0.05):
+                await admin_svc.store_probe(timeout_ms=5000)
+
+        anyio.run(_abandon)
+        assert finished == [True], "the caller's cancellation reached the connect"
 
     def test_probe_never_returns_5xx(self, client, monkeypatch):
         import aiosqlite
