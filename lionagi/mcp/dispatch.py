@@ -803,6 +803,12 @@ async def _run_one(entry: Any) -> dict[str, Any]:
 
 async def request(ops: list[dict[str, Any]] | None = None, help: Any = None) -> dict[str, Any]:  # noqa: A002 — `help` is the parameter name the surface advertises
     """Run a batch of ops, or answer a help request. Never raises for one bad op."""
+    # Shape first, before the help branch: otherwise a malformed ops is judged on
+    # truthiness, so an empty dict slips past as "no ops" and is discarded in
+    # silence, while a non-empty one is reported as a help conflict rather than
+    # as the wrong type it is.
+    if ops is not None and not isinstance(ops, list):
+        raise ValueError(f"ops is a list of {{op, args}} objects, got {type(ops).__name__}")
     if help is not None and help is not False:
         # A catalog and a set of op results are different shapes, so one reply
         # cannot carry both, and answering half of the request would look like
@@ -819,8 +825,6 @@ async def request(ops: list[dict[str, Any]] | None = None, help: Any = None) -> 
             "pass ops, or help=true for the catalog. This tool dispatches namespaced "
             "verbs; help=true lists them with their required parameters."
         )
-    if not isinstance(ops, list):
-        raise ValueError(f"ops is a list of {{op, args}} objects, got {type(ops).__name__}")
     if not ops:
         raise ValueError("ops is empty; pass at least one {op, args} object")
     if len(ops) > MAX_OPS:

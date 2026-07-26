@@ -154,6 +154,29 @@ def test_help_with_an_empty_ops_list_is_a_plain_help_call():
     assert call(help=True, ops=[]) == call(help=True)
 
 
+@pytest.mark.parametrize("bad", [{}, {"op": "server.info"}, "server.info"])
+def test_help_alongside_a_malformed_ops_reports_the_wrong_type(bad):
+    """A malformed ops is judged on its shape, not on whether it is truthy.
+
+    Deciding by truthiness split these three: the empty dict was falsey, so it
+    was read as "no ops" and dropped in silence, which is the very thing this
+    refusal exists to prevent. The other two were truthy and came back blamed on
+    the help conflict rather than on being the wrong type.
+    """
+    with pytest.raises(ValueError, match="ops is a list"):
+        call(help=True, ops=bad)
+
+
+@pytest.mark.parametrize("bad", [{}, {"op": "server.info"}, "server.info"])
+def test_a_malformed_ops_reports_the_same_way_with_and_without_help(bad):
+    """Whether help was asked for cannot change what a wrong type is called."""
+    with pytest.raises(ValueError, match="ops is a list") as with_help:
+        call(help=True, ops=bad)
+    with pytest.raises(ValueError, match="ops is a list") as without_help:
+        call(ops=bad)
+    assert str(with_help.value) == str(without_help.value)
+
+
 # ── closed validation, and the schema that comes back with the refusal ───────
 #
 # These request the submit fixture even though none of them should reach it: if
