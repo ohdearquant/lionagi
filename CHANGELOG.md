@@ -19,9 +19,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   never a hardcoded one, and the delivery outcome is recorded on the job and surfaced by the
   `job.status` operation. See `docs/reference/mcp-server.md` for the verb catalog and `.mcp.json`
   registration.
+- `/api/admin/health` reports `code_identity`: which commit the Studio daemon's code was loaded
+  from, whether that checkout has since moved or been edited, how far behind its comparison ref it
+  is, and a `drift` verdict over all of it. Under an editable install the code being served is
+  whatever commit the working tree sits on, and it keeps being served after the tree moves — a
+  state the version string cannot show, since it is identical between a current checkout and one
+  many commits behind. A reading that cannot be taken is reported as `unknown` with the reason
+  rather than omitted, because an absent key is indistinguishable from a healthy one to anything
+  scanning the response. The reading runs off the event loop, so a daemon never stalls on its own
+  health check.
 
 ### Fixed
 
+- The Studio daemon no longer reports a commit it never loaded. `code_identity` reads its git
+  position once and keeps it, initialising lazily, and the daemon left that initialisation to the
+  first `/api/admin/health` request. A checkout moved after startup but before that request — an
+  ordinary deploy or branch switch — was then read as the position the process had loaded from, so
+  the response named the new commit with `checkout_moved` false and a clean `drift` verdict, which
+  is the exact condition the field exists to detect. The daemon now takes the snapshot in its
+  lifespan, before the scheduler starts and before it serves anything, as the MCP server already
+  did.
 - The built-in provider collision filter no longer misses a plugin entry whose endpoint class
   comes from a helper module. `_reject_builtin_collisions` identified an activation's entries by
   requiring the class to be defined in the activated provider module, but a provider module may
