@@ -59,6 +59,12 @@ GOLDEN_VERBS = (
     "plugin info",
     "state stats",
     "team list",
+    # The queue's writes. A golden matters more here than on a read: a caller acts
+    # on the schema, so an argparse change that silently made `token` optional or
+    # renamed `--dry-run` would turn a refused call into a destructive one.
+    "dispatch ack",
+    "dispatch retry",
+    "dispatch purge",
 )
 
 # Everything the MCP surface is a candidate to dispatch. `mirror` is

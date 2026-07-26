@@ -228,13 +228,44 @@ def test_the_listing_that_prunes_trust_never_runs_from_this_surface(home):
 
 @pytest.mark.parametrize(
     ("command", "sub"),
-    [("state", "prune"), ("dispatch", "purge"), ("team", "send"), ("invoke", "start")],
+    [("state", "prune"), ("team", "send"), ("invoke", "start")],
 )
 def test_a_subcommand_that_writes_says_so_instead_of_running(home, command, sub):
     done = li(command, sub, "--machine")
     envelope = json.loads(done.stdout)
     assert envelope["ok"] is False
     assert envelope["error"]["kind"] == "unavailable"
+
+
+# `dispatch purge` used to sit in the roster above, refused wholesale because it
+# writes. It is now open for one named id and still closed for a criteria sweep,
+# so the rule it obeys is narrower than "writes, therefore refused" and is stated
+# here rather than left as a gap in that list.
+
+
+def test_purging_by_criteria_is_refused_even_though_purging_one_id_is_not(home):
+    """The line is named rows, not writes.
+
+    Deleting a row the caller read and named is a deliberate act. A sweep by
+    `--status`/`--before` deletes rows nobody named and reports a count for rows
+    that can no longer be inspected, which is not an answer a caller can check.
+    Refused by name rather than quietly ignoring the criteria, because ignoring
+    them would purge the one row the caller also happened to pass.
+    """
+    for criteria in (["--status", "dead_letter"], ["--before", "1"]):
+        envelope = json.loads(li("dispatch", "purge", *criteria, "--machine").stdout)
+        assert envelope["ok"] is False, f"a criteria sweep ran: {criteria}"
+        assert envelope["error"]["kind"] == "unavailable"
+        assert "never named" in envelope["error"]["message"]
+
+
+def test_purge_with_no_id_is_bad_input_rather_than_an_absent_seam(home):
+    # The seam exists, so "you gave me nothing to purge" is the honest answer.
+    # Reporting `unavailable` here would tell a caller the capability is missing
+    # and send them to a terminal for something they can do from here.
+    envelope = json.loads(li("dispatch", "purge", "--machine").stdout)
+    assert envelope["ok"] is False
+    assert envelope["error"]["kind"] == "invalid_input"
 
 
 def test_a_subcommand_nobody_has_is_bad_input_not_an_absent_seam(home):

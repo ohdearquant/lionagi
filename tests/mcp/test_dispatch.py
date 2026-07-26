@@ -176,6 +176,45 @@ def test_a_missing_required_parameter_names_itself(submitted):
     assert "missing required parameter 'playbook'" in answer["ops"][0]["error"]["message"]
 
 
+def test_a_refusal_on_a_synchronous_verb_does_not_blame_a_background_run():
+    """The reason a parameter is declined has to match the verb it was passed to.
+
+    Every refusal used to be on a spawn verb, where "nobody is attached to the
+    terminal" explains all of them, so the message said so in general terms.
+    `dispatch purge` is synchronous: a caller told its parameter was refused
+    because the run is detached would go looking for a background run they never
+    started.
+    """
+    answer = call(ops=[{"op": "dispatch.purge", "args": {"id": "d1", "status": "dead_letter"}}])
+    message = answer["ops"][0]["error"]["message"]
+    assert "'status' is not accepted here" in message
+    assert "background run" not in message
+    # And the reason travels with it, so the caller learns what to do instead.
+    assert "purge one id" in message
+
+
+def test_a_refusal_on_a_detached_verb_still_says_the_run_is_detached(submitted):
+    answer = call(ops=[spawn_op("agent.submit", {"verbose": True})])
+    assert "not accepted on a background run" in answer["ops"][0]["error"]["message"]
+
+
+def test_the_queue_sweep_is_refused_by_name_rather_than_left_undeclared():
+    """An unadmitted parameter and a refused one read very differently to a caller.
+
+    Dropping `--status`/`--before` from `admits` alone would report them as
+    unknown, and they are not unknown: they exist on the command, they are spelled
+    correctly, and they are declined. A caller told "unknown parameter" looks for
+    a typo instead of reading why.
+    """
+    schema = dispatch.verb_schema(verbs.VERBS["dispatch.purge"])
+    assert sorted(schema["properties"]) == ["dry_run", "id"]
+    assert sorted(schema["x-refused"]) == ["before", "status"]
+    # The parser leaves `id` optional because omitting it is how a terminal asks
+    # for a sweep. Here an absent id can never succeed, so the schema says so
+    # rather than letting the caller make the call and find out.
+    assert schema["required"] == ["id"]
+
+
 # ── previous-surface names ───────────────────────────────────────────────────
 
 

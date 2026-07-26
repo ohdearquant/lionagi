@@ -295,7 +295,13 @@ def _validate(schema: dict[str, Any], args: dict[str, Any], verb: Verb) -> None:
             continue
         reason = verb.refuses.get(name)
         if reason is not None:
-            problems.append(f"{name!r} is not accepted on a background run: {reason}")
+            # Every refusal used to be on a spawn verb, so the message could say
+            # why in general terms: nobody is attached to the terminal. A refusal
+            # on a synchronous verb has nothing to do with detachment, and saying
+            # so would send the caller looking for a background run that is not
+            # what they invoked.
+            where = "on a background run" if verb.executor in ("job", "spawn") else "here"
+            problems.append(f"{name!r} is not accepted {where}: {reason}")
         else:
             problems.append(f"unknown parameter {name!r} for {verb.name!r}")
 

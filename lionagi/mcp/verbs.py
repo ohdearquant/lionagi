@@ -209,6 +209,13 @@ _SPAWN_REFUSALS: Mapping[str, str] = {
     "notify": "the server wires the terminal hook; use notify_command and notify_seat",
 }
 
+_PURGE_SWEEP_REFUSALS: Mapping[str, str] = {
+    "status": "sweeps every row in that status, including rows the caller never read; "
+    "purge one id, or run the sweep from a terminal",
+    "before": "sweeps by age, so it deletes rows the caller never named and reports a "
+    "count for rows that can no longer be inspected; purge one id instead",
+}
+
 _AGENT_REFUSALS: Mapping[str, str] = {
     **_SPAWN_REFUSALS,
     "list_profiles": "prints the agent-profile catalog and exits without running anything",
@@ -655,6 +662,41 @@ _REGISTERED: tuple[Verb, ...] = (
         admits=("id",),
     ),
     Verb(
+        name="dispatch.ack",
+        summary="Acknowledge a delivered dispatch with its ack token, so the queue "
+        "stops redelivering it. A wrong token is refused without echoing the real one.",
+        executor="machine",
+        cli_path="dispatch ack",
+        admits=("id", "token"),
+    ),
+    Verb(
+        name="dispatch.retry",
+        summary="Return a failed or dead-lettered dispatch to pending so delivery is "
+        "attempted again.",
+        executor="machine",
+        cli_path="dispatch retry",
+        admits=("id",),
+    ),
+    Verb(
+        name="dispatch.purge",
+        summary="Delete one dispatch row by id, whatever its status, recording an audit "
+        "row. Deleting by --status/--before is refused here: a sweep deletes rows the "
+        "caller never named and reports a count for rows that can no longer be inspected.",
+        executor="machine",
+        cli_path="dispatch purge",
+        admits=("id", "dry_run"),
+        # The parser leaves `id` optional because omitting it is how a terminal
+        # asks for a sweep. Here a sweep is refused, so an absent id is never a
+        # valid call, and stating that in the schema beats letting the caller make
+        # a request that cannot succeed.
+        requires=("id",),
+        # Named as refused rather than left out of `admits`. Both keep the sweep
+        # unreachable, but an unadmitted parameter is reported as unknown, and
+        # these are not unknown: they exist, they are spelled correctly, and they
+        # are declined. A caller told "unknown parameter" looks for a typo.
+        refuses=_PURGE_SWEEP_REFUSALS,
+    ),
+    Verb(
         name="state.ls",
         summary="Sessions in the lifecycle store with their branch and message counts.",
         executor="machine",
@@ -761,11 +803,9 @@ ABSENT: tuple[AbsentVerb, ...] = (
         ("doctor",),
         "Read-only inspection of the lifecycle store.",
     ),
-    *_absent(
-        "dispatch",
-        ("ack", "retry", "purge"),
-        "The outbound dispatch queue.",
-    ),
+    # `dispatch ack`, `retry` and `purge` are registered above rather than named
+    # absent here. They are the queue's writes, and the caller that reads the queue
+    # from this surface is the one that has to resolve what it finds.
     # `plugin trust` and `hooks trust` are deliberately not here. A fenced path is
     # accounted for by FENCED_PATHS, and naming it in the catalog would advertise
     # the capability to the caller it is fenced from; that is a different silence
