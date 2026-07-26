@@ -26,11 +26,16 @@ pytest.importorskip("croniter", reason="studio extra not installed")
 
 @pytest.fixture
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Per-test temp file DB. Both ``state.db`` and the schedules service
-    bind ``DEFAULT_DB_PATH`` by plain import, so both need patching."""
+    """Per-test temp file DB.
+
+    Only the one binding is patched, because only one is read. ``StateDB``
+    resolves the default at call time from its own module, and the schedules
+    service no longer decides anything from a path: it asks the configured
+    store. Patching a name the service does not read would pin nothing while
+    looking like it pinned something.
+    """
     db_path = tmp_path / "state.db"
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr("lionagi.studio.services.schedules.DEFAULT_DB_PATH", db_path)
     return db_path
 
 
