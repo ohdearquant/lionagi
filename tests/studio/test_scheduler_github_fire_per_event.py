@@ -431,14 +431,19 @@ async def test_undispatched_event_is_relisted_on_next_poll(monkeypatch, caplog):
 
 
 def _closed_page(hour: int, base_number: int, *, merges: dict[int, str] | None = None):
-    """20 closed PRs at a fixed hour, minutes descending -- one fake
-    "page" of a merged-mode poll response. ``merges`` maps a within-page
-    index to a merged_at value for that PR (closed-but-unmerged otherwise)."""
+    """One FULL page of closed PRs at a fixed hour, updated_at descending.
+
+    Size comes from ``gh_mod._PER_PAGE``: the poller treats a page shorter than
+    the requested size as terminal, so a fixture stating its own size turns
+    every pagination test into a single-page test as soon as the reach changes.
+    """
     merges = merges or {}
+    n = gh_mod._PER_PAGE
+    step = max(1, (3600 - 60) // n)
     items = []
-    for i in range(20):
-        minute = 59 - i * 3
-        updated_at = f"2026-07-06T{hour:02d}:{minute:02d}:00Z"
+    for i in range(n):
+        secs = 3540 - i * step
+        updated_at = f"2026-07-06T{hour:02d}:{secs // 60:02d}:{secs % 60:02d}Z"
         items.append(_pr(base_number + i, updated_at, state="closed", merged_at=merges.get(i)))
     return items
 
