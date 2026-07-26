@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import builtins
 import os
+import signal
 from pathlib import Path
 
 import pytest
@@ -186,6 +187,71 @@ def test_kill_guards_low_pid(sandbox):
 def test_kill_unknown_job(sandbox):
     out = jobs.kill("nope")
     assert out["killed"] is False and out["reason"] == "no such job"
+
+
+@pytest.mark.parametrize(
+    "recorded",
+    [
+        {"status": "completed", "finished_at": "2026-01-01T00:00:00+00:00"},
+        {"status": "cancelled", "finished_at": "2026-01-01T00:00:00+00:00"},
+        {"status": "timed_out", "finished_at": "2026-01-01T00:00:00+00:00"},
+        {"status": "failed", "spawn_state": "failed", "finished_at": "2026-01-01T00:00:00+00:00"},
+        # No finished_at: a spawn failure is terminal on the spawn state alone,
+        # which is what `status` derives from it. Without this case the guard
+        # could drop its spawn-state arm and every other case here would still
+        # pass, putting kill and status back into disagreement.
+        {"status": "failed", "spawn_state": "failed"},
+    ],
+)
+def test_kill_refuses_a_record_that_already_ended(sandbox, monkeypatch, recorded):
+    """A run that ended is never probed and never signalled, however it ended.
+
+    The pid stays on the record after the run ends and pid numbers get reused, so
+    a liveness probe of that number can find an unrelated process — signalling it
+    would kill a stranger's process group. The recorded end must also survive: a
+    kill that should be a no-op must not relabel a completed or cancelled run.
+    """
+    killpg_calls: list[tuple] = []
+    monkeypatch.setattr(jobs.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(jobs.os, "killpg", lambda *a: killpg_calls.append(a))
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+
+    rid = jobs.new_run_id()
+    jobs._write_job({"run_id": rid, "pid": 4242, "kind": "agent", "log": None, **recorded})
+
+    out = jobs.kill(rid)
+
+    assert killpg_calls == [], "a job that already ended must not be signalled"
+    assert out["killed"] is False
+    assert recorded["status"] in out["reason"]
+    # The refusal reports the pid: a group that really did outlive its recorded
+    # end can only be found by an operator if this number survives the refusal.
+    assert out["pid"] == 4242
+    # kill and status must call the same record terminal. Whichever arm of the
+    # predicate this case exercises, disagreement here is the bug being guarded.
+    assert jobs.status(rid)["terminal"] is True
+    after = jobs._read_job(rid)
+    assert after["status"] == recorded["status"]
+    assert after.get("finished_at") == recorded.get("finished_at")
+
+
+def test_kill_signals_the_process_group_of_a_live_run(sandbox, monkeypatch):
+    """The whole point of kill: a live, non-terminal run gets SIGTERM by group."""
+    killpg_calls: list[tuple] = []
+    monkeypatch.setattr(jobs.os, "getpgid", lambda pid: 9000 + pid)
+    monkeypatch.setattr(jobs.os, "killpg", lambda *a: killpg_calls.append(a))
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+
+    rid = jobs.new_run_id()
+    jobs._write_job({"run_id": rid, "pid": 4242, "kind": "agent", "status": "running", "log": None})
+
+    out = jobs.kill(rid)
+
+    assert killpg_calls == [(9000 + 4242, signal.SIGTERM)]
+    assert out["killed"] is True and out["reason"] is None and out["pid"] == 4242
+    after = jobs._read_job(rid)
+    assert after["status"] == "killed" and after["finished_at"] is not None
+    assert jobs.status(rid)["terminal"] is True
 
 
 @pytest.mark.parametrize("cli_status", ["timed_out", "cancelled", "aborted", "completed_empty"])

@@ -706,6 +706,19 @@ def _record_spawn_failure(run_id: str, exc: Exception) -> SpawnError:
     return SpawnError(run_id, record, f"could not spawn run {run_id}: {exc}")
 
 
+def _record_is_terminal(job: dict[str, Any]) -> bool:
+    """Whether the record itself already says the run ended.
+
+    The same notion `_derive` classifies on, and deliberately not a membership
+    test against a set of terminal status strings: the status is whatever the CLI
+    reported, recorded verbatim, so any such set would silently read the statuses
+    it did not happen to list as still running. What marks an end is the presence
+    of ``finished_at``, or a spawn that failed — a run that never started is over
+    however its status reads.
+    """
+    return job.get("finished_at") is not None or job.get("spawn_state") == "failed"
+
+
 def _needs_lifecycle_read(job: dict[str, Any] | None, alive: bool) -> bool:
     """Whether this observation has to go and ask the lifecycle store.
 
@@ -718,7 +731,7 @@ def _needs_lifecycle_read(job: dict[str, Any] | None, alive: bool) -> bool:
     """
     if job is None or alive:
         return False
-    return job.get("finished_at") is None and job.get("spawn_state") != "failed"
+    return not _record_is_terminal(job)
 
 
 def _cache_lifecycle_end(
@@ -865,6 +878,26 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
     job = _read_job(run_id)
     if job is None:
         return {"run_id": run_id, "killed": False, "reason": "no such job"}
+    # Before the pid is read, let alone signalled. A record that already ended
+    # keeps its pid, and the operating system reuses pid numbers: probing that
+    # number can find an unrelated live process, and signalling it would kill a
+    # stranger's process group and report success. The write below would also
+    # relabel a run that completed or was cancelled as "killed".
+    if _record_is_terminal(job):
+        recorded = job.get("status", "unknown")
+        # The pid rides along on the refusal. A record can be marked terminal
+        # while its group leader is still alive: the terminal status is persisted
+        # from the lifecycle transition, and the run's own teardown finishes
+        # after that. Refusing is still right, because this pid may equally have
+        # been reused by then and nothing here can tell the two apart. But an
+        # operator reaping a group that really did outlive its recorded end needs
+        # the number, and this is the last place it is reported.
+        return {
+            "run_id": run_id,
+            "killed": False,
+            "reason": f"already ended as {recorded}; pid not signalled because it may since have been reused",
+            "pid": job.get("pid"),
+        }
     pid = job.get("pid")
     if not pid or pid <= 1:  # never signal pgid 0/1 (self/init)
         return {"run_id": run_id, "killed": False, "reason": "no pid on record"}
