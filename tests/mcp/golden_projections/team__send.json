@@ -1,0 +1,63 @@
+{
+  "path": "team send",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "artifacts": {
+        "description": "Comma-separated artifact paths to attach (used with --kind done).",
+        "type": "string",
+        "x-flag": "--artifacts"
+      },
+      "content": {
+        "description": "Message body, as the recipients will read it.",
+        "type": "string",
+        "x-positional": true
+      },
+      "from_op": {
+        "description": "The op id this message belongs to (e.g. 'o3'). Ties a coord signal to a specific invocation when the sender agent runs multiple ops on the same branch.",
+        "type": "string",
+        "x-flag": "--from-op"
+      },
+      "kind": {
+        "description": "Message kind (default: 'message'). Use 'done' when you've finished your part and may be revived later, 'finished' when you're permanently done \u2014 quiescence detection reads this.",
+        "enum": [
+          "message",
+          "done",
+          "finished",
+          "wakeup"
+        ],
+        "type": "string",
+        "x-flag": "--kind"
+      },
+      "sender": {
+        "description": "Name to send as, so recipients know who is asking (defaults to '_cli'). A name that is not a member still sends, and is reported as a warning.",
+        "type": "string",
+        "x-flag": "--from"
+      },
+      "team": {
+        "description": "Team to send into \u2014 its id, its name, or an unambiguous id prefix.",
+        "type": "string",
+        "x-aliases": [
+          "-t"
+        ],
+        "x-flag": "--team"
+      },
+      "to": {
+        "description": "Recipients: 'all' to broadcast to the whole team, or comma-separated member names.",
+        "type": "string",
+        "x-flag": "--to"
+      }
+    },
+    "required": [
+      "content",
+      "team",
+      "to"
+    ],
+    "title": "team send",
+    "type": "object",
+    "x-positional-order": [
+      "content"
+    ]
+  },
+  "stage": "static"
+}

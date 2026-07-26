@@ -23,9 +23,13 @@ def add_mcp_subparser(subparsers: argparse._SubParsersAction) -> None:
         "mcp",
         help="Serve the lionagi MCP server (background job submit/query) over stdio.",
         description=(
-            "Serve the lionagi MCP server over stdio. It submits li runs as "
-            "detached background jobs (submit_agent/submit_flow/submit_fanout) "
-            "and exposes job_status/job_output/job_kill/jobs_list. Requires the "
+            "Serve the lionagi MCP server over stdio. It advertises one tool, "
+            "request(ops=[{op, args}], help?), with every operation behind it as "
+            "a namespaced verb: agent.submit, flow.submit, fanout.submit and "
+            "play.submit start detached background runs, job.status, job.output, "
+            "job.list, job.wait and job.kill follow them. Call request(help=true) "
+            'for the verb catalog and request(help="<verb>") for one verb\'s '
+            "parameters, generated from this CLI's own parsers. Requires the "
             "'mcp' extra: pip install 'lionagi[mcp]'."
         ),
     )

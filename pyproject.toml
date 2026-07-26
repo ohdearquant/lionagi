@@ -192,6 +192,12 @@ ignore = [
     "W293",   # blank line whitespace (handled by formatter)
 ]
 
+[tool.ruff.lint.flake8-bugbear]
+# pydantic.Field in a default is the documented way to attach a description to a
+# parameter; the FieldInfo it returns is inert, so B008's mutable-default hazard
+# does not apply.
+extend-immutable-calls = ["pydantic.Field", "lionagi.mcp.server._arg"]
+
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = [
     "S",      # security rules relaxed in tests

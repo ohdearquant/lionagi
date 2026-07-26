@@ -1,0 +1,18 @@
+{
+  "path": "doctor",
+  "schema": {
+    "additionalProperties": false,
+    "description": "Environment preflight: install location + editability, Python/venv, the import chain `li --version` traverses, core dependency importability, Studio daemon reachability, and ~/.lionagi writability.",
+    "properties": {
+      "json": {
+        "default": false,
+        "description": "Emit a JSON object of check name -> {status, detail} instead of plain text.",
+        "type": "boolean",
+        "x-flag": "--json"
+      }
+    },
+    "title": "doctor",
+    "type": "object"
+  },
+  "stage": "static"
+}

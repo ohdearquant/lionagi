@@ -1,0 +1,175 @@
+{
+  "path": "orchestrate fanout",
+  "schema": {
+    "additionalProperties": false,
+    "description": "Orchestrator decomposes task into N agent requests, fans out to workers, optionally synthesizes. Effort can be embedded in model spec: claude/opus-4-7-high. Flags may appear anywhere relative to the positionals.",
+    "properties": {
+      "agent": {
+        "description": "Load orchestrator profile by name. Resolves .lionagi/agents/<NAME>/<NAME>.md first, then .lionagi/agents/<NAME>.md. Profile provides system prompt, default model, effort, yolo. CLI flags and positional model override profile settings.",
+        "type": "string",
+        "x-aliases": [
+          "-a"
+        ],
+        "x-flag": "--agent"
+      },
+      "bypass": {
+        "default": false,
+        "description": "Bypass all codex approvals and sandbox (for cloud/codespace environments).",
+        "type": "boolean",
+        "x-flag": "--bypass"
+      },
+      "cwd": {
+        "description": "Directory the agent's process runs in \u2014 the repo or worktree it acts on. Defaults to the current directory.",
+        "type": "string",
+        "x-flag": "--cwd"
+      },
+      "effort": {
+        "description": "Override effort (overrides spec suffix). claude: low|medium|high|xhigh|max. codex: none|minimal|low|medium|high|xhigh|max|ultra (max/ultra clamp per model support). gemini-code/gemini-cli: folded into --model as Low|Medium|High (Gemini 3.1 Pro has no Medium).",
+        "type": "string",
+        "x-flag": "--effort"
+      },
+      "fast": {
+        "default": false,
+        "description": "Route codex requests through OpenAI's priority service tier (lower latency; requires account eligibility). Does not change model or reasoning effort.",
+        "type": "boolean",
+        "x-flag": "--fast"
+      },
+      "invocation": {
+        "description": "Parent invocation id (from `li invoke start`). Groups this session under a skill orchestration record. Optional.",
+        "type": "string",
+        "x-flag": "--invocation"
+      },
+      "max_concurrent": {
+        "default": 0,
+        "description": "Cap on workers running at the same time. 0, the default, runs them all at once \u2014 lower it to stay under a provider's rate limit.",
+        "type": "integer",
+        "x-flag": "--max-concurrent"
+      },
+      "notify": {
+        "description": "Shell command template run once this run reaches its terminal status. Overrides .lionagi/settings.yaml notify.on_terminal. Substitutes {payload} (full JSON), {status}, {invocation_id}.",
+        "type": "string",
+        "x-flag": "--notify"
+      },
+      "num_workers": {
+        "default": 3,
+        "description": "Maximum assignments the orchestrator generates (default 3). It may generate fewer if the task does not divide that far, and --workers specs beyond this cap go unused.",
+        "type": "integer",
+        "x-aliases": [
+          "-n"
+        ],
+        "x-flag": "--num-workers"
+      },
+      "output": {
+        "default": "text",
+        "description": "Result format: 'text' (default) for reading, 'json' for a machine-readable run.",
+        "enum": [
+          "text",
+          "json"
+        ],
+        "type": "string",
+        "x-flag": "--output"
+      },
+      "pack": {
+        "description": "Path to a YAML routing pack. Provides per-role model/effort when --workers is absent. --workers overrides pack routing.",
+        "type": "string",
+        "x-flag": "--pack"
+      },
+      "project": {
+        "description": "Explicit project name for this session. Overrides auto-detection from .lionagi/config.toml or git remote.",
+        "type": "string",
+        "x-flag": "--project"
+      },
+      "query": {
+        "description": "Orchestrator model spec (provider/model-effort) followed by the task prompt. Model is also used as the default worker model unless --workers is set; omit it when -a/--agent provides one. A single positional is treated as the prompt.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array",
+        "x-positional": true
+      },
+      "resume_on_timeout": {
+        "default": false,
+        "description": "If the run terminates on --timeout, automatically fire one resume of the same session with 'continue and conclude the task' and report the combined result. Bounded to a single auto-resume; a timeout on the resumed leg terminates normally. Same effect as an agent profile's 'resume_on_timeout: once'.",
+        "type": "boolean",
+        "x-flag": "--resume-on-timeout"
+      },
+      "save": {
+        "description": "Directory to write each worker's output and the run's artifacts into. Without it they land in the run's own artifacts directory.",
+        "type": "string",
+        "x-flag": "--save"
+      },
+      "synthesis_prompt": {
+        "description": "What the merged answer should be \u2014 a ranked list, a decision, a single patch. Implies synthesis.",
+        "type": "string",
+        "x-flag": "--synthesis-prompt"
+      },
+      "team_mode": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "const": true
+          }
+        ],
+        "description": "Create a persistent team for this fanout. Workers get team context and results are posted as team messages. Bare flag uses 'fanout' as team name; with arg uses that name.",
+        "x-bare-value": "fanout",
+        "x-flag": "--team-mode"
+      },
+      "theme": {
+        "description": "Pick the colour scheme printed output is tuned for: 'light' or 'dark' terminal.",
+        "enum": [
+          "light",
+          "dark"
+        ],
+        "type": "string",
+        "x-flag": "--theme"
+      },
+      "timeout": {
+        "description": "Hard wall-clock timeout in seconds. When set, a [DEADLINE] preamble is injected into the agent's prompt so the agent knows its time budget and can pace reasoning accordingly.",
+        "type": "integer",
+        "x-flag": "--timeout"
+      },
+      "verbose": {
+        "default": false,
+        "description": "Stream the agent's output as it is produced instead of printing only the final result, and silence the progress lines that would interleave with it.",
+        "type": "boolean",
+        "x-aliases": [
+          "-v"
+        ],
+        "x-flag": "--verbose"
+      },
+      "with_synthesis": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "const": true
+          }
+        ],
+        "default": false,
+        "description": "Run a final pass merging the workers' results into one answer. Bare flag uses the orchestrator model; with an argument, that model instead.",
+        "x-bare-value": true,
+        "x-flag": "--with-synthesis"
+      },
+      "workers": {
+        "description": "Comma-separated worker model specs, assigned round-robin (each may carry an effort suffix). This is how one fanout mixes cheap and expensive models across workers.",
+        "type": "string",
+        "x-flag": "--workers"
+      },
+      "yolo": {
+        "default": false,
+        "description": "Auto-approve the agent's tool calls, so an unattended run is never left waiting.",
+        "type": "boolean",
+        "x-flag": "--yolo"
+      }
+    },
+    "title": "orchestrate fanout",
+    "type": "object",
+    "x-positional-order": [
+      "query"
+    ]
+  },
+  "stage": "static"
+}
