@@ -1823,8 +1823,9 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         "--prompt",
         help=(
             "Instruction the scheduled agent runs at each fire. Required when "
-            "--action-kind is agent, which is the default, unless --agent names a "
-            "profile that carries its own prompt."
+            "--action-kind is agent, which is the default. A profile named by "
+            "--agent supplies the model and settings, never this instruction, so "
+            "a schedule created without it fires and fails."
         ),
     )
     create_p.add_argument("--model", help="Model spec for agent action.")

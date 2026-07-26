@@ -126,7 +126,7 @@
         "x-flag": "--project"
       },
       "prompt": {
-        "description": "Instruction the scheduled agent runs at each fire. Required when --action-kind is agent, which is the default, unless --agent names a profile that carries its own prompt.",
+        "description": "Instruction the scheduled agent runs at each fire. Required when --action-kind is agent, which is the default. A profile named by --agent supplies the model and settings, never this instruction, so a schedule created without it fires and fails.",
         "type": "string",
         "x-flag": "--prompt"
       },
