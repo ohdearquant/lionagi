@@ -64,6 +64,29 @@ def _seed(db_path, *, sessions: int, branches_per_session: int = 1) -> list[str]
     return ids
 
 
+def _hold_the_write_lock(db_path):
+    """A connection holding the store's write lock against every reader.
+
+    The store is created in WAL, where an ordinary writer deliberately does not
+    block readers, so a plain transaction cannot produce the condition these
+    tests need. The obvious lever, `PRAGMA locking_mode = EXCLUSIVE`, is the
+    wrong one: a second connection to the same WAL database in the same process
+    while another holds the shared-memory region exclusively is not a
+    configuration SQLite supports, and it can end the process rather than
+    return an error — a harness that aborts its own worker, with no traceback
+    to say why.
+
+    Moving the file to a rollback journal gets there within supported
+    behaviour: there a writer holding a transaction does block readers, which
+    is exactly the "store will not answer" the probe has to report as slow.
+    """
+    blocker = sqlite3.connect(str(db_path), isolation_level=None)
+    blocker.execute("PRAGMA journal_mode = DELETE")
+    blocker.execute("BEGIN EXCLUSIVE")
+    blocker.execute("UPDATE sessions SET name = name")
+    return blocker
+
+
 @pytest.fixture
 def seeded(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
@@ -340,13 +363,7 @@ class TestStoreProbe:
                 if getattr(t, "_target", None) is _connection_worker_thread
             )
 
-        # The store runs in WAL, where an ordinary writer never blocks a reader.
-        # An exclusive locking mode does: it holds the file lock outright, so
-        # any other connection is refused until this one lets go.
-        blocker = sqlite3.connect(str(db_path), isolation_level=None)
-        blocker.execute("PRAGMA locking_mode = EXCLUSIVE")
-        blocker.execute("BEGIN IMMEDIATE")
-        blocker.execute("UPDATE sessions SET name = name")
+        blocker = _hold_the_write_lock(db_path)
         try:
             before = _workers()
             body = asyncio.run(admin_svc.store_probe(timeout_ms=50))
@@ -391,10 +408,7 @@ class TestStoreProbe:
                 if getattr(t, "_target", None) is _connection_worker_thread
             )
 
-        blocker = sqlite3.connect(str(db_path), isolation_level=None)
-        blocker.execute("PRAGMA locking_mode = EXCLUSIVE")
-        blocker.execute("BEGIN IMMEDIATE")
-        blocker.execute("UPDATE sessions SET name = name")
+        blocker = _hold_the_write_lock(db_path)
         try:
             before = _workers()
 
