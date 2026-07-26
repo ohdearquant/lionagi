@@ -125,6 +125,51 @@ def test_missing_git_binary_is_unknown_not_a_missing_checkout(
     assert "FileNotFoundError" in git["detail"]
 
 
+def test_a_git_call_that_never_ran_does_not_read_as_a_missing_upstream(
+    checkout_behind: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lookup that could not run is not evidence the tree has no upstream.
+
+    origin/HEAD resolves here, so falling through to it would produce a confident
+    `ok` built on a question that was never actually asked.
+    """
+    _git(checkout_behind, "remote", "set-head", "origin", "-a")
+    real_run = subprocess.run
+
+    def _upstream_probe_times_out(argv: list[str], **kwargs: object):
+        if "@{upstream}" in argv:
+            raise subprocess.TimeoutExpired(argv, 5.0)
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(_code_identity.subprocess, "run", _upstream_probe_times_out)
+
+    git = git_identity(checkout_behind)
+    assert git["status"] == "unknown"
+    assert "TimeoutExpired" in git["detail"]
+    assert git.get("comparison_ref_source") != "remote_head"
+
+
+def test_a_spent_allowance_is_unknown_not_ok(checkout_behind: Path) -> None:
+    """The whole identity gets one allowance; running out of it is not a pass."""
+    git = git_identity(checkout_behind, _code_identity._Budget(0.0))
+    assert git["status"] == "unknown"
+    assert "allowance" in git["detail"]
+
+
+def test_the_remote_head_fallback_carries_its_own_staleness(checkout_behind: Path) -> None:
+    """origin/HEAD is local and can name a branch the remote no longer defaults to."""
+    _git(checkout_behind, "remote", "set-head", "origin", "-a")
+    _git(checkout_behind, "checkout", "--detach", "HEAD")
+
+    git = git_identity(checkout_behind)
+    assert git["comparison_ref_source"] == "remote_head"
+    assert "local symbolic ref" in git["comparison_ref_caveat"]
+
+
+def test_a_reading_says_when_it_was_taken(checkout_behind: Path) -> None:
+    assert git_identity(checkout_behind)["observed_at"]
+
+
 def test_no_comparison_ref_is_unknown_not_ok(tmp_path: Path) -> None:
     """A checkout with no remote cannot be measured, so it is not declared current."""
     _git(tmp_path, "init", "-b", "main", ".")
@@ -162,6 +207,99 @@ def test_behind_outranks_unknown_in_the_verdict() -> None:
     assert any("24 commit(s) behind" in reason for reason in drift["reasons"])
 
 
+# ── the snapshot, and the tree moving underneath it ──────────────────────────
+
+
+@pytest.fixture
+def loaded_from(checkout_behind: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Pretend this process imported itself from *checkout_behind*, snapshot unset."""
+    monkeypatch.setattr(_code_identity, "_SNAPSHOT", None)
+    monkeypatch.setattr(_code_identity, "loaded_package_path", lambda: str(checkout_behind))
+    return checkout_behind
+
+
+def test_the_first_call_takes_the_snapshot_and_it_is_the_current_reading(
+    loaded_from: Path,
+) -> None:
+    identity = code_identity()
+    assert identity["git_snapshot_taken_at"]
+    assert identity["checkout_moved"] is False
+    assert identity["git"]["commit"] == identity["git_live"]["commit"]
+
+
+def test_a_checkout_that_moves_under_the_process_is_reported_as_moved(
+    loaded_from: Path,
+) -> None:
+    """The loaded code is the snapshot; the tree's new position is a separate fact."""
+    loaded_commit = code_identity()["git"]["commit"]
+
+    _git(loaded_from, "merge", "--ff-only", "origin/main")
+
+    after = code_identity()
+    assert after["git"]["commit"] == loaded_commit
+    assert after["git_live"]["commit"] != loaded_commit
+    assert after["checkout_moved"] is True
+    assert "moved from" in after["checkout_moved_detail"]
+    assert after["drift"]["status"] == "drift"
+    assert any("moved from" in reason for reason in after["drift"]["reasons"])
+
+
+def test_the_snapshot_is_read_once_not_once_per_call(loaded_from: Path) -> None:
+    first = code_identity()["git_snapshot_taken_at"]
+    _git(loaded_from, "merge", "--ff-only", "origin/main")
+    assert code_identity()["git_snapshot_taken_at"] == first
+
+
+def test_the_server_snapshots_its_position_before_it_starts_serving(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lionagi.mcp import server
+
+    monkeypatch.setattr(_code_identity, "_SNAPSHOT", None)
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(server.mcp, "run", lambda: seen.update(snapshot=_code_identity._SNAPSHOT))
+
+    server.main()
+    assert seen["snapshot"] is not None
+
+
+def test_an_unreadable_live_position_is_unknown_movement_not_no_movement() -> None:
+    moved, detail = _code_identity._checkout_movement(
+        {"status": "ok", "commit": "a" * 40},
+        {"status": "unknown", "detail": "git went away"},
+    )
+    assert moved is None
+    assert "cannot be read" in detail
+
+
+def test_the_live_count_answers_when_the_checkout_has_not_moved() -> None:
+    """Same commit, fresher view of the remote: the newer measurement is the true one."""
+    drift = _code_identity._drift(
+        {"status": "ok", "behind": 0, "comparison_ref": "origin/main"},
+        "0.1.0",
+        None,
+        live={"status": "ok", "behind": 3, "comparison_ref": "origin/main"},
+        moved=False,
+    )
+    assert drift["status"] == "drift"
+    assert any("3 commit(s) behind" in reason for reason in drift["reasons"])
+
+
+def test_the_snapshot_answers_when_the_checkout_has_moved() -> None:
+    """Once the tree moves, the live count is about a commit that is not running."""
+    drift = _code_identity._drift(
+        {"status": "ok", "behind": 24, "comparison_ref": "origin/main"},
+        "0.1.0",
+        None,
+        live={"status": "ok", "behind": 0, "comparison_ref": "origin/main"},
+        moved=True,
+        movement_detail="it moved",
+    )
+    assert drift["status"] == "drift"
+    assert "it moved" in drift["reasons"]
+    assert any("24 commit(s) behind" in reason for reason in drift["reasons"])
+
+
 def test_code_identity_reports_this_process() -> None:
     identity = code_identity()
     assert identity["version"]
@@ -170,6 +308,9 @@ def test_code_identity_reports_this_process() -> None:
     assert identity["verb_count"] > 0
     assert identity["git"]["status"] in ("ok", "not_a_git_checkout", "unknown")
     assert identity["drift"]["status"] in ("ok", "drift", "unknown")
+    assert identity["git_snapshot_taken_at"]
+    assert identity["checkout_moved"] in (True, False, None)
+    assert identity["git_live"]["status"] in ("ok", "not_a_git_checkout", "unknown")
 
 
 # ── the doctor check ─────────────────────────────────────────────────────────
@@ -217,6 +358,17 @@ def test_doctor_ok_when_identity_is_clean(monkeypatch: pytest.MonkeyPatch) -> No
     result = doctor._check_code_identity()
     assert result["status"] == "ok"
     assert "abc123def456 (detached)" in result["detail"]
+
+
+def test_doctor_quotes_when_the_position_was_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A commit with no time attached reads as current; this one says what it is."""
+    monkeypatch.setattr(
+        _code_identity,
+        "code_identity",
+        lambda: _identity("ok", git_snapshot_taken_at="2026-07-26T00:00:00+00:00"),
+    )
+    detail = doctor._check_code_identity()["detail"]
+    assert "as read at 2026-07-26T00:00:00+00:00" in detail
 
 
 def test_doctor_check_that_cannot_run_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:

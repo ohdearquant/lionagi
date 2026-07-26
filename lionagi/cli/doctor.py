@@ -177,6 +177,11 @@ def _check_code_identity() -> dict[str, str]:
         else:
             position += " (detached)"
         where += f", git {position}"
+        # The position is the one read when this process started, not the tree's
+        # position now, so it is quoted with the time it was true of.
+        taken_at = identity.get("git_snapshot_taken_at")
+        if taken_at:
+            where += f" as read at {taken_at}"
     elif git["status"] == "not_a_git_checkout":
         where += ", not a git checkout"
 

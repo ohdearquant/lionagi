@@ -9,20 +9,34 @@ version, the resolved path it imported itself from, that tree's git position,
 and how many verbs it registered — and every answer is derived here, in one
 place, so the handshake and the server's own info cannot disagree.
 
+The git position is the part that can go stale under a running process, because
+someone can move the checkout the process imported from and the loaded module
+objects will not notice. So it is captured once, as early as the process can
+manage, and that capture is what the identity calls the running code. The tree's
+current position is read too, and reported beside it: when the two disagree the
+checkout moved after this process loaded, and that divergence is itself the fact
+an operator needs, so it is named in the payload rather than left to be inferred.
+
 Failure is closed: a tree whose git state cannot be read is ``unknown``, never
-``ok``. "Cannot tell" and "nothing wrong" are different answers.
+``ok``. "Cannot tell" and "nothing wrong" are different answers, and a git call
+that could not run at all is a third thing again — it is not evidence that the
+tree lacks an upstream, so it never falls through to the fallback comparison.
 """
 
 from __future__ import annotations
 
 import subprocess
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 __all__ = (
     "code_identity",
     "git_identity",
+    "snapshot_git_position",
     "GIT_TIMEOUT_SECONDS",
+    "IDENTITY_BUDGET_SECONDS",
 )
 
 # Bounded because this runs inside a handshake a client is waiting on, and a git
@@ -30,51 +44,127 @@ __all__ = (
 # otherwise hang the answer instead of failing it.
 GIT_TIMEOUT_SECONDS = 5.0
 
+# One allowance for the whole computation, not one per call: half a dozen git
+# calls each free to take the per-call timeout is a worst case measured in tens
+# of seconds, which is longer than the handshake it sits inside is worth waiting.
+# When the allowance runs out the answer is `unknown` with the reason, which is
+# the honest reading — a check that could not finish has not passed.
+IDENTITY_BUDGET_SECONDS = 6.0
+
 _SHORT_SHA = 12
 
+# Return codes for calls that never produced one: git could not be run at all,
+# or the allowance was already spent before this call's turn came.
+_COULD_NOT_RUN = -1
+_BUDGET_SPENT = -2
 
-def _git(tree: Path, *argv: str) -> tuple[int, str, str]:
+_REF_CAVEATS = {
+    "upstream": (
+        "this is a remote-tracking ref, updated only by a fetch in this tree, so the "
+        "comparison is as current as the last fetch and no more"
+    ),
+    "remote_head": (
+        "origin/HEAD is a local symbolic ref, written when this clone was made and "
+        "refreshed only on request; if the remote's default branch has changed since, "
+        "this measures against the wrong branch and understates how far behind the "
+        "checkout is. It is also a remote-tracking ref, so it is only as current as "
+        "the last fetch in this tree"
+    ),
+}
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class _Budget:
+    """One wall-clock allowance shared by every git call in a single computation."""
+
+    def __init__(self, seconds: float) -> None:
+        self.total = seconds
+        self._deadline = time.monotonic() + seconds
+
+    def remaining(self) -> float:
+        return self._deadline - time.monotonic()
+
+
+def _ran(rc: int) -> bool:
+    """Whether git actually ran and produced this return code."""
+    return rc >= 0
+
+
+def _git(tree: Path, *argv: str, budget: _Budget) -> tuple[int, str, str]:
     """Run one git command against *tree*; returns (rc, stdout, stderr), stripped.
 
-    An rc of -1 means git itself could not be run, which is a different fact
+    A negative rc means no git process produced it — either git could not be run,
+    or the shared allowance was gone before this call. Both are a different fact
     from git running and refusing.
     """
+    left = budget.remaining()
+    if left <= 0:
+        return (
+            _BUDGET_SPENT,
+            "",
+            f"the {budget.total}s allowance for reading git state was spent before "
+            f"`git {' '.join(argv)}` could run",
+        )
     try:
         completed = subprocess.run(  # noqa: S603 — fixed argv, no shell
             ["git", "-C", str(tree), *argv],  # noqa: S607 — resolved from PATH by design
             capture_output=True,
             text=True,
-            timeout=GIT_TIMEOUT_SECONDS,
+            timeout=min(GIT_TIMEOUT_SECONDS, left),
             check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        return -1, "", f"{type(exc).__name__}: {exc}"
+        return _COULD_NOT_RUN, "", f"{type(exc).__name__}: {exc}"
     return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
 
 
-def _comparison_ref(tree: Path) -> tuple[str | None, str, str | None]:
-    """The ref this checkout should be measured against, and where it came from.
+def _comparison_ref(tree: Path, budget: _Budget) -> tuple[str | None, str, str | None, bool]:
+    """The ref this checkout should be measured against, where it came from, and
+    whether the question could be asked at all.
 
     The configured upstream is preferred. A detached checkout has none — which is
     exactly the state a pinned deployment sits in — so the remote's default
     branch is the fallback, because "behind the branch this remote publishes" is
     the question a detached tree still has an answer to.
+
+    The fallback is only reached when git ran and told us there is no upstream. A
+    call that never ran — a timeout, a missing binary, a spent allowance — says
+    nothing about upstreams, so it stops here instead of being read as one.
     """
-    rc, out, _ = _git(tree, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+    rc, out, err = _git(
+        tree, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}", budget=budget
+    )
     if rc == 0 and out:
-        return out, "upstream", None
+        return out, "upstream", None, True
+    if not _ran(rc):
+        return None, "unreadable", err or "the upstream lookup did not run", False
 
-    rc, out, err = _git(tree, "rev-parse", "--abbrev-ref", "origin/HEAD")
+    rc, out, err = _git(tree, "rev-parse", "--abbrev-ref", "origin/HEAD", budget=budget)
     if rc == 0 and out:
-        return out, "remote_head", None
-    return None, "none", err or "no upstream configured and origin/HEAD does not resolve"
+        return out, "remote_head", None, True
+    if not _ran(rc):
+        return None, "unreadable", err or "the origin/HEAD lookup did not run", False
+    return None, "none", err or "no upstream configured and origin/HEAD does not resolve", True
 
 
-def git_identity(tree: Path) -> dict[str, Any]:
-    """Where *tree* sits in git history, or why that could not be established."""
-    rc, top, err = _git(tree, "rev-parse", "--show-toplevel")
+def git_identity(tree: Path, budget: _Budget | None = None) -> dict[str, Any]:
+    """Where *tree* sits in git history now, or why that could not be established.
+
+    The reading is stamped with when it was taken, because a git position is only
+    true of the instant it was read.
+    """
+    identity = _read_git_identity(tree, budget or _Budget(IDENTITY_BUDGET_SECONDS))
+    identity["observed_at"] = _now()
+    return identity
+
+
+def _read_git_identity(tree: Path, budget: _Budget) -> dict[str, Any]:
+    rc, top, err = _git(tree, "rev-parse", "--show-toplevel", budget=budget)
     if rc != 0:
-        if "not a git repository" in err.lower():
+        if _ran(rc) and "not a git repository" in err.lower():
             return {
                 "status": "not_a_git_checkout",
                 "detail": f"{tree} is not inside a git checkout",
@@ -83,32 +173,42 @@ def git_identity(tree: Path) -> dict[str, Any]:
 
     identity: dict[str, Any] = {"status": "ok", "toplevel": top}
 
-    rc, commit, err = _git(tree, "rev-parse", "HEAD")
+    rc, commit, err = _git(tree, "rev-parse", "HEAD", budget=budget)
     if rc != 0 or not commit:
         return {"status": "unknown", "detail": f"could not read HEAD: {err or 'no output'}"}
     identity["commit"] = commit
     identity["commit_short"] = commit[:_SHORT_SHA]
 
-    rc, branch, _ = _git(tree, "rev-parse", "--abbrev-ref", "HEAD")
+    rc, branch, _ = _git(tree, "rev-parse", "--abbrev-ref", "HEAD", budget=budget)
     detached = rc != 0 or branch == "HEAD"
     identity["detached"] = detached
     identity["branch"] = None if detached else branch
 
-    rc, porcelain, err = _git(tree, "status", "--porcelain")
+    rc, porcelain, err = _git(tree, "status", "--porcelain", budget=budget)
     if rc != 0:
         return {"status": "unknown", "detail": f"could not read working tree: {err}"}
     identity["dirty"] = bool(porcelain)
 
-    ref, source, why = _comparison_ref(tree)
+    ref, source, why, asked = _comparison_ref(tree, budget)
+    if not asked:
+        return {
+            "status": "unknown",
+            "detail": f"could not establish a comparison ref: {why}",
+            "commit": commit,
+        }
     identity["comparison_ref"] = ref
     identity["comparison_ref_source"] = source
+    if source in _REF_CAVEATS:
+        identity["comparison_ref_caveat"] = _REF_CAVEATS[source]
     if ref is None:
         identity["ahead"] = None
         identity["behind"] = None
         identity["comparison_detail"] = why
         return identity
 
-    rc, counts, err = _git(tree, "rev-list", "--left-right", "--count", f"HEAD...{ref}")
+    rc, counts, err = _git(
+        tree, "rev-list", "--left-right", "--count", f"HEAD...{ref}", budget=budget
+    )
     if rc != 0:
         return {
             "status": "unknown",
@@ -126,6 +226,80 @@ def git_identity(tree: Path) -> dict[str, Any]:
             "commit": commit,
         }
     return identity
+
+
+def loaded_package_path() -> str | None:
+    """The directory this process actually imported ``lionagi`` from."""
+    import lionagi
+
+    module_file = getattr(lionagi, "__file__", None)
+    return str(Path(module_file).resolve().parent) if module_file else None
+
+
+# The position of the tree this process loaded from, read once and kept. `None`
+# until something asks for it; a process that wants an honest answer later takes
+# it at startup, before anything can move the tree underneath it.
+_SNAPSHOT: dict[str, Any] | None = None
+
+
+def snapshot_git_position(budget: _Budget | None = None) -> dict[str, Any]:
+    """Read the loaded tree's git position once and keep it for every later call.
+
+    Call this as early in the process as possible. The module objects this
+    process holds were fixed at import; the tree they came from is a directory
+    anyone can move afterwards. Capturing the position at startup is what makes a
+    later divergence visible as a divergence rather than silently replacing the
+    answer with a commit that was never loaded.
+    """
+    global _SNAPSHOT
+    if _SNAPSHOT is None:
+        _SNAPSHOT = _read_loaded_tree(budget or _Budget(IDENTITY_BUDGET_SECONDS))
+    return _SNAPSHOT
+
+
+def _read_loaded_tree(budget: _Budget) -> dict[str, Any]:
+    try:
+        package_path = loaded_package_path()
+        if package_path is None:
+            return {
+                "status": "unknown",
+                "detail": "the loaded lionagi package has no __file__",
+                "observed_at": _now(),
+            }
+        return git_identity(Path(package_path), budget)
+    except Exception as exc:  # noqa: BLE001 — startup must not fail on an unreadable tree
+        return {
+            "status": "unknown",
+            "detail": f"could not read the loaded tree: {type(exc).__name__}: {exc}",
+            "observed_at": _now(),
+        }
+
+
+def _checkout_movement(
+    snapshot: dict[str, Any], live: dict[str, Any]
+) -> tuple[bool | None, str | None]:
+    """Whether the tree this process loaded from has moved since it loaded.
+
+    ``True`` and ``False`` are answers; ``None`` means the comparison could not be
+    made, which is not the same as the checkout having stayed put.
+    """
+    if live is snapshot:
+        return False, None
+    if snapshot.get("status") != "ok":
+        return None, (
+            "the position this process started from was never established: "
+            f"{snapshot.get('detail', 'no detail')}"
+        )
+    if live.get("status") != "ok":
+        return None, (f"the tree's position cannot be read now: {live.get('detail', 'no detail')}")
+    if snapshot.get("commit") != live.get("commit"):
+        return True, (
+            f"the checkout at {snapshot.get('toplevel')} moved from "
+            f"{snapshot.get('commit_short')} to {live.get('commit_short')} after this "
+            "process loaded its code — the code answering here is the earlier commit, "
+            "and reading that tree now describes something this process never imported"
+        )
+    return False, None
 
 
 def _distribution_version() -> tuple[str | None, str | None]:
@@ -152,7 +326,18 @@ def _drift(
     git: dict[str, Any],
     version: str,
     distribution_version: str | None,
+    *,
+    live: dict[str, Any] | None = None,
+    moved: bool | None = False,
+    movement_detail: str | None = None,
 ) -> dict[str, Any]:
+    """The verdict on *git*, the position of the code this process actually loaded.
+
+    When the checkout has not moved, the live reading measures that same commit
+    against a fresher view of the remote, so it is the better source for how far
+    behind the loaded code is. When it has moved, the live reading is about some
+    other commit and only the snapshot speaks for what is running.
+    """
     reasons: list[str] = []
     unknowns: list[str] = []
 
@@ -163,20 +348,30 @@ def _drift(
             "serving the installed build"
         )
 
-    status = git.get("status")
+    if moved is True and movement_detail:
+        reasons.append(movement_detail)
+    elif moved is None and movement_detail:
+        unknowns.append(movement_detail)
+
+    position = git
+    if moved is False and live is not None and live.get("status") == "ok":
+        position = live
+
+    status = position.get("status")
     if status == "unknown":
-        unknowns.append(f"git state unreadable: {git.get('detail', 'no detail')}")
+        unknowns.append(f"git state unreadable: {position.get('detail', 'no detail')}")
     elif status == "ok":
-        behind = git.get("behind")
+        behind = position.get("behind")
         if behind is None:
             unknowns.append(
                 "nothing to compare this checkout against: "
-                f"{git.get('comparison_detail', 'no comparison ref')}"
+                f"{position.get('comparison_detail', 'no comparison ref')}"
             )
+
         elif behind > 0:
             reasons.append(
                 f"the loaded checkout is {behind} commit(s) behind "
-                f"{git['comparison_ref']} — it is serving code older than that ref"
+                f"{position['comparison_ref']} — it is serving code older than that ref"
             )
 
     if reasons:
@@ -190,19 +385,24 @@ def code_identity() -> dict[str, Any]:
     """The running process's own code identity, drift verdict included.
 
     Everything here describes the module objects this process actually imported,
-    never the environment that was supposed to supply them.
+    never the environment that was supposed to supply them. ``git`` is the
+    position captured when this process first looked, which is what it loaded;
+    ``git_live`` is the tree as it stands now. On the call that takes the
+    snapshot the two are one reading and are reported as such.
     """
-    import lionagi
     from lionagi.version import __version__
 
-    module_file = getattr(lionagi, "__file__", None)
-    package_path = str(Path(module_file).resolve().parent) if module_file else None
+    budget = _Budget(IDENTITY_BUDGET_SECONDS)
+    package_path = loaded_package_path()
 
-    git = (
-        git_identity(Path(package_path))
-        if package_path
-        else {"status": "unknown", "detail": "the loaded lionagi package has no __file__"}
-    )
+    already_snapshotted = _SNAPSHOT is not None
+    snapshot = snapshot_git_position(budget)
+    if already_snapshotted and package_path is not None:
+        live = git_identity(Path(package_path), budget)
+    else:
+        live = snapshot
+
+    moved, movement_detail = _checkout_movement(snapshot, live)
     distribution_version, distribution_detail = _distribution_version()
     verb_count, verb_detail = _verb_count()
 
@@ -211,9 +411,21 @@ def code_identity() -> dict[str, Any]:
         "package_path": package_path,
         "distribution_version": distribution_version,
         "verb_count": verb_count,
-        "git": git,
-        "drift": _drift(git, __version__, distribution_version),
+        "git": snapshot,
+        "git_snapshot_taken_at": snapshot.get("observed_at"),
+        "git_live": live,
+        "checkout_moved": moved,
+        "drift": _drift(
+            snapshot,
+            __version__,
+            distribution_version,
+            live=live,
+            moved=moved,
+            movement_detail=movement_detail,
+        ),
     }
+    if movement_detail is not None:
+        identity["checkout_moved_detail"] = movement_detail
     if distribution_detail is not None:
         identity["distribution_detail"] = distribution_detail
     if verb_detail is not None:
