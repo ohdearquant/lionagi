@@ -15,11 +15,16 @@ import pytest
 from pydantic import BaseModel
 
 from lionagi.operations._defaults import make_parse_param
-from lionagi.operations.parse import SchemaRejectedError, UnparsedResponse
+from lionagi.operations.parse import (
+    ExtractionError,
+    SchemaRejectedError,
+    UnparsedResponse,
+)
 from lionagi.operations.parse.parse import _validate_dict_or_model
 from lionagi.operations.parse.parse import parse as _parse
 from lionagi.protocols.types import AssistantResponse
 from lionagi.session.branch import Branch
+from lionagi.testing import LionAGIMockFactory
 
 
 class Course(BaseModel):
@@ -161,5 +166,53 @@ class TestReformatRequestsVary:
 
         assert len(seen) == 4, "expected 1 attempt plus 3 retries"
         assert len(set(seen)) == len(seen), "retries reissued an identical request"
-        # The failure that preceded each retry is what makes it differ.
-        assert all("courses.2.name" in g for g in seen[0:])
+        # The failure that preceded each turn is what makes it differ.
+        assert all("courses.2.name" in g for g in seen)
+
+
+class TestOperateSurfacesTheDistinction:
+    """operate() is the entry point this was reported through.
+
+    It pins parse to ``return_value`` internally, so whatever parse degrades to
+    is what a caller of operate() actually receives.
+    """
+
+    @staticmethod
+    def _branch(body: str):
+        return LionAGIMockFactory.create_mocked_branch(response=body, model="gpt-4.1-mini")
+
+    async def _operate(self, body: str, **kw):
+        return await self._branch(body).operate(
+            instruction="extract the transcript",
+            response_format=Transcript,
+            invoke_actions=False,
+            **kw,
+        )
+
+    @pytest.mark.asyncio
+    async def test_default_return_carries_the_reason_through_operate(self):
+        result = await self._operate(FENCED_SCHEMA_VIOLATION)
+
+        assert isinstance(result, str), "the raw-text degradation must survive"
+        assert result.failure_kind == "validation"
+        assert result.validation_error.errors()[0]["type"] == "string_type"
+
+    @pytest.mark.asyncio
+    async def test_raise_names_the_schema_not_the_provider(self):
+        """A schema rejection must not be blamed on structured-output support."""
+        with pytest.raises(ValueError) as exc_info:
+            await self._operate(FENCED_SCHEMA_VIOLATION, handle_validation="raise")
+
+        exc = exc_info.value
+        assert isinstance(exc, SchemaRejectedError)
+        assert exc.validation_error is not None
+        assert "courses.2.name" in str(exc)
+        assert "supports structured JSON output" not in str(exc)
+
+    @pytest.mark.asyncio
+    async def test_unparseable_text_still_blames_extraction(self):
+        with pytest.raises(ValueError) as exc_info:
+            await self._operate(NOTHING_PARSEABLE, handle_validation="raise")
+
+        assert isinstance(exc_info.value, ExtractionError)
+        assert exc_info.value.validation_error is None
