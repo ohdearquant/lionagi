@@ -2954,13 +2954,23 @@ class StateDB:
         }
     )
 
-    async def update_schedule(self, schedule_id: str, **fields: Any) -> None:
-        stmt, params = self._build_update_schedule_stmt(schedule_id, fields)
+    async def update_schedule(
+        self, schedule_id: str, *, guard_cursor_forward: bool = False, **fields: Any
+    ) -> None:
+        stmt, params = self._build_update_schedule_stmt(
+            schedule_id, fields, guard_cursor_forward=guard_cursor_forward
+        )
         async with self._tx() as conn:
             await conn.execute(stmt, params)
 
     @classmethod
-    def _build_update_schedule_stmt(cls, schedule_id: str, fields: dict[str, Any]):
+    def _build_update_schedule_stmt(
+        cls,
+        schedule_id: str,
+        fields: dict[str, Any],
+        *,
+        guard_cursor_forward: bool = False,
+    ):
         """Validate + build the ``UPDATE schedules`` statement + bound
         params for *fields* without opening a transaction.
 
@@ -2969,6 +2979,18 @@ class StateDB:
         transaction as the occurrence insert) -- the single choke point for
         both the field allowlist and the SQL shape, so the two write paths
         can never drift apart.
+
+        ``guard_cursor_forward`` makes the ``github_cursor`` assignment
+        monotonic: the column moves only if the new value sorts above the
+        stored one. The scheduler passes it, because a poll reads the cursor
+        at tick start and writes it back much later, so its value is a
+        snapshot that an operator's deliberate cursor move can outrun. Without
+        the guard the stale write silently undoes that move, and a backlog the
+        operator had declined becomes eligible again.
+
+        It is a per-COLUMN condition rather than a row predicate on purpose:
+        the same statement carries ``last_fired_at``/``next_fire_at``, and
+        those must land whether or not the cursor is allowed to advance.
         """
         bad = set(fields) - cls._SCHEDULE_UPDATE_ALLOWED_FIELDS
         if bad:
@@ -2987,9 +3009,24 @@ class StateDB:
         }
         fields = dict(fields)
         fields["updated_at"] = time.time()
+        guarded_cursor = (
+            guard_cursor_forward
+            and "github_cursor" in fields
+            and fields["github_cursor"] is not None
+        )
         sets_parts = []
         bind_params = []
         for k in fields:
+            if k == "github_cursor" and guarded_cursor:
+                # Cursors are compared as strings everywhere (the poller
+                # compares them against GitHub's own timestamps), so plain
+                # lexical order IS the ordering.
+                sets_parts.append(
+                    '"github_cursor" = CASE WHEN github_cursor IS NULL '
+                    "OR github_cursor < :github_cursor "
+                    "THEN :github_cursor ELSE github_cursor END"
+                )
+                continue
             sets_parts.append(f'"{k}" = :{k}')
             if k in json_fields:
                 bind_params.append(bindparam(k, type_=JSON))
@@ -3075,7 +3112,12 @@ class StateDB:
         allowlist as ``update_schedule``.
         """
         run_stmt, run_params = self._build_schedule_run_insert_stmt(run)
-        sched_stmt, sched_params = self._build_update_schedule_stmt(schedule_id, schedule_fields)
+        # Engine-only path, so the monotonic cursor guard always applies: the
+        # value being written came from a poll snapshot taken before this
+        # transaction and must never walk an operator's cursor move backwards.
+        sched_stmt, sched_params = self._build_update_schedule_stmt(
+            schedule_id, schedule_fields, guard_cursor_forward=True
+        )
         async with self._tx() as conn:
             await conn.execute(run_stmt, run_params)
             await self._initialize_managed_entity_in_tx(

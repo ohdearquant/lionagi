@@ -27,7 +27,9 @@ class SchedulerStateService(Protocol):
 
     async def list_schedules(self, *, enabled: bool | None = None) -> list[dict[str, Any]]: ...
 
-    async def update_schedule(self, schedule_id: str, **fields: Any) -> None: ...
+    async def update_schedule(
+        self, schedule_id: str, *, guard_cursor_forward: bool = False, **fields: Any
+    ) -> None: ...
 
     async def count_schedule_runs(
         self,
@@ -105,9 +107,13 @@ class _DBSchedulerStateService:
         async with StateDB() as db:
             return await db.list_schedules(enabled=enabled)
 
-    async def update_schedule(self, schedule_id: str, **fields: Any) -> None:
+    async def update_schedule(
+        self, schedule_id: str, *, guard_cursor_forward: bool = False, **fields: Any
+    ) -> None:
         async with StateDB() as db:
-            await db.update_schedule(schedule_id, **fields)
+            await db.update_schedule(
+                schedule_id, guard_cursor_forward=guard_cursor_forward, **fields
+            )
 
     async def count_schedule_runs(
         self,

@@ -148,7 +148,9 @@ async def test_multi_event_poll_fires_once_per_dispatchable_event():
     # Trailing safety-net batched write still lands on the newest event too
     # (harmless re-write of what the last event's own atomic call already
     # persisted).
-    svc.update_schedule.assert_any_call("sched-001", github_cursor="2026-07-07T12:00:00Z")
+    svc.update_schedule.assert_any_call(
+        "sched-001", github_cursor="2026-07-07T12:00:00Z", guard_cursor_forward=True
+    )
     assert engine._global_inflight == 0
 
 
@@ -179,7 +181,9 @@ async def test_single_event_poll_behavior_unchanged():
     assert [e["pr_number"] for e in run_payload["trigger_context"]["github_events"]] == [7]
     assert run_payload["trigger_context"]["repo"] == "acme/widgets"
     assert kwargs["schedule_fields"]["github_cursor"] == "2026-07-07T10:00:00Z"
-    svc.update_schedule.assert_any_call("sched-001", github_cursor="2026-07-07T10:00:00Z")
+    svc.update_schedule.assert_any_call(
+        "sched-001", github_cursor="2026-07-07T10:00:00Z", guard_cursor_forward=True
+    )
     assert engine._global_inflight == 0
 
 
@@ -226,7 +230,9 @@ async def test_max_runs_exhaustion_mid_batch_stops_cursor_before_undispatched(ca
     assert svc.create_invocation.await_count == 2
 
     # Cursor stops at PR 2's updated_at, not PR 3's -- PR 3 was never dispatched.
-    svc.update_schedule.assert_any_call("sched-001", github_cursor="2026-07-07T11:00:00Z")
+    svc.update_schedule.assert_any_call(
+        "sched-001", github_cursor="2026-07-07T11:00:00Z", guard_cursor_forward=True
+    )
     cursor_calls = [c for c in svc.update_schedule.await_args_list if "github_cursor" in c.kwargs]
     assert all(c.kwargs["github_cursor"] != "2026-07-07T12:00:00Z" for c in cursor_calls)
 
@@ -274,7 +280,9 @@ async def test_global_slot_exhaustion_mid_batch_stops_cursor_before_undispatched
         await engine._tick_github(schedule, now=10_000.0)
 
     assert svc.create_invocation.await_count == 1
-    svc.update_schedule.assert_any_call("sched-001", github_cursor="2026-07-07T10:00:00Z")
+    svc.update_schedule.assert_any_call(
+        "sched-001", github_cursor="2026-07-07T10:00:00Z", guard_cursor_forward=True
+    )
     assert any(
         "sched-001" in r.message and "2" in r.message and "concurrent-fire" in r.message
         for r in caplog.records
@@ -311,7 +319,9 @@ async def test_filtered_event_between_dispatched_events_still_advances_cursor():
         await engine._tick_github(schedule, now=10_000.0)
 
     assert svc.create_invocation.await_count == 2
-    svc.update_schedule.assert_any_call("sched-001", github_cursor="2026-07-07T12:00:00Z")
+    svc.update_schedule.assert_any_call(
+        "sched-001", github_cursor="2026-07-07T12:00:00Z", guard_cursor_forward=True
+    )
 
 
 # ---------------------------------------------------------------------------

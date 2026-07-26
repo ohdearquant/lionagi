@@ -1349,7 +1349,12 @@ class SchedulerEngine:
             # atomic with. For a dispatched item it re-writes the same
             # value already committed, a harmless no-op.
             if cursor != schedule.get("github_cursor"):
-                await self._svc.update_schedule(sid, github_cursor=cursor)
+                # guard_cursor_forward: this value derives from the snapshot
+                # read at tick start, so it must not undo a cursor an operator
+                # moved forward while the poll was in flight.
+                await self._svc.update_schedule(
+                    sid, github_cursor=cursor, guard_cursor_forward=True
+                )
         finally:
             if pre_rate_claim is not None:
                 pre_rate_claim.release()
