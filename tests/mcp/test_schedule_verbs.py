@@ -206,23 +206,50 @@ schedules:
 """
 
 
-def test_validate_resolves_a_good_document(tmp_path):
-    path = tmp_path / "schedules.yaml"
-    path.write_text(_VALID_SET.format(cwd=tmp_path))
-    data = result_of("schedule.validate", {"file": str(path)})
+@pytest.fixture
+def declared(tmp_path, monkeypatch):
+    """A directory holding the ScheduleSet and the profile it names.
+
+    Resolving an agent target loads the named profile, and profiles are looked
+    up from the working directory outward before falling back to the home
+    directory. Left to the ambient machine the document resolves wherever a
+    `reviewer` profile happens to be installed and fails everywhere else, which
+    is how a set naming a real fleet profile passed here and failed on a clean
+    checkout. The child is a subprocess, so the isolation has to be the working
+    directory it inherits rather than anything patched into this process.
+    """
+    agents = tmp_path / ".lionagi" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "reviewer.md").write_text("---\nmodel: anthropic/claude-sonnet-5\n---\nBody.\n")
+    monkeypatch.chdir(tmp_path)
+
+    def _write(body: str) -> str:
+        path = tmp_path / "schedules.yaml"
+        path.write_text(body)
+        return str(path)
+
+    return tmp_path, _write
+
+
+def test_validate_resolves_a_good_document(declared):
+    tmp_path, write = declared
+    data = result_of("schedule.validate", {"file": write(_VALID_SET.format(cwd=tmp_path))})
     assert data["valid"] is True
     assert data["errors"] == []
     assert "nightly" in data["schedules"]
 
 
-def test_validate_reports_a_bad_document_as_an_answer_not_a_refusal(tmp_path):
-    path = tmp_path / "schedules.yaml"
-    path.write_text(
+def test_validate_reports_a_bad_document_as_an_answer_not_a_refusal(declared):
+    tmp_path, write = declared
+    path = write(
         _VALID_SET.format(cwd=tmp_path).replace('expression: "0 9 * * *"', 'expression: "nope"')
     )
-    data = result_of("schedule.validate", {"file": str(path)})
+    data = result_of("schedule.validate", {"file": path})
     assert data["valid"] is False
-    assert data["errors"], "an invalid set names which schedule failed and why"
+    # Named, so that the profile going missing cannot make this pass for a
+    # reason that has nothing to do with the cron expression under test.
+    assert [e["name"] for e in data["errors"]] == ["nightly"]
+    assert "nope" in data["errors"][0]["message"]
 
 
 def test_validate_refuses_a_relative_path(tmp_path):
