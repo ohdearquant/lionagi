@@ -78,9 +78,15 @@ def _capture_popen(monkeypatch) -> dict:
     return captured
 
 
-def _spawn(verb: str, args: dict) -> dict:
-    """Drive the real spawn verb, fingerprint fetched the way a caller must."""
-    fingerprint = asyncio.run(dispatch.request(help=verb))["schema_fingerprint"]
+def _spawn(verb: str, args: dict, *, playbook: str | None = None) -> dict:
+    """Drive the real spawn verb, fingerprint fetched the way a caller must.
+
+    A verb that takes a playbook is projected again once one is named, so its
+    fingerprint is a function of that argument and help has to be asked for the
+    same way the call will be made.
+    """
+    target = verb if playbook is None else {"verb": verb, "playbook": playbook}
+    fingerprint = asyncio.run(dispatch.request(help=target))["schema_fingerprint"]
     answer = asyncio.run(
         dispatch.request(ops=[{"op": verb, "args": args, "schema_fingerprint": fingerprint}])
     )
@@ -200,6 +206,59 @@ def test_the_snapshot_is_reported_when_the_caller_says_nothing(
     assert handle["mcp_config_reason"] is None
     seen = resolve_spawn_mcp_servers(str(snapshot), launch_dir=submit_dir)
     assert set(seen.servers) == {"ambient"}
+
+
+_PLAYBOOK = """\
+name: probe
+nodes:
+  - id: n1
+    prompt: hello
+"""
+
+
+@pytest.fixture
+def playbook(submit_dir):
+    """A project-local playbook the name `probe` resolves to.
+
+    The search starts from the current directory, which `submit_dir` has already
+    made the submitting directory, so the playbook and the ambient config are
+    found from the same place a real caller would have them.
+    """
+    books = submit_dir / ".lionagi" / "playbooks"
+    books.mkdir(parents=True)
+    (books / "probe.playbook.yaml").write_text(_PLAYBOOK)
+    return "probe"
+
+
+def test_a_play_caller_who_names_a_config_gets_that_config_and_a_handle_that_says_so(
+    sandbox, submit_dir, playbook, monkeypatch
+):
+    """A play is a flow whose plan is written down, and it is spawned as one.
+
+    `play.submit` runs `orchestrate flow` with the playbook named, so it reaches
+    the same code that puts a config on the child's line — but by a different job
+    kind, so nothing about the flow verb passing says this one does. Held to the
+    same contract: the file the caller names is the file the child opens, and the
+    handle reports that same file rather than a snapshot beside it.
+    """
+    (submit_dir / ".mcp.json").write_text(json.dumps({"mcpServers": {"ambient": {"command": "a"}}}))
+    chosen = submit_dir / "chosen.json"
+    chosen.write_text(json.dumps({"mcpServers": {"mine": {"command": "m"}}}))
+
+    captured = _capture_popen(monkeypatch)
+    handle = _spawn(
+        "play.submit",
+        {"playbook": playbook, "mcp_config": str(chosen), "cwd": str(submit_dir)},
+        playbook=playbook,
+    )
+
+    child_sees = _child_config(captured["argv"])
+    assert child_sees == str(chosen)
+    seen = resolve_spawn_mcp_servers(child_sees, launch_dir=submit_dir)
+    assert set(seen.servers) == {"mine"}
+    assert handle["mcp_config"] == str(chosen)
+    assert handle["mcp_config_source"] == str(chosen)
+    assert not (config.job_dir(handle["run_id"]) / "mcp-servers.json").exists()
 
 
 def test_the_orchestration_cli_accepts_the_flags_the_surface_renders(sandbox):
