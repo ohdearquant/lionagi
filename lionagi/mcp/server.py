@@ -82,6 +82,13 @@ async def request(
 
 def main() -> None:
     """Console entrypoint: run the server over stdio."""
+    from lionagi.cli._code_identity import snapshot_git_position
+
+    # Read where this server's code came from before serving anything. The
+    # process keeps the modules it imported for its whole life, so a checkout
+    # that moves later is divergence to report, not a new answer to give — and
+    # only a reading taken now can tell the two apart.
+    snapshot_git_position()
     mcp.run()
 
 
