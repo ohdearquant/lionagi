@@ -62,7 +62,7 @@ def test_catalog_carries_a_signature_not_a_bare_name():
 def test_catalog_names_an_unavailable_verb_with_its_reason():
     # Hiding it would make "not built" and "cannot be built yet" the same answer.
     entries = {e["verb"]: e for e in call(help=True)["verbs"]}
-    absent = entries["schedule.list"]
+    absent = entries["schedule.apply"]
     assert absent["available"] is False
     assert "machine result" in absent["reason"]
 
