@@ -609,7 +609,14 @@ def lifecycle_data(run_id: str) -> dict[str, Any]:
         }
 
     async def _read() -> list[dict[str, Any]]:
-        async with StateDB() as db:
+        # Read-only at the connection, not by intention. The ordinary open
+        # reconciles the schema — `create_all`, index reconciliation, seed
+        # inserts — so a reporting command that used it would write to the store
+        # it is reporting on, and against a store opened read-only elsewhere it
+        # fails on an `INSERT INTO schema_meta` while claiming to be a read.
+        # This function's own docstring says it changes nothing; that is only
+        # true of this connection.
+        async with StateDB(readonly=True) as db:
             return await db.get_sessions_for_run(run_id)
 
     try:

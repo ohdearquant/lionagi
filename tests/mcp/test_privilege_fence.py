@@ -49,6 +49,9 @@ REVIEWED_PATHS = frozenset(
         "dispatch ls",
         "dispatch show",
         "invoke list",
+        # Read-only: reports what the lifecycle store already recorded about one
+        # run id. It writes nothing and names no path of its own.
+        "lifecycle",
         "monitor",
         "plugin info",
         "schedule create",
