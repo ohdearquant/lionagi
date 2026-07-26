@@ -205,6 +205,7 @@ nav:
       - Durable operations: guides/durable-operations.md
       - Studio & schedules: guides/studio.md
       - Scheduling workflows: guides/scheduling-workflows.md
+      - Connect an MCP client: guides/mcp-setup.md
       - MCP server: reference/mcp-server.md
       - Providers: reference/providers.md
       - State & testing: reference/testing-state-session.md

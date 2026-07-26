@@ -32,6 +32,10 @@ Importing `lionagi.mcp` does not pull that dependency. Only serving does, so a
 missing extra surfaces when you run `li mcp`, with a message naming the install
 command.
 
+No source checkout is needed: the server ships inside the wheel. For the full
+setup path — client registration, environment variables, and how to confirm the
+connection — see [Connect an MCP client](../guides/mcp-setup.md).
+
 Register it with any MCP client, for example in an `.mcp.json`:
 
 ```json
@@ -95,8 +99,8 @@ relative timestamps, formatted durations, or tables.
       "required": []
     }
   ],
-  "verb_count": 47,
-  "available_count": 36,
+  "verb_count": 68,
+  "available_count": 40,
   "max_ops": 8,
   "help_usage": "help=true returns this catalog; help='<verb>' returns that verb's full parameter schema; ...",
   "synonyms_removed_after": "2026-09-30"
@@ -130,7 +134,7 @@ resolves that playbook's own declared arguments into the schema.
 
 ## The catalog
 
-36 verbs are reachable. This list is generated from the registry:
+40 verbs are reachable. This list is generated from the registry:
 
 ```bash
 python -c "from lionagi.mcp import verbs as v; print(len(v.VERBS)); [print(n) for n in sorted(v.VERBS)]"
@@ -139,7 +143,10 @@ python -c "from lionagi.mcp import verbs as v; print(len(v.VERBS)); [print(n) fo
 | Verb | Summary |
 |------|---------|
 | `agent.submit` | Run one agent on one task as a detached background run. |
+| `dispatch.ack` | Acknowledge a delivered dispatch with its ack token, so the queue stops redelivering it. A wrong token is refused without echoing the real one. |
 | `dispatch.ls` | Rows in the durable dispatch outbox, newest first, without their payloads. |
+| `dispatch.purge` | Delete one dispatch row by id, whatever its status, recording an audit row. Deleting by --status/--before is refused here: a sweep deletes rows the caller never named and reports a count for rows that can no longer be inspected. |
+| `dispatch.retry` | Return a failed or dead-lettered dispatch to pending so delivery is attempted again. |
 | `dispatch.show` | One dispatch row in full, including its payload and ack token. |
 | `doctor` | Environment checks and which of them failed. |
 | `fanout.submit` | Run N agents on one task in parallel, optionally synthesized. |
@@ -151,6 +158,7 @@ python -c "from lionagi.mcp import verbs as v; print(len(v.VERBS)); [print(n) fo
 | `job.output` | Console tail and artifact list of a background run. |
 | `job.status` | Current state of a background run: liveness, job record, CLI manifest. |
 | `job.wait` | Observe runs until terminal or the window closes; partial results, never a bool. |
+| `lifecycle` | What the lifecycle store records about one run: whether every session it opened has ended, and with what outcome. |
 | `monitor` | Entities in flight right now: sessions, invocations, shows, plays. |
 | `play.submit` | Run a saved playbook: a flow whose plan and prompt are already written down. |
 | `plugin.info` | One plugin's version, trust state, and everything its manifest declares. |
@@ -183,7 +191,7 @@ against rather than a copy of it.
 
 ## Operations the surface does not offer
 
-Eleven further names are catalogued as **unavailable**, each with its reason.
+Twenty-eight further names are catalogued as **unavailable**, each with its reason.
 They are not omissions: a caller that asks what exists gets the name and why it
 cannot be called, which is a different answer from the name never having been
 considered.
