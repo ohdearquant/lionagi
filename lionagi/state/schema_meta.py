@@ -215,6 +215,11 @@ sessions = Table(
     Column("duration_ms", Float),
 )
 
+# first_msg_id / last_msg_id are child keys of messages(id): these serve the
+# search sqlite runs when a message row is deleted, not any query.
+Index("idx_sessions_first_msg_id", sessions.c.first_msg_id)
+Index("idx_sessions_last_msg_id", sessions.c.last_msg_id)
+Index("idx_sessions_progression_id", sessions.c.progression_id)
 Index("idx_sessions_updated", sessions.c.updated_at)
 Index("idx_sessions_status_updated", sessions.c.status, sessions.c.updated_at)
 Index(
@@ -271,6 +276,8 @@ branches = Table(
 )
 
 Index("idx_branches_session", branches.c.session_id)
+Index("idx_branches_system_msg_id", branches.c.system_msg_id)
+Index("idx_branches_progression_id", branches.c.progression_id)
 
 # ── definitions ───────────────────────────────────────────────────────────────
 
