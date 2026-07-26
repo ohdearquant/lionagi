@@ -429,7 +429,14 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         for key in order:
             yield self.collections[key]
 
+    @synchronized
     def __next__(self) -> T:
+        # The cursor is created on the first next() and walks the order
+        # snapshot taken at that moment; it is not rebuilt per call. So
+        # interleaving next() with mutation traverses the order as it was
+        # when iteration started (item lookup stays live, as in __iter__).
+        # The cursor read/update runs under the same lock as the other sync
+        # methods, so concurrent next() calls do not race on it.
         if self._iterator is None:
             self._iterator = iter(self)
         try:
@@ -574,11 +581,14 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
             object.__setattr__(result, k, copy.deepcopy(v, memo))
         priv = {}
         for k, v in (self.__pydantic_private__ or {}).items():
-            if k in ("_lock", "_async_lock"):
+            # _iterator holds a live generator between next() calls and is
+            # not copyable; a copy should start with a fresh cursor anyway.
+            if k in ("_lock", "_async_lock", "_iterator"):
                 continue
             priv[k] = copy.deepcopy(v, memo)
         priv["_lock"] = threading.RLock()
         priv["_async_lock"] = ConcurrencyLock()
+        priv["_iterator"] = None
         object.__setattr__(result, "__pydantic_private__", priv)
         return result
 

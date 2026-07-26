@@ -707,3 +707,19 @@ def test_repeated_next_advances(sample_pile, sample_elements):
 
     # Exhausting the cursor resets it, so the container stays reusable.
     assert next(sample_pile) == sample_elements[0]
+
+
+def test_deepcopy_with_live_cursor(sample_pile, sample_elements):
+    """A pile stepped with next() must still be deepcopy-able."""
+    import copy
+
+    # Control: an untouched pile copies fine.
+    assert len(copy.deepcopy(sample_pile)) == len(sample_elements)
+
+    next(sample_pile)  # leave a live, unexhausted generator on the instance
+    clone = copy.deepcopy(sample_pile)
+
+    assert len(clone) == len(sample_elements)
+    # The copy starts with a fresh cursor rather than sharing the original's.
+    assert next(clone) == sample_elements[0]
+    assert next(sample_pile) == sample_elements[1]
