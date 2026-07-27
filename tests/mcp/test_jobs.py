@@ -778,15 +778,10 @@ def test_kill_never_dereferences_a_pid_it_must_not_signal(
 
 @pytest.mark.parametrize(
     "record",
-    [
-        # No identity fields at all: written before they were captured.
-        {},
-        # Present but malformed, which says as little as absent does.
-        {"pid_create_time": "not-a-number", "pgid": 7777},
-        {"pid_create_time": _SPAWNED_AT, "pgid": "7777"},
-        {"pid_create_time": _SPAWNED_AT, "pgid": 0},
-        {"pid_create_time": None, "pgid": None},
-    ],
+    # No identity keys at all, which is the one thing that means the record was
+    # written before they existed. A record that carries the keys and bad values
+    # is damaged rather than old, and gets its own answer.
+    [{}],
 )
 def test_kill_refuses_a_record_that_cannot_confirm_an_identity(
     sandbox, monkeypatch, no_stray_signal, record
@@ -866,6 +861,122 @@ def test_kill_refuses_a_record_whose_start_time_cannot_be_compared(
     # The value came off disk and a JSON number has no length limit, so it must not
     # be able to set the size of a reason a caller has to read.
     assert len(out["reason"]) < 400, "a record must not choose how long the answer is"
+
+
+def _write_raw_record(rid: str, text: str) -> None:
+    d = config.job_dir(rid)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "job.json").write_text(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_code"),
+    [
+        # Present, and its bytes cannot be parsed. A retry may read differently.
+        ("{", jobs.KILL_RECORD_UNREADABLE),
+        ('{"run_id": "x", ', jobs.KILL_RECORD_UNREADABLE),
+        # Present, parses cleanly, and is not an object. A retry cannot help.
+        ("[]", jobs.KILL_RECORD_WRONG_SHAPE),
+        ('"a string"', jobs.KILL_RECORD_WRONG_SHAPE),
+        ("null", jobs.KILL_RECORD_WRONG_SHAPE),
+        ("42", jobs.KILL_RECORD_WRONG_SHAPE),
+    ],
+)
+def test_kill_refuses_a_damaged_record_without_calling_it_absent(
+    sandbox, no_stray_signal, text, expected_code
+):
+    """A file that is present and unusable is not a run that never existed.
+
+    Both were reported as "no such job", which tells an operator to stop looking
+    for a record that is sitting on disk — and two of these shapes did not refuse
+    at all, they raised out of the call. The refusal now says which of the two
+    happened, and says the file is the thing to look at.
+    """
+    rid = jobs.new_run_id()
+    _write_raw_record(rid, text)
+
+    out = jobs.kill(rid)
+
+    assert no_stray_signal == []
+    assert out["killed"] is False
+    assert out["reason_code"] == expected_code
+    assert "no such job" not in out["reason"]
+    assert rid in out["reason"]
+
+
+@pytest.mark.parametrize("text", ["[]", '"a string"', "42", "{"])
+def test_every_surface_survives_a_record_it_cannot_use(sandbox, text):
+    """The record is read by more than one verb, so one of them refusing is not enough.
+
+    A JSON value that is not an object used to reach ``.get()`` on whichever surface
+    read it, so status and output raised as readily as kill did — and status is what
+    an observer polls. Each must return something a caller can read.
+    """
+    rid = jobs.new_run_id()
+    _write_raw_record(rid, text)
+
+    assert jobs.kill(rid)["killed"] is False
+    assert jobs.status(rid)["run_id"] == rid
+    assert jobs.output(rid)["run_id"] == rid
+    assert isinstance(jobs.list_jobs(), list)
+
+
+def test_a_readable_record_is_still_read(sandbox, monkeypatch, no_stray_signal):
+    """Guards the precondition every refusal above depends on.
+
+    All of this rests on the reader admitting an ordinary record unchanged. If the
+    shape check ever rejected one, every surface would degrade to a refusal and the
+    tests for the damaged cases would keep passing, because they only ever assert
+    that a refusal happened.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(
+        jobs, "_live_group_members", lambda pgid: ([(5001, _SPAWNED_AT + 3.0)], True)
+    )
+
+    rid = _identity_record()
+    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("found", rid))
+
+    assert jobs._read_job(rid)["pgid"] == 7777
+    assert jobs.kill(rid)["killed"] is True
+    assert no_stray_signal == [(7777, signal.SIGTERM)]
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        {"pid_create_time": "not-a-number", "pgid": 7777},
+        {"pid_create_time": _SPAWNED_AT, "pgid": "7777"},
+        {"pid_create_time": _SPAWNED_AT, "pgid": 0},
+        {"pid_create_time": None, "pgid": None},
+        # Half-written: the keys exist because the writer knows about them.
+        {"pid_create_time": _SPAWNED_AT},
+        {"pgid": 7777},
+    ],
+)
+def test_kill_does_not_call_a_damaged_identity_an_old_record(
+    sandbox, monkeypatch, no_stray_signal, identity
+):
+    """Present-but-wrong is not the same news as absent, and must not borrow its sentence.
+
+    The refusal for a record written before these fields existed says exactly that
+    about its age. A record carrying the keys was written by code that knows them,
+    so the age claim is false of it however bad the values are — and unlike an old
+    record, this one is worth looking into.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: pytest.fail("pid must not be probed"))
+
+    rid = jobs.new_run_id()
+    jobs._write_job(
+        {"run_id": rid, "pid": 4242, "kind": "agent", "status": "running", "log": None, **identity}
+    )
+    out = jobs.kill(rid)
+
+    assert no_stray_signal == []
+    assert out["killed"] is False
+    assert out["reason_code"] == jobs.KILL_IDENTITY_UNUSABLE
+    assert "predates" not in out["reason"], "the record is not old, it is damaged"
+    assert out["pid"] == 4242
 
 
 def _process_table_enumerable() -> tuple[bool, str]:

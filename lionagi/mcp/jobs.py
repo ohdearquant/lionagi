@@ -109,6 +109,13 @@ _CREATE_TIME_TOLERANCE = 0.1
 # Reason codes carried by kill(). The human `reason` explains the particular
 # case; the code is what a caller can branch on without matching prose.
 KILL_NO_SUCH_JOB = "no_such_job"
+# The record is on disk and cannot be used. Two codes rather than one, on the same
+# axis as everything else here: bytes that could not be read or parsed may read
+# differently on the next call, whereas a record that parsed cleanly into something
+# other than an object will answer identically every time and only a person can
+# resolve it.
+KILL_RECORD_UNREADABLE = "job_record_unreadable"
+KILL_RECORD_WRONG_SHAPE = "job_record_wrong_shape"
 KILL_NO_PID = "no_pid_on_record"
 KILL_SIGNALLED = "signalled"
 KILL_PROCESS_GONE = "process_gone"
@@ -179,14 +186,52 @@ def _write_job(record: dict[str, Any]) -> None:
         raise
 
 
-def _read_job(run_id: str) -> dict[str, Any] | None:
+def _short_repr(value: Any, limit: int = 60) -> str:
+    """A recorded value, shown as written and bounded in length.
+
+    Reporting the value as written rather than as coerced lets a reader see the
+    damage instead of a plausible-looking substitute. It came off disk, though, and
+    a JSON number or string has no length limit, so the record must not get to
+    choose how long an answer is.
+    """
+    shown = repr(value)
+    return shown if len(shown) <= limit else f"{shown[:limit]}… ({len(shown)} characters)"
+
+
+def _read_job_state(run_id: str) -> tuple[dict[str, Any] | None, str]:
+    """The job record for *run_id*, and why there isn't one when there isn't.
+
+    ``("absent", "unreadable", "wrong_shape")`` are three different facts and only
+    the first means the run is unknown. A record whose bytes cannot be read or
+    parsed is present and damaged; a record that parses to a JSON value that is not
+    an object — an array, a string, ``null`` — is present, intact and unusable.
+    Reporting either as "no such job" tells an operator to stop looking for a run
+    whose file is sitting on disk.
+
+    The record is returned only in the ``"ok"`` case, so nothing downstream can
+    reach a value this did not admit.
+    """
     p = config.job_dir(run_id) / "job.json"
     if not p.exists():
-        return None
+        return None, "absent"
     try:
-        return json.loads(p.read_text())
+        record = json.loads(p.read_text())
     except (OSError, json.JSONDecodeError):
-        return None
+        return None, "unreadable"
+    if not isinstance(record, dict):
+        return None, "wrong_shape"
+    return record, "ok"
+
+
+def _read_job(run_id: str) -> dict[str, Any] | None:
+    """The job record, or None when there is no usable one.
+
+    Every reader that only needs the record goes through here and gets what it
+    always got, including a falsy answer to fall back on. A caller that has to tell
+    an unknown run from a damaged file — and only ``kill()`` does — reads the state
+    alongside it instead.
+    """
+    return _read_job_state(run_id)[0]
 
 
 def _read_lifecycle(run_id: str) -> dict[str, Any] | None:
@@ -1356,10 +1401,32 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
     stated here rather than papered over, because the guarantee is "never signalled
     without an identification", not "never signals the wrong group".
     """
-    job = _read_job(run_id)
-    if job is None:
+    job, state = _read_job_state(run_id)
+    if state == "absent":
         return _kill_result(
             run_id, killed=False, reason="no such job", reason_code=KILL_NO_SUCH_JOB
+        )
+    if state == "unreadable":
+        return _kill_result(
+            run_id,
+            killed=False,
+            reason=(
+                f"the record for {run_id} is on disk but could not be read or parsed, so "
+                "nothing is known about the run it describes and nothing was signalled; "
+                "the file itself is what has to be looked at"
+            ),
+            reason_code=KILL_RECORD_UNREADABLE,
+        )
+    if state == "wrong_shape" or job is None:
+        return _kill_result(
+            run_id,
+            killed=False,
+            reason=(
+                f"the record for {run_id} holds valid JSON that is not an object, so it "
+                "carries no fields to identify a process with and nothing was signalled; "
+                "the file itself is what has to be looked at"
+            ),
+            reason_code=KILL_RECORD_WRONG_SHAPE,
         )
 
     # First, and before any number on the record is probed or dereferenced. A
@@ -1372,10 +1439,29 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
             run_id, killed=False, reason="no pid on record", reason_code=KILL_NO_PID, pid=pid
         )
 
+    # A record written before a run's process identity was captured does not carry
+    # these keys at all. That is the only thing that means the record is old: a key
+    # that is present and holds the wrong type says the opposite — it was written by
+    # code that knows about these fields, and what it wrote is damaged. The two get
+    # different answers, because one is expected and ages out while the other is
+    # worth looking into.
+    if "pid_create_time" not in job and "pgid" not in job:
+        return _refuse_legacy_record(run_id, pid)
     created = job.get("pid_create_time")
     pgid = job.get("pgid")
     if not isinstance(created, int | float) or not isinstance(pgid, int) or pgid <= 1:
-        return _refuse_legacy_record(run_id, pid)
+        return _kill_result(
+            run_id,
+            killed=False,
+            reason=(
+                f"the identity recorded for pid {pid} is not usable — start time "
+                f"{_short_repr(created)}, process group {_short_repr(pgid)} — so this "
+                "record cannot identify its own process and nothing was signalled; reap "
+                "the group by hand after confirming the process is this run's"
+            ),
+            reason_code=KILL_IDENTITY_UNUSABLE,
+            pid=pid,
+        )
     # Three values reach here that look like numbers and cannot act as one. A NaN or
     # an infinity passes every type and range check above and then loses silently to
     # every comparison below, so the leader would be reported as a recycled pid. A
@@ -1392,13 +1478,7 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
     except OverflowError:
         unusable = True
     if unusable:
-        # The value is reported as written rather than as coerced, so a reader sees
-        # the damage instead of a plausible-looking timestamp — but it came off disk
-        # and a JSON number has no length limit, so it is capped before it goes into
-        # a reason a caller has to read.
-        shown = repr(created)
-        if len(shown) > 60:
-            shown = f"{shown[:60]}… ({len(shown)} characters)"
+        shown = _short_repr(created)
         return _kill_result(
             run_id,
             killed=False,
