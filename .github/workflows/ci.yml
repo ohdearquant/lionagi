@@ -190,8 +190,14 @@ jobs:
 
     # Coverage runs on 3.10, and only on pushes — never on a pull request.
     #
-    # Instrumentation costs about 4 minutes on this suite: measured on one run,
-    # the 3.10 test step took 619s with coverage while 3.11 took 366s without it.
+    # Instrumentation is the slowest thing on the pull-request path. Measured on
+    # the same interpreter, so the comparison is not confounded by Python
+    # version: the 3.10 test step took 488-645s across six instrumented runs,
+    # and 412s uninstrumented. The uninstrumented 3.10 figure lands inside the
+    # 391-517s range the four uninstrumented interpreters occupy among
+    # themselves, which is where it should land if instrumentation is what
+    # separated it from them.
+    #
     # Since ci-gate hard-gates on `test`, that time sat directly on the path a
     # pull request has to clear before it can merge, and the 3.10 leg is kept in
     # the reduced pull-request matrix, so every pull request paid it.
