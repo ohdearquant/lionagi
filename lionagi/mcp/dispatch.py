@@ -536,6 +536,28 @@ def _has_model_source(kind: str, args: dict[str, Any], prompt: str | None) -> bo
     return len(bucket) >= 2
 
 
+_FLOW_MODEL_SOURCES = (
+    "pass a model as the first value of 'query' with the prompt after it — a lone "
+    "positional is read as the prompt, not as a model — or name a profile with "
+    "'agent', a spec with 'file', or a playbook with 'playbook'"
+)
+
+# What each command can be handed to obtain a model, spelled the way that command
+# accepts it. A remediation that named a source the receiving command has no
+# argument for would send the caller straight into a second refusal, this time
+# from argument validation, so the sources are stated per command rather than
+# once for all of them. A play runs the flow command and takes its arguments.
+_MODEL_SOURCES = {
+    "agent": ("pass a model as the first positional in 'query', or name a profile with 'agent'"),
+    "fanout": (
+        "pass a model as the first value of 'query' with the prompt after it — a lone "
+        "positional is read as the prompt, not as a model — or name a profile with 'agent'"
+    ),
+    "flow": _FLOW_MODEL_SOURCES,
+    "play": _FLOW_MODEL_SOURCES,
+}
+
+
 def _refuse_without_model(verb: Verb, args: dict[str, Any], prompt: str | None) -> None:
     """Refuse a submission the command would reject on start, naming the fix.
 
@@ -548,14 +570,7 @@ def _refuse_without_model(verb: Verb, args: dict[str, Any], prompt: str | None) 
     kind = verb.job_kind
     if kind is None or _has_model_source(kind, args, prompt):
         return
-    sources = (
-        "pass a model as the first positional in 'query', or name a profile with 'agent'"
-        if kind == "agent"
-        else (
-            "pass a model as the first positional in 'query', or name a profile with "
-            "'agent', a spec with 'file', or a playbook with 'playbook'"
-        )
-    )
+    sources = _MODEL_SOURCES[kind]
     raise OpError(
         "invalid_input",
         f"{verb.name!r} has no model and nothing to supply one, so the run would be "

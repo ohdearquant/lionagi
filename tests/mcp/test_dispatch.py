@@ -644,3 +644,43 @@ def test_a_spec_file_may_be_the_thing_that_names_the_model(submitted):
     # same branch, but naming one here would require it to exist on the machine.
     answer = call(ops=[spawn_op("flow.submit", {"file": "/tmp/spec.yaml"})])["ops"][0]
     assert answer["ok"] is True, answer
+
+
+def _refusal(op: str) -> str:
+    return call(ops=[spawn_op(op, {"prompt": "do it"})])["ops"][0]["error"]["message"]
+
+
+def test_the_remediation_names_only_sources_the_verb_it_was_sent_to_accepts(submitted):
+    """A fix a caller cannot follow costs them the round-trip it was meant to save.
+
+    `fanout` takes neither a spec file nor a playbook, so a message that offered
+    either would be answered by a second refusal, this time from argument
+    validation, on a call the caller made because the first refusal told them to.
+    Both halves are asserted together: what each message names, and what the
+    receiving schema actually admits.
+    """
+    fanout, flow = _refusal("fanout.submit"), _refusal("flow.submit")
+    assert "'file'" not in fanout and "'playbook'" not in fanout
+    assert "'file'" in flow and "'playbook'" in flow
+
+    fanout_admits = set(call(help="fanout.submit")["schema"]["properties"])
+    flow_admits = set(call(help="flow.submit")["schema"]["properties"])
+    assert not {"file", "playbook"} & fanout_admits
+    assert {"file", "playbook"} <= flow_admits
+    # A profile is the one source all three share, so every message names it.
+    assert "'agent'" in fanout and "'agent'" in flow and "'agent'" in _refusal("agent.submit")
+
+
+def test_the_remediation_says_where_in_the_positionals_the_model_goes(submitted):
+    """Where the model sits differs by command, so each message says its own answer.
+
+    An agent's prompt travels separately, leaving its positional bucket for the
+    model alone. Flow and fanout read the last positional as the prompt, so a
+    caller who passes the model on its own has passed a prompt — the message has
+    to say that a second value follows, or it describes a call still missing a model.
+    """
+    for op in ("fanout.submit", "flow.submit"):
+        message = _refusal(op)
+        assert "with the prompt after it" in message, message
+        assert "read as the prompt" in message, message
+    assert "first positional in 'query'" in _refusal("agent.submit")
