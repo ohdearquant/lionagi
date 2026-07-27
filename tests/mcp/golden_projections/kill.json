@@ -2,7 +2,7 @@
   "path": "kill",
   "schema": {
     "additionalProperties": false,
-    "description": "Kill a running lionagi entity by id, or sweep all stale running entities whose underlying OS process is dead.\n\nThe entity's status is set to 'cancelled' (sessions/invocations), 'blocked' (plays), or 'aborted' (shows) with reason tracking per ADR-0028.\n\nRecursion boundary: --recursive kills a session's or invocation's direct children, which are the PID-bearing workers. PLAY and SHOW rows are orchestrator records with no stored link to the sessions they started, so killing one only marks that row terminal and exits non-zero (plays) to say the workers are still running. To stop that work, kill the session ids directly; --all-stale cancels play and show rows once their workers are gone.\n\nExamples:\n  li kill abc123                        # kill by id prefix\n  li kill <session-id>                  # stop a worker process\n  li kill abc123 --reason 'stuck'\n  li kill abc123 --recursive            # kill + direct children\n  li kill --all-stale                   # sweep dead-PID rows\n  li kill --all-stale --threshold 3600  # only rows older than 1h\n  li kill --all-stale --dry-run",
+    "description": "Kill a running lionagi entity by id, or sweep all stale running entities whose underlying OS process is dead.\n\nThe entity's status is set to 'cancelled' (sessions/invocations), 'blocked' (plays), or 'aborted' (shows) with reason tracking per ADR-0028.\n\nRecursion boundary: --recursive kills a session's or invocation's direct children, which are the PID-bearing workers. A PLAY kill reaches the play's worker chain only when the row records the session it started; a play created by a live run does not, so that kill marks the row terminal and exits non-zero to say no worker was stopped. A SHOW kill only marks the show row terminal. To stop work either one cannot reach, kill the session ids directly; --all-stale cancels play and show rows once their workers are gone.\n\nExamples:\n  li kill abc123                        # kill by id prefix\n  li kill <session-id>                  # stop a worker process\n  li kill abc123 --reason 'stuck'\n  li kill abc123 --recursive            # kill + direct children\n  li kill --all-stale                   # sweep dead-PID rows\n  li kill --all-stale --threshold 3600  # only rows older than 1h\n  li kill --all-stale --dry-run",
     "properties": {
       "all_stale": {
         "default": false,
@@ -35,7 +35,7 @@
       },
       "recursive": {
         "default": false,
-        "description": "Also kill direct child entities (e.g. invocations spawned by a session). Has no effect on play or show kills, which cannot reach their workers -- kill the session ids directly to stop them.",
+        "description": "Also kill direct child entities (e.g. invocations spawned by a session). Has no effect on a play kill, which already reaps whatever worker chain the row records, or on a show kill, which cannot reach one -- kill the session ids directly to stop a show's workers.",
         "type": "boolean",
         "x-flag": "--recursive"
       },

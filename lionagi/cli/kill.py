@@ -285,11 +285,26 @@ async def _list_running_children(
         for row in rows:
             children.append(("plays", "play", db._row_to_dict(row)))
 
-    # A play has no branch here on purpose. Nothing records which sessions a
-    # play started: no writer binds plays.session_id, and a worker session
-    # carries no play reference either, so there is no key to resolve a play's
-    # workers by. `_do_kill` reports that gap instead of walking a link that
-    # would never match.
+    if entity_type == "play":
+        # `plays.session_id` is the only key connecting a play to the sessions
+        # it started, and it is bound on one path only: the Studio show
+        # importer, which resolves the session by name when it mirrors a show
+        # directory. A play created by a live run leaves it NULL, so this
+        # returns nothing for those and the caller reports the gap rather than
+        # implying a reap that did not happen.
+        rows = await db.fetch_all(
+            "SELECT sessions.* FROM plays "
+            "JOIN sessions ON sessions.id = plays.session_id "
+            "WHERE plays.id = ? AND sessions.status = 'running'",
+            (entity_id,),
+        )
+        for row in rows:
+            session_row = db._row_to_dict(row)
+            # Deepest first: the session's own children are signalled before
+            # the session, so a worker is never orphaned by its parent going
+            # terminal ahead of it.
+            children.extend(await _list_running_children(db, "session", session_row["id"]))
+            children.append(("sessions", "session", session_row))
 
     if entity_type == "session":
         rows = await db.fetch_all(
@@ -504,11 +519,7 @@ async def _do_kill(
         results = []
         blocked = []
 
-        # A play kill can only mark the play row terminal: nothing links a play
-        # to the sessions it started, so its workers cannot be found from the
-        # play id. That is a failed kill, not a quiet success, and the exit code
-        # below says so.
-        play_workers_unreachable = entity_type == "play"
+        play_workers_unreachable = False
 
         if entity_type == "show":
             # ADR-0104 explicitly defers show-level reaping: a show kill only
@@ -521,6 +532,12 @@ async def _do_kill(
                     "plays or their workers (deferred per ADR-0104) — kill the "
                     "play or session ids directly to stop a show's workers"
                 )
+        elif entity_type == "play":
+            # A play row carries no PID of its own, so its whole effect on the
+            # running system is through the sessions it started. Resolving them
+            # is the kill, not an extra step behind --recursive.
+            children = await _list_running_children(db, entity_type, row["id"])
+            play_workers_unreachable = not children
         elif recursive:
             children = await _list_running_children(db, entity_type, row["id"])
         else:
@@ -562,10 +579,10 @@ async def _do_kill(
 
         if play_workers_unreachable:
             log_error(
-                f"play {row['id'][:12]} is marked blocked, but its worker "
-                "processes were NOT stopped: a play records no link to the "
-                "sessions it started, so they cannot be resolved from the play "
-                "id. Find the running sessions with `li monitor` and kill those "
+                f"play {row['id'][:12]} is marked blocked, but no worker "
+                "process was stopped: the row records no running session, so "
+                "any workers it started cannot be resolved from the play id. "
+                "Find the running sessions with `li monitor` and kill those "
                 "ids directly."
             )
             return 1
@@ -573,14 +590,20 @@ async def _do_kill(
     return 1 if blocked else 0
 
 
-async def _play_child_stale(db: Any, play_row: dict[str, Any]) -> bool:
-    """True if the play's linked session has terminated."""
+async def _play_child_stale(db: Any, play_row: dict[str, Any]) -> bool | None:
+    """Whether the play's linked session has terminated.
+
+    ``None`` means the question could not be asked: the row records no session
+    to look up, or it points at one that is no longer in the table. That is a
+    different answer from "the session is still running", and the sweep reports
+    it differently.
+    """
     session_id = play_row.get("session_id")
     if not session_id:
-        return False
+        return None
     row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (session_id,))
     if row is None:
-        return False
+        return None
     return row["status"] != "running"
 
 
@@ -609,6 +632,7 @@ async def _do_kill_all_stale(
     skipped_live = 0
     skipped_recent = 0
     skipped_unverifiable = 0
+    skipped_unlinked_plays = 0
 
     live_status_for: dict[str, str] = {
         "sessions": "running",
@@ -737,9 +761,21 @@ async def _do_kill_all_stale(
                     )
                 continue
 
-            if not await _play_child_stale(db, row_dict):
+            child_stale = await _play_child_stale(db, row_dict)
+            if child_stale is None:
+                # No session to check. Age alone would not distinguish a play
+                # whose workers are gone from one still doing hours of work, so
+                # the row is left alone and counted for the closing summary.
+                skipped_unlinked_plays += 1
                 if verbose:
-                    print(f"  skip play {play_id[:12]}: child session still running or absent")
+                    print(
+                        f"  skip play {play_id[:12]}: row records no worker session, "
+                        "so staleness cannot be determined"
+                    )
+                continue
+            if not child_stale:
+                if verbose:
+                    print(f"  skip play {play_id[:12]}: worker session still running")
                 continue
 
             if dry_run:
@@ -821,8 +857,19 @@ async def _do_kill_all_stale(
     print(
         f"\n{prefix} {killed} stale entities "
         f"[skipped_recent={skipped_recent}, skipped_live_pid={skipped_live}, "
-        f"skipped_unverifiable_pid={skipped_unverifiable}]"
+        f"skipped_unverifiable_pid={skipped_unverifiable}, "
+        f"skipped_unlinked_plays={skipped_unlinked_plays}]"
     )
+    if skipped_unlinked_plays:
+        # One line per sweep, not one per row: a play created by a live run
+        # never records the sessions it started, so this is a property of how
+        # plays are written rather than an observation about these rows.
+        warn(
+            f"{skipped_unlinked_plays} running play row(s) were not considered: "
+            "a play created by a live run records no worker session, so there is "
+            "nothing to test for staleness. Sweep the worker session ids instead "
+            "(`li monitor` lists them)."
+        )
     return 0
 
 
@@ -837,12 +884,13 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
             "'blocked' (plays), or 'aborted' (shows) with reason tracking per "
             "ADR-0028.\n\n"
             "Recursion boundary: --recursive kills a session's or invocation's "
-            "direct children, which are the PID-bearing workers. PLAY and SHOW "
-            "rows are orchestrator records with no stored link to the sessions "
-            "they started, so killing one only marks that row terminal and exits "
-            "non-zero (plays) to say the workers are still running. To stop that "
-            "work, kill the session ids directly; --all-stale cancels play and "
-            "show rows once their workers are gone.\n\n"
+            "direct children, which are the PID-bearing workers. A PLAY kill "
+            "reaches the play's worker chain only when the row records the "
+            "session it started; a play created by a live run does not, so that "
+            "kill marks the row terminal and exits non-zero to say no worker was "
+            "stopped. A SHOW kill only marks the show row terminal. To stop work "
+            "either one cannot reach, kill the session ids directly; --all-stale "
+            "cancels play and show rows once their workers are gone.\n\n"
             "Examples:\n"
             "  li kill abc123                        # kill by id prefix\n"
             "  li kill <session-id>                  # stop a worker process\n"
@@ -874,8 +922,9 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help=(
             "Also kill direct child entities (e.g. invocations spawned by a session). "
-            "Has no effect on play or show kills, which cannot reach their workers -- "
-            "kill the session ids directly to stop them."
+            "Has no effect on a play kill, which already reaps whatever worker chain "
+            "the row records, or on a show kill, which cannot reach one -- kill the "
+            "session ids directly to stop a show's workers."
         ),
     )
     kill.add_argument(
