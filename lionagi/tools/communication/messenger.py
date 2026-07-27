@@ -53,7 +53,9 @@ class MessengerRequest(BaseModel):
         None,
         description=(
             "Recipient name(s). Required for 'send' and 'wakeup'. 'send' accepts "
-            "a name or a list of names; 'wakeup' takes a single name."
+            "a name or a list of names and delivers to every one of them. "
+            "'wakeup' wakes exactly one teammate: pass a name, or a list, in "
+            "which case only its first name is woken and the rest are ignored."
         ),
     )
     content: str | None = Field(
@@ -139,10 +141,11 @@ class LionMessenger(LionTool):
             done/finished, wake a teammate, or send a help signal. action in
             {'send', 'receive', 'done', 'finished', 'wakeup', 'help'}; to and
             content are required for send/wakeup — 'send' takes a name or a
-            list of names, 'wakeup' takes a single name and wakes only one
-            teammate per call; neither is required for receive; content (the
-            reason) is required for help, urgency is optional (defaults to
-            'fyi')."""
+            list of names and delivers to every one of them, 'wakeup' wakes
+            exactly one teammate and accepts a name or a list, in which case
+            only its first name is woken and the rest are ignored; neither is
+            required for receive; content (the reason) is required for help,
+            urgency is optional (defaults to 'fyi')."""
             if action == "receive":
                 pending = exchange.receive(sender_id)
                 if not pending:

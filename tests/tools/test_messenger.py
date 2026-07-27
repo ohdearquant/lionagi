@@ -455,3 +455,38 @@ class TestMessengerBindUnknownAction:
         tool = m.bind(branch, roster={})
         result = tool.func_callable(action="bogus")
         assert "Unknown action: bogus" in result
+
+
+# ---------------------------------------------------------------------------
+# Tool description stays consistent with wakeup's recipient handling
+# ---------------------------------------------------------------------------
+
+
+class TestMessengerWakeupDescription:
+    def test_wakeup_list_wakes_first_name_only_and_says_so(self):
+        """A list passed to wakeup reaches its first name only, and both
+        LLM-facing descriptions of `to` say that.
+
+        `wakeup` accepts the same `to` shapes as `send` but resolves a list to
+        its first entry, so a caller told it takes one name would never learn
+        what the other names in a list do — they are dropped in silence.
+        """
+        ex = Exchange()
+        m = LionMessenger(exchange=ex)
+        events = []
+        m.on("wakeup", lambda **kw: events.append(kw))
+        branch = _make_branch(ex)
+        alice_id, bob_id = uuid4(), uuid4()
+        ex.register(alice_id)
+        ex.register(bob_id)
+        tool = m.bind(branch, roster={"alice": alice_id, "bob": bob_id})
+
+        result = tool.func_callable(action="wakeup", to=["alice", "bob"], content="rise")
+
+        assert "Woke up alice" in result
+        assert [e["target"] for e in events] == ["alice"], "only the first name is woken"
+        assert len(branch._included) == 1, "bob gets no message"
+
+        field_desc = MessengerRequest.model_fields["to"].description
+        assert "first name is woken" in field_desc
+        assert "first name is woken" in tool.func_callable.__doc__
