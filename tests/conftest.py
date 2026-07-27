@@ -15,15 +15,27 @@
 # isolation the default, and covers modules added later for free — patching
 # the constants after import would have to name every consumer.
 #
-# An explicit ``LIONAGI_HOME`` is honoured, so a caller can still point the
-# suite somewhere specific.
+# ``LIONAGI_HOME`` is the ordinary production variable: it is what a person sets
+# to point their own work at a particular store, and it is set in plenty of
+# shells and CI environments for reasons that have nothing to do with the suite.
+# So it is overwritten unconditionally rather than only when absent. Deferring to
+# it would let an ambient value silently switch the suite back to writing into
+# somebody's real store, and the boundary a test suite draws around itself must
+# not be something the environment can turn off by accident.
+#
+# ``LIONAGI_TEST_HOME`` is the deliberate way through, for an integration case
+# that needs the suite pointed at a specific directory. Setting it means the
+# suite writes outside the root it owns and cleans up: whatever lands under that
+# directory stays there after the run, interleaved with anything already in it.
 import atexit
 import os
 import shutil
 import sys
 import tempfile
 
-if not os.environ.get("LIONAGI_HOME"):
+if os.environ.get("LIONAGI_TEST_HOME"):
+    os.environ["LIONAGI_HOME"] = os.environ["LIONAGI_TEST_HOME"]
+else:
     _TEST_LIONAGI_HOME = tempfile.mkdtemp(prefix="lionagi-tests-")
     os.environ["LIONAGI_HOME"] = _TEST_LIONAGI_HOME
     atexit.register(shutil.rmtree, _TEST_LIONAGI_HOME, ignore_errors=True)
