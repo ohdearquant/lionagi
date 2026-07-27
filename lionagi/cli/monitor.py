@@ -636,6 +636,8 @@ async def _detail_invocation(db: Any, inv: dict[str, Any]) -> str:
 
 
 async def _detail_show(db: Any, show: dict[str, Any]) -> str:
+    from lionagi.state.db import PLAY_ACTIVE_STATUSES, PLAY_TERMINAL_STATUSES
+
     lines: list[str] = []
     lines.append(_bold(f"SHOW  {show['id']}"))
     lines.append(f"  topic:   {show.get('topic') or '-'}")
@@ -650,8 +652,12 @@ async def _detail_show(db: Any, show: dict[str, Any]) -> str:
         lines.append(_dim("  -- plays --"))
         # Every terminal play status the lifecycle declares. A play here has
         # finished and cannot move again without an override, so it reads
-        # [done] even when it finished badly.
-        terminal = {"merged", "escalated", "gate_failed", "blocked", "aborted_after_finish"}
+        # [done] even when it finished badly. Read from the lifecycle
+        # vocabulary rather than restated as a literal here: the policy owns
+        # which statuses are terminal, and a copy of it in this view goes
+        # stale silently — the day the policy grows a terminal status this
+        # view keeps calling a finished play [wait].
+        terminal = PLAY_TERMINAL_STATUSES
         # Executing right now, which is narrower than "not finished". `gated`
         # and `pending` fall through to [wait] because waiting is what they are
         # doing. This set is also narrower than the default listing's in-flight
@@ -664,8 +670,18 @@ async def _detail_show(db: Any, show: dict[str, Any]) -> str:
                 marker = _dim("  [done]  ")
             elif pstatus in live:
                 marker = _green("  [live]  ")
-            else:
+            elif pstatus in PLAY_ACTIVE_STATUSES:
                 marker = _yellow("  [wait]  ")
+            else:
+                # Neither terminal, nor executing, nor a status the lifecycle
+                # declares in-flight at all. It is not [wait]: waiting claims
+                # the play will continue and nothing here can support that
+                # claim for a status this view does not know. It is not
+                # [done] either: reading an unknown status as terminal is how
+                # live work gets swept. It gets its own marker so the row
+                # reads as a data problem instead of being sorted into a
+                # bucket that answers a question nobody can answer.
+                marker = _red("  [????]  ")
             pelapsed = _elapsed(play.get("started_at"), play.get("ended_at"))
             pname = _trunc(play.get("name") or play["id"][:12], 24)
             pstatus_col = _colour_status(pstatus)

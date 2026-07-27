@@ -17,6 +17,7 @@ from lionagi.cli.monitor import (
     _NON_TTY_MAX_COL_WIDTH,
     _cached_detect_project,
     _colour_status,
+    _detail_show,
     _elapsed,
     _find_entity,
     _format_coordination_line,
@@ -36,7 +37,11 @@ from lionagi.cli.monitor import (
     _stdout_is_tty,
     _trunc,
 )
-from lionagi.state.db import StateDB
+from lionagi.state.db import (
+    PLAY_ACTIVE_STATUSES,
+    PLAY_TERMINAL_STATUSES,
+    StateDB,
+)
 
 
 class _FakeStdout:
@@ -1189,6 +1194,92 @@ async def test_run_detail_show(temp_db_path: Path) -> None:
     output = await _run_detail(show_id)
     assert "SHOW" in output
     assert "implement-auth" in output
+
+
+# ── Show detail: how a play's status is classified into a marker ──────────────
+
+
+class _PlayRowsDB:
+    """Minimal db stand-in for _detail_show — it only calls fetch_all, to read
+    the show's plays. Rows are supplied directly so a play can carry a status
+    no writer would accept, which is the case the unrecognised marker is for."""
+
+    def __init__(self, plays: list[dict[str, Any]]) -> None:
+        self._plays = plays
+
+    async def fetch_all(self, *_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        return self._plays
+
+
+_MARKER_PLAY_NAME = "marker-probe"
+
+
+async def _marker_for_status(status: str) -> str:
+    """Render a one-play show and return the marker column of that play's row."""
+    db = _PlayRowsDB(
+        [
+            {
+                "id": "0123456789ab",
+                "name": _MARKER_PLAY_NAME,
+                "status": status,
+                "started_at": None,
+                "ended_at": None,
+            }
+        ]
+    )
+    output = await _detail_show(db, {"id": "show-abc", "topic": "t", "status": "active"})
+    line = next(ln for ln in output.splitlines() if _MARKER_PLAY_NAME in ln)
+    return line[: line.index(_MARKER_PLAY_NAME)]
+
+
+@pytest.fixture
+def _no_tty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Markers are compared verbatim, so keep ANSI wrapping out of them."""
+    monkeypatch.setattr("lionagi.cli.monitor._IS_TTY", False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", sorted(PLAY_TERMINAL_STATUSES))
+async def test_detail_show_policy_terminal_status_reads_done(_no_tty: None, status: str) -> None:
+    """Driven from the lifecycle terminal set, not a literal list — a status
+    added to the policy is covered here the day it is added."""
+    assert await _marker_for_status(status) == "  [done]  "
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["running", "running_complete", "redoing"])
+async def test_detail_show_executing_status_reads_live(_no_tty: None, status: str) -> None:
+    assert await _marker_for_status(status) == "  [live]  "
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["gated", "pending"])
+async def test_detail_show_active_but_not_executing_reads_wait(_no_tty: None, status: str) -> None:
+    """Active without being the play that is moving — waiting is what it is
+    doing, so [wait] is the honest marker."""
+    assert status in PLAY_ACTIVE_STATUSES
+    assert await _marker_for_status(status) == "  [wait]  "
+
+
+@pytest.mark.asyncio
+async def test_detail_show_unrecognised_status_is_not_wait(_no_tty: None) -> None:
+    status = "no-such-play-status"
+    assert status not in PLAY_TERMINAL_STATUSES
+    assert status not in PLAY_ACTIVE_STATUSES
+    marker = await _marker_for_status(status)
+    assert marker == "  [????]  "
+    assert marker not in ("  [wait]  ", "  [done]  ", "  [live]  ")
+
+
+@pytest.mark.asyncio
+async def test_detail_show_marker_column_width_is_uniform(_no_tty: None) -> None:
+    """All four classifications occupy the same column, so the play names
+    below them stay aligned."""
+    markers = [
+        await _marker_for_status(s) for s in ("merged", "running", "gated", "no-such-play-status")
+    ]
+    assert len(set(markers)) == 4
+    assert {len(m) for m in markers} == {10}
 
 
 @pytest.mark.asyncio
