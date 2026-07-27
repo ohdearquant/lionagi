@@ -661,16 +661,29 @@ def _has_prompt_source(kind: str, args: dict[str, Any], prompt: str | None) -> b
     A prompt reaches these commands by two routes and both are read: ``prompt``
     and ``prompt_file`` are resolved before this runs, while a prompt passed
     positionally arrives in ``query`` — where a lone value is the prompt and a
-    second one is the model ahead of it, so any positional at all means a prompt
-    is present.
+    second one is the model ahead of it. A resolved ``prompt`` is appended
+    behind the ``query`` values, so whichever of them comes last is the one the
+    command reads as its prompt.
+
+    That last value is tested for truth rather than for presence, because the
+    command tests it for truth: it assigns the positionals and then refuses on
+    a prompt that is falsy, not on one that is absent. An empty string is
+    present and not true, so a check asking only whether a prompt was passed
+    admits a submission the command refuses on start — the same stranded
+    non-terminal run this refusal exists to prevent, arriving as a value
+    instead of as a gap.
 
     Beyond those, each command is taken at its parser's word. Flow also accepts
     a spec file and a playbook, either of which may carry a ``prompt`` key this
-    does not read, so their presence makes the question the command's to answer.
-    A play is that same command with the playbook required, so it always has
-    one. Fanout takes neither and has only the two routes.
+    does not read, so their presence makes the question the command's to answer
+    — including when a positional is present but empty, since the command reads
+    the file after assigning the positionals and lets it supply the prompt. A
+    play is that same command with the playbook required, so it always has one.
+    Fanout takes neither and has only the two routes.
     """
-    if prompt is not None or args.get("query"):
+    query = args.get("query") or []
+    last_positional = prompt if prompt is not None else (query[-1] if query else None)
+    if last_positional:
         return True
     if kind == "fanout":
         return False

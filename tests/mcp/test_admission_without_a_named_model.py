@@ -257,6 +257,52 @@ def test_a_play_naming_only_a_playbook_reaches_the_spawn(spawned, submit_dir):
     assert "--playbook=probe" in spawned.argv, spawned.argv
 
 
+@pytest.mark.parametrize("verb", ("flow.submit", "fanout.submit"))
+def test_an_orchestrating_submission_whose_prompt_is_empty_never_reaches_the_spawn(spawned, verb):
+    """The command refuses a falsy prompt, not an absent one. An empty string is
+    present and not true, so admitting it here strands the same run a missing
+    prompt would."""
+    answer = call(ops=[spawn_op(verb, {"prompt": "", "no_mcp_config": True})])["ops"][0]
+
+    assert spawned.argv is None, "the submission reached the spawn"
+    assert answer["ok"] is False, answer
+    assert answer["error"]["kind"] == "invalid_input", answer
+    assert "has no prompt and nothing to supply one" in answer["error"]["message"], answer
+
+
+@pytest.mark.parametrize("verb", ("flow.submit", "fanout.submit"))
+@pytest.mark.parametrize("query", ([""], ["claude_code/claude-opus-5", ""]))
+def test_an_orchestrating_submission_whose_last_positional_is_empty_never_reaches_the_spawn(
+    spawned, verb, query
+):
+    """The command reads the last positional as the prompt: a lone one is it,
+    and with two the model comes first. So a model ahead of an empty prompt is
+    refused exactly as a lone empty one is."""
+    answer = call(ops=[spawn_op(verb, {"query": query, "no_mcp_config": True})])["ops"][0]
+
+    assert spawned.argv is None, "the submission reached the spawn"
+    assert answer["ok"] is False, answer
+    assert answer["error"]["kind"] == "invalid_input", answer
+    assert "has no prompt and nothing to supply one" in answer["error"]["message"], answer
+
+
+def test_a_flow_with_an_empty_positional_and_a_spec_file_reaches_the_spawn(spawned, submit_dir):
+    """The spec file may carry a prompt: key, and the command reads it after
+    assigning the positionals. So an empty positional beside a file is still the
+    command's question to answer, and refusing it here would refuse a run that
+    would have started."""
+    spec = submit_dir / "flow.yaml"
+    spec.write_text("prompt: summarize this\n")
+
+    answer = call(
+        ops=[spawn_op("flow.submit", {"query": [""], "file": str(spec), "no_mcp_config": True})]
+    )["ops"][0]
+
+    assert answer["ok"] is True, answer
+    assert spawned.argv is not None, "the submission was refused before the spawn"
+    assert _positionals(spawned.argv) == [""]
+
+
 def test_every_kind_the_prompt_check_refuses_has_a_correction_to_offer():
     """The refusal reads its remediation by kind, so a kind admitted into the
     check without one would raise past the caller instead of answering."""
