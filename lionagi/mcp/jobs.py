@@ -359,6 +359,17 @@ def _process_create_time(pid: int) -> tuple[str, float | None]:
         return "unknown", None
 
 
+def _start_time_matches(observed: float, recorded: float) -> bool:
+    """Whether a start time read now is the one recorded for this run at spawn.
+
+    Within a tolerance, because the two are separate reads of a clock the kernel
+    keeps in ticks. Only for a recorded value against a live one: two live reads
+    of the same process must be equal, and letting those drift would weaken the
+    check that tells a recycled pid from the process that held it.
+    """
+    return abs(observed - recorded) <= _CREATE_TIME_TOLERANCE
+
+
 def _spawned_pgid(pid: int) -> int:
     """The process group of a just-spawned child.
 
@@ -1219,6 +1230,61 @@ def _server_identity() -> dict[str, str]:
     return {"version": version, "module": str(Path(__file__).resolve().parent)}
 
 
+def _run_process_liveness(job: dict[str, Any] | None, pid: int | None) -> tuple[bool, str | None]:
+    """Whether the process *this run* spawned is alive, and what settled it.
+
+    A pid number is not an identity. Once the run's process exits and the OS
+    hands its number to something else, a probe of that number answers about a
+    stranger, and a run that ended would report as running for as long as the
+    stranger lives. So where the record captured the start time of the process
+    it spawned, that identity is confirmed here before liveness is reported, and
+    a number now held by a different process reports this run's process as not
+    alive — which is the truth about the run, and what raises
+    ``possibly_orphaned``, the field that exists for a process gone with no end
+    recorded.
+
+    The second element names what was established, so a caller can tell the
+    readings apart rather than infer them: ``"confirmed"``, ``"recycled"``,
+    ``"gone"`` (the pid held no live process by the time its identity was read),
+    ``"unreadable"`` (the identity probe errored, so nothing was established and
+    the liveness probe stands), ``"not_recorded"`` (the record captured no start
+    time) and ``"unusable"`` (it captured one that no start time can be compared
+    against). None when there was no live pid to identify.
+
+    Where no identity was captured the answer is the liveness probe alone,
+    exactly as before: a pid probe is all such a record ever had, and calling
+    those runs orphaned would be a claim their data does not support. A probe
+    that errored is treated the same way, because a failed read is not evidence
+    of death.
+    """
+    alive = _pid_alive(pid)
+    if not alive or job is None or not isinstance(pid, int):
+        return alive, None
+
+    recorded = job.get("pid_create_time")
+    if recorded is None:
+        return alive, "not_recorded"
+    # The same three values kill() refuses: a bool is an int to isinstance and
+    # arrives as a moment in 1970, a NaN loses every comparison silently, and an
+    # unbounded JSON integer fails the conversion that any comparison needs.
+    try:
+        spawned_at = float(recorded)
+        usable = not isinstance(recorded, bool) and math.isfinite(spawned_at)
+    except (TypeError, ValueError, OverflowError):
+        usable = False
+    if not usable:
+        return alive, "unusable"
+
+    state, live_created = _process_create_time(pid)
+    if state == "gone":
+        return False, "gone"
+    if state != "found" or live_created is None:
+        return alive, "unreadable"
+    if _start_time_matches(live_created, spawned_at):
+        return True, "confirmed"
+    return False, "recycled"
+
+
 def status(run_id: str) -> dict[str, Any]:
     """Current state of *run_id*.
 
@@ -1235,6 +1301,15 @@ def status(run_id: str) -> dict[str, Any]:
     to write it: a killed or crashed run leaves a manifest still reading
     ``running`` forever. It is one-directional evidence, so read ``status`` here,
     not ``run["status"]``.
+    ``alive`` is about the process this run spawned, not about whatever holds its
+    pid number now: where the record carries the start time captured at spawn, a
+    number the OS has handed on reports as not alive. ``pid_identity`` says how
+    that was settled — ``"confirmed"``, ``"recycled"``, ``"gone"``,
+    ``"unreadable"``, ``"not_recorded"``, ``"unusable"``, or null when there was
+    no live pid to identify — so a caller can tell a process that vanished from a
+    number that now belongs to someone else, which are different things to do
+    next. A record written without a start time is answered by the pid probe
+    alone, as it always was.
     ``possibly_orphaned`` flags a run whose process is gone with no end recorded;
     it is advisory and never makes the run terminal.
     ``notify_delivery`` reports whether the terminal notice was delivered.
@@ -1251,7 +1326,7 @@ def status(run_id: str) -> dict[str, Any]:
     job, record_state = _read_job_state(run_id)
     manifest = _read_run_manifest(run_id)
     pid = job.get("pid") if job else None
-    alive = _pid_alive(pid)
+    alive, pid_identity = _run_process_liveness(job, pid)
 
     lifecycle = None
     if _needs_lifecycle_read(job, alive):
@@ -1271,6 +1346,7 @@ def status(run_id: str) -> dict[str, Any]:
         "spawn_state": derived["spawn_state"],
         "possibly_orphaned": derived["possibly_orphaned"],
         "alive": alive,
+        "pid_identity": pid_identity,
         "pid": pid,
         "submitted_at": (job or {}).get("submitted_at"),
         "finished_at": (job or {}).get("finished_at"),
@@ -1730,7 +1806,7 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
                 pgid=pgid,
             )
         if state == "found" and live_created is not None:
-            if abs(live_created - spawned_at) <= _CREATE_TIME_TOLERANCE:
+            if _start_time_matches(live_created, spawned_at):
                 # The leader is confirmed to be the process this run spawned, so
                 # its group can be read now and required to be the recorded one.
                 # Without that equality the recorded pgid is only a number that

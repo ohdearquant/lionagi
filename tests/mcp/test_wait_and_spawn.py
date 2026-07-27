@@ -470,6 +470,29 @@ async def test_wait_snapshot_of_a_stopped_run_is_still_a_snapshot(sandbox, monke
     assert res["stopped_without_end"] == [rid]
 
 
+async def test_wait_does_not_hold_the_window_open_for_a_reused_pid(sandbox, monkeypatch):
+    """A run whose pid now belongs to someone else has stopped, not stalled.
+
+    wait observes through status, so a liveness answer taken from whatever holds
+    the number keeps the run in ``pending`` for the whole window and leaves
+    ``stopped_without_end`` empty — the caller waits out its budget on a run that
+    already ended, and is told nothing about why.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", 1_700_005_000.0))
+    rid = jobs.new_run_id()
+    _record(rid, pid=4242, pid_create_time=1_700_000_000.0, pgid=4242)
+
+    res = await jobs.wait([rid], max_wait=0, poll_interval=5)
+
+    assert res["pending"] == []
+    assert res["stopped_without_end"] == [rid]
+    assert res["all_terminal"] is False
+    assert res["runs"][0]["possibly_orphaned"] is True
+    assert res["runs"][0]["terminal"] is False
+    assert res["runs"][0]["error"] is None
+
+
 async def test_the_floor_never_outruns_the_window(sandbox, monkeypatch):
     """The floor is bounded by what is left of the window, not by the interval.
 

@@ -550,6 +550,140 @@ def test_kill_refuses_when_the_leaders_start_time_is_unreadable(
     assert out["killed"] is False and out["reason_code"] == jobs.KILL_LEADER_UNVERIFIABLE
 
 
+def test_status_reports_a_reused_pid_as_not_this_runs_process(
+    sandbox, monkeypatch, no_stray_signal
+):
+    """A stranger holding the run's old pid number must not read as the run.
+
+    Nothing recorded an end for this run, so the only thing standing between it
+    and "running forever" is the identity check: without it the liveness probe
+    answers about whatever process now holds the number, and the run reports
+    healthy for as long as that process lives. It also silences the one field
+    that would say otherwise, since a run flagged possibly_orphaned is exactly a
+    run whose process is gone with no end recorded.
+
+    kill() refuses this same record as a reused pid, so the two surfaces are
+    asserted together: one module answering one record two ways is the defect.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", _SPAWNED_AT + 5000))
+
+    rid = _identity_record()
+    st = jobs.status(rid)
+
+    assert st["alive"] is False
+    assert st["pid_identity"] == "recycled"
+    assert st["status"] == "exited"
+    assert st["terminal"] is False
+    assert st["outcome"] is None
+    assert st["possibly_orphaned"] is True
+    assert jobs.kill(rid)["reason_code"] == jobs.KILL_PID_RECYCLED
+    assert no_stray_signal == []
+
+
+def test_status_reports_a_confirmed_process_as_running(sandbox, monkeypatch):
+    """The healthy case is unchanged, and the comparison keeps its tolerance.
+
+    The start time is read from a clock kept in ticks, so a live read of the
+    process this run spawned can differ from the recorded value in the last
+    decimal. Comparing it exactly would report every live run as recycled.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", _SPAWNED_AT + 0.02))
+
+    st = jobs.status(_identity_record())
+
+    assert st["alive"] is True
+    assert st["pid_identity"] == "confirmed"
+    assert st["status"] == "running"
+    assert st["terminal"] is False
+    assert st["possibly_orphaned"] is False
+
+
+def test_status_does_not_read_a_failed_identity_probe_as_death(sandbox, monkeypatch):
+    """A probe that errored established nothing, so the liveness probe stands.
+
+    Reporting the run as stopped here would invent a death out of a measurement
+    that did not come off, and stopped is what a caller stops waiting on.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("unknown", None))
+
+    st = jobs.status(_identity_record())
+
+    assert st["alive"] is True
+    assert st["pid_identity"] == "unreadable"
+    assert st["status"] == "running"
+    assert st["possibly_orphaned"] is False
+
+
+def test_status_reports_a_pid_that_emptied_between_the_two_reads(sandbox, monkeypatch):
+    """The process exited between the liveness probe and the identity read."""
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("gone", None))
+
+    st = jobs.status(_identity_record())
+
+    assert st["alive"] is False
+    assert st["pid_identity"] == "gone"
+    assert st["status"] == "exited"
+    assert st["possibly_orphaned"] is True
+
+
+@pytest.mark.parametrize(
+    ("recorded", "identity"),
+    [
+        # submit() writes a null start time whenever the read at spawn failed,
+        # and a record written before identity capture has the same shape.
+        (None, "not_recorded"),
+        # Present, and holding something no start time can be compared against:
+        # a damaged record, which is different news from an old one.
+        ("not-a-number", "unusable"),
+        (float("nan"), "unusable"),
+        (True, "unusable"),
+    ],
+)
+def test_status_leaves_a_record_that_cannot_identify_its_process_on_the_pid_probe(
+    sandbox, monkeypatch, recorded, identity
+):
+    """No identity was captured, so a pid probe is all this record ever had.
+
+    Flipping these to stopped would claim the process is gone on the strength of
+    data that says nothing about it either way.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        jobs,
+        "_process_create_time",
+        lambda pid: pytest.fail("a record with no usable identity has nothing to compare"),
+    )
+
+    st = jobs.status(_identity_record(created=recorded))
+
+    assert st["alive"] is True
+    assert st["pid_identity"] == identity
+    assert st["status"] == "running"
+    assert st["terminal"] is False
+    assert st["possibly_orphaned"] is False
+
+
+def test_status_identifies_nothing_when_no_live_pid_holds_the_number(sandbox, monkeypatch):
+    """Nothing answered the liveness probe, so there was no process to identify."""
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(
+        jobs,
+        "_process_create_time",
+        lambda pid: pytest.fail("a pid holding nothing must not be probed for identity"),
+    )
+
+    st = jobs.status(_identity_record())
+
+    assert st["alive"] is False
+    assert st["pid_identity"] is None
+    assert st["status"] == "exited"
+    assert st["possibly_orphaned"] is True
+
+
 def test_kill_reaps_a_live_group_whose_leader_exited(sandbox, monkeypatch, no_stray_signal):
     """The case a leader-liveness gate refuses: `li` exits, its workers do not.
 
