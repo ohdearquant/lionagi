@@ -629,16 +629,46 @@ def _refuse_without_model(
     )
 
 
+def _resolve_cwd(args: dict[str, Any]) -> str | None:
+    """The caller's working directory, resolved the way it will be used.
+
+    ``~`` is a shell convention rather than a path the kernel resolves, so
+    whoever hands the value on has to expand it — and every verb taking a ``cwd``
+    has to expand it the same way, or one argument name means two things on one
+    server. It did: a roster read resolved under ``~/project`` while a submit
+    handed the tilde straight to the spawn, which cannot chdir to it.
+
+    Checked here rather than left to the spawn because a directory that is not
+    there is the caller's to fix, and a refused spawn is reported as
+    ``unavailable`` — the kind that says the machine is momentarily unable and
+    to come back later. Retrying a path that never existed is the one response
+    that cannot help. Checking first also means no run record is minted for a
+    run that was never going to start.
+
+    What stays on the spawn's own error path is genuinely the platform's: a
+    permission, an exhausted resource, an interpreter that is not there, and the
+    directory removed in the window between this check and the spawn.
+    """
+    cwd = args.get("cwd")
+    if cwd is None:
+        return None
+    resolved = Path(cwd).expanduser()
+    if not resolved.is_dir():
+        raise OpError("invalid_input", f"cwd {cwd!r} is not a directory")
+    return str(resolved)
+
+
 def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
     prompt = _resolve_prompt(args)
     _refuse_without_model(verb, schema, args, prompt)
+    cwd = _resolve_cwd(args)
     flags = render_argv(schema, args)
     assert verb.job_kind is not None
     result = jobs.submit(
         verb.job_kind,
         flags,
         prompt=prompt,
-        cwd=args.get("cwd"),
+        cwd=cwd,
         label=args.get("label") or args.get("playbook"),
         notify_command=args.get("notify_command"),
         notify_target=args.get("notify_seat"),
@@ -706,12 +736,10 @@ def _run_roster(verb: Verb, args: dict[str, Any]) -> dict[str, Any]:
     drift from: the profile loader is one function, and it is the same one the
     spawned `li agent` calls. The one thing the subprocess boundary would have
     carried for free is the working directory, so that is taken as an argument
-    and checked here — a run submitted with a bad cwd fails at spawn, and a
-    roster read of the same cwd should not answer for a different directory.
+    and checked here — a roster read of a cwd should not answer for a different
+    directory, and a submit carrying the same cwd is checked the same way.
     """
-    cwd = args.get("cwd")
-    if cwd is not None and not Path(cwd).expanduser().is_dir():
-        raise OpError("invalid_input", f"cwd {cwd!r} is not a directory")
+    cwd = _resolve_cwd(args)
     try:
         if verb.name == "profile.list":
             return roster.profile_list(cwd=cwd, names=args.get("names"), fields=args.get("fields"))
@@ -918,6 +946,24 @@ async def _run_one(entry: Any) -> dict[str, Any]:
             result = _run_machine(verb, schema, args)
     except OpError as exc:
         return _op_error(name, exc, schema)
+    except jobs.SpawnError as exc:
+        # A run whose child could not be started. The caller asked for a run and
+        # does not have one, so this is their answer rather than an exception
+        # that takes the whole batch down with it — SpawnError is a RuntimeError
+        # and fell outside every clause here, discarding the results of ops
+        # beside it that had already succeeded. The run_id rides along because a
+        # record was written before the failure and its log holds the cause.
+        #
+        # `unavailable`, not `invalid_input`: the arguments were already accepted
+        # by the schema, and what failed is this machine's ability to start a
+        # process — a denied permission, an exhausted resource, a missing
+        # interpreter. A caller told its input was wrong will rewrite the request
+        # and send it again, which is the one response that cannot help here.
+        return _op_error(
+            name,
+            OpError("unavailable", str(exc), detail={"run_id": exc.run_id}),
+            schema,
+        )
     except projection.SchemaProjectionError as exc:
         return _op_error(name, OpError("unavailable", str(exc)), None)
     except (ValueError, TypeError, KeyError, OSError) as exc:
