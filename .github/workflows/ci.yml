@@ -190,21 +190,16 @@ jobs:
 
     # Coverage runs on 3.10, and only on pushes — never on a pull request.
     #
-    # Instrumentation is the slowest thing on the pull-request path. Measured on
-    # the same interpreter, so the comparison is not confounded by Python
-    # version: the 3.10 test step took 488-645s across six instrumented runs,
-    # and 412s uninstrumented. The uninstrumented 3.10 figure lands inside the
-    # 391-517s range the four uninstrumented interpreters occupy among
-    # themselves, which is where it should land if instrumentation is what
-    # separated it from them.
-    #
-    # Since ci-gate hard-gates on `test`, that time sat directly on the path a
-    # pull request has to clear before it can merge, and the 3.10 leg is kept in
-    # the reduced pull-request matrix, so every pull request paid it.
+    # Running the suite under coverage instrumentation is materially slower than
+    # running it plain. The 3.10 leg is kept in the reduced pull-request matrix
+    # and ci-gate hard-gates on `test`, so before this split that extra time sat
+    # directly on the path every pull request had to clear before it could merge.
     #
     # Coverage is a report rather than a gate, so pushes to a long-lived branch
     # are a sufficient place to produce it. Pull requests run the same tests on
-    # the same interpreters, uninstrumented.
+    # the same interpreters, uninstrumented — no test is skipped on a pull
+    # request, the 3.10 leg is switched from the instrumented command to the
+    # plain one.
     - name: Run tests with coverage
       if: matrix.python-version == '3.10' && github.event_name != 'pull_request'
       run: scripts/ci.sh test-python-cov
