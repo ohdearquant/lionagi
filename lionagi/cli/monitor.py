@@ -648,7 +648,10 @@ async def _detail_show(db: Any, show: dict[str, Any]) -> str:
     if plays:
         lines.append("")
         lines.append(_dim("  -- plays --"))
-        terminal = {"merged", "escalated", "gate_failed", "aborted_after_finish"}
+        # Every terminal play status the lifecycle declares. A play here has
+        # finished and cannot move again without an override, so it reads
+        # [done] even when it finished badly.
+        terminal = {"merged", "escalated", "gate_failed", "blocked", "aborted_after_finish"}
         # Executing right now, which is narrower than "not finished". `gated`
         # and `pending` fall through to [wait] because waiting is what they are
         # doing. This set is also narrower than the default listing's in-flight

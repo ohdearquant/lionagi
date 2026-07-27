@@ -2019,3 +2019,24 @@ async def test_show_detail_marks_gated_play_as_waiting(temp_db_path: Path) -> No
     assert "[wait]" in gated_line
     assert "[live]" not in gated_line
     assert "[live]" in running_line, "a running play must still be marked live"
+
+
+@pytest.mark.asyncio
+async def test_show_detail_marks_blocked_play_as_done(temp_db_path: Path) -> None:
+    """`blocked` is a terminal play status: the play has finished and cannot
+    move again on its own. The detail view must render it [done], not [wait] —
+    waiting is the one thing a blocked play is not doing. A gated play in the
+    same store is the control for the distinction the marker draws: it is also
+    not executing, but it is genuinely unfinished, so it stays [wait]."""
+    async with StateDB() as db:
+        show_id = await _make_show(db)
+        await _make_play(db, show_id, status="blocked", name="blocked-play")
+        await _make_play(db, show_id, status="gated", name="awaiting-gate")
+
+    output = await _run_detail(show_id)
+
+    blocked_line = next(line for line in output.splitlines() if "blocked-play" in line)
+    gated_line = next(line for line in output.splitlines() if "awaiting-gate" in line)
+    assert "[done]" in blocked_line
+    assert "[wait]" not in blocked_line
+    assert "[wait]" in gated_line, "an undecided play is unfinished, not done"
