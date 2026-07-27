@@ -505,6 +505,12 @@ class OrchestrationEnv:
     _name_counts: dict[str, int] = field(default_factory=dict)
     _all_names: list[str] = field(default_factory=list)
 
+    # agent_id -> the directory that worker was launched in and told to write
+    # to. Recorded at build time so the end-of-run report can name a worker
+    # that produced nothing, instead of inferring the roster from whichever
+    # directories happen to be non-empty.
+    worker_artifact_dirs: dict[str, Path] = field(default_factory=dict)
+
     def assign_name(self, role: str) -> str:
         self._name_counts[role] = self._name_counts.get(role, 0) + 1
         n = self._name_counts[role]
@@ -751,7 +757,7 @@ async def build_worker_branch(
     """Resolve model/profile/system and build a worker Branch. The fourth
     return value, ``messenger_bound``, is True when this worker got the
     in-process messenger tool registered — see docs/internals/cli.md."""
-    from ._common import bare_worker_system
+    from ._common import bare_worker_system, worker_artifact_section
 
     w_model, w_profile, w_cfg = _resolve_worker_model_spec(env, role, model_override)
 
@@ -781,6 +787,14 @@ async def build_worker_branch(
     artifact_dir = env.run.agent_artifact_dir(agent_id)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     w_imodel.endpoint.config.kwargs["repo"] = artifact_dir
+    # The directory named in the worker's system prompt must be the one the
+    # worker can actually write. The file-editing tool refuses absolute paths
+    # outside the working directory, so only the cwd qualifies — read it back
+    # from the kwargs the worker is launched with rather than reusing the
+    # local, so a later change to how the cwd is chosen cannot leave the
+    # prompt naming a path the worker will be refused.
+    worker_cwd = Path(w_imodel.endpoint.config.kwargs["repo"])
+    env.worker_artifact_dirs[agent_id] = worker_cwd
     project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
     w_imodel.endpoint.config.kwargs.setdefault("add_dir", [])
     if project_root not in w_imodel.endpoint.config.kwargs["add_dir"]:
@@ -819,18 +833,26 @@ async def build_worker_branch(
     elif not env.bare and w_profile and w_profile.raw_body:
         verbatim_system = w_profile.system_prompt
     elif env.bare or not _is_casts_role(role):
-        verbatim_system = bare_worker_system(grant_spawn=grant_spawn)
+        verbatim_system = bare_worker_system(grant_spawn=grant_spawn, artifact_dir=worker_cwd)
 
     log_config = DataLoggerConfig(auto_save_on_exit=False)
     if verbatim_system is None:
         # Casts-role path: factory prepends LION_SYSTEM and renders the policy
         # block; grant_emissions off — spawn rights granted below if needed.
+        # A casts-role worker composes its prompt from the role body and never
+        # sees `bare_worker_system`, so the artifact directive is appended here
+        # too — otherwise the default (non-`--bare`) worker, which is the
+        # common case, would still be told nothing about where output belongs.
+        artifact_section = worker_artifact_section(worker_cwd)
+        composed_extra = (
+            f"{artifact_section}\n\n{team_section}" if team_section else artifact_section
+        )
         spec = AgentSpec.compose(
             role,
             modes=resolved_modes,
             pack=env.pack if env.pack is not None else "default",
             grant_emissions=False,
-            system_prompt=team_section,
+            system_prompt=composed_extra,
             khive_injection=(getattr(w_profile, "khive_injection", None) if w_profile else None),
         )
         wb = await create_agent(
@@ -1099,6 +1121,47 @@ def make_team_lifecycle_coordinator(
     )
 
 
+def collect_worker_artifacts(env: OrchestrationEnv) -> list[dict]:
+    """List what each worker actually wrote, one entry per worker built.
+
+    The roster comes from the directories the run handed out, not from a scan
+    for non-empty ones, so a worker that wrote nothing is still an entry — with
+    an empty ``files`` list — rather than an absence. A run where nothing was
+    written therefore reports every worker as having produced nothing, instead
+    of rendering as a clean report with no rows.
+
+    A directory that cannot be read is reported with its error rather than as
+    empty; "we could not look" and "there was nothing there" are different
+    answers and must not collapse into one.
+    """
+    entries: list[dict] = []
+    for agent_id, adir in env.worker_artifact_dirs.items():
+        entry: dict = {"agent_id": agent_id, "dir": str(adir), "files": []}
+        try:
+            files = sorted(str(p.relative_to(adir)) for p in adir.rglob("*") if p.is_file())
+        except OSError as exc:
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+        else:
+            entry["files"] = files
+        entries.append(entry)
+    return entries
+
+
+def _emit_worker_artifact_report(entries: list[dict]) -> None:
+    if not entries:
+        return
+    hint("\n[artifacts] files written by each worker:")
+    for e in entries:
+        if "error" in e:
+            hint(f"  {e['agent_id']}: UNREADABLE ({e['error']}) — {e['dir']}")
+        elif not e["files"]:
+            hint(f"  {e['agent_id']}: produced nothing — {e['dir']}")
+        else:
+            hint(f"  {e['agent_id']}: {len(e['files'])} file(s) in {e['dir']}")
+            for name in e["files"]:
+                hint(f"      {name}")
+
+
 def finalize_orchestration(
     env: OrchestrationEnv,
     *,
@@ -1143,14 +1206,26 @@ def finalize_orchestration(
                 exc_info=True,
             )
 
+    # Where each worker actually wrote. Recorded in the run manifest as well as
+    # printed, so a stray write is visible at the end of the run rather than
+    # days later, and is machine-readable after the terminal output is gone.
+    artifact_entries = collect_worker_artifacts(env)
+
     finalize_extras = dict(extras or {})
     if injection_activity:
         finalize_extras["khive_injection"] = injection_stats
+    if artifact_entries:
+        finalize_extras["worker_artifacts"] = artifact_entries
     if finalize_extras:
         env._finalize_extras = finalize_extras
 
     orc_branch_id = str(env.orc_branch.id)
     save_last_branch_pointer(env.run.run_id, orc_branch_id)
+
+    # Not gated on `emit_hints`: a quieter resume-pointer block is a display
+    # preference, whereas suppressing the artifact report would leave a run
+    # with no record of where its output went.
+    _emit_worker_artifact_report(artifact_entries)
 
     if emit_hints:
         hint(f'\n[orchestrator] li agent -r {orc_branch_id} "..."')

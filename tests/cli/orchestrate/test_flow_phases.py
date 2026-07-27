@@ -67,6 +67,7 @@ def _make_env(tmp_path, *, bare=True, total_budget=None, team_data=None, live_pe
         register_name=register_name,
         _live_persist=live_persist,
         _finalize_extras=None,
+        worker_artifact_dirs={},
     )
 
 

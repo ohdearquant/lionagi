@@ -34,6 +34,7 @@ from ._common import (
     _format_result_json,
     _format_result_text,
     _post_results_to_team,
+    retarget_artifact_section,
 )
 from ._notify import register_flow_notify_scope, unregister_flow_notify_scope
 from ._orchestration import (
@@ -96,6 +97,29 @@ def _leg_artifact_entries(node_id: str, role_defaults: dict | None) -> list[dict
             }
         )
     return entries
+
+
+def _retarget_spawn_prompt(branch, artifact_dir) -> None:
+    """Rewrite a spawned clone's artifact directive to name its own directory.
+
+    Best-effort: a prompt that cannot be rewritten is warned about rather than
+    raised, since a stale directive is a worse outcome for the spawned node
+    alone, while an exception here would abort the whole run.
+    """
+    msgs = getattr(branch, "msgs", None)
+    if msgs is None:
+        _warn(f"spawned worker prompt not retargeted to {artifact_dir}: branch has no messages")
+        return
+    sys_msg = msgs.system
+    if sys_msg is None:
+        return
+    current = sys_msg.content.system_message or ""
+    if not isinstance(current, str):
+        _warn(f"spawned worker prompt not retargeted to {artifact_dir}: prompt is not text")
+        return
+    updated = retarget_artifact_section(current, artifact_dir)
+    if updated != current:
+        msgs.set_system(msgs.create_system(system=updated))
 
 
 def _artifact_directive(run, node_id: str, leg_expected: list[dict]) -> str:
@@ -1187,6 +1211,11 @@ async def _execute_dag(
         artifact_dir.mkdir(parents=True, exist_ok=True)
         kwargs = chat_model.endpoint.config.kwargs
         kwargs["repo"] = artifact_dir
+        env.worker_artifact_dirs[spawn_id] = artifact_dir
+        # The clone inherits the emitter's prompt, which names the emitter's
+        # directory. Retarget it, or the spawned worker is pointed at a
+        # directory that is no longer its own.
+        _retarget_spawn_prompt(branch, artifact_dir)
         project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
         add_dir = kwargs.setdefault("add_dir", [])
         if project_root not in add_dir:
