@@ -223,42 +223,30 @@ async def test_async_with_block_excludes_sync_thread():
     assert got == [item]
 
 
-class _ContentionSignallingLock:
-    """The pile's sync lock, announcing when *watched* blocks on it.
+def _sync_lock_is_held_against_other_threads(pile: Pile) -> bool:
+    """Whether *pile*'s sync lock is currently held against a foreign thread.
 
-    Signalling from inside the acquisition is the whole point. A signal sent by
-    the includer just *before* it calls `include()` proves only that a line ran;
-    the thread can then be descheduled, and the snapshot proceeds having never
-    been contended. Here the announcement happens after the lock's holder has
-    been established and before the waiting thread can get past it, so a
-    snapshot that observes the signal knows a synchronous caller is committed to
-    the lock it holds.
+    A non-blocking acquire from a thread that does not own the lock answers
+    this outright, with no scheduling window to lose: it fails exactly when
+    some other thread holds the lock. That is what makes this a decidable
+    question rather than a race.
+
+    It has to run on a foreign thread. The lock is reentrant, so the same
+    thread that holds it would succeed and report the opposite of the truth.
     """
+    acquired: list[bool] = []
 
-    def __init__(self, real, watched: threading.Thread, contending: threading.Event):
-        self._real = real
-        self._watched = watched
-        self._contending = contending
+    def attempt():
+        got = pile._lock.acquire(blocking=False)
+        if got:
+            pile._lock.release()
+        acquired.append(got)
 
-    def _announce(self) -> None:
-        if threading.current_thread() is self._watched:
-            self._contending.set()
-
-    def acquire(self, *args, **kwargs):
-        self._announce()
-        return self._real.acquire(*args, **kwargs)
-
-    def release(self):
-        return self._real.release()
-
-    def __enter__(self):
-        self._announce()
-        self._real.acquire()
-        return self
-
-    def __exit__(self, *exc_info):
-        self._real.release()
-        return False
+    t = threading.Thread(target=attempt)
+    t.start()
+    t.join(5)
+    assert acquired, "lock probe thread did not finish"
+    return not acquired[0]
 
 
 async def test_adump_snapshot_excludes_sync_thread_mutation(tmp_path):
@@ -268,14 +256,31 @@ async def test_adump_snapshot_excludes_sync_thread_mutation(tmp_path):
     # The slow call has to be one adump actually makes under the lock for this
     # obj_key. The json path builds its records with _ordered_records() and
     # never touches to_df, which only the parquet path calls.
+    #
+    # Nothing here waits on a clock, and nothing depends on which thread the
+    # scheduler picks. Earlier versions of this test tried to catch a racing
+    # include in the act, which leaves a window where the include has not yet
+    # reached the lock and the snapshot passes having excluded nothing. The
+    # decidable question is whether the snapshot HOLDS the lock while it reads,
+    # since include() acquires that same lock: if it is held, no synchronous
+    # caller can be inside include(), and the race does not need to be run.
     pile = Pile()
     pile.include([_Item() for _ in range(3)])
 
     in_snapshot = threading.Event()
-    contending = threading.Event()
     real_ordered_records = pile._ordered_records
     snapshot_sizes: list[int] = []
+    lock_held_during_snapshot: list[bool] = []
     included: list = []
+
+    def slow_ordered_records(*a, **kw):
+        lock_held_during_snapshot.append(_sync_lock_is_held_against_other_threads(pile))
+        in_snapshot.set()
+        records = real_ordered_records(*a, **kw)
+        snapshot_sizes.append(len(records))
+        return records
+
+    object.__setattr__(pile, "_ordered_records", slow_ordered_records)
 
     def includer():
         assert in_snapshot.wait(10), "adump never entered its snapshot region"
@@ -283,21 +288,6 @@ async def test_adump_snapshot_excludes_sync_thread_mutation(tmp_path):
         included.append(True)
 
     t = threading.Thread(target=includer)
-    object.__setattr__(pile, "_lock", _ContentionSignallingLock(pile._lock, t, contending))
-
-    def slow_ordered_records(*a, **kw):
-        in_snapshot.set()
-        # Wait for the includer to reach the lock rather than budgeting an
-        # interval for it to get there. There is no sleep here on purpose: a
-        # wall-clock budget is what lets a loaded machine turn this into a pass
-        # that exercised nothing.
-        assert contending.wait(10), "includer never contended for the pile lock"
-        records = real_ordered_records(*a, **kw)
-        snapshot_sizes.append(len(records))
-        return records
-
-    object.__setattr__(pile, "_ordered_records", slow_ordered_records)
-
     t.start()
     try:
         # Bounded, so a regression that wedges the locking path fails this test
@@ -306,9 +296,12 @@ async def test_adump_snapshot_excludes_sync_thread_mutation(tmp_path):
     finally:
         t.join(5)
 
-    # The exclusion itself, asserted on content rather than on a clock: the
-    # include was already blocked on the lock when the records were read, so a
-    # snapshot that still sees three records is one no mutation interleaved with.
+    # The exclusion, established rather than raced for.
+    assert lock_held_during_snapshot == [True], (
+        "adump must hold the pile's sync lock while it reads its snapshot"
+    )
+    # And the consequence: a concurrent include cannot be inside the collection
+    # while that snapshot is taken.
     assert snapshot_sizes == [3]
     assert included, "sync include must eventually complete after adump releases"
     assert len(pile) == 4
