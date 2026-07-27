@@ -506,6 +506,14 @@ def _resolve_prompt(args: dict[str, Any]) -> str | None:
     return text
 
 
+# The kinds whose command treats naming neither a model nor an agent as a
+# request to orchestrate, and answers it with the default orchestrator profile
+# instead of refusing. Named by kind rather than inferred from the absence of
+# the others, so a spawning command added later is refused as before until it
+# is known to carry the same default.
+_ORCHESTRATING_KINDS = frozenset({"flow", "fanout", "play"})
+
+
 def _has_model_source(kind: str, args: dict[str, Any], prompt: str | None) -> bool:
     """Whether this submission gives the run any way to obtain a model.
 
@@ -517,21 +525,28 @@ def _has_model_source(kind: str, args: dict[str, Any], prompt: str | None) -> bo
     Answered conservatively: true whenever any source of a model is present,
     false only when none is. A profile, a spec file and a playbook each name one
     in content this does not read, so any of them present makes the question the
-    command's to answer, not this one's.
+    command's to answer, not this one's. The orchestrating commands' implicit
+    default is the same kind of claim and gets the same treatment: naming
+    neither a model nor an agent is a request to orchestrate, so those commands
+    resolve the default orchestrator profile themselves, and that profile is a
+    source this does not read either.
 
-    Where the model would sit in the positional bucket differs by command
-    because the prompt is delivered differently: an agent reads its prompt from
-    a file, so its bucket holds the model alone, while flow and fanout take the
-    prompt as the last positional, so a model is present only when a second
-    token accompanies it.
+    Where the model would sit in the positional bucket does not differ by
+    command, though the reason it lands there does. Every one of these commands
+    reads its positionals as ``[MODEL] PROMPT``, so a lone positional is the
+    prompt and a model is present only when a second value accompanies it.
+    Flow and fanout receive the prompt as that second positional; an agent
+    receives it through ``--prompt-file`` and so leaves the bucket one shorter,
+    which is why the prompt is counted alongside the positionals rather than
+    only within them.
     """
     if args.get("agent") or args.get("resume") or args.get("continue_last"):
         return True
-    query = args.get("query") or []
-    if kind == "agent":
-        return bool(query)
+    if kind in _ORCHESTRATING_KINDS:
+        return True
     if args.get("file") or args.get("playbook"):
         return True
+    query = args.get("query") or []
     bucket = [*query, *([prompt] if prompt is not None else [])]
     return len(bucket) >= 2
 
@@ -548,7 +563,11 @@ _FLOW_MODEL_SOURCES = (
 # from argument validation, so the sources are stated per command rather than
 # once for all of them. A play runs the flow command and takes its arguments.
 _MODEL_SOURCES = {
-    "agent": ("pass a model as the first positional in 'query', or name a profile with 'agent'"),
+    "agent": (
+        "pass a model as the first value of 'query' with the prompt in 'prompt' or as a "
+        "second value — a lone positional is read as the prompt, not as a model — or name "
+        "a profile with 'agent'"
+    ),
     "fanout": (
         "pass a model as the first value of 'query' with the prompt after it — a lone "
         "positional is read as the prompt, not as a model — or name a profile with 'agent'"

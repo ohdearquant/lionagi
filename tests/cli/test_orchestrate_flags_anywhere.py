@@ -88,10 +88,15 @@ class TestFlowFlagsAnywhere:
         assert code == 1
         assert "prompt is required" in capsys.readouterr().err
 
-    def test_missing_model_still_errors_clearly(self, capsys):
-        code = main(["o", "flow", "--dry-run", "some prompt"])
-        assert code == 1
-        assert "model or --agent is required" in capsys.readouterr().err
+    def test_naming_neither_a_model_nor_an_agent_orchestrates(self):
+        """Naming neither is a request to orchestrate, not a missing argument:
+        the prompt reaches the flow with both slots empty, and the default
+        orchestrator profile is resolved further in."""
+        code, run_flow = _run_with_flow_mock(["o", "flow", "--dry-run", "some prompt"])
+        assert code == 0
+        assert run_flow.call_args.kwargs["model_spec"] == ""
+        assert run_flow.call_args.kwargs["agent_name"] is None
+        assert run_flow.call_args.kwargs["prompt"] == "some prompt"
 
 
 class TestFanoutFlagsAnywhere:

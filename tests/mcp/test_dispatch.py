@@ -356,7 +356,7 @@ def test_a_spawn_verb_renders_the_tokens_the_cli_parser_declares(submitted):
 
 
 def test_a_boolean_only_reaches_argv_when_it_differs_from_the_parser_default(submitted):
-    call(ops=[spawn_op("agent.submit", {"query": ["m"], "yolo": False})])
+    call(ops=[spawn_op("agent.submit", {"query": ["m"], "prompt": "do it", "yolo": False})])
     assert "--yolo" not in submitted["flags"]
 
 
@@ -594,8 +594,7 @@ def test_the_fingerprint_is_not_a_claim_that_anyone_read_the_schema(submitted):
     ("op", "args"),
     [
         ("agent.submit", {"prompt": "do it"}),
-        ("flow.submit", {"prompt": "do it"}),
-        ("fanout.submit", {"prompt": "do it"}),
+        ("agent.submit", {"query": ["do it"]}),
     ],
 )
 def test_a_submission_with_no_model_is_refused_instead_of_handed_a_handle(submitted, op, args):
@@ -650,6 +649,17 @@ def _refusal(op: str) -> str:
     return call(ops=[spawn_op(op, {"prompt": "do it"})])["ops"][0]["error"]["message"]
 
 
+def _sources(kind: str) -> str:
+    """The remediation a refusal of this kind would quote.
+
+    Read from the table rather than from a refusal for the orchestrating
+    commands, which answer a submission naming nothing with the default
+    orchestrator profile and so cannot reach this refusal at all. What the text
+    says is still worth holding: it is what a caller of any future refusal reads.
+    """
+    return dispatch._MODEL_SOURCES[kind]
+
+
 def test_the_remediation_names_only_sources_the_verb_it_was_sent_to_accepts(submitted):
     """A fix a caller cannot follow costs them the round-trip it was meant to save.
 
@@ -659,7 +669,7 @@ def test_the_remediation_names_only_sources_the_verb_it_was_sent_to_accepts(subm
     Both halves are asserted together: what each message names, and what the
     receiving schema actually admits.
     """
-    fanout, flow = _refusal("fanout.submit"), _refusal("flow.submit")
+    fanout, flow = _sources("fanout"), _sources("flow")
     assert "'file'" not in fanout and "'playbook'" not in fanout
     assert "'file'" in flow and "'playbook'" in flow
 
@@ -674,16 +684,20 @@ def test_the_remediation_names_only_sources_the_verb_it_was_sent_to_accepts(subm
 def test_the_remediation_says_where_in_the_positionals_the_model_goes(submitted):
     """Where the model sits differs by command, so each message says its own answer.
 
-    An agent's prompt travels separately, leaving its positional bucket for the
-    model alone. Flow and fanout read the last positional as the prompt, so a
-    caller who passes the model on its own has passed a prompt — the message has
-    to say that a second value follows, or it describes a call still missing a model.
+    Every one of these commands reads a lone positional as the prompt, so a
+    caller who passes the model on its own has passed a prompt — each message
+    has to say where the prompt goes instead, or it describes a call still
+    missing a model. The agent's prompt travels separately, so its message names
+    the parameter that carries it as well as the second positional.
     """
-    for op in ("fanout.submit", "flow.submit"):
-        message = _refusal(op)
+    for kind in ("fanout", "flow"):
+        message = _sources(kind)
         assert "with the prompt after it" in message, message
         assert "read as the prompt" in message, message
-    assert "first positional in 'query'" in _refusal("agent.submit")
+    agent = _refusal("agent.submit")
+    assert "first value of 'query'" in agent, agent
+    assert "the prompt in 'prompt' or as a second value" in agent, agent
+    assert "read as the prompt" in agent, agent
 
 
 def test_every_spawning_command_has_its_own_model_sources(submitted):
