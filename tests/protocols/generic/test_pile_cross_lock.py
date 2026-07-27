@@ -9,8 +9,6 @@ import asyncio
 import threading
 import time
 
-import pytest
-
 from lionagi.protocols.generic.element import Element
 from lionagi.protocols.generic.pile import Pile
 
@@ -225,35 +223,86 @@ async def test_async_with_block_excludes_sync_thread():
     assert got == [item]
 
 
+def _sync_lock_is_held_against_other_threads(pile: Pile) -> bool:
+    """Whether *pile*'s sync lock is currently held against a foreign thread.
+
+    A non-blocking acquire from a thread that does not own the lock answers
+    this outright, with no scheduling window to lose: it fails exactly when
+    some other thread holds the lock. That is what makes this a decidable
+    question rather than a race.
+
+    It has to run on a foreign thread. The lock is reentrant, so the same
+    thread that holds it would succeed and report the opposite of the truth.
+    """
+    acquired: list[bool] = []
+
+    def attempt():
+        got = pile._lock.acquire(blocking=False)
+        if got:
+            pile._lock.release()
+        acquired.append(got)
+
+    t = threading.Thread(target=attempt)
+    t.start()
+    t.join(5)
+    assert acquired, "lock probe thread did not finish"
+    return not acquired[0]
+
+
 async def test_adump_snapshot_excludes_sync_thread_mutation(tmp_path):
     # While adump holds its snapshot region, a sync-thread include() must not
     # interleave; it lands only after the region releases.
-    pytest.importorskip("pandas", reason="adump serializes through the optional pandas adapter")
+    #
+    # The slow call has to be one adump actually makes under the lock for this
+    # obj_key. The json path builds its records with _ordered_records() and
+    # never touches to_df, which only the parquet path calls.
+    #
+    # Nothing here waits on a clock, and nothing depends on which thread the
+    # scheduler picks. Earlier versions of this test tried to catch a racing
+    # include in the act, which leaves a window where the include has not yet
+    # reached the lock and the snapshot passes having excluded nothing. The
+    # decidable question is whether the snapshot HOLDS the lock while it reads,
+    # since include() acquires that same lock: if it is held, no synchronous
+    # caller can be inside include(), and the race does not need to be run.
     pile = Pile()
     pile.include([_Item() for _ in range(3)])
 
     in_snapshot = threading.Event()
-    real_to_df = pile.to_df
-
-    def slow_to_df(*a, **kw):
-        in_snapshot.set()
-        time.sleep(0.3)
-        return real_to_df(*a, **kw)
-
-    object.__setattr__(pile, "to_df", slow_to_df)
-
+    real_ordered_records = pile._ordered_records
+    snapshot_sizes: list[int] = []
+    lock_held_during_snapshot: list[bool] = []
     included: list = []
 
+    def slow_ordered_records(*a, **kw):
+        lock_held_during_snapshot.append(_sync_lock_is_held_against_other_threads(pile))
+        in_snapshot.set()
+        records = real_ordered_records(*a, **kw)
+        snapshot_sizes.append(len(records))
+        return records
+
+    object.__setattr__(pile, "_ordered_records", slow_ordered_records)
+
     def includer():
-        in_snapshot.wait(5)
+        assert in_snapshot.wait(10), "adump never entered its snapshot region"
         pile.include(_Item())
         included.append(True)
 
     t = threading.Thread(target=includer)
     t.start()
-    await pile.adump(tmp_path / "dump.json", obj_key="json")
-    t.join(5)
+    try:
+        # Bounded, so a regression that wedges the locking path fails this test
+        # instead of hanging the worker that runs it.
+        await asyncio.wait_for(pile.adump(tmp_path / "dump.json", obj_key="json"), 30)
+    finally:
+        t.join(5)
 
+    # The exclusion, established rather than raced for.
+    assert lock_held_during_snapshot == [True], (
+        "adump must hold the pile's sync lock while it reads its snapshot"
+    )
+    # And the consequence: a concurrent include cannot be inside the collection
+    # while that snapshot is taken.
+    assert snapshot_sizes == [3]
     assert included, "sync include must eventually complete after adump releases"
     assert len(pile) == 4
 
