@@ -1108,10 +1108,10 @@ async def wait(
     """Observe *run_ids* until they are all terminal or the window closes.
 
     A bounded observation, not a subscription. It returns one entry per requested
-    id, in the order they were requested, plus ``all_terminal``, ``timed_out`` and
-    the ids still ``pending`` — never a bare boolean, because mixed outcomes are
-    the normal case and collapsing them forces the follow-up poll this call exists
-    to replace.
+    id, in the order they were requested, plus ``all_terminal``, ``timed_out``,
+    the ids still ``pending`` and the ids ``stopped_without_end`` — never a bare
+    boolean, because mixed outcomes are the normal case and collapsing them forces
+    the follow-up poll this call exists to replace.
 
     ``max_wait`` is clamped to ``[0, WAIT_MAX_SECONDS]`` and ``poll_interval`` to
     ``[WAIT_MIN_POLL_SECONDS, WAIT_MAX_POLL_SECONDS]``; the effective values are
@@ -1124,6 +1124,29 @@ async def wait(
     and calling again is safe. Unknown or malformed ids are per-id errors inside
     the result and never stop the other ids being observed; they are not listed
     as pending, because waiting longer cannot resolve them.
+
+    A run whose process is gone with no end recorded meets that same criterion:
+    it has stopped, and both writers of an end are past it, so the window is not
+    held open for it either. Such ids are named in ``stopped_without_end`` — not
+    in ``pending``, which is what is still worth waiting for, and not as a per-id
+    ``error``, because observing them succeeded. Nothing about the record itself
+    changes: the entry stays non-terminal with a null outcome, and a run that
+    does get an end written afterwards is classified terminal by the next
+    observation as it always was. ``all_terminal`` therefore stays false while any
+    id is here, because a run that stopped without recording an end is not a
+    completed one.
+
+    Because such an id resolves nothing by waiting, a caller looping until
+    ``all_terminal`` would otherwise re-ask as fast as it can. So a call that
+    would return without having waited at all, while at least one id is
+    ``stopped_without_end``, first sleeps one poll interval — bounded by whatever
+    is left of the window — and observes again. This is a floor on the call, not
+    a charge added to it: a call that already waited on a running id has met it,
+    and ``max_wait=0`` is untaxed by construction, having no window to spend. The
+    extra observation is not wasted either, since it is exactly the interval in
+    which a slow end-writer finishes. Pacing belongs here because the boundary
+    can enforce it once for every client, while a documented duty to back off is
+    satisfied only by the clients that read it.
 
     Observing does not touch the run. This function only reads: a wait that
     expires, or whose caller cancels or disconnects, leaves the durable record
@@ -1140,22 +1163,34 @@ async def wait(
 
     entries: list[dict[str, Any]] = []
     pending: list[str] = []
+    stopped: list[str] = []
+    waited = False
     while True:
         entries = [_wait_entry(rid) for rid in ordered]
-        pending = [e["run_id"] for e in entries if e["error"] is None and not e["terminal"]]
-        if not pending:
-            break
+        observed = [e for e in entries if e["error"] is None]
+        stopped = [e["run_id"] for e in observed if e["possibly_orphaned"]]
+        pending = [
+            e["run_id"] for e in observed if not e["terminal"] and not e["possibly_orphaned"]
+        ]
         remaining = deadline - anyio.current_time()
         if remaining <= 0:
             break
+        # Nothing left worth waiting for. Return now unless the only unresolved
+        # ids stopped without an end and this call has not waited at all — that
+        # is the shape a loop-until-all_terminal caller repeats as fast as it can
+        # ask, so the floor is spent here rather than left to every client.
+        if not pending and (waited or not stopped):
+            break
+        waited = True
         await anyio.sleep(min(eff_poll, remaining))
 
     errored = any(e["error"] is not None for e in entries)
     return {
         "runs": entries,
-        "all_terminal": not pending and not errored,
+        "all_terminal": not pending and not errored and not stopped,
         "timed_out": bool(pending),
         "pending": pending,
+        "stopped_without_end": stopped,
         "max_wait": eff_max,
         "poll_interval": eff_poll,
         "requested_max_wait": max_wait,

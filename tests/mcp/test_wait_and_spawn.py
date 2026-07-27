@@ -342,6 +342,199 @@ async def test_wait_stops_as_soon_as_every_id_is_terminal(sandbox, monkeypatch):
     assert polls["n"] == 2
 
 
+async def test_a_stopped_run_costs_one_poll_interval_and_no_more(sandbox, monkeypatch):
+    """A run whose process is gone cannot be resolved by waiting the window out.
+
+    Both writers of an end are past it, so the window is not held open for it —
+    but returning instantly would let a caller looping until ``all_terminal``
+    re-ask as fast as it can, so the boundary spends one poll interval first.
+    The assertion is on the sleeps actually entered, not on how long the call
+    felt: exactly one, of one interval. Against the previous behaviour the same
+    ids held the window for its full 600 seconds.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    rid = jobs.new_run_id()
+    _record(rid, pid=999_999)
+
+    import anyio
+
+    slept: list[float] = []
+
+    async def no_sleep(seconds):
+        slept.append(seconds)
+        # The sleep is a no-op, so a version that keeps this id pending would
+        # spin here for the whole 600s window. Fail on the fourth interval
+        # instead, naming what it was still waiting for.
+        if len(slept) > 3:
+            raise AssertionError(f"still polling after {len(slept)} intervals on a stopped run")
+
+    monkeypatch.setattr(anyio, "sleep", no_sleep)
+    res = await jobs.wait([rid], max_wait=600, poll_interval=5)
+
+    assert slept == [5]
+    assert res["pending"] == []
+    assert res["stopped_without_end"] == [rid]
+    assert res["timed_out"] is False
+    # Stopped is not finished: nothing recorded how this run came out.
+    assert res["all_terminal"] is False
+    assert res["runs"][0]["terminal"] is False
+    assert res["runs"][0]["outcome"] is None
+    assert res["runs"][0]["possibly_orphaned"] is True
+    assert res["runs"][0]["error"] is None
+
+
+async def test_wait_still_waits_for_a_running_id_beside_a_stopped_one(sandbox, monkeypatch):
+    """A stopped id is dropped from the wait; the ids that can still finish keep it.
+
+    The poll count also pins the floor as a minimum rather than a surcharge: this
+    call waited on a running id, so it has already met the floor and pays nothing
+    extra for the stopped one sitting beside it.
+    """
+    alive = {"value": True}
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: pid == 4242 and alive["value"])
+    gone = jobs.new_run_id()
+    _record(gone, pid=999_999)
+    busy = jobs.new_run_id()
+    _record(busy, pid=4242)
+
+    polls = {"n": 0}
+    real_status = jobs.status
+
+    def counting_status(run_id):
+        if run_id == busy:
+            polls["n"] += 1
+            if polls["n"] == 2:  # the running run ends between two observations
+                alive["value"] = False
+                jobs.mark_terminal(run_id, "completed")
+        return real_status(run_id)
+
+    monkeypatch.setattr(jobs, "status", counting_status)
+    res = await jobs.wait([gone, busy], max_wait=30, poll_interval=0.01)
+
+    assert polls["n"] == 2  # the wait did keep observing the running id
+    assert res["pending"] == []
+    assert res["stopped_without_end"] == [gone]
+    assert res["timed_out"] is False
+    assert res["all_terminal"] is False  # one id never recorded an end
+    assert res["runs"][1]["terminal"] is True
+    assert res["runs"][1]["outcome"] == "succeeded"
+
+
+async def test_a_stopped_run_that_later_records_an_end_is_terminal(sandbox, monkeypatch):
+    """Dropping a stopped id from the wait says nothing about the record.
+
+    An end written afterwards by either writer classifies exactly as it always
+    did, and the id is no longer reported as stopped without one.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    rid = jobs.new_run_id()
+    _record(rid, pid=999_999)
+
+    stopped = await jobs.wait([rid], max_wait=0, poll_interval=1)
+    assert stopped["stopped_without_end"] == [rid]
+
+    jobs.mark_terminal(rid, "completed")
+    res = await jobs.wait([rid], max_wait=0, poll_interval=1)
+
+    assert res["stopped_without_end"] == []
+    assert res["pending"] == []
+    assert res["all_terminal"] is True
+    assert res["runs"][0]["terminal"] is True
+    assert res["runs"][0]["outcome"] == "succeeded"
+    assert res["runs"][0]["possibly_orphaned"] is False
+
+
+async def test_wait_snapshot_of_a_stopped_run_is_still_a_snapshot(sandbox, monkeypatch):
+    """max_wait=0 observes once and returns, whatever the ids turn out to be.
+
+    This is also where the floor stops: a snapshot request has no window to spend,
+    so the id that would otherwise buy one poll interval buys nothing here. A
+    caller that asked not to wait is not made to.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    rid = jobs.new_run_id()
+    _record(rid, pid=999_999)
+
+    import anyio
+
+    slept: list[float] = []
+
+    async def no_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(anyio, "sleep", no_sleep)
+    res = await jobs.wait([rid], max_wait=0, poll_interval=5)
+
+    assert slept == []
+    assert res["max_wait"] == 0.0
+    assert res["stopped_without_end"] == [rid]
+
+
+async def test_the_floor_never_outruns_the_window(sandbox, monkeypatch):
+    """The floor is bounded by what is left of the window, not by the interval.
+
+    A caller who asked for half a second does not get five because one id stopped
+    without an end. Without the bound the floor could overrun a window the caller
+    chose, which would make the pacing the producer's decision rather than a
+    minimum inside the caller's own budget.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    rid = jobs.new_run_id()
+    _record(rid, pid=999_999)
+
+    import anyio
+
+    slept: list[float] = []
+
+    async def no_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(anyio, "sleep", no_sleep)
+    res = await jobs.wait([rid], max_wait=0.5, poll_interval=5)
+
+    assert len(slept) == 1
+    assert 0 < slept[0] <= 0.5
+    assert res["stopped_without_end"] == [rid]
+
+
+async def test_every_unresolved_id_is_named_somewhere_in_the_result(sandbox, monkeypatch):
+    """No observed id may be left non-terminal and unnamed.
+
+    A caller is required to hold a policy for every id a wait does not resolve,
+    and that duty is only implementable if every such id arrives somewhere it
+    can be read. This pins the invariant rather than today's categories: a
+    future non-terminal state added to the classifier without being added to a
+    list fails here. A written obligation cannot catch that on its own — the
+    text sits unchanged while the shape it describes stops occurring, which is
+    exactly how the obligation this replaces stopped covering a stopped run.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: pid == 4242)
+    running = jobs.new_run_id()
+    _record(running, pid=4242)
+    stopped = jobs.new_run_id()
+    _record(stopped, pid=999_999)
+    done = jobs.new_run_id()
+    _record(done, pid=999_999)
+    jobs.mark_terminal(done, "completed")
+    never_recorded = jobs.new_run_id()
+
+    res = await jobs.wait([running, stopped, done, never_recorded, ""], max_wait=0, poll_interval=1)
+
+    named = set(res["pending"]) | set(res["stopped_without_end"])
+    assert not (set(res["pending"]) & set(res["stopped_without_end"]))
+    for entry in res["runs"]:
+        if entry["terminal"]:
+            assert entry["run_id"] not in named
+        elif entry["error"] is None:
+            assert entry["run_id"] in named, (
+                f"{entry['run_id']!r} is non-terminal, was observed without error, and is "
+                "named in neither pending nor stopped_without_end -- nothing tells a "
+                "caller it has a decision to make about this id"
+            )
+    assert running in res["pending"]
+    assert stopped in res["stopped_without_end"]
+
+
 # --- the argv the child is actually spawned with --------------------------------
 #
 # Everything above this point either mocks `jobs.submit` or reads records back, so
