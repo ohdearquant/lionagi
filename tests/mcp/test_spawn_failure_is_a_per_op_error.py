@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -81,15 +82,19 @@ class _FailingPopen:
 
     def __init__(self, exc: Exception) -> None:
         self.exc = exc
+        self.calls: list[dict[str, Any]] = []
 
     def __call__(self, *a: Any, **kw: Any) -> Any:
+        self.calls.append(kw)
         raise self.exc
 
 
 @pytest.fixture
 def spawn_refused(monkeypatch, tmp_path):
+    popen = _FailingPopen(OSError(13, "Permission denied"))
     monkeypatch.setattr(jobs.config, "JOBS_DIR", tmp_path, raising=False)
-    monkeypatch.setattr(jobs.subprocess, "Popen", _FailingPopen(OSError(13, "Permission denied")))
+    monkeypatch.setattr(jobs.subprocess, "Popen", popen)
+    return popen
 
 
 def test_a_spawn_failure_raises_spawn_error_carrying_the_run(spawn_refused):
@@ -149,6 +154,43 @@ def test_a_value_error_spawn_failure_is_handled_the_same_way(monkeypatch, tmp_pa
 
     assert result["ops"][0]["ok"] is False
     assert result["ops"][0]["error"]["detail"]["run_id"]
+
+
+def test_a_working_directory_that_is_not_there_is_the_callers_to_fix(monkeypatch, tmp_path):
+    """`unavailable` is the only kind that tells a caller to come back later, and
+    a path that was never there will not be there later either. It reached that
+    kind because the spawn was the first thing to look at the directory."""
+    monkeypatch.setattr(jobs.config, "JOBS_DIR", tmp_path, raising=False)
+
+    result = _batch(_submit_op(query=["claude", "hi"], cwd=str(tmp_path / "not-a-directory")))
+
+    error = result["ops"][0]["error"]
+    assert error["kind"] == "invalid_input"
+    assert "not a directory" in error["message"]
+
+
+def test_no_run_is_recorded_for_a_directory_that_is_not_there(monkeypatch, tmp_path):
+    """The refusal happens before anything is written. A run record for a run
+    that was never going to start is a row every later reader has to explain."""
+    monkeypatch.setattr(jobs.config, "JOBS_DIR", tmp_path, raising=False)
+
+    result = _batch(_submit_op(query=["claude", "hi"], cwd=str(tmp_path / "not-a-directory")))
+
+    assert "run_id" not in (result["ops"][0]["error"].get("detail") or {})
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_tilde_means_the_same_thing_on_every_verb_that_takes_a_cwd(spawn_refused):
+    """One server, one argument name, one meaning. A roster read resolved under
+    `~/x` while a submit handed the tilde to a spawn that cannot chdir to it, so
+    the same string was a working directory on one verb and a refusal on the
+    other."""
+    result = _batch(_submit_op(query=["claude", "hi"], cwd="~"))
+
+    # Past the check, into the spawn — which this fixture refuses for its own
+    # reasons. What matters is which directory the platform was asked for.
+    assert result["ops"][0]["error"]["kind"] == "unavailable"
+    assert spawn_refused.calls[-1]["cwd"] == str(Path("~").expanduser())
 
 
 def test_the_record_says_failed_rather_than_running(spawn_refused):
