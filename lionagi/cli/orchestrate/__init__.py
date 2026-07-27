@@ -16,6 +16,7 @@ from .._logging import hint, log_error
 from .._providers import add_common_cli_args
 from .._util import EXIT_CODE_BY_STATUS
 from ._checkpoint import FlowResumeError
+from ._common import MAX_SPEC_PROMPT_CHARS
 from .fanout import FanoutPlanError, _run_fanout
 from .flow import FlowPlanError, _resume_flow, _run_flow
 
@@ -431,8 +432,10 @@ def _validate_spec_fields(spec: dict) -> str | None:
         prompt = spec["prompt"]
         if not isinstance(prompt, str):
             return f"spec field 'prompt' must be a string, got {type(prompt).__name__}"
-        if len(prompt) > 8192:
-            return "spec field 'prompt' exceeds maximum length of 8192 characters"
+        if len(prompt) > MAX_SPEC_PROMPT_CHARS:
+            return (
+                f"spec field 'prompt' exceeds maximum length of {MAX_SPEC_PROMPT_CHARS} characters"
+            )
 
     if "save" in spec:
         save = spec["save"]

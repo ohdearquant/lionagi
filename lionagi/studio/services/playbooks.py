@@ -10,6 +10,7 @@ import yaml
 from fastapi import Body, HTTPException
 
 from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
+from lionagi.cli.orchestrate._common import MAX_SPEC_PROMPT_CHARS
 from lionagi.service.providers import EFFORT_LEVELS as _VALID_EFFORT_LEVELS
 
 from ..registry import studio_route
@@ -81,8 +82,10 @@ def _check_spec_fields(spec: dict[str, Any]) -> str | None:
         prompt = spec["prompt"]
         if not isinstance(prompt, str):
             return f"spec field 'prompt' must be a string, got {type(prompt).__name__}"
-        if len(prompt) > 8192:
-            return "spec field 'prompt' exceeds maximum length of 8192 characters"
+        if len(prompt) > MAX_SPEC_PROMPT_CHARS:
+            return (
+                f"spec field 'prompt' exceeds maximum length of {MAX_SPEC_PROMPT_CHARS} characters"
+            )
 
     if "save" in spec:
         save = spec["save"]

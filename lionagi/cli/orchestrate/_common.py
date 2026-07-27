@@ -12,6 +12,21 @@ from lionagi.ln._utils import now_utc
 from .. import team as _team_module
 from ..team import _locked_team
 
+# How long a spec file's prompt may be, in characters.
+#
+# One number, read by every surface that validates a spec: the CLI, the Studio
+# playbook service, and the Studio schedule service. It used to be written out
+# three times, which meant three chances for them to disagree and no way to
+# raise it in one place.
+#
+# The bound exists for the pathological file, not for the long prompt. An
+# orchestration prompt carries the whole task — the brief, the constraints, the
+# exit criteria — and a real one had already been squeezed to fit the old 8192,
+# which is close enough to normal writing that an ordinary edit could push a
+# working spec over it and kill the run at submit. Set far enough out that no
+# honest spec reaches it, while still refusing a file that is not a prompt.
+MAX_SPEC_PROMPT_CHARS = 256 * 1024
+
 # ── Output formatting ─────────────────────────────────────────────────────
 
 
