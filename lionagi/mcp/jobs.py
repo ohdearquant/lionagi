@@ -32,6 +32,7 @@ have been without it.
 from __future__ import annotations
 
 import json
+import math
 import os
 import shlex
 import signal
@@ -117,6 +118,11 @@ KILL_PERMISSION_DENIED = "permission_denied"
 # for it. Its own code, so a reader can tell an old record from a refusal
 # decided about a record that does carry an identity.
 KILL_LEGACY_NO_IDENTITY = "legacy_record_no_process_identity"
+# The identity fields are present and of the right type but hold a value nothing
+# can be compared against — a NaN or an infinity where a start time belongs. Its
+# own code rather than the one above: that one says a record is old and expected,
+# this one says a record is damaged, and only the second is worth investigating.
+KILL_IDENTITY_UNUSABLE = "recorded_identity_unusable"
 # Identity-bearing records. Split by what a caller would do next: a mismatch or
 # a foreign group is settled and will not change on a retry, while an unreadable
 # probe or an incomplete scan is a measurement that failed and may succeed later.
@@ -1341,6 +1347,25 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
     if not isinstance(created, int | float) or not isinstance(pgid, int) or pgid <= 1:
         return _refuse_legacy_record(run_id, pid)
     spawned_at = float(created)
+    # A NaN or an infinity passes every type and range check above and then loses
+    # silently to every comparison below: a NaN start time is never within
+    # tolerance of a live one, so the leader would be reported as a recycled pid.
+    # That names the wrong fact — nothing was established about the pid at all,
+    # only that this record cannot say anything about it.
+    if not math.isfinite(spawned_at):
+        return _kill_result(
+            run_id,
+            killed=False,
+            reason=(
+                f"the start time recorded for pid {pid} is {spawned_at}, which nothing "
+                "can be compared against, so this record cannot identify its own "
+                "process and nothing was signalled; reap the group by hand after "
+                "confirming the process is this run's"
+            ),
+            reason_code=KILL_IDENTITY_UNUSABLE,
+            pid=pid,
+            pgid=pgid,
+        )
 
     if _pid_alive(pid):
         state, live_created = _process_create_time(pid)

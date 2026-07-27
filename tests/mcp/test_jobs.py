@@ -781,6 +781,28 @@ def test_kill_refuses_a_record_that_cannot_confirm_an_identity(
     assert jobs._read_job(rid)["status"] == "running", "a refusal changes no recorded status"
 
 
+@pytest.mark.parametrize("created", [float("nan"), float("inf"), float("-inf")])
+def test_kill_refuses_a_record_whose_start_time_cannot_be_compared(
+    sandbox, monkeypatch, no_stray_signal, created
+):
+    """A start time that is not a real number says nothing about the pid.
+
+    It is a float, so it passes the type check, and then loses every comparison
+    below it: a NaN is never within tolerance of a live start time, so the leader
+    would be reported as a reused pid. That is the wrong fact — nothing has been
+    established about the pid at all, only that the record cannot describe it. The
+    refusal is the same, but the code and the reason must not claim otherwise.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: pytest.fail("pid must not be probed"))
+
+    out = jobs.kill(_identity_record(created=created))
+
+    assert no_stray_signal == []
+    assert out["killed"] is False
+    assert out["reason_code"] == jobs.KILL_IDENTITY_UNUSABLE
+    assert "reused" not in out["reason"], "the pid was never established to be anything"
+
+
 def _process_table_enumerable() -> tuple[bool, str]:
     """Whether this machine lets us list the process table at all.
 
