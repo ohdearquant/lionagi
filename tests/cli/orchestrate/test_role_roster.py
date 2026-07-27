@@ -266,6 +266,22 @@ class TestAvailableRoles:
 
         assert orch.available_roles() == ["critic", "deck_hand", "rigging-mate"]
 
+    def test_two_profile_only_spellings_both_stay_on_the_menu(self, monkeypatch):
+        """Profile resolution gives an exact spelling priority over the other one,
+        so two files differing only in separator are two selectable profiles."""
+        monkeypatch.setattr(orch, "list_agents", lambda: ["deck-hand", "deck_hand"])
+        monkeypatch.setattr("lionagi.casts.pattern.list_roles", lambda: ["critic"])
+
+        assert orch.available_roles() == ["critic", "deck-hand", "deck_hand"]
+
+    def test_a_builtin_still_absorbs_both_profile_spellings(self, monkeypatch):
+        """The built-in case is the opposite: Role.load accepts only the canonical
+        spelling, so neither profile spelling is a second role."""
+        monkeypatch.setattr(orch, "list_agents", lambda: ["deck-hand", "deck_hand"])
+        monkeypatch.setattr("lionagi.casts.pattern.list_roles", lambda: ["deck-hand"])
+
+        assert orch.available_roles() == ["deck-hand"]
+
     def test_roster_carries_one_line_for_a_role_spelled_both_ways(self, monkeypatch, stub_profiles):
         from lionagi.cli._providers import _parse_profile
 
