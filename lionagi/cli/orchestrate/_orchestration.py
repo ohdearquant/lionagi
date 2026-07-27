@@ -112,8 +112,11 @@ def _profile_summary(profile: AgentProfile) -> str:
 
     Profiles state their purpose on a ``**Mission**:`` line; when a file has
     none, its first paragraph of prose is the next best summary.
+
+    Only the authored body is read. ``system_prompt`` also carries the shared
+    LION preamble, which every profile has and none of them is about.
     """
-    body = profile.raw_body or profile.system_prompt or ""
+    body = profile.raw_body or ""
     paragraphs = [
         " ".join(line.strip() for line in block.splitlines() if line.strip())
         for block in re.split(r"\n\s*\n", body)
@@ -129,13 +132,12 @@ def _profile_summary(profile: AgentProfile) -> str:
 def _role_blurb(role: str, default_model: str) -> str:
     """Roster line body: what the role is for, and what it will run on.
 
-    The description has to match the body that will actually run, or the
-    roster describes one thing while the worker does another. A profile that
-    defines its own system prompt replaces the built-in role body entirely, so
-    for those the profile's summary is the accurate description. A profile that
-    only sets a model or effort leaves the built-in body in place and has no
-    summary of its own to offer, so those fall through to the built-in
-    description on their own.
+    The description has to match the body that will actually run, or the roster
+    describes one thing while the worker does another. A profile with an
+    authored body replaces the built-in role body, so for those the profile's
+    own summary is the accurate description. A profile that only sets fields
+    like a model authors no body, leaves the built-in composing, and is
+    described by the built-in — the same authored-body signal decides both.
     """
     try:
         profile = load_agent_profile(role)
@@ -718,11 +720,13 @@ async def build_worker_branch(
     )
 
     # Casts-role workers route through the factory; verbatim-prompt workers set
-    # the string directly (no Role to compose from).
+    # the string directly (no Role to compose from). A profile takes the
+    # verbatim path only when it authored a body — one that just sets a model
+    # or an effort has no body to run, and leaves the role composing as usual.
     verbatim_system: str | None = None
     if system_prompt_override is not None:
         verbatim_system = system_prompt_override
-    elif not env.bare and w_profile and w_profile.system_prompt:
+    elif not env.bare and w_profile and w_profile.raw_body:
         verbatim_system = w_profile.system_prompt
     elif env.bare or not _is_casts_role(role):
         verbatim_system = bare_worker_system(grant_spawn=grant_spawn)
