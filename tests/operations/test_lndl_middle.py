@@ -233,6 +233,33 @@ class TestRunRoundChatDispatch:
         fake.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_per_call_api_model_overrides_a_cli_branch(self):
+        """A model supplied on the chat param overrides the branch default for
+        this call, so an API model must take the non-streaming path even when
+        the branch's own chat_model is CLI-backed."""
+        branch = SimpleNamespace(chat_model=SimpleNamespace(is_cli=True))
+        fake = AsyncMock(return_value="api text")
+        with patch("lionagi.operations.communicate.communicate.communicate", new=fake):
+            result = await _run_round_chat(
+                branch, "hi", ChatParam(imodel=SimpleNamespace(is_cli=False))
+            )
+        assert result == "api text"
+        fake.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_per_call_cli_model_overrides_an_api_branch(self):
+        """The inverse override: a CLI model on the chat param takes the
+        streaming path even though the branch's chat_model is an API model."""
+        branch = SimpleNamespace(chat_model=SimpleNamespace(is_cli=False))
+        fake = AsyncMock(return_value="cli text")
+        with patch("lionagi.operations.run.run.run_and_collect", new=fake):
+            result = await _run_round_chat(
+                branch, "hi", ChatParam(imodel=SimpleNamespace(is_cli=True))
+            )
+        assert result == "cli text"
+        fake.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_real_scripted_branch_round_trips_via_run_and_collect(self):
         """End-to-end sanity check with a real TestBranch (necessarily
         CLI-routed, see class docstring) — confirms the dispatch wiring
