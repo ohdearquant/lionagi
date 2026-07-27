@@ -583,12 +583,21 @@ def _tail(path: str | None, limit: int = 4000) -> str | None:
     return data[-limit:] if len(data) > limit else data
 
 
-def _list_artifacts(run_id: str) -> list[str]:
+def _list_artifacts(run_id: str) -> tuple[list[str], str]:
+    """The persisted artifacts of *run_id*, and whether the traversal completed.
+
+    A traversal that fails answers with the empty list and ``"unreadable"``, never
+    with the empty list alone. "This run wrote no artifacts" is a claim about the
+    run; "the artifacts could not be listed" is a claim about the read, and a
+    caller that is told the first when the second happened has been told something
+    false about the run.
+    """
     adir = config.run_dir(run_id) / "artifacts"
     try:
-        return sorted(str(p.relative_to(adir)) for p in adir.rglob("*") if p.is_file())
+        found = sorted(str(p.relative_to(adir)) for p in adir.rglob("*") if p.is_file())
     except OSError:
-        return []
+        return [], "unreadable"
+    return found, "ok"
 
 
 def _split_at_sentinel(flags: Sequence[str]) -> tuple[list[str], list[str]]:
@@ -1397,7 +1406,9 @@ def output(run_id: str, tail_chars: int = 20000) -> dict[str, Any]:
 
     ``record_state`` carries what was read, the same way ``status`` reports it, and
     ``error`` names that state rather than reporting every failed read as an
-    unknown run.
+    unknown run. ``artifacts_state`` does the same for the artifact traversal, so
+    an empty ``artifacts`` means the run wrote none rather than standing in for a
+    listing that failed.
     """
     job, record_state = _read_job_state(run_id)
     if job is None:
@@ -1408,6 +1419,7 @@ def output(run_id: str, tail_chars: int = 20000) -> dict[str, Any]:
             "error": _NO_RECORD_ERROR.get(record_state, "no such job"),
         }
     st = status(run_id)
+    artifacts, artifacts_state = _list_artifacts(run_id)
     return {
         "run_id": run_id,
         "known": True,
@@ -1417,7 +1429,8 @@ def output(run_id: str, tail_chars: int = 20000) -> dict[str, Any]:
         "outcome": st["outcome"],
         "reason_code": st["reason_code"],
         "console": _tail(job.get("log"), limit=tail_chars),
-        "artifacts": _list_artifacts(run_id),
+        "artifacts": artifacts,
+        "artifacts_state": artifacts_state,
         "run_dir": str(config.run_dir(run_id)),
     }
 
@@ -1917,11 +1930,19 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
     An entry whose record could not be used is listed with the state of that read
     in ``record_state``, the same field ``status`` reports, so a damaged record is
     visible here as a damaged record rather than as a job with no kind and an
-    unknown status.
+    unknown status. That is a per-run failure, and one damaged record must not cost
+    the caller the runs beside it.
+
+    The directory read itself is different, and is allowed to fail. A listing has
+    no field in which to say it could not be read, so answering the empty list
+    would say "there are no jobs at all" about a directory nobody could look in.
+    The caller is better served by the error. Only a directory that is not there is
+    answered as no jobs: nothing has written one yet, which is exactly the fact the
+    empty listing states.
     """
     try:
         entries = sorted(config.JOBS_DIR.iterdir(), reverse=True)
-    except OSError:
+    except FileNotFoundError:
         return []
     out: list[dict[str, Any]] = []
     for d in entries:

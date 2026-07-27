@@ -1572,6 +1572,7 @@ def test_every_surface_survives_a_run_directory_it_cannot_get_at(sandbox, monkey
     assert st["log_tail"] == "a line of log\n"
     assert st["run"] == {"run_id": rid}
     assert jobs.output(rid)["artifacts"] == ["a.txt"]
+    assert jobs.output(rid)["artifacts_state"] == "ok"
     assert [j["run_id"] for j in jobs.list_jobs()] == [rid]
 
     os.chmod(run_dir, 0o000)
@@ -1591,19 +1592,23 @@ def test_every_surface_survives_a_run_directory_it_cannot_get_at(sandbox, monkey
         got = jobs.output(rid)
         assert got["known"] is True
         assert got["console"] is None
-        assert got["artifacts"] == []
+        # The empty list is not the answer here — it is what "no artifacts" looks
+        # like, and this run wrote one. The state is what carries the difference,
+        # and without it the caller is told the run produced nothing.
+        assert got["artifacts_state"] == "unreadable"
 
         assert [j["run_id"] for j in jobs.list_jobs()] == [rid]
     finally:
         os.chmod(run_dir, 0o700)
 
 
-def test_listing_jobs_survives_a_jobs_directory_it_cannot_get_at(sandbox):
-    """Listing answers with what it can see, including nothing.
+def test_listing_a_jobs_directory_it_cannot_get_at_is_not_an_empty_listing(sandbox):
+    """An unsearchable jobs directory is not an empty one.
 
-    An unsearchable jobs directory is not an empty one, but a listing has no
-    field in which to say so, and the caller asked for jobs rather than for the
-    errno. The record surfaces are where that distinction is kept.
+    A listing has no field in which to say the read failed, so answering the empty
+    list says "there are no jobs at all" about a directory nobody could look in.
+    The read is allowed to fail instead, and the surface turns that into a per-op
+    error rather than into a wrong answer.
     """
     if os.geteuid() == 0:
         pytest.skip("root searches a directory whose mode denies it, so the case cannot be set up")
@@ -1619,9 +1624,29 @@ def test_listing_jobs_survives_a_jobs_directory_it_cannot_get_at(sandbox):
             pass
         else:
             pytest.skip("this filesystem does not enforce directory search permission")
-        assert jobs.list_jobs() == []
+
+        with pytest.raises(OSError):
+            jobs.list_jobs()
+
+        import asyncio
+
+        from lionagi.mcp import dispatch
+
+        out = asyncio.run(dispatch.request([{"op": "job.list"}]))["ops"][0]
+        assert out["ok"] is False
+        assert out["error"]["kind"] == "internal"
     finally:
         os.chmod(config.JOBS_DIR, 0o700)
+
+
+def test_listing_jobs_before_any_job_is_written_is_empty(sandbox):
+    """A jobs directory that is not there is no jobs, and says so.
+
+    Nothing creates it until the first record is written, so the fresh case has to
+    stay an ordinary empty listing rather than becoming an error about a read.
+    """
+    assert not config.JOBS_DIR.exists()
+    assert jobs.list_jobs() == []
 
 
 @pytest.mark.parametrize(
