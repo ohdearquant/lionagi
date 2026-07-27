@@ -398,6 +398,84 @@ def test_an_unavailable_lifecycle_answer_is_not_read_as_no_record(home, monkeypa
     assert st["possibly_orphaned"] is True
 
 
+def test_output_that_defeats_the_parser_is_a_read_that_learned_nothing(home, monkeypatch):
+    """The reader promises None for any reason at all, and this is the reason a
+    list of exception types would have missed.
+
+    The bytes are well under the size limit and are not malformed in a way the
+    parser reports: they exhaust the decoder's stack instead, so a guard naming
+    parse errors does not cover them. What arrives here is another program's
+    stdout, so the parse is the one surface in this function whose input is
+    genuinely unconstrained, and a caller polling a run cannot be handed an
+    exception in place of "learned nothing".
+    """
+    monkeypatch.setattr(
+        config,
+        "li_command",
+        lambda: [sys.executable, "-c", "print('[' * 10000)"],
+    )
+    run_id = jobs.new_run_id()
+    jobs._write_job(
+        {
+            "run_id": run_id,
+            "pid": 999_999,
+            "kind": "agent",
+            "label": None,
+            "status": "running",
+            "spawn_state": "started",
+            "submitted_at": "2026-07-25T00:00:00+00:00",
+            "finished_at": None,
+            "log": None,
+        }
+    )
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+
+    assert jobs._read_lifecycle(run_id) is None
+    st = jobs.status(run_id)
+    assert st["terminal"] is False
+    assert st["possibly_orphaned"] is True
+    assert jobs._read_job(run_id)["finished_at"] is None, "nothing was concluded and none cached"
+
+
+def test_a_spawn_failure_nobody_anticipated_is_also_a_read_that_learned_nothing(home, monkeypatch):
+    """The other half of the same promise, checked the same way.
+
+    Spawning is the guard whose failures are hardest to enumerate, because they
+    come from the operating system rather than from this package. The failure
+    injected here means nothing on purpose: what is being checked is that the
+    reader treats a command it could not run as a fact it did not learn, rather
+    than recognising a particular way of not running it.
+    """
+    run_id = jobs.new_run_id()
+    jobs._write_job(
+        {
+            "run_id": run_id,
+            "pid": 999_999,
+            "kind": "agent",
+            "label": None,
+            "status": "running",
+            "spawn_state": "started",
+            "submitted_at": "2026-07-25T00:00:00+00:00",
+            "finished_at": None,
+            "log": None,
+        }
+    )
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+
+    class UnanticipatedSpawnFailure(Exception):
+        pass
+
+    def refusing_run(*a, **kw):
+        raise UnanticipatedSpawnFailure("nothing in the reader has heard of this")
+
+    monkeypatch.setattr(subprocess, "run", refusing_run)
+
+    assert jobs._read_lifecycle(run_id) is None
+    st = jobs.status(run_id)
+    assert st["terminal"] is False
+    assert st["possibly_orphaned"] is True
+
+
 def test_a_healthy_running_job_is_never_asked_about(home, monkeypatch):
     """The read is only made where the record cannot already answer.
 

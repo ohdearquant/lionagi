@@ -231,23 +231,30 @@ def _read_job_state(run_id: str) -> tuple[dict[str, Any] | None, str]:
     found to be missing. Only "the file is not there" is absence; every other way
     the read can fail is a record that is present and could not be got at.
 
-    Bytes that are not valid UTF-8 are one of those ways, and they are named
-    explicitly because they do not arrive as ``OSError``: the file opens and reads,
-    and the decode is what fails.
+    "Every other way" is meant literally, so the guards are written to be total
+    rather than to list the failures anyone thought of. Bytes are damaged in ways
+    that are not guessable in advance: they fail to be text before they fail to be
+    JSON, and they exhaust the decoder's stack rather than failing to parse at all.
+    Naming those one at a time produces a list that is correct until the next shape
+    arrives, and the caller cannot use a classification that is only mostly total.
+
+    What makes the broad guards safe here is the size of what they cover, not the
+    exceptions they name. Each wraps a single expression that does one thing and
+    holds no logic of its own, so anything raised inside it came from the read or
+    the parse and is a record this function could not establish. A guard this broad
+    over a block with branching in it would be hiding bugs instead of classifying
+    damage; that is the property to preserve if this code grows.
     """
     p = config.job_dir(run_id) / "job.json"
     try:
         raw = p.read_text()
     except FileNotFoundError:
         return None, "absent"
-    except (OSError, UnicodeDecodeError):
+    except Exception:
         return None, "unreadable"
     try:
         record = json.loads(raw)
-    except (json.JSONDecodeError, RecursionError):
-        # Deeply nested input exhausts the decoder's stack rather than failing to
-        # parse, so it arrives as neither a syntax error nor anything else this
-        # reader would recognise. It is still a record that could not be read.
+    except Exception:
         return None, "unreadable"
     if not isinstance(record, dict):
         return None, "wrong_shape"
@@ -277,6 +284,15 @@ def _read_lifecycle(run_id: str) -> dict[str, Any] | None:
     a caller must treat it as "did not learn anything" and fall back to what it
     already knew, because the alternative is calling a run finished on the
     strength of a read that never happened.
+
+    "Any reason at all" is meant literally, so the two guards below are total
+    rather than lists of the failures anyone thought of. Both are safe for the
+    same reason the record reader's are: each covers a single expression that
+    spawns or parses and holds no logic of its own, so anything raised inside it
+    came from the read. The output arrives from another program, which makes the
+    parse the widest surface here — bytes that exhaust the decoder's stack fail
+    to parse without raising a parse error — and a caller cannot fall back on an
+    answer that is only mostly total.
     """
     argv = [*config.li_command(), "lifecycle", run_id, "--machine"]
     try:
@@ -286,7 +302,7 @@ def _read_lifecycle(run_id: str) -> dict[str, Any] | None:
             timeout=LIFECYCLE_TIMEOUT_SECONDS,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
+    except Exception:
         return None
 
     if len(completed.stdout) > _LIFECYCLE_OUTPUT_LIMIT:
@@ -296,7 +312,7 @@ def _read_lifecycle(run_id: str) -> dict[str, Any] | None:
         return None
     try:
         envelope = json.loads(text)
-    except json.JSONDecodeError:
+    except Exception:
         return None
     if not isinstance(envelope, dict) or not envelope.get("ok"):
         return None
@@ -311,9 +327,15 @@ def _read_lifecycle(run_id: str) -> dict[str, Any] | None:
 
 
 def _read_run_manifest(run_id: str) -> dict[str, Any] | None:
+    """The run manifest, or None when there is not one to be had.
+
+    Total for the same reason the record reader is: the caller is told only whether
+    there is a manifest to show, so every way of not getting one is the same answer,
+    and the guard covers a single expression that reads and parses and nothing else.
+    """
     try:
         return json.loads(config.run_manifest(run_id).read_text())
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    except Exception:
         return None
 
 

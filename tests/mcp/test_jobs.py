@@ -1647,6 +1647,37 @@ def test_a_damaged_record_is_reported_as_damaged_by_every_surface(sandbox, paylo
     assert listed[ok_rid] == "ok", "one damaged record must not cost the runs beside it"
 
 
+def test_a_read_failure_nobody_anticipated_is_still_an_unusable_record(sandbox, monkeypatch):
+    """The classification is total, and this is what says so.
+
+    The table above covers the damage shapes that are known. The reader's promise
+    is stronger than that list: it says every way the read can fail yields a state,
+    and a promise about shapes nobody has thought of cannot be tested by naming
+    more of them. So the failure here is deliberately one that means nothing --
+    what is being checked is that the reader classifies rather than recognises.
+    """
+    rid = jobs.new_run_id()
+    jobs._write_job({"run_id": rid, "pid": None, "kind": "agent", "status": "running"})
+    assert jobs.status(rid)["record_state"] == "ok", "control: the record reads before patching"
+
+    class UnanticipatedFailure(Exception):
+        pass
+
+    real_read_text = Path.read_text
+
+    def failing_read_text(self, *a, **kw):
+        if self.name == "job.json":
+            raise UnanticipatedFailure("nothing in the reader has heard of this")
+        return real_read_text(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", failing_read_text)
+
+    assert jobs.status(rid)["record_state"] == "unreadable"
+    assert jobs.output(rid)["record_state"] == "unreadable"
+    assert jobs.kill(rid)["reason_code"] == jobs.KILL_RECORD_UNREADABLE
+    assert [j["record_state"] for j in jobs.list_jobs()] == ["unreadable"]
+
+
 def test_a_run_manifest_of_invalid_bytes_does_not_escape_the_surface_that_reads_it(sandbox):
     """The manifest is advisory, which is an argument about its value and not a
     licence to raise. A read that returns nothing costs the caller one display
@@ -1663,6 +1694,43 @@ def test_a_run_manifest_of_invalid_bytes_does_not_escape_the_surface_that_reads_
     manifest.write_bytes(b"\xff\xfe not utf-8")
     assert jobs.status(rid)["run"] is None
     assert jobs.status(rid)["known"] is True, "the record is fine; only the manifest is not"
+
+
+def test_a_manifest_read_failure_nobody_anticipated_still_costs_only_the_manifest(
+    sandbox, monkeypatch
+):
+    """The manifest reader makes the same total promise the record reader does, so
+    it is checked the same way: with a failure that means nothing, which no list of
+    exception types could have named in advance.
+
+    The failure is aimed at the manifest alone. The record is read on the same call
+    and must survive, because the claim is not that the surface tolerates damage
+    generally -- it is that a manifest nobody can read costs the caller that one
+    field and nothing else.
+    """
+    rid = jobs.new_run_id()
+    jobs._write_job({"run_id": rid, "pid": None, "kind": "agent", "status": "running"})
+    manifest = config.run_manifest(rid)
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text('{"run_id": "readable"}')
+    assert jobs.status(rid)["run"] == {"run_id": "readable"}, "control: the manifest is read"
+
+    class UnanticipatedFailure(Exception):
+        pass
+
+    real_read_text = Path.read_text
+
+    def failing_read_text(self, *a, **kw):
+        if self.name == "run.json":
+            raise UnanticipatedFailure("nothing in the reader has heard of this")
+        return real_read_text(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", failing_read_text)
+
+    answer = jobs.status(rid)
+    assert answer["run"] is None
+    assert answer["record_state"] == "ok", "the record was reachable and still is"
+    assert answer["known"] is True
 
 
 def test_an_artifacts_directory_that_denies_its_own_read_is_not_a_run_that_wrote_nothing(
