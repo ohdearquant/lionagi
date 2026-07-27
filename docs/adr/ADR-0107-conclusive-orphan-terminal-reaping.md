@@ -1,6 +1,6 @@
 # ADR-0107: Conclusive orphan terminal reaping
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Aspirational (records the target state)
 - **Area**: cli-surface
 - **Date**: 2026-07-27
@@ -504,7 +504,10 @@ whose external effects are unknown. Rejected for this sidecar contract.
 10. Public MCP reference and CLI documentation define `lost`,
     `process_gone_without_outcome`, `terminal_source`,
     `liveness_conclusion`, and the revised `all_terminal` meaning in the same
-    change.
+    change. Wherever `lost` is publicly defined, the documentation also states
+    the consumer-facing consequence of D4's `finished_at` semantics: for a lost
+    run `finished_at` is when the end was established, not when the process
+    exited, so any duration derived from it is an upper bound.
 11. No test branches on `status == "exited"` to decide terminality.
 12. Fault injection after durable terminal publication but before delivery
     proves that reconciliation still reads a terminal lost run.
