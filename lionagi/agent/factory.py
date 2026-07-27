@@ -590,6 +590,21 @@ async def _load_mcp(
                 _attach_hooks(tool, spec, tool_name)
 
 
+_MCP_FORWARDING_PROVIDERS = frozenset({"claude_code", "codex"})
+
+
+def provider_accepts_forwarded_mcp(provider: str | None) -> bool:
+    """Whether a provider's request can carry an MCP server set resolved by the caller.
+
+    One answer for a capability with two transports: claude_code takes the set
+    as a request kwarg, codex takes it as `-c mcp_servers.<name>.<field>`
+    overrides. Both are implemented in ``_forward_mcp_to_cli_request`` below,
+    which is why the predicate lives here; callers that only report what a leg
+    will get must ask this rather than keep a second list.
+    """
+    return provider in _MCP_FORWARDING_PROVIDERS
+
+
 def _forward_mcp_to_cli_request(
     branch: Branch,
     spec: AgentSpec,
@@ -610,7 +625,7 @@ def _forward_mcp_to_cli_request(
 
     provider = getattr(branch.chat_model.endpoint.config, "provider", None)
 
-    if provider not in ("claude_code", "codex"):
+    if not provider_accepts_forwarded_mcp(provider):
         if mcp_path is not None:
             import logging
 
