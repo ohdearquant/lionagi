@@ -346,7 +346,39 @@ _ROSTER_CWD = {
     ),
 }
 
-_PROFILE_LIST_SCHEMA = _own({"cwd": _ROSTER_CWD})
+_PROFILE_LIST_SCHEMA = _own(
+    {
+        "cwd": _ROSTER_CWD,
+        "names": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Answer for these profile names only, matched exactly as the roster "
+                "spells them. A name nothing declares is simply absent from the reply, "
+                "so asking for three and reading back two says which one is missing. "
+                "Omit it for the whole roster."
+            ),
+        },
+        "fields": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Return only these keys per profile: 'source', 'shadowed', 'ambiguous', "
+                "'resolved' for the whole configuration block, or 'resolved.<key>' for "
+                "one of its fields ('resolved.model', 'resolved.effort', ...). 'name' is "
+                "always returned. An unrecognised field is an error rather than an empty "
+                "one. Omit it and every profile comes back as 'name', 'source', "
+                "'shadowed' and the whole 'resolved' block, with each placed file given "
+                "as a path and a scope and nothing else. Naming a placement field returns "
+                "more of it than that, not less: 'source' and 'shadowed' entries then also "
+                "carry 'match', which says whether the resolver found the spelling asked "
+                "for or substituted the other separator, and 'ambiguous' — the files a "
+                "name is refused over rather than ranked between — is reachable only by "
+                "asking for it here."
+            ),
+        },
+    }
+)
 
 _PROFILE_SHOW_SCHEMA = _own(
     {
