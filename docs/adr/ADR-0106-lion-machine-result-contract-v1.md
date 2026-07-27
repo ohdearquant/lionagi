@@ -99,7 +99,7 @@ wake it. A consumer restart across a successful delivery loses it the same way.
 | Distinguishing absence from failure | D7: every read-derived field carries its own availability and reason |
 | Process-level faults | D8: a valid envelope is authoritative; exit status is the transport-level answer, with a defined precedence |
 | Terminal notification | D9: a notification is a prompt to read state, never proof and never the only path |
-| Bounded observation | D10: `wait` is bounded, returns partial results, and takes ADR-0066 D6 with two marked extensions and one marked divergence |
+| Bounded observation | D10: `wait` is bounded, returns partial results, and takes ADR-0066 D6 with two marked extensions and one clause D6 leaves open decided here |
 
 Out of scope:
 
@@ -110,8 +110,9 @@ Out of scope:
   binary path.
 - **The MCP tool surface itself.** ADR-0066 decides that. This ADR constrains what
   those tools return, which is a strictly smaller question, and D10 takes ADR-0066 D6
-  as written rather than re-deciding it, marking its two additions as additions and its
-  one departure as a departure.
+  as written rather than re-deciding it, marking its two additions as additions and
+  saying plainly where D6 underdetermines a rule that an implementation must nonetheless
+  settle.
 - **Hosted / multi-tenant concerns.** No tenancy appears in this contract; a hosted
   join is built above it, not inside it.
 - **Playbook and flow semantics.** What a flow *does* is unchanged here.
@@ -541,7 +542,7 @@ is configured, sends a terminal notice.
 - Artifacts are written before the notice is sent, so a consumer woken by the notice
   finds the outputs already present.
 
-### D10 — Bounded observation, taken from ADR-0066 D6, extended in two places and departed from in one
+### D10 — Bounded observation, taken from ADR-0066 D6, extended in two places and completed in one
 
 `wait` takes ids, a maximum wait, and a poll interval; both numbers are clamped to
 documented bounds and the effective values are echoed back. `0` is a legal snapshot
@@ -584,36 +585,64 @@ effective way to prevent it being reconciled:
 - **Every entry carries `outcome`** as well as `terminal`, per D4. ADR-0066 D6's entry
   contract lists kind, status, terminality and reason code, so a conforming ADR-0066
   implementation would omit the field this contract requires for reporting a result.
-- **An id that waiting cannot resolve does not hold the window open.** A run whose process
-  is gone with no end recorded has stopped, and both writers of an end are past it, so
-  further polling cannot change its answer. Such ids are returned in their own list,
-  `stopped_without_end`, rather than in `pending`, and the call returns as soon as every
-  remaining id is either terminal or in that list. It is a separate list and not a per-id
-  error, because observing them succeeded. Nothing about the record changes: the entry
-  stays non-terminal with a null outcome, and a run that does record an end afterwards is
-  classified terminal by the next observation exactly as before. `all_terminal` stays false
-  while any id is in the list, because a run that stopped without recording an end is not a
-  completed one.
+- **An id that waiting cannot resolve does not hold the window open, and the producer pays
+  a floor for it.** A run whose process is gone with no end recorded has stopped, and both
+  writers of an end are past it, so further polling cannot change its answer. Such ids are
+  returned in their own list, `stopped_without_end`, rather than in `pending`, and the call
+  stops re-observing once every remaining id is either terminal or in that list. It is a
+  separate list and not a per-id error, because observing them succeeded. Nothing about the
+  record changes: the entry stays non-terminal with a null outcome, and a run that does
+  record an end afterwards is classified terminal by the next observation exactly as
+  before. `all_terminal` stays false while any id is in the list, because a run that stopped
+  without recording an end is not a completed one.
 
-  **What this costs, stated rather than discovered.** The window's duration was doing two
-  jobs: bounding the observation, and rate-limiting a caller that keeps re-asking about a
-  run which never resolves. Returning early removes the second. A consumer that loops until
-  `all_terminal` with no backoff of its own turns a visible stall into a hot loop, which is
-  worse than the stall this removes. That is why the consumer obligation below names both
-  shapes rather than only the expired-window one.
+  **The window was doing two jobs, and the second one stays here.** Its duration bounded the
+  observation and also rate-limited a caller that keeps re-asking about a run which never
+  resolves. Dropping such ids from `pending` removes the second, and a consumer looping
+  until `all_terminal` with no backoff of its own would turn a visible stall into a hot
+  loop, which is worse than the stall it removes. So a call that would return without having
+  waited at all, while at least one id is in `stopped_without_end`, first sleeps one poll
+  interval — bounded by whatever is left of the window — and observes once more. The trigger
+  is a property of the observation the call is about to return, not of any history, so it
+  applies on a first observation as much as a later one.
 
-The first two need a forward amendment to ADR-0066 D6 to keep the two documents in
-agreement; until that lands, this ADR is the stricter of the two on them and an
+  This is a floor on the call, not a charge added to it. A call that already waited on a
+  running id has met it and pays nothing extra, and `max_wait=0` is untaxed by construction,
+  having no window to spend, so it remains the documented snapshot. The cost no shape avoids
+  is a caller joining an already-finished batch beside one stopped id: it pays at most one
+  poll interval, once per call. That is accepted deliberately rather than engineered around.
+  It is bounded and small, the hazard it replaces is unbounded spin at a shared boundary,
+  and that asymmetry decides it without a measurement of how often either case occurs —
+  which neither party to the decision had. The extra observation is not wasted either, since
+  it is exactly the interval in which a slow end-writer finishes.
+
+  **Why the producer and not the consumer.** Both were live options and the choice is not
+  obvious. Pacing enforced here is enforced once for every client, including clients written
+  before this rule and clients we do not control; a documented duty to back off is honoured
+  only by the clients that read it. The decisive evidence is local: this ADR's own consumer
+  obligation 8 was silently disarmed by a code change while its text sat unchanged. A
+  boundary whose safety depends on N independent clients continuing to behave is not a
+  boundary.
+
+The first two extensions need a forward amendment to ADR-0066 D6 to keep the two documents
+in agreement; until that lands, this ADR is the stricter of the two on them and an
 implementation satisfying it also satisfies ADR-0066.
 
-**The third is a divergence, not a strengthening, and is called one here** rather than
-folded in beside them. ADR-0066 D6 states the result as the entries plus `all_terminal`,
-`timed_out`, and the list of ids still pending; under it, a stopped run is pending and
-stays pending, and a conforming ADR-0066 implementation reports it that way every time.
-An implementation satisfying this extension therefore does **not** also satisfy ADR-0066
-D6 — it answers the same question differently. The two documents are in conflict until
-ADR-0066 D6 is amended, and this ADR does not resolve that by declaring itself stricter,
-because "stricter" would be the same move this section exists to refuse.
+**The third is a definition of something ADR-0066 D6 leaves open**, and it is the clause to
+read carefully. D6 states the result as the entries plus `all_terminal`, `timed_out`, and
+the list of ids still pending. It names that key and nowhere says which ids qualify for it,
+so it does not by itself decide where a run that stopped without an end belongs. A reading
+is available on which it does: D6 names a per-id error channel for ids that could not be
+observed, and naming one exclusion can be read as ruling out others. That reading is
+recorded here because it was argued seriously, not because it is adopted. It is not
+adopted — the error channel is for ids observation could not resolve, while a stopped id
+was observed and classified, so naming that channel does not settle the pending rule by
+exclusion. The honest conclusion is that D6 underdetermines this, and an underdetermined
+clause is settled by amending it rather than by either document assuming its own reading.
+The forward amendment therefore states the partition outright: `pending`,
+`stopped_without_end` and terminal are disjoint and exhaustive over every observed id.
+That is the invariant this contract's implementation already tests, so the amendment
+records a rule that is enforced rather than adding one that is not.
 
 **Why this is taken up rather than deferred.** An earlier draft deferred bounded wait on
 the grounds that timeout, signal and disconnect had no v1 answer. That was wrong about
@@ -711,9 +740,13 @@ being asked of them in one place.
    because the failure mode is a consumer that waits forever on a run nobody will ever
    finish, or three integrators each inventing a different timeout behaviour, which is
    the divergence removed from the specification arriving back through the consumers.
-   Note specifically that a `stopped_without_end` id does not consume the window, so the
-   window is not backpressure for it: a loop that re-asks needs a delay of its own, or it
-   replaces a stall with a hot loop.
+
+   On pacing, this obligation describes rather than requires. A `stopped_without_end` id
+   does not consume the window, so the window is not backpressure for it — the producer
+   spends a one-interval floor instead (D10), and the correctness of the boundary does not
+   depend on you. A backoff of your own is still recommended, because a floor set by the
+   poll interval is a floor and not a policy, and only you know how often re-asking about
+   an unresolvable run is worth anything.
 
 ## Consequences
 
@@ -764,9 +797,12 @@ the escape hatch: a breaking change is expressible as a version increment rather
 negotiation. D8 could be dropped without touching the envelope, at the cost of P7
 returning. D10 cannot be dropped without re-opening the contradiction with ADR-0066, and
 its two marked extensions cannot be dropped without leaving the two documents disagreeing
-about what a wait entry contains and what a disconnect does. Its one marked departure is
-the opposite case: it is what puts the two documents into disagreement, and it is
-reversible only until a consumer has been written against it.
+about what a wait entry contains and what a disconnect does. The clause it decides where
+D6 is silent is the opposite case: nothing forces it, an implementation could have put
+stopped ids in `pending` and stayed conforming, and it is reversible only until a consumer
+has been written against it. The producer floor attached to it is cheaper to reverse than
+to introduce, since removing a minimum call duration cannot break a caller that was
+tolerating it.
 
 ## Alternatives considered
 

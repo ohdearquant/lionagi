@@ -342,12 +342,15 @@ async def test_wait_stops_as_soon_as_every_id_is_terminal(sandbox, monkeypatch):
     assert polls["n"] == 2
 
 
-async def test_wait_returns_at_once_when_the_process_is_gone(sandbox, monkeypatch):
-    """A run whose process is gone cannot be resolved by waiting longer.
+async def test_a_stopped_run_costs_one_poll_interval_and_no_more(sandbox, monkeypatch):
+    """A run whose process is gone cannot be resolved by waiting the window out.
 
-    Both writers of an end are past it, so the window is not held open for it.
-    The sleep is replaced by one that fails, so the assertion is that no poll
-    interval was ever entered rather than that the call felt quick.
+    Both writers of an end are past it, so the window is not held open for it —
+    but returning instantly would let a caller looping until ``all_terminal``
+    re-ask as fast as it can, so the boundary spends one poll interval first.
+    The assertion is on the sleeps actually entered, not on how long the call
+    felt: exactly one, of one interval. Against the previous behaviour the same
+    ids held the window for its full 600 seconds.
     """
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
     rid = jobs.new_run_id()
@@ -355,12 +358,20 @@ async def test_wait_returns_at_once_when_the_process_is_gone(sandbox, monkeypatc
 
     import anyio
 
-    async def never(seconds):
-        raise AssertionError(f"slept {seconds}s on a run whose process is gone")
+    slept: list[float] = []
 
-    monkeypatch.setattr(anyio, "sleep", never)
+    async def no_sleep(seconds):
+        slept.append(seconds)
+        # The sleep is a no-op, so a version that keeps this id pending would
+        # spin here for the whole 600s window. Fail on the fourth interval
+        # instead, naming what it was still waiting for.
+        if len(slept) > 3:
+            raise AssertionError(f"still polling after {len(slept)} intervals on a stopped run")
+
+    monkeypatch.setattr(anyio, "sleep", no_sleep)
     res = await jobs.wait([rid], max_wait=600, poll_interval=5)
 
+    assert slept == [5]
     assert res["pending"] == []
     assert res["stopped_without_end"] == [rid]
     assert res["timed_out"] is False
@@ -373,7 +384,12 @@ async def test_wait_returns_at_once_when_the_process_is_gone(sandbox, monkeypatc
 
 
 async def test_wait_still_waits_for_a_running_id_beside_a_stopped_one(sandbox, monkeypatch):
-    """A stopped id is dropped from the wait; the ids that can still finish keep it."""
+    """A stopped id is dropped from the wait; the ids that can still finish keep it.
+
+    The poll count also pins the floor as a minimum rather than a surcharge: this
+    call waited on a running id, so it has already met the floor and pays nothing
+    extra for the stopped one sitting beside it.
+    """
     alive = {"value": True}
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: pid == 4242 and alive["value"])
     gone = jobs.new_run_id()
@@ -429,7 +445,12 @@ async def test_a_stopped_run_that_later_records_an_end_is_terminal(sandbox, monk
 
 
 async def test_wait_snapshot_of_a_stopped_run_is_still_a_snapshot(sandbox, monkeypatch):
-    """max_wait=0 observes once and returns, whatever the ids turn out to be."""
+    """max_wait=0 observes once and returns, whatever the ids turn out to be.
+
+    This is also where the floor stops: a snapshot request has no window to spend,
+    so the id that would otherwise buy one poll interval buys nothing here. A
+    caller that asked not to wait is not made to.
+    """
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
     rid = jobs.new_run_id()
     _record(rid, pid=999_999)
@@ -446,6 +467,33 @@ async def test_wait_snapshot_of_a_stopped_run_is_still_a_snapshot(sandbox, monke
 
     assert slept == []
     assert res["max_wait"] == 0.0
+    assert res["stopped_without_end"] == [rid]
+
+
+async def test_the_floor_never_outruns_the_window(sandbox, monkeypatch):
+    """The floor is bounded by what is left of the window, not by the interval.
+
+    A caller who asked for half a second does not get five because one id stopped
+    without an end. Without the bound the floor could overrun a window the caller
+    chose, which would make the pacing the producer's decision rather than a
+    minimum inside the caller's own budget.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    rid = jobs.new_run_id()
+    _record(rid, pid=999_999)
+
+    import anyio
+
+    slept: list[float] = []
+
+    async def no_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(anyio, "sleep", no_sleep)
+    res = await jobs.wait([rid], max_wait=0.5, poll_interval=5)
+
+    assert len(slept) == 1
+    assert 0 < slept[0] <= 0.5
     assert res["stopped_without_end"] == [rid]
 
 
