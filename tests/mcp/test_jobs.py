@@ -1073,9 +1073,8 @@ def test_kill_never_dereferences_a_pid_it_must_not_signal(
 
 @pytest.mark.parametrize(
     "record",
-    # No identity keys at all, which is the one thing that means the record was
-    # written before they existed. A record that carries the keys and bad values
-    # is damaged rather than old, and gets its own answer.
+    # No identity keys at all. A record that carries the keys and holds bad values
+    # is a different observation and gets its own answer.
     [{}],
 )
 def test_kill_refuses_a_record_that_cannot_confirm_an_identity(
@@ -1110,13 +1109,42 @@ def test_kill_refuses_a_record_that_cannot_confirm_an_identity(
     out = jobs.kill(rid)
 
     assert no_stray_signal == [], "a pid without an identity must license no signal"
-    assert out["killed"] is False and out["reason_code"] == jobs.KILL_LEGACY_NO_IDENTITY
+    assert out["killed"] is False and out["reason_code"] == jobs.KILL_NO_RECORDED_IDENTITY
     assert out["pid"] == 4242, "the operator needs the number to reap the group by hand"
-    # The observation first — both fields missing — with the age of the record
-    # offered as the explanation and not as something the refusal measured.
+    # What was read off the record: both fields missing, so the pid is unusable.
     assert "carries neither a start time nor a process group" in out["reason"]
-    assert "written before they were captured" in out["reason"]
     assert jobs._read_job(rid)["status"] == "running", "a refusal changes no recorded status"
+
+
+def test_kill_does_not_date_a_record_that_carries_no_identity(
+    sandbox, monkeypatch, no_stray_signal
+):
+    """Both fields absent is an observation about the record, not about its age.
+
+    This record is written here, seconds ago, by the current writer, with the two
+    identity keys removed. The refusal it draws must therefore not tell an operator
+    the record was written before those fields were captured: no current writer
+    omitting them rules out one origin, and a record altered after it was written
+    reads exactly like an old one. The remedies differ — age out a stale record
+    versus inspect one that was changed — so the sentence would point the wrong way.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: pytest.fail("pid must not be probed"))
+
+    rid = _identity_record()
+    record = jobs._read_job(rid)
+    del record["pid_create_time"], record["pgid"]
+    jobs._write_job(record)
+
+    out = jobs.kill(rid)
+
+    assert no_stray_signal == []
+    assert out["killed"] is False
+    assert out["reason_code"] == jobs.KILL_NO_RECORDED_IDENTITY
+    assert out["pid"] == 4242, "the operator needs the number to reap the group by hand"
+    assert "carries neither a start time nor a process group" in out["reason"]
+    for claim in ("written before", "predates", "legacy", "older", "since those fields"):
+        assert claim not in out["reason"], f"the refusal must not date the record: {claim!r}"
+    assert "legacy" not in out["reason_code"], "the code names the observation, not an origin"
 
 
 @pytest.mark.parametrize(
@@ -1608,15 +1636,15 @@ def test_listing_jobs_survives_a_jobs_directory_it_cannot_get_at(sandbox):
         {"pgid": 7777},
     ],
 )
-def test_kill_does_not_call_a_damaged_identity_an_old_record(
+def test_kill_does_not_call_a_damaged_identity_an_absent_one(
     sandbox, monkeypatch, no_stray_signal, identity
 ):
     """Present-but-wrong is not the same news as absent, and must not borrow its sentence.
 
-    The refusal for a record written before these fields existed says exactly that
-    about its age. A record carrying the keys was written by code that knows them,
-    so the age claim is false of it however bad the values are — and unlike an old
-    record, this one is worth looking into.
+    A record carrying the keys was written by something that knows about them, so
+    what an operator has to look at is the value it wrote — which is a different
+    thing to look at than a record that names no identity at all. Neither refusal
+    dates the record.
     """
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: pytest.fail("pid must not be probed"))
 

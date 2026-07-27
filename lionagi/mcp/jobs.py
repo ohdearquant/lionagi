@@ -125,15 +125,16 @@ KILL_NO_PID = "no_pid_on_record"
 KILL_SIGNALLED = "signalled"
 KILL_PROCESS_GONE = "process_gone"
 KILL_PERMISSION_DENIED = "permission_denied"
-# The record was written before a run's process identity was recorded, so the
-# pid on it cannot be told apart from a reused one and nothing can be signalled
-# for it. Its own code, so a reader can tell an old record from a refusal
-# decided about a record that does carry an identity.
-KILL_LEGACY_NO_IDENTITY = "legacy_record_no_process_identity"
+# The record carries neither identity field, so the pid on it cannot be told
+# apart from a reused one and nothing can be signalled for it. The code names
+# what was read off the record and not why the fields are absent, which the
+# reading does not establish. Its own code, so a reader can tell this from a
+# refusal decided about a record that does carry an identity.
+KILL_NO_RECORDED_IDENTITY = "no_recorded_process_identity"
 # The identity fields are present and of the right type but hold a value nothing
 # can be compared against where a start time belongs. Its own code rather than the
-# one above: that one says a record is old and expected, this one says a record is
-# damaged, and only the second is worth investigating.
+# one above: that one says the fields are absent, this one says they are there and
+# damaged, and the two point an operator at different things to do.
 KILL_IDENTITY_UNUSABLE = "recorded_identity_unusable"
 # Identity-bearing records. Split by what a caller would do next: a mismatch or
 # a foreign group is settled and will not change on a retry, while an unreadable
@@ -1596,8 +1597,8 @@ def _signal_leader_group(
     return _signal_group(run_id, job, pid, pgid, sig, KILL_SIGNALLED)
 
 
-def _refuse_legacy_record(run_id: str, pid: int) -> dict[str, Any]:
-    """Refuse a record written before a run's process identity was recorded.
+def _refuse_record_without_identity(run_id: str, pid: int) -> dict[str, Any]:
+    """Refuse a record that carries no process identity at all.
 
     Such a record carries a pid and nothing that distinguishes it from a pid the
     OS has since handed to an unrelated process. The missing fields cannot be
@@ -1606,13 +1607,13 @@ def _refuse_legacy_record(run_id: str, pid: int) -> dict[str, Any]:
     the pid at this point is exactly the step that resolves a reused pid to a
     stranger's group. So nothing is signalled.
 
-    The refusal leads with what was read off the record — both fields absent —
-    and offers the age of the record as the explanation rather than as the
-    finding. What is observed is that the fields are missing; that they are
-    missing because the record predates them follows from every write since
-    having set them, which is a fact about this code and not a measurement of
-    this file. Stating the inference alone would hand an operator a history the
-    refusal never established.
+    The refusal says only what the read established: both fields are absent, so
+    the pid cannot be told from a reused one and no group was signalled. It does
+    not say when the record was written. That no current writer omits the fields
+    rules out one origin; it does not choose among the others, and a record
+    altered after it was written is absent the same way an old one is. An
+    operator told the record is old would go looking for a different remedy than
+    one told the record cannot identify its process.
 
     The pid rides along on the refusal, because it is the only handle an operator
     has for reaping the group by hand, and this is the last place it is reported.
@@ -1622,12 +1623,10 @@ def _refuse_legacy_record(run_id: str, pid: int) -> dict[str, Any]:
         killed=False,
         reason=(
             f"this record carries neither a start time nor a process group, so pid {pid} "
-            "cannot be distinguished from a reused one and no group was signalled; every "
-            "write since those fields existed sets them, so a record missing both was "
-            "written before they were captured; reap the group by hand after confirming "
-            "the process is this run's"
+            "cannot be distinguished from a reused one and no group was signalled; reap "
+            "the group by hand after confirming the process is this run's"
         ),
-        reason_code=KILL_LEGACY_NO_IDENTITY,
+        reason_code=KILL_NO_RECORDED_IDENTITY,
         pid=pid,
     )
 
@@ -1651,7 +1650,7 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
     refuses: the refusal says which fact was missing, and a refusal with an
     accurate reason is the outcome being aimed at, not the largest possible
     number of processes stopped. That holds without exception, including for a
-    record written before these fields existed — such a record cannot confirm
+    record carrying no process identity at all — such a record cannot confirm
     anything, so it is refused and its group is left for an operator to reap by
     hand.
 
@@ -1758,14 +1757,15 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
             run_id, killed=False, reason="no pid on record", reason_code=KILL_NO_PID, pid=pid
         )
 
-    # A record written before a run's process identity was captured does not carry
-    # these keys at all. That is the only thing that means the record is old: a key
-    # that is present and holds the wrong type says the opposite — it was written by
-    # code that knows about these fields, and what it wrote is damaged. The two get
-    # different answers, because one is expected and ages out while the other is
-    # worth looking into.
+    # Neither key on the record at all. What that establishes is that this record
+    # cannot identify its process, not how it came to be that way — an absent key
+    # says nothing about when or by what it was written. A key that is present and
+    # holds the wrong type is a different observation: something that knows about
+    # these fields wrote a value nothing can be compared against. The two get
+    # different answers because they leave an operator with different things to
+    # look at, not because one of them dates the record.
     if "pid_create_time" not in job and "pgid" not in job:
-        return _refuse_legacy_record(run_id, pid)
+        return _refuse_record_without_identity(run_id, pid)
     created = job.get("pid_create_time")
     pgid = job.get("pgid")
     if not isinstance(created, int | float) or not isinstance(pgid, int) or pgid <= 1:
