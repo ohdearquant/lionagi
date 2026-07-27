@@ -204,6 +204,10 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
       removing a not-yet-visited item raises ``KeyError`` at that step
       (fail-loud) instead of silently yielding a stale object. ``keys`` /
       ``values`` / ``items`` return fully materialized snapshots.
+    - A Pile is iterable but is NOT itself an iterator, matching ``list`` and
+      ``dict``. Traversal position lives in the object ``iter(pile)`` returns,
+      so concurrent readers each get their own cursor and a copied Pile never
+      inherits a partially consumed one.
     - The exclusion boundary is CROSS-THREAD, not cross-task. On the event
       loop's own thread, a sync call made by a different task while an async
       operation is mid-await re-enters the RLock (thread-owned) and proceeds.
@@ -426,11 +430,11 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         for key in order:
             yield self.collections[key]
 
-    def __next__(self) -> T:
-        try:
-            return next(iter(self))
-        except StopIteration:
-            raise StopIteration("End of pile") from None
+    # A Pile is iterable but deliberately NOT an iterator: traversal state lives
+    # in the object returned by ``iter(self)``, never on the container. Two
+    # traversals of the same Pile are therefore independent, and a Pile has no
+    # cursor for copying, pickling or concurrent readers to disagree about.
+    # ``next(pile)`` raises TypeError; use ``it = iter(pile)`` and ``next(it)``.
 
     @synchronized
     def __getitem__(self, key: ID.Ref | ID.RefSeq | int | slice) -> Any | list | T:
@@ -677,11 +681,9 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         for key in order:
             yield self.collections[key]
 
-    async def __anext__(self) -> T:
-        try:
-            return await anext(self.AsyncPileIterator(self))
-        except StopAsyncIteration:
-            raise StopAsyncIteration("End of pile") from None
+    # Async mirror of the sync contract: a Pile is async-iterable but not an
+    # async iterator. ``anext(pile)`` raises TypeError; use ``async for`` or
+    # hold ``Pile.AsyncPileIterator(pile)``, which is a real async iterator.
 
     @synchronized
     def filter(self, predicate: Callable[[T], bool]) -> Pile[T]:
