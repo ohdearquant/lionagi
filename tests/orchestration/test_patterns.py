@@ -445,3 +445,40 @@ class TestSpawnRoles:
         assert roles["architect"].capabilities is not None
         arch_caps = [s.name for s in roles["architect"].capabilities.__op_fields__]
         assert "spawn_request" in arch_caps
+
+
+class TestPlanAssigneeSpelling:
+    """'-' and '_' are interchangeable in a role name, so an assignment written
+    with the other separator names a listed role rather than an unknown one."""
+
+    @pytest.mark.asyncio
+    async def test_other_separator_resolves_to_the_listed_role(self):
+        orc = _FakeOrc([TaskAssignment(task="a", assignee="postmortem_lead")])
+        out = await plan(orc, "task", roles=["postmortem-lead"])
+        assert [a.assignee for a in out] == ["postmortem-lead"]
+
+    @pytest.mark.asyncio
+    async def test_resolution_runs_in_both_directions(self):
+        orc = _FakeOrc([TaskAssignment(task="a", assignee="deck-hand")])
+        out = await plan(orc, "task", roles=["deck_hand"])
+        assert [a.assignee for a in out] == ["deck_hand"]
+
+    @pytest.mark.asyncio
+    async def test_exact_match_is_left_alone(self):
+        orc = _FakeOrc([TaskAssignment(task="a", assignee="deck_hand")])
+        out = await plan(orc, "task", roles=["deck-hand", "deck_hand"])
+        assert [a.assignee for a in out] == ["deck_hand"]
+
+    @pytest.mark.asyncio
+    async def test_a_spelling_matching_two_listed_roles_is_dropped(self):
+        """Two listed roles can differ only in where each separator falls. A
+        third spelling matching both is not resolved by picking one."""
+        orc = _FakeOrc([TaskAssignment(task="a", assignee="deck-hand-two")])
+        out = await plan(orc, "task", roles=["deck-hand_two", "deck_hand-two"])
+        assert out == []
+
+    @pytest.mark.asyncio
+    async def test_an_unrelated_name_is_still_dropped(self):
+        orc = _FakeOrc([TaskAssignment(task="a", assignee="ghost_writer")])
+        out = await plan(orc, "task", roles=["deck_hand"])
+        assert out == []

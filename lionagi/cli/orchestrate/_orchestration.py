@@ -90,11 +90,29 @@ def parse_orchestrator_provider(model_spec: str) -> tuple[str | None, str | None
     return ms.model, provider
 
 
+def _role_key(name: str) -> str:
+    """The name a role is known by regardless of which separator it is spelled with.
+
+    ``-`` and ``_`` are interchangeable in a profile name, so both spellings
+    resolve to one profile and one built-in role module. Keying on that makes
+    the roster agree with the loaders instead of listing one role twice.
+    """
+    return name.replace("-", "_")
+
+
 def available_roles() -> list[str]:
-    """Casts roles + user profiles the orchestrator may assign to."""
+    """Casts roles + user profiles the orchestrator may assign to, one entry per role.
+
+    A profile whose file name spells the separator the other way is the same
+    role as the built-in it matches, so the built-in's spelling is the one
+    listed. A name with no built-in counterpart keeps the profile's spelling.
+    """
     from lionagi.casts.pattern import list_roles
 
-    return sorted(set(list_roles()) | set(list_agents()))
+    canonical = {_role_key(r): r for r in list_roles()}
+    for name in list_agents():
+        canonical.setdefault(_role_key(name), name)
+    return sorted(canonical.values())
 
 
 def _first_sentence(text: str) -> str:
