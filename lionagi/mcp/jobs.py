@@ -370,6 +370,37 @@ def _pid_alive(pid: int | None) -> bool:
     return True
 
 
+def _askable_pid(value: object) -> int | None:
+    """The recorded pid if the OS can be asked about it at all, otherwise None.
+
+    A pid is a C integer to every call that takes one, so a record can carry a
+    perfectly good Python int that no probe can express, and a probe handed one
+    raises before it looks anything up. The bound is the platform's and not ours,
+    so it is established by asking rather than by a constant of our own choosing.
+    Signal 0 asks about a process without disturbing it, which is what the
+    liveness probe does with it too.
+
+    The type check is here rather than at each caller because a record is JSON
+    from disk: the value can be a string, a list, or anything else that survives
+    a parse, and every probe below takes an integer. A bool is an int to
+    isinstance and arrives as 0 or 1, both of which mean something else entirely
+    to a group signal, so it is refused alongside them.
+
+    Only the overflow is caught, because only the overflow is a question about
+    the number. Any other failure of that call is a failure of the probe, and
+    reporting it as an unusable pid would blame the record for it.
+    """
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 1:
+        return None
+    try:
+        os.kill(value, 0)
+    except OverflowError:
+        return None
+    except OSError:
+        pass
+    return value
+
+
 def _process_create_time(pid: int) -> tuple[str, float | None]:
     """When the process at *pid* started: ``("found", t)``, ``("gone", None)``
     or ``("unknown", None)``.
@@ -1350,25 +1381,53 @@ def _run_process_liveness(job: dict[str, Any] | None, pid: int | None) -> tuple[
 
     The second element names what was established, so a caller can tell the
     readings apart rather than infer them: ``"confirmed"``, ``"recycled"``,
-    ``"gone"`` (the pid held no live process by the time its identity was read),
-    ``"unreadable"`` (the identity probe errored, so nothing was established and
-    the liveness probe stands), ``"not_recorded"`` (the record captured no start
-    time) and ``"unusable"`` (it captured one that no start time can be compared
-    against). None when there was no live pid to identify.
+    ``"gone"`` (the pid held no live process when it was read), ``"unreadable"``
+    (the identity probe errored, so nothing was established and the liveness
+    probe stands), ``"not_recorded"`` (the record captured no start time),
+    ``"unusable"`` (it captured one that no start time can be compared against)
+    and ``"unusable_pid"`` (the record's pid is not a number the OS can be asked
+    about, so no probe was made and the answer is not a finding of death). None
+    when there was no live pid to identify.
 
-    Where no identity was captured the answer is the liveness probe alone,
-    exactly as before: a pid probe is all such a record ever had, and calling
-    those runs orphaned would be a claim their data does not support. A probe
-    that errored is treated the same way, because a failed read is not evidence
-    of death.
+    Two separate questions are settled here in the order their evidence allows.
+    Whether the pid holds a live process at all needs only the pid, so it is
+    asked first and on every path. Whether that live process is *this run's*
+    needs the recorded start time, so it is asked second and only where one was
+    recorded; without it the liveness answer stands alone, because a pid probe is
+    all such a record has for that second question, and calling those runs
+    recycled would be a claim their data does not support. A probe that errored
+    is treated the same way, because a failed read is not evidence of death.
+
+    Keeping the first question ahead of the record matters: the liveness probe
+    reaps only its own children, so a process that exited under a different
+    parent — any job whose server is not the one that spawned it — is a zombie
+    that ``kill -0`` reports as alive. Deciding that from the record would leave
+    every record without a start time reporting an exited run as running, and
+    ``possibly_orphaned``, the field that exists for a process gone with no end
+    recorded, would be false in exactly the case it is meant to catch.
     """
-    alive = _pid_alive(pid)
-    if not alive or job is None or not isinstance(pid, int):
-        return alive, None
+    asked = _askable_pid(pid)
+    if asked is None:
+        return False, "unusable_pid"
+    if not _pid_alive(asked):
+        return False, None
 
+    # Whether that pid still holds a live process is settled here, before the
+    # record is consulted, because settling it does not need the record. The
+    # liveness probe reaps only its own children, so a process that exited under
+    # a different parent stays a zombie, and asking the OS whether the pid exists
+    # answers yes for as long as it does. The probe below tells a zombie from a
+    # live process from the pid alone, which is why it runs on every path and not
+    # only where a start time was recorded to compare against.
+    state, live_created = _process_create_time(asked)
+    if state == "gone":
+        return False, "gone"
+
+    if job is None:
+        return True, None
     recorded = job.get("pid_create_time")
     if recorded is None:
-        return alive, "not_recorded"
+        return True, "not_recorded"
     # The same three values kill() refuses: a bool is an int to isinstance and
     # arrives as a moment in 1970, a NaN loses every comparison silently, and an
     # unbounded JSON integer fails the conversion that any comparison needs.
@@ -1378,13 +1437,10 @@ def _run_process_liveness(job: dict[str, Any] | None, pid: int | None) -> tuple[
     except (TypeError, ValueError, OverflowError):
         usable = False
     if not usable:
-        return alive, "unusable"
+        return True, "unusable"
 
-    state, live_created = _process_create_time(pid)
-    if state == "gone":
-        return False, "gone"
     if state != "found" or live_created is None:
-        return alive, "unreadable"
+        return True, "unreadable"
     if _start_time_matches(live_created, spawned_at):
         return True, "confirmed"
     return False, "recycled"
@@ -1410,11 +1466,12 @@ def status(run_id: str) -> dict[str, Any]:
     pid number now: where the record carries the start time captured at spawn, a
     number the OS has handed on reports as not alive. ``pid_identity`` says how
     that was settled — ``"confirmed"``, ``"recycled"``, ``"gone"``,
-    ``"unreadable"``, ``"not_recorded"``, ``"unusable"``, or null when there was
-    no live pid to identify — so a caller can tell a process that vanished from a
-    number that now belongs to someone else, which are different things to do
-    next. A record written without a start time is answered by the pid probe
-    alone, as it always was.
+    ``"unreadable"``, ``"not_recorded"``, ``"unusable"``, ``"unusable_pid"``, or
+    null when there was no live pid to identify — so a caller can tell a process
+    that vanished from a number that now belongs to someone else, which are
+    different things to do next. A record written without a start time still
+    reports a process that has exited as not alive; what it cannot report is
+    whether a live process at that pid is this run's.
     ``possibly_orphaned`` flags a run whose process is gone with no end recorded;
     it is advisory and never makes the run terminal.
     ``notify_delivery`` reports whether the terminal notice was delivered.
@@ -1837,11 +1894,26 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
     # First, and before any number on the record is probed or dereferenced. A
     # pid of 0 means the caller's own process group to killpg, and 1 is init;
     # a record carrying either — a placeholder, a truncated write, a test
-    # double — must never reach a group signal.
-    pid = job.get("pid")
-    if not isinstance(pid, int) or pid <= 1:
+    # double — must never reach a group signal. The same gate settles the shape
+    # and the range, because the record is JSON from disk and the probes below
+    # all take a C integer: a value of the wrong type, or one past what the
+    # platform can express, would raise out of the first probe to touch it.
+    recorded_pid = job.get("pid")
+    pid = _askable_pid(recorded_pid)
+    if pid is None:
         return _kill_result(
-            run_id, killed=False, reason="no pid on record", reason_code=KILL_NO_PID, pid=pid
+            run_id,
+            killed=False,
+            reason=(
+                "no pid on record"
+                if recorded_pid is None
+                else (
+                    "no pid on record that can identify a process to signal; the "
+                    f"record carries {_short_repr(recorded_pid)}"
+                )
+            ),
+            reason_code=KILL_NO_PID,
+            pid=recorded_pid,
         )
 
     # Neither key on the record at all. What that establishes is that this record

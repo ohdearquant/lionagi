@@ -483,7 +483,10 @@ def test_a_healthy_running_job_is_never_asked_about(home, monkeypatch):
     running ids polls every second, and paying a subprocess per id per poll
     would be a real cost for an answer the record already has.
     """
+    # Both process probes, because the reader asks the pid two questions and a
+    # double that answers only "is it alive" describes a zombie, which is not.
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", 1_700_000_000.0))
     monkeypatch.setattr(
         jobs,
         "_read_lifecycle",
