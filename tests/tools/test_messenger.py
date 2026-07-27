@@ -489,4 +489,7 @@ class TestMessengerWakeupDescription:
 
         field_desc = MessengerRequest.model_fields["to"].description
         assert "first name is woken" in field_desc
-        assert "first name is woken" in tool.func_callable.__doc__
+        assert "the rest are ignored" in field_desc
+        doc = tool.func_callable.__doc__
+        assert "first name is woken" in doc
+        assert "the rest are ignored" in doc
