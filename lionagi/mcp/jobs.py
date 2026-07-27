@@ -1411,13 +1411,19 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
     exited, which is the case worth reaping, and a pid the OS handed to an
     unrelated process, which must never be signalled.
 
-    Nothing is signalled that the record does not identify. A probe that errors
-    is unknown, and unknown refuses: the refusal says which fact was missing, and
-    a refusal with an accurate reason is the outcome being aimed at, not the
-    largest possible number of processes stopped. That holds without exception,
-    including for a record written before these fields existed — such a record
-    cannot confirm anything, so it is refused and its group is left for an
-    operator to reap by hand.
+    Nothing is signalled that the record does not identify — a statement about
+    what is decided here, not about where the signal lands. Identification and
+    the signal are separate system calls and the interval between them belongs
+    to the OS, so the delivered guarantee is best-effort identification followed
+    by a signal, never an atomic one; the last paragraph of this contract says
+    what that costs, and it is not a caveat on the sentence so much as the
+    sentence's actual scope. A probe that errors is unknown, and unknown
+    refuses: the refusal says which fact was missing, and a refusal with an
+    accurate reason is the outcome being aimed at, not the largest possible
+    number of processes stopped. That holds without exception, including for a
+    record written before these fields existed — such a record cannot confirm
+    anything, so it is refused and its group is left for an operator to reap by
+    hand.
 
     What that buys, stated exactly, because the difference matters to anyone
     relying on it. Every signal is preceded by a positive identification: either
