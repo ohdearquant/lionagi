@@ -609,12 +609,26 @@ async def setup_orchestration(
     # Only the fully unspecified case defaults. A caller who named either one
     # gets it honoured, and still gets the refusal below if it cannot resolve
     # to a model, because there the caller did choose and we could not comply.
-    if not agent_name and not model_spec:
+    defaulted_agent = not agent_name and not model_spec
+    if defaulted_agent:
         agent_name = DEFAULT_ORCHESTRATOR_AGENT
 
     orc_profile: AgentProfile | None = None
     if agent_name:
-        orc_profile = load_agent_profile(agent_name)
+        try:
+            orc_profile = load_agent_profile(agent_name)
+        except FileNotFoundError as exc:
+            if not defaulted_agent:
+                raise
+            # The caller never mentioned this profile, so an error naming it as
+            # if they had asked for it explains nothing. Say what was assumed
+            # and what would satisfy it instead.
+            raise ConfigurationError(
+                "Naming neither an agent nor a model orchestrates under the "
+                f"{DEFAULT_ORCHESTRATOR_AGENT!r} agent profile, and no such profile "
+                "was found. Create one in .lionagi/agents/ or ~/.lionagi/agents/, "
+                "or name an agent or a model on this call."
+            ) from exc
         if orc_profile.model and not model_spec:
             model_spec = orc_profile.model
         if orc_profile.effort and not effort:

@@ -82,6 +82,9 @@ async def test_setup_orchestration_none_cwd_is_unaffected(monkeypatch):
     profile rather than refusing, so that error is no longer reachable here and
     cannot serve as the marker. Stop the call at the first thing built instead,
     which proves the same point: cwd validation let a cwd=None call through.
+
+    The call names a model so that nothing here depends on which agent profiles
+    happen to exist on the machine running the test.
     """
     import lionagi.cli.orchestrate._orchestration as orch_mod
 
@@ -96,7 +99,7 @@ async def test_setup_orchestration_none_cwd_is_unaffected(monkeypatch):
     with pytest.raises(_ReachedBuild):
         await setup_orchestration(
             pattern_name="Flow",
-            model_spec="",
+            model_spec="claude",
             agent_name=None,
             save_dir=None,
             cwd=None,

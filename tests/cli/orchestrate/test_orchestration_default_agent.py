@@ -114,6 +114,44 @@ async def test_a_named_agent_with_no_model_still_refuses_and_names_itself(monkey
 
 
 @pytest.mark.asyncio
+async def test_a_missing_orchestrator_profile_says_what_was_assumed(monkeypatch):
+    """The default reaches for a profile the caller never mentioned, so if it is
+    not there the raw loader error names something they did not ask for. Explain
+    the assumption instead."""
+    import lionagi.cli.orchestrate._orchestration as orch_mod
+
+    def _absent(name, *a, **kw):
+        raise FileNotFoundError(f"Agent profile '{name}' not found")
+
+    monkeypatch.setattr(orch_mod, "load_agent_profile", _absent)
+
+    with pytest.raises(ConfigurationError) as exc_info:
+        await _run()
+
+    message = str(exc_info.value)
+    assert DEFAULT_ORCHESTRATOR_AGENT in message
+    assert "name an agent or a model" in message
+
+
+@pytest.mark.asyncio
+async def test_a_named_agent_that_is_missing_still_raises_the_loader_error(monkeypatch):
+    """The explanation above is for the assumption we made. A caller who named
+    the profile themselves gets the loader's own error, which lists what is
+    available."""
+    import lionagi.cli.orchestrate._orchestration as orch_mod
+
+    def _absent(name, *a, **kw):
+        raise FileNotFoundError(f"Agent profile '{name}' not found")
+
+    monkeypatch.setattr(orch_mod, "load_agent_profile", _absent)
+
+    with pytest.raises(FileNotFoundError) as exc_info:
+        await _run(agent_name="no-such-agent")
+
+    assert "no-such-agent" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
 async def test_the_default_does_not_fire_when_a_modelless_agent_was_named(monkeypatch):
     """Guards the interaction between the two behaviours: a modelless named
     agent must reach the refusal, never silently fall through to the default
