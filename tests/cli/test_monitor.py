@@ -1950,3 +1950,93 @@ def test_watch_loop_leaves_unrestorable_handlers_alone(monkeypatch: pytest.Monke
     monitor_mod._watch_loop(1, None, since_window=None, entity_type=None, project=None)
 
     assert installed == []
+
+
+# ── Regression: a play awaiting a gate decision is not running ────────────────
+
+
+@pytest.mark.asyncio
+async def test_gated_play_absent_from_default_listing(temp_db_path: Path) -> None:
+    """A play parked on a gate decision has stopped and cannot advance on its
+    own, so the default (no --since) view must not list it as in-flight work.
+    A running play in the same store is the control: the filter still selects
+    real work, it just no longer selects a play waiting to be decided."""
+    async with StateDB() as db:
+        show_id = await _make_show(db)
+        gated_id = await _make_play(db, show_id, status="gated", name="awaiting-gate")
+        running_id = await _make_play(db, show_id, status="running", name="in-flight")
+
+        rows = await _gather_table_rows(db, since=None, entity_type=None, project=None)
+
+    ids = [r["id"] for r in rows]
+    assert running_id[:16] in ids, "a running play must still be listed"
+    assert gated_id[:16] not in ids
+
+
+@pytest.mark.asyncio
+async def test_gated_play_absent_from_play_type_listing(temp_db_path: Path) -> None:
+    """Same exclusion through `--type play`, which reaches the plays query by
+    its own branch in _gather_entities."""
+    async with StateDB() as db:
+        show_id = await _make_show(db)
+        gated_id = await _make_play(db, show_id, status="gated", name="awaiting-gate")
+
+        rows = await _gather_table_rows(db, since=None, entity_type="play", project=None)
+
+    assert gated_id[:16] not in [r["id"] for r in rows]
+
+
+@pytest.mark.asyncio
+async def test_gated_play_still_visible_with_since(temp_db_path: Path) -> None:
+    """--since drops the status filter entirely, which is what keeps an
+    undecided play reachable after it stops counting as running. Guards that
+    escape hatch: if the window query ever grew a status filter of its own, a
+    gated play would become invisible rather than merely not-running."""
+    async with StateDB() as db:
+        show_id = await _make_show(db)
+        gated_id = await _make_play(db, show_id, status="gated", name="awaiting-gate")
+
+        rows = await _gather_table_rows(
+            db, since=time.time() - 3600, entity_type=None, project=None
+        )
+
+    assert gated_id[:16] in [r["id"] for r in rows]
+
+
+@pytest.mark.asyncio
+async def test_show_detail_marks_gated_play_as_waiting(temp_db_path: Path) -> None:
+    """The show detail view splits plays into done/live/wait. A play waiting on
+    a gate decision belongs in wait, not live."""
+    async with StateDB() as db:
+        show_id = await _make_show(db)
+        await _make_play(db, show_id, status="gated", name="awaiting-gate")
+        await _make_play(db, show_id, status="running", name="in-flight")
+
+    output = await _run_detail(show_id)
+
+    gated_line = next(line for line in output.splitlines() if "awaiting-gate" in line)
+    running_line = next(line for line in output.splitlines() if "in-flight" in line)
+    assert "[wait]" in gated_line
+    assert "[live]" not in gated_line
+    assert "[live]" in running_line, "a running play must still be marked live"
+
+
+@pytest.mark.asyncio
+async def test_show_detail_marks_blocked_play_as_done(temp_db_path: Path) -> None:
+    """`blocked` is a terminal play status: the play has finished and cannot
+    move again on its own. The detail view must render it [done], not [wait] —
+    waiting is the one thing a blocked play is not doing. A gated play in the
+    same store is the control for the distinction the marker draws: it is also
+    not executing, but it is genuinely unfinished, so it stays [wait]."""
+    async with StateDB() as db:
+        show_id = await _make_show(db)
+        await _make_play(db, show_id, status="blocked", name="blocked-play")
+        await _make_play(db, show_id, status="gated", name="awaiting-gate")
+
+    output = await _run_detail(show_id)
+
+    blocked_line = next(line for line in output.splitlines() if "blocked-play" in line)
+    gated_line = next(line for line in output.splitlines() if "awaiting-gate" in line)
+    assert "[done]" in blocked_line
+    assert "[wait]" not in blocked_line
+    assert "[wait]" in gated_line, "an undecided play is unfinished, not done"

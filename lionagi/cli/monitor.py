@@ -214,7 +214,14 @@ async def _query_running_plays(
         query += " AND updated_at >= ?"
         params.append(since)
     else:
-        running_statuses = ("running", "running_complete", "gated", "redoing", "prepared")
+        # `gated` is deliberately absent: a play parked on a gate decision is
+        # not in flight. It has stopped, and nothing it does can move it — only
+        # a decision can. Counting it here left every undecided play on the
+        # live view indefinitely, which is the one thing the default view is
+        # supposed to rule out. Such a play is still reachable through
+        # `--since`, through `li monitor <id>`, and through the show detail
+        # view, which marks it as waiting.
+        running_statuses = ("running", "running_complete", "redoing", "prepared")
         placeholders = ",".join("?" * len(running_statuses))
         query += f" AND status IN ({placeholders})"
         params.extend(running_statuses)
@@ -641,13 +648,21 @@ async def _detail_show(db: Any, show: dict[str, Any]) -> str:
     if plays:
         lines.append("")
         lines.append(_dim("  -- plays --"))
-        terminal = {"merged", "escalated", "gate_failed", "aborted_after_finish"}
-        active = {"running", "running_complete", "gated", "redoing"}
+        # Every terminal play status the lifecycle declares. A play here has
+        # finished and cannot move again without an override, so it reads
+        # [done] even when it finished badly.
+        terminal = {"merged", "escalated", "gate_failed", "blocked", "aborted_after_finish"}
+        # Executing right now, which is narrower than "not finished". `gated`
+        # and `pending` fall through to [wait] because waiting is what they are
+        # doing. This set is also narrower than the default listing's in-flight
+        # filter, which counts `prepared`: there the question is whether a run
+        # is under way at all, here it is whether this play is the one moving.
+        live = {"running", "running_complete", "redoing"}
         for play in plays:
             pstatus = play.get("status") or "?"
             if pstatus in terminal:
                 marker = _dim("  [done]  ")
-            elif pstatus in active:
+            elif pstatus in live:
                 marker = _green("  [live]  ")
             else:
                 marker = _yellow("  [wait]  ")
