@@ -119,9 +119,9 @@ KILL_PERMISSION_DENIED = "permission_denied"
 # decided about a record that does carry an identity.
 KILL_LEGACY_NO_IDENTITY = "legacy_record_no_process_identity"
 # The identity fields are present and of the right type but hold a value nothing
-# can be compared against — a NaN or an infinity where a start time belongs. Its
-# own code rather than the one above: that one says a record is old and expected,
-# this one says a record is damaged, and only the second is worth investigating.
+# can be compared against where a start time belongs. Its own code rather than the
+# one above: that one says a record is old and expected, this one says a record is
+# damaged, and only the second is worth investigating.
 KILL_IDENTITY_UNUSABLE = "recorded_identity_unusable"
 # Identity-bearing records. Split by what a caller would do next: a mismatch or
 # a foreign group is settled and will not change on a retry, while an unreadable
@@ -135,6 +135,12 @@ KILL_GROUP_FOREIGN = "group_belongs_to_another_run"
 KILL_GROUP_MARKERS_CONFLICT = "group_markers_conflict"
 KILL_GROUP_PREDATES_RUN = "group_predates_run"
 KILL_GROUP_SCAN_INCOMPLETE = "group_scan_incomplete"
+# The group was inspected end to end and simply yielded no evidence of ownership:
+# no member's marker could be read. Separate from an incomplete scan, because that
+# one is a measurement that failed and may answer on the next call, while this one
+# is the measurement succeeding and returning nothing — the same call will keep
+# returning it, and only an operator can settle the group.
+KILL_GROUP_OWNERSHIP_UNPROVEN = "group_ownership_unproven"
 
 
 def _now_iso() -> str:
@@ -379,16 +385,18 @@ def _group_identity(pgid: int, spawned_at: float, run_id: str) -> tuple[str, str
     ``"conflict"``: two runs cannot both own a group, so whatever produced the
     disagreement is unexplained, and an unexplained group is not signalled.
 
-    The start time decides only by exclusion, and covers what the marker
-    cannot — a run recorded before the marker existed, and a member whose
-    environment cannot be read. It is an inequality rather than an
-    identification: every member starting at or after the run did is consistent
-    with the group being ours but equally consistent with an unrelated group
-    that happens to be younger, so it is the fallback and never the primary.
+    The start time can only ever exclude. A member that started before this run
+    did cannot be work this run spawned, so the group number has been handed on
+    and the answer is ``"not_ours"``. The converse does not follow: every member
+    being younger than the run is consistent with the group being ours and
+    equally consistent with an unrelated group that simply started later, so it
+    is not an identification and is never treated as one. A dead leader whose
+    group yields no readable marker is ``"unproven"`` — inspected in full,
+    and found to carry no evidence either way.
 
     ``"gone"`` when nothing live is left in the group, and ``"unknown"`` when
-    neither rule could establish anything — a member the scan could not read
-    leaves a group that may hold work this scan never saw.
+    the scan itself could not be completed — a member it could not read leaves a
+    group that may hold work the scan never saw.
     """
     members, complete = _live_group_members(pgid)
 
@@ -407,9 +415,9 @@ def _group_identity(pgid: int, spawned_at: float, run_id: str) -> tuple[str, str
     if not members:
         return "gone", "scan"
     floor = spawned_at - _CREATE_TIME_TOLERANCE
-    if all(created >= floor for _, created in members):
-        return "ours", "start_time"
-    return "not_ours", "start_time"
+    if any(created < floor for _, created in members):
+        return "not_ours", "start_time"
+    return "unproven", "start_time"
 
 
 def _tail(path: str | None, limit: int = 4000) -> str | None:
@@ -1325,6 +1333,21 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
     including for a record written before these fields existed — such a record
     cannot confirm anything, so it is refused and its group is left for an
     operator to reap by hand.
+
+    What that buys, stated exactly, because the difference matters to anyone
+    relying on it. Every signal is preceded by a positive identification: either
+    the live leader's start time matches the record and its current group is the
+    recorded one, or a live member of the recorded group carries this run's id in
+    its environment. A group is never signalled because it merely looks young
+    enough. But the identification and the signal are two separate system calls,
+    and there is no way to make them one: ``killpg`` takes a group number, not a
+    reference to the group that was inspected, and there is no "signal this group
+    only if it still holds the process I verified" operation to reach for. So in
+    the window between the two, the identified group can empty and its number be
+    handed to an unrelated group, which would then receive the signal. The window
+    is small and closing it is not possible with process groups alone; it is
+    stated here rather than papered over, because the guarantee is "never signalled
+    without an identification", not "never signals the wrong group".
     """
     job = _read_job(run_id)
     if job is None:
@@ -1346,19 +1369,34 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
     pgid = job.get("pgid")
     if not isinstance(created, int | float) or not isinstance(pgid, int) or pgid <= 1:
         return _refuse_legacy_record(run_id, pid)
-    # Two values reach here that look like numbers and cannot act as one. A NaN or
+    # Three values reach here that look like numbers and cannot act as one. A NaN or
     # an infinity passes every type and range check above and then loses silently to
     # every comparison below, so the leader would be reported as a recycled pid. A
     # boolean is an int as far as isinstance is concerned, so a start time of `true`
-    # arrives as 1.0 — a moment in 1970 — and mismatches the same way. Both name the
-    # wrong fact: nothing was established about the pid at all, only that this record
-    # cannot say anything about it.
-    if isinstance(created, bool) or not math.isfinite(float(created)):
+    # arrives as 1.0 — a moment in 1970 — and mismatches the same way. And a JSON
+    # integer is unbounded, so a record can carry one too large to be a float at all;
+    # converting it is the only way to compare it, and the conversion is what fails,
+    # so that refusal has to be decided from the failure rather than after it. All
+    # three name the wrong fact if they are allowed through: nothing was established
+    # about the pid, only that this record cannot say anything about it.
+    try:
+        spawned_at = float(created)
+        unusable = isinstance(created, bool) or not math.isfinite(spawned_at)
+    except OverflowError:
+        unusable = True
+    if unusable:
+        # The value is reported as written rather than as coerced, so a reader sees
+        # the damage instead of a plausible-looking timestamp — but it came off disk
+        # and a JSON number has no length limit, so it is capped before it goes into
+        # a reason a caller has to read.
+        shown = repr(created)
+        if len(shown) > 60:
+            shown = f"{shown[:60]}… ({len(shown)} characters)"
         return _kill_result(
             run_id,
             killed=False,
             reason=(
-                f"the start time recorded for pid {pid} is {created!r}, which no start "
+                f"the start time recorded for pid {pid} is {shown}, which no start "
                 "time can be compared against, so this record cannot identify its own "
                 "process and nothing was signalled; reap the group by hand after "
                 "confirming the process is this run's"
@@ -1367,7 +1405,6 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
             pid=pid,
             pgid=pgid,
         )
-    spawned_at = float(created)
 
     if _pid_alive(pid):
         state, live_created = _process_create_time(pid)
@@ -1430,28 +1467,26 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
             pid=pid,
             pgid=pgid,
         )
-    # Each refusal gets its own code, because they are not the same news. A
-    # foreign marker, a conflict and an older member are settled facts about the
-    # group and will read the same on every retry; an incomplete scan is a
-    # measurement that failed and may succeed on the next call.
+    # Each refusal gets its own code, because they are not the same news, and each
+    # reason reports what the probe saw rather than the history that would explain
+    # it. A foreign marker, a conflict, an older member and a group with no marker
+    # at all are settled and will read the same on every retry; an incomplete scan
+    # is a measurement that failed and may succeed on the next call.
     if verdict == "conflict":
-        detail = (
-            f"group {pgid} holds processes stamped with different run ids, so which "
-            "run it belongs to is unexplained"
-        )
+        detail = f"live members of group {pgid} carry different run ids in their environment"
         code = KILL_GROUP_MARKERS_CONFLICT
     elif verdict == "not_ours" and rule == "marker":
-        detail = (
-            f"group {pgid} holds a process started by a different run, so the group "
-            "number has been reused"
-        )
+        detail = f"a live member of group {pgid} carries a different run's id in its environment"
         code = KILL_GROUP_FOREIGN
     elif verdict == "not_ours":
-        detail = (
-            f"group {pgid} holds a process that started before this run did, so the "
-            "group number has been reused"
-        )
+        detail = f"a live member of group {pgid} started before this run did"
         code = KILL_GROUP_PREDATES_RUN
+    elif verdict == "unproven":
+        detail = (
+            f"no live member of group {pgid} carries a readable run id, and starting "
+            "after this run did is not evidence of belonging to it"
+        )
+        code = KILL_GROUP_OWNERSHIP_UNPROVEN
     else:
         detail = f"group {pgid} could not be fully inspected"
         code = KILL_GROUP_SCAN_INCOMPLETE

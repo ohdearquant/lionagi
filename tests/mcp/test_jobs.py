@@ -389,7 +389,8 @@ def test_kill_reaps_a_live_group_whose_leader_exited(sandbox, monkeypatch, no_st
 
     The children are spawned into the leader's group and outlive it, so the
     group is what has to be signalled — and it is still identifiable after the
-    leader is gone, because every member started after the run did.
+    leader is gone, because the run stamped its id into every process it started
+    and a surviving member reads it back.
     """
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
     monkeypatch.setattr(
@@ -397,6 +398,7 @@ def test_kill_reaps_a_live_group_whose_leader_exited(sandbox, monkeypatch, no_st
     )
 
     rid = _identity_record()
+    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("found", rid))
     out = jobs.kill(rid)
 
     assert no_stray_signal == [(7777, signal.SIGTERM)]
@@ -487,11 +489,10 @@ def test_kill_identifies_the_group_by_the_marker_the_run_stamped(
 
 
 def test_kill_refuses_a_group_carrying_another_runs_marker(sandbox, monkeypatch, no_stray_signal):
-    """The same evidence pointing the other way, where start time would allow.
+    """The same evidence pointing the other way, and it is what excludes.
 
-    Every member started after this run did, so the inequality is satisfied and
-    the fallback would signal. The marker names a different run, which is a
-    positive identification that the group number has been handed on.
+    Every member started after this run did, so the start time excludes nothing.
+    The marker names a different run, which is what settles it.
     """
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
     monkeypatch.setattr(
@@ -503,7 +504,12 @@ def test_kill_refuses_a_group_carrying_another_runs_marker(sandbox, monkeypatch,
 
     assert no_stray_signal == []
     assert out["killed"] is False and out["reason_code"] == jobs.KILL_GROUP_FOREIGN
-    assert "started by a different run" in out["reason"]
+    # The sentence reports what was read, not the history that would explain it.
+    # An environment variable is what was observed; who spawned the process, and
+    # whether a group number was handed on, was not.
+    assert "carries a different run's id in its environment" in out["reason"]
+    assert "started by" not in out["reason"]
+    assert "reused" not in out["reason"]
 
 
 @pytest.mark.parametrize("order", [("this-run", "other-run"), ("other-run", "this-run")])
@@ -565,17 +571,25 @@ def test_kill_identifies_a_group_whose_members_all_carry_this_runs_marker(
 @pytest.mark.parametrize(
     "marker",
     [
-        # Read fine, but the process predates the marker: a run recorded by an
-        # older build, whose children were never stamped.
+        # The environment was read and simply holds no run id.
         ("found", None),
         # The environment could not be read at all.
         ("unknown", None),
     ],
 )
-def test_kill_falls_back_to_start_time_when_the_marker_is_no_help(
+def test_kill_refuses_a_group_that_is_merely_young_enough(
     sandbox, monkeypatch, no_stray_signal, marker
 ):
-    """Neither confirmed nor refuted, so the inequality decides — as before."""
+    """Starting after this run did is not evidence of belonging to it.
+
+    Every member here is younger than the record, which is exactly what an
+    unrelated group occupying a reused group number looks like: the number was
+    freed when this run's group emptied, and whoever took it necessarily started
+    later. The inequality can rule a group out and can never rule one in, so with
+    no marker to read there is nothing left that identifies this group, and both
+    ways of failing to read one — no id present, and no readable environment —
+    have to refuse.
+    """
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
     monkeypatch.setattr(
         jobs, "_live_group_members", lambda pgid: ([(5001, _SPAWNED_AT + 3.0)], True)
@@ -584,8 +598,36 @@ def test_kill_falls_back_to_start_time_when_the_marker_is_no_help(
 
     out = jobs.kill(_identity_record())
 
-    assert no_stray_signal == [(7777, signal.SIGTERM)]
-    assert out["killed"] is True and out["reason_code"] == jobs.KILL_SIGNALLED
+    assert no_stray_signal == [], "a young group is not thereby this run's group"
+    assert out["killed"] is False
+    assert out["reason_code"] == jobs.KILL_GROUP_OWNERSHIP_UNPROVEN
+    assert "not evidence of belonging to it" in out["reason"]
+
+
+def test_kill_still_excludes_a_group_holding_a_member_older_than_the_run(
+    sandbox, monkeypatch, no_stray_signal
+):
+    """The start time keeps the half of its job that is sound.
+
+    It cannot identify a group, but it can still rule one out: a process that was
+    already running before this run started cannot be work this run spawned. That
+    refusal is a different fact from having no evidence at all, and keeps its own
+    code.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(
+        jobs,
+        "_live_group_members",
+        lambda pgid: ([(5001, _SPAWNED_AT + 3.0), (5002, _SPAWNED_AT - 60.0)], True),
+    )
+
+    out = jobs.kill(_identity_record())
+
+    assert no_stray_signal == []
+    assert out["reason_code"] == jobs.KILL_GROUP_PREDATES_RUN
+    # Observation, not inferred history: a member's age is what was measured.
+    assert "started before this run did" in out["reason"]
+    assert "reused" not in out["reason"]
 
 
 def test_kill_decides_a_dead_leaders_group_without_reading_the_leader_again(
@@ -610,7 +652,9 @@ def test_kill_decides_a_dead_leaders_group_without_reading_the_leader_again(
         jobs, "_live_group_members", lambda pgid: ([(5001, _SPAWNED_AT + 3.0)], True)
     )
 
-    out = jobs.kill(_identity_record())
+    rid = _identity_record()
+    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("found", rid))
+    out = jobs.kill(rid)
 
     assert out["killed"] is True and no_stray_signal == [(7777, signal.SIGTERM)]
 
@@ -673,6 +717,7 @@ def test_kill_reaps_a_live_group_behind_a_terminal_record(sandbox, monkeypatch, 
     )
 
     rid = _identity_record(status="completed", finished_at="2026-01-01T00:00:00+00:00")
+    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("found", rid))
     out = jobs.kill(rid)
 
     assert no_stray_signal == [(7777, signal.SIGTERM)]
@@ -781,19 +826,34 @@ def test_kill_refuses_a_record_that_cannot_confirm_an_identity(
     assert jobs._read_job(rid)["status"] == "running", "a refusal changes no recorded status"
 
 
-@pytest.mark.parametrize("created", [float("nan"), float("inf"), float("-inf"), True, False])
+@pytest.mark.parametrize(
+    "created",
+    [
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        True,
+        False,
+        # A JSON integer has no bound, so a record can carry one that is not a
+        # float at all. Converting it to compare it is what fails.
+        int("9" * 400),
+        -int("9" * 400),
+    ],
+)
 def test_kill_refuses_a_record_whose_start_time_cannot_be_compared(
     sandbox, monkeypatch, no_stray_signal, created
 ):
     """A start time that cannot act as one says nothing about the pid.
 
-    Each of these satisfies the type check and then loses every comparison below
-    it. A NaN is never within tolerance of a live start time. A boolean is an int
-    to isinstance, so ``true`` becomes 1.0 and compares as a moment in 1970. Either
-    way the leader would be reported as a reused pid, and that is the wrong fact —
-    nothing has been established about the pid at all, only that the record cannot
-    describe it. The refusal is the same, but the code and the reason must not
-    claim otherwise.
+    Each of these satisfies the type check and then fails to act as a start time.
+    A NaN is never within tolerance of a live one. A boolean is an int to
+    isinstance, so ``true`` becomes 1.0 and compares as a moment in 1970. An
+    integer too large for a float cannot be converted at all, and would leave the
+    call raising out of a tool that promises a refusal. Each would otherwise have
+    the leader reported as a reused pid, or nothing reported at all, and both are
+    the wrong answer — nothing has been established about the pid, only that the
+    record cannot describe it. The refusal is the same, but the code and the
+    reason must not claim otherwise.
     """
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: pytest.fail("pid must not be probed"))
 
@@ -803,6 +863,9 @@ def test_kill_refuses_a_record_whose_start_time_cannot_be_compared(
     assert out["killed"] is False
     assert out["reason_code"] == jobs.KILL_IDENTITY_UNUSABLE
     assert "reused" not in out["reason"], "the pid was never established to be anything"
+    # The value came off disk and a JSON number has no length limit, so it must not
+    # be able to set the size of a reason a caller has to read.
+    assert len(out["reason"]) < 400, "a record must not choose how long the answer is"
 
 
 def _process_table_enumerable() -> tuple[bool, str]:
@@ -834,14 +897,27 @@ def test_a_group_outlives_its_leader_and_is_reaped_by_identity(sandbox):
 
     A leader that backgrounds a child and exits leaves the child running in the
     group it created. Nothing is mocked here: the record carries the identity
-    submit() records, the leader really exits and is really reaped, and the
-    group is enumerated from the OS.
+    submit() records, the leader is started with the run id in its environment
+    exactly as submit() starts one, the leader really exits and is really reaped,
+    and the group is enumerated from the OS. The surviving child inherited the
+    marker, which is what identifies the group once its leader is gone.
+
+    The survivor is an interpreter rather than a shell utility on purpose. macOS
+    does not disclose the environment of its own protected system binaries, so a
+    ``sleep`` left in the group would read back as carrying no marker and the run
+    would be unidentifiable for a reason that has nothing to do with this code.
+    A `li` worker is an interpreter, and this stays faithful to that.
     """
+    import shlex
     import subprocess
+    import sys
     import time
 
+    rid = jobs.new_run_id()
+    survivor = f'{shlex.quote(sys.executable)} -c "import time; time.sleep(30)"'
     proc = subprocess.Popen(  # noqa: S603,S607
-        ["sh", "-c", "sleep 30 & sleep 0.5"],
+        ["sh", "-c", f"{survivor} & sleep 0.5"],
+        env={**os.environ, config.JOB_MARKER_ENV_VAR: rid},
         start_new_session=True,
     )
     # start_new_session, so the group is the leader's own pid. Held before
@@ -858,7 +934,7 @@ def test_a_group_outlives_its_leader_and_is_reaped_by_identity(sandbox):
         members, complete = jobs._live_group_members(pgid)
         assert complete and members, "the child outlived its leader in the group"
 
-        rid = _identity_record(pid=proc.pid, pgid=pgid, created=created)
+        _identity_record(pid=proc.pid, pgid=pgid, created=created, run_id=rid)
         out = jobs.kill(rid, signal.SIGKILL)
 
         assert out["killed"] is True and out["reason_code"] == jobs.KILL_SIGNALLED
