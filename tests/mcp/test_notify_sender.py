@@ -96,6 +96,9 @@ def test_no_delivery_runs_when_the_template_needs_a_sender_and_none_was_given(
     rec = jobs._read_job(rid)
     assert rec["notify_delivery"]["attempted"] is False
     assert rec["notify_delivery"]["error"] == "delivery_command_needs_a_sender_and_none_was_given"
+    # A notifier refused for want of a sender is one an operator wants named:
+    # the template is dropped here, so the program is taken before that happens.
+    assert rec["notify_delivery"]["command"] == "notify"
 
 
 def test_a_template_that_needs_a_sender_delivers_when_one_is_given(monkeypatch, tmp_path):
