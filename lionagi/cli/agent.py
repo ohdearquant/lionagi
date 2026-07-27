@@ -306,10 +306,9 @@ def _report_mcp_resolution(
     for the one case where it is accurate: servers resolved and handed over.
 
     ``forwarded`` is the caller's answer to "does this spawn hand the resolved
-    set to the leg?" — it is read off the request that was just built, or off
-    ``provider_accepts_forwarded_mcp`` where the hand-off happens later during
-    agent construction. This function must not re-derive it from the provider
-    name: a second list here is what let the message contradict the spawn.
+    set to the leg?", read off the request that spawn built. This function must
+    not re-derive it from the provider name: a second list here is what let the
+    message contradict the spawn.
     """
     from lionagi.cli._logging import warn
 
@@ -522,18 +521,15 @@ async def _run_agent(
         )
         effort = resolve_persisted_effort(provider, chat_model, effort)
         # Two spawn shapes hand the set over in two different places, so the
-        # message has to ask the one that applies. A create_agent leg gets it
-        # from the forwarder a few lines below (both CLI transports); a plain
-        # leg gets only what build_chat_model already put on the request.
+        # message has to read the one that applies. A plain leg gets only what
+        # build_chat_model already put on the request, which is knowable here;
+        # a create_agent leg is handed the set inside create_agent, so its
+        # message waits for the request that call produces (below).
         takes_create_agent_path = preset == "coding" or has_role_key
-        if takes_create_agent_path:
-            from lionagi.agent.factory import provider_accepts_forwarded_mcp
-
-            forwarded = provider_accepts_forwarded_mcp(provider)
-        else:
+        if not takes_create_agent_path:
             built_config = getattr(getattr(chat_model, "endpoint", None), "config", None)
             forwarded = bool(built_config and "mcp_servers" in built_config.kwargs)
-        _report_mcp_resolution(mcp_resolution, provider=provider, cwd=cwd, forwarded=forwarded)
+            _report_mcp_resolution(mcp_resolution, provider=provider, cwd=cwd, forwarded=forwarded)
 
         # Opt-in profile `role:` key switches a plain `-a <profile>` leg onto
         # the same create_agent path as --preset coding, parameterized by role.
@@ -541,7 +537,10 @@ async def _run_agent(
             took_create_agent_path = True
             # Use create_agent so CodingToolkit tools and path-guards are wired;
             # compose the profile extension into the spec before calling it.
-            from lionagi.agent.factory import create_agent
+            from lionagi.agent.factory import (
+                create_agent,
+                request_carries_forwarded_mcp,
+            )
 
             # Use profile.raw_body, not profile.system_prompt, to avoid
             # duplicating LION_SYSTEM_MESSAGE (see docs/internals/cli.md).
@@ -558,11 +557,24 @@ async def _run_agent(
             # of the profile's frontmatter — propagate an explicit opt-out.
             if profile is not None and not profile.lion_system:
                 spec.lion_system = False
+            # Hand over the set resolved from the submitting directory. Without
+            # it the factory looks for a config of its own, and a leg pointed
+            # at a checkout gets whatever is found near the target instead of
+            # what this command resolved and reported.
             branch = await create_agent(
                 spec,
                 chat_model=chat_model,
                 log_config=DataLoggerConfig(auto_save_on_exit=False),
                 load_settings=False,
+                resolved_mcp_servers=mcp_resolution.servers,
+            )
+            # The hand-over happened inside create_agent, so the request it
+            # produced is the only honest source for what this leg is getting.
+            _report_mcp_resolution(
+                mcp_resolution,
+                provider=provider,
+                cwd=cwd,
+                forwarded=request_carries_forwarded_mcp(branch),
             )
         else:
             branch = Branch(
