@@ -397,6 +397,14 @@ def test_kill_signals_a_live_leader_whose_environment_names_no_run(
     marker to signal would strand every job whose processes cannot be read. Both
     of those answers are covered here, because the distinction the code must not
     start drawing between them is invisible to a single case.
+
+    It is also where the scope of the whole identity check ends, and the case is
+    pinned here rather than only described in prose. A record rewritten to hold
+    a live stranger's pid, start time and group reaches this same assertion: if
+    that stranger names no run, it is signalled. Nothing in the record can say
+    who wrote it, so the guarantee is relative to a record this run wrote, and a
+    store that can be rewritten is a store whose writer could signal these
+    processes without going through here at all.
     """
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", _SPAWNED_AT))

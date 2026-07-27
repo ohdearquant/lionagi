@@ -1439,6 +1439,19 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
     boundary that would settle it, and it is not a boundary a field comparison
     can draw.
 
+    So the store is a trusted input, and that is a premise of this function
+    rather than an oversight in it. It is also not a weakness worth engineering
+    against: the store lives in the invoking user's own directory, and anything
+    able to rewrite a record there can call ``killpg`` on that user's processes
+    directly, without going through here. Nothing kept beside the record helps,
+    since the same writer reaches it too, and an identifier held only in this
+    process would break the one property the recorded identity exists to
+    provide, which is that a run stays reapable after the server that spawned it
+    restarts. What is claimed, then, is the guarantee relative to a record this
+    run wrote: given that, no signal is sent without a positive identification.
+    Provenance of the record itself is out of scope and is not implied anywhere
+    in the result.
+
     Identification and the signal are two separate system calls,
     and there is no way to make them one: ``killpg`` takes a group number, not a
     reference to the group that was inspected, and there is no "signal this group
