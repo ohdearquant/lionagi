@@ -1,6 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
+import asyncio
 import logging
 
 import anyio
@@ -110,6 +111,21 @@ class HookedEvent(Event):
         which of those it was. Whatever ended the stream still propagates unchanged;
         post-hook failures are logged, never raised.
 
+        Guaranteed: the caller receives the very same exception object the stream ended
+        with, not a replacement, no matter how the teardown fails — an ordinary
+        exception, a cancellation the hook raises at itself, or a failure in the hook's
+        own logging. A stream that ended normally still ends normally.
+
+        Deliberately not guaranteed: a cancellation actually delivered to the consuming
+        task while the teardown is running is not swallowed. It reaches the caller in
+        place of whatever the stream ended with, because a task that was cancelled from
+        outside must not come back believing it was not. On a stream that was itself
+        ended by cancellation the source is re-raised instead, since the consumer stays
+        cancelled either way. Off asyncio the two kinds of cancellation cannot be told
+        apart at all and both propagate. ``KeyboardInterrupt`` and ``SystemExit`` raised
+        inside the teardown also propagate — they are process-level directives rather
+        than hook failures.
+
         A consumer that stops early is responsible for closing the stream, with
         ``aclose()`` or ``contextlib.aclosing``. A bare ``break`` does not close the
         generator it was iterating, so teardown is deferred to whenever the interpreter
@@ -147,7 +163,30 @@ class HookedEvent(Event):
             raise
         finally:
             self._stream_terminal_state = state
-            await self._run_post_stream_hook(state)
+            try:
+                await self._run_post_stream_hook(state)
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except get_cancelled_exc_class():
+                # A cancellation the hook raised at itself was already absorbed where it
+                # could still be attributed. One reaching here was delivered to the
+                # consuming task, so it is honoured -- except on a stream that ended in
+                # cancellation, where re-raising the source leaves the consumer cancelled
+                # anyway and keeps the exception it was handed.
+                if state is not StreamTerminalState.Cancelled:
+                    raise
+                _logger.warning(
+                    "Post-stream teardown was cancelled while the stream was ending "
+                    "(%s); the stream's own ending is preserved",
+                    state.value,
+                )
+            except BaseException as _teardown_exc:
+                _logger.warning(
+                    "Post-stream teardown failed while the stream was ending (%s): %s",
+                    state.value,
+                    _teardown_exc,
+                    exc_info=True,
+                )
 
     async def _run_post_stream_hook(self, state: StreamTerminalState) -> None:
         """Invoke and log the post-invocation hook for a stream that ended in ``state``.
@@ -171,12 +210,12 @@ class HookedEvent(Event):
             StreamTerminalState.Cancelled,
         )
         if not unwinding:
-            await self._invoke_post_stream_hook(h_ev)
+            await self._invoke_post_stream_hook_isolated(h_ev)
             return
 
         with anyio.CancelScope(shield=True):
             with move_on_after(POST_STREAM_TEARDOWN_GRACE) as scope:
-                await self._invoke_post_stream_hook(h_ev)
+                await self._invoke_post_stream_hook_isolated(h_ev)
             if scope.cancelled_caught:
                 _logger.warning(
                     "Post-stream hook did not finish within %ss while the stream was "
@@ -184,6 +223,38 @@ class HookedEvent(Event):
                     POST_STREAM_TEARDOWN_GRACE,
                     state.value,
                 )
+
+    async def _invoke_post_stream_hook_isolated(self, h_ev: HookEvent) -> None:
+        """Run the post-hook in a child task, so a cancellation it raises is attributable.
+
+        Within one task a cancellation raised by the awaited code and one delivered to
+        the task at that await are the same exception arriving at the same place, and
+        cannot be told apart -- shielding does not help, since a direct ``Task.cancel()``
+        reaches a shielded await anyway. Running the hook in a child task separates them:
+        if a cancellation surfaces here and the child has finished, it came out of the
+        hook and must not replace the stream's own ending; if the child is still running,
+        the cancellation was delivered to the consuming task and is the consumer's, so
+        the hook is cancelled with it and the cancellation propagates.
+
+        Off asyncio there is no task to branch into, so the hook runs inline and the two
+        are indistinguishable; a cancellation then propagates.
+        """
+        try:
+            child = asyncio.ensure_future(self._invoke_post_stream_hook(h_ev))
+        except RuntimeError:
+            await self._invoke_post_stream_hook(h_ev)
+            return
+
+        try:
+            await asyncio.shield(child)
+        except get_cancelled_exc_class():
+            if child.done():
+                _logger.warning(
+                    "Post-stream hook cancelled itself (data already sent)",
+                )
+                return
+            child.cancel()
+            raise
 
     async def _invoke_post_stream_hook(self, h_ev: HookEvent) -> None:
         try:

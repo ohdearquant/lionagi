@@ -9,7 +9,9 @@ from types import SimpleNamespace
 
 import anyio
 import pytest
+from pydantic import PrivateAttr
 
+from lionagi.ln.concurrency import get_cancelled_exc_class
 from lionagi.protocols.types import EventStatus
 from lionagi.service.hooks import hooked_event
 from lionagi.service.hooks._types import StreamTerminalState
@@ -305,6 +307,49 @@ class SlowStream(HookedEvent):
         yield "chunk2"
 
 
+class RaisingStream(HookedEvent):
+    """Yields one chunk, then raises the exception object handed to it.
+
+    Raising a caller-held object is what makes identity assertable: the test can
+    compare what the consumer caught against what the source actually raised.
+    """
+
+    _to_raise: BaseException = PrivateAttr(None)
+
+    async def _core_stream(self):
+        yield "chunk1"
+        raise self._to_raise
+
+
+class CancelCapturingStream(HookedEvent):
+    """Waits to be cancelled from outside, keeping the cancellation it was handed."""
+
+    _delivered: list = PrivateAttr(default_factory=list)
+
+    async def _core_stream(self):
+        yield "chunk1"
+        try:
+            await anyio.sleep(30)
+        except get_cancelled_exc_class() as e:
+            self._delivered.append(e)
+            raise
+        yield "chunk2"
+
+
+def _post_hook_raising(exc: BaseException):
+    """A post-hook that raises ``exc`` out of invoke()."""
+
+    class _RaisingHookEvent:
+        execution = SimpleNamespace(status=EventStatus.COMPLETED, error=None)
+        _should_exit = False
+        _exit_cause = None
+
+        async def invoke(self):
+            raise exc
+
+    return _RaisingHookEvent()
+
+
 def _recording_post_hook(event: HookedEvent):
     """A post-hook that records the terminal state visible to it when it runs."""
     seen: list[StreamTerminalState | None] = []
@@ -324,14 +369,22 @@ def _recording_post_hook(event: HookedEvent):
 
 @pytest.mark.asyncio
 async def test_stream_post_hook_runs_when_core_stream_raises():
-    """A source error must not skip teardown, and must reach the caller unchanged."""
-    h = FailingHooked()
+    """A source error must not skip teardown, and must reach the caller unchanged.
+
+    Unchanged means the same object: a teardown that replaced it with an equivalent
+    one would still satisfy a type-and-message check while losing the original
+    traceback and any state the caller attached to it.
+    """
+    source = ValueError("core_stream_failed")
+    h = RaisingStream()
+    h._to_raise = source
     seen = _recording_post_hook(h)
 
-    with pytest.raises(ValueError, match="core_stream_failed"):
+    with pytest.raises(ValueError) as caught:
         async for _ in h._stream():
             pass
 
+    assert caught.value is source
     assert seen == [StreamTerminalState.Failed]
     assert h.stream_terminal_state is StreamTerminalState.Failed
 
@@ -474,4 +527,145 @@ async def test_bare_break_defers_teardown_to_generator_finalization():
             await anyio.sleep(0.01)
 
     assert seen == [StreamTerminalState.Closed]
+
+
+# ---------------------------------------------------------------------------
+# HookedEvent._stream() — a failing teardown must not replace the ending it
+# was there to record
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "hook_exc",
+    [
+        pytest.param(asyncio.CancelledError("post hook cancelled itself"), id="cancelled"),
+        pytest.param(RuntimeError("post hook exploded"), id="ordinary"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_source_error_survives_a_failing_teardown(hook_exc):
+    """A source error reaches the caller as the same object, whatever the hook does.
+
+    A cancellation is the interesting half: it is a BaseException, so a teardown
+    guard written against Exception lets it out of the finally and the caller gets
+    the hook's cancellation instead of the failure that ended the stream.
+    """
+    source = ValueError("core_stream_failed")
+    h = RaisingStream()
+    h._to_raise = source
+    h._post_invoke_hook_event = _post_hook_raising(hook_exc)
+
+    with pytest.raises(ValueError) as caught:
+        async for _ in h._stream():
+            pass
+
+    assert caught.value is source
+    assert h.stream_terminal_state is StreamTerminalState.Failed
+
+
+@pytest.mark.parametrize(
+    "hook_exc",
+    [
+        pytest.param(asyncio.CancelledError("post hook cancelled itself"), id="cancelled"),
+        pytest.param(RuntimeError("post hook exploded"), id="ordinary"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_normal_completion_survives_a_failing_teardown(hook_exc):
+    """A stream that ended normally still ends normally when its teardown fails."""
+    h = SimpleHooked()
+    h._post_invoke_hook_event = _post_hook_raising(hook_exc)
+
+    chunks = [c async for c in h._stream()]
+
+    assert chunks == ["chunk1", "chunk2"]
+    assert h.stream_terminal_state is StreamTerminalState.Completed
+
+
+@pytest.mark.parametrize(
+    "hook_exc",
+    [
+        pytest.param(asyncio.CancelledError("post hook cancelled itself"), id="cancelled"),
+        pytest.param(RuntimeError("post hook exploded"), id="ordinary"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_early_close_survives_a_failing_teardown(hook_exc):
+    """aclose() on an early-stopped stream returns, it does not raise the hook's failure."""
+    h = SimpleHooked()
+    h._post_invoke_hook_event = _post_hook_raising(hook_exc)
+
+    stream = h._stream()
+    async for _ in stream:
+        break
+    await stream.aclose()
+
     assert h.stream_terminal_state is StreamTerminalState.Closed
+
+
+@pytest.mark.asyncio
+async def test_outer_cancellation_survives_a_failing_teardown():
+    """A cancelled consumer gets back the cancellation it was handed, not the hook's.
+
+    Identity is checked inside the consuming coroutine: asyncio re-wraps a task's
+    cancellation at the task boundary, so awaiting the task cannot see it.
+    """
+    h = CancelCapturingStream()
+    h._post_invoke_hook_event = _post_hook_raising(
+        asyncio.CancelledError("post hook cancelled itself")
+    )
+    first_chunk = asyncio.Event()
+    caught: list[BaseException] = []
+
+    async def consume():
+        try:
+            async for _ in h._stream():
+                first_chunk.set()
+        except asyncio.CancelledError as e:
+            caught.append(e)
+            raise
+
+    task = asyncio.create_task(consume())
+    await first_chunk.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert task.cancelled()
+    assert caught and caught[0] is h._delivered[0]
+    assert h.stream_terminal_state is StreamTerminalState.Cancelled
+
+
+@pytest.mark.asyncio
+async def test_consumer_cancelled_during_teardown_is_still_cancelled():
+    """The cancellation the fix could swallow: one delivered while teardown awaits.
+
+    The stream itself ended normally, so nothing is in flight to protect, and the
+    cancellation belongs to the consuming task. Swallowing it here would leave a
+    task that was cancelled from outside running on as if it never had been.
+    """
+    hook_running = asyncio.Event()
+
+    class BlockingPostHook:
+        execution = SimpleNamespace(status=EventStatus.COMPLETED, error=None)
+        _should_exit = False
+        _exit_cause = None
+
+        async def invoke(self):
+            hook_running.set()
+            await anyio.sleep(30)
+
+    h = SimpleHooked()
+    h._post_invoke_hook_event = BlockingPostHook()
+
+    async def consume():
+        async for _ in h._stream():
+            pass
+
+    task = asyncio.create_task(consume())
+    await hook_running.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert task.cancelled(), "a consumer cancelled from outside must stay cancelled"
