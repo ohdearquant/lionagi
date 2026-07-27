@@ -3,11 +3,14 @@
 
 """Tests for lionagi.service.hooks.hooked_event — HookedEvent._invoke() and _stream()."""
 
+import asyncio
 from types import SimpleNamespace
 
+import anyio
 import pytest
 
 from lionagi.protocols.types import EventStatus
+from lionagi.service.hooks._types import StreamTerminalState
 from lionagi.service.hooks.hooked_event import HookedEvent
 
 # ---------------------------------------------------------------------------
@@ -284,3 +287,129 @@ async def test_stream_post_hook_aborted_status_logs_warning(caplog):
 
     assert chunks == ["chunk1", "chunk2"]
     assert any("Post-stream hook failed" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# HookedEvent._stream() — teardown on every way a stream can end
+# ---------------------------------------------------------------------------
+
+
+class SlowStream(HookedEvent):
+    """Yields one chunk, then waits long enough to be cancelled from outside."""
+
+    async def _core_stream(self):
+        yield "chunk1"
+        await anyio.sleep(30)
+        yield "chunk2"
+
+
+def _recording_post_hook(event: HookedEvent):
+    """A post-hook that records the terminal state visible to it when it runs."""
+    seen: list[StreamTerminalState | None] = []
+
+    class _RecordingHookEvent:
+        def __init__(self):
+            self.execution = SimpleNamespace(status=EventStatus.COMPLETED, error=None)
+            self._should_exit = False
+            self._exit_cause = None
+
+        async def invoke(self):
+            seen.append(event.stream_terminal_state)
+
+    event._post_invoke_hook_event = _RecordingHookEvent()
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_stream_post_hook_runs_when_core_stream_raises():
+    """A source error must not skip teardown, and must reach the caller unchanged."""
+    h = FailingHooked()
+    seen = _recording_post_hook(h)
+
+    with pytest.raises(ValueError, match="core_stream_failed"):
+        async for _ in h._stream():
+            pass
+
+    assert seen == [StreamTerminalState.Failed]
+    assert h.stream_terminal_state is StreamTerminalState.Failed
+
+
+@pytest.mark.asyncio
+async def test_stream_post_hook_runs_when_consumer_breaks_early():
+    """A consumer that stops after the first chunk still gets teardown."""
+    h = SimpleHooked()
+    seen = _recording_post_hook(h)
+
+    stream = h._stream()
+    async for chunk in stream:
+        assert chunk == "chunk1"
+        break
+    await stream.aclose()
+
+    assert seen == [StreamTerminalState.Closed]
+    assert h.stream_terminal_state is StreamTerminalState.Closed
+
+
+@pytest.mark.asyncio
+async def test_stream_post_hook_runs_when_consuming_task_is_cancelled():
+    """Cancellation still propagates, and teardown runs shielded from it."""
+    h = SlowStream()
+    seen = _recording_post_hook(h)
+    first_chunk = asyncio.Event()
+
+    async def consume():
+        async for _ in h._stream():
+            first_chunk.set()
+
+    task = asyncio.create_task(consume())
+    await first_chunk.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert task.cancelled()
+    assert seen == [StreamTerminalState.Cancelled]
+    assert h.stream_terminal_state is StreamTerminalState.Cancelled
+
+
+@pytest.mark.asyncio
+async def test_stream_post_hook_runs_when_an_enclosing_timeout_fires():
+    """A timeout around the consumer reaches the stream as cancellation."""
+    h = SlowStream()
+    seen = _recording_post_hook(h)
+
+    with pytest.raises(TimeoutError):
+        with anyio.fail_after(0.05):
+            async for _ in h._stream():
+                pass
+
+    assert seen == [StreamTerminalState.Cancelled]
+    assert h.stream_terminal_state is StreamTerminalState.Cancelled
+
+
+@pytest.mark.asyncio
+async def test_stream_terminal_state_is_completed_on_exhaustion():
+    """The ordinary path keeps reporting itself as a completed stream."""
+    h = SimpleHooked()
+    seen = _recording_post_hook(h)
+
+    chunks = [c async for c in h._stream()]
+
+    assert chunks == ["chunk1", "chunk2"]
+    assert seen == [StreamTerminalState.Completed]
+    assert h.stream_terminal_state is StreamTerminalState.Completed
+
+
+@pytest.mark.asyncio
+async def test_public_stream_closes_the_inner_stream_when_closed_early():
+    """Closing Event.stream() must close the hooked stream it wraps, so teardown
+    happens at the close rather than whenever the interpreter gets around to it."""
+    h = SimpleHooked()
+    seen = _recording_post_hook(h)
+
+    stream = h.stream()
+    async for _ in stream:
+        break
+    await stream.aclose()
+
+    assert seen == [StreamTerminalState.Closed]

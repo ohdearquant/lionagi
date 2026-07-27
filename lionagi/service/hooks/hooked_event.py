@@ -3,12 +3,23 @@
 
 import logging
 
+import anyio
 from pydantic import PrivateAttr
 
+from lionagi.ln.concurrency import get_cancelled_exc_class, move_on_after
 from lionagi.protocols.types import DataLogger, Event, EventStatus
 from lionagi.service.hooks import HookEvent, HookEventTypes
 
+from ._types import StreamTerminalState
+
 _logger = logging.getLogger(__name__)
+
+POST_STREAM_TEARDOWN_GRACE = 5.0
+"""Seconds a post-stream hook may take when the stream is being closed or cancelled.
+
+Teardown on those paths runs shielded so it is not cut short by the cancellation that
+caused it, but it must not stall the unwind either, so it is bounded by this grace.
+"""
 
 global_hook_logger = DataLogger(
     persist_dir="./data/logs",
@@ -23,6 +34,16 @@ class HookedEvent(Event):
 
     _pre_invoke_hook_event: HookEvent = PrivateAttr(None)
     _post_invoke_hook_event: HookEvent = PrivateAttr(None)
+    _stream_terminal_state: StreamTerminalState | None = PrivateAttr(None)
+
+    @property
+    def stream_terminal_state(self) -> StreamTerminalState | None:
+        """How the current ``_stream()`` run ended, or None while it is still running.
+
+        Set before the post-invocation hook is invoked, so a hook can tell a stream that
+        completed from one that failed, was closed by its consumer, or was cancelled.
+        """
+        return self._stream_terminal_state
 
     async def _core_invoke(self):
         """Override in subclasses; return value is stored in ``self.execution.response``."""
@@ -82,7 +103,13 @@ class HookedEvent(Event):
         return response
 
     async def _stream(self):
-        """Run pre-hook, yield chunks from ``_core_stream()``, run post-hook (post failures only logged)."""
+        """Run pre-hook, yield chunks from ``_core_stream()``, run post-hook.
+
+        The post-hook runs however the stream ends — exhaustion, a source error, an
+        early-stopping consumer, or cancellation — and ``stream_terminal_state`` says
+        which of those it was. Whatever ended the stream still propagates unchanged;
+        post-hook failures are logged, never raised.
+        """
         if h_ev := self._pre_invoke_hook_event:
             await h_ev.invoke()
             if h_ev.execution.status in (EventStatus.FAILED, EventStatus.CANCELLED):
@@ -95,32 +122,81 @@ class HookedEvent(Event):
                 )
             await global_hook_logger.alog(h_ev)
 
-        async for chunk in self._core_stream():
-            yield chunk
+        self._stream_terminal_state = None
+        state = StreamTerminalState.Completed
+        try:
+            async for chunk in self._core_stream():
+                yield chunk
+        except GeneratorExit:
+            # Raised at the yield above when the consumer stops early and the generator
+            # is closed. Teardown may await, but must not yield, and must not stall.
+            state = StreamTerminalState.Closed
+            raise
+        except get_cancelled_exc_class():
+            state = StreamTerminalState.Cancelled
+            raise
+        except BaseException:
+            state = StreamTerminalState.Failed
+            raise
+        finally:
+            self._stream_terminal_state = state
+            await self._run_post_stream_hook(state)
 
-        # Post-stream hook failure: data already sent, must not reraise — log at WARNING only.
-        # HookRegistry.post_invocation() records a handler's raised exception on the
-        # HookEvent (status FAILED/CANCELLED/ABORTED) rather than re-raising it out of
-        # invoke(), so the failure must be detected via status, not a try/except.
-        if h_ev := self._post_invoke_hook_event:
-            try:
-                await h_ev.invoke()
-                if h_ev.execution.status in (
-                    EventStatus.FAILED,
-                    EventStatus.CANCELLED,
-                    EventStatus.ABORTED,
-                ):
-                    _logger.warning(
-                        "Post-stream hook failed (data already sent): %s",
-                        h_ev.execution.error,
-                    )
-            except Exception as _hook_exc:
+    async def _run_post_stream_hook(self, state: StreamTerminalState) -> None:
+        """Invoke and log the post-invocation hook for a stream that ended in ``state``.
+
+        Post-stream hook failure: data already sent, must not reraise — log at WARNING
+        only. HookRegistry.post_invocation() records a handler's raised exception on the
+        HookEvent (status FAILED/CANCELLED/ABORTED) rather than re-raising it out of
+        invoke(), so the failure must be detected via status, not a try/except.
+        """
+        h_ev = self._post_invoke_hook_event
+        if not h_ev:
+            return
+
+        # On the close and cancel paths the teardown is running inside an unwind that is
+        # already cancelling: an unshielded await would be cancelled before the hook
+        # could run, and would replace the exception in flight with a fresh one. Shield
+        # it so the hook actually runs, and bound it so a slow hook cannot hold the
+        # unwind open.
+        unwinding = state in (
+            StreamTerminalState.Closed,
+            StreamTerminalState.Cancelled,
+        )
+        if not unwinding:
+            await self._invoke_post_stream_hook(h_ev)
+            return
+
+        with anyio.CancelScope(shield=True):
+            with move_on_after(POST_STREAM_TEARDOWN_GRACE) as scope:
+                await self._invoke_post_stream_hook(h_ev)
+            if scope.cancelled_caught:
+                _logger.warning(
+                    "Post-stream hook did not finish within %ss while the stream was "
+                    "being torn down (%s)",
+                    POST_STREAM_TEARDOWN_GRACE,
+                    state.value,
+                )
+
+    async def _invoke_post_stream_hook(self, h_ev: HookEvent) -> None:
+        try:
+            await h_ev.invoke()
+            if h_ev.execution.status in (
+                EventStatus.FAILED,
+                EventStatus.CANCELLED,
+                EventStatus.ABORTED,
+            ):
                 _logger.warning(
                     "Post-stream hook failed (data already sent): %s",
-                    _hook_exc,
-                    exc_info=True,
+                    h_ev.execution.error,
                 )
-            await global_hook_logger.alog(h_ev)
+        except Exception as _hook_exc:
+            _logger.warning(
+                "Post-stream hook failed (data already sent): %s",
+                _hook_exc,
+                exc_info=True,
+            )
+        await global_hook_logger.alog(h_ev)
 
     def create_pre_invoke_hook(
         self,
