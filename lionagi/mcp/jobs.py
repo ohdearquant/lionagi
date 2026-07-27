@@ -1125,6 +1125,17 @@ async def wait(
     the result and never stop the other ids being observed; they are not listed
     as pending, because waiting longer cannot resolve them.
 
+    A run whose process is gone with no end recorded meets that same criterion:
+    it has stopped, and both writers of an end are past it, so the window is not
+    held open for it either. Such ids are named in ``stopped_without_end`` — not
+    in ``pending``, which is what is still worth waiting for, and not as a per-id
+    ``error``, because observing them succeeded. Nothing about the record itself
+    changes: the entry stays non-terminal with a null outcome, and a run that
+    does get an end written afterwards is classified terminal by the next
+    observation as it always was. ``all_terminal`` therefore stays false while any
+    id is here, because a run that stopped without recording an end is not a
+    completed one.
+
     Observing does not touch the run. This function only reads: a wait that
     expires, or whose caller cancels or disconnects, leaves the durable record
     exactly as it was — cancelling an observation is not cancelling the work.
@@ -1140,9 +1151,14 @@ async def wait(
 
     entries: list[dict[str, Any]] = []
     pending: list[str] = []
+    stopped: list[str] = []
     while True:
         entries = [_wait_entry(rid) for rid in ordered]
-        pending = [e["run_id"] for e in entries if e["error"] is None and not e["terminal"]]
+        observed = [e for e in entries if e["error"] is None]
+        stopped = [e["run_id"] for e in observed if e["possibly_orphaned"]]
+        pending = [
+            e["run_id"] for e in observed if not e["terminal"] and not e["possibly_orphaned"]
+        ]
         if not pending:
             break
         remaining = deadline - anyio.current_time()
@@ -1153,9 +1169,10 @@ async def wait(
     errored = any(e["error"] is not None for e in entries)
     return {
         "runs": entries,
-        "all_terminal": not pending and not errored,
+        "all_terminal": not pending and not errored and not stopped,
         "timed_out": bool(pending),
         "pending": pending,
+        "stopped_without_end": stopped,
         "max_wait": eff_max,
         "poll_interval": eff_poll,
         "requested_max_wait": max_wait,

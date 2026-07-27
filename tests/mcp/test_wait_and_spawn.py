@@ -342,6 +342,113 @@ async def test_wait_stops_as_soon_as_every_id_is_terminal(sandbox, monkeypatch):
     assert polls["n"] == 2
 
 
+async def test_wait_returns_at_once_when_the_process_is_gone(sandbox, monkeypatch):
+    """A run whose process is gone cannot be resolved by waiting longer.
+
+    Both writers of an end are past it, so the window is not held open for it.
+    The sleep is replaced by one that fails, so the assertion is that no poll
+    interval was ever entered rather than that the call felt quick.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    rid = jobs.new_run_id()
+    _record(rid, pid=999_999)
+
+    import anyio
+
+    async def never(seconds):
+        raise AssertionError(f"slept {seconds}s on a run whose process is gone")
+
+    monkeypatch.setattr(anyio, "sleep", never)
+    res = await jobs.wait([rid], max_wait=600, poll_interval=5)
+
+    assert res["pending"] == []
+    assert res["stopped_without_end"] == [rid]
+    assert res["timed_out"] is False
+    # Stopped is not finished: nothing recorded how this run came out.
+    assert res["all_terminal"] is False
+    assert res["runs"][0]["terminal"] is False
+    assert res["runs"][0]["outcome"] is None
+    assert res["runs"][0]["possibly_orphaned"] is True
+    assert res["runs"][0]["error"] is None
+
+
+async def test_wait_still_waits_for_a_running_id_beside_a_stopped_one(sandbox, monkeypatch):
+    """A stopped id is dropped from the wait; the ids that can still finish keep it."""
+    alive = {"value": True}
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: pid == 4242 and alive["value"])
+    gone = jobs.new_run_id()
+    _record(gone, pid=999_999)
+    busy = jobs.new_run_id()
+    _record(busy, pid=4242)
+
+    polls = {"n": 0}
+    real_status = jobs.status
+
+    def counting_status(run_id):
+        if run_id == busy:
+            polls["n"] += 1
+            if polls["n"] == 2:  # the running run ends between two observations
+                alive["value"] = False
+                jobs.mark_terminal(run_id, "completed")
+        return real_status(run_id)
+
+    monkeypatch.setattr(jobs, "status", counting_status)
+    res = await jobs.wait([gone, busy], max_wait=30, poll_interval=0.01)
+
+    assert polls["n"] == 2  # the wait did keep observing the running id
+    assert res["pending"] == []
+    assert res["stopped_without_end"] == [gone]
+    assert res["timed_out"] is False
+    assert res["all_terminal"] is False  # one id never recorded an end
+    assert res["runs"][1]["terminal"] is True
+    assert res["runs"][1]["outcome"] == "succeeded"
+
+
+async def test_a_stopped_run_that_later_records_an_end_is_terminal(sandbox, monkeypatch):
+    """Dropping a stopped id from the wait says nothing about the record.
+
+    An end written afterwards by either writer classifies exactly as it always
+    did, and the id is no longer reported as stopped without one.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    rid = jobs.new_run_id()
+    _record(rid, pid=999_999)
+
+    stopped = await jobs.wait([rid], max_wait=0, poll_interval=1)
+    assert stopped["stopped_without_end"] == [rid]
+
+    jobs.mark_terminal(rid, "completed")
+    res = await jobs.wait([rid], max_wait=0, poll_interval=1)
+
+    assert res["stopped_without_end"] == []
+    assert res["pending"] == []
+    assert res["all_terminal"] is True
+    assert res["runs"][0]["terminal"] is True
+    assert res["runs"][0]["outcome"] == "succeeded"
+    assert res["runs"][0]["possibly_orphaned"] is False
+
+
+async def test_wait_snapshot_of_a_stopped_run_is_still_a_snapshot(sandbox, monkeypatch):
+    """max_wait=0 observes once and returns, whatever the ids turn out to be."""
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    rid = jobs.new_run_id()
+    _record(rid, pid=999_999)
+
+    import anyio
+
+    slept: list[float] = []
+
+    async def no_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(anyio, "sleep", no_sleep)
+    res = await jobs.wait([rid], max_wait=0, poll_interval=5)
+
+    assert slept == []
+    assert res["max_wait"] == 0.0
+    assert res["stopped_without_end"] == [rid]
+
+
 # --- the argv the child is actually spawned with --------------------------------
 #
 # Everything above this point either mocks `jobs.submit` or reads records back, so
