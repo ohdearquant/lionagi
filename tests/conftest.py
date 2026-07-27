@@ -1,6 +1,43 @@
 # tests/conftest.py
-import json
+
+# ── Run directory isolation ─────────────────────────────────────────────
+#
+# Must stay above every other import in this file. ``lionagi._paths`` reads
+# ``LIONAGI_HOME`` once, at import, and derives ``RUNS_ROOT`` from it; seven
+# modules then bind those two constants into their own namespace by name. So
+# the value has to be in the environment before the first of those imports
+# runs, and this conftest is the earliest code the suite loads.
+#
+# Without it, isolating the run directory is opt-in per test file: a test that
+# calls ``allocate_run`` writes a manifest, branch snapshots and stream buffers
+# into whichever run directory the machine is actually using, interleaved with
+# the ones a person's own work depends on. Redirecting the root here makes
+# isolation the default, and covers modules added later for free — patching
+# the constants after import would have to name every consumer.
+#
+# An explicit ``LIONAGI_HOME`` is honoured, so a caller can still point the
+# suite somewhere specific.
+import atexit
+import os
+import shutil
 import sys
+import tempfile
+
+if not os.environ.get("LIONAGI_HOME"):
+    _TEST_LIONAGI_HOME = tempfile.mkdtemp(prefix="lionagi-tests-")
+    os.environ["LIONAGI_HOME"] = _TEST_LIONAGI_HOME
+    atexit.register(shutil.rmtree, _TEST_LIONAGI_HOME, ignore_errors=True)
+
+if "lionagi._paths" in sys.modules:
+    # The constants are already bound to the old value, so the redirect above
+    # did nothing and every run-directory write in this session lands in the
+    # real one. Fail here rather than let the suite report itself as isolated.
+    raise RuntimeError(
+        "lionagi._paths was imported before tests/conftest.py could redirect "
+        "LIONAGI_HOME; the run directory used by this session is not isolated."
+    )
+
+import json
 import types
 
 import pytest
