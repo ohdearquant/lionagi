@@ -26,11 +26,12 @@ from lionagi import Branch, Session
 from lionagi._errors import ConfigurationError
 from lionagi.agent import AgentSpec, create_agent
 from lionagi.agent.factory import register_profile_injection
+from lionagi.ln import Unset
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.state import provenance as _provenance
 
-from .._logging import hint
+from .._logging import hint, warn
 from .._providers import (
     _CLAUDE_PROVIDER_NAMES,
     AgentProfile,
@@ -493,7 +494,8 @@ class OrchestrationEnv:
     pack: Pack | None = None
 
     # The MCP servers every worker in this run is handed, resolved once when the
-    # run was set up. None when the caller refused a set or none was found.
+    # run was set up. An empty dict is the caller having asked for no servers at
+    # all; None is there being no set to hand over, because none was found.
     mcp_servers: dict | None = None
 
     # None = no budget configured; workers skip the BUDGET preamble.
@@ -518,17 +520,39 @@ class OrchestrationEnv:
         return list(self._all_names)
 
 
-def _hand_mcp_servers(imodel, servers: dict | None) -> None:
+def _hand_mcp_servers(imodel, servers: dict | None, *, label: str) -> None:
     """Give one branch's model the run's server set, where it can carry one.
 
-    Only the Claude CLI lane accepts a server set per request; the other CLI
-    providers read a user-level config that no caller directory affects, so
-    handing them this here would drop it without a word.
+    An empty set and no set are different requests. ``{}`` is the caller having
+    asked for no servers, and only a provider that accepts a server set per
+    request can express it: handed ``{}``, the Claude CLI lane is told the whole
+    set is empty rather than being left to find its own. ``None`` is there being
+    nothing to hand over, and the model keeps whatever it would have used.
+
+    The other CLI providers read a user-level config that no caller directory
+    affects, so a set given here would be dropped without a word. That is
+    tolerable for servers the model would mostly have found anyway, but not for
+    a refusal — the caller who asked for none would go on believing they got
+    none, so *label* names the worker whose request could not carry it.
     """
     if servers is None:
         return
-    if imodel.endpoint.config.provider in _CLAUDE_PROVIDER_NAMES:
+    provider = imodel.endpoint.config.provider
+    if provider in _CLAUDE_PROVIDER_NAMES:
         imodel.endpoint.config.kwargs["mcp_servers"] = servers
+        if not servers:
+            # An empty set alone is merged with whatever the CLI discovers for
+            # itself, which leaves the discovered servers in place. The strict
+            # flag is what makes the handed set the entire set.
+            imodel.endpoint.config.kwargs["strict_mcp_config"] = True
+        return
+    if not servers:
+        warn(
+            f"{label}: --no-mcp-config was not applied. The {provider} provider "
+            "takes its MCP servers from its own configuration rather than from "
+            "the request, so this worker keeps the servers that configuration "
+            "gives it."
+        )
 
 
 async def setup_orchestration(
@@ -563,6 +587,11 @@ async def setup_orchestration(
         launch_dir=os.getcwd(),
         disabled=no_mcp_config,
     )
+    # A refusal resolves to no servers for the same reason a fruitless search
+    # does, and the two must not reach the workers as the same thing: one is a
+    # decision to hand over an empty set, the other is having nothing to hand
+    # over. Keep the decision as an empty set so it survives the handoff.
+    run_mcp_servers = {} if no_mcp_config else mcp_resolution.servers
 
     # Fail fast: a nonexistent --cwd must never silently spawn into a
     # provider-created directory. Forward the tilde-expanded path (providers never expand `~`).
@@ -603,7 +632,7 @@ async def setup_orchestration(
         fast=fast,
     )
     _orc_provider = orc_imodel.endpoint.config.provider
-    _hand_mcp_servers(orc_imodel, mcp_resolution.servers)
+    _hand_mcp_servers(orc_imodel, run_mcp_servers, label="orchestrator")
     effort = resolve_persisted_effort(_orc_provider, orc_imodel, effort)
     if cwd:
         orc_imodel.endpoint.config.kwargs.setdefault("repo", Path(cwd))
@@ -624,11 +653,16 @@ async def setup_orchestration(
     else:
         # Built-in "orchestrator" casts role via AgentSpec.compose + factory.
         orc_spec = AgentSpec.compose("orchestrator", pack=loaded_pack, grant_emissions=False)
+        # The factory discovers a config from the agent's own directory unless a
+        # caller hands it a set. A refusal has to be handed over for the same
+        # reason a set does: left to discover, the factory would find one and
+        # overwrite the empty set the orchestrator was just given.
         orc_branch = await create_agent(
             orc_spec,
             load_settings=False,
             chat_model=orc_imodel,
             log_config=orc_log_config,
+            resolved_mcp_servers={} if no_mcp_config else Unset,
         )
         orc_branch.name = "orchestrator"
     _session_id_env = os.environ.get("LIONAGI_SESSION_ID")
@@ -656,7 +690,7 @@ async def setup_orchestration(
         cwd=cwd,
         total_budget=total_budget,
         pack=loaded_pack,
-        mcp_servers=mcp_resolution.servers,
+        mcp_servers=run_mcp_servers,
     )
 
 
@@ -743,7 +777,7 @@ async def build_worker_branch(
         theme=env.theme,
         fast=w_fast,
     )
-    _hand_mcp_servers(w_imodel, getattr(env, "mcp_servers", None))
+    _hand_mcp_servers(w_imodel, getattr(env, "mcp_servers", None), label=agent_id)
     artifact_dir = env.run.agent_artifact_dir(agent_id)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     w_imodel.endpoint.config.kwargs["repo"] = artifact_dir
