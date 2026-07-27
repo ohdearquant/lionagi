@@ -775,3 +775,28 @@ def test_an_unlisted_kind_declaring_no_model_argument_says_so_instead_of_guessin
     assert "declares no argument this check reads as one" in message, message
     assert "per-command model sources" in message, message
     assert submitted == {}
+
+
+def test_job_list_carries_the_delivery_state_out_to_the_caller(monkeypatch, tmp_path):
+    """The verb hands the listing back whole, delivery state included.
+
+    A field the job engine adds and the verb layer then drops is a change that
+    ships and does nothing, so the property is asserted at the surface a caller
+    actually reads rather than one layer in.
+    """
+    from lionagi.mcp import config
+
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
+    rid = jobs.new_run_id()
+    jobs._write_job(
+        {"run_id": rid, "status": "completed", "kind": "agent", "pid": None, "log": None}
+    )
+    jobs.record_notify_delivery(
+        rid, {"attempted": True, "ok": False, "exit_code": 1, "error": None, "command": "notify"}
+    )
+
+    answer = call(ops=[{"op": "job.list", "args": {"limit": 5}}])
+
+    listed = answer["ops"][0]["result"]["jobs"]
+    assert [j["run_id"] for j in listed] == [rid]
+    assert listed[0]["notify_delivery_state"] == "failed"
