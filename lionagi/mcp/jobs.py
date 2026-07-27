@@ -140,6 +140,11 @@ KILL_IDENTITY_UNUSABLE = "recorded_identity_unusable"
 # probe or an incomplete scan is a measurement that failed and may succeed later.
 KILL_PID_RECYCLED = "pid_recycled"
 KILL_LEADER_UNVERIFIABLE = "leader_identity_unreadable"
+# The leader's start time was read twice around the reads that describe its
+# group, and the two readings are not the same value. Separate from the code
+# above, which says the start time could not be read at all: here it was read,
+# twice, and what came back does not describe one process.
+KILL_LEADER_IDENTITY_CHANGED = "leader_identity_changed"
 KILL_LEADER_GROUP_MISMATCH = "leader_group_mismatch"
 KILL_LEADER_GROUP_UNREADABLE = "leader_group_unreadable"
 KILL_GROUP_GONE = "group_gone"
@@ -244,8 +249,7 @@ def _read_job(run_id: str) -> dict[str, Any] | None:
 
     Every reader that only needs the record goes through here and gets what it
     always got, including a falsy answer to fall back on. A caller that has to tell
-    an unknown run from a damaged file — and only ``kill()`` does — reads the state
-    alongside it instead.
+    an unknown run from a damaged file reads the state alongside it instead.
     """
     return _read_job_state(run_id)[0]
 
@@ -1236,8 +1240,15 @@ def status(run_id: str) -> dict[str, Any]:
     ``notify_delivery`` reports whether the terminal notice was delivered.
     ``server`` identifies the implementation that answered, so a caller can tell
     which build it is talking to rather than inferring it from behaviour.
+
+    ``known`` says whether a usable record was obtained, and ``record_state`` says
+    what was read to answer that: ``"ok"``, or ``"absent"``, ``"unreadable"`` or
+    ``"wrong_shape"`` when it was not. Only ``"absent"`` means the run is unknown.
+    A record whose bytes cannot be read, or that parses to something other than an
+    object, is a file sitting on disk, and reporting it as an unknown run tells an
+    operator to stop looking for the run it describes.
     """
-    job = _read_job(run_id)
+    job, record_state = _read_job_state(run_id)
     manifest = _read_run_manifest(run_id)
     pid = job.get("pid") if job else None
     alive = _pid_alive(pid)
@@ -1267,20 +1278,42 @@ def status(run_id: str) -> dict[str, Any]:
         "run": manifest,
         "log_tail": _tail((job or {}).get("log")),
         "known": job is not None,
+        "record_state": record_state,
         "server": _server_identity(),
     }
 
 
+# What to tell a caller that asked about a run whose record could not be used.
+# One message per way the read can fail, because "no such job" is true of exactly
+# one of them and sends an operator away from a file that is on disk.
+_NO_RECORD_ERROR = {
+    "absent": "no such job",
+    "unreadable": "the record for this job is on disk and could not be read or parsed",
+    "wrong_shape": "the record for this job holds valid JSON that is not an object",
+}
+
+
 def output(run_id: str, tail_chars: int = 20000) -> dict[str, Any]:
     """Terminal output of *run_id*: the console (an agent's final response prints
-    here) plus any persisted artifacts."""
-    job = _read_job(run_id)
+    here) plus any persisted artifacts.
+
+    ``record_state`` carries what was read, the same way ``status`` reports it, and
+    ``error`` names that state rather than reporting every failed read as an
+    unknown run.
+    """
+    job, record_state = _read_job_state(run_id)
     if job is None:
-        return {"run_id": run_id, "known": False, "error": "no such job"}
+        return {
+            "run_id": run_id,
+            "known": False,
+            "record_state": record_state,
+            "error": _NO_RECORD_ERROR.get(record_state, "no such job"),
+        }
     st = status(run_id)
     return {
         "run_id": run_id,
         "known": True,
+        "record_state": record_state,
         "status": st["status"],
         "terminal": st["terminal"],
         "outcome": st["outcome"],
@@ -1362,17 +1395,18 @@ def _signal_group(
 
 
 def _signal_leader_group(
-    run_id: str, job: dict[str, Any], pid: int, pgid: int, sig: int
+    run_id: str, job: dict[str, Any], pid: int, pgid: int, sig: int, observed_at: float
 ) -> dict[str, Any]:
     """Signal *pgid*, once the confirmed leader at *pid* is shown to be in it.
 
-    The caller has established that *pid* is the process this run spawned. What
-    is still open is whether the *pgid* on the record is that process's group:
-    the two numbers are stored separately, and a record whose pgid is wrong would
-    otherwise direct a signal at an unrelated group. Read the leader's group and
-    require equality. If they differ, or the group cannot be read, refuse — with
-    different codes, because a mismatch is a settled fact about the record while
-    an unreadable group is a probe that may answer on a later call.
+    The caller has established that *pid* is the process this run spawned, and
+    *observed_at* is the start time it read to establish it. What is still open is
+    whether the *pgid* on the record is that process's group: the two numbers are
+    stored separately, and a record whose pgid is wrong would otherwise direct a
+    signal at an unrelated group. Read the leader's group and require equality. If
+    they differ, or the group cannot be read, refuse — with different codes,
+    because a mismatch is a settled fact about the record while an unreadable
+    group is a probe that may answer on a later call.
 
     Then ask the leader itself. Every process a run spawns carries the run id in
     its environment, so a leader that reads back a *different* run's id says the
@@ -1387,6 +1421,22 @@ def _signal_leader_group(
     identically — a process whose environment is not disclosed reads as carrying
     no marker — and requiring one to permit a signal would turn every process
     that cannot be read into a job that can never be reaped.
+
+    Group and marker are read by pid, after the start time that identified the pid
+    was read, so neither is bound to that identification on its own. A run's leader
+    leads its own group, which means the number it holds is at once its pid and its
+    pgid: when it exits and the whole group drains, the OS is free to hand that one
+    number to a new session leader whose group number is the same value — so the
+    equality above can hold of a process this run never spawned, and the marker
+    cannot make up the difference, being able to withhold a signal and never to
+    permit one. So the two reads are bracketed by the start time, exactly as a
+    group member's are: read again afterwards and required to equal *observed_at*
+    exactly. Exactly, not within the tolerance the record is compared under — that
+    tolerance is for a value written to disk at spawn against one read now, while
+    these are two reads of the same kernel value, and allowing them to drift would
+    weaken the one check that tells a recycled number from the process that held
+    it. A re-read that fails, or that answers with a different process, is a
+    measurement that did not come off, and it refuses.
     """
     try:
         live_pgid = os.getpgid(pid)
@@ -1417,6 +1467,22 @@ def _signal_leader_group(
             pgid=pgid,
         )
     state, marker = _process_marker(pid)
+    again, created_again = _process_create_time(pid)
+    if again != "found" or created_again != observed_at:
+        return _kill_result(
+            run_id,
+            killed=False,
+            reason=(
+                f"pid {pid} matched this run's leader, but reading its start time again "
+                f"after its group and environment answered {created_again!r} rather than "
+                f"{observed_at!r}, so those answers do not describe the process that "
+                f"matched and group {pgid} was not confirmed to be this run's; nothing "
+                "was signalled"
+            ),
+            reason_code=KILL_LEADER_IDENTITY_CHANGED,
+            pid=pid,
+            pgid=pgid,
+        )
     if state == "found" and marker is not None and marker != run_id:
         return _kill_result(
             run_id,
@@ -1669,12 +1735,12 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
                 # its group can be read now and required to be the recorded one.
                 # Without that equality the recorded pgid is only a number that
                 # passed a range check, and a damaged or hand-edited record would
-                # aim the signal at whatever group holds that number. Reading the
-                # group is safe here and nowhere else on this path: it is safe
-                # because the pid was just identified, and the number signalled
-                # is still the recorded one — the read only decides whether to
-                # signal at all, so a reused pid cannot substitute its own group.
-                return _signal_leader_group(run_id, job, pid, pgid, sig)
+                # aim the signal at whatever group holds that number. The start
+                # time just read goes over with it, because that group read and
+                # the environment read beside it are made by pid and are not
+                # otherwise tied to this comparison; there they are bracketed by
+                # it.
+                return _signal_leader_group(run_id, job, pid, pgid, sig, live_created)
             return _kill_result(
                 run_id,
                 killed=False,
@@ -1747,7 +1813,13 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
 
 
 def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[str, Any]]:
-    """Recent jobs, newest first (run_id sorts by timestamp)."""
+    """Recent jobs, newest first (run_id sorts by timestamp).
+
+    An entry whose record could not be used is listed with the state of that read
+    in ``record_state``, the same field ``status`` reports, so a damaged record is
+    visible here as a damaged record rather than as a job with no kind and an
+    unknown status.
+    """
     try:
         entries = sorted(config.JOBS_DIR.iterdir(), reverse=True)
     except OSError:
@@ -1770,6 +1842,7 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
                 "reason_code": st["reason_code"],
                 "submitted_at": st["submitted_at"],
                 "finished_at": st["finished_at"],
+                "record_state": st["record_state"],
             }
         )
         if len(out) >= limit:
@@ -1784,6 +1857,12 @@ def _wait_entry(run_id: Any) -> dict[str, Any]:
     rather than raising, so one bad id never costs the caller the ids beside it.
     Every entry carries the full lifecycle shape, error or not, so a caller reads
     the same keys in both cases.
+
+    An id with no record is ``not_found``; an id whose record is present and
+    unusable is ``record_unusable``, and says which way it is unusable. They are
+    different news — the first is a run nobody submitted, the second is a file to
+    go and look at — and calling both of them not found sends an operator away
+    from the second.
     """
     entry: dict[str, Any] = {
         "run_id": run_id,
@@ -1802,7 +1881,13 @@ def _wait_entry(run_id: Any) -> dict[str, Any]:
 
     st = status(run_id)
     if not st["known"]:
-        entry["error"] = {"kind": "not_found", "message": f"no job with id {run_id}"}
+        if st["record_state"] == "absent":
+            entry["error"] = {"kind": "not_found", "message": f"no job with id {run_id}"}
+        else:
+            entry["error"] = {
+                "kind": "record_unusable",
+                "message": f"{_NO_RECORD_ERROR[st['record_state']]}: {run_id}",
+            }
         return entry
 
     entry.update(

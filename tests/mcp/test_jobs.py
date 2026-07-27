@@ -417,6 +417,85 @@ def test_kill_signals_a_live_leader_whose_environment_names_no_run(
     assert out["killed"] is True and out["reason_code"] == jobs.KILL_SIGNALLED
 
 
+def _leader_reads(monkeypatch, answers):
+    """Answer each read of the leader's start time from *answers*, in call order.
+
+    Lets a test hand the leader's pid to another process partway through the
+    kill without a real race.
+    """
+    reads = iter(answers)
+    monkeypatch.setattr(jobs, "_process_create_time", lambda pid: next(reads, answers[-1]))
+
+
+def test_kill_refuses_a_leader_whose_number_is_handed_on_under_the_group_read(
+    sandbox, monkeypatch, no_stray_signal
+):
+    """The live leader's group and marker have to describe the pid that matched.
+
+    A run's leader is started in its own session, so the one number is both its
+    pid and its pgid. When it exits and its group drains, that number is free,
+    and the OS can hand it to a new session leader whose pgid is again the same
+    number. A kill that matched the start time just before that happened then
+    reads a group equal to the recorded one — from a process this run never
+    spawned — and the marker cannot correct it, since an absent or unreadable one
+    only ever withholds a signal.
+
+    So the start time is read again after those reads and required to be
+    unchanged, and here it is not.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    _leader_reads(monkeypatch, [("found", _SPAWNED_AT), ("found", _SPAWNED_AT + 400.0)])
+    monkeypatch.setattr(jobs.os, "getpgid", lambda pid: 4242)
+
+    rid = _identity_record(pid=4242, pgid=4242)
+    out = jobs.kill(rid)
+
+    assert no_stray_signal == [], "a group read from a replacement licenses nothing"
+    assert out["killed"] is False
+    assert out["reason_code"] == jobs.KILL_LEADER_IDENTITY_CHANGED
+    assert jobs._read_job(rid)["status"] == "running"
+
+
+@pytest.mark.parametrize("second_read", [("unknown", None), ("gone", None)])
+def test_kill_refuses_when_the_leaders_start_time_cannot_be_read_back(
+    sandbox, monkeypatch, no_stray_signal, second_read
+):
+    """A bracket that cannot be closed is a measurement that did not come off.
+
+    Whether the second read errored or found nothing there, what the group and
+    the marker said is no longer tied to the process that matched, and an
+    untied answer is never licence to signal.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    _leader_reads(monkeypatch, [("found", _SPAWNED_AT), second_read])
+    monkeypatch.setattr(jobs.os, "getpgid", lambda pid: 4242)
+
+    out = jobs.kill(_identity_record(pid=4242, pgid=4242))
+
+    assert no_stray_signal == []
+    assert out["killed"] is False
+    assert out["reason_code"] == jobs.KILL_LEADER_IDENTITY_CHANGED
+
+
+def test_kill_signals_a_leader_that_is_the_same_process_at_both_reads(
+    sandbox, monkeypatch, no_stray_signal
+):
+    """The control the refusals above are worth nothing without.
+
+    Every one of them asserts that a kill refused, which a bracket that always
+    refused would satisfy as readily as a correct one. An ordinary leader — alive,
+    unchanged across both reads, in the recorded group — is still signalled.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    _leader_reads(monkeypatch, [("found", _SPAWNED_AT), ("found", _SPAWNED_AT)])
+    monkeypatch.setattr(jobs.os, "getpgid", lambda pid: 4242)
+
+    out = jobs.kill(_identity_record(pid=4242, pgid=4242))
+
+    assert no_stray_signal == [(4242, signal.SIGTERM)]
+    assert out["killed"] is True and out["reason_code"] == jobs.KILL_SIGNALLED
+
+
 def test_kill_refuses_a_record_that_names_a_different_run(sandbox, monkeypatch):
     """A record found under one run, describing another.
 
@@ -995,6 +1074,68 @@ def test_every_surface_survives_a_record_it_cannot_use(sandbox, text):
     assert jobs.status(rid)["run_id"] == rid
     assert jobs.output(rid)["run_id"] == rid
     assert isinstance(jobs.list_jobs(), list)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_state"),
+    [
+        ("{", "unreadable"),
+        ('{"run_id": "x", ', "unreadable"),
+        ("[]", "wrong_shape"),
+        ("null", "wrong_shape"),
+    ],
+)
+def test_the_read_surfaces_name_a_damaged_record_rather_than_an_unknown_run(
+    sandbox, text, expected_state
+):
+    """kill() tells a damaged record from an absent one; the readers did not.
+
+    They dropped the state the read established and answered from the record
+    being None, so a file sitting on disk came back as ``known: false``, as "no
+    such job", and as a wait entry saying the run was not found. An operator
+    reading any of those stops looking for a run whose record is right there,
+    and the surfaces disagree with kill() about the same file.
+
+    Each assertion below carries an id with no record at all beside it, so the
+    values are shown to distinguish the two cases rather than merely to exist.
+    """
+    rid = jobs.new_run_id()
+    _write_raw_record(rid, text)
+    absent = jobs.new_run_id()
+
+    st = jobs.status(rid)
+    assert st["known"] is False, "no usable record was obtained, and that has not changed"
+    assert st["record_state"] == expected_state
+    assert jobs.status(absent)["record_state"] == "absent"
+
+    got = jobs.output(rid)
+    assert got["known"] is False
+    assert got["record_state"] == expected_state
+    assert "no such job" not in got["error"]
+    assert jobs.output(absent)["error"] == "no such job"
+
+    entry = jobs._wait_entry(rid)
+    assert entry["error"]["kind"] == "record_unusable"
+    assert jobs._wait_entry(absent)["error"]["kind"] == "not_found"
+
+    listed = {j["run_id"]: j["record_state"] for j in jobs.list_jobs()}
+    assert listed == {rid: expected_state}
+
+
+def test_a_usable_record_reads_back_as_one(sandbox, monkeypatch):
+    """The control for the four cases above.
+
+    They assert that a damaged record is named as damaged. A reader that named
+    every record damaged would satisfy all of them, and would fail this.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    rid = _identity_record()
+
+    assert jobs.status(rid)["record_state"] == "ok"
+    assert jobs.status(rid)["known"] is True
+    assert jobs.output(rid)["record_state"] == "ok"
+    assert jobs._wait_entry(rid)["error"] is None
+    assert [j["record_state"] for j in jobs.list_jobs()] == ["ok"]
 
 
 def test_a_readable_record_is_still_read(sandbox, monkeypatch, no_stray_signal):
