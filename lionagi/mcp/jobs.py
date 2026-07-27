@@ -39,7 +39,6 @@ import signal
 import stat
 import subprocess
 import sys
-import time
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -71,15 +70,6 @@ _KIND_ARGV: dict[str, list[str]] = {
 # reported verbatim and classified as a failure, because the failure mode of a
 # stale success list is a timeout or an empty completion read back as a success.
 _SUCCEEDED_STATUSES = frozenset({"completed"})
-
-# How long a just-spawned child is watched for an immediate refusal, and how
-# often it is checked. Two measured startup deaths (an over-long instruction and
-# a malformed artifact contract) both wrote their cause and exited within one
-# second of the spawn, so a three-second window covers that class with room for a
-# slower machine. A healthy run pays the window once, against a submit that goes
-# on to take minutes.
-_EARLY_EXIT_WATCH_SECONDS = 3.0
-_EARLY_EXIT_POLL_SECONDS = 0.05
 
 # Statuses that mean the run was stopped on purpose. Separated from failure
 # because "someone cancelled this" and "this went wrong" call for different
@@ -1234,19 +1224,6 @@ def submit(
     latest["spawn_state"] = "started"
     _write_job(latest)
 
-    # A child that refuses its own arguments dies here, in the first second,
-    # before it is far enough along to be anything the notify hook can report:
-    # the hook runs in the child, so a child that never got past parsing its
-    # instruction has nothing left to run it. Without this the submit returns a
-    # run_id and a live pid for a run that is already dead, and the caller waits
-    # for a notice that cannot come.
-    #
-    # The cause is in the log the whole time. Watch briefly, and if the child is
-    # gone, put it on the record and hand it back to the caller as a refusal.
-    early = _refusal_from_early_exit(proc, run_id, log_path)
-    if early is not None:
-        raise early
-
     # The handle carries the same three lifecycle fields every other
     # status-bearing response does, so a caller never has to classify the status
     # string itself — including in the narrow case where the child reached a
@@ -1268,62 +1245,6 @@ def submit(
         "mcp_config_reason": mcp_config_reason,
         "notify_sender": notify_sender,
     }
-
-
-def _refusal_from_early_exit(
-    proc: subprocess.Popen, run_id: str, log_path: Path
-) -> SpawnError | None:
-    """Watch a just-spawned child briefly and turn an immediate failure into a
-    refused submit, or return None and let the run proceed.
-
-    Anything the child decides about its own arguments — an unparseable spec, a
-    field out of range, an instruction longer than the surface accepts — is
-    decided within the first moment and ends the process. That death happens
-    before the run exists in any sense the terminal hook can report, because the
-    hook is the child; so the record keeps saying "running" against a pid that
-    is already gone, and the caller waits on a notice nothing will ever send.
-    Measured on two such deaths: both wrote their cause and exited inside one
-    second of the spawn.
-
-    Only a NON-ZERO exit is a refusal. A child that exits cleanly in the window
-    did the work and finished; its own terminal path has already recorded that,
-    and rewriting it here would turn a fast success into a failure.
-
-    A live child costs the full window once, which buys back the minutes a
-    director would otherwise spend waiting on a corpse.
-    """
-    deadline = time.monotonic() + _EARLY_EXIT_WATCH_SECONDS
-    while True:
-        code = proc.poll()
-        if code is not None:
-            break
-        if time.monotonic() >= deadline:
-            return None
-        time.sleep(_EARLY_EXIT_POLL_SECONDS)
-
-    if code == 0:
-        return None
-
-    # The child wrote why before it went. Prefer that to the exit status, which
-    # only says that something was refused and never which thing.
-    detail = (_tail(str(log_path), limit=1000) or "").strip()
-    reason = f"run refused at startup (exit {code})"
-    if detail:
-        reason = f"{reason}: {detail}"
-
-    record = _read_job(run_id) or {"run_id": run_id}
-    record.update(
-        {
-            "status": "failed",
-            "finished_at": _now_iso(),
-            "reason": reason,
-        }
-    )
-    try:
-        _write_job(record)
-    except OSError:
-        pass
-    return SpawnError(run_id, record, reason)
 
 
 def _record_spawn_failure(run_id: str, exc: Exception) -> SpawnError:

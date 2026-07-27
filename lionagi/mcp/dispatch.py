@@ -919,11 +919,12 @@ async def _run_one(entry: Any) -> dict[str, Any]:
     except OpError as exc:
         return _op_error(name, exc, schema)
     except jobs.SpawnError as exc:
-        # A run that could not start, or that refused its own arguments and died
-        # immediately. The caller asked for a run and does not have one, so this
-        # is their answer rather than an exception that takes the whole batch
-        # down with it. The run_id rides along because a record was written
-        # before the failure and its log holds the cause.
+        # A run whose child could not be started. The caller asked for a run and
+        # does not have one, so this is their answer rather than an exception
+        # that takes the whole batch down with it — SpawnError is a RuntimeError
+        # and fell outside every clause here, discarding the results of ops
+        # beside it that had already succeeded. The run_id rides along because a
+        # record was written before the failure and its log holds the cause.
         return _op_error(
             name,
             OpError("invalid_input", str(exc), detail={"run_id": exc.run_id}),
