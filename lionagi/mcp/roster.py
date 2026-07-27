@@ -82,10 +82,12 @@ def _roots() -> list[dict[str, Any]]:
 
 
 def _placement(name: str) -> dict[str, Any]:
-    """Every file declaring *name*, in resolution order — the first one is what runs.
+    """Every file *name* itself resolves to, in resolution order — the first one runs.
 
-    Built from the same per-directory resolver ``load_agent_profile`` uses, and
-    walked in the same order, so the file named here is the file that was read.
+    Built from the same per-directory candidates ``load_agent_profile`` uses,
+    walked in the same order and narrowed by the same spelling rule, so the file
+    named here is the file that was read and everything after it is a file this
+    name really does displace.
     """
     from lionagi._paths import find_lionagi_dirs
     from lionagi.cli._providers import _profile_path_candidates, _resolve_plugin_profile_path
@@ -97,9 +99,22 @@ def _placement(name: str) -> dict[str, Any]:
             # layouts share a directory, so a single root can hold two
             # declarations of the same name and the loser is displaced just as
             # surely as one in a root further down.
+            #
+            # Within one spelling, though. '-' and '_' stand in for each other
+            # only where the spelling asked for is absent, so a directory
+            # holding both holds two profiles that each still resolve under
+            # their own name. Grouping by spelling and keeping the one the
+            # resolver would read leaves the other out of this answer entirely,
+            # rather than reporting a profile a caller can run as displaced.
+            declared: dict[str, list[Path]] = {}
             for path in _profile_path_candidates(d / "agents", name):
                 if path.is_file():
-                    found.append({"path": str(path), "scope": _scope(d)})
+                    declared.setdefault(path.stem, []).append(path)
+            # No file spelled as asked: the fallback spellings are what is left
+            # to report, and a directory holding more than one of those is the
+            # ambiguity the resolver refuses rather than ranks.
+            resolving = declared.get(name) or [p for paths in declared.values() for p in paths]
+            found.extend({"path": str(path), "scope": _scope(d)} for path in resolving)
     plugin_path = _resolve_plugin_profile_path(name)
     if plugin_path is not None:
         found.append({"path": str(plugin_path), "scope": "plugin"})
