@@ -79,7 +79,11 @@ __all__ = (
     "role_config",
     "resolve_modes",
     "parse_orchestrator_provider",
+    "DEFAULT_ORCHESTRATOR_AGENT",
 )
+
+#: Profile used when a submit names neither an agent nor a model.
+DEFAULT_ORCHESTRATOR_AGENT = "orchestrator"
 
 
 def parse_orchestrator_provider(model_spec: str) -> tuple[str | None, str | None]:
@@ -599,6 +603,15 @@ async def setup_orchestration(
 
     cache_cancelled_exc_class()
 
+    # Naming no agent and no model is a request to orchestrate, not an
+    # incomplete command: orchestration is what this entry point does, so the
+    # orchestrator profile is the answer rather than a question to ask back.
+    # Only the fully unspecified case defaults. A caller who named either one
+    # gets it honoured, and still gets the refusal below if it cannot resolve
+    # to a model, because there the caller did choose and we could not comply.
+    if not agent_name and not model_spec:
+        agent_name = DEFAULT_ORCHESTRATOR_AGENT
+
     orc_profile: AgentProfile | None = None
     if agent_name:
         orc_profile = load_agent_profile(agent_name)
@@ -612,8 +625,12 @@ async def setup_orchestration(
             fast = True
 
     if not model_spec:
+        # Only reachable when the caller named an agent, since naming nothing
+        # defaults above and naming a model satisfies this outright. So the
+        # caller did choose, and the profile they chose carries no model.
         raise ConfigurationError(
-            "Provide a model spec or use -a/--agent to load a profile with a model."
+            f"Agent profile {agent_name!r} declares no model, and no model spec was given. "
+            "Add a model: line to the profile, or pass a model spec."
         )
 
     from lionagi.casts.catalog import _load_packaged_pack
