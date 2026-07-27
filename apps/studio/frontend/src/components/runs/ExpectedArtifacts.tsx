@@ -34,17 +34,31 @@ export default function ExpectedArtifacts({ contract, verification }: ExpectedAr
         <span className="rounded bg-surface-overlay px-1.5 py-0 font-mono text-[length:var(--t-xs)] text-content-muted">
           {expected.length}
         </span>
-        {verification?.status && (
-          <Badge tone={verificationTone(verification.status)}>
-            Verified: {verification.status}
+        {verification?.provisional ? (
+          // Mid-run, a contract status is always "failed" until the last
+          // artifact lands, which says nothing except that the run is not over.
+          // Progress is the thing worth showing while it is still going.
+          <Badge tone={producedById.size === expected.length ? "ok" : "pending"}>
+            {producedById.size} of {expected.length} written
           </Badge>
+        ) : (
+          verification?.status && (
+            <Badge tone={verificationTone(verification.status)}>
+              Verified: {verification.status}
+            </Badge>
+          )
         )}
       </div>
       <div className="rounded border border-edge bg-surface-raised px-3 py-2 shadow-card">
         <ul className="flex flex-col divide-y divide-edge-subtle">
           {expected.map((entry) => {
             const produced = producedById.get(entry.id);
-            const missing = missingRequired.has(entry.id) || missingOptional.has(entry.id);
+            // A provisional reading is taken while the run is still going, so an
+            // artifact that is not on disk yet has not been missed — it has not
+            // been written yet. Only a recorded verdict can call one missing.
+            const missing =
+              !verification?.provisional &&
+              (missingRequired.has(entry.id) || missingOptional.has(entry.id));
             const required = entry.required !== false;
             const statusTone = produced
               ? "ok"
