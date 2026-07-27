@@ -235,3 +235,75 @@ class TestRoleRoster:
             if line.split(": ", 1)[1].startswith("user profile (model:")
         ]
         assert bare == []
+
+
+class TestAvailableRoles:
+    """One entry per role, whichever separator each side spells it with.
+
+    The built-in roles are the real catalog; only the agent profiles are
+    stubbed, so these never read the machine's own agents directories.
+    """
+
+    def test_profile_spelling_of_a_builtin_role_is_not_a_second_entry(self, monkeypatch):
+        from lionagi.casts.pattern import list_roles
+
+        monkeypatch.setattr(orch, "list_agents", lambda: ["postmortem_lead"])
+        roles = orch.available_roles()
+
+        assert "postmortem-lead" in roles
+        assert "postmortem_lead" not in roles
+        assert len(roles) == len(set(list_roles()))
+
+    def test_builtin_spelling_wins_whichever_side_is_listed_first(self, monkeypatch):
+        monkeypatch.setattr(orch, "list_agents", lambda: ["postmortem_lead"])
+        monkeypatch.setattr("lionagi.casts.pattern.list_roles", lambda: ["postmortem-lead"])
+
+        assert orch.available_roles() == ["postmortem-lead"]
+
+    def test_profile_only_name_keeps_its_own_spelling(self, monkeypatch):
+        monkeypatch.setattr(orch, "list_agents", lambda: ["deck_hand", "rigging-mate"])
+        monkeypatch.setattr("lionagi.casts.pattern.list_roles", lambda: ["critic"])
+
+        assert orch.available_roles() == ["critic", "deck_hand", "rigging-mate"]
+
+    def test_two_profile_only_spellings_both_stay_on_the_menu(self, monkeypatch):
+        """Profile resolution gives an exact spelling priority over the other one,
+        so two files differing only in separator are two selectable profiles."""
+        monkeypatch.setattr(orch, "list_agents", lambda: ["deck-hand", "deck_hand"])
+        monkeypatch.setattr("lionagi.casts.pattern.list_roles", lambda: ["critic"])
+
+        assert orch.available_roles() == ["critic", "deck-hand", "deck_hand"]
+
+    def test_a_builtin_still_absorbs_both_profile_spellings(self, monkeypatch):
+        """The built-in case is the opposite: Role.load accepts only the canonical
+        spelling, so neither profile spelling is a second role."""
+        monkeypatch.setattr(orch, "list_agents", lambda: ["deck-hand", "deck_hand"])
+        monkeypatch.setattr("lionagi.casts.pattern.list_roles", lambda: ["deck-hand"])
+
+        assert orch.available_roles() == ["deck-hand"]
+
+    def test_roster_carries_one_line_for_a_role_spelled_both_ways(self, monkeypatch, stub_profiles):
+        from lionagi.cli._providers import _parse_profile
+
+        stub_profiles["postmortem_lead"] = _parse_profile(
+            "postmortem_lead", "---\nmodel: codex/gpt-5\n---\n"
+        )
+        monkeypatch.setattr(orch, "list_agents", lambda: ["postmortem_lead"])
+        monkeypatch.setattr("lionagi.casts.pattern.list_roles", lambda: ["postmortem-lead"])
+
+        lines = orch.role_roster("openai/gpt-4.1-mini").split("\n")[1:]
+        assert len(lines) == 1
+        assert lines[0].startswith("- postmortem-lead: ")
+
+    def test_mode_roster_states_a_role_restriction_once(self, monkeypatch):
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(orch, "list_agents", lambda: ["postmortem_lead"])
+        monkeypatch.setattr("lionagi.casts.pattern.list_roles", lambda: ["postmortem-lead"])
+        pack = SimpleNamespace(
+            config=lambda role: SimpleNamespace(modes_allow=["adversarial"], default_modes=[])
+        )
+
+        text = orch.mode_roster(pack)
+        assert text.count("accepts only adversarial") == 1
+        assert "postmortem_lead accepts" not in text

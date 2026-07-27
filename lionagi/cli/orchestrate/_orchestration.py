@@ -90,11 +90,33 @@ def parse_orchestrator_provider(model_spec: str) -> tuple[str | None, str | None
     return ms.model, provider
 
 
+def _role_key(name: str) -> str:
+    """A name reduced to the separator-independent form the loaders key on.
+
+    Both spellings reach one built-in role module, so this is what decides
+    whether a profile names a built-in. It is not a claim that two spellings are
+    always one profile: when both files exist, profile resolution gives the exact
+    spelling priority and they are two profiles. ``available_roles`` handles that
+    case separately.
+    """
+    return name.replace("-", "_")
+
+
 def available_roles() -> list[str]:
-    """Casts roles + user profiles the orchestrator may assign to."""
+    """Casts roles + user profiles the orchestrator may assign to, one entry per role.
+
+    A profile whose file name spells the separator the other way is the same
+    role as the built-in it matches, so the built-in's spelling is the one
+    listed. Two profiles that differ only in separator and match no built-in
+    are a different case: profile resolution gives an exact spelling priority
+    over the other one, so both files are separately loadable and both stay on
+    the menu. Collapsing them would take a selectable profile off it.
+    """
     from lionagi.casts.pattern import list_roles
 
-    return sorted(set(list_roles()) | set(list_agents()))
+    builtins = {_role_key(r): r for r in list_roles()}
+    profiles = [name for name in list_agents() if _role_key(name) not in builtins]
+    return sorted({*builtins.values(), *profiles})
 
 
 def _first_sentence(text: str) -> str:
