@@ -1144,6 +1144,92 @@ def test_every_surface_survives_a_record_it_cannot_get_at(sandbox, monkeypatch, 
         os.chmod(job_dir, 0o700)
 
 
+def test_every_surface_survives_a_run_directory_it_cannot_get_at(sandbox, monkeypatch):
+    """The same rule, for the run's own directory rather than the job record.
+
+    The log, the artifacts and the run manifest live under the CLI's run
+    directory, which the job record only points at. So a readable record can name
+    a directory this process cannot search, and asking whether those paths exist
+    raises there exactly as it does for the record.
+
+    The manifest is read before the log tail, so a fix confined to the tail would
+    leave all three surfaces raising on the manifest instead. This asserts on the
+    surfaces rather than on any one read, which is what makes it notice that.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root searches a directory whose mode denies it, so the case cannot be set up")
+
+    rid = jobs.new_run_id()
+    run_dir = config.run_dir(rid)
+    (run_dir / "artifacts").mkdir(parents=True)
+    (run_dir / "artifacts" / "a.txt").write_text("x")
+    (run_dir / "run.json").write_text(f'{{"run_id": "{rid}"}}')
+    log = run_dir / "job.log"
+    log.write_text("a line of log\n")
+    jobs._write_job(
+        {"run_id": rid, "pid": None, "kind": "agent", "status": "running", "log": str(log)}
+    )
+
+    # The control arm has to reach all three, or the permission arm below proves
+    # nothing: a surface that never opened the log cannot demonstrate surviving
+    # an unreadable one.
+    st = jobs.status(rid)
+    assert st["known"] is True
+    assert st["log_tail"] == "a line of log\n"
+    assert st["run"] == {"run_id": rid}
+    assert jobs.output(rid)["artifacts"] == ["a.txt"]
+    assert [j["run_id"] for j in jobs.list_jobs()] == [rid]
+
+    os.chmod(run_dir, 0o000)
+    try:
+        try:
+            log.read_text()
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("this filesystem does not enforce directory search permission")
+
+        st = jobs.status(rid)
+        assert st["known"] is True, "the record is readable; only what it points at is not"
+        assert st["log_tail"] is None
+        assert st["run"] is None
+
+        got = jobs.output(rid)
+        assert got["known"] is True
+        assert got["console"] is None
+        assert got["artifacts"] == []
+
+        assert [j["run_id"] for j in jobs.list_jobs()] == [rid]
+    finally:
+        os.chmod(run_dir, 0o700)
+
+
+def test_listing_jobs_survives_a_jobs_directory_it_cannot_get_at(sandbox):
+    """Listing answers with what it can see, including nothing.
+
+    An unsearchable jobs directory is not an empty one, but a listing has no
+    field in which to say so, and the caller asked for jobs rather than for the
+    errno. The record surfaces are where that distinction is kept.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root searches a directory whose mode denies it, so the case cannot be set up")
+
+    rid = _identity_record()
+    assert [j["run_id"] for j in jobs.list_jobs()] == [rid]
+
+    os.chmod(config.JOBS_DIR, 0o000)
+    try:
+        try:
+            list(config.JOBS_DIR.iterdir())
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("this filesystem does not enforce directory search permission")
+        assert jobs.list_jobs() == []
+    finally:
+        os.chmod(config.JOBS_DIR, 0o700)
+
+
 @pytest.mark.parametrize(
     "identity",
     [

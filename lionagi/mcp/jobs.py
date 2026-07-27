@@ -297,11 +297,8 @@ def _read_lifecycle(run_id: str) -> dict[str, Any] | None:
 
 
 def _read_run_manifest(run_id: str) -> dict[str, Any] | None:
-    p = config.run_manifest(run_id)
-    if not p.exists():
-        return None
     try:
-        return json.loads(p.read_text())
+        return json.loads(config.run_manifest(run_id).read_text())
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -531,13 +528,19 @@ def _group_identity(pgid: int, spawned_at: float, run_id: str) -> tuple[str, str
 
 
 def _tail(path: str | None, limit: int = 4000) -> str | None:
+    """The last *limit* characters of the log, or None when there is no tail to
+    show.
+
+    A log that cannot be read reports as no tail rather than as an error. Unlike
+    the job record, the tail is advisory — the caller has already been told the
+    run exists and what state it is in — so there is nothing an operator would do
+    differently on "no log yet" versus "the log could not be read", and neither is
+    worth failing the surrounding call for.
+    """
     if not path:
         return None
-    p = Path(path)
-    if not p.exists():
-        return None
     try:
-        data = p.read_text(errors="replace")
+        data = Path(path).read_text(errors="replace")
     except OSError:
         return None
     return data[-limit:] if len(data) > limit else data
@@ -545,9 +548,10 @@ def _tail(path: str | None, limit: int = 4000) -> str | None:
 
 def _list_artifacts(run_id: str) -> list[str]:
     adir = config.run_dir(run_id) / "artifacts"
-    if not adir.exists():
+    try:
+        return sorted(str(p.relative_to(adir)) for p in adir.rglob("*") if p.is_file())
+    except OSError:
         return []
-    return sorted(str(p.relative_to(adir)) for p in adir.rglob("*") if p.is_file())
 
 
 def _split_at_sentinel(flags: Sequence[str]) -> tuple[list[str], list[str]]:
@@ -1744,10 +1748,12 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
 
 def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[str, Any]]:
     """Recent jobs, newest first (run_id sorts by timestamp)."""
-    if not config.JOBS_DIR.exists():
+    try:
+        entries = sorted(config.JOBS_DIR.iterdir(), reverse=True)
+    except OSError:
         return []
     out: list[dict[str, Any]] = []
-    for d in sorted(config.JOBS_DIR.iterdir(), reverse=True):
+    for d in entries:
         if not d.is_dir():
             continue
         st = status(d.name)
