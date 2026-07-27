@@ -163,6 +163,52 @@ def test_a_same_root_loser_is_listed_before_a_further_root(roots):
     ]
 
 
+def test_the_other_separator_spelling_is_a_second_profile_not_a_displaced_one(roots):
+    """One directory, both spellings, and each name still selects its own file.
+
+    ``-`` and ``_`` are interchangeable only when the spelling asked for is
+    absent, so a directory holding both holds two profiles a caller can run
+    separately. Listing either under the other's ``shadowed`` would tell a
+    reader a profile cannot be selected when a request for it selects it.
+    """
+    hyphen = write_profile(roots.proj, "postmortem-lead", "---\nmodel: hyphen-model\n---\nh\n")
+    underscore = write_profile(roots.proj, "postmortem_lead", "---\nmodel: under-model\n---\nu\n")
+
+    shown = op("profile.show", {"name": "postmortem-lead"})["result"]
+    assert shown["source"]["path"] == str(hyphen)
+    assert shown["resolved"]["model"] == "hyphen-model"
+    assert shown["shadowed"] == []
+
+    shown = op("profile.show", {"name": "postmortem_lead"})["result"]
+    assert shown["source"]["path"] == str(underscore)
+    assert shown["resolved"]["model"] == "under-model"
+    assert shown["shadowed"] == []
+
+
+def test_a_displaced_layout_is_still_shadowed_beside_the_other_spelling(roots):
+    """Both claims the shadowed list has to keep making, in one directory.
+
+    ``postmortem-lead`` is declared twice, in both layouts, and only the
+    directory one is ever read — naming the flat file is the whole point of the
+    list. ``postmortem_lead`` is a third file that runs under its own name, so
+    it belongs nowhere in that list. Reporting neither would drop the
+    diagnostic rather than correct it.
+    """
+    directory_layout = roots.proj / "postmortem-lead" / "postmortem-lead.md"
+    directory_layout.parent.mkdir(parents=True)
+    directory_layout.write_text("---\nmodel: directory-model\n---\ndirectory\n")
+    flat_layout = write_profile(roots.proj, "postmortem-lead", "---\nmodel: flat-model\n---\nf\n")
+    underscore = write_profile(roots.proj, "postmortem_lead", "---\nmodel: under-model\n---\nu\n")
+
+    shown = op("profile.show", {"name": "postmortem-lead"})["result"]
+
+    assert shown["source"]["path"] == str(directory_layout)
+    assert shown["shadowed"] == [{"path": str(flat_layout), "scope": "project"}]
+    assert op("profile.show", {"name": "postmortem_lead"})["result"]["source"]["path"] == str(
+        underscore
+    )
+
+
 def test_the_verb_agrees_with_the_loader_a_run_would_use(roots):
     """Compared on a profile that declares almost nothing, and on every field.
 
