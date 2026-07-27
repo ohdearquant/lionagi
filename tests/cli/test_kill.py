@@ -1243,9 +1243,14 @@ async def test_do_kill_play_leaves_workers_running_and_exits_non_zero(
         assert (
             await db.fetch_one("SELECT status FROM invocations WHERE id = ?", (invocation_id,))
         )["status"] == "running"
-        assert (await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,)))[
+        play_status = (await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,)))[
             "status"
-        ] == "blocked"
+        ]
+    assert play_status == "blocked"
+    # The message has to name the status that was actually written. Asserting the
+    # literal word here would pass just as well against a message that names a
+    # status the kill never wrote, which is what it used to do.
+    assert f"is marked {play_status}" in captured.err.replace("\n", " ")
 
 
 async def test_do_kill_active_show_succeeds(temp_db_path: Path):

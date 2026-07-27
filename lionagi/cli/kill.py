@@ -323,7 +323,12 @@ async def _persist_cancel(
     reason_summary: str,
     evidence: dict[str, Any],
 ) -> None:
-    """Write cancelled status + status_transition row."""
+    """Write the entity's terminal status + status_transition row.
+
+    The status is per entity kind, not one word: a session or invocation goes
+    ``cancelled``, a play goes ``blocked``, a show goes ``aborted``. Anything
+    reported to an operator has to name the one that was actually written.
+    """
     from lionagi.state.db import (
         PLAY_TERMINAL_STATUSES,
         SHOW_TERMINAL_STATUSES,
@@ -557,7 +562,7 @@ async def _do_kill(
 
         if play_workers_unreachable:
             log_error(
-                f"play {row['id'][:12]} is marked cancelled, but its worker "
+                f"play {row['id'][:12]} is marked blocked, but its worker "
                 "processes were NOT stopped: a play records no link to the "
                 "sessions it started, so they cannot be resolved from the play "
                 "id. Find the running sessions with `li monitor` and kill those "
