@@ -8,8 +8,9 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import decimal
+import math
 import re
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
@@ -202,6 +203,68 @@ def make_options(
     return opt
 
 
+# --------- non-finite float detection -----------------------------------------
+
+# orjson writes inf, -inf and nan as `null`, which is indistinguishable from a
+# genuine null on read: the value silently changes and no consumer can detect it.
+# JSON has no representation for these, so serialization fails loudly instead.
+
+
+def _locate_non_finite(obj: Any, default: Callable[[Any], Any], path: str = "$") -> str | None:
+    """Return the path of the first non-finite float reachable from obj, else None.
+
+    Mirrors how orjson traverses the object, including the default() hook, so the
+    reported path matches what would have been written.
+    """
+    typ = obj.__class__
+    # Concrete types first: isinstance against the collections ABCs is an order of
+    # magnitude slower, and these cover everything orjson serializes natively.
+    if typ is float:
+        return None if math.isfinite(obj) else path
+    if typ in (str, int, bool, bytes) or obj is None:
+        return None
+    if typ is dict or isinstance(obj, Mapping):
+        for key, value in obj.items():
+            # Non-string keys are stringified by orjson, so a non-finite one is
+            # written as the key "null" and lost the same way a value would be.
+            if key.__class__ is float and not math.isfinite(key):
+                return f"{path}.<key>"
+            found = _locate_non_finite(value, default, f"{path}.{key}")
+            if found is not None:
+                return found
+        return None
+    if typ in (list, tuple, set, frozenset) or (
+        isinstance(obj, Sequence | set | frozenset) and not isinstance(obj, str | bytes)
+    ):
+        for index, value in enumerate(obj):
+            found = _locate_non_finite(value, default, f"{path}[{index}]")
+            if found is not None:
+                return found
+        return None
+    # Anything else reaches orjson through default(); follow the same conversion.
+    try:
+        converted = default(obj)
+    except Exception:
+        return None
+    return _locate_non_finite(converted, default, path)
+
+
+def _dumpb(obj: Any, default: Callable[[Any], Any], opt: int) -> bytes:
+    """orjson.dumps, rejecting payloads whose non-finite floats would become null."""
+    out = orjson.dumps(obj, default=default, option=opt)
+    # Every non-finite float produces a literal `null`, so a null-free result is
+    # provably clean and the walk below only runs on the rare candidate payload.
+    if b"null" in out:
+        found = _locate_non_finite(obj, default)
+        if found is not None:
+            raise ValueError(
+                f"cannot serialize non-finite float at {found}: JSON has no "
+                "representation for inf, -inf or nan, and writing it would "
+                "silently record null in its place"
+            )
+    return out
+
+
 # --------- dump helpers -------------------------------------------------------
 
 
@@ -246,7 +309,7 @@ def json_dumpb(
             allow_non_str_keys=allow_non_str_keys,
         )
     )
-    return orjson.dumps(obj, default=default, option=opt)
+    return _dumpb(obj, default, opt)
 
 
 @overload
@@ -344,4 +407,4 @@ def json_lines_iter(
         opt = options | orjson.OPT_APPEND_NEWLINE
 
     for item in it:
-        yield orjson.dumps(item, default=default, option=opt)
+        yield _dumpb(item, default, opt)
