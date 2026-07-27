@@ -1550,6 +1550,60 @@ def test_kill_subparser_registered():
     assert "kill" in result.stdout.lower() or "kill" in result.stderr.lower()
 
 
+def _kill_help_text() -> str:
+    """`li kill --help` stdout, whitespace-normalised so argparse's line
+    wrapping does not decide whether a sentence is present."""
+    result = subprocess.run(
+        [sys.executable, "-m", "lionagi.cli", "kill", "--help"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return " ".join(result.stdout.split())
+
+
+def test_help_states_what_the_sweep_does_to_a_play():
+    """The sweep's two conditions have to survive into the text people read.
+
+    A play does not go `cancelled` — that word belongs to sessions and
+    invocations — and the sweep does not act on every play: one whose row
+    records no worker session is left running, because its age says nothing
+    about whether its workers are gone. Help text that promises either of those
+    describes a command that does not exist, and the MCP schema below is
+    generated from the same strings, so a caller reading the projection gets
+    whatever this says.
+    """
+    help_text = _kill_help_text()
+
+    assert "is marked 'blocked'" in help_text
+    assert "records no worker session is left running" in help_text
+    assert "and ALL of its plays are terminal" in help_text
+    # The sweep is conditional; nothing may claim it acts on every play.
+    assert "cancels play and show rows once their workers are gone" not in help_text
+
+
+def test_mcp_projection_carries_the_same_sweep_contract():
+    """The projected schema is the same text by another route.
+
+    An MCP caller never sees `--help`; it sees this schema, and it cannot check
+    the claim against the database. Pinning the contract on both surfaces is
+    what stops a correction to one of them from leaving the other promising the
+    old behaviour.
+    """
+    golden = json.loads(
+        (
+            Path(__file__).resolve().parents[1] / "mcp" / "golden_projections" / "kill.json"
+        ).read_text()
+    )
+    schema = golden["schema"]
+    all_stale = schema["properties"]["all_stale"]["description"]
+
+    assert "is marked 'blocked'" in all_stale
+    assert "records no worker session is left running" in all_stale
+    assert "A show is marked 'aborted' only once" in all_stale
+    assert "cancels play and show rows once their workers are gone" not in schema["description"]
+
+
 def test_kill_all_stale_subparser_flags():
     """Verify --all-stale, --threshold, --dry-run are accepted."""
     import tempfile

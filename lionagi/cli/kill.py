@@ -890,7 +890,8 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
             "kill marks the row terminal and exits non-zero to say no worker was "
             "stopped. A SHOW kill only marks the show row terminal. To stop work "
             "either one cannot reach, kill the session ids directly; --all-stale "
-            "cancels play and show rows once their workers are gone.\n\n"
+            "marks a play 'blocked' only when the row records a worker session "
+            "that has gone terminal, and leaves an unlinked play running.\n\n"
             "Examples:\n"
             "  li kill abc123                        # kill by id prefix\n"
             "  li kill <session-id>                  # stop a worker process\n"
@@ -932,9 +933,11 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help=(
             "Sweep stale sessions and invocations with dead PIDs older than --threshold. "
-            "A play whose swept session was its worker is cancelled with it; a show is "
-            "cancelled only once it is older than --threshold and ALL of its plays are "
-            "terminal."
+            "A play older than --threshold whose recorded worker session has gone "
+            "terminal is marked 'blocked'; a play that records no worker session is "
+            "left running, because age alone cannot tell it apart from one still "
+            "working. A show is marked 'aborted' only once it is older than --threshold "
+            "and ALL of its plays are terminal."
         ),
     )
     kill.add_argument(
