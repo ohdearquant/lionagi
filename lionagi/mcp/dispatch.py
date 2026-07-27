@@ -557,6 +557,15 @@ _MODEL_SOURCES = {
     "play": _FLOW_MODEL_SOURCES,
 }
 
+# Every spawning command registered today has an entry above, and a test holds
+# the two together so a new one cannot arrive without its sources. A kind with
+# no entry is still answered rather than raised past the caller: the submission
+# is missing a model either way, and that is the caller's to fix, so it is the
+# same refusal. Only the list of places to put one is withheld, because naming
+# an argument this table cannot vouch for is what the per-command sources exist
+# to avoid.
+_UNLISTED_MODEL_SOURCES = "name a model in whichever of this command's arguments carries one"
+
 
 def _refuse_without_model(verb: Verb, args: dict[str, Any], prompt: str | None) -> None:
     """Refuse a submission the command would reject on start, naming the fix.
@@ -570,7 +579,7 @@ def _refuse_without_model(verb: Verb, args: dict[str, Any], prompt: str | None) 
     kind = verb.job_kind
     if kind is None or _has_model_source(kind, args, prompt):
         return
-    sources = _MODEL_SOURCES[kind]
+    sources = _MODEL_SOURCES.get(kind, _UNLISTED_MODEL_SOURCES)
     raise OpError(
         "invalid_input",
         f"{verb.name!r} has no model and nothing to supply one, so the run would be "
