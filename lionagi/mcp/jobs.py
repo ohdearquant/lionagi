@@ -1108,10 +1108,10 @@ async def wait(
     """Observe *run_ids* until they are all terminal or the window closes.
 
     A bounded observation, not a subscription. It returns one entry per requested
-    id, in the order they were requested, plus ``all_terminal``, ``timed_out`` and
-    the ids still ``pending`` — never a bare boolean, because mixed outcomes are
-    the normal case and collapsing them forces the follow-up poll this call exists
-    to replace.
+    id, in the order they were requested, plus ``all_terminal``, ``timed_out``,
+    the ids still ``pending`` and the ids ``stopped_without_end`` — never a bare
+    boolean, because mixed outcomes are the normal case and collapsing them forces
+    the follow-up poll this call exists to replace.
 
     ``max_wait`` is clamped to ``[0, WAIT_MAX_SECONDS]`` and ``poll_interval`` to
     ``[WAIT_MIN_POLL_SECONDS, WAIT_MAX_POLL_SECONDS]``; the effective values are
