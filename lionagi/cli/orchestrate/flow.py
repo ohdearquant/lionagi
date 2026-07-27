@@ -1829,7 +1829,10 @@ async def _run_flow(
         env,
         invocation_kind=_invocation_kind,
         playbook_name=playbook_name,
-        agent_name=agent_name,
+        # The profile the run resolved, not the one this call named: a call that
+        # named neither an agent nor a model named none, and recording that
+        # `agent_name` would leave the record unable to say what it ran under.
+        agent_name=env.orc_profile_name,
         artifacts_path=str(env.run.artifact_root),
         invocation_id=invocation_id,
         model=_orc_model,
