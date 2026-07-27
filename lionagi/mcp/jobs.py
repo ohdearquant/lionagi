@@ -100,6 +100,30 @@ WAIT_MAX_POLL_SECONDS = 60.0
 # interpreter path so it runs regardless of PATH in the CLI's environment.
 _NOTIFY_MODULE = "lionagi.mcp._notify_hook"
 
+# A process start time is read from the kernel in clock ticks, so two reads of
+# the same process can differ in the last decimal. Compared within this
+# tolerance, the same way the CLI's own kill path compares it.
+_CREATE_TIME_TOLERANCE = 0.1
+
+# Reason codes carried by kill(). The human `reason` explains the particular
+# case; the code is what a caller can branch on without matching prose.
+KILL_NO_SUCH_JOB = "no_such_job"
+KILL_NO_PID = "no_pid_on_record"
+KILL_SIGNALLED = "signalled"
+KILL_PROCESS_GONE = "process_gone"
+KILL_PERMISSION_DENIED = "permission_denied"
+# The record was written before a run's process identity was recorded, so the
+# pid on it cannot be told apart from a reused one. Its own codes, so a reader
+# can tell an old record from a refusal this build actually decided.
+KILL_LEGACY_NO_IDENTITY = "legacy_record_no_process_identity"
+KILL_LEGACY_ALREADY_ENDED = "legacy_record_already_ended"
+KILL_LEGACY_ALREADY_EXITED = "legacy_record_already_exited"
+# Identity-bearing records.
+KILL_PID_RECYCLED = "pid_recycled"
+KILL_LEADER_UNVERIFIABLE = "leader_identity_unreadable"
+KILL_GROUP_GONE = "group_gone"
+KILL_GROUP_UNVERIFIED = "group_identity_unverified"
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -231,6 +255,140 @@ def _pid_alive(pid: int | None) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _process_create_time(pid: int) -> tuple[str, float | None]:
+    """When the process at *pid* started: ``("found", t)``, ``("gone", None)``
+    or ``("unknown", None)``.
+
+    Three answers, not two. "unknown" is a probe that errored — the process may
+    well be there — and a caller must never read it as death or as licence to
+    signal. A zombie answers "gone": it has exited, holds its pid until it is
+    reaped, and cannot be a recycled pid while it does.
+    """
+    import psutil
+
+    try:
+        proc = psutil.Process(pid)
+        if proc.status() == psutil.STATUS_ZOMBIE:
+            return "gone", None
+        return "found", proc.create_time()
+    except psutil.NoSuchProcess:
+        return "gone", None
+    except (psutil.Error, OSError):
+        return "unknown", None
+
+
+def _spawned_pgid(pid: int) -> int:
+    """The process group of a just-spawned child.
+
+    Read from the OS, with the child's pid as the fallback: it was started with
+    ``start_new_session``, so it leads its own group and the two are equal by
+    construction. Recorded at spawn because deriving it at kill time is what
+    lets a reused pid resolve to a stranger's group.
+    """
+    try:
+        return os.getpgid(pid)
+    except OSError:
+        return pid
+
+
+def _live_group_members(pgid: int) -> tuple[list[tuple[int, float]], bool]:
+    """Live members of process group *pgid*, and whether the scan was complete.
+
+    Returns ``(members, complete)`` where each member is ``(pid, create_time)``.
+    A process that vanishes mid-scan is simply not a live member; a process
+    whose group or start time could not be read leaves *complete* false,
+    because the group may then hold a member this scan never saw. Zombies are
+    excluded: an unreaped corpse still counts as a group member to the kernel,
+    so counting it would report a group that is empty of running work as live.
+    """
+    import psutil
+
+    members: list[tuple[int, float]] = []
+    complete = True
+    try:
+        pids = psutil.pids()
+    except (psutil.Error, OSError):
+        return [], False
+
+    for pid in pids:
+        if pid <= 1:
+            continue
+        try:
+            if os.getpgid(pid) != pgid:
+                continue
+        except ProcessLookupError:
+            continue
+        except OSError:
+            complete = False
+            continue
+        state, created = _process_create_time(pid)
+        if state == "found" and created is not None:
+            members.append((pid, created))
+        elif state == "unknown":
+            complete = False
+    return members, complete
+
+
+def _process_marker(pid: int) -> tuple[str, str | None]:
+    """The run marker carried by the process at *pid*.
+
+    ``("found", value_or_None)`` when the environment was read — a None value
+    means the process simply does not carry the marker. ``("unknown", None)``
+    when the environment could not be read at all, which is a probe that
+    failed and never evidence about the process.
+    """
+    import psutil
+
+    try:
+        return "found", psutil.Process(pid).environ().get(config.JOB_MARKER_ENV_VAR)
+    except (psutil.Error, OSError, UnicodeDecodeError):
+        return "unknown", None
+
+
+def _group_identity(pgid: int, spawned_at: float, run_id: str) -> tuple[str, str]:
+    """Whether the live group *pgid* can be the group this run spawned.
+
+    Returns the verdict and the rule that reached it. Two rules, tried in that
+    order:
+
+    The marker decides positively. Every process the run spawned carries the
+    run id in its environment, so a live member that reads back this run's id
+    identifies the group outright — members share a pgid, so one confirmed
+    member makes the group this run's. A member carrying a *different* run's id
+    is the same evidence pointing the other way: the group number has been
+    reused.
+
+    The start time decides only by exclusion, and covers what the marker
+    cannot — a run recorded before the marker existed, and a member whose
+    environment cannot be read. It is an inequality rather than an
+    identification: every member starting at or after the run did is consistent
+    with the group being ours but equally consistent with an unrelated group
+    that happens to be younger, so it is the fallback and never the primary.
+
+    ``"gone"`` when nothing live is left in the group, and ``"unknown"`` when
+    neither rule could establish anything — a member the scan could not read
+    leaves a group that may hold work this scan never saw.
+    """
+    members, complete = _live_group_members(pgid)
+
+    for pid, _ in members:
+        state, marker = _process_marker(pid)
+        if state != "found" or marker is None:
+            continue
+        if marker == run_id:
+            return "ours", "marker"
+        return "not_ours", "marker"
+
+    if not complete:
+        return "unknown", "scan"
+    if not members:
+        return "gone", "scan"
+    floor = spawned_at - _CREATE_TIME_TOLERANCE
+    if all(created >= floor for _, created in members):
+        return "ours", "start_time"
+    return "not_ours", "start_time"
 
 
 def _tail(path: str | None, limit: int = 4000) -> str | None:
@@ -675,6 +833,10 @@ def submit(
     # environment that claims it is running under an interactive harness.
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
     env[config.RUN_ID_ENV_VAR] = run_id
+    # The child carries the run that started it. Every process it goes on to
+    # spawn inherits this, so a live member of the group can later be asked
+    # what it belongs to instead of being guessed at from when it started.
+    env[config.JOB_MARKER_ENV_VAR] = run_id
 
     # Only "agent" hands the instruction over in a file; flow and fanout take it
     # as a positional, so a long one has to fit in the process argument vector.
@@ -702,6 +864,8 @@ def submit(
     record = {
         "run_id": run_id,
         "pid": None,
+        "pid_create_time": None,
+        "pgid": None,
         "kind": kind,
         "argv": argv,
         "cwd": cwd,
@@ -749,8 +913,20 @@ def submit(
 
     # Attach the pid without rewriting status: if the hook already recorded a
     # terminal in the (tiny) spawn window, re-reading here preserves it.
+    #
+    # The pid goes down with the two things that say WHICH process it was: when
+    # that process started, and the group it leads. A pid number on its own is
+    # not an identity — the OS hands it out again once the process is reaped —
+    # so a kill holding only a number cannot tell the run it started from
+    # whatever occupies that number later. The start time is read here, while
+    # the child is certainly the one just spawned; a read that fails leaves it
+    # null, which kill() reads as "no identity was captured" rather than as any
+    # claim about the process.
     latest = _read_job(run_id) or record
     latest["pid"] = proc.pid
+    _state, created = _process_create_time(proc.pid)
+    latest["pid_create_time"] = created
+    latest["pgid"] = _spawned_pgid(proc.pid)
     latest["spawn_state"] = "started"
     _write_job(latest)
 
@@ -972,51 +1148,243 @@ def output(run_id: str, tail_chars: int = 20000) -> dict[str, Any]:
     }
 
 
-def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
-    """Signal the whole process group of *run_id*."""
-    job = _read_job(run_id)
-    if job is None:
-        return {"run_id": run_id, "killed": False, "reason": "no such job"}
-    # Before the pid is read, let alone signalled. A record that already ended
-    # keeps its pid, and the operating system reuses pid numbers: probing that
-    # number can find an unrelated live process, and signalling it would kill a
-    # stranger's process group and report success. The write below would also
-    # relabel a run that completed or was cancelled as "killed".
+def _kill_result(
+    run_id: str,
+    *,
+    killed: bool,
+    reason: str | None,
+    reason_code: str,
+    pid: Any = None,
+    pgid: int | None = None,
+) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "killed": killed,
+        "reason": reason,
+        "reason_code": reason_code,
+        "pid": pid,
+        "pgid": pgid,
+    }
+
+
+def _mark_killed(job: dict[str, Any]) -> None:
+    """Record the kill on the job record.
+
+    A record that already carries an end keeps it. The run really did finish
+    the way it says, and what was signalled here is work that outlived that end
+    — overwriting ``completed`` with ``killed`` would replace how the run came
+    out with how its stragglers were cleaned up.
+    """
+    if _record_is_terminal(job):
+        job["group_reaped_at"] = _now_iso()
+    else:
+        job["status"] = "killed"
+        job["finished_at"] = _now_iso()
+    _write_job(job)
+
+
+def _signal_group(
+    run_id: str,
+    job: dict[str, Any],
+    pid: int,
+    pgid: int,
+    sig: int,
+    reason_code: str,
+) -> dict[str, Any]:
+    """Signal *pgid* and record the outcome on the job record."""
+    try:
+        os.killpg(pgid, sig)
+    except ProcessLookupError:
+        return _kill_result(
+            run_id,
+            killed=False,
+            reason="process gone",
+            reason_code=KILL_PROCESS_GONE,
+            pid=pid,
+            pgid=pgid,
+        )
+    except PermissionError as e:
+        return _kill_result(
+            run_id,
+            killed=False,
+            reason=f"permission denied: {e}",
+            reason_code=KILL_PERMISSION_DENIED,
+            pid=pid,
+            pgid=pgid,
+        )
+    _mark_killed(job)
+    return _kill_result(
+        run_id, killed=True, reason=None, reason_code=reason_code, pid=pid, pgid=pgid
+    )
+
+
+def _kill_legacy_record(run_id: str, job: dict[str, Any], pid: int, sig: int) -> dict[str, Any]:
+    """Kill a record written before a run's process identity was recorded.
+
+    Nothing here can tell this run's pid from a reused one, so the behaviour is
+    the one that predates identity, unchanged, and the reason codes say which
+    record this was. The missing fields cannot be filled in after the fact: the
+    process they describe is the one that was spawned, and nothing observable
+    now can recover when it started.
+    """
     if _record_is_terminal(job):
         recorded = job.get("status", "unknown")
         # The pid rides along on the refusal. A record can be marked terminal
         # while its group leader is still alive: the terminal status is persisted
         # from the lifecycle transition, and the run's own teardown finishes
         # after that. Refusing is still right, because this pid may equally have
-        # been reused by then and nothing here can tell the two apart. But an
-        # operator reaping a group that really did outlive its recorded end needs
-        # the number, and this is the last place it is reported.
-        return {
-            "run_id": run_id,
-            "killed": False,
-            "reason": f"already ended as {recorded}; pid not signalled because it may since have been reused",
-            "pid": job.get("pid"),
-        }
-    pid = job.get("pid")
-    if not pid or pid <= 1:  # never signal pgid 0/1 (self/init)
-        return {"run_id": run_id, "killed": False, "reason": "no pid on record"}
+        # been reused by then and nothing on this record can tell the two apart.
+        # But an operator reaping a group that really did outlive its recorded
+        # end needs the number, and this is the last place it is reported.
+        return _kill_result(
+            run_id,
+            killed=False,
+            reason=(
+                f"already ended as {recorded}; pid not signalled because "
+                "it may since have been reused"
+            ),
+            reason_code=KILL_LEGACY_ALREADY_ENDED,
+            pid=pid,
+        )
     if not _pid_alive(pid):
-        return {"run_id": run_id, "killed": False, "reason": "already exited"}
-
-    reason: str | None = None
+        return _kill_result(
+            run_id,
+            killed=False,
+            reason="already exited",
+            reason_code=KILL_LEGACY_ALREADY_EXITED,
+            pid=pid,
+        )
     try:
-        os.killpg(os.getpgid(pid), sig)
-        killed = True
+        pgid = os.getpgid(pid)
     except ProcessLookupError:
-        killed, reason = False, "process gone"
+        return _kill_result(
+            run_id,
+            killed=False,
+            reason="process gone",
+            reason_code=KILL_PROCESS_GONE,
+            pid=pid,
+        )
     except PermissionError as e:
-        killed, reason = False, f"permission denied: {e}"
+        return _kill_result(
+            run_id,
+            killed=False,
+            reason=f"permission denied: {e}",
+            reason_code=KILL_PERMISSION_DENIED,
+            pid=pid,
+        )
+    return _signal_group(run_id, job, pid, pgid, sig, KILL_LEGACY_NO_IDENTITY)
 
-    if killed:
-        job["status"] = "killed"
-        job["finished_at"] = _now_iso()
-        _write_job(job)
-    return {"run_id": run_id, "killed": killed, "reason": reason, "pid": pid}
+
+def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
+    """Signal the process group *run_id* was spawned into.
+
+    The record carries what the pid alone cannot: when the leader started, and
+    the group it was given at spawn. Those turn the two cases a bare pid
+    confuses into decidable ones — a group still running after its leader
+    exited, which is the case worth reaping, and a pid the OS handed to an
+    unrelated process, which must never be signalled.
+
+    Nothing is signalled on an unconfirmed identity. A probe that errors is
+    unknown, and unknown refuses: the refusal says which fact was missing, and
+    a refusal with an accurate reason is the outcome being aimed at, not the
+    largest possible number of processes stopped.
+    """
+    job = _read_job(run_id)
+    if job is None:
+        return _kill_result(
+            run_id, killed=False, reason="no such job", reason_code=KILL_NO_SUCH_JOB
+        )
+
+    # First, and before any number on the record is probed or dereferenced. A
+    # pid of 0 means the caller's own process group to killpg, and 1 is init;
+    # a record carrying either — a placeholder, a truncated write, a test
+    # double — must never reach a group signal.
+    pid = job.get("pid")
+    if not isinstance(pid, int) or pid <= 1:
+        return _kill_result(
+            run_id, killed=False, reason="no pid on record", reason_code=KILL_NO_PID, pid=pid
+        )
+
+    created = job.get("pid_create_time")
+    pgid = job.get("pgid")
+    if not isinstance(created, int | float) or not isinstance(pgid, int) or pgid <= 1:
+        return _kill_legacy_record(run_id, job, pid, sig)
+    spawned_at = float(created)
+
+    if _pid_alive(pid):
+        state, live_created = _process_create_time(pid)
+        if state == "unknown":
+            return _kill_result(
+                run_id,
+                killed=False,
+                reason=(
+                    f"pid {pid} is alive but its start time could not be read, so it "
+                    "cannot be confirmed to be this run; nothing was signalled"
+                ),
+                reason_code=KILL_LEADER_UNVERIFIABLE,
+                pid=pid,
+                pgid=pgid,
+            )
+        if state == "found" and live_created is not None:
+            if abs(live_created - spawned_at) <= _CREATE_TIME_TOLERANCE:
+                # Identity confirmed. The group signalled is the one recorded at
+                # spawn, never one re-derived from the pid now.
+                return _signal_group(run_id, job, pid, pgid, sig, KILL_SIGNALLED)
+            return _kill_result(
+                run_id,
+                killed=False,
+                reason=(
+                    f"pid {pid} now belongs to a different process (started "
+                    f"{live_created:.3f}, this run started {spawned_at:.3f}); "
+                    "nothing was signalled"
+                ),
+                reason_code=KILL_PID_RECYCLED,
+                pid=pid,
+                pgid=pgid,
+            )
+        # "gone": it exited between the liveness probe and this read. Fall
+        # through — its group may well still be running.
+
+    # The leader is gone. Its group can outlive it, and that group is what the
+    # run's work is actually in, so it is reapable — but only once the group
+    # itself is identified, since a pgid is a pid number and is reused like one.
+    #
+    # Identified from the group's own live members, never by looking at the
+    # leader's pid again: the liveness probe reaps an exited child, after which
+    # that pid is free for the OS to hand to an unrelated process, and a second
+    # read of it would describe whoever holds it now.
+    verdict, rule = _group_identity(pgid, spawned_at, run_id)
+    if verdict == "ours":
+        return _signal_group(run_id, job, pid, pgid, sig, KILL_SIGNALLED)
+    if verdict == "gone":
+        return _kill_result(
+            run_id,
+            killed=False,
+            reason=f"already exited; no live process remains in group {pgid}",
+            reason_code=KILL_GROUP_GONE,
+            pid=pid,
+            pgid=pgid,
+        )
+    if verdict == "not_ours" and rule == "marker":
+        detail = f"group {pgid} holds a process started by a different run, so the group number has been reused"
+    elif verdict == "not_ours":
+        detail = (
+            f"group {pgid} holds a process that started before this run did, so the "
+            "group number has been reused"
+        )
+    else:
+        detail = f"group {pgid} could not be fully inspected"
+    return _kill_result(
+        run_id,
+        killed=False,
+        reason=(
+            f"the leader has exited and {detail}; the group could not be confirmed "
+            "to be this run's, so nothing was signalled"
+        ),
+        reason_code=KILL_GROUP_UNVERIFIED,
+        pid=pid,
+        pgid=pgid,
+    )
 
 
 def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[str, Any]]:
