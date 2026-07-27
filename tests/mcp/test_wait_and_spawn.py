@@ -449,6 +449,44 @@ async def test_wait_snapshot_of_a_stopped_run_is_still_a_snapshot(sandbox, monke
     assert res["stopped_without_end"] == [rid]
 
 
+async def test_every_unresolved_id_is_named_somewhere_in_the_result(sandbox, monkeypatch):
+    """No observed id may be left non-terminal and unnamed.
+
+    A caller is required to hold a policy for every id a wait does not resolve,
+    and that duty is only implementable if every such id arrives somewhere it
+    can be read. This pins the invariant rather than today's categories: a
+    future non-terminal state added to the classifier without being added to a
+    list fails here. A written obligation cannot catch that on its own — the
+    text sits unchanged while the shape it describes stops occurring, which is
+    exactly how the obligation this replaces stopped covering a stopped run.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: pid == 4242)
+    running = jobs.new_run_id()
+    _record(running, pid=4242)
+    stopped = jobs.new_run_id()
+    _record(stopped, pid=999_999)
+    done = jobs.new_run_id()
+    _record(done, pid=999_999)
+    jobs.mark_terminal(done, "completed")
+    never_recorded = jobs.new_run_id()
+
+    res = await jobs.wait([running, stopped, done, never_recorded, ""], max_wait=0, poll_interval=1)
+
+    named = set(res["pending"]) | set(res["stopped_without_end"])
+    assert not (set(res["pending"]) & set(res["stopped_without_end"]))
+    for entry in res["runs"]:
+        if entry["terminal"]:
+            assert entry["run_id"] not in named
+        elif entry["error"] is None:
+            assert entry["run_id"] in named, (
+                f"{entry['run_id']!r} is non-terminal, was observed without error, and is "
+                "named in neither pending nor stopped_without_end -- nothing tells a "
+                "caller it has a decision to make about this id"
+            )
+    assert running in res["pending"]
+    assert stopped in res["stopped_without_end"]
+
+
 # --- the argv the child is actually spawned with --------------------------------
 #
 # Everything above this point either mocks `jobs.submit` or reads records back, so
