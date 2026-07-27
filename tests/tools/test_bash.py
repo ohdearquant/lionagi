@@ -380,3 +380,23 @@ async def test_bash_tool_timeout_invalid_pid_calls_kill_not_killpg(monkeypatch, 
     assert killpg_calls == [], f"os.killpg must not be called for pid={invalid_pid!r}"
     mock_proc.kill.assert_called_once()
     assert resp.timed_out is True
+
+
+# ---------------------------------------------------------------------------
+# Tool description stays consistent with the guard
+# ---------------------------------------------------------------------------
+
+
+async def test_docstring_recovery_advice_is_executable():
+    """Advice the tool gives for oversized output must survive its own guard.
+
+    The command guard rejects shell redirection, so telling the caller to
+    redirect large output into a file would hand it an unusable remedy.
+    """
+    tool = BashTool()
+
+    resp = await tool.handle_request(BashRequest(command="echo x > /tmp/lionagi_doc_check"))
+    assert resp.return_code == -1, "redirection is expected to be rejected"
+
+    doc = tool.to_tool().func_callable.__doc__
+    assert "redirect to a file" not in doc

@@ -139,8 +139,10 @@ class BashTool(LionTool):
                 reader/editor/search tools.
 
                 Enforces a configurable timeout (default 30 s, max 5 min). Output
-                exceeding 100 KB per stream is truncated — redirect to a file and
-                use the reader tool for large outputs.
+                exceeding 100 KB per stream is truncated — narrow what the command
+                prints, or have the program write its own file (e.g. an -o/--output
+                flag) and read that with the reader tool. Shell redirection is not
+                available here.
 
                 Recovery hints:
                 - 'command not found': check the executable is installed and in PATH
