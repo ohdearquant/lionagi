@@ -36,6 +36,7 @@ import math
 import os
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -630,6 +631,16 @@ def _list_artifacts(run_id: str) -> tuple[list[str], str]:
     A directory that is not there is not a failed read. Nothing writes one until a
     run persists something, so its absence is exactly what an empty list of
     artifacts means.
+
+    The per-entry check asks for the metadata itself rather than for a verdict
+    about it. The convenience predicates answer a question this function is not
+    asking: they report what the entry is, and report a false when they could not
+    find out, which are two different answers arriving as one value. Which of
+    those a caller gets has changed across interpreter versions, so relying on one
+    to raise makes the shortfall visible on some and invisible on others. Asking
+    for the metadata keeps the distinction in this function, where the difference
+    between "not a file" and "could not be looked at" is exactly what the state is
+    for.
     """
     adir = config.run_dir(run_id) / "artifacts"
     unreadable = False
@@ -644,7 +655,12 @@ def _list_artifacts(run_id: str) -> tuple[list[str], str]:
         for name in names:
             path = Path(root) / name
             try:
-                is_file = path.is_file()
+                mode = path.stat().st_mode
+            except FileNotFoundError:
+                # Gone between the walk naming it and this look at it. Nothing was
+                # withheld, so there is no shortfall to report, exactly as the
+                # directory-level callback treats the same disappearance.
+                continue
             except OSError:
                 # A directory can be listable and still not searchable, so a name
                 # can arrive from the walk and its metadata still be out of reach.
@@ -653,7 +669,7 @@ def _list_artifacts(run_id: str) -> tuple[list[str], str]:
                 # the entries after it are still true.
                 unreadable = True
                 continue
-            if is_file:
+            if stat.S_ISREG(mode):
                 found.append(str(path.relative_to(adir)))
     return sorted(found), "unreadable" if unreadable else "ok"
 
