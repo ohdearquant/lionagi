@@ -477,6 +477,137 @@ async def test_fallback_terminal_envelope_has_last_known_previous_status(
     assert emitted[0].previous_status is not None
 
 
+async def test_fallback_envelope_keeps_resolved_status_when_only_the_write_fails(
+    temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The fallback envelope must distinguish "resolution never ran" from
+    "resolution ran and only the write failed".
+
+    `_resolve_invocation_terminal_flow` can downgrade a flow whose own
+    execution finished clean to `completed_empty` (no child produced
+    evidence). When resolution succeeds and only the subsequent status write
+    raises, the resolved status/reason are known-good and must be what the
+    envelope reports -- reporting the flow's own coarser `completed` instead
+    would tell a `--notify` consumer the run succeeded on exactly the path
+    where its outcome was already known to be empty.
+    """
+    from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
+    from lionagi.state.reasons import RunReasons
+
+    env = _make_env(tmp_path)
+    invocation_id = str(uuid4())
+    await _make_invocation(temp_db_path, invocation_id)
+    emitted = []
+    callback_name = f"test.resolved.{invocation_id}"
+    DEFAULT_TERMINAL_CALLBACKS.register(
+        callback_name,
+        emitted.append,
+        kinds=["invocation"],
+        ids=[invocation_id],
+    )
+
+    real_update_status = StateDB.update_status
+
+    async def _fail_only_the_invocation_write(self, entity_type, entity_id, **kwargs):
+        if entity_type == "invocation":
+            raise RuntimeError("status write failed after resolution already succeeded")
+        return await real_update_status(self, entity_type, entity_id, **kwargs)
+
+    monkeypatch.setattr(StateDB, "update_status", _fail_only_the_invocation_write)
+
+    try:
+        with (
+            patch(
+                "lionagi.cli.orchestrate.flow.setup_orchestration",
+                AsyncMock(return_value=env),
+            ),
+            patch(
+                "lionagi.cli.orchestrate.flow._run_flow_inner",
+                AsyncMock(return_value="ok result"),
+            ),
+            patch(
+                "lionagi.cli.orchestrate.flow._resolve_invocation_terminal_flow",
+                AsyncMock(
+                    return_value=(
+                        "completed_empty",
+                        RunReasons.COMPLETED_EMPTY_NO_EVIDENCE,
+                        "Flow exited clean but produced no evidence.",
+                        [],
+                        {"child_statuses": ["completed_empty"]},
+                    )
+                ),
+            ),
+        ):
+            result, terminal_status = await _run_flow(
+                "claude", "do the thing", invocation_id=invocation_id
+            )
+    finally:
+        DEFAULT_TERMINAL_CALLBACKS.unregister(callback_name)
+
+    assert result == "ok result"
+    assert terminal_status == "completed"
+
+    assert len(emitted) == 1
+    assert emitted[0].terminal_status == "completed_empty", (
+        "fallback envelope discarded the already-resolved invocation status"
+    )
+    assert emitted[0].reason_code == RunReasons.COMPLETED_EMPTY_NO_EVIDENCE
+
+
+async def test_fallback_envelope_reports_an_interrupted_flow_as_sigint_not_user_abort(
+    temp_db_path: Path, tmp_path: Path
+):
+    """An interrupted flow is a SIGINT cancellation, and the fallback
+    envelope must say so.
+
+    `aborted` is the flow's terminal status for an interrupt; its cause is
+    the SIGINT reason that a normal invocation finalization of the very same
+    run records. Emitting a distinct user-abort reason here would make the
+    cause a consumer sees depend on whether finalization happened to fail,
+    for a run that was interrupted identically either way."""
+    from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
+    from lionagi.state.reasons import RunReasons
+
+    env = _make_env(tmp_path)
+    invocation_id = str(uuid4())
+    await _make_invocation(temp_db_path, invocation_id)
+    emitted = []
+    callback_name = f"test.sigint.{invocation_id}"
+    DEFAULT_TERMINAL_CALLBACKS.register(
+        callback_name,
+        emitted.append,
+        kinds=["invocation"],
+        ids=[invocation_id],
+    )
+
+    try:
+        with (
+            patch(
+                "lionagi.cli.orchestrate.flow.setup_orchestration",
+                AsyncMock(return_value=env),
+            ),
+            patch(
+                "lionagi.cli.orchestrate.flow._run_flow_inner",
+                AsyncMock(side_effect=KeyboardInterrupt()),
+            ),
+            patch(
+                "lionagi.cli.orchestrate.flow._resolve_invocation_terminal_flow",
+                AsyncMock(side_effect=RuntimeError("db hiccup during invocation finalize")),
+            ),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            await _run_flow("claude", "do the thing", invocation_id=invocation_id)
+    finally:
+        DEFAULT_TERMINAL_CALLBACKS.unregister(callback_name)
+
+    assert len(emitted) == 1
+    assert emitted[0].terminal_status == "aborted"
+    assert emitted[0].reason_code == RunReasons.CANCELLED_SIGINT, (
+        "an interrupted flow was reported with a cause other than the SIGINT "
+        "one a normal finalization of the same run records"
+    )
+
+
 async def test_run_flow_fires_hook_without_invocation_id(temp_db_path: Path, tmp_path: Path):
     """A `--notify` run with no --invocation scopes to the session id
     instead, and the payload's own invocation_id field stays null; no

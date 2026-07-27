@@ -362,9 +362,15 @@ async def _resolve_invocation_terminal_flow(
 
 def _fallback_notify_reason(status: str) -> str:
     """Reason code for a best-effort terminal-notify envelope emitted when
-    invocation finalization itself raised (see `_run_flow`'s finally block)
-    -- *status* here is the flow's own already-computed terminal status, not
-    a value read back from the (never-committed) invocation row."""
+    invocation finalization itself raised before resolving a reason (see
+    `_run_flow`'s finally block) -- *status* here is the flow's own
+    already-computed terminal status, not a value read back from the
+    (never-committed) invocation row.
+
+    The mapping deliberately matches what `_resolve_invocation_terminal_flow`
+    would have returned for the same status, so a consumer sees the same cause
+    for the same run whether or not finalization failed. In particular an
+    aborted flow is a SIGINT cancellation."""
     from lionagi.state.reasons import RunReasons
 
     return {
@@ -372,7 +378,7 @@ def _fallback_notify_reason(status: str) -> str:
         "completed_empty": RunReasons.COMPLETED_EMPTY_NO_EVIDENCE,
         "failed": RunReasons.FAILED_EXCEPTION,
         "timed_out": RunReasons.TIMED_OUT_DEADLINE,
-        "aborted": RunReasons.ABORTED_USER,
+        "aborted": RunReasons.CANCELLED_SIGINT,
         "cancelled": RunReasons.CANCELLED_SYSTEM,
     }.get(status, RunReasons.FAILED_EXCEPTION)
 
@@ -1881,6 +1887,11 @@ async def _run_flow(
                 from lionagi.state.db import StateDB
 
                 _invocation_previous_status = "unknown"
+                # Populated once resolution succeeds, so the fallback below can
+                # tell "resolution never produced an outcome" from "resolution
+                # produced one and only the write failed".
+                inv_status: str | None = None
+                inv_rc: str | None = None
                 try:
                     async with StateDB() as _status_db:
                         _invocation_row = await _status_db.get_invocation(invocation_id)
@@ -1919,10 +1930,16 @@ async def _run_flow(
                     # invocation's entity -- any --notify / notify.on_terminal
                     # handler scoped to it would otherwise be silently
                     # dropped exactly when a notification is most needed.
-                    # Emit a best-effort envelope directly, using the flow's
-                    # own already-computed terminal status as a fallback
-                    # (mirrors the unconditional fire_terminal_notify() call
-                    # this code path replaced).
+                    # Emit a best-effort envelope directly (mirrors the
+                    # unconditional fire_terminal_notify() call this code path
+                    # replaced). Report the invocation status/reason that
+                    # resolution already settled when it got that far -- the
+                    # failure may have been only in the write, and the resolved
+                    # outcome can differ from the flow's own coarser status
+                    # (a clean flow whose children produced no evidence
+                    # resolves to completed_empty). Fall back to the flow's own
+                    # terminal status only when resolution itself never
+                    # produced one.
                     try:
                         import uuid as _uuid
 
@@ -1933,13 +1950,16 @@ async def _run_flow(
                             RunTerminalEnvelope,
                         )
 
+                        _notify_status = inv_status or _terminal_status
+                        _notify_reason = inv_rc or _fallback_notify_reason(_notify_status)
+
                         await DEFAULT_TERMINAL_CALLBACKS.emit(
                             RunTerminalEnvelope(
                                 event_id=str(_uuid.uuid4()),
                                 entity=EntityRef(kind="invocation", id=invocation_id),
                                 previous_status=_invocation_previous_status,
-                                terminal_status=_terminal_status,
-                                reason_code=_fallback_notify_reason(_terminal_status),
+                                terminal_status=_notify_status,
+                                reason_code=_notify_reason,
                                 occurred_at=_ended_at,
                                 correlation=Correlation(invocation_id=invocation_id),
                                 durable=False,
