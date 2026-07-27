@@ -25,7 +25,7 @@ worker.
 | `li monitor run ID...` | Wait for scheduled runs and their chains; optionally keep watching |
 | `li agent status [ID]` | Read stable session/invocation status, optionally as JSON |
 | `li o ctl {status,pause,resume,msg}` | Inspect or steer a live flow by ID |
-| `li kill ID` | Terminate one running entity or sweep stale processes; play kills also reap the linked worker chain; show ids are not directly killable ([details](#li-kill)) |
+| `li kill ID` | Terminate one running entity or sweep stale processes; play kills cannot reach their workers and exit non-zero saying so; show ids are not directly killable ([details](#li-kill)) |
 
 ### Reuse, coordination, and operation
 
@@ -550,7 +550,7 @@ already dead. Source: `cli/kill.py` (`add_kill_subparser`).
 
 ```bash
 li kill abc123                        # kill by id prefix
-li kill <play-id>                     # also reaps the play's linked worker session
+li kill <session-id>                  # stop a worker process
 li kill abc123 --reason 'stuck'
 li kill abc123 --recursive            # kill + direct children (session -> invocation)
 li kill --all-stale                   # sweep dead-PID sessions/invocations
@@ -569,10 +569,14 @@ li kill --all-stale --dry-run
 | `--grace SECS` | 5.0 | Wait after SIGTERM before escalating to SIGKILL |
 
 **`--recursive` scope boundary.** Recursion only reaches PID-bearing workers,
-and it stops at the play level:
+and orchestrator rows have no path to theirs:
 
-- Killing a **play** always reaps its linked worker session (and that
-  session's invocation), with or without `--recursive`.
+- Killing a **play** cannot reach its workers. A play row stores no link to
+  the sessions it started, and a worker session stores no play reference, so
+  there is no key to resolve them by. The kill marks the play row `blocked`,
+  prints an error naming the workers it could not stop, and **exits 1** — a
+  play kill never reports success it did not achieve. Kill the worker session
+  ids directly (`li monitor` lists them).
 - Killing a **session** with `--recursive` also cancels its linked invocation.
 - A **show** id cannot be killed directly today: only `running` rows are
   killable, and show rows persist as `active` (never `running`), so

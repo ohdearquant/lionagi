@@ -8,7 +8,6 @@ import argparse
 import os
 import signal
 import time
-from collections import deque
 from typing import Any, Literal
 
 import psutil
@@ -271,7 +270,6 @@ def _terminate_pid(
 
 # Only sessions/invocations carry PIDs; plays/shows are orchestrators.
 _STALE_SWEEP_ORDER = ("sessions", "invocations")
-_MAX_RECURSIVE_CHILDREN = 100
 
 
 async def _list_running_children(
@@ -287,19 +285,11 @@ async def _list_running_children(
         for row in rows:
             children.append(("plays", "play", db._row_to_dict(row)))
 
-    if entity_type == "play":
-        rows = await db.fetch_all(
-            "SELECT sessions.* FROM plays "
-            "JOIN sessions ON sessions.id = plays.session_id "
-            "WHERE plays.id = ? AND sessions.status = 'running'",
-            (entity_id,),
-        )
-        if not rows:
-            warn(f"play {entity_id[:12]} has no running worker session to reap")
-        for row in rows:
-            session_row = db._row_to_dict(row)
-            children.append(("sessions", "session", session_row))
-            children.extend(await _list_running_children(db, "session", session_row["id"]))
+    # A play has no branch here on purpose. Nothing records which sessions a
+    # play started: no writer binds plays.session_id, and a worker session
+    # carries no play reference either, so there is no key to resolve a play's
+    # workers by. `_do_kill` reports that gap instead of walking a link that
+    # would never match.
 
     if entity_type == "session":
         rows = await db.fetch_all(
@@ -321,35 +311,6 @@ async def _list_running_children(
         for row in rows:
             children.append(("sessions", "session", db._row_to_dict(row)))
 
-    return children
-
-
-async def _walk_running_children(
-    db: Any, entity_type: str, entity_id: str
-) -> list[tuple[str, str, dict[str, Any]]]:
-    """Discover running descendants breadth-first and return them deepest-first."""
-    frontier = deque(await _list_running_children(db, entity_type, entity_id))
-    seen = {(entity_type, entity_id)}
-    children: list[tuple[str, str, dict[str, Any]]] = []
-
-    while frontier:
-        table, child_type, child_row = frontier.popleft()
-        child_id = child_row["id"]
-        child_key = (child_type, child_id)
-        if child_key in seen:
-            continue
-        if len(children) >= _MAX_RECURSIVE_CHILDREN:
-            warn(
-                f"recursive kill stopped after {_MAX_RECURSIVE_CHILDREN} children; "
-                "remaining descendants were not reaped"
-            )
-            break
-
-        seen.add(child_key)
-        children.append((table, child_type, child_row))
-        frontier.extend(await _list_running_children(db, child_type, child_id))
-
-    children.reverse()
     return children
 
 
@@ -538,9 +499,13 @@ async def _do_kill(
         results = []
         blocked = []
 
-        if entity_type == "play":
-            children = await _walk_running_children(db, entity_type, row["id"])
-        elif entity_type == "show":
+        # A play kill can only mark the play row terminal: nothing links a play
+        # to the sessions it started, so its workers cannot be found from the
+        # play id. That is a failed kill, not a quiet success, and the exit code
+        # below says so.
+        play_workers_unreachable = entity_type == "play"
+
+        if entity_type == "show":
             # ADR-0104 explicitly defers show-level reaping: a show kill only
             # marks the show row terminal. --recursive is a documented no-op
             # here rather than a partial reap of the show's plays/workers.
@@ -589,6 +554,16 @@ async def _do_kill(
             blocked.append(r)
         else:
             print(f"killed {entity_type} {row['id'][:12]} (signal={r['signal']}, pid={r['pid']})")
+
+        if play_workers_unreachable:
+            log_error(
+                f"play {row['id'][:12]} is marked cancelled, but its worker "
+                "processes were NOT stopped: a play records no link to the "
+                "sessions it started, so they cannot be resolved from the play "
+                "id. Find the running sessions with `li monitor` and kill those "
+                "ids directly."
+            )
+            return 1
 
     return 1 if blocked else 0
 
@@ -856,16 +831,16 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
             "The entity's status is set to 'cancelled' (sessions/invocations), "
             "'blocked' (plays), or 'aborted' (shows) with reason tracking per "
             "ADR-0028.\n\n"
-            "Recursion boundary: --recursive walks play -> session -> invocation "
-            "and always reaches the PID-bearing workers. A SHOW kill ('active' "
-            "-> 'aborted') only marks the show row terminal: --recursive has no "
-            "effect on shows, since reaping a show's plays/workers is deferred "
-            "per ADR-0104. To stop a show's work, kill its play ids or session "
-            "ids directly; --all-stale cancels play and show rows once their "
-            "workers are gone.\n\n"
+            "Recursion boundary: --recursive kills a session's or invocation's "
+            "direct children, which are the PID-bearing workers. PLAY and SHOW "
+            "rows are orchestrator records with no stored link to the sessions "
+            "they started, so killing one only marks that row terminal and exits "
+            "non-zero (plays) to say the workers are still running. To stop that "
+            "work, kill the session ids directly; --all-stale cancels play and "
+            "show rows once their workers are gone.\n\n"
             "Examples:\n"
             "  li kill abc123                        # kill by id prefix\n"
-            "  li kill <play-id>                     # also reap linked workers\n"
+            "  li kill <session-id>                  # stop a worker process\n"
             "  li kill abc123 --reason 'stuck'\n"
             "  li kill abc123 --recursive            # kill + direct children\n"
             "  li kill --all-stale                   # sweep dead-PID rows\n"
@@ -894,9 +869,8 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help=(
             "Also kill direct child entities (e.g. invocations spawned by a session). "
-            "Play kills always reap their linked workers regardless. Has no effect on show "
-            "kills, which never reap their plays -- kill the play or session id directly to "
-            "stop a show's workers."
+            "Has no effect on play or show kills, which cannot reach their workers -- "
+            "kill the session ids directly to stop them."
         ),
     )
     kill.add_argument(
