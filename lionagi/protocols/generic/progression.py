@@ -118,11 +118,9 @@ class Progression(Element, Ordering[T], Generic[T]):
     def __iter__(self):
         return iter(self.order)
 
-    def __next__(self) -> UUID:
-        try:
-            return next(iter(self.order))
-        except StopIteration:
-            raise StopIteration("No more items in the progression") from None
+    # Iterable, but deliberately not an iterator: the cursor belongs to the
+    # object ``iter(self)`` hands back, so two traversals never share position.
+    # ``next(progression)`` raises TypeError; use ``next(iter(progression))``.
 
     def __list__(self) -> list[UUID]:
         return list(self.order)

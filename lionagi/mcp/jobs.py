@@ -2070,8 +2070,45 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
     )
 
 
+def _notify_delivery_state(outcome: Any) -> str:
+    """One word for what became of a run's terminal notice: the listing's shape.
+
+    ``status`` reports the whole ``notify_delivery`` object, which is what someone
+    diagnosing one run needs. The listing is scanned, not read: a caller polling
+    several runs wants to spot the one whose notice failed without decoding a
+    four-field object per row, and a listing that carried the object would make
+    every caller write that decoding itself — including the rule for which
+    combinations count as a failure, which is the part worth having in one place.
+    So the listing carries this collapsed state and leaves the detail to ``status``.
+
+    ``"none"`` covers a run that has not reached a terminal yet and a terminal run
+    with no notifier configured. In both, nobody was waiting on a notice: silence
+    is the documented default and is never a failure. ``"delivered"`` is a notice
+    that went out. ``"failed"`` is every way a *configured* notifier came to
+    nothing — refused before it ran, unable to start, timed out, or exited
+    non-zero — because to a caller waiting on the notice those are one fact.
+
+    The record is JSON on disk, so an ``outcome`` that is not an object is read as
+    no delivery rather than allowed to raise through the listing.
+    """
+    if not isinstance(outcome, dict):
+        return "none"
+    if outcome.get("ok"):
+        return "delivered"
+    if not outcome.get("attempted") and not outcome.get("error"):
+        return "none"
+    return "failed"
+
+
 def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[str, Any]]:
     """Recent jobs, newest first (run_id sorts by timestamp).
+
+    ``notify_delivery_state`` says whether each run's terminal notice was
+    delivered, so a run whose notice failed is distinguishable here from one that
+    is still working. Without it this listing — the surface a caller polls while
+    waiting on several runs — reports a failed notice as no notice, and a caller
+    reads that as a run still going. A notice that could not be delivered has to
+    be visible where the waiting is done, not only on the record.
 
     An entry whose record could not be used is listed with the state of that read
     in ``record_state``, the same field ``status`` reports, so a damaged record is
@@ -2109,6 +2146,7 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
                 "submitted_at": st["submitted_at"],
                 "finished_at": st["finished_at"],
                 "record_state": st["record_state"],
+                "notify_delivery_state": _notify_delivery_state(st["notify_delivery"]),
             }
         )
         if len(out) >= limit:

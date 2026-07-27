@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import yaml
 
+from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.cli.orchestrate import (
     _validate_spec_fields,
     add_orchestrate_subparser,
@@ -99,7 +100,7 @@ class TestSpecValidationRejectsBadTypes:
         assert err is not None
 
     def test_prompt_too_long(self):
-        err = _validate_spec_fields({"prompt": "x" * 8193})
+        err = _validate_spec_fields({"prompt": "x" * (MAX_SPEC_PROMPT_CHARS + 1)})
         assert err is not None
         assert "prompt" in err
 
@@ -213,7 +214,7 @@ class TestSpecValidationAcceptsValidFields:
         assert _validate_spec_fields({"prompt": "Do the thing"}) is None
 
     def test_prompt_at_max_length(self):
-        assert _validate_spec_fields({"prompt": "x" * 8192}) is None
+        assert _validate_spec_fields({"prompt": "x" * MAX_SPEC_PROMPT_CHARS}) is None
 
     def test_valid_string_fields(self):
         spec = {

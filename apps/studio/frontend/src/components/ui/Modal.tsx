@@ -9,8 +9,9 @@ export interface ModalProps {
   closeLabel: string;
   onClose: () => void;
   children: ReactNode;
-  /** Width utility for the dialog card. */
-  maxWidth?: "max-w-md" | "max-w-lg" | "max-w-xl" | "max-w-2xl";
+  /** Width utility for the dialog card. Spelled out rather than left open so
+   *  every class the app can produce is literally present for Tailwind to find. */
+  maxWidth?: "max-w-md" | "max-w-lg" | "max-w-xl" | "max-w-2xl" | "max-w-4xl";
   className?: string;
 }
 

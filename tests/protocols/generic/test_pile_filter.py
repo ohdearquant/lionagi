@@ -172,13 +172,19 @@ class TestMisc:
             assert isinstance(uuid, UUID)
             assert isinstance(item, Item)
 
-    def test_next_raises_on_empty(self):
+    def test_pile_is_not_an_iterator(self, pile_3):
+        # A Pile is iterable, not an iterator: next() on the container itself
+        # is a TypeError rather than a traversal that silently never advances.
+        with pytest.raises(TypeError):
+            next(pile_3)
+
+    def test_iter_raises_on_empty(self):
         p = Pile()
         with pytest.raises(StopIteration):
-            next(p)
+            next(iter(p))
 
-    def test_next_returns_first(self, pile_3, three_items):
-        first = next(pile_3)
+    def test_iter_returns_first(self, pile_3, three_items):
+        first = next(iter(pile_3))
         assert first == three_items[0]
 
     def test_append_alias_for_update(self, pile_3):

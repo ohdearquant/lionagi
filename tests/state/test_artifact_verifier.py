@@ -424,3 +424,158 @@ def test_safe_join_dotdot_rejects(tmp_path):
 def test_safe_join_glob_rejects(tmp_path):
     with pytest.raises(ArtifactPathError, match="glob characters"):
         _safe_join(str(tmp_path), "*.md")
+
+
+# ── A bare filename resolves to whichever worker produced it ──────────────────
+#
+# In a multi-agent run each worker writes into its own subdirectory of the
+# artifacts root, and which worker produces a given artifact is decided when the
+# plan is cast. A playbook contract therefore cannot name that subdirectory in
+# advance, so a bare filename used to be impossible to satisfy: every declared
+# artifact verified as MISSING even when the file was sitting one level down,
+# which in turn rewrote a completed run to failed.
+
+
+def _contract(*entries):
+    return {"expected": list(entries)}
+
+
+def test_bare_filename_found_in_a_worker_subdirectory(tmp_path):
+    (tmp_path / "scribe").mkdir()
+    (tmp_path / "scribe" / "VERDICTS.md").write_text("rows")
+
+    result = verify_artifact_contract(
+        _contract({"id": "verdicts", "path": "VERDICTS.md", "required": True}),
+        artifacts_root=str(tmp_path),
+    )
+    assert result["status"] == "passed"
+    assert result["missing_required"] == []
+    assert result["produced"][0]["id"] == "verdicts"
+
+
+def test_produced_reports_where_the_file_actually_is(tmp_path):
+    # _context_from reads produced["path"] relative to the root, so reporting
+    # the declared name rather than the resolved one would hand it a path that
+    # does not exist.
+    (tmp_path / "planner").mkdir()
+    (tmp_path / "planner" / "SLICES.md").write_text("slices")
+
+    result = verify_artifact_contract(
+        _contract({"id": "slices", "path": "SLICES.md", "required": True}),
+        artifacts_root=str(tmp_path),
+    )
+    entry = result["produced"][0]
+    assert entry["path"] == os.path.join("planner", "SLICES.md")
+    assert (tmp_path / entry["path"]).read_text() == "slices"
+
+
+def test_a_file_at_the_root_still_wins_over_a_subdirectory_copy(tmp_path):
+    (tmp_path / "REPORT.md").write_text("root copy")
+    (tmp_path / "worker").mkdir()
+    (tmp_path / "worker" / "REPORT.md").write_text("subdir copy")
+
+    result = verify_artifact_contract(
+        _contract({"id": "r", "path": "REPORT.md", "required": True}),
+        artifacts_root=str(tmp_path),
+    )
+    assert result["produced"][0]["path"] == "REPORT.md"
+
+
+def test_same_filename_in_two_subdirectories_resolves_deterministically(tmp_path):
+    for name in ("zeta", "alpha", "mid"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "OUT.md").write_text(name)
+
+    seen = {
+        verify_artifact_contract(
+            _contract({"id": "o", "path": "OUT.md", "required": True}),
+            artifacts_root=str(tmp_path),
+        )["produced"][0]["path"]
+        for _ in range(5)
+    }
+    assert seen == {os.path.join("alpha", "OUT.md")}
+
+
+def test_a_directory_qualified_path_is_matched_exactly_and_not_searched_elsewhere(tmp_path):
+    # role_default entries name their own directory. That precision must be
+    # honoured: a contract asking for critic/review.md is not satisfied by some
+    # other worker's review.md.
+    (tmp_path / "writer").mkdir()
+    (tmp_path / "writer" / "review.md").write_text("wrong author")
+
+    result = verify_artifact_contract(
+        _contract({"id": "cr", "path": "critic/review.md", "required": True}),
+        artifacts_root=str(tmp_path),
+    )
+    assert result["status"] == "failed"
+    assert [e["id"] for e in result["missing_required"]] == ["cr"]
+
+
+def test_a_nested_bare_filename_is_not_found_two_levels_down(tmp_path):
+    # The search is one level deep on purpose: workers write into their own
+    # directory, not into arbitrary trees, and an unbounded walk would let an
+    # incidental file elsewhere satisfy a contract.
+    deep = tmp_path / "worker" / "nested"
+    deep.mkdir(parents=True)
+    (deep / "DEEP.md").write_text("too far")
+
+    result = verify_artifact_contract(
+        _contract({"id": "d", "path": "DEEP.md", "required": True}),
+        artifacts_root=str(tmp_path),
+    )
+    assert result["status"] == "failed"
+
+
+def test_an_empty_file_in_a_subdirectory_is_still_missing(tmp_path):
+    # A worker that created the file and wrote nothing has not produced it.
+    (tmp_path / "scribe").mkdir()
+    (tmp_path / "scribe" / "EMPTY.md").write_text("")
+
+    result = verify_artifact_contract(
+        _contract({"id": "e", "path": "EMPTY.md", "required": True}),
+        artifacts_root=str(tmp_path),
+    )
+    assert result["status"] == "failed"
+
+
+def test_a_genuinely_absent_artifact_is_still_missing(tmp_path):
+    (tmp_path / "scribe").mkdir()
+    (tmp_path / "scribe" / "SOMETHING_ELSE.md").write_text("x")
+
+    result = verify_artifact_contract(
+        _contract({"id": "gone", "path": "NOT_THERE.md", "required": True}),
+        artifacts_root=str(tmp_path),
+    )
+    assert result["status"] == "failed"
+    assert [e["id"] for e in result["missing_required"]] == ["gone"]
+
+
+def test_the_reported_run_shape_now_passes_end_to_end(tmp_path):
+    # The exact contract and layout that produced a false failure: four
+    # playbook-declared bare filenames, each written by a different worker,
+    # plus one role_default entry that already named its own directory.
+    layout = {
+        "scribe": "VERDICTS.md",
+        "planner": "SLICES.md",
+        "writer": "STALE.md",
+        "advisor": "PARKED.md",
+        "critic": "review.md",
+    }
+    for agent, filename in layout.items():
+        (tmp_path / agent).mkdir()
+        (tmp_path / agent / filename).write_text("content")
+
+    result = verify_artifact_contract(
+        _contract(
+            {"id": "verdicts", "path": "VERDICTS.md", "required": True},
+            {"id": "slices", "path": "SLICES.md", "required": True},
+            {"id": "stale", "path": "STALE.md", "required": False},
+            {"id": "parked", "path": "PARKED.md", "required": False},
+            {"id": "critic__review", "path": "critic/review.md", "required": True},
+        ),
+        artifacts_root=str(tmp_path),
+    )
+    assert result["status"] == "passed"
+    assert result["missing_required"] == []
+    assert result["missing_optional"] == []
+    assert len(result["produced"]) == 5

@@ -18,6 +18,7 @@ from fastapi import HTTPException, Query
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
+from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.service.providers import EFFORT_LEVELS as _VALID_EFFORT_LEVELS
 from lionagi.state.db import StateDB, state_db_known_absent
 
@@ -374,8 +375,10 @@ def _validate_flow_yaml_spec(yaml_text: str) -> str | None:
         prompt = spec["prompt"]
         if not isinstance(prompt, str):
             return f"spec field 'prompt' must be a string, got {type(prompt).__name__}"
-        if len(prompt) > 8192:
-            return "spec field 'prompt' exceeds maximum length of 8192 characters"
+        if len(prompt) > MAX_SPEC_PROMPT_CHARS:
+            return (
+                f"spec field 'prompt' exceeds maximum length of {MAX_SPEC_PROMPT_CHARS} characters"
+            )
 
     if "save" in spec:
         save = spec["save"]

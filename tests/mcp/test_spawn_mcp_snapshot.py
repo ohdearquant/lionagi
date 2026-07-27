@@ -181,7 +181,9 @@ def test_a_caller_who_names_a_config_gets_that_config_and_a_handle_that_says_so(
         lambda argv, **kw: (captured.update(argv=argv), _FakeProc())[1],
     )
 
-    handle = _spawn_agent({"prompt": "hi", "mcp_config": str(chosen), "cwd": str(submit_dir)})
+    handle = _spawn_agent(
+        {"query": ["a-model"], "prompt": "hi", "mcp_config": str(chosen), "cwd": str(submit_dir)}
+    )
 
     child_sees = _child_config(captured["argv"])
     assert child_sees == str(chosen)
@@ -207,7 +209,7 @@ def test_the_generated_snapshot_still_wins_when_the_caller_says_nothing(
         lambda argv, **kw: (captured.update(argv=argv), _FakeProc())[1],
     )
 
-    handle = _spawn_agent({"prompt": "hi", "cwd": str(submit_dir)})
+    handle = _spawn_agent({"query": ["a-model"], "prompt": "hi", "cwd": str(submit_dir)})
 
     snapshot = config.job_dir(handle["run_id"]) / "mcp-servers.json"
     assert _child_config(captured["argv"]) == str(snapshot)
@@ -232,7 +234,9 @@ def test_a_caller_who_asks_for_no_servers_is_not_handed_a_snapshot(
         lambda argv, **kw: (captured.update(argv=argv), _FakeProc())[1],
     )
 
-    handle = _spawn_agent({"prompt": "hi", "no_mcp_config": True, "cwd": str(submit_dir)})
+    handle = _spawn_agent(
+        {"query": ["a-model"], "prompt": "hi", "no_mcp_config": True, "cwd": str(submit_dir)}
+    )
 
     assert _child_config(captured["argv"]) is None
     assert handle["mcp_config"] is None

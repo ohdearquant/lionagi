@@ -352,17 +352,21 @@ class TestPileAsyncIteration:
         assert len(collected) == 4
 
     @pytest.mark.asyncio
-    async def test_anext_called_directly(self):
+    async def test_pile_is_not_an_async_iterator(self):
         a, b = Element(), Element()
         p = Pile(collections=[a, b])
-        item = await p.__anext__()
-        assert item is a
+        with pytest.raises(TypeError):
+            await anext(p)
 
     @pytest.mark.asyncio
-    async def test_anext_stop_async_iteration(self):
-        p = Pile(collections=[])
+    async def test_async_iterator_yields_then_stops(self):
+        a, b = Element(), Element()
+        p = Pile(collections=[a, b])
+        it = Pile.AsyncPileIterator(p)
+        assert await anext(it) is a
+        assert await anext(it) is b
         with pytest.raises(StopAsyncIteration):
-            await p.__anext__()
+            await anext(it)
 
     @pytest.mark.asyncio
     async def test_async_context_manager(self):
