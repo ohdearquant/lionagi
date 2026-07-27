@@ -244,7 +244,10 @@ def _read_job_state(run_id: str) -> tuple[dict[str, Any] | None, str]:
         return None, "unreadable"
     try:
         record = json.loads(raw)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
+        # Deeply nested input exhausts the decoder's stack rather than failing to
+        # parse, so it arrives as neither a syntax error nor anything else this
+        # reader would recognise. It is still a record that could not be read.
         return None, "unreadable"
     if not isinstance(record, dict):
         return None, "wrong_shape"
@@ -618,7 +621,17 @@ def _list_artifacts(run_id: str) -> tuple[list[str], str]:
     for root, _dirs, names in os.walk(adir, onerror=_note):
         for name in names:
             path = Path(root) / name
-            if path.is_file():
+            try:
+                is_file = path.is_file()
+            except OSError:
+                # A directory can be listable and still not searchable, so a name
+                # can arrive from the walk and its metadata still be out of reach.
+                # The entry is one the caller will not hear about, which is the
+                # same shortfall the state reports; the walk continues, because
+                # the entries after it are still true.
+                unreadable = True
+                continue
+            if is_file:
                 found.append(str(path.relative_to(adir)))
     return sorted(found), "unreadable" if unreadable else "ok"
 

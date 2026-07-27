@@ -1602,17 +1602,31 @@ def test_every_surface_survives_a_run_directory_it_cannot_get_at(sandbox, monkey
         os.chmod(run_dir, 0o700)
 
 
-def test_a_record_of_invalid_bytes_is_an_unusable_record_not_an_exception(sandbox):
-    """Corruption that is not JSON corruption.
+# Each entry is a way a record on disk can be damaged. They are listed together
+# because the reader's contract is one claim about all of them — a record that
+# cannot be used is reported as unusable — and because the ways bytes fail are
+# not guessable in advance. Four of these were found one at a time, each after
+# the previous had been called handled. A new shape belongs in this list.
+DAMAGED_RECORDS = [
+    pytest.param(b'{"run_id": "truncated"', "unreadable", id="truncated-json"),
+    pytest.param(b'\xff\xfe{"run_id": "x"}', "unreadable", id="not-utf8"),
+    pytest.param(b"[" * 10000, "unreadable", id="nested-past-the-decoder-stack"),
+    pytest.param(b'"a string, not an object"', "wrong_shape", id="json-but-not-an-object"),
+    pytest.param(b"[1, 2, 3]", "wrong_shape", id="json-array"),
+    pytest.param(b"", "unreadable", id="empty-file"),
+]
 
-    The record is bytes on disk, and bytes can fail to be text before they ever
-    fail to be JSON. That failure does not arrive as ``OSError`` — the file opens
-    and reads fine — so a reader guarding only the open and the parse lets it out.
 
-    Every surface here shares one reader, which is what makes this worth asserting
-    at the surfaces rather than at the helper: the listing in particular promises
-    that one damaged record does not cost the caller the runs beside it, and an
-    exception out of the shared reader breaks that promise for every run at once.
+@pytest.mark.parametrize("payload,expected_state", DAMAGED_RECORDS)
+def test_a_damaged_record_is_reported_as_damaged_by_every_surface(sandbox, payload, expected_state):
+    """One contract, asserted at the surfaces rather than at the reader.
+
+    The reader promises that a record which cannot be used is reported as
+    unusable, never raised. Asserting that at the helper would miss what makes it
+    matter: four public surfaces share this reader, and the listing in particular
+    promises that one damaged record does not cost the caller the runs beside it.
+    An exception out of the shared reader breaks that promise for every run at
+    once, so a healthy sibling record is part of every case here.
     """
     ok_rid = jobs.new_run_id()
     jobs._write_job({"run_id": ok_rid, "pid": None, "kind": "agent", "status": "running"})
@@ -1620,23 +1634,16 @@ def test_a_record_of_invalid_bytes_is_an_unusable_record_not_an_exception(sandbo
     bad_rid = jobs.new_run_id()
     bad_dir = config.job_dir(bad_rid)
     bad_dir.mkdir(parents=True, exist_ok=True)
-    (bad_dir / "job.json").write_bytes(b'\xff\xfe{"run_id": "not utf-8"}')
+    (bad_dir / "job.json").write_bytes(payload)
 
-    # Control: the truncated-JSON case already reports unusable, so a passing
-    # assertion below is about the bytes and not about damaged records generally.
-    trunc_rid = jobs.new_run_id()
-    trunc_dir = config.job_dir(trunc_rid)
-    trunc_dir.mkdir(parents=True, exist_ok=True)
-    (trunc_dir / "job.json").write_text('{"run_id": "truncated"')
-    assert jobs.status(trunc_rid)["record_state"] == "unreadable"
-
-    assert jobs.status(bad_rid)["record_state"] == "unreadable"
-    assert jobs.status(bad_rid)["known"] is False
-    assert jobs.output(bad_rid)["record_state"] == "unreadable"
-    assert jobs.kill(bad_rid)["reason_code"] == jobs.KILL_RECORD_UNREADABLE
+    st = jobs.status(bad_rid)
+    assert st["record_state"] == expected_state
+    assert st["known"] is False
+    assert jobs.output(bad_rid)["record_state"] == expected_state
+    assert jobs.kill(bad_rid)["killed"] is False
 
     listed = {j["run_id"]: j.get("record_state") for j in jobs.list_jobs()}
-    assert listed[bad_rid] == "unreadable"
+    assert listed[bad_rid] == expected_state
     assert listed[ok_rid] == "ok", "one damaged record must not cost the runs beside it"
 
 
@@ -1701,6 +1708,43 @@ def test_an_artifacts_directory_that_denies_its_own_read_is_not_a_run_that_wrote
         assert got["artifacts_state"] == "unreadable"
     finally:
         os.chmod(adir, 0o700)
+
+
+def test_an_entry_whose_metadata_is_out_of_reach_does_not_escape_the_listing(sandbox):
+    """A directory can be listable and not searchable at the same time.
+
+    Read permission gets the walk the names; search permission is what it takes
+    to stat them. With one and not the other, an entry arrives from the walk and
+    then fails inspection, which is a per-entry failure the directory-level error
+    callback never sees. The traversal is short by that entry, which is what the
+    state says, and the entries beside it are still true.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root searches a directory whose mode denies it, so the case cannot be set up")
+
+    rid = jobs.new_run_id()
+    adir = config.run_dir(rid) / "artifacts"
+    adir.mkdir(parents=True)
+    (adir / "a.txt").write_text("x")
+    jobs._write_job({"run_id": rid, "pid": None, "kind": "agent", "status": "running"})
+
+    assert jobs.output(rid)["artifacts"] == ["a.txt"], "control: readable and searchable"
+    assert jobs.output(rid)["artifacts_state"] == "ok"
+
+    os.chmod(adir, 0o600)  # readable, not searchable
+    try:
+        try:
+            os.stat(adir / "a.txt")
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("this filesystem does not enforce directory search permission")
+
+        got = jobs.output(rid)
+        assert got["artifacts_state"] == "unreadable"
+        assert got["known"] is True, "only the traversal fell short"
+    finally:
+        os.chmod(adir, 0o755)
 
 
 def test_a_partly_readable_artifact_tree_returns_what_it_reached(sandbox):
