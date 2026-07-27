@@ -200,10 +200,20 @@ class Element(BaseModel):
         return cls.model_validate(data)
 
     def to_json(self, decode: bool = True, **kw) -> str:
-        """Serialize to JSON string."""
+        """Serialize to JSON string.
+
+        Raises ValueError if the element holds inf, -inf or nan: JSON cannot
+        represent them and they would be written as `null`, which no reader can
+        tell apart from a genuine null once the element has been stored.
+        """
         kw.pop("mode", None)
         dict_ = self._to_dict(**kw)
-        return json_dumps(dict_, default=DEFAULT_ELEMENT_SERIALIZER, decode=decode)
+        return json_dumps(
+            dict_,
+            default=DEFAULT_ELEMENT_SERIALIZER,
+            decode=decode,
+            check_non_finite=True,
+        )
 
     @classmethod
     def from_json(cls, json_str: str) -> Element:

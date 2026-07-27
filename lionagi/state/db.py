@@ -423,10 +423,15 @@ def _validate_columns(fields: dict[str, Any], allowed: frozenset[str]) -> None:
 
 
 def _to_json_column(value: Any) -> Any:
-    """Serialize value to JSON string for round-trippable storage."""
+    """Serialize value to JSON string for round-trippable storage.
+
+    Raises ValueError on inf, -inf or nan rather than storing them: JSON writes
+    them as `null`, and a row that has been written cannot afterwards be told
+    apart from one that always held a null there.
+    """
     if value is None or isinstance(value, bytes | bytearray | memoryview):
         return value
-    return _json_dumps(value)
+    return _json_dumps(value, check_non_finite=True)
 
 
 def _validate_session_status(status: Any) -> None:
