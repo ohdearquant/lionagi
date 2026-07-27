@@ -352,10 +352,17 @@ def _live_group_members(pgid: int) -> tuple[list[tuple[int, float]], bool]:
 def _process_marker(pid: int) -> tuple[str, str | None]:
     """The run marker carried by the process at *pid*.
 
-    ``("found", value_or_None)`` when the environment was read — a None value
-    means the process simply does not carry the marker. ``("unknown", None)``
-    when the environment could not be read at all, which is a probe that
-    failed and never evidence about the process.
+    ``("found", value_or_None)`` when the environment was read, ``("unknown",
+    None)`` when it raised — a probe that failed, and never evidence about the
+    process.
+
+    A None value is weaker than it looks and must not be read as "this process
+    does not carry the marker". macOS returns an *empty* environment, without
+    raising, for a process running a protected system binary, so a declined
+    disclosure and a genuinely absent marker arrive identically. That is safe
+    only in one direction: an unreadable environment contributes no marker, and
+    no marker can only ever withhold ownership, never assert it. Nothing here
+    may be inverted into evidence that a group is not this run's.
     """
     import psutil
 
