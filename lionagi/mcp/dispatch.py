@@ -918,6 +918,17 @@ async def _run_one(entry: Any) -> dict[str, Any]:
             result = _run_machine(verb, schema, args)
     except OpError as exc:
         return _op_error(name, exc, schema)
+    except jobs.SpawnError as exc:
+        # A run that could not start, or that refused its own arguments and died
+        # immediately. The caller asked for a run and does not have one, so this
+        # is their answer rather than an exception that takes the whole batch
+        # down with it. The run_id rides along because a record was written
+        # before the failure and its log holds the cause.
+        return _op_error(
+            name,
+            OpError("invalid_input", str(exc), detail={"run_id": exc.run_id}),
+            schema,
+        )
     except projection.SchemaProjectionError as exc:
         return _op_error(name, OpError("unavailable", str(exc)), None)
     except (ValueError, TypeError, KeyError, OSError) as exc:

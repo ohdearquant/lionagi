@@ -30,6 +30,11 @@ class _FakeProc:
     def __init__(self, pid: int = 4242) -> None:
         self.pid = pid
 
+    def poll(self):
+        """Still running. submit() watches a fresh child briefly for a startup
+        refusal, and a double that models a live spawn has to be able to say so."""
+        return None
+
 
 @pytest.fixture
 def submit_dir(monkeypatch, tmp_path):
