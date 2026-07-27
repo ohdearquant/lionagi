@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from lionagi._errors import ConfigurationError
+from lionagi.cli._providers import AgentProfileNotFoundError
 from lionagi.cli.orchestrate._orchestration import (
     DEFAULT_ORCHESTRATOR_AGENT,
     setup_orchestration,
@@ -121,7 +122,7 @@ async def test_a_missing_orchestrator_profile_says_what_was_assumed(monkeypatch)
     import lionagi.cli.orchestrate._orchestration as orch_mod
 
     def _absent(name, *a, **kw):
-        raise FileNotFoundError(f"Agent profile '{name}' not found")
+        raise AgentProfileNotFoundError(f"Agent profile '{name}' not found")
 
     monkeypatch.setattr(orch_mod, "load_agent_profile", _absent)
 
@@ -141,14 +142,34 @@ async def test_a_named_agent_that_is_missing_still_raises_the_loader_error(monke
     import lionagi.cli.orchestrate._orchestration as orch_mod
 
     def _absent(name, *a, **kw):
-        raise FileNotFoundError(f"Agent profile '{name}' not found")
+        raise AgentProfileNotFoundError(f"Agent profile '{name}' not found")
 
     monkeypatch.setattr(orch_mod, "load_agent_profile", _absent)
 
-    with pytest.raises(FileNotFoundError) as exc_info:
+    with pytest.raises(AgentProfileNotFoundError) as exc_info:
         await _run(agent_name="no-such-agent")
 
     assert "no-such-agent" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_a_profile_that_cannot_be_read_is_not_reported_as_a_missing_default(monkeypatch):
+    """The loader finds the file and then reads it, and a file that disappears
+    between those two steps raises the same builtin type as a missing profile.
+    Calling that "no orchestrator profile was found" sends the reader to create
+    a profile that is already there."""
+    import lionagi.cli.orchestrate._orchestration as orch_mod
+
+    def _found_then_vanished(name, *a, **kw):
+        raise FileNotFoundError(f"[Errno 2] No such file or directory: '{name}.md'")
+
+    monkeypatch.setattr(orch_mod, "load_agent_profile", _found_then_vanished)
+
+    with pytest.raises(FileNotFoundError) as exc_info:
+        await _run()
+
+    assert not isinstance(exc_info.value, ConfigurationError)
+    assert "No such file or directory" in str(exc_info.value)
 
 
 @pytest.mark.asyncio

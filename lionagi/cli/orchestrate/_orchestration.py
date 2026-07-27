@@ -35,6 +35,7 @@ from .._logging import hint, warn
 from .._providers import (
     _CLAUDE_PROVIDER_NAMES,
     AgentProfile,
+    AgentProfileNotFoundError,
     build_imodel_from_spec,
     list_agents,
     load_agent_profile,
@@ -617,12 +618,17 @@ async def setup_orchestration(
     if agent_name:
         try:
             orc_profile = load_agent_profile(agent_name)
-        except FileNotFoundError as exc:
+        except AgentProfileNotFoundError as exc:
             if not defaulted_agent:
                 raise
             # The caller never mentioned this profile, so an error naming it as
             # if they had asked for it explains nothing. Say what was assumed
             # and what would satisfy it instead.
+            #
+            # Only the not-found case is translated. The loader reads the file
+            # once it has found one, and a file that disappears between those
+            # two steps raises the same builtin type — reported as a missing
+            # default profile it would send the reader somewhere else entirely.
             raise ConfigurationError(
                 "Naming neither an agent nor a model orchestrates under the "
                 f"{DEFAULT_ORCHESTRATOR_AGENT!r} agent profile, and no such profile "

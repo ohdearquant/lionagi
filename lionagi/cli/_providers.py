@@ -52,6 +52,7 @@ __all__ = (
     "resolve_model_spec",
     "resolve_persisted_effort",
     "AgentProfile",
+    "AgentProfileNotFoundError",
     "AmbiguousProfileNameError",
     "build_agent_profile_catalog",
     "build_deadline_preamble",
@@ -383,6 +384,16 @@ class AmbiguousProfileNameError(ValueError):
     """One agents dir declares a name under both '-' and '_' spellings."""
 
 
+class AgentProfileNotFoundError(FileNotFoundError):
+    """No profile of that name exists on the search path.
+
+    A subclass rather than a bare FileNotFoundError so a caller can tell "there
+    is no such profile" from "a profile was found and then could not be read".
+    The two are the same exception type otherwise, and a caller acting on the
+    first would silently swallow the second.
+    """
+
+
 def _name_spellings(name: str) -> tuple[str, ...]:
     """NAME plus its separator spellings, requested spelling first.
 
@@ -592,7 +603,7 @@ def load_agent_profile(name: str) -> AgentProfile:
         return _parse_profile(name, plugin_path.read_text())
 
     if not dirs and not plugin_token:
-        raise FileNotFoundError(
+        raise AgentProfileNotFoundError(
             "No .lionagi/ directory found. Create .lionagi/agents/ in your repo "
             "or ~/.lionagi/agents/ globally."
         )
@@ -603,7 +614,7 @@ def load_agent_profile(name: str) -> AgentProfile:
         msg += f"\n{path} exists but its symlink target is unreadable: {target}"
     if available:
         msg += f"\nAvailable: {', '.join(available)}"
-    raise FileNotFoundError(msg)
+    raise AgentProfileNotFoundError(msg)
 
 
 def _parse_profile_timeout(name: str, raw: Any) -> int | None:
