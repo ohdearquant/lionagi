@@ -33,12 +33,40 @@ import shutil
 import sys
 import tempfile
 
+
+def _remove_test_home(root):
+    """Delete the suite's temporary root, and say so on stderr if it survives.
+
+    Cleanup runs from ``atexit``, after the session pytest reported on is over,
+    so there is nothing left to fail: raising here would produce an unraisable
+    traceback attached to no test and could only confuse the result a reader
+    already has. Swallowing the error is worse — a permission problem, a busy
+    file or a full filesystem leaves a directory behind and the suite says
+    nothing, so a boundary the suite draws around itself is one it cannot
+    report on when it leaks.
+
+    So the failure is a message rather than an exception: it names the root
+    that is still on disk and the error that stopped the removal, which is what
+    a person needs to find it and clear it. Only the removal is guarded --
+    anything else escapes, because a bug in this function is not a cleanup
+    failure and should not be dressed up as one.
+    """
+    try:
+        shutil.rmtree(root)
+    except OSError as e:
+        sys.stderr.write(
+            f"\nlionagi tests: could not remove the temporary run directory {root}\n"
+            f"  {e}\n"
+            "  It is still on disk; remove it by hand.\n"
+        )
+
+
 if os.environ.get("LIONAGI_TEST_HOME"):
     os.environ["LIONAGI_HOME"] = os.environ["LIONAGI_TEST_HOME"]
 else:
     _TEST_LIONAGI_HOME = tempfile.mkdtemp(prefix="lionagi-tests-")
     os.environ["LIONAGI_HOME"] = _TEST_LIONAGI_HOME
-    atexit.register(shutil.rmtree, _TEST_LIONAGI_HOME, ignore_errors=True)
+    atexit.register(_remove_test_home, _TEST_LIONAGI_HOME)
 
 if "lionagi._paths" in sys.modules:
     # The constants are already bound to the old value, so the redirect above
