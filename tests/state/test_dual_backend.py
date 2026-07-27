@@ -19,7 +19,7 @@ import uuid
 
 import pytest
 
-from lionagi.state.db import StateDB
+from lionagi.state.db import SCHEMA_VERSION, StateDB
 from lionagi.state.reasons import RunReasons
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
@@ -158,9 +158,9 @@ async def _run_parity_suite(db: StateDB) -> None:
     # 5. get_session returns None for a missing id
     assert await db.get_session(_uid()) is None
 
-    # 6. schema_version is '1'
+    # 6. schema_version is the version this code applies
     ver = await db.schema_version()
-    assert ver == "1", f"schema_version must be '1', got {ver!r}"
+    assert ver == SCHEMA_VERSION, f"schema_version must be {SCHEMA_VERSION!r}, got {ver!r}"
 
     # 7. insert_session_signal assigns sequential seq (MAX+1 path / PG advisory lock)
     s1 = await db.insert_session_signal(

@@ -17,7 +17,9 @@ CREATE TABLE IF NOT EXISTS schema_meta (
   value   TEXT NOT NULL
 );
 
-INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '1');
+-- Must match SCHEMA_VERSION in db.py, which re-stamps this row on every open
+-- so a migrated database reports the shape it now has.
+INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '2');
 INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('created_at', strftime('%s', 'now'));
 
 -- ── Message types (int enum for lion_class) ───────────────────────────────

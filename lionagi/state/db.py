@@ -115,6 +115,14 @@ def _default_reason_code_for_entity_status(entity_type: str, status: str) -> str
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
 
+# Shape of the schema this code applies. ``_apply_schema`` stamps it into
+# ``schema_meta.version`` on every open, so the recorded version describes the
+# database as it stands after migrations rather than as it was created. Bump it
+# whenever a migration changes the shape a reader would see -- a new table, a
+# rebuilt CHECK constraint, a column whose meaning changed. Version "1" is the
+# original shape, before the migrations now applied on open existed.
+SCHEMA_VERSION = "2"
+
 
 def state_db_file() -> Path | None:
     """The local file a default ``StateDB()`` would open, if it opens one at all.
@@ -800,11 +808,16 @@ class StateDB:
             await self._reconcile_indexes(conn)
             # Seed immutable reference rows; ON CONFLICT DO NOTHING is safe to
             # re-run on every open() because the rows are identity-stable.
+            # The version row is the exception: the migrations above rewrite an
+            # older database into the current shape, so the stamp has to move
+            # with them. DO UPDATE, not DO NOTHING, or a migrated database keeps
+            # reporting the version it was created at.
             await conn.execute(
                 text(
-                    "INSERT INTO schema_meta (key, value) VALUES ('version', '1') "
-                    "ON CONFLICT (key) DO NOTHING"
-                )
+                    "INSERT INTO schema_meta (key, value) VALUES ('version', :version) "
+                    "ON CONFLICT (key) DO UPDATE SET value = excluded.value"
+                ),
+                {"version": SCHEMA_VERSION},
             )
             await conn.execute(
                 text(

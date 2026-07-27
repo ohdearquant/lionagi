@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import text
 
-from lionagi.state.db import StateDB
+from lionagi.state.db import SCHEMA_VERSION, StateDB
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -129,7 +129,7 @@ async def test_open_close():
 
     # Schema is available after open
     version = await state.schema_version()
-    assert version == "1"
+    assert version == SCHEMA_VERSION
 
     await state.close()
     assert state._engine is None
@@ -139,7 +139,7 @@ async def test_context_manager():
     """async with opens and closes cleanly."""
     async with StateDB(":memory:") as state:
         version = await state.schema_version()
-        assert version == "1"
+        assert version == SCHEMA_VERSION
     assert state._engine is None
 
 
@@ -359,8 +359,8 @@ async def test_schema_creates_all_tables(db: StateDB):
 
 
 async def test_schema_version(db: StateDB):
-    """schema_version() returns '1'."""
-    assert await db.schema_version() == "1"
+    """schema_version() returns the version this code applies."""
+    assert await db.schema_version() == SCHEMA_VERSION
 
 
 async def test_apply_schema_adds_missing_columns_on_old_db(tmp_path):
