@@ -237,6 +237,21 @@ def test_kill_refuses_a_record_that_already_ended(sandbox, monkeypatch, recorded
 _SPAWNED_AT = 1_700_000_000.0
 
 
+def _raise(exc: BaseException):
+    """A stand-in for an OS call that fails, whatever arguments it is handed.
+
+    The signatures differ across the calls being doubled, so the replacement
+    accepts anything and raises the one exception the test is about. Raising an
+    instance rather than a class keeps errno and message available to the code
+    under test, which several of these guards put into what they report.
+    """
+
+    def _fail(*args, **kwargs):
+        raise exc
+
+    return _fail
+
+
 def _live_process(monkeypatch, created: float = _SPAWNED_AT):
     """Make both process probes agree that the pid holds a live process.
 
@@ -2365,3 +2380,238 @@ def test_an_ordinary_prompt_is_not_caught_by_the_size_guard(tmp_path, monkeypatc
 
     # Returns rather than raising.
     assert jobs._reject_oversized_argv(argv, env, kind="flow") is None
+
+
+# --- The failure classification of each guarded OS read -----------------------
+#
+# Each guard below decides what the caller is told when one specific probe
+# fails. A guard nothing drives is a branch whose answer has never been read
+# back, so these exercise them one at a time, each against a control that shows
+# the same code path answering differently when the probe succeeds.
+
+
+def test_a_waitpid_failure_that_is_not_a_missing_child_does_not_decide_liveness(monkeypatch):
+    """waitpid can fail for reasons that say nothing about the process.
+
+    Only ChildProcessError carries information here: it means the pid is not
+    ours to reap, so the direct probe is authoritative. Any other failure of
+    waitpid is a failed measurement, and a failed measurement must not become
+    the answer. The direct probe still decides, in both directions.
+    """
+    monkeypatch.setattr(jobs.os, "waitpid", _raise(OSError(5, "I/O error")))
+
+    monkeypatch.setattr(jobs.os, "kill", lambda pid, sig: None)
+    assert jobs._pid_alive(4242) is True
+
+    monkeypatch.setattr(jobs.os, "kill", _raise(ProcessLookupError()))
+    assert jobs._pid_alive(4242) is False
+
+
+def test_a_process_we_may_not_signal_is_alive_rather_than_absent(monkeypatch):
+    """Refusing to signal a process is the OS confirming it exists.
+
+    A pid held by another user answers the existence probe with a permission
+    error, which is a positive answer to the only question being asked. Reading
+    it as absence would report a live run as finished.
+    """
+    monkeypatch.setattr(jobs.os, "waitpid", _raise(ChildProcessError()))
+
+    monkeypatch.setattr(jobs.os, "kill", _raise(PermissionError(1, "not permitted")))
+    assert jobs._pid_alive(4242) is True
+
+    # The control: the same shape of refusal from the same call, for a pid that
+    # genuinely holds nothing, is the other answer.
+    monkeypatch.setattr(jobs.os, "kill", _raise(ProcessLookupError()))
+    assert jobs._pid_alive(4242) is False
+
+
+def test_a_start_time_probe_that_errors_is_unknown_and_never_gone(monkeypatch):
+    """An errored identity probe must not read as death.
+
+    "gone" licenses the caller to stop looking; "unknown" does not. A probe that
+    failed knows nothing about the process, which may well be running, so the
+    two answers cannot be folded together.
+    """
+    import psutil
+
+    monkeypatch.setattr(psutil, "Process", _raise(psutil.AccessDenied(4242)))
+    assert jobs._process_create_time(4242) == ("unknown", None)
+
+    monkeypatch.setattr(psutil, "Process", _raise(OSError(5, "I/O error")))
+    assert jobs._process_create_time(4242) == ("unknown", None)
+
+    # The control: the answer that does mean the process is gone.
+    monkeypatch.setattr(psutil, "Process", _raise(psutil.NoSuchProcess(4242)))
+    assert jobs._process_create_time(4242) == ("gone", None)
+
+
+def test_a_member_whose_group_read_fails_is_told_apart_from_one_that_exited(monkeypatch):
+    """Two ways a group read ends without an answer, and they are not the same.
+
+    A pid that no longer exists is not a member of the group, which is a fact.
+    A group read that failed for any other reason established nothing, and
+    reporting it as absence would let a scan call itself complete while a live
+    member went unseen.
+    """
+    monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", _SPAWNED_AT))
+    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("unknown", None))
+
+    monkeypatch.setattr(jobs.os, "getpgid", _raise(ProcessLookupError()))
+    assert jobs._pinned_member(4242, 7777) == ("gone", None)
+
+    monkeypatch.setattr(jobs.os, "getpgid", _raise(OSError(1, "not permitted")))
+    assert jobs._pinned_member(4242, 7777) == ("unknown", None)
+
+    # The control: the same call succeeding produces a member, so the two
+    # refusals above are the guards answering and not the setup failing.
+    monkeypatch.setattr(jobs.os, "getpgid", lambda pid: 7777)
+    state, member = jobs._pinned_member(4242, 7777)
+    assert state == "found" and member is not None and member[0] == 4242
+
+
+def test_a_process_table_that_cannot_be_read_reports_an_incomplete_scan(monkeypatch):
+    """No process table, no membership claim.
+
+    Returning an empty member list with the scan marked complete would say the
+    group holds nothing running, on the strength of a read that never happened.
+    The empty list is only ever safe alongside the flag that says so.
+    """
+    import psutil
+
+    monkeypatch.setattr(psutil, "pids", _raise(psutil.AccessDenied()))
+    assert jobs._live_group_members(7777) == ([], False)
+
+    monkeypatch.setattr(psutil, "pids", _raise(OSError(1, "not permitted")))
+    assert jobs._live_group_members(7777) == ([], False)
+
+
+def test_a_candidate_whose_group_cannot_be_read_leaves_the_scan_incomplete(monkeypatch):
+    """One unreadable candidate is a gap in the membership, not a non-member.
+
+    The pid may be in this group. Skipping it quietly would let the scan report
+    a complete view of a group it had not finished reading.
+    """
+    import psutil
+
+    monkeypatch.setattr(psutil, "pids", lambda: [4242])
+    monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", _SPAWNED_AT))
+    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("unknown", None))
+
+    monkeypatch.setattr(jobs.os, "getpgid", _raise(OSError(1, "not permitted")))
+    members, complete = jobs._live_group_members(7777)
+    assert members == [] and complete is False
+
+    # A candidate that simply exited is a non-member and no gap at all, so the
+    # scan over the same single pid is complete.
+    monkeypatch.setattr(jobs.os, "getpgid", _raise(ProcessLookupError()))
+    members, complete = jobs._live_group_members(7777)
+    assert members == [] and complete is True
+
+
+def test_a_group_that_is_gone_at_the_moment_of_the_signal_is_reported_as_gone(
+    sandbox, monkeypatch, no_stray_signal
+):
+    """The group can end between being identified and being signalled.
+
+    Nothing was killed, and the reason has to say that rather than claim a
+    signal landed. The record is left alone: a run this call did not stop must
+    not be written down as stopped by it.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", _SPAWNED_AT))
+    monkeypatch.setattr(jobs.os, "getpgid", lambda pid: 7777)
+    monkeypatch.setattr(jobs.os, "killpg", _raise(ProcessLookupError()))
+
+    rid = _identity_record()
+    out = jobs.kill(rid)
+
+    assert out["killed"] is False
+    assert out["reason_code"] == jobs.KILL_PROCESS_GONE
+    assert out["pgid"] == 7777
+    assert jobs._read_job(rid)["status"] == "running"
+
+
+def test_a_group_we_may_not_signal_is_reported_as_refused_not_as_stopped(
+    sandbox, monkeypatch, no_stray_signal
+):
+    """A refused signal is a live group this call did not stop.
+
+    It is the case most easily mistaken for success, because the group was
+    correctly identified and the call returned without an error reaching the
+    caller. The operator has to be told the process is still running.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", _SPAWNED_AT))
+    monkeypatch.setattr(jobs.os, "getpgid", lambda pid: 7777)
+    monkeypatch.setattr(jobs.os, "killpg", _raise(PermissionError(1, "not permitted")))
+
+    rid = _identity_record()
+    out = jobs.kill(rid)
+
+    assert out["killed"] is False
+    assert out["reason_code"] == jobs.KILL_PERMISSION_DENIED
+    assert "permission denied" in out["reason"]
+    assert jobs._read_job(rid)["status"] == "running"
+
+
+def test_an_artifact_that_disappears_after_being_named_is_not_a_failed_listing(
+    sandbox, monkeypatch
+):
+    """A file removed mid-walk withheld nothing.
+
+    The walk names entries and the metadata is read afterwards, so a file that
+    is deleted in between is simply not there. That is a true empty answer, and
+    marking the listing unreadable for it would report a shortfall that did not
+    happen — which is the same error as the opposite case, in the other
+    direction.
+    """
+    adir = config.run_dir("run-x") / "artifacts"
+    adir.mkdir(parents=True)
+    (adir / "kept.txt").write_text("still here")
+
+    real_stat = Path.stat
+
+    def vanishing(self, *a, **kw):
+        if self.name == "gone.txt":
+            raise FileNotFoundError(2, "No such file or directory")
+        return real_stat(self, *a, **kw)
+
+    monkeypatch.setattr(
+        jobs.os, "walk", lambda d, onerror=None: [(str(adir), [], ["kept.txt", "gone.txt"])]
+    )
+    monkeypatch.setattr(Path, "stat", vanishing)
+
+    found, state = jobs._list_artifacts("run-x")
+
+    assert found == ["kept.txt"]
+    assert state == "ok", "a file that vanished is an absence, not an unreadable listing"
+
+
+def test_an_artifact_whose_metadata_is_refused_does_make_the_listing_unreadable(
+    sandbox, monkeypatch
+):
+    """The control for the case above, and the distinction the state exists for.
+
+    Here the entry is real and was withheld, so the caller is short a file it
+    was never told about. Same loop, same continue, opposite state.
+    """
+    adir = config.run_dir("run-y") / "artifacts"
+    adir.mkdir(parents=True)
+    (adir / "kept.txt").write_text("still here")
+
+    real_stat = Path.stat
+
+    def refused(self, *a, **kw):
+        if self.name == "locked.txt":
+            raise PermissionError(1, "Operation not permitted")
+        return real_stat(self, *a, **kw)
+
+    monkeypatch.setattr(
+        jobs.os, "walk", lambda d, onerror=None: [(str(adir), [], ["kept.txt", "locked.txt"])]
+    )
+    monkeypatch.setattr(Path, "stat", refused)
+
+    found, state = jobs._list_artifacts("run-y")
+
+    assert found == ["kept.txt"]
+    assert state == "unreadable"
