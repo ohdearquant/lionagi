@@ -322,7 +322,10 @@ class TestCLIProviderRequestModels:
         args = req.as_cmd_args()
         assert isinstance(args, list)
         assert "exec" in args
-        assert "fix tests" in args
+        # The prompt is delivered on the child's stdin, so the command line
+        # ends with codex's read-from-stdin marker instead of the prompt text.
+        assert args[-2:] == ["--", "-"]
+        assert "fix tests" not in args
 
 
 class TestCLIProviderEndpoints:
