@@ -9,7 +9,14 @@ import ReactFlow, {
   useNodesState,
   useEdgesState,
 } from "reactflow";
-import type { Connection, Edge, Node, NodeMouseHandler, EdgeMouseHandler } from "reactflow";
+import type {
+  Connection,
+  Edge,
+  Node,
+  NodeMouseHandler,
+  EdgeMouseHandler,
+  ReactFlowInstance,
+} from "reactflow";
 import "reactflow/dist/style.css";
 
 import StepNodeComponent from "./StepNode";
@@ -160,6 +167,10 @@ export default function WorkerCanvas({
   compact = false,
 }: WorkerCanvasProps) {
   const initialised = useRef(false);
+  // Captured via onInit rather than useReactFlow(): this component renders its
+  // own <ReactFlow> and sits outside any ReactFlowProvider, so the hook has no
+  // context to read.
+  const flowRef = useRef<ReactFlowInstance | null>(null);
 
   const initialFlowNodes = useMemo(() => toFlowNodes(graph.nodes), [graph.nodes]);
   const initialFlowEdges = useMemo(() => toFlowEdges(graph.edges), [graph.edges]);
@@ -174,6 +185,22 @@ export default function WorkerCanvas({
     setNodes(ln);
     setEdges(le);
     initialised.current = true;
+
+    // ReactFlow's `fitView` prop fits once, when the flow initialises. At that
+    // moment `nodes` is still the empty array this component starts with, since
+    // the layout above only reaches state in an effect — after the first
+    // render. So the declarative fit lands on an empty graph and never runs
+    // again, leaving the viewport at its default while the real graph is laid
+    // out somewhere off-screen. Small graphs happen to fall inside that default
+    // viewport and look fine, which is why this reads as a large-graph bug.
+    //
+    // Fit explicitly once the nodes exist. rAF defers to after React has
+    // committed them, so ReactFlow measures a populated graph.
+    if (ln.length === 0) return;
+    const frame = requestAnimationFrame(() => {
+      flowRef.current?.fitView({ padding: 0.3 });
+    });
+    return () => cancelAnimationFrame(frame);
   }, [initialFlowNodes, initialFlowEdges, setNodes, setEdges]);
 
   // Apply execution status to nodes. nodeStatuses (live signal-derived, keyed
@@ -357,6 +384,9 @@ export default function WorkerCanvas({
           nodesDraggable={true}
           nodesConnectable={editable}
           elementsSelectable={true}
+          onInit={(instance) => {
+            flowRef.current = instance;
+          }}
           fitView
           fitViewOptions={{ padding: 0.3 }}
           proOptions={{ hideAttribution: true }}
