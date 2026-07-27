@@ -12,7 +12,30 @@ import pytest
 
 from lionagi._errors import EmptyOutgoingContentError
 from lionagi.casts.emission import TaskAssignment
+from lionagi.cli._providers import AgentProfile
+from lionagi.cli.orchestrate import _orchestration as orch
 from lionagi.cli.orchestrate.flow import FlowPlanError, _parse_reactive, _run_flow_inner
+
+
+@pytest.fixture
+def stub_profiles(monkeypatch):
+    """Serve agent profiles from a dict instead of the machine's agents directories.
+
+    A user profile outranks a pack in model resolution, and profiles are
+    discovered from the git root, the working directory and its parents, and the
+    home directory — so a test that asserts on which source supplied a model
+    reads whatever profiles happen to be installed unless the loader is stubbed.
+    """
+    table: dict[str, AgentProfile] = {}
+
+    def fake_load(name: str) -> AgentProfile:
+        try:
+            return table[name]
+        except KeyError:
+            raise FileNotFoundError(name) from None
+
+    monkeypatch.setattr(orch, "load_agent_profile", fake_load)
+    return table
 
 
 class _FakeOrcBranch:
@@ -358,8 +381,12 @@ def _pack_env(tmp_path, orc, pack_yaml: str) -> SimpleNamespace:
 
 
 @pytest.mark.asyncio
-async def test_pack_routing_shown_in_dry_run(tmp_path):
-    """A pack with writer.model appears as (pack) in dry-run model resolution."""
+async def test_pack_routing_shown_in_dry_run(tmp_path, stub_profiles):
+    """A pack with writer.model appears as (pack) in dry-run model resolution.
+
+    No profile is registered, so the pack is the only source that can supply the
+    model — which is the routing this asserts.
+    """
     orc = _FakeOrcBranch(
         [SimpleNamespace(assignments=[TaskAssignment(task="draft docs", assignee="writer")])]
     )
