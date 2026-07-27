@@ -481,11 +481,10 @@ def test_kill_reaps_a_live_group_whose_leader_exited(sandbox, monkeypatch, no_st
     """
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
     monkeypatch.setattr(
-        jobs, "_live_group_members", lambda pgid: ([(5001, _SPAWNED_AT + 3.0)], True)
+        jobs, "_live_group_members", lambda pgid: ([(5001, _SPAWNED_AT + 3.0, rid)], True)
     )
 
     rid = _identity_record()
-    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("found", rid))
     out = jobs.kill(rid)
 
     assert no_stray_signal == [(7777, signal.SIGTERM)]
@@ -564,11 +563,10 @@ def test_kill_identifies_the_group_by_the_marker_the_run_stamped(
     """
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
     monkeypatch.setattr(
-        jobs, "_live_group_members", lambda pgid: ([(5001, _SPAWNED_AT - 60.0)], True)
+        jobs, "_live_group_members", lambda pgid: ([(5001, _SPAWNED_AT - 60.0, rid)], True)
     )
 
     rid = _identity_record()
-    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("found", rid))
     out = jobs.kill(rid)
 
     assert no_stray_signal == [(7777, signal.SIGTERM)]
@@ -583,9 +581,10 @@ def test_kill_refuses_a_group_carrying_another_runs_marker(sandbox, monkeypatch,
     """
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
     monkeypatch.setattr(
-        jobs, "_live_group_members", lambda pgid: ([(5001, _SPAWNED_AT + 3.0)], True)
+        jobs,
+        "_live_group_members",
+        lambda pgid: ([(5001, _SPAWNED_AT + 3.0, "some-other-run")], True),
     )
-    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("found", "some-other-run"))
 
     out = jobs.kill(_identity_record())
 
@@ -615,12 +614,14 @@ def test_kill_refuses_a_group_whose_members_carry_conflicting_markers(
     monkeypatch.setattr(
         jobs,
         "_live_group_members",
-        lambda pgid: ([(5001, _SPAWNED_AT + 1.0), (5002, _SPAWNED_AT + 2.0)], True),
+        lambda pgid: (
+            [(5001, _SPAWNED_AT + 1.0, seen[5001]), (5002, _SPAWNED_AT + 2.0, seen[5002])],
+            True,
+        ),
     )
 
     rid = _identity_record()
     seen = {pid: (rid if m == "this-run" else m) for pid, m in zip([5001, 5002], order)}
-    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("found", seen[pid]))
 
     out = jobs.kill(rid)
 
@@ -644,29 +645,17 @@ def test_kill_identifies_a_group_whose_members_all_carry_this_runs_marker(
         jobs,
         "_live_group_members",
         # Both older than the record, so only the marker can license this signal.
-        lambda pgid: ([(5001, _SPAWNED_AT - 60.0), (5002, _SPAWNED_AT - 30.0)], True),
+        lambda pgid: ([(5001, _SPAWNED_AT - 60.0, rid), (5002, _SPAWNED_AT - 30.0, rid)], True),
     )
 
     rid = _identity_record()
-    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("found", rid))
     out = jobs.kill(rid)
 
     assert no_stray_signal == [(7777, signal.SIGTERM)]
     assert out["killed"] is True and out["reason_code"] == jobs.KILL_SIGNALLED
 
 
-@pytest.mark.parametrize(
-    "marker",
-    [
-        # The environment was read and simply holds no run id.
-        ("found", None),
-        # The environment could not be read at all.
-        ("unknown", None),
-    ],
-)
-def test_kill_refuses_a_group_that_is_merely_young_enough(
-    sandbox, monkeypatch, no_stray_signal, marker
-):
+def test_kill_refuses_a_group_that_is_merely_young_enough(sandbox, monkeypatch, no_stray_signal):
     """Starting after this run did is not evidence of belonging to it.
 
     Every member here is younger than the record, which is exactly what an
@@ -679,9 +668,8 @@ def test_kill_refuses_a_group_that_is_merely_young_enough(
     """
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
     monkeypatch.setattr(
-        jobs, "_live_group_members", lambda pgid: ([(5001, _SPAWNED_AT + 3.0)], True)
+        jobs, "_live_group_members", lambda pgid: ([(5001, _SPAWNED_AT + 3.0, None)], True)
     )
-    monkeypatch.setattr(jobs, "_process_marker", lambda pid: marker)
 
     out = jobs.kill(_identity_record())
 
@@ -705,7 +693,7 @@ def test_kill_still_excludes_a_group_holding_a_member_older_than_the_run(
     monkeypatch.setattr(
         jobs,
         "_live_group_members",
-        lambda pgid: ([(5001, _SPAWNED_AT + 3.0), (5002, _SPAWNED_AT - 60.0)], True),
+        lambda pgid: ([(5001, _SPAWNED_AT + 3.0, None), (5002, _SPAWNED_AT - 60.0, None)], True),
     )
 
     out = jobs.kill(_identity_record())
@@ -736,11 +724,10 @@ def test_kill_decides_a_dead_leaders_group_without_reading_the_leader_again(
         lambda pid: pytest.fail(f"pid {pid} may have been reaped and reused"),
     )
     monkeypatch.setattr(
-        jobs, "_live_group_members", lambda pgid: ([(5001, _SPAWNED_AT + 3.0)], True)
+        jobs, "_live_group_members", lambda pgid: ([(5001, _SPAWNED_AT + 3.0, rid)], True)
     )
 
     rid = _identity_record()
-    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("found", rid))
     out = jobs.kill(rid)
 
     assert out["killed"] is True and no_stray_signal == [(7777, signal.SIGTERM)]
@@ -751,10 +738,10 @@ def test_kill_decides_a_dead_leaders_group_without_reading_the_leader_again(
     [
         # A member older than the run: this group number was reused. Settled —
         # a retry reads the same thing.
-        (([(5001, _SPAWNED_AT - 60.0)], True), jobs.KILL_GROUP_PREDATES_RUN),
+        (([(5001, _SPAWNED_AT - 60.0, None)], True), jobs.KILL_GROUP_PREDATES_RUN),
         # The scan could not read every candidate, so a member may be unseen.
         # A measurement that failed, and a retry may answer.
-        (([(5001, _SPAWNED_AT + 3.0)], False), jobs.KILL_GROUP_SCAN_INCOMPLETE),
+        (([(5001, _SPAWNED_AT + 3.0, None)], False), jobs.KILL_GROUP_SCAN_INCOMPLETE),
         (([], False), jobs.KILL_GROUP_SCAN_INCOMPLETE),
     ],
 )
@@ -800,11 +787,10 @@ def test_kill_reaps_a_live_group_behind_a_terminal_record(sandbox, monkeypatch, 
     """
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
     monkeypatch.setattr(
-        jobs, "_live_group_members", lambda pgid: ([(5001, _SPAWNED_AT + 3.0)], True)
+        jobs, "_live_group_members", lambda pgid: ([(5001, _SPAWNED_AT + 3.0, rid)], True)
     )
 
     rid = _identity_record(status="completed", finished_at="2026-01-01T00:00:00+00:00")
-    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("found", rid))
     out = jobs.kill(rid)
 
     assert no_stray_signal == [(7777, signal.SIGTERM)]
@@ -821,7 +807,7 @@ def test_kill_refuses_a_terminal_record_whose_group_is_unconfirmable(
     """The refusal says identity is unverified, not that reuse is certain."""
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
     monkeypatch.setattr(
-        jobs, "_live_group_members", lambda pgid: ([(5001, _SPAWNED_AT - 60)], True)
+        jobs, "_live_group_members", lambda pgid: ([(5001, _SPAWNED_AT - 60, None)], True)
     )
 
     rid = _identity_record(status="completed", finished_at="2026-01-01T00:00:00+00:00")
@@ -904,7 +890,10 @@ def test_kill_refuses_a_record_that_cannot_confirm_an_identity(
     assert no_stray_signal == [], "a pid without an identity must license no signal"
     assert out["killed"] is False and out["reason_code"] == jobs.KILL_LEGACY_NO_IDENTITY
     assert out["pid"] == 4242, "the operator needs the number to reap the group by hand"
-    assert "predates process-identity capture" in out["reason"]
+    # The observation first — both fields missing — with the age of the record
+    # offered as the explanation and not as something the refusal measured.
+    assert "carries neither a start time nor a process group" in out["reason"]
+    assert "written before they were captured" in out["reason"]
     assert jobs._read_job(rid)["status"] == "running", "a refusal changes no recorded status"
 
 
@@ -1018,15 +1007,141 @@ def test_a_readable_record_is_still_read(sandbox, monkeypatch, no_stray_signal):
     """
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
     monkeypatch.setattr(
-        jobs, "_live_group_members", lambda pgid: ([(5001, _SPAWNED_AT + 3.0)], True)
+        jobs, "_live_group_members", lambda pgid: ([(5001, _SPAWNED_AT + 3.0, rid)], True)
     )
 
     rid = _identity_record()
-    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("found", rid))
 
     assert jobs._read_job(rid)["pgid"] == 7777
     assert jobs.kill(rid)["killed"] is True
     assert no_stray_signal == [(7777, signal.SIGTERM)]
+
+
+def _scan_one_candidate(monkeypatch, pgid, create_times, marker):
+    """Drive a real group scan over a single invented pid.
+
+    The process table yields one candidate whose group matches; every read of
+    that pid is answered from *create_times* in call order, so a caller can make
+    the pid change identity partway through the scan without a real race.
+    """
+    import psutil
+
+    monkeypatch.setattr(psutil, "pids", lambda: [5001])
+    monkeypatch.setattr(jobs.os, "getpgid", lambda pid: pgid)
+    reads = iter(create_times)
+    monkeypatch.setattr(
+        jobs, "_process_create_time", lambda pid: ("found", next(reads, create_times[-1]))
+    )
+    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("found", marker))
+
+
+def test_a_member_that_changes_identity_mid_scan_does_not_identify_the_group(
+    sandbox, monkeypatch, no_stray_signal
+):
+    """A marker and the pid it was read from have to be the same process.
+
+    Membership, start time and marker are three reads addressed by pid, and a
+    pid the OS reassigns between them answers the later ones as the replacement.
+    A replacement carrying this run's id — a descendant moved into another group,
+    say — would then license a signal to a group no live member of which was ever
+    shown to be this run's. The scan has to notice that the identity moved, and
+    report itself incomplete rather than answer for the group.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    rid = _identity_record()
+    # The first read describes the member; every later one describes whoever
+    # holds the pid now. The marker belongs to that second process.
+    _scan_one_candidate(monkeypatch, 7777, [_SPAWNED_AT + 3.0, _SPAWNED_AT + 90.0], rid)
+
+    out = jobs.kill(rid)
+
+    assert no_stray_signal == [], "evidence from two processes identifies neither"
+    assert out["killed"] is False
+    assert out["reason_code"] == jobs.KILL_GROUP_SCAN_INCOMPLETE
+
+
+def test_a_member_that_changes_identity_mid_scan_cannot_lose_the_start_time_exclusion(
+    sandbox, monkeypatch, no_stray_signal
+):
+    """The same composition, on the rule that refuses rather than the one that allows.
+
+    A member older than the run rules the group out. Read the start time off a
+    younger process that has since taken the pid and the exclusion disappears,
+    which is the direction that costs something: the group stops being refused
+    for a reason the scan can no longer see. An unpinnable member makes the scan
+    incomplete, so what is reported is a measurement that did not finish.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    rid = _identity_record()
+    # A young replacement read first, the original older member read second.
+    _scan_one_candidate(monkeypatch, 7777, [_SPAWNED_AT + 3.0, _SPAWNED_AT - 60.0], None)
+
+    out = jobs.kill(rid)
+
+    assert no_stray_signal == []
+    assert out["killed"] is False
+    assert out["reason_code"] == jobs.KILL_GROUP_SCAN_INCOMPLETE
+
+
+def test_a_member_whose_environment_is_closed_still_counts_as_a_member(
+    sandbox, monkeypatch, no_stray_signal
+):
+    """Guards the precondition the pinned scan depends on.
+
+    An unreadable environment is the ordinary case for a process this user
+    cannot introspect, and it withholds a marker rather than failing the scan.
+    If pinning ever treated it as an unpinnable member, every such group would
+    report an incomplete scan and no job with an unreadable process in it could
+    be reaped at all — this fails the moment that happens.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    rid = _identity_record()
+    _scan_one_candidate(monkeypatch, 7777, [_SPAWNED_AT + 3.0], None)
+    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("unknown", None))
+
+    out = jobs.kill(rid)
+
+    assert no_stray_signal == []
+    # A complete scan that found no marker: unproven, not unfinished.
+    assert out["reason_code"] == jobs.KILL_GROUP_OWNERSHIP_UNPROVEN
+
+
+def test_every_surface_survives_a_record_it_cannot_get_at(sandbox, monkeypatch, no_stray_signal):
+    """A directory that cannot be searched is not a run that does not exist.
+
+    Asking whether the file is there and then reading it answers two questions,
+    and the first one cannot fail: a path under a directory with no search
+    permission is neither present nor absent to it. Reading directly is what
+    tells the two apart, and every surface that reads a record has to come back
+    with an answer rather than the errno.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root searches a directory whose mode denies it, so the case cannot be set up")
+
+    rid = _identity_record()
+    job_dir = config.job_dir(rid)
+    os.chmod(job_dir, 0o000)
+    try:
+        try:
+            (job_dir / "job.json").read_text()
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("this filesystem does not enforce directory search permission")
+
+        out = jobs.kill(rid)
+        assert no_stray_signal == []
+        assert out["killed"] is False
+        assert out["reason_code"] == jobs.KILL_RECORD_UNREADABLE
+        assert "could not be read" in out["reason"]
+
+        st = jobs.status(rid)
+        assert st["known"] is False
+
+        got = jobs.output(rid)
+        assert got["known"] is False
+    finally:
+        os.chmod(job_dir, 0o700)
 
 
 @pytest.mark.parametrize(

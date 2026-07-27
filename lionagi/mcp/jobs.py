@@ -215,13 +215,24 @@ def _read_job_state(run_id: str) -> tuple[dict[str, Any] | None, str]:
 
     The record is returned only in the ``"ok"`` case, so nothing downstream can
     reach a value this did not admit.
+
+    Absence is established by the read itself rather than by a separate question
+    about whether the path is there. Asking first and reading second answers a
+    question nobody asked — the path may become unreadable between the two — and,
+    more plainly, a path whose directory cannot be searched is not a path that was
+    found to be missing. Only "the file is not there" is absence; every other way
+    the read can fail is a record that is present and could not be got at.
     """
     p = config.job_dir(run_id) / "job.json"
-    if not p.exists():
-        return None, "absent"
     try:
-        record = json.loads(p.read_text())
-    except (OSError, json.JSONDecodeError):
+        raw = p.read_text()
+    except FileNotFoundError:
+        return None, "absent"
+    except OSError:
+        return None, "unreadable"
+    try:
+        record = json.loads(raw)
+    except json.JSONDecodeError:
         return None, "unreadable"
     if not isinstance(record, dict):
         return None, "wrong_shape"
@@ -361,19 +372,63 @@ def _spawned_pgid(pid: int) -> int:
         return pid
 
 
-def _live_group_members(pgid: int) -> tuple[list[tuple[int, float]], bool]:
+def _pinned_member(pid: int, pgid: int) -> tuple[str, tuple[int, float, str | None] | None]:
+    """Everything *pid* has to say as a member of *pgid*, read as one observation.
+
+    ``("found", (pid, create_time, marker))`` when a single process answered all
+    of it, ``("gone", None)`` when the pid holds no live member of this group,
+    and ``("unknown", None)`` when the reads could not be tied to one process.
+
+    Group, start time and marker are three facts, each read by pid, and a pid
+    the OS reassigns between two of those reads answers the later ones as the
+    replacement process. A verdict assembled from those answers would describe
+    no process that ever existed, so the reads are bracketed by the start time:
+    read before, read again after, required to be unchanged. That is the value
+    that tells a recycled pid from the process that held it, and it is what
+    binds the other two to the same process. Failing the bracket is "unknown" —
+    a measurement that did not come off, never evidence about the group.
+    """
+    state, created = _process_create_time(pid)
+    if state == "gone":
+        return "gone", None
+    if state != "found" or created is None:
+        return "unknown", None
+    try:
+        in_group = os.getpgid(pid) == pgid
+    except ProcessLookupError:
+        return "gone", None
+    except OSError:
+        return "unknown", None
+    _marker_state, marker = _process_marker(pid)
+    again, created_again = _process_create_time(pid)
+    if again != "found" or created_again != created:
+        return "unknown", None
+    if not in_group:
+        return "gone", None
+    return "found", (pid, created, marker)
+
+
+def _live_group_members(pgid: int) -> tuple[list[tuple[int, float, str | None]], bool]:
     """Live members of process group *pgid*, and whether the scan was complete.
 
-    Returns ``(members, complete)`` where each member is ``(pid, create_time)``.
+    Returns ``(members, complete)`` where each member is ``(pid, create_time,
+    marker)``. All three arrive together, from :func:`_pinned_member`, so that a
+    caller weighing a member's marker and a member's age is weighing one
+    process. The group read in the loop below only narrows the process table to
+    candidates; the membership that counts is the one read inside the bracket.
+
     A process that vanishes mid-scan is simply not a live member; a process
-    whose group or start time could not be read leaves *complete* false,
-    because the group may then hold a member this scan never saw. Zombies are
-    excluded: an unreaped corpse still counts as a group member to the kernel,
-    so counting it would report a group that is empty of running work as live.
+    whose group or identity could not be read leaves *complete* false, because
+    the group may then hold a member this scan never saw. A member that cannot
+    be pinned is never quietly dropped instead: a scan that reported itself
+    complete while a member went unread would let a live group be answered for
+    as gone. Zombies are excluded: an unreaped corpse still counts as a group
+    member to the kernel, so counting it would report a group that is empty of
+    running work as live.
     """
     import psutil
 
-    members: list[tuple[int, float]] = []
+    members: list[tuple[int, float, str | None]] = []
     complete = True
     try:
         pids = psutil.pids()
@@ -391,9 +446,9 @@ def _live_group_members(pgid: int) -> tuple[list[tuple[int, float]], bool]:
         except OSError:
             complete = False
             continue
-        state, created = _process_create_time(pid)
-        if state == "found" and created is not None:
-            members.append((pid, created))
+        state, member = _pinned_member(pid, pgid)
+        if state == "found" and member is not None:
+            members.append(member)
         elif state == "unknown":
             complete = False
     return members, complete
@@ -438,7 +493,9 @@ def _group_identity(pgid: int, spawned_at: float, run_id: str) -> tuple[str, str
     Every readable marker is collected before the rule is applied, because
     deciding on the first one read would make the verdict depend on the order
     the process table happened to be enumerated in — the same group could then
-    be accepted or refused between two calls. Markers that disagree are
+    be accepted or refused between two calls. Each marker arrives already tied
+    to the member that carries it and to that member's age, so no rule here
+    reasons about a pid, only about processes the scan pinned. Markers that disagree are
     ``"conflict"``: two runs cannot both own a group, so whatever produced the
     disagreement is unexplained, and an unexplained group is not signalled.
 
@@ -457,11 +514,7 @@ def _group_identity(pgid: int, spawned_at: float, run_id: str) -> tuple[str, str
     """
     members, complete = _live_group_members(pgid)
 
-    markers = set()
-    for pid, _ in members:
-        state, marker = _process_marker(pid)
-        if state == "found" and marker is not None:
-            markers.add(marker)
+    markers = {marker for _, _, marker in members if marker is not None}
     if len(markers) > 1:
         return "conflict", "marker"
     if markers:
@@ -472,7 +525,7 @@ def _group_identity(pgid: int, spawned_at: float, run_id: str) -> tuple[str, str
     if not members:
         return "gone", "scan"
     floor = spawned_at - _CREATE_TIME_TOLERANCE
-    if any(created < floor for _, created in members):
+    if any(created < floor for _, created, _ in members):
         return "not_ours", "start_time"
     return "unproven", "start_time"
 
@@ -1386,6 +1439,14 @@ def _refuse_legacy_record(run_id: str, pid: int) -> dict[str, Any]:
     the pid at this point is exactly the step that resolves a reused pid to a
     stranger's group. So nothing is signalled.
 
+    The refusal leads with what was read off the record — both fields absent —
+    and offers the age of the record as the explanation rather than as the
+    finding. What is observed is that the fields are missing; that they are
+    missing because the record predates them follows from every write since
+    having set them, which is a fact about this code and not a measurement of
+    this file. Stating the inference alone would hand an operator a history the
+    refusal never established.
+
     The pid rides along on the refusal, because it is the only handle an operator
     has for reaping the group by hand, and this is the last place it is reported.
     """
@@ -1393,9 +1454,11 @@ def _refuse_legacy_record(run_id: str, pid: int) -> dict[str, Any]:
         run_id,
         killed=False,
         reason=(
-            f"this record predates process-identity capture, so pid {pid} cannot be "
-            "distinguished from a reused one and no group was signalled; reap the "
-            "group by hand after confirming the process is this run's"
+            f"this record carries neither a start time nor a process group, so pid {pid} "
+            "cannot be distinguished from a reused one and no group was signalled; every "
+            "write since those fields existed sets them, so a record missing both was "
+            "written before they were captured; reap the group by hand after confirming "
+            "the process is this run's"
         ),
         reason_code=KILL_LEGACY_NO_IDENTITY,
         pid=pid,
