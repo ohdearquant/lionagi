@@ -485,6 +485,63 @@ class TestChatContextParameters:
         assert isinstance(result, str)
 
 
+class TestSuppliedModelSelection:
+    """Which model a turn runs against is decided by whether one was supplied,
+    not by whether it is truthy."""
+
+    @pytest.mark.asyncio
+    async def test_a_supplied_falsy_model_is_used_instead_of_the_branch_model(
+        self, make_mocked_branch_for_chat
+    ):
+        """The parameter bag stores whatever the caller passes, so a model
+        object defining ``__bool__`` as False — an adapter or a subclass
+        wrapping another model — is still a supplied model, and the turn must
+        be invoked against it rather than against the branch default."""
+        branch = make_mocked_branch_for_chat()
+        supplied = _FalsyIModel(branch.chat_model)
+        assert not bool(supplied)
+
+        chat_ctx = ChatParam(
+            guidance=None,
+            context=None,
+            sender="user",
+            recipient=branch.id,
+            response_format=None,
+            progression=None,
+            tool_schemas=[],
+            images=[],
+            image_detail="auto",
+            plain_content="",
+            include_token_usage_to_model=False,
+            imodel=supplied,
+            imodel_kw={},
+        )
+
+        await chat(branch, "Test", chat_ctx, return_ins_res_message=False)
+
+        assert supplied.invoked, "the supplied model was discarded for the branch default"
+
+
+class _FalsyIModel:
+    """Delegates to a real model but reports False in a boolean context, as an
+    adapter or a wrapping subclass may legitimately do. Records whether the
+    turn was actually invoked against it."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.invoked = False
+
+    def __bool__(self) -> bool:
+        return False
+
+    async def invoke(self, **kw):
+        self.invoked = True
+        return await self._inner.invoke(**kw)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 # ============================================================================
 # Fixtures
 # ============================================================================

@@ -54,7 +54,9 @@ async def chat(
     # (potentially side-effecting) gather.
     ins = _build_instruction(branch, instruction, chat_param)
 
-    imodel = chat_param.imodel or branch.chat_model
+    # Sentinel status, not truthiness: a supplied model that defines __bool__
+    # as False is still a supplied model and must override the branch default.
+    imodel = branch.chat_model if chat_param._is_sentinel(chat_param.imodel) else chat_param.imodel
     await _emit_user_prompt_submit(branch, chat_param, ins, imodel=imodel)
 
     provider_ins, context_report = await _apply_context_providers(

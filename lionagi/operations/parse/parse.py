@@ -207,7 +207,11 @@ async def parse(
                 )
                 else None
             ),
-            imodel=parse_param.imodel or branch.parse_model,
+            imodel=(
+                branch.parse_model
+                if parse_param._is_sentinel(parse_param.imodel)
+                else parse_param.imodel
+            ),
             sender=branch.user,
             recipient=branch.id,
             return_ins_res_message=True,
