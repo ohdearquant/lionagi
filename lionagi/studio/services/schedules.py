@@ -18,7 +18,7 @@ from fastapi import HTTPException, Query
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
-from lionagi.cli.orchestrate._common import MAX_SPEC_PROMPT_CHARS
+from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.service.providers import EFFORT_LEVELS as _VALID_EFFORT_LEVELS
 from lionagi.state.db import StateDB, state_db_known_absent
 

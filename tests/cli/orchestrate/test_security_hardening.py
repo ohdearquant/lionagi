@@ -9,12 +9,12 @@ from unittest.mock import AsyncMock, patch
 
 import yaml
 
+from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.cli.orchestrate import (
     _validate_spec_fields,
     add_orchestrate_subparser,
     run_orchestrate,
 )
-from lionagi.cli.orchestrate._common import MAX_SPEC_PROMPT_CHARS
 
 
 def _parse_flow_args(argv: list[str]) -> argparse.Namespace:

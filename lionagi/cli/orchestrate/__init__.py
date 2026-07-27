@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from lionagi._errors import TimeoutError as LionTimeoutError
+from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.libs.path_safety import validate_path_component as validate_path_component
 from lionagi.ln.concurrency import is_cancelled, run_async
 
@@ -16,7 +17,6 @@ from .._logging import hint, log_error
 from .._providers import add_common_cli_args
 from .._util import EXIT_CODE_BY_STATUS
 from ._checkpoint import FlowResumeError
-from ._common import MAX_SPEC_PROMPT_CHARS
 from .fanout import FanoutPlanError, _run_fanout
 from .flow import FlowPlanError, _resume_flow, _run_flow
 

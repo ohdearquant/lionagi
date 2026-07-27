@@ -10,7 +10,7 @@ import yaml
 from fastapi import Body, HTTPException
 
 from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
-from lionagi.cli.orchestrate._common import MAX_SPEC_PROMPT_CHARS
+from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.service.providers import EFFORT_LEVELS as _VALID_EFFORT_LEVELS
 
 from ..registry import studio_route

@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import yaml
 
+from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.cli.orchestrate import _validate_spec_fields
-from lionagi.cli.orchestrate._common import MAX_SPEC_PROMPT_CHARS
 from lionagi.studio.services.playbooks import _check_spec_fields
 from lionagi.studio.services.schedules import _validate_flow_yaml_spec
 
