@@ -118,8 +118,17 @@ def test_the_refusal_names_the_run_whose_log_holds_the_cause(spawn_refused):
 
     op = result["ops"][0]
     assert op["ok"] is False
-    assert op["error"]["kind"] == "invalid_input"
     assert op["error"]["detail"]["run_id"]
+
+
+def test_a_refused_spawn_is_unavailable_rather_than_bad_input(spawn_refused):
+    """The kind is a closed vocabulary a caller branches on. The arguments were
+    already accepted by the schema; what failed is this machine's ability to
+    start a process. A caller told its input was wrong will rewrite the request
+    and send it again, which is the one response that cannot help here."""
+    result = _batch(_submit_op(query=["claude", "hi"]))
+
+    assert result["ops"][0]["error"]["kind"] == "unavailable"
 
 
 def test_the_error_is_json_serialisable(spawn_refused):

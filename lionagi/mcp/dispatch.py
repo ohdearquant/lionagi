@@ -925,9 +925,15 @@ async def _run_one(entry: Any) -> dict[str, Any]:
         # and fell outside every clause here, discarding the results of ops
         # beside it that had already succeeded. The run_id rides along because a
         # record was written before the failure and its log holds the cause.
+        #
+        # `unavailable`, not `invalid_input`: the arguments were already accepted
+        # by the schema, and what failed is this machine's ability to start a
+        # process — a denied permission, an exhausted resource, a missing
+        # interpreter. A caller told its input was wrong will rewrite the request
+        # and send it again, which is the one response that cannot help here.
         return _op_error(
             name,
-            OpError("invalid_input", str(exc), detail={"run_id": exc.run_id}),
+            OpError("unavailable", str(exc), detail={"run_id": exc.run_id}),
             schema,
         )
     except projection.SchemaProjectionError as exc:
