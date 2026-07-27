@@ -153,7 +153,9 @@ KILL_GROUP_MARKERS_CONFLICT = "group_markers_conflict"
 KILL_GROUP_PREDATES_RUN = "group_predates_run"
 KILL_GROUP_SCAN_INCOMPLETE = "group_scan_incomplete"
 # The group was inspected end to end and simply yielded no evidence of ownership:
-# no member's marker could be read. Separate from an incomplete scan, because that
+# every member's environment was read and none of them carries a marker. Separate
+# from an incomplete scan, which covers a member whose environment would not open
+# at all, because that
 # one is a measurement that failed and may answer on the next call, while this one
 # is the measurement succeeding and returning nothing — the same call will keep
 # returning it, and only an operator can settle the group.
@@ -384,12 +386,13 @@ def _spawned_pgid(pid: int) -> int:
         return pid
 
 
-def _pinned_member(pid: int, pgid: int) -> tuple[str, tuple[int, float, str | None] | None]:
+def _pinned_member(pid: int, pgid: int) -> tuple[str, tuple[int, float, str | None, bool] | None]:
     """Everything *pid* has to say as a member of *pgid*, read as one observation.
 
-    ``("found", (pid, create_time, marker))`` when a single process answered all
-    of it, ``("gone", None)`` when the pid holds no live member of this group,
-    and ``("unknown", None)`` when the reads could not be tied to one process.
+    ``("found", (pid, create_time, marker, marker_read))`` when a single process
+    answered all of it, ``("gone", None)`` when the pid holds no live member of
+    this group, and ``("unknown", None)`` when the reads could not be tied to one
+    process.
 
     Group, start time and marker are three facts, each read by pid, and a pid
     the OS reassigns between two of those reads answers the later ones as the
@@ -399,6 +402,11 @@ def _pinned_member(pid: int, pgid: int) -> tuple[str, tuple[int, float, str | No
     that tells a recycled pid from the process that held it, and it is what
     binds the other two to the same process. Failing the bracket is "unknown" —
     a measurement that did not come off, never evidence about the group.
+
+    *marker_read* travels with the marker because a None marker alone does not
+    say which of two things happened. The environment read and held no marker,
+    and the environment could not be read at all, are the same None; only this
+    flag tells a member that was inspected from one that refused inspection.
     """
     state, created = _process_create_time(pid)
     if state == "gone":
@@ -411,23 +419,24 @@ def _pinned_member(pid: int, pgid: int) -> tuple[str, tuple[int, float, str | No
         return "gone", None
     except OSError:
         return "unknown", None
-    _marker_state, marker = _process_marker(pid)
+    marker_state, marker = _process_marker(pid)
     again, created_again = _process_create_time(pid)
     if again != "found" or created_again != created:
         return "unknown", None
     if not in_group:
         return "gone", None
-    return "found", (pid, created, marker)
+    return "found", (pid, created, marker, marker_state == "found")
 
 
-def _live_group_members(pgid: int) -> tuple[list[tuple[int, float, str | None]], bool]:
+def _live_group_members(pgid: int) -> tuple[list[tuple[int, float, str | None, bool]], bool]:
     """Live members of process group *pgid*, and whether the scan was complete.
 
     Returns ``(members, complete)`` where each member is ``(pid, create_time,
-    marker)``. All three arrive together, from :func:`_pinned_member`, so that a
-    caller weighing a member's marker and a member's age is weighing one
-    process. The group read in the loop below only narrows the process table to
-    candidates; the membership that counts is the one read inside the bracket.
+    marker, marker_read)``. All of it arrives together, from
+    :func:`_pinned_member`, so that a caller weighing a member's marker and a
+    member's age is weighing one process. The group read in the loop below only
+    narrows the process table to candidates; the membership that counts is the
+    one read inside the bracket.
 
     A process that vanishes mid-scan is simply not a live member; a process
     whose group or identity could not be read leaves *complete* false, because
@@ -437,10 +446,15 @@ def _live_group_members(pgid: int) -> tuple[list[tuple[int, float, str | None]],
     as gone. Zombies are excluded: an unreaped corpse still counts as a group
     member to the kernel, so counting it would report a group that is empty of
     running work as live.
+
+    *complete* is about membership coverage and nothing else. A member whose
+    marker could not be read was still seen — its pid, group and start time all
+    answered — so it opens no gap in the membership, and it is reported as a
+    member carrying *marker_read* false rather than as a member the scan missed.
     """
     import psutil
 
-    members: list[tuple[int, float, str | None]] = []
+    members: list[tuple[int, float, str | None, bool]] = []
     complete = True
     try:
         pids = psutil.pids()
@@ -517,16 +531,21 @@ def _group_identity(pgid: int, spawned_at: float, run_id: str) -> tuple[str, str
     being younger than the run is consistent with the group being ours and
     equally consistent with an unrelated group that simply started later, so it
     is not an identification and is never treated as one. A dead leader whose
-    group yields no readable marker is ``"unproven"`` — inspected in full,
-    and found to carry no evidence either way.
+    group yields no marker, every member's environment having been read, is
+    ``"unproven"`` — inspected in full, and found to carry no evidence either
+    way.
 
     ``"gone"`` when nothing live is left in the group, and ``"unknown"`` when
-    the scan itself could not be completed — a member it could not read leaves a
-    group that may hold work the scan never saw.
+    the scan itself could not be completed. Two things leave it incomplete: a
+    member it could not read at all, which leaves a group that may hold work the
+    scan never saw, and a member it saw whose environment refused to be read,
+    which leaves the marker rule undecided on a process it did see. Neither is a
+    finding about the group, and both may answer on the next call, so they are
+    the same news and share an answer.
     """
     members, complete = _live_group_members(pgid)
 
-    markers = {marker for _, _, marker in members if marker is not None}
+    markers = {marker for _, _, marker, _ in members if marker is not None}
     if len(markers) > 1:
         return "conflict", "marker"
     if markers:
@@ -537,8 +556,10 @@ def _group_identity(pgid: int, spawned_at: float, run_id: str) -> tuple[str, str
     if not members:
         return "gone", "scan"
     floor = spawned_at - _CREATE_TIME_TOLERANCE
-    if any(created < floor for _, created, _ in members):
+    if any(created < floor for _, created, _, _ in members):
         return "not_ours", "start_time"
+    if any(not marker_read for _, _, _, marker_read in members):
+        return "unknown", "marker"
     return "unproven", "start_time"
 
 
@@ -1854,9 +1875,11 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
         )
     # Each refusal gets its own code, because they are not the same news, and each
     # reason reports what the probe saw rather than the history that would explain
-    # it. A foreign marker, a conflict, an older member and a group with no marker
-    # at all are settled and will read the same on every retry; an incomplete scan
-    # is a measurement that failed and may succeed on the next call.
+    # it. A foreign marker, a conflict, an older member and a group whose members
+    # were all read and carry no marker are settled and will read the same on every
+    # retry; an incomplete scan is a measurement that failed and may succeed on the
+    # next call, and a member whose environment would not open is such a failure —
+    # the marker it withheld is one the next call may well read.
     if verdict == "conflict":
         detail = f"live members of group {pgid} carry different run ids in their environment"
         code = KILL_GROUP_MARKERS_CONFLICT
