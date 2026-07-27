@@ -223,6 +223,44 @@ async def test_async_with_block_excludes_sync_thread():
     assert got == [item]
 
 
+class _ContentionSignallingLock:
+    """The pile's sync lock, announcing when *watched* blocks on it.
+
+    Signalling from inside the acquisition is the whole point. A signal sent by
+    the includer just *before* it calls `include()` proves only that a line ran;
+    the thread can then be descheduled, and the snapshot proceeds having never
+    been contended. Here the announcement happens after the lock's holder has
+    been established and before the waiting thread can get past it, so a
+    snapshot that observes the signal knows a synchronous caller is committed to
+    the lock it holds.
+    """
+
+    def __init__(self, real, watched: threading.Thread, contending: threading.Event):
+        self._real = real
+        self._watched = watched
+        self._contending = contending
+
+    def _announce(self) -> None:
+        if threading.current_thread() is self._watched:
+            self._contending.set()
+
+    def acquire(self, *args, **kwargs):
+        self._announce()
+        return self._real.acquire(*args, **kwargs)
+
+    def release(self):
+        return self._real.release()
+
+    def __enter__(self):
+        self._announce()
+        self._real.acquire()
+        return self
+
+    def __exit__(self, *exc_info):
+        self._real.release()
+        return False
+
+
 async def test_adump_snapshot_excludes_sync_thread_mutation(tmp_path):
     # While adump holds its snapshot region, a sync-thread include() must not
     # interleave; it lands only after the region releases.
@@ -234,41 +272,43 @@ async def test_adump_snapshot_excludes_sync_thread_mutation(tmp_path):
     pile.include([_Item() for _ in range(3)])
 
     in_snapshot = threading.Event()
-    include_issued = threading.Event()
+    contending = threading.Event()
     real_ordered_records = pile._ordered_records
     snapshot_sizes: list[int] = []
+    included: list = []
+
+    def includer():
+        assert in_snapshot.wait(10), "adump never entered its snapshot region"
+        pile.include(_Item())
+        included.append(True)
+
+    t = threading.Thread(target=includer)
+    object.__setattr__(pile, "_lock", _ContentionSignallingLock(pile._lock, t, contending))
 
     def slow_ordered_records(*a, **kw):
         in_snapshot.set()
-        # Hand off rather than budget an interval for the other thread to
-        # start: a loaded machine must not be able to turn this into a pass
-        # that exercised nothing. The short sleep that remains only lets an
-        # already-running thread reach the lock, and can weaken the exercise,
-        # never fail it.
-        assert include_issued.wait(10), "includer thread never issued include()"
-        time.sleep(0.05)
+        # Wait for the includer to reach the lock rather than budgeting an
+        # interval for it to get there. There is no sleep here on purpose: a
+        # wall-clock budget is what lets a loaded machine turn this into a pass
+        # that exercised nothing.
+        assert contending.wait(10), "includer never contended for the pile lock"
         records = real_ordered_records(*a, **kw)
         snapshot_sizes.append(len(records))
         return records
 
     object.__setattr__(pile, "_ordered_records", slow_ordered_records)
 
-    included: list = []
-
-    def includer():
-        assert in_snapshot.wait(10), "adump never entered its snapshot region"
-        include_issued.set()
-        pile.include(_Item())
-        included.append(True)
-
-    t = threading.Thread(target=includer)
     t.start()
-    await pile.adump(tmp_path / "dump.json", obj_key="json")
-    t.join(5)
+    try:
+        # Bounded, so a regression that wedges the locking path fails this test
+        # instead of hanging the worker that runs it.
+        await asyncio.wait_for(pile.adump(tmp_path / "dump.json", obj_key="json"), 30)
+    finally:
+        t.join(5)
 
     # The exclusion itself, asserted on content rather than on a clock: the
-    # include was already waiting when the region opened, so a snapshot that
-    # still sees three records is one no mutation interleaved with.
+    # include was already blocked on the lock when the records were read, so a
+    # snapshot that still sees three records is one no mutation interleaved with.
     assert snapshot_sizes == [3]
     assert included, "sync include must eventually complete after adump releases"
     assert len(pile) == 4
