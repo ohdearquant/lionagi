@@ -4,6 +4,7 @@
 """Tests for lionagi.service.hooks.hooked_event — HookedEvent._invoke() and _stream()."""
 
 import asyncio
+import gc
 from types import SimpleNamespace
 
 import anyio
@@ -443,3 +444,34 @@ async def test_public_stream_closes_the_inner_stream_when_closed_early():
     await stream.aclose()
 
     assert seen == [StreamTerminalState.Closed]
+
+
+@pytest.mark.asyncio
+async def test_bare_break_defers_teardown_to_generator_finalization():
+    """A consumer that breaks without closing does not get teardown at the break.
+
+    ``break`` does not close the generator it was iterating, so nothing raises
+    GeneratorExit at that point and the post-invocation hook has not run yet. The
+    interpreter still finalizes the abandoned generator, and teardown runs then with
+    the closed terminal state -- but at a moment the consumer does not choose. This
+    is why an early-stopping consumer that needs the hook to have run should close
+    the stream itself.
+    """
+    h = SimpleHooked()
+    seen = _recording_post_hook(h)
+
+    stream = h.stream()
+    async for _ in stream:
+        break
+
+    assert seen == [], "teardown must not be attributed to a break that did not close"
+    assert h.stream_terminal_state is None
+
+    del stream
+    gc.collect()
+    with anyio.fail_after(5):
+        while not seen:
+            await anyio.sleep(0.01)
+
+    assert seen == [StreamTerminalState.Closed]
+    assert h.stream_terminal_state is StreamTerminalState.Closed

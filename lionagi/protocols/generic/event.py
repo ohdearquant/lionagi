@@ -299,7 +299,12 @@ class Event(Element):
         raise NotImplementedError("Override _invoke() in subclass.")
 
     async def stream(self):
-        """Streaming variant of invoke(). Same outcome contract."""
+        """Streaming variant of invoke(). Same outcome contract.
+
+        A consumer that stops before the stream is exhausted should close it, with
+        ``aclose()`` or ``contextlib.aclosing``, so the teardown below runs at that
+        point rather than whenever the interpreter finalizes the abandoned generator.
+        """
         if self.execution.status in self._TERMINAL_STATUSES:
             return
 

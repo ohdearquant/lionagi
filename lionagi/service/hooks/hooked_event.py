@@ -109,6 +109,13 @@ class HookedEvent(Event):
         early-stopping consumer, or cancellation — and ``stream_terminal_state`` says
         which of those it was. Whatever ended the stream still propagates unchanged;
         post-hook failures are logged, never raised.
+
+        A consumer that stops early is responsible for closing the stream, with
+        ``aclose()`` or ``contextlib.aclosing``. A bare ``break`` does not close the
+        generator it was iterating, so teardown is deferred to whenever the interpreter
+        finalizes the abandoned generator — it still runs, and still reports the closed
+        state, but not at a point the consumer picked, and during interpreter or loop
+        shutdown the grace bound below can cut it short.
         """
         if h_ev := self._pre_invoke_hook_event:
             await h_ev.invoke()
