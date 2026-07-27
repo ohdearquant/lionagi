@@ -35,7 +35,7 @@ def _capture_warnings(fn):
 def test_non_claude_provider_warning_is_leg_scoped():
     resolution = McpResolution({"khive": {"command": "kkernel"}}, None, "/tmp/.mcp.json", "/tmp")
     messages = _capture_warnings(
-        lambda: _report_mcp_resolution(resolution, provider="codex", cwd="/tmp")
+        lambda: _report_mcp_resolution(resolution, provider="codex", cwd="/tmp", forwarded=False)
     )
 
     assert len(messages) == 1
@@ -50,7 +50,9 @@ def test_non_claude_provider_warning_is_leg_scoped():
 def test_no_servers_warning_is_leg_scoped():
     resolution = McpResolution(None, "no_mcp_config_found", None, "/tmp")
     messages = _capture_warnings(
-        lambda: _report_mcp_resolution(resolution, provider="claude_code", cwd="/tmp")
+        lambda: _report_mcp_resolution(
+            resolution, provider="claude_code", cwd="/tmp", forwarded=True
+        )
     )
 
     assert len(messages) == 1

@@ -295,23 +295,29 @@ class _ProgressReport:
         )
 
 
-def _report_mcp_resolution(resolution: McpResolution, *, provider: str, cwd: str | None) -> None:
+def _report_mcp_resolution(
+    resolution: McpResolution, *, provider: str, cwd: str | None, forwarded: bool
+) -> None:
     """Say at spawn time what tool surface the leg is actually getting.
 
     The whole point of resolving here is that a leg starting without the
     servers its instructions assume should be visible when it is launched
     rather than inferred from its output an hour later. Silence is reserved
     for the one case where it is accurate: servers resolved and handed over.
+
+    ``forwarded`` is the caller's answer to "does this spawn hand the resolved
+    set to the leg?", read off the request that spawn built. This function must
+    not re-derive it from the provider name: a second list here is what let the
+    message contradict the spawn.
     """
     from lionagi.cli._logging import warn
 
-    if provider not in _CLAUDE_PROVIDER_NAMES:
+    if not forwarded:
         if resolution.servers is not None:
             warn(
                 f"MCP servers resolved from {resolution.source} are not carried to "
-                f"provider {provider!r}: this spawn path only hands a resolved server "
-                "set to the Claude CLI lane. This leg gets whatever its own provider "
-                "resolves for itself."
+                f"provider {provider!r} on this spawn path. This leg gets whatever "
+                "its own provider resolves for itself."
             )
         return
 
@@ -327,7 +333,7 @@ def _report_mcp_resolution(resolution: McpResolution, *, provider: str, cwd: str
     warn(
         f"no MCP servers are being handed to this leg ({resolution.reason}; searched "
         f"from {resolution.searched_from}). It will start with only whatever the "
-        f"Claude CLI discovers from {target} itself, which is where a leg pointed at "
+        f"{provider} CLI discovers from {target} itself, which is where a leg pointed at "
         "a checkout silently loses them. Pass --mcp-config PATH, or --no-mcp-config "
         "to state that this is intended."
     )
@@ -514,15 +520,27 @@ async def _run_agent(
             mcp_servers=mcp_resolution.servers,
         )
         effort = resolve_persisted_effort(provider, chat_model, effort)
-        _report_mcp_resolution(mcp_resolution, provider=provider, cwd=cwd)
+        # Two spawn shapes hand the set over in two different places, so the
+        # message has to read the one that applies. A plain leg gets only what
+        # build_chat_model already put on the request, which is knowable here;
+        # a create_agent leg is handed the set inside create_agent, so its
+        # message waits for the request that call produces (below).
+        takes_create_agent_path = preset == "coding" or has_role_key
+        if not takes_create_agent_path:
+            built_config = getattr(getattr(chat_model, "endpoint", None), "config", None)
+            forwarded = bool(built_config and "mcp_servers" in built_config.kwargs)
+            _report_mcp_resolution(mcp_resolution, provider=provider, cwd=cwd, forwarded=forwarded)
 
         # Opt-in profile `role:` key switches a plain `-a <profile>` leg onto
         # the same create_agent path as --preset coding, parameterized by role.
-        if preset == "coding" or has_role_key:
+        if takes_create_agent_path:
             took_create_agent_path = True
             # Use create_agent so CodingToolkit tools and path-guards are wired;
             # compose the profile extension into the spec before calling it.
-            from lionagi.agent.factory import create_agent
+            from lionagi.agent.factory import (
+                create_agent,
+                request_carries_forwarded_mcp,
+            )
 
             # Use profile.raw_body, not profile.system_prompt, to avoid
             # duplicating LION_SYSTEM_MESSAGE (see docs/internals/cli.md).
@@ -539,11 +557,24 @@ async def _run_agent(
             # of the profile's frontmatter — propagate an explicit opt-out.
             if profile is not None and not profile.lion_system:
                 spec.lion_system = False
+            # Hand over the set resolved from the submitting directory. Without
+            # it the factory looks for a config of its own, and a leg pointed
+            # at a checkout gets whatever is found near the target instead of
+            # what this command resolved and reported.
             branch = await create_agent(
                 spec,
                 chat_model=chat_model,
                 log_config=DataLoggerConfig(auto_save_on_exit=False),
                 load_settings=False,
+                resolved_mcp_servers=mcp_resolution.servers,
+            )
+            # The hand-over happened inside create_agent, so the request it
+            # produced is the only honest source for what this leg is getting.
+            _report_mcp_resolution(
+                mcp_resolution,
+                provider=provider,
+                cwd=cwd,
+                forwarded=request_carries_forwarded_mcp(branch),
             )
         else:
             branch = Branch(
@@ -617,7 +648,11 @@ async def _run_agent(
         # not the caller's directory.
         if mcp_resolution.servers is not None and provider in _CLAUDE_PROVIDER_NAMES:
             cfg["mcp_servers"] = mcp_resolution.servers
-        _report_mcp_resolution(mcp_resolution, provider=provider, cwd=cwd)
+        # A resumed leg re-spawns from the persisted request, which is the only
+        # thing that decides what it carries — read the answer off it.
+        _report_mcp_resolution(
+            mcp_resolution, provider=provider, cwd=cwd, forwarded="mcp_servers" in cfg
+        )
 
     # Add the profile system prompt for every leg EXCEPT one whose branch carries
     # (or, on a brand-new leg, would carry) a create_agent-composed system message
