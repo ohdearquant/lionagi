@@ -586,18 +586,37 @@ def _tail(path: str | None, limit: int = 4000) -> str | None:
 def _list_artifacts(run_id: str) -> tuple[list[str], str]:
     """The persisted artifacts of *run_id*, and whether the traversal completed.
 
-    A traversal that fails answers with the empty list and ``"unreadable"``, never
-    with the empty list alone. "This run wrote no artifacts" is a claim about the
-    run; "the artifacts could not be listed" is a claim about the read, and a
-    caller that is told the first when the second happened has been told something
-    false about the run.
+    A traversal that fails answers ``"unreadable"``, never with the empty list
+    alone. "This run wrote no artifacts" is a claim about the run; "the artifacts
+    could not be listed" is a claim about the read, and a caller that is told the
+    first when the second happened has been told something false about the run.
+
+    The walk is asked to report its errors rather than raise them. Denying a read
+    does not always raise: a directory whose own read permission is refused yields
+    nothing at all, so a traversal that only catches exceptions would answer that
+    the run wrote nothing and call that answer complete. A partly readable tree
+    returns the files it did reach, since those are true, alongside the state that
+    says the list is short.
+
+    A directory that is not there is not a failed read. Nothing writes one until a
+    run persists something, so its absence is exactly what an empty list of
+    artifacts means.
     """
     adir = config.run_dir(run_id) / "artifacts"
-    try:
-        found = sorted(str(p.relative_to(adir)) for p in adir.rglob("*") if p.is_file())
-    except OSError:
-        return [], "unreadable"
-    return found, "ok"
+    unreadable = False
+
+    def _note(exc: OSError) -> None:
+        nonlocal unreadable
+        if not isinstance(exc, FileNotFoundError):
+            unreadable = True
+
+    found: list[str] = []
+    for root, _dirs, names in os.walk(adir, onerror=_note):
+        for name in names:
+            path = Path(root) / name
+            if path.is_file():
+                found.append(str(path.relative_to(adir)))
+    return sorted(found), "unreadable" if unreadable else "ok"
 
 
 def _split_at_sentinel(flags: Sequence[str]) -> tuple[list[str], list[str]]:

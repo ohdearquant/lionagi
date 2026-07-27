@@ -1602,6 +1602,88 @@ def test_every_surface_survives_a_run_directory_it_cannot_get_at(sandbox, monkey
         os.chmod(run_dir, 0o700)
 
 
+def test_an_artifacts_directory_that_denies_its_own_read_is_not_a_run_that_wrote_nothing(
+    sandbox,
+):
+    """The failing read that does not raise.
+
+    Denying the search bit on a *parent* makes the traversal raise, and the test
+    above covers that. Denying read on the artifacts directory *itself* does not
+    raise: the walk simply yields nothing. So a traversal that learns about failure
+    only by catching exceptions reports this run as having written no artifacts,
+    and reports that answer as complete.
+
+    That is the same conflation the state field exists to remove, surviving inside
+    the field meant to remove it, which is worse than the ambiguity it replaced: a
+    caller reading no artifacts and a state of ok has been told the read succeeded.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root reads a directory whose mode denies it, so the case cannot be set up")
+
+    rid = jobs.new_run_id()
+    adir = config.run_dir(rid) / "artifacts"
+    adir.mkdir(parents=True)
+    (adir / "a.txt").write_text("x")
+    jobs._write_job({"run_id": rid, "pid": None, "kind": "agent", "status": "running"})
+
+    # Control: the artifact is found while the directory is readable. Without it,
+    # an empty list below could mean the fixture never wrote anything.
+    assert jobs.output(rid)["artifacts"] == ["a.txt"]
+    assert jobs.output(rid)["artifacts_state"] == "ok"
+
+    os.chmod(adir, 0o000)
+    try:
+        try:
+            list(adir.iterdir())
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("this filesystem does not enforce directory read permission")
+
+        got = jobs.output(rid)
+        assert got["known"] is True
+        assert got["artifacts_state"] == "unreadable"
+    finally:
+        os.chmod(adir, 0o700)
+
+
+def test_a_partly_readable_artifact_tree_returns_what_it_reached(sandbox):
+    """A read that fails part way through still found real files.
+
+    Discarding them would trade one false answer for another: the run did write
+    these, and saying so costs nothing. The state carries the fact that the list is
+    short, so the caller can tell a complete listing from a truncated one without
+    losing the part that was read.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root reads a directory whose mode denies it, so the case cannot be set up")
+
+    rid = jobs.new_run_id()
+    adir = config.run_dir(rid) / "artifacts"
+    locked = adir / "locked"
+    locked.mkdir(parents=True)
+    (adir / "top.txt").write_text("x")
+    (locked / "hidden.txt").write_text("y")
+    jobs._write_job({"run_id": rid, "pid": None, "kind": "agent", "status": "running"})
+
+    assert jobs.output(rid)["artifacts"] == ["locked/hidden.txt", "top.txt"]
+
+    os.chmod(locked, 0o000)
+    try:
+        try:
+            list(locked.iterdir())
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("this filesystem does not enforce directory read permission")
+
+        got = jobs.output(rid)
+        assert got["artifacts"] == ["top.txt"], "what was reached is still true"
+        assert got["artifacts_state"] == "unreadable", "and the listing is known to be short"
+    finally:
+        os.chmod(locked, 0o700)
+
+
 def test_listing_a_jobs_directory_it_cannot_get_at_is_not_an_empty_listing(sandbox):
     """An unsearchable jobs directory is not an empty one.
 
