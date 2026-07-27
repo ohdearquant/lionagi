@@ -113,16 +113,22 @@ KILL_SIGNALLED = "signalled"
 KILL_PROCESS_GONE = "process_gone"
 KILL_PERMISSION_DENIED = "permission_denied"
 # The record was written before a run's process identity was recorded, so the
-# pid on it cannot be told apart from a reused one. Its own codes, so a reader
-# can tell an old record from a refusal this build actually decided.
+# pid on it cannot be told apart from a reused one and nothing can be signalled
+# for it. Its own code, so a reader can tell an old record from a refusal
+# decided about a record that does carry an identity.
 KILL_LEGACY_NO_IDENTITY = "legacy_record_no_process_identity"
-KILL_LEGACY_ALREADY_ENDED = "legacy_record_already_ended"
-KILL_LEGACY_ALREADY_EXITED = "legacy_record_already_exited"
-# Identity-bearing records.
+# Identity-bearing records. Split by what a caller would do next: a mismatch or
+# a foreign group is settled and will not change on a retry, while an unreadable
+# probe or an incomplete scan is a measurement that failed and may succeed later.
 KILL_PID_RECYCLED = "pid_recycled"
 KILL_LEADER_UNVERIFIABLE = "leader_identity_unreadable"
+KILL_LEADER_GROUP_MISMATCH = "leader_group_mismatch"
+KILL_LEADER_GROUP_UNREADABLE = "leader_group_unreadable"
 KILL_GROUP_GONE = "group_gone"
-KILL_GROUP_UNVERIFIED = "group_identity_unverified"
+KILL_GROUP_FOREIGN = "group_belongs_to_another_run"
+KILL_GROUP_MARKERS_CONFLICT = "group_markers_conflict"
+KILL_GROUP_PREDATES_RUN = "group_predates_run"
+KILL_GROUP_SCAN_INCOMPLETE = "group_scan_incomplete"
 
 
 def _now_iso() -> str:
@@ -360,6 +366,13 @@ def _group_identity(pgid: int, spawned_at: float, run_id: str) -> tuple[str, str
     is the same evidence pointing the other way: the group number has been
     reused.
 
+    Every readable marker is collected before the rule is applied, because
+    deciding on the first one read would make the verdict depend on the order
+    the process table happened to be enumerated in — the same group could then
+    be accepted or refused between two calls. Markers that disagree are
+    ``"conflict"``: two runs cannot both own a group, so whatever produced the
+    disagreement is unexplained, and an unexplained group is not signalled.
+
     The start time decides only by exclusion, and covers what the marker
     cannot — a run recorded before the marker existed, and a member whose
     environment cannot be read. It is an inequality rather than an
@@ -373,13 +386,15 @@ def _group_identity(pgid: int, spawned_at: float, run_id: str) -> tuple[str, str
     """
     members, complete = _live_group_members(pgid)
 
+    markers = set()
     for pid, _ in members:
         state, marker = _process_marker(pid)
-        if state != "found" or marker is None:
-            continue
-        if marker == run_id:
-            return "ours", "marker"
-        return "not_ours", "marker"
+        if state == "found" and marker is not None:
+            markers.add(marker)
+    if len(markers) > 1:
+        return "conflict", "marker"
+    if markers:
+        return ("ours" if markers == {run_id} else "not_ours"), "marker"
 
     if not complete:
         return "unknown", "scan"
@@ -1218,61 +1233,74 @@ def _signal_group(
     )
 
 
-def _kill_legacy_record(run_id: str, job: dict[str, Any], pid: int, sig: int) -> dict[str, Any]:
-    """Kill a record written before a run's process identity was recorded.
+def _signal_leader_group(
+    run_id: str, job: dict[str, Any], pid: int, pgid: int, sig: int
+) -> dict[str, Any]:
+    """Signal *pgid*, once the confirmed leader at *pid* is shown to be in it.
 
-    Nothing here can tell this run's pid from a reused one, so the behaviour is
-    the one that predates identity, unchanged, and the reason codes say which
-    record this was. The missing fields cannot be filled in after the fact: the
-    process they describe is the one that was spawned, and nothing observable
-    now can recover when it started.
+    The caller has established that *pid* is the process this run spawned. What
+    is still open is whether the *pgid* on the record is that process's group:
+    the two numbers are stored separately, and a record whose pgid is wrong would
+    otherwise direct a signal at an unrelated group. Read the leader's group and
+    require equality. If they differ, or the group cannot be read, refuse — with
+    different codes, because a mismatch is a settled fact about the record while
+    an unreadable group is a probe that may answer on a later call.
     """
-    if _record_is_terminal(job):
-        recorded = job.get("status", "unknown")
-        # The pid rides along on the refusal. A record can be marked terminal
-        # while its group leader is still alive: the terminal status is persisted
-        # from the lifecycle transition, and the run's own teardown finishes
-        # after that. Refusing is still right, because this pid may equally have
-        # been reused by then and nothing on this record can tell the two apart.
-        # But an operator reaping a group that really did outlive its recorded
-        # end needs the number, and this is the last place it is reported.
+    try:
+        live_pgid = os.getpgid(pid)
+    except (ProcessLookupError, PermissionError, OSError) as e:
         return _kill_result(
             run_id,
             killed=False,
             reason=(
-                f"already ended as {recorded}; pid not signalled because "
-                "it may since have been reused"
+                f"pid {pid} is this run's leader but its process group could not be "
+                f"read ({e}), so group {pgid} could not be confirmed to be its group; "
+                "nothing was signalled"
             ),
-            reason_code=KILL_LEGACY_ALREADY_ENDED,
+            reason_code=KILL_LEADER_GROUP_UNREADABLE,
             pid=pid,
+            pgid=pgid,
         )
-    if not _pid_alive(pid):
+    if live_pgid != pgid:
         return _kill_result(
             run_id,
             killed=False,
-            reason="already exited",
-            reason_code=KILL_LEGACY_ALREADY_EXITED,
+            reason=(
+                f"pid {pid} is this run's leader but is in group {live_pgid}, not the "
+                f"recorded group {pgid}; neither group was signalled because the "
+                "record disagrees with the running process"
+            ),
+            reason_code=KILL_LEADER_GROUP_MISMATCH,
             pid=pid,
+            pgid=pgid,
         )
-    try:
-        pgid = os.getpgid(pid)
-    except ProcessLookupError:
-        return _kill_result(
-            run_id,
-            killed=False,
-            reason="process gone",
-            reason_code=KILL_PROCESS_GONE,
-            pid=pid,
-        )
-    except PermissionError as e:
-        return _kill_result(
-            run_id,
-            killed=False,
-            reason=f"permission denied: {e}",
-            reason_code=KILL_PERMISSION_DENIED,
-            pid=pid,
-        )
-    return _signal_group(run_id, job, pid, pgid, sig, KILL_LEGACY_NO_IDENTITY)
+    return _signal_group(run_id, job, pid, pgid, sig, KILL_SIGNALLED)
+
+
+def _refuse_legacy_record(run_id: str, pid: int) -> dict[str, Any]:
+    """Refuse a record written before a run's process identity was recorded.
+
+    Such a record carries a pid and nothing that distinguishes it from a pid the
+    OS has since handed to an unrelated process. The missing fields cannot be
+    filled in after the fact — they describe the process that was spawned, and
+    nothing observable now recovers when it started — and deriving a group from
+    the pid at this point is exactly the step that resolves a reused pid to a
+    stranger's group. So nothing is signalled.
+
+    The pid rides along on the refusal, because it is the only handle an operator
+    has for reaping the group by hand, and this is the last place it is reported.
+    """
+    return _kill_result(
+        run_id,
+        killed=False,
+        reason=(
+            f"this record predates process-identity capture, so pid {pid} cannot be "
+            "distinguished from a reused one and no group was signalled; reap the "
+            "group by hand after confirming the process is this run's"
+        ),
+        reason_code=KILL_LEGACY_NO_IDENTITY,
+        pid=pid,
+    )
 
 
 def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
@@ -1287,7 +1315,10 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
     Nothing is signalled on an unconfirmed identity. A probe that errors is
     unknown, and unknown refuses: the refusal says which fact was missing, and
     a refusal with an accurate reason is the outcome being aimed at, not the
-    largest possible number of processes stopped.
+    largest possible number of processes stopped. That holds without exception,
+    including for a record written before these fields existed — such a record
+    cannot confirm anything, so it is refused and its group is left for an
+    operator to reap by hand.
     """
     job = _read_job(run_id)
     if job is None:
@@ -1308,7 +1339,7 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
     created = job.get("pid_create_time")
     pgid = job.get("pgid")
     if not isinstance(created, int | float) or not isinstance(pgid, int) or pgid <= 1:
-        return _kill_legacy_record(run_id, job, pid, sig)
+        return _refuse_legacy_record(run_id, pid)
     spawned_at = float(created)
 
     if _pid_alive(pid):
@@ -1327,9 +1358,16 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
             )
         if state == "found" and live_created is not None:
             if abs(live_created - spawned_at) <= _CREATE_TIME_TOLERANCE:
-                # Identity confirmed. The group signalled is the one recorded at
-                # spawn, never one re-derived from the pid now.
-                return _signal_group(run_id, job, pid, pgid, sig, KILL_SIGNALLED)
+                # The leader is confirmed to be the process this run spawned, so
+                # its group can be read now and required to be the recorded one.
+                # Without that equality the recorded pgid is only a number that
+                # passed a range check, and a damaged or hand-edited record would
+                # aim the signal at whatever group holds that number. Reading the
+                # group is safe here and nowhere else on this path: it is safe
+                # because the pid was just identified, and the number signalled
+                # is still the recorded one — the read only decides whether to
+                # signal at all, so a reused pid cannot substitute its own group.
+                return _signal_leader_group(run_id, job, pid, pgid, sig)
             return _kill_result(
                 run_id,
                 killed=False,
@@ -1365,15 +1403,31 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
             pid=pid,
             pgid=pgid,
         )
-    if verdict == "not_ours" and rule == "marker":
-        detail = f"group {pgid} holds a process started by a different run, so the group number has been reused"
+    # Each refusal gets its own code, because they are not the same news. A
+    # foreign marker, a conflict and an older member are settled facts about the
+    # group and will read the same on every retry; an incomplete scan is a
+    # measurement that failed and may succeed on the next call.
+    if verdict == "conflict":
+        detail = (
+            f"group {pgid} holds processes stamped with different run ids, so which "
+            "run it belongs to is unexplained"
+        )
+        code = KILL_GROUP_MARKERS_CONFLICT
+    elif verdict == "not_ours" and rule == "marker":
+        detail = (
+            f"group {pgid} holds a process started by a different run, so the group "
+            "number has been reused"
+        )
+        code = KILL_GROUP_FOREIGN
     elif verdict == "not_ours":
         detail = (
             f"group {pgid} holds a process that started before this run did, so the "
             "group number has been reused"
         )
+        code = KILL_GROUP_PREDATES_RUN
     else:
         detail = f"group {pgid} could not be fully inspected"
+        code = KILL_GROUP_SCAN_INCOMPLETE
     return _kill_result(
         run_id,
         killed=False,
@@ -1381,7 +1435,7 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
             f"the leader has exited and {detail}; the group could not be confirmed "
             "to be this run's, so nothing was signalled"
         ),
-        reason_code=KILL_GROUP_UNVERIFIED,
+        reason_code=code,
         pid=pid,
         pgid=pgid,
     )

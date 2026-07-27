@@ -223,7 +223,6 @@ def test_kill_refuses_a_record_that_already_ended(sandbox, monkeypatch, recorded
 
     assert killpg_calls == [], "a job that already ended must not be signalled"
     assert out["killed"] is False
-    assert recorded["status"] in out["reason"]
     # The refusal reports the pid: a group that really did outlive its recorded
     # end can only be found by an operator if this number survives the refusal.
     assert out["pid"] == 4242
@@ -233,25 +232,6 @@ def test_kill_refuses_a_record_that_already_ended(sandbox, monkeypatch, recorded
     after = jobs._read_job(rid)
     assert after["status"] == recorded["status"]
     assert after.get("finished_at") == recorded.get("finished_at")
-
-
-def test_kill_signals_the_process_group_of_a_live_run(sandbox, monkeypatch):
-    """The whole point of kill: a live, non-terminal run gets SIGTERM by group."""
-    killpg_calls: list[tuple] = []
-    monkeypatch.setattr(jobs.os, "getpgid", lambda pid: 9000 + pid)
-    monkeypatch.setattr(jobs.os, "killpg", lambda *a: killpg_calls.append(a))
-    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
-
-    rid = jobs.new_run_id()
-    jobs._write_job({"run_id": rid, "pid": 4242, "kind": "agent", "status": "running", "log": None})
-
-    out = jobs.kill(rid)
-
-    assert killpg_calls == [(9000 + 4242, signal.SIGTERM)]
-    assert out["killed"] is True and out["reason"] is None and out["pid"] == 4242
-    after = jobs._read_job(rid)
-    assert after["status"] == "killed" and after["finished_at"] is not None
-    assert jobs.status(rid)["terminal"] is True
 
 
 _SPAWNED_AT = 1_700_000_000.0
@@ -280,15 +260,16 @@ def no_stray_signal(monkeypatch):
     Three jobs, all following from the same fact: the pids in these records are
     numbers the test made up, and some live process may well hold each of them.
     It records what was signalled so a test can assert on it; it replaces
-    os.getpgid with a raise, since resolving a group from a made-up pid would
-    aim a real signal at whoever holds that number; and it stubs the marker read
-    to "unreadable", so no test reaches into a real process's environment. A
-    test exercising the marker overrides that last one with its own stub.
+    os.getpgid with a raise, so a test that needs the live leader's group has to
+    say which group that is rather than reading whatever real process holds its
+    invented pid; and it stubs the marker read to "unreadable", so no test
+    reaches into a real process's environment. A test exercising the marker or
+    the leader's group overrides the relevant stub with its own.
     """
     calls: list[tuple] = []
 
     def refuse_getpgid(pid):
-        raise AssertionError(f"the group must come from the record, not from pid {pid}")
+        raise AssertionError(f"pid {pid} is invented; the test must stub its group")
 
     monkeypatch.setattr(jobs.os, "getpgid", refuse_getpgid)
     monkeypatch.setattr(jobs.os, "killpg", lambda *a: calls.append(a))
@@ -314,9 +295,11 @@ def test_submit_records_the_identity_of_the_process_it_spawned(sandbox, monkeypa
 def test_kill_signals_the_recorded_group_when_identity_matches(
     sandbox, monkeypatch, no_stray_signal
 ):
-    """The happy path: the leader is alive and is the process we started."""
+    """The happy path: the leader is alive, is the process we started, and is
+    in the group the record names."""
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", _SPAWNED_AT + 0.02))
+    monkeypatch.setattr(jobs.os, "getpgid", lambda pid: 7777)
 
     rid = _identity_record()
     out = jobs.kill(rid)
@@ -326,6 +309,53 @@ def test_kill_signals_the_recorded_group_when_identity_matches(
     assert out["pgid"] == 7777
     after = jobs._read_job(rid)
     assert after["status"] == "killed" and after["finished_at"] is not None
+
+
+def test_kill_refuses_when_the_live_leader_is_in_a_different_group(
+    sandbox, monkeypatch, no_stray_signal
+):
+    """A stored group number that the confirmed leader is not actually in.
+
+    The leader passes the identity check, so the old code signalled the recorded
+    group on the strength of it having been an integer above one. A record whose
+    pgid was damaged or edited would then aim a signal at whatever group holds
+    that number. Neither number is signalled.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", _SPAWNED_AT))
+    monkeypatch.setattr(jobs.os, "getpgid", lambda pid: 4242)
+
+    rid = _identity_record(pgid=987654)
+    out = jobs.kill(rid)
+
+    assert no_stray_signal == [], "a record's pgid alone must license no signal"
+    assert out["killed"] is False
+    assert out["reason_code"] == jobs.KILL_LEADER_GROUP_MISMATCH
+    assert jobs._read_job(rid)["status"] == "running"
+
+
+@pytest.mark.parametrize("error", [ProcessLookupError(), PermissionError(1, "not permitted")])
+def test_kill_refuses_when_the_live_leaders_group_cannot_be_read(
+    sandbox, monkeypatch, no_stray_signal, error
+):
+    """An unreadable group is a probe that failed, and it refuses like any other.
+
+    Its own code, separate from a mismatch: nothing has been established about
+    the record here, so this is the case where a later call may still succeed.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", _SPAWNED_AT))
+
+    def raising_getpgid(pid):
+        raise error
+
+    monkeypatch.setattr(jobs.os, "getpgid", raising_getpgid)
+
+    out = jobs.kill(_identity_record())
+
+    assert no_stray_signal == []
+    assert out["killed"] is False
+    assert out["reason_code"] == jobs.KILL_LEADER_GROUP_UNREADABLE
 
 
 def test_kill_refuses_a_recycled_pid(sandbox, monkeypatch, no_stray_signal):
@@ -472,8 +502,64 @@ def test_kill_refuses_a_group_carrying_another_runs_marker(sandbox, monkeypatch,
     out = jobs.kill(_identity_record())
 
     assert no_stray_signal == []
-    assert out["killed"] is False and out["reason_code"] == jobs.KILL_GROUP_UNVERIFIED
+    assert out["killed"] is False and out["reason_code"] == jobs.KILL_GROUP_FOREIGN
     assert "started by a different run" in out["reason"]
+
+
+@pytest.mark.parametrize("order", [("this-run", "other-run"), ("other-run", "this-run")])
+def test_kill_refuses_a_group_whose_members_carry_conflicting_markers(
+    sandbox, monkeypatch, no_stray_signal, order
+):
+    """Two markers disagree, and the verdict must not depend on which is read first.
+
+    Deciding on the first readable marker made the answer a function of the order
+    the process table was enumerated in: the same two members returned "ours" one
+    way round and "not_ours" the other. Both orders now reach the same refusal,
+    and a disagreement is its own outcome rather than being reported as either
+    ownership claim.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(
+        jobs,
+        "_live_group_members",
+        lambda pgid: ([(5001, _SPAWNED_AT + 1.0), (5002, _SPAWNED_AT + 2.0)], True),
+    )
+
+    rid = _identity_record()
+    seen = {pid: (rid if m == "this-run" else m) for pid, m in zip([5001, 5002], order)}
+    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("found", seen[pid]))
+
+    out = jobs.kill(rid)
+
+    assert no_stray_signal == [], "an unexplained group must not be signalled"
+    assert out["killed"] is False
+    assert out["reason_code"] == jobs.KILL_GROUP_MARKERS_CONFLICT
+    assert "different run ids" in out["reason"]
+
+
+def test_kill_identifies_a_group_whose_members_all_carry_this_runs_marker(
+    sandbox, monkeypatch, no_stray_signal
+):
+    """Agreeing markers across several members still identify the group.
+
+    The conflict rule must refuse disagreement without refusing agreement: a run
+    that spawned more than one process is the ordinary case, and every member
+    reading back the same run id is the strongest evidence available here.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(
+        jobs,
+        "_live_group_members",
+        # Both older than the record, so only the marker can license this signal.
+        lambda pgid: ([(5001, _SPAWNED_AT - 60.0), (5002, _SPAWNED_AT - 30.0)], True),
+    )
+
+    rid = _identity_record()
+    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("found", rid))
+    out = jobs.kill(rid)
+
+    assert no_stray_signal == [(7777, signal.SIGTERM)]
+    assert out["killed"] is True and out["reason_code"] == jobs.KILL_SIGNALLED
 
 
 @pytest.mark.parametrize(
@@ -530,21 +616,27 @@ def test_kill_decides_a_dead_leaders_group_without_reading_the_leader_again(
 
 
 @pytest.mark.parametrize(
-    "members",
+    ("members", "expected_code"),
     [
-        # A member older than the run: this group number was reused.
-        ([(5001, _SPAWNED_AT - 60.0)], True),
+        # A member older than the run: this group number was reused. Settled —
+        # a retry reads the same thing.
+        (([(5001, _SPAWNED_AT - 60.0)], True), jobs.KILL_GROUP_PREDATES_RUN),
         # The scan could not read every candidate, so a member may be unseen.
-        ([(5001, _SPAWNED_AT + 3.0)], False),
-        ([], False),
+        # A measurement that failed, and a retry may answer.
+        (([(5001, _SPAWNED_AT + 3.0)], False), jobs.KILL_GROUP_SCAN_INCOMPLETE),
+        (([], False), jobs.KILL_GROUP_SCAN_INCOMPLETE),
     ],
 )
-def test_kill_refuses_a_group_it_cannot_confirm(sandbox, monkeypatch, no_stray_signal, members):
+def test_kill_refuses_a_group_it_cannot_confirm(
+    sandbox, monkeypatch, no_stray_signal, members, expected_code
+):
     """A pgid is a pid number and is reused like one.
 
     With the leader gone, the recorded group number alone licenses nothing: an
     accurate refusal is the outcome being aimed at here, not the largest number
-    of processes stopped.
+    of processes stopped. Each refusal carries its own code, because "this group
+    is another run's" and "the inspection did not finish" are different news to a
+    caller deciding whether to try again.
     """
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
     monkeypatch.setattr(jobs, "_live_group_members", lambda pgid: members)
@@ -552,7 +644,7 @@ def test_kill_refuses_a_group_it_cannot_confirm(sandbox, monkeypatch, no_stray_s
     out = jobs.kill(_identity_record())
 
     assert no_stray_signal == []
-    assert out["killed"] is False and out["reason_code"] == jobs.KILL_GROUP_UNVERIFIED
+    assert out["killed"] is False and out["reason_code"] == expected_code
 
 
 def test_kill_reports_a_group_with_nothing_live_left_in_it(sandbox, monkeypatch, no_stray_signal):
@@ -604,7 +696,7 @@ def test_kill_refuses_a_terminal_record_whose_group_is_unconfirmable(
     out = jobs.kill(rid)
 
     assert no_stray_signal == []
-    assert out["reason_code"] == jobs.KILL_GROUP_UNVERIFIED
+    assert out["reason_code"] == jobs.KILL_GROUP_PREDATES_RUN
     assert "could not be confirmed" in out["reason"]
     assert jobs._read_job(rid)["status"] == "completed"
 
@@ -639,46 +731,35 @@ def test_kill_never_dereferences_a_pid_it_must_not_signal(
     assert out["killed"] is False and out["reason_code"] == jobs.KILL_NO_PID
 
 
-def test_kill_falls_back_to_pid_liveness_on_a_record_without_identity(sandbox, monkeypatch):
-    """A record written before identity was recorded keeps its old behaviour.
+@pytest.mark.parametrize(
+    "record",
+    [
+        # No identity fields at all: written before they were captured.
+        {},
+        # Present but malformed, which says as little as absent does.
+        {"pid_create_time": "not-a-number", "pgid": 7777},
+        {"pid_create_time": _SPAWNED_AT, "pgid": "7777"},
+        {"pid_create_time": _SPAWNED_AT, "pgid": 0},
+        {"pid_create_time": None, "pgid": None},
+    ],
+)
+def test_kill_refuses_a_record_that_cannot_confirm_an_identity(
+    sandbox, monkeypatch, no_stray_signal, record
+):
+    """A record with no usable identity is refused rather than signalled.
 
-    The fields were never captured and nothing observable now can recover them,
-    so such a record is signalled the way it always was — and says so with its
-    own reason code, which is how a reader tells an old record from a refusal
-    this build decided.
+    Deriving a group from the pid at this point is the pid-reuse step the identity
+    fields exist to remove: the pid may have been handed to an unrelated process
+    since, and its group would then be a stranger's. Nothing about the process is
+    probed either — a liveness answer would not distinguish the two cases, so the
+    refusal does not depend on one.
     """
-    killpg_calls: list[tuple] = []
-    monkeypatch.setattr(jobs.os, "getpgid", lambda pid: 9000 + pid)
-    monkeypatch.setattr(jobs.os, "killpg", lambda *a: killpg_calls.append(a))
-    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: pytest.fail("pid must not be probed"))
     monkeypatch.setattr(
         jobs,
         "_live_group_members",
-        lambda pgid: pytest.fail("a legacy record has no group to verify"),
+        lambda pgid: pytest.fail("a record without an identity has no group to verify"),
     )
-
-    rid = jobs.new_run_id()
-    jobs._write_job({"run_id": rid, "pid": 4242, "kind": "agent", "status": "running", "log": None})
-    out = jobs.kill(rid)
-
-    assert killpg_calls == [(9000 + 4242, signal.SIGTERM)]
-    assert out["killed"] is True and out["reason_code"] == jobs.KILL_LEGACY_NO_IDENTITY
-    assert jobs._read_job(rid)["status"] == "killed"
-
-
-def test_kill_refuses_a_legacy_record_whose_pid_is_gone(sandbox, monkeypatch, no_stray_signal):
-    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
-
-    rid = jobs.new_run_id()
-    jobs._write_job({"run_id": rid, "pid": 4242, "kind": "agent", "status": "running", "log": None})
-    out = jobs.kill(rid)
-
-    assert no_stray_signal == []
-    assert out["killed"] is False and out["reason_code"] == jobs.KILL_LEGACY_ALREADY_EXITED
-
-
-def test_kill_refuses_a_legacy_record_that_already_ended(sandbox, monkeypatch, no_stray_signal):
-    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
 
     rid = jobs.new_run_id()
     jobs._write_job(
@@ -686,18 +767,44 @@ def test_kill_refuses_a_legacy_record_that_already_ended(sandbox, monkeypatch, n
             "run_id": rid,
             "pid": 4242,
             "kind": "agent",
-            "status": "completed",
-            "finished_at": "2026-01-01T00:00:00+00:00",
+            "status": "running",
             "log": None,
+            **record,
         }
     )
     out = jobs.kill(rid)
 
-    assert no_stray_signal == []
-    assert out["killed"] is False and out["reason_code"] == jobs.KILL_LEGACY_ALREADY_ENDED
-    assert "may since have been reused" in out["reason"]
+    assert no_stray_signal == [], "a pid without an identity must license no signal"
+    assert out["killed"] is False and out["reason_code"] == jobs.KILL_LEGACY_NO_IDENTITY
+    assert out["pid"] == 4242, "the operator needs the number to reap the group by hand"
+    assert "predates process-identity capture" in out["reason"]
+    assert jobs._read_job(rid)["status"] == "running", "a refusal changes no recorded status"
 
 
+def _process_table_enumerable() -> tuple[bool, str]:
+    """Whether this machine lets us list the process table at all.
+
+    The group-identity rules are built on enumerating processes, and some
+    sandboxes refuse it outright: ``psutil.pids()`` raises, ``_live_group_members``
+    correctly reports an incomplete scan, and a test that needs a real measurement
+    has nothing to measure. That is an environment that cannot run the check, not
+    a regression, and it must not read like one. Only the enumeration itself is
+    probed — a machine that can list processes and still gets the wrong answer
+    fails, which is the case worth failing on.
+    """
+    import psutil
+
+    try:
+        psutil.pids()
+    except (psutil.Error, OSError) as e:
+        return False, f"this environment cannot enumerate the process table: {e!r}"
+    return True, ""
+
+
+_CAN_ENUMERATE, _NO_ENUMERATION_REASON = _process_table_enumerable()
+
+
+@pytest.mark.skipif(not _CAN_ENUMERATE, reason=_NO_ENUMERATION_REASON or "process table readable")
 def test_a_group_outlives_its_leader_and_is_reaped_by_identity(sandbox):
     """End to end against real processes: the defect, and the fix, unmocked.
 
