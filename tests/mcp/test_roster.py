@@ -16,6 +16,7 @@ moved before any resolution happens.
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -123,9 +124,7 @@ def test_a_name_in_both_roots_resolves_to_the_project_one(roots):
     # Whole-file precedence, not a field merge: the global file's effort is
     # displaced, not inherited.
     assert shown["resolved"]["effort"] is None
-    assert shown["shadowed"] == [
-        {"path": str(roots.glob / "reviewer.md"), "scope": "global", "match": "exact"}
-    ]
+    assert shown["shadowed"] == [{"path": str(roots.glob / "reviewer.md"), "scope": "global"}]
 
 
 def test_the_two_layouts_in_one_root_shadow_each_other_too(roots):
@@ -145,7 +144,7 @@ def test_the_two_layouts_in_one_root_shadow_each_other_too(roots):
 
     assert shown["source"]["path"] == str(directory_layout)
     assert shown["resolved"]["model"] == "directory-model"
-    assert shown["shadowed"] == [{"path": str(flat_layout), "scope": "project", "match": "exact"}]
+    assert shown["shadowed"] == [{"path": str(flat_layout), "scope": "project"}]
 
 
 def test_a_same_root_loser_is_listed_before_a_further_root(roots):
@@ -205,7 +204,7 @@ def test_a_displaced_layout_is_still_shadowed_beside_the_other_spelling(roots):
     shown = op("profile.show", {"name": "postmortem-lead"})["result"]
 
     assert shown["source"]["path"] == str(directory_layout)
-    assert shown["shadowed"] == [{"path": str(flat_layout), "scope": "project", "match": "exact"}]
+    assert shown["shadowed"] == [{"path": str(flat_layout), "scope": "project"}]
     assert op("profile.show", {"name": "postmortem_lead"})["result"]["source"]["path"] == str(
         underscore
     )
@@ -310,24 +309,26 @@ def test_an_unknown_parameter_is_refused_by_name(roots):
 # ── the spelling fallback, and where it has nothing to say ───────────────────
 
 
-def test_a_source_reached_by_the_other_separator_says_so(roots):
-    """The same file in ``source``, but reached two different ways.
+def test_a_file_reached_by_the_other_separator_says_so(roots):
+    """Two files under one name, reached two different ways.
 
-    Asked for by its own spelling it is a file that matched. Asked for by the
-    other separator it is what the fallback produced — the run still reads it,
-    but the caller's spelling names nothing on disk, and a reply that describes
-    both cases identically hides which one it is looking at.
+    The project file is spelled the way the name is spelled. The global one is
+    reached only because the separators stand in for each other, and it is still
+    selectable under its own spelling — so a caller deciding which file to edit
+    is looking at a weaker claim there than in the project root. A reply that
+    describes both entries identically hides which one is which.
     """
-    write_profile(roots.proj, "postmortem_lead", "---\nmodel: m\n---\nbody\n")
+    exact = write_profile(roots.proj, "postmortem-lead", "---\nmodel: m\n---\nbody\n")
+    other_spelling = write_profile(roots.glob, "postmortem_lead", "---\nmodel: g\n---\nbody\n")
 
-    asked_as_written = op("profile.show", {"name": "postmortem_lead"})["result"]
-    assert asked_as_written["source"]["match"] == "exact"
+    entry = op("profile.list", {"names": ["postmortem-lead"], "fields": ["source", "shadowed"]})[
+        "result"
+    ]["profiles"][0]
 
-    asked_with_the_other_separator = op("profile.show", {"name": "postmortem-lead"})["result"]
-    assert asked_with_the_other_separator["source"]["path"] == str(
-        roots.proj / "postmortem_lead.md"
-    )
-    assert asked_with_the_other_separator["source"]["match"] == "separator_fallback"
+    assert entry["source"] == {"path": str(exact), "scope": "project", "match": "exact"}
+    assert entry["shadowed"] == [
+        {"path": str(other_spelling), "scope": "global", "match": "separator_fallback"}
+    ]
 
 
 def test_two_spellings_in_one_root_are_reported_as_ambiguous_not_as_shadowed(roots):
@@ -343,11 +344,14 @@ def test_two_spellings_in_one_root_are_reported_as_ambiguous_not_as_shadowed(roo
     underscores = write_profile(roots.glob, "post_mortem_lead", "---\nmodel: under\n---\nbody\n")
     hyphens = write_profile(roots.glob, "post-mortem-lead", "---\nmodel: hyphen\n---\nbody\n")
 
-    shown = op("profile.show", {"name": "post-mortem_lead"})["result"]
+    listed = op(
+        "profile.list",
+        {"names": ["post-mortem_lead"], "fields": ["source", "shadowed", "ambiguous"]},
+    )["result"]["profiles"]
 
-    assert shown["source"] == {"path": str(exact), "scope": "project", "match": "exact"}
-    assert shown["shadowed"] == []
-    assert sorted(entry["path"] for entry in shown["ambiguous"]) == sorted(
+    assert listed[0]["source"] == {"path": str(exact), "scope": "project", "match": "exact"}
+    assert listed[0]["shadowed"] == []
+    assert sorted(entry["path"] for entry in listed[0]["ambiguous"]) == sorted(
         [str(underscores), str(hyphens)]
     )
     # Both really are selectable, which is why neither is displaced.
@@ -386,17 +390,49 @@ def test_placement_names_no_source_where_the_loader_refuses_to_choose(roots):
 
 
 def test_the_unprojected_list_is_what_it_has_always_been(roots):
-    """Asking for nothing in particular still answers with the full record.
+    """The whole reply to a call that asked for nothing, against the shape on record.
 
-    The projection is an addition, so every caller that never learned about it
-    has to keep reading the same keys in the same shape.
+    The projection is an addition, so a caller that never learned about it has
+    to keep reading the same keys — including inside ``source`` and each
+    ``shadowed`` entry, which is where a key added to the placement walk would
+    otherwise arrive unannounced. Compared whole rather than key by key: a
+    subset check passes on a reply carrying anything extra, which is exactly the
+    change it is here to catch.
     """
-    write_profile(roots.proj, "builder", "---\nmodel: anthropic/claude\n---\nbody\n")
+    write_profile(roots.glob, "reviewer", "---\nmodel: global-model\n---\nglobal\n")
+    write_profile(roots.proj, "reviewer", "---\nmodel: project-model\n---\nproject\n")
 
-    entry = op("profile.list")["result"]["profiles"][0]
+    result = op("profile.list")["result"]
+    # Through a JSON round trip, because that is how a caller receives it.
+    assert json.loads(json.dumps(result)) == result
 
-    assert set(entry) == {"name", "source", "shadowed", "ambiguous", "resolved"}
-    assert entry["resolved"] == profile_config(load_agent_profile("builder"))
+    assert set(result) == {"cwd", "roots", "profiles", "count"}
+    assert result["count"] == 1
+    assert result["profiles"] == [
+        {
+            "name": "reviewer",
+            "source": {"path": str(roots.proj / "reviewer.md"), "scope": "project"},
+            "shadowed": [{"path": str(roots.glob / "reviewer.md"), "scope": "global"}],
+            "resolved": profile_config(load_agent_profile("reviewer")),
+        }
+    ]
+
+
+def test_showing_one_profile_is_what_it_has_always_been_too(roots):
+    """``profile.show`` takes no projection at all, so it carries the same record.
+
+    Placement detail reaches a caller of the list only by being named in
+    ``fields``; there is nothing to name here, so there is nothing extra to
+    return.
+    """
+    write_profile(roots.glob, "reviewer", "---\nmodel: global-model\n---\nglobal\n")
+    write_profile(roots.proj, "reviewer", "---\nmodel: project-model\n---\nproject\n")
+
+    shown = op("profile.show", {"name": "reviewer"})["result"]
+
+    assert set(shown) == {"cwd", "name", "source", "shadowed", "resolved", "declared_extra_keys"}
+    assert shown["source"] == {"path": str(roots.proj / "reviewer.md"), "scope": "project"}
+    assert shown["shadowed"] == [{"path": str(roots.glob / "reviewer.md"), "scope": "global"}]
 
 
 def test_names_answers_for_the_profiles_asked_for_and_no_others(roots):

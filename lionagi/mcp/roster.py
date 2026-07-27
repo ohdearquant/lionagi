@@ -165,6 +165,24 @@ def _placement(name: str) -> dict[str, Any]:
 _PLACEMENT_FIELDS = ("source", "shadowed", "ambiguous")
 
 
+def _record_placement(name: str) -> dict[str, Any]:
+    """The placement a reply carries when it was not asked for anything narrower.
+
+    ``match`` and ``ambiguous`` describe how the resolver arrived at its answer.
+    That is worth having, but a caller reading a reply it did not ask to be
+    reshaped has to find the keys it has always found and no others, so the two
+    are reachable only by naming them in ``fields``.
+    """
+    placement = _placement(name)
+    source = placement["source"]
+    return {
+        "source": None if source is None else {k: v for k, v in source.items() if k != "match"},
+        "shadowed": [
+            {k: v for k, v in entry.items() if k != "match"} for entry in placement["shadowed"]
+        ],
+    }
+
+
 def _resolved_fields() -> tuple[str, ...]:
     """The keys a resolved block carries, asked of the function that builds one.
 
@@ -224,7 +242,7 @@ def _profile_entry(
     entirely — the fields a caller left out cost nothing to leave out.
     """
     if not projected:
-        return {"name": name, **_placement(name), "resolved": config}
+        return {"name": name, **_record_placement(name), "resolved": config}
     entry: dict[str, Any] = {"name": name}
     if selected:
         entry.update({k: v for k, v in _placement(name).items() if k in selected})
@@ -285,7 +303,7 @@ def profile_show(name: str, *, cwd: str | None = None) -> dict[str, Any]:
         return {
             "cwd": os.getcwd(),
             "name": name,
-            **_placement(name),
+            **_record_placement(name),
             "resolved": profile_config(profile),
             # Frontmatter keys the loader recognised no runtime meaning for,
             # by name only: enough to see that a profile declares something

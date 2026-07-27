@@ -366,8 +366,9 @@ _PROFILE_LIST_SCHEMA = _own(
                 "Return only these keys per profile: 'source', 'shadowed', 'ambiguous', "
                 "'resolved' for the whole configuration block, or 'resolved.<key>' for "
                 "one of its fields ('resolved.model', 'resolved.effort', ...). 'name' is "
-                "always returned. An unrecognised field is an error rather than an empty "
-                "one. Omit it for the full record."
+                "always returned. A placement field asked for by name also says how the "
+                "resolver reached each file it lists. An unrecognised field is an error "
+                "rather than an empty one. Omit it for the full record."
             ),
         },
     }
