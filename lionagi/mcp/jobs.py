@@ -116,6 +116,11 @@ KILL_NO_SUCH_JOB = "no_such_job"
 # resolve it.
 KILL_RECORD_UNREADABLE = "job_record_unreadable"
 KILL_RECORD_WRONG_SHAPE = "job_record_wrong_shape"
+# The record parsed into an object and names a run other than the one asked about.
+# Its own code rather than the shape ones above: those say a file has to be looked
+# at by a person, while this one names the run the record does describe, and acting
+# on it is a call this caller can make on its own.
+KILL_RECORD_FOREIGN_RUN = "job_record_names_another_run"
 KILL_NO_PID = "no_pid_on_record"
 KILL_SIGNALLED = "signalled"
 KILL_PROCESS_GONE = "process_gone"
@@ -1311,6 +1316,20 @@ def _signal_leader_group(
     require equality. If they differ, or the group cannot be read, refuse — with
     different codes, because a mismatch is a settled fact about the record while
     an unreadable group is a probe that may answer on a later call.
+
+    Then ask the leader itself. Every process a run spawns carries the run id in
+    its environment, so a leader that reads back a *different* run's id says the
+    record does not describe it, whatever its numbers matched — the same evidence
+    the group route acts on when the leader is gone, read here from the one
+    process that has already been identified rather than from the group at large.
+    The group's other rules stay where they are: they answer a different question,
+    which member of a group can speak for it, and that question is settled here.
+
+    The marker only ever withholds a signal. An absent or unreadable one leaves
+    the decision exactly where the numbers left it, because those two arrive
+    identically — a process whose environment is not disclosed reads as carrying
+    no marker — and requiring one to permit a signal would turn every process
+    that cannot be read into a job that can never be reaped.
     """
     try:
         live_pgid = os.getpgid(pid)
@@ -1337,6 +1356,20 @@ def _signal_leader_group(
                 "record disagrees with the running process"
             ),
             reason_code=KILL_LEADER_GROUP_MISMATCH,
+            pid=pid,
+            pgid=pgid,
+        )
+    state, marker = _process_marker(pid)
+    if state == "found" and marker is not None and marker != run_id:
+        return _kill_result(
+            run_id,
+            killed=False,
+            reason=(
+                f"pid {pid} matches this record but carries a different run's id in "
+                f"its environment, so group {pgid} is that run's work and not this "
+                "one's; nothing was signalled"
+            ),
+            reason_code=KILL_GROUP_FOREIGN,
             pid=pid,
             pgid=pgid,
         )
@@ -1378,8 +1411,8 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
     exited, which is the case worth reaping, and a pid the OS handed to an
     unrelated process, which must never be signalled.
 
-    Nothing is signalled on an unconfirmed identity. A probe that errors is
-    unknown, and unknown refuses: the refusal says which fact was missing, and
+    Nothing is signalled that the record does not identify. A probe that errors
+    is unknown, and unknown refuses: the refusal says which fact was missing, and
     a refusal with an accurate reason is the outcome being aimed at, not the
     largest possible number of processes stopped. That holds without exception,
     including for a record written before these fields existed — such a record
@@ -1391,7 +1424,22 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
     the live leader's start time matches the record and its current group is the
     recorded one, or a live member of the recorded group carries this run's id in
     its environment. A group is never signalled because it merely looks young
-    enough. But the identification and the signal are two separate system calls,
+    enough. Where a process can be asked which run it belongs to, an answer
+    naming another run refuses on either route; where it cannot be asked, the
+    silence decides nothing, since an environment that is withheld and one that
+    is empty come back the same and treating either as a denial would strand
+    every job whose processes cannot be read.
+
+    What no check here establishes is who wrote the record. The fields are
+    compared against the running process, so they identify a process that is
+    still the one described; they cannot show that this run described it. A
+    record that has been rewritten with a live stranger's numbers, by something
+    already able to write into this user's job store, is refused only when that
+    stranger names a different run of its own. The store's own integrity is the
+    boundary that would settle it, and it is not a boundary a field comparison
+    can draw.
+
+    Identification and the signal are two separate system calls,
     and there is no way to make them one: ``killpg`` takes a group number, not a
     reference to the group that was inspected, and there is no "signal this group
     only if it still holds the process I verified" operation to reach for. So in
@@ -1427,6 +1475,28 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
                 "the file itself is what has to be looked at"
             ),
             reason_code=KILL_RECORD_WRONG_SHAPE,
+        )
+
+    # The record names the run it describes, and every write of one puts this
+    # run's own id there. So a record found under one run that names another was
+    # not written for the run being killed — copied, restored over, or edited —
+    # and its numbers describe some other run's process. Unlike every probe below,
+    # this costs nothing when it is wrong about a healthy record: the field is
+    # written here rather than measured, so a disagreement is never a reading that
+    # failed. Checked before the pid is even looked at, because no probe of a
+    # number from a record that does not belong here is worth making.
+    recorded_run_id = job.get("run_id")
+    if recorded_run_id != run_id:
+        return _kill_result(
+            run_id,
+            killed=False,
+            reason=(
+                f"the record stored for {run_id} names run "
+                f"{_short_repr(recorded_run_id)} instead, so the process it describes "
+                f"is not this run's and nothing was signalled; kill that run by its own "
+                "id if it is the one meant to stop"
+            ),
+            reason_code=KILL_RECORD_FOREIGN_RUN,
         )
 
     # First, and before any number on the record is probed or dereferenced. A

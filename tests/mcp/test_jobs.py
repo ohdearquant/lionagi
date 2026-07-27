@@ -358,6 +358,85 @@ def test_kill_refuses_when_the_live_leaders_group_cannot_be_read(
     assert out["reason_code"] == jobs.KILL_LEADER_GROUP_UNREADABLE
 
 
+def test_kill_refuses_a_live_leader_that_says_it_belongs_to_another_run(
+    sandbox, monkeypatch, no_stray_signal
+):
+    """A live leader whose every number matches, and which names another run.
+
+    The record's pid, start time and group all describe this process, so the
+    numbers alone license the signal. The process itself disagrees: it carries a
+    different run's id in the environment its parent gave it, which is exactly
+    the evidence the group route refuses on when the leader is gone. The same
+    evidence has to reach the same conclusion on the route where the leader is
+    still alive, or one branch of this decision trusts what the other rejects.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", _SPAWNED_AT))
+    monkeypatch.setattr(jobs.os, "getpgid", lambda pid: 7777)
+    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("found", "some-other-run"))
+
+    rid = _identity_record()
+    out = jobs.kill(rid)
+
+    assert no_stray_signal == [], "a process naming another run must not be signalled"
+    assert out["killed"] is False and out["reason_code"] == jobs.KILL_GROUP_FOREIGN
+    assert jobs._read_job(rid)["status"] == "running"
+
+
+@pytest.mark.parametrize("marker", [("unknown", None), ("found", None)])
+def test_kill_signals_a_live_leader_whose_environment_names_no_run(
+    sandbox, monkeypatch, no_stray_signal, marker
+):
+    """No marker withholds nothing, on the route where the leader is alive too.
+
+    This one passes before the marker was read here at all, and that is what it
+    is for: the marker may veto a signal and may never be required to permit
+    one. A process whose environment cannot be read and one whose environment is
+    genuinely empty arrive as the same answer — some platforms hand back an empty
+    environment for a protected binary rather than raising — so requiring a
+    marker to signal would strand every job whose processes cannot be read. Both
+    of those answers are covered here, because the distinction the code must not
+    start drawing between them is invisible to a single case.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", _SPAWNED_AT))
+    monkeypatch.setattr(jobs.os, "getpgid", lambda pid: 7777)
+    monkeypatch.setattr(jobs, "_process_marker", lambda pid: marker)
+
+    out = jobs.kill(_identity_record())
+
+    assert no_stray_signal == [(7777, signal.SIGTERM)]
+    assert out["killed"] is True and out["reason_code"] == jobs.KILL_SIGNALLED
+
+
+def test_kill_refuses_a_record_that_names_a_different_run(sandbox, monkeypatch):
+    """A record found under one run, describing another.
+
+    Every write of a record stamps the run it belongs to, so this field is not a
+    measurement that can fail — a record whose own id is not the one being killed
+    was put there by something other than the run being killed, and the process
+    its numbers describe is some other run's. Nothing is probed: the pid on such
+    a record has no claim on this call.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: pytest.fail("pid must not be probed"))
+
+    rid = jobs.new_run_id()
+    other = jobs.new_run_id()
+    _write_raw_record(
+        rid,
+        f'{{"run_id": "{other}", "pid": 4242, "pgid": 7777, '
+        f'"pid_create_time": {_SPAWNED_AT}, "status": "running"}}',
+    )
+
+    out = jobs.kill(rid)
+
+    assert out["killed"] is False
+    assert out["reason_code"] == jobs.KILL_RECORD_FOREIGN_RUN
+    # The run the record does name is reported: it is the only handle a caller
+    # has for stopping the run that record actually describes.
+    assert other in out["reason"]
+
+
 def test_kill_refuses_a_recycled_pid(sandbox, monkeypatch, no_stray_signal):
     """An alive pid that started at a different time is a different process."""
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
