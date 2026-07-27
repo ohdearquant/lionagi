@@ -585,3 +585,193 @@ def test_the_fingerprint_is_not_a_claim_that_anyone_read_the_schema(submitted):
         ]
     )
     assert answer["ops"][0]["ok"] is True
+
+
+# ── a run that could not start ───────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("op", "args"),
+    [
+        ("agent.submit", {"prompt": "do it"}),
+        ("flow.submit", {"prompt": "do it"}),
+        ("fanout.submit", {"prompt": "do it"}),
+    ],
+)
+def test_a_submission_with_no_model_is_refused_instead_of_handed_a_handle(submitted, op, args):
+    # Every spawning command refuses to start without a model, and it refuses
+    # after its own startup — so a submission that reached the spawn came back
+    # describing a started run, with a pid, while the run was already over. Such
+    # a run never reaches the terminal hook, so it never becomes terminal and no
+    # terminal notice is ever delivered: a caller waiting for one waits forever.
+    # What the caller is told AT SUBMIT is the subject here, so the assertion is
+    # on the submit result and not on the job record.
+    answer = call(ops=[spawn_op(op, args)])["ops"][0]
+    assert answer["ok"] is False
+    assert answer["error"]["kind"] == "invalid_input"
+    assert "no model" in answer["error"]["message"]
+    # The refusal names the schema it judged against, as every other one does.
+    assert answer["error"]["schema"]["title"] == op
+    # Nothing was spawned, so there is no run_id for a caller to go on waiting on.
+    assert submitted == {}
+    assert "run_id" not in answer
+
+
+@pytest.mark.parametrize(
+    ("op", "args"),
+    [
+        ("agent.submit", {"query": ["a-model"], "prompt": "do it"}),
+        ("agent.submit", {"agent": "a-profile", "prompt": "do it"}),
+        ("flow.submit", {"query": ["a-model"], "prompt": "do it"}),
+        ("flow.submit", {"query": ["a-model", "do it"]}),
+        ("flow.submit", {"agent": "a-profile", "prompt": "do it"}),
+        ("fanout.submit", {"agent": "a-profile", "prompt": "do it"}),
+    ],
+)
+def test_a_submission_that_names_a_model_still_spawns(submitted, op, args):
+    # The refusal above is conservative on purpose: it fires only where no source
+    # of a model exists at all. This pins the other side of that line, so a
+    # tightening that started refusing ordinary submissions is caught here.
+    answer = call(ops=[spawn_op(op, args)])["ops"][0]
+    assert answer["ok"] is True
+    assert submitted["kind"]
+
+
+def test_a_spec_file_may_be_the_thing_that_names_the_model(submitted):
+    # A flow spec declares the orchestrator in content the server does not read.
+    # Refusing it would reject valid submissions, so its presence hands the
+    # question back to the command. A playbook is the same case and takes the
+    # same branch, but naming one here would require it to exist on the machine.
+    answer = call(ops=[spawn_op("flow.submit", {"file": "/tmp/spec.yaml"})])["ops"][0]
+    assert answer["ok"] is True, answer
+
+
+def _refusal(op: str) -> str:
+    return call(ops=[spawn_op(op, {"prompt": "do it"})])["ops"][0]["error"]["message"]
+
+
+def test_the_remediation_names_only_sources_the_verb_it_was_sent_to_accepts(submitted):
+    """A fix a caller cannot follow costs them the round-trip it was meant to save.
+
+    `fanout` takes neither a spec file nor a playbook, so a message that offered
+    either would be answered by a second refusal, this time from argument
+    validation, on a call the caller made because the first refusal told them to.
+    Both halves are asserted together: what each message names, and what the
+    receiving schema actually admits.
+    """
+    fanout, flow = _refusal("fanout.submit"), _refusal("flow.submit")
+    assert "'file'" not in fanout and "'playbook'" not in fanout
+    assert "'file'" in flow and "'playbook'" in flow
+
+    fanout_admits = set(call(help="fanout.submit")["schema"]["properties"])
+    flow_admits = set(call(help="flow.submit")["schema"]["properties"])
+    assert not {"file", "playbook"} & fanout_admits
+    assert {"file", "playbook"} <= flow_admits
+    # A profile is the one source all three share, so every message names it.
+    assert "'agent'" in fanout and "'agent'" in flow and "'agent'" in _refusal("agent.submit")
+
+
+def test_the_remediation_says_where_in_the_positionals_the_model_goes(submitted):
+    """Where the model sits differs by command, so each message says its own answer.
+
+    An agent's prompt travels separately, leaving its positional bucket for the
+    model alone. Flow and fanout read the last positional as the prompt, so a
+    caller who passes the model on its own has passed a prompt — the message has
+    to say that a second value follows, or it describes a call still missing a model.
+    """
+    for op in ("fanout.submit", "flow.submit"):
+        message = _refusal(op)
+        assert "with the prompt after it" in message, message
+        assert "read as the prompt" in message, message
+    assert "first positional in 'query'" in _refusal("agent.submit")
+
+
+def test_every_spawning_command_has_its_own_model_sources(submitted):
+    """A new spawn kind must arrive with the remediation its refusal will quote.
+
+    The sources are per command, so the registry and the table are two lists of
+    the same commands kept in separate files. Nothing else holds them together:
+    add a spawning verb and the refusal for it falls back to a message that
+    names no argument at all, which is the least a caller can act on. This is
+    the check that says so at authoring time instead.
+    """
+    registered = {v.job_kind for v in verbs.VERBS.values() if v.executor == "spawn"}
+    assert registered, "no spawning verb is registered; this check would pass vacuously"
+    assert registered <= set(dispatch._MODEL_SOURCES), sorted(
+        registered - set(dispatch._MODEL_SOURCES)
+    )
+    # Each entry must also survive the refusal it is quoted in, so a stale entry
+    # for a kind no longer registered is reported rather than left to rot.
+    assert set(dispatch._MODEL_SOURCES) <= registered, sorted(
+        set(dispatch._MODEL_SOURCES) - registered
+    )
+
+
+def test_a_command_whose_kind_the_table_does_not_name_is_still_refused_as_a_result(
+    submitted, monkeypatch
+):
+    """An unlisted kind is a client input error, not a server fault.
+
+    Indexing the sources table by kind makes a kind it does not name an
+    exception out of dispatch, which reaches the caller as an internal failure
+    and tells them their submission was fine. It was not: it carries no model
+    and the run would die on start. So it is the ordinary refusal, and it still
+    has to name a correction the caller can make: one assembled from arguments
+    the command itself declares, so acting on it cannot land in a second
+    refusal from argument validation.
+    """
+    probe = verbs.Verb(
+        name="probe.submit",
+        summary="A spawning verb whose kind the sources table does not name.",
+        executor="spawn",
+        cli_path="orchestrate fanout",
+        job_kind="probe",
+        server_params=verbs._SPAWN_SERVER_PARAMS,
+    )
+    monkeypatch.setattr(dispatch, "VERBS", {**verbs.VERBS, probe.name: probe})
+    answer = call(ops=[spawn_op("probe.submit", {"prompt": "do it"})])["ops"][0]
+    assert answer["ok"] is False, answer
+    assert answer["error"]["kind"] == "invalid_input", answer
+    message = answer["error"]["message"]
+    assert "has no model and nothing to supply one" in message
+    # The caller has to be able to write the corrected request from this. It
+    # says the sources are not recorded for this command, and then names the
+    # arguments that both satisfy the check and appear in this command's own
+    # schema, so sending one of them cannot be refused as an unknown parameter.
+    assert "no model sources recorded for the 'probe' command" in message, message
+    declared = dispatch.verb_schema(probe)["properties"]
+    assert {"query", "agent"} <= set(declared), sorted(declared)
+    assert "first value of 'query'" in message, message
+    assert "name a profile with 'agent'" in message, message
+    # 'file' and 'playbook' are model sources the check accepts but this command
+    # does not declare, so they are not offered.
+    assert "file" not in declared and "playbook" not in declared, sorted(declared)
+    assert "'file'" not in message and "'playbook'" not in message, message
+    # Nothing was spawned: the point of refusing here is that no run is started.
+    assert submitted == {}
+
+
+def test_an_unlisted_kind_declaring_no_model_argument_says_so_instead_of_guessing(
+    submitted, monkeypatch
+):
+    """With nothing to name, the refusal names the gap rather than an argument.
+
+    The correction is only as good as the arguments it can be assembled from. A
+    command declaring none of them leaves nothing true to say about where a
+    model goes, and a reassuring sentence there would be the guess the
+    per-command sources exist to avoid.
+    """
+    probe = verbs.Verb(
+        name="opaque.submit",
+        summary="A spawning verb declaring none of the arguments the check reads.",
+        executor="spawn",
+        own_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        job_kind="opaque",
+    )
+    monkeypatch.setattr(dispatch, "VERBS", {**verbs.VERBS, probe.name: probe})
+    answer = call(ops=[spawn_op("opaque.submit", {})])["ops"][0]
+    assert answer["ok"] is False, answer
+    message = answer["error"]["message"]
+    assert "declares no argument this check reads as one" in message, message
+    assert "per-command model sources" in message, message
+    assert submitted == {}
