@@ -3,8 +3,11 @@
 
 """Non-finite floats must fail serialization rather than turn into null."""
 
+import dataclasses
+import enum
 import math
 
+import orjson
 import pytest
 
 from lionagi.ln import json_dumpb, json_dumps, json_lines_iter
@@ -114,3 +117,97 @@ def test_extreme_but_finite_floats_are_untouched():
     assert restored["big"] == 1.7976931348623157e308
     assert restored["small"] == 5e-324
     assert math.copysign(1, restored["neg"]) == -1
+
+
+# --- forms orjson encodes natively, which never reach the default() hook ---
+
+
+@pytest.mark.parametrize("bad", NON_FINITE)
+def test_dataclass_field_rejects_non_finite(bad):
+    @dataclasses.dataclass
+    class Measurement:
+        value: float
+
+    with pytest.raises(ValueError, match="non-finite float at \\$\\.value"):
+        json_dumpb(Measurement(bad))
+
+
+def test_nested_dataclass_reports_its_path():
+    @dataclasses.dataclass
+    class Inner:
+        value: float
+
+    @dataclasses.dataclass
+    class Outer:
+        inner: Inner
+
+    with pytest.raises(ValueError, match="\\$\\.readings\\[0\\]\\.inner\\.value"):
+        json_dumpb({"readings": [Outer(Inner(float("nan")))]})
+
+
+def test_finite_dataclass_still_serializes():
+    @dataclasses.dataclass
+    class Measurement:
+        value: float
+        note: str | None
+
+    assert json_dumpb(Measurement(1.5, None)) == b'{"value":1.5,"note":null}'
+
+
+@pytest.mark.parametrize("bad", NON_FINITE)
+def test_enum_float_value_rejects_non_finite(bad):
+    limit = enum.Enum("_Limit", {"EDGE": bad})
+
+    with pytest.raises(ValueError, match="non-finite float at \\$\\.limit"):
+        json_dumpb({"limit": limit.EDGE})
+
+
+def test_numpy_array_rejects_non_finite():
+    np = pytest.importorskip("numpy")
+
+    with pytest.raises(ValueError, match="non-finite float at \\$\\[1\\]"):
+        json_dumpb(np.array([1.0, float("nan")]), options=orjson.OPT_SERIALIZE_NUMPY)
+
+
+def test_numpy_multidimensional_array_reports_its_index():
+    np = pytest.importorskip("numpy")
+
+    with pytest.raises(ValueError, match="\\$\\.grid\\[1\\]\\[1\\]"):
+        json_dumpb(
+            {"grid": np.array([[1.0, 2.0], [3.0, float("inf")]])},
+            options=orjson.OPT_SERIALIZE_NUMPY,
+        )
+
+
+@pytest.mark.parametrize("dtype_name", ["float16", "float32", "float64"])
+def test_numpy_scalar_rejects_non_finite(dtype_name):
+    np = pytest.importorskip("numpy")
+    scalar = np.dtype(dtype_name).type(float("inf"))
+
+    with pytest.raises(ValueError, match="non-finite float at \\$\\.v"):
+        json_dumpb({"v": scalar}, options=orjson.OPT_SERIALIZE_NUMPY)
+
+
+def test_finite_numpy_arrays_still_serialize():
+    np = pytest.importorskip("numpy")
+    opt = orjson.OPT_SERIALIZE_NUMPY
+
+    assert json_dumpb(np.array([1.0, 2.5]), options=opt) == b"[1.0,2.5]"
+    # Integer and boolean dtypes cannot be non-finite and must not be probed.
+    assert json_dumpb(np.array([1, 2]), options=opt) == b"[1,2]"
+    assert json_dumpb(np.array([True, False]), options=opt) == b"[true,false]"
+
+
+def test_dataclass_under_passthrough_follows_the_default_hook():
+    """OPT_PASSTHROUGH_DATACLASS routes dataclasses to default(), so the walk must too."""
+
+    @dataclasses.dataclass
+    class Measurement:
+        value: float
+
+    with pytest.raises(ValueError, match="non-finite float at \\$\\.value"):
+        json_dumpb(
+            Measurement(float("inf")),
+            default=lambda o: {"value": o.value},
+            options=orjson.OPT_PASSTHROUGH_DATACLASS,
+        )
