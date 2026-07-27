@@ -423,11 +423,13 @@ def _validate_columns(fields: dict[str, Any], allowed: frozenset[str]) -> None:
 
 
 def _to_json_column(value: Any) -> Any:
-    """Serialize value to JSON string for round-trippable storage.
+    """Serialize value to a JSON string for a TEXT column holding JSON.
 
-    Raises ValueError on inf, -inf or nan rather than storing them: JSON writes
-    them as `null`, and a row that has been written cannot afterwards be told
-    apart from one that always held a null there.
+    Columns bound as ``type_=JSON`` are serialized by the engine instead; this
+    is for the writes that hand the driver a finished string. Both reject inf,
+    -inf and nan rather than storing them, because neither the `null` orjson
+    writes nor the bare `NaN` the stdlib writes can be read back as the value
+    that was handed in.
     """
     if value is None or isinstance(value, bytes | bytearray | memoryview):
         return value
@@ -1887,7 +1889,11 @@ class StateDB:
                     "INSERT INTO progressions (id, created_at, collection) VALUES (:id, :ca, :col) "
                     "ON CONFLICT (id) DO NOTHING"
                 ),
-                {"id": progression_id, "ca": time.time(), "col": json.dumps(collection or [])},
+                {
+                    "id": progression_id,
+                    "ca": time.time(),
+                    "col": _to_json_column(collection or []),
+                },
             )
 
     async def get_progression(self, progression_id: str) -> list[str]:
