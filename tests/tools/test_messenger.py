@@ -487,9 +487,16 @@ class TestMessengerWakeupDescription:
         assert [e["target"] for e in events] == ["alice"], "only the first name is woken"
         assert len(branch._included) == 1, "bob gets no message"
 
-        field_desc = MessengerRequest.model_fields["to"].description
-        assert "first name is woken" in field_desc
-        assert "the rest are ignored" in field_desc
-        doc = tool.func_callable.__doc__
-        assert "first name is woken" in doc
-        assert "the rest are ignored" in doc
+        # Read the generated schema, not the source strings it is built from:
+        # what the model acts on is the schema, and a generation regression
+        # leaves the sources correct while the model is told nothing.
+        function = tool.tool_schema["function"]
+        to_desc = function["parameters"]["properties"]["to"]["description"]
+        func_desc = function["description"]
+
+        # Claim 1 — a list wakes its first name.
+        assert "first name is woken" in to_desc
+        assert "takes one name" in func_desc
+        # Claim 2 — the names after the first are dropped, not woken too.
+        assert "the rest are ignored" in to_desc
+        assert "rest are ignored" in func_desc

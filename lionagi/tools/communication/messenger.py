@@ -137,7 +137,13 @@ class LionMessenger(LionTool):
             content: str = None,
             urgency: str = None,
         ) -> str:
-            """Send messages to teammates, receive pending ones, signal
+            """Team messaging and signals. 'wakeup' takes one name; a list's rest are ignored.
+
+            Only the summary line above is extracted into the generated tool
+            description, so the recipient rule a caller would otherwise be
+            surprised by is stated there rather than below.
+
+            Send messages to teammates, receive pending ones, signal
             done/finished, wake a teammate, or send a help signal. action in
             {'send', 'receive', 'done', 'finished', 'wakeup', 'help'}; to and
             content are required for send/wakeup — 'send' takes a name or a

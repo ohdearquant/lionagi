@@ -4,6 +4,7 @@
 """Tests for BashTool: request model, response model, execution, security."""
 
 import asyncio
+import sys
 
 import pytest
 from pydantic import ValidationError
@@ -387,16 +388,46 @@ async def test_bash_tool_timeout_invalid_pid_calls_kill_not_killpg(monkeypatch, 
 # ---------------------------------------------------------------------------
 
 
-async def test_docstring_recovery_advice_is_executable():
+async def test_docstring_recovery_advice_is_executable(tmp_path):
     """Advice the tool gives for oversized output must survive its own guard.
 
-    The command guard rejects shell redirection, so telling the caller to
-    redirect large output into a file would hand it an unusable remedy.
+    Two halves, so advice and guard cannot drift apart in either direction:
+    the remedy the guard rejects is neither advised nor runnable, and each
+    remedy the advice does name is run here through the guard that would have
+    to accept it. The assertions pin which remedy is recommended, not the
+    sentence recommending it — a reworded docstring keeping the same two
+    remedies still passes.
     """
     tool = BashTool()
-
-    resp = await tool.handle_request(BashRequest(command="echo x > /tmp/lionagi_doc_check"))
-    assert resp.return_code == -1, "redirection is expected to be rejected"
-
     doc = tool.to_tool().func_callable.__doc__
+
+    # The rejected remedy: not advised, and demonstrably unusable.
+    resp = await tool.handle_request(BashRequest(command=f"echo x > {tmp_path / 'redirected.txt'}"))
+    assert resp.return_code == -1, "redirection is expected to be rejected"
     assert "redirect to a file" not in doc
+
+    # Remedy 1 — narrow what the command prints. Named, and a narrowed command runs.
+    assert "narrow" in doc, "advice must name narrowing the command's own output"
+    noisy = tmp_path / "noisy.txt"
+    noisy.write_text("line\n" * 200)
+    resp = await tool.handle_request(BashRequest(command=f"head -n 1 {noisy}"))
+    assert resp.return_code == 0, resp.stderr
+    assert resp.stdout.strip() == "line"
+
+    # Remedy 2 — let the program write its own file, then read it with the
+    # reader tool. Named, and an --output style invocation runs.
+    assert "--output" in doc, "advice must name the program's own output flag"
+    assert "reader tool" in doc, "advice must name what reads the file back"
+    writer = tmp_path / "writer.py"
+    writer.write_text(
+        "import sys\n"
+        "out = sys.argv[sys.argv.index('--output') + 1]\n"
+        "open(out, 'w').write('generated\\n')\n"
+    )
+    produced = tmp_path / "produced.txt"
+    resp = await tool.handle_request(
+        BashRequest(command=f"{sys.executable} {writer} --output {produced}")
+    )
+    assert resp.return_code == 0, resp.stderr
+    assert produced.read_text() == "generated\n"
+    assert resp.stdout == "", "the remedy only helps if the bulk never comes back as output"
