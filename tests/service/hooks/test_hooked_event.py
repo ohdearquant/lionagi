@@ -10,6 +10,7 @@ import anyio
 import pytest
 
 from lionagi.protocols.types import EventStatus
+from lionagi.service.hooks import hooked_event
 from lionagi.service.hooks._types import StreamTerminalState
 from lionagi.service.hooks.hooked_event import HookedEvent
 
@@ -398,6 +399,35 @@ async def test_stream_terminal_state_is_completed_on_exhaustion():
     assert chunks == ["chunk1", "chunk2"]
     assert seen == [StreamTerminalState.Completed]
     assert h.stream_terminal_state is StreamTerminalState.Completed
+
+
+@pytest.mark.asyncio
+async def test_stream_teardown_does_not_block_the_close_indefinitely(monkeypatch, caplog):
+    """Teardown runs on the close path, but a slow hook must not hold the close open."""
+    monkeypatch.setattr(hooked_event, "POST_STREAM_TEARDOWN_GRACE", 0.1)
+
+    class SlowPostHook:
+        execution = SimpleNamespace(status=EventStatus.COMPLETED, error=None)
+        _should_exit = False
+        _exit_cause = None
+
+        async def invoke(self):
+            await anyio.sleep(30)
+
+    h = SimpleHooked()
+    h._post_invoke_hook_event = SlowPostHook()
+
+    stream = h._stream()
+    async for _ in stream:
+        break
+
+    started = anyio.current_time()
+    with caplog.at_level("WARNING", logger="lionagi.service.hooks.hooked_event"):
+        await stream.aclose()
+    elapsed = anyio.current_time() - started
+
+    assert elapsed < 5, f"close waited {elapsed}s on a hook it should have given up on"
+    assert any("did not finish within" in r.message for r in caplog.records)
 
 
 @pytest.mark.asyncio
