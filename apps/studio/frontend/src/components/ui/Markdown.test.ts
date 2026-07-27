@@ -72,3 +72,32 @@ describe("Markdown.tsx — file-link resolution wiring", () => {
     expect(SRC).toMatch(/knownFiles: fileContext\.knownFiles/);
   });
 });
+
+describe("Markdown.tsx — the file viewer renders markdown as markdown", () => {
+  it("decides by file extension, accepting .md and .markdown case-insensitively", () => {
+    expect(SRC).toMatch(/const isMarkdown = \/\\\.\(md\|markdown\)\$\/i\.test\(path\)/);
+  });
+
+  it("routes a markdown file through the Markdown renderer rather than a <pre>", () => {
+    expect(SRC).toMatch(/isMarkdown \?/);
+    expect(SRC).toMatch(/<Markdown>\{state\.content\}<\/Markdown>/);
+  });
+
+  it("keeps the verbatim <pre> path for every non-markdown file", () => {
+    // The <pre> must survive as the else-branch: source files, logs and JSON
+    // are read as source, and reflowing them would corrupt what they show.
+    expect(SRC).toMatch(/<pre className="whitespace-pre-wrap break-words font-mono/);
+  });
+
+  it("renders the previewed document WITHOUT a fileContext, so a viewer cannot stack on itself", () => {
+    // <Markdown> with no fileContext prop yields components=undefined, so the
+    // nested render wires no FileRef handlers and mounts no second modal.
+    // A bare <Markdown> tag (no props) is the whole guard — assert it stays bare.
+    expect(SRC).toMatch(/<Markdown>\{state\.content\}<\/Markdown>/);
+    expect(SRC).not.toMatch(/<Markdown[^>]+fileContext/);
+  });
+
+  it("gives a rendered document more width than raw source, since tables need it", () => {
+    expect(SRC).toMatch(/maxWidth=\{isMarkdown \? "max-w-4xl" : "max-w-2xl"\}/);
+  });
+});
