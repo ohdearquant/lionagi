@@ -8,6 +8,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -96,20 +97,67 @@ def available_roles() -> list[str]:
     return sorted(set(list_roles()) | set(list_agents()))
 
 
+def _first_sentence(text: str) -> str:
+    """Opening sentence of ``text``, truncated so one role cannot crowd out
+    the roster."""
+    first = text.split(". ", 1)[0].strip()
+    return (first[:160] + "…") if len(first) > 161 else first
+
+
+_MISSION_LABEL = re.compile(r"^\*\*mission\*\*\s*:?\s*", re.IGNORECASE)
+_MARKDOWN_FURNITURE = re.compile(r"^(#|-{3,}|\||>|```|`[^`]*`$)")
+
+
+def _profile_summary(profile: AgentProfile) -> str:
+    """One line describing what a user profile is for.
+
+    Profiles state their purpose on a ``**Mission**:`` line; when a file has
+    none, its first paragraph of prose is the next best summary.
+
+    Only the authored body is read. ``system_prompt`` also carries the shared
+    LION preamble, which every profile has and none of them is about.
+    """
+    body = profile.raw_body or ""
+    paragraphs = [
+        " ".join(line.strip() for line in block.splitlines() if line.strip())
+        for block in re.split(r"\n\s*\n", body)
+    ]
+    paragraphs = [p for p in paragraphs if p]
+    for p in paragraphs:
+        if _MISSION_LABEL.match(p):
+            return _MISSION_LABEL.sub("", p).strip(" `*")
+    prose = (p for p in paragraphs if not _MARKDOWN_FURNITURE.match(p))
+    return next(prose, "").strip(" `*")
+
+
 def _role_blurb(role: str, default_model: str) -> str:
+    """Roster line body: what the role is for, and what it will run on.
+
+    The description has to match the body that will actually run, or the roster
+    describes one thing while the worker does another. A profile with an
+    authored body replaces the built-in role body, so for those the profile's
+    own summary is the accurate description. A profile that only sets fields
+    like a model authors no body, leaves the built-in composing, and is
+    described by the built-in — the same authored-body signal decides both.
+    """
     try:
-        p = load_agent_profile(role)
-        return f"user profile (model: {p.model or default_model})"
+        profile = load_agent_profile(role)
     except FileNotFoundError:
-        pass
+        profile = None
+
     from lionagi.casts.pattern import Role
 
-    try:
-        desc = Role.load(role).description
-    except ValueError:
-        return ""
-    first = desc.split(". ", 1)[0].strip()
-    return (first[:160] + "…") if len(first) > 161 else first
+    summary = _first_sentence(_profile_summary(profile)) if profile is not None else ""
+    if not summary:
+        try:
+            summary = _first_sentence(Role.load(role).description)
+        except ValueError:
+            summary = ""
+
+    if profile is None:
+        return summary
+    model = f"(model: {profile.model or default_model})"
+    return f"{summary} {model}" if summary else f"user profile {model}"
 
 
 def role_roster(default_model: str) -> str:
@@ -706,11 +754,13 @@ async def build_worker_branch(
     )
 
     # Casts-role workers route through the factory; verbatim-prompt workers set
-    # the string directly (no Role to compose from).
+    # the string directly (no Role to compose from). A profile takes the
+    # verbatim path only when it authored a body — one that just sets a model
+    # or an effort has no body to run, and leaves the role composing as usual.
     verbatim_system: str | None = None
     if system_prompt_override is not None:
         verbatim_system = system_prompt_override
-    elif not env.bare and w_profile and w_profile.system_prompt:
+    elif not env.bare and w_profile and w_profile.raw_body:
         verbatim_system = w_profile.system_prompt
     elif env.bare or not _is_casts_role(role):
         verbatim_system = bare_worker_system(grant_spawn=grant_spawn)
