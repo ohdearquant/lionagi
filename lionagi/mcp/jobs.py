@@ -1346,19 +1346,20 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
     pgid = job.get("pgid")
     if not isinstance(created, int | float) or not isinstance(pgid, int) or pgid <= 1:
         return _refuse_legacy_record(run_id, pid)
-    spawned_at = float(created)
-    # A NaN or an infinity passes every type and range check above and then loses
-    # silently to every comparison below: a NaN start time is never within
-    # tolerance of a live one, so the leader would be reported as a recycled pid.
-    # That names the wrong fact — nothing was established about the pid at all,
-    # only that this record cannot say anything about it.
-    if not math.isfinite(spawned_at):
+    # Two values reach here that look like numbers and cannot act as one. A NaN or
+    # an infinity passes every type and range check above and then loses silently to
+    # every comparison below, so the leader would be reported as a recycled pid. A
+    # boolean is an int as far as isinstance is concerned, so a start time of `true`
+    # arrives as 1.0 — a moment in 1970 — and mismatches the same way. Both name the
+    # wrong fact: nothing was established about the pid at all, only that this record
+    # cannot say anything about it.
+    if isinstance(created, bool) or not math.isfinite(float(created)):
         return _kill_result(
             run_id,
             killed=False,
             reason=(
-                f"the start time recorded for pid {pid} is {spawned_at}, which nothing "
-                "can be compared against, so this record cannot identify its own "
+                f"the start time recorded for pid {pid} is {created!r}, which no start "
+                "time can be compared against, so this record cannot identify its own "
                 "process and nothing was signalled; reap the group by hand after "
                 "confirming the process is this run's"
             ),
@@ -1366,6 +1367,7 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
             pid=pid,
             pgid=pgid,
         )
+    spawned_at = float(created)
 
     if _pid_alive(pid):
         state, live_created = _process_create_time(pid)

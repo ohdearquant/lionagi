@@ -781,17 +781,19 @@ def test_kill_refuses_a_record_that_cannot_confirm_an_identity(
     assert jobs._read_job(rid)["status"] == "running", "a refusal changes no recorded status"
 
 
-@pytest.mark.parametrize("created", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("created", [float("nan"), float("inf"), float("-inf"), True, False])
 def test_kill_refuses_a_record_whose_start_time_cannot_be_compared(
     sandbox, monkeypatch, no_stray_signal, created
 ):
-    """A start time that is not a real number says nothing about the pid.
+    """A start time that cannot act as one says nothing about the pid.
 
-    It is a float, so it passes the type check, and then loses every comparison
-    below it: a NaN is never within tolerance of a live start time, so the leader
-    would be reported as a reused pid. That is the wrong fact — nothing has been
-    established about the pid at all, only that the record cannot describe it. The
-    refusal is the same, but the code and the reason must not claim otherwise.
+    Each of these satisfies the type check and then loses every comparison below
+    it. A NaN is never within tolerance of a live start time. A boolean is an int
+    to isinstance, so ``true`` becomes 1.0 and compares as a moment in 1970. Either
+    way the leader would be reported as a reused pid, and that is the wrong fact —
+    nothing has been established about the pid at all, only that the record cannot
+    describe it. The refusal is the same, but the code and the reason must not
+    claim otherwise.
     """
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: pytest.fail("pid must not be probed"))
 
