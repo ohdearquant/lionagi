@@ -9,8 +9,6 @@ import asyncio
 import threading
 import time
 
-import pytest
-
 from lionagi.protocols.generic.element import Element
 from lionagi.protocols.generic.pile import Pile
 
@@ -228,24 +226,38 @@ async def test_async_with_block_excludes_sync_thread():
 async def test_adump_snapshot_excludes_sync_thread_mutation(tmp_path):
     # While adump holds its snapshot region, a sync-thread include() must not
     # interleave; it lands only after the region releases.
-    pytest.importorskip("pandas", reason="adump serializes through the optional pandas adapter")
+    #
+    # The slow call has to be one adump actually makes under the lock for this
+    # obj_key. The json path builds its records with _ordered_records() and
+    # never touches to_df, which only the parquet path calls.
     pile = Pile()
     pile.include([_Item() for _ in range(3)])
 
     in_snapshot = threading.Event()
-    real_to_df = pile.to_df
+    include_issued = threading.Event()
+    real_ordered_records = pile._ordered_records
+    snapshot_sizes: list[int] = []
 
-    def slow_to_df(*a, **kw):
+    def slow_ordered_records(*a, **kw):
         in_snapshot.set()
-        time.sleep(0.3)
-        return real_to_df(*a, **kw)
+        # Hand off rather than budget an interval for the other thread to
+        # start: a loaded machine must not be able to turn this into a pass
+        # that exercised nothing. The short sleep that remains only lets an
+        # already-running thread reach the lock, and can weaken the exercise,
+        # never fail it.
+        assert include_issued.wait(10), "includer thread never issued include()"
+        time.sleep(0.05)
+        records = real_ordered_records(*a, **kw)
+        snapshot_sizes.append(len(records))
+        return records
 
-    object.__setattr__(pile, "to_df", slow_to_df)
+    object.__setattr__(pile, "_ordered_records", slow_ordered_records)
 
     included: list = []
 
     def includer():
-        in_snapshot.wait(5)
+        assert in_snapshot.wait(10), "adump never entered its snapshot region"
+        include_issued.set()
         pile.include(_Item())
         included.append(True)
 
@@ -254,6 +266,10 @@ async def test_adump_snapshot_excludes_sync_thread_mutation(tmp_path):
     await pile.adump(tmp_path / "dump.json", obj_key="json")
     t.join(5)
 
+    # The exclusion itself, asserted on content rather than on a clock: the
+    # include was already waiting when the region opened, so a snapshot that
+    # still sees three records is one no mutation interleaved with.
+    assert snapshot_sizes == [3]
     assert included, "sync include must eventually complete after adump releases"
     assert len(pile) == 4
 
