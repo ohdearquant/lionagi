@@ -91,11 +91,13 @@ def parse_orchestrator_provider(model_spec: str) -> tuple[str | None, str | None
 
 
 def _role_key(name: str) -> str:
-    """The name a role is known by regardless of which separator it is spelled with.
+    """A name reduced to the separator-independent form the loaders key on.
 
-    ``-`` and ``_`` are interchangeable in a profile name, so both spellings
-    resolve to one profile and one built-in role module. Keying on that makes
-    the roster agree with the loaders instead of listing one role twice.
+    Both spellings reach one built-in role module, so this is what decides
+    whether a profile names a built-in. It is not a claim that two spellings are
+    always one profile: when both files exist, profile resolution gives the exact
+    spelling priority and they are two profiles. ``available_roles`` handles that
+    case separately.
     """
     return name.replace("-", "_")
 
