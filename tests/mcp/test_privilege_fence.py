@@ -214,7 +214,26 @@ def test_a_flag_value_that_looks_like_a_switch_stays_a_value(monkeypatch):
         return {"run_id": "rid"}
 
     monkeypatch.setattr(jobs, "submit", fake_submit)
-    call(ops=[spawn_op("agent.submit", {"query": ["hi"], "cwd": "--machine"})])
-    assert "--cwd=--machine" in seen["flags"]
+    # A profile name rather than a working directory: a cwd is checked against
+    # the filesystem before anything is rendered, so it can no longer carry an
+    # arbitrary string and would test the binding on a value that cannot arrive.
+    # This one is free text all the way to argv, which is where the binding has
+    # to hold.
+    call(ops=[spawn_op("agent.submit", {"query": ["hi"], "agent": "--machine"})])
+    assert "--agent=--machine" in seen["flags"]
     assert "--machine" not in seen["flags"]
     assert not machine.has_machine_flag(seen["flags"])
+
+
+def test_a_working_directory_that_looks_like_a_switch_never_reaches_argv(monkeypatch):
+    """The same fence, one step earlier. A cwd has to name a directory that is
+    there, and a switch is not one, so the value is refused before argv exists
+    rather than bound safely inside it."""
+    spawned: list = []
+
+    monkeypatch.setattr(jobs, "submit", lambda *a, **kw: spawned.append(kw) or {"run_id": "rid"})
+    answer = call(ops=[spawn_op("agent.submit", {"query": ["hi"], "cwd": "--machine"})])
+
+    assert answer["ops"][0]["ok"] is False
+    assert answer["ops"][0]["error"]["kind"] == "invalid_input"
+    assert spawned == []

@@ -102,6 +102,9 @@ def test_command_override_substitutes_and_delivers(job, monkeypatch):
         "ok": True,
         "exit_code": 0,
         "error": None,
+        # named from the configured template, so the record says which notifier
+        # this was without keeping anything the command itself printed
+        "command": "notify",
     }
 
 
@@ -117,6 +120,7 @@ def test_delivery_failure_is_recorded_not_silent(job, monkeypatch):
         "ok": False,
         "exit_code": 7,
         "error": None,
+        "command": "notify",
     }
 
 
@@ -427,3 +431,107 @@ def test_an_unwritable_log_does_not_break_the_terminal_path(job, monkeypatch):
 
     assert rc == 0
     assert jobs._read_job(job)["notify_delivery"]["ok"] is False
+
+
+def test_the_record_names_which_notifier_failed(job, monkeypatch):
+    """A failed delivery says which notifier it was, without keeping its output.
+
+    The exit code alone says a delivery failed; on a host with more than one
+    notifier configured over time it does not say which. The program name is
+    operator configuration, already readable by whoever wrote it, so naming it
+    costs nothing the command's own output would have cost.
+    """
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(3))
+
+    command = json.dumps(["notify-webhook", "--status", "{status}"])
+    rc = _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+
+    assert rc == 0
+    outcome = jobs._read_job(job)["notify_delivery"]
+    assert outcome["command"] == "notify-webhook"
+    assert outcome["exit_code"] == 3 and outcome["error"] is None
+
+
+def test_the_named_program_is_the_configured_token_not_the_substituted_one(job, monkeypatch):
+    """The name comes from the template, so no run field can reach the record.
+
+    Substitution puts run fields into the argv that is spawned. Taking the name
+    from the template instead means what lands on the record is exactly the token
+    an operator wrote in their settings, whatever the run was called.
+    """
+    spawned: list = []
+    monkeypatch.setattr(
+        _notify_hook.subprocess,
+        "run",
+        lambda argv, **_k: spawned.append(argv) or _FakeCompleted(1),
+    )
+
+    command = json.dumps(["notify-{status}"])
+    rc = _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+
+    assert rc == 0
+    assert spawned == [["notify-completed"]]  # the run's field reached the argv
+    assert jobs._read_job(job)["notify_delivery"]["command"] == "notify-{status}"
+
+
+def test_a_notifier_that_never_started_stays_tellable_from_one_that_ran(job, monkeypatch):
+    """Naming the program must not blur the two ways a delivery fails.
+
+    "the notifier is not there" and "the notifier ran and rejected this" send an
+    operator to different places, and the record has always told them apart by
+    which of exit_code / error is filled in. Adding the name leaves that intact.
+    """
+    command = json.dumps(["notify-webhook", "{status}"])
+
+    def _boom(*_a, **_k):
+        raise OSError("no such command")
+
+    monkeypatch.setattr(_notify_hook.subprocess, "run", _boom)
+    _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+    never_started = jobs._read_job(job)["notify_delivery"]
+
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(3))
+    _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+    ran_and_failed = jobs._read_job(job)["notify_delivery"]
+
+    assert never_started["command"] == ran_and_failed["command"] == "notify-webhook"
+    assert never_started["exit_code"] is None and never_started["error"] == "OSError"
+    assert ran_and_failed["exit_code"] == 3 and ran_and_failed["error"] is None
+
+
+def test_a_configuration_with_no_program_in_it_names_none(job, monkeypatch):
+    """An override that never parsed has no program, and none is invented."""
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(0))
+    _no_settings_notifier(monkeypatch)
+
+    rc = _notify_hook.main(["--run-id", job, "--status", "completed", "--command", "not json ["])
+
+    assert rc == 0
+    outcome = jobs._read_job(job)["notify_delivery"]
+    assert outcome["error"] == "delivery_command_is_not_valid_json"
+    assert outcome["command"] is None
+
+
+def test_the_delivery_commands_own_output_is_still_never_kept(job, monkeypatch):
+    """Naming the program changes nothing about what the command may say.
+
+    Its stdout and stderr are free text that can carry a credential the command
+    obtained anywhere, so the child inherits DEVNULL and the record holds only
+    fields this hook chose. Asserted here because the name is the boundary: it
+    is configuration, and everything on the far side of it stays discarded.
+    """
+    seen: dict = {}
+
+    def _run(argv, **kwargs):
+        seen.update(kwargs)
+        return _FakeCompleted(4)
+
+    monkeypatch.setattr(_notify_hook.subprocess, "run", _run)
+
+    command = json.dumps(["notify-webhook"])
+    _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+
+    assert seen["stdout"] is _notify_hook.subprocess.DEVNULL
+    assert seen["stderr"] is _notify_hook.subprocess.DEVNULL
+    outcome = jobs._read_job(job)["notify_delivery"]
+    assert set(outcome) == {"attempted", "ok", "exit_code", "error", "command"}

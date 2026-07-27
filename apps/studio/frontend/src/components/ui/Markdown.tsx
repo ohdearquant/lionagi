@@ -158,12 +158,17 @@ function FileViewerModal({
     };
   }, [runId, path]);
 
+  // Agents write their reports as markdown, so a .md preview showing raw source
+  // makes the reader parse tables and headings by eye. Render it. Anything else
+  // stays verbatim in a <pre>, where source is the point.
+  const isMarkdown = /\.(md|markdown)$/i.test(path);
+
   return (
     <Modal
       title={path.split("/").pop() ?? path}
       closeLabel="Close file viewer"
       onClose={onClose}
-      maxWidth="max-w-2xl"
+      maxWidth={isMarkdown ? "max-w-4xl" : "max-w-2xl"}
     >
       <div className="max-h-[70vh] overflow-auto p-4">
         {state.status === "loading" && <p className="text-body text-content-muted">Loading…</p>}
@@ -181,9 +186,16 @@ function FileViewerModal({
         )}
         {state.status === "ready" && (
           <>
-            <pre className="whitespace-pre-wrap break-words font-mono text-[length:var(--t-xs)] leading-relaxed text-content-secondary">
-              {state.content}
-            </pre>
+            {isMarkdown ? (
+              // Deliberately rendered without a fileContext: a document being
+              // previewed must not turn its own filename mentions into links
+              // that stack another viewer on top of this one.
+              <Markdown>{state.content}</Markdown>
+            ) : (
+              <pre className="whitespace-pre-wrap break-words font-mono text-[length:var(--t-xs)] leading-relaxed text-content-secondary">
+                {state.content}
+              </pre>
+            )}
             {state.truncated && (
               <p className="mt-2 text-meta text-content-muted">
                 File truncated — showing the first portion only.

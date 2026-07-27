@@ -46,6 +46,9 @@ export interface ArtifactVerification {
   missing_required: ExpectedArtifact[];
   missing_optional: ExpectedArtifact[];
   produced: ProducedArtifact[];
+  /** A reading taken while the run is still going, rather than the recorded
+   *  verdict it was judged on. Artifacts may still appear. */
+  provisional?: boolean;
 }
 
 // ─── Run types ───────────────────────────────────────────────────────────────

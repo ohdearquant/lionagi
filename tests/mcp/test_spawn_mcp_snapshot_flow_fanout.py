@@ -156,7 +156,10 @@ def test_a_caller_who_names_a_config_gets_that_config_and_a_handle_that_says_so(
     chosen.write_text(json.dumps({"mcpServers": {"mine": {"command": "m"}}}))
 
     captured = _capture_popen(monkeypatch)
-    handle = _spawn(verb, {"prompt": "hi", "mcp_config": str(chosen), "cwd": str(submit_dir)})
+    handle = _spawn(
+        verb,
+        {"query": ["a-model"], "prompt": "hi", "mcp_config": str(chosen), "cwd": str(submit_dir)},
+    )
 
     child_sees = _child_config(captured["argv"])
     assert child_sees == str(chosen)
@@ -179,7 +182,9 @@ def test_a_caller_who_asks_for_no_servers_is_not_handed_a_snapshot(
     (submit_dir / ".mcp.json").write_text(json.dumps({"mcpServers": {"ambient": {"command": "a"}}}))
 
     captured = _capture_popen(monkeypatch)
-    handle = _spawn(verb, {"prompt": "hi", "no_mcp_config": True, "cwd": str(submit_dir)})
+    handle = _spawn(
+        verb, {"query": ["a-model"], "prompt": "hi", "no_mcp_config": True, "cwd": str(submit_dir)}
+    )
 
     assert _child_config(captured["argv"]) is None
     assert handle["mcp_config"] is None
@@ -197,7 +202,7 @@ def test_the_snapshot_is_reported_when_the_caller_says_nothing(
     (submit_dir / ".mcp.json").write_text(json.dumps({"mcpServers": {"ambient": {"command": "a"}}}))
 
     captured = _capture_popen(monkeypatch)
-    handle = _spawn(verb, {"prompt": "hi", "cwd": str(submit_dir)})
+    handle = _spawn(verb, {"query": ["a-model"], "prompt": "hi", "cwd": str(submit_dir)})
 
     snapshot = config.job_dir(handle["run_id"]) / "mcp-servers.json"
     assert _child_config(captured["argv"]) == str(snapshot)
