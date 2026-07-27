@@ -501,6 +501,60 @@ def test_an_unknown_field_is_refused_by_name(roots):
     assert "resolved.model" in result["error"]["message"]
 
 
+def test_the_unprojected_placement_is_narrower_than_the_projected_one(roots):
+    """The same key, two shapes, pinned side by side under one roster.
+
+    Both calls describe the same two files. Omitting ``fields`` gives each of
+    them as a path and a scope; naming ``source`` and ``shadowed`` adds ``match``
+    to both, and ``ambiguous`` exists on the projected reply and nowhere else.
+    Which shape a caller gets is decided by whether they asked, so the two are
+    pinned together rather than apart — that is the part a caller has to be able
+    to predict, and the part the schema text has to describe.
+    """
+    project = write_profile(roots.proj, "reviewer", "---\nmodel: project-model\n---\nproject\n")
+    global_ = write_profile(roots.glob, "reviewer", "---\nmodel: global-model\n---\nglobal\n")
+
+    plain = op("profile.list")["result"]["profiles"][0]
+    asked = op("profile.list", {"fields": ["source", "shadowed", "ambiguous"]})["result"][
+        "profiles"
+    ][0]
+
+    assert plain["source"] == {"path": str(project), "scope": "project"}
+    assert plain["shadowed"] == [{"path": str(global_), "scope": "global"}]
+    assert "ambiguous" not in plain
+
+    assert asked["source"] == {"path": str(project), "scope": "project", "match": "exact"}
+    assert asked["shadowed"] == [
+        {"path": str(global_), "scope": "global", "match": "exact"},
+    ]
+    assert asked["ambiguous"] == []
+
+
+def test_the_fields_description_says_what_omitting_it_returns(roots):
+    """Read from the schema the server serves, against a reply it really produced.
+
+    A caller sizing a call reads this text and nothing else, so it has to name
+    the keys an unprojected reply carries and say that naming a placement field
+    widens that reply rather than narrowing it. Asserting against the served
+    schema rather than against a copy of the string keeps the two from drifting;
+    asserting the key names against a real reply keeps the text from going stale
+    when the reply gains a key.
+    """
+    write_profile(roots.proj, "builder", "---\nmodel: m\n---\nbody\n")
+
+    described = call(help="profile.list")["schema"]["properties"]["fields"]["description"]
+    entry = op("profile.list")["result"]["profiles"][0]
+
+    for key in entry:
+        assert f"'{key}'" in described, key
+    # The two ways a projected placement field is wider than an unprojected one.
+    assert "'match'" in described
+    assert "'ambiguous'" in described
+    # Omitting the parameter returns the narrower placement, so no reading of
+    # this text may promise that omitting it returns more.
+    assert "full record" not in described
+
+
 def test_names_and_fields_narrow_the_same_reply_together(roots):
     write_profile(roots.glob, "archivist", "---\nmodel: a\n---\nbody\n")
     write_profile(roots.proj, "builder", "---\nmodel: b\n---\nbody\n")
