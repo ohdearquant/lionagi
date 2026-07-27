@@ -3,13 +3,45 @@
 - **Status**: Accepted
 - **Kind**: Aspirational
 - **Area**: cli-surface
-- **Date**: 2026-07-24 (amended 2026-07-25 twice — D1, D2, D3 and D7, see Amendment history)
+- **Date**: 2026-07-24 (amended 2026-07-25 twice — D1, D2, D3 and D7; amended 2026-07-27 —
+  D6, see Amendment history)
 - **Relations**: builds on ADR-0095 (run-terminal callbacks — the `notify.on_terminal`
   layer the MCP submits ride) and ADR-0104 (`li kill` transitive play reaping and
   terminal-notify on kill, whose semantics the kill verb must inherit rather than
   re-implement); none superseded
 
 ## Amendment history
+
+**2026-07-27 — Amendment 3: D6 states four things it previously left to the reader.** All
+four were already true of the implementation and none was findable in this document, which
+is the whole problem: a decision that lives only in code is not a decision anyone can build
+against, and each of these had a consumer reading the silence a different way.
+
+1. **Every entry carries `outcome` beside `terminal`.** The original enumeration named kind,
+   status, terminality and reason code. A caller given only those has to map an open status
+   vocabulary onto success and failure itself, which is the copy of our status names that
+   this surface exists to make unnecessary.
+2. **Observing does not touch the run.** D6 said nothing about signals or disconnects, so
+   "cancel the wait" and "cancel the work" were indistinguishable from the document. They
+   are different operations and always were.
+3. **The result partitions the observed ids.** D6 named the pending list without saying
+   which ids qualify for it. That silence was read three different ways in one review round,
+   which is how a reader-derived rule announces that it needs writing down. The partition is
+   now stated outright.
+4. **A call carries a minimum duration when an id resolves nothing by waiting.** This is
+   caller-visible timing, so leaving it unstated recreates the same silence one level down:
+   a client measuring a call that returned in one poll interval rather than immediately had
+   no document that explained it. Stated as a floor, with the two cases that do not pay it.
+
+The third is the one worth flagging for anyone tracing history: it is a *definition* of
+something this document left open, not a reversal. An implementation that put every
+non-terminal observed id in `pending` was conforming before this amendment. It is not
+conforming after it, and that is the point of amending rather than assuming.
+
+The same three rules are stated for the machine result contract in ADR-0106, which is
+Proposed at the time of writing. They are recorded here on their own merit and do not
+derive authority from it; where the two documents overlap they are meant to agree, and if
+they diverge this one governs the verb surface.
 
 **2026-07-25 — Accepted.** The status field is the authority on a document's stage and nothing
 infers acceptance from an edit, including an edit by the author of the decision. Recorded here
@@ -405,15 +437,49 @@ The default maximum sits conservatively below ordinary client timeouts; `0` is a
 snapshot request.
 
 **Every successful call returns one entry per requested id, in input order**, carrying that
-id's kind, status, whether it is terminal, and its reason code — plus `all_terminal`,
-`timed_out`, and the list of ids still pending. Returning a bare boolean is rejected: mixed
-outcomes (two children done, one failed, one running) are the normal case, and collapsing
-them forces an immediate follow-up poll that the call was supposed to replace.
+id's kind, label, status, whether it is `terminal`, its `outcome`, its `reason_code`, and
+whether its process is `possibly_orphaned` — plus `all_terminal`, `timed_out`, and the lists
+that account for the ids still unresolved. Every entry carries the same keys whether or not
+it also carries an `error`, so a caller reads one shape rather than two.
+Returning a bare boolean is rejected: mixed outcomes (two children done, one failed, one
+running) are the normal case, and collapsing them forces an immediate follow-up poll that
+the call was supposed to replace. `outcome` rides beside `terminal` rather than being left
+to the caller, because status is an open vocabulary: a caller deriving success from it needs
+a copy of our status names, and a copy goes stale silently in the direction of reading an
+unrecognised failure as a success.
+
+**The result partitions the observed ids, and the partition is exhaustive.** Every id that
+was observed without a per-id error is exactly one of: terminal; still `pending`, meaning
+further waiting can still change its answer; or in `stopped_without_end`, meaning its process
+is gone with no end recorded and waiting cannot. The three are disjoint and together cover
+every observed id, so a caller can hold a policy for each and know it has covered them all.
+An id that is not resolved and is not named anywhere is a defect in the implementation, not
+a caller's problem to infer: the duty to have a policy for an unresolved run is only
+dischargeable if every unresolved run arrives somewhere it can be read. A future
+non-terminal classification is therefore added to a list at the same time it is added to the
+classifier, never to the classifier alone.
+
+Because an id in `stopped_without_end` resolves nothing by waiting, a caller looping until
+`all_terminal` would otherwise re-ask as fast as it could send. So a call that would return
+without having waited at all, while at least one id is in that list, first waits one poll
+interval — bounded by whatever is left of the window — and observes again. This is a floor
+on the call rather than a charge added to it: a call that already waited on a running id has
+met it, and a snapshot request has no window to spend and pays nothing. Pacing sits here
+because the boundary applies it once for every client, where a documented duty to back off
+binds only the clients that read it.
 
 **Expiry is not an error.** A timed-out wait means the observation window closed, nothing
 more. It reports what was learned, so completed children are not discarded and a retry is
 safe. Unknown or ambiguous ids are per-id errors inside the result and never prevent the
-other ids from being observed.
+other ids from being observed. Those errors are a separate channel from the pending list and
+do not define it: they are for ids that could not be observed at all, so an id that *was*
+observed is placed by the partition above rather than by what the error channel excludes.
+
+**Observing does not touch the run.** A wait that expires, that is signalled, or whose caller
+disconnects leaves the durable record exactly as it was. Cancelling an observation is not
+cancelling the work, and no implementation may make the two the same operation — a caller
+that walks away from a bounded wait has said nothing about whether the work should continue,
+and the only safe reading of silence is that it should.
 
 **Lifecycle state is the single authority.** Terminal status and reason come from the same
 cross-kind resolver `li wait` uses, not from the MCP job sidecar. The sidecar is
