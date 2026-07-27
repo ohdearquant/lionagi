@@ -565,12 +565,31 @@ async def _vacuum() -> None:
         await db.vacuum()
 
 
+class _PreviewOnlyError(Exception):
+    """Signals the end of a preview so its transaction unwinds instead of committing.
+
+    A preview has to answer "how many rows would this free", and the only answer
+    that cannot drift from the real one is the real one. The preview therefore
+    runs the prune and then refuses to commit it, carrying the counts out with it.
+    """
+
+    def __init__(self, counts: dict[str, int]) -> None:
+        super().__init__("preview complete")
+        self.counts = counts
+
+
 async def _prune(
     *,
     keep_days: int,
     keep_n: int,
     dry_run: bool,
 ) -> dict[str, int]:
+    """Delete old sessions and the branches, progressions and messages they owned.
+
+    ``dry_run`` runs exactly the same statements and then rolls the transaction
+    back, so the reported counts are measurements of the prune rather than an
+    estimate of it.
+    """
     import time as _time
 
     from lionagi.state.db import StateDB
@@ -579,87 +598,136 @@ async def _prune(
 
     from sqlalchemy import text
 
+    counts = {"sessions": 0, "branches": 0, "messages": 0}
+
     async with StateDB() as db:
-        async with db._read() as conn:
-            rows = (
-                (
-                    await conn.execute(
-                        text(
-                            "SELECT id FROM sessions "
-                            "WHERE id NOT IN ("
-                            "  SELECT id FROM sessions ORDER BY updated_at DESC LIMIT :keep_n"
-                            ") AND (updated_at < :cutoff OR updated_at IS NULL)"
-                        ),
-                        {"keep_n": keep_n, "cutoff": cutoff},
+        try:
+            async with db._tx() as conn:
+                rows = (
+                    (
+                        await conn.execute(
+                            text(
+                                "SELECT id FROM sessions "
+                                "WHERE id NOT IN ("
+                                "  SELECT id FROM sessions ORDER BY updated_at DESC LIMIT :keep_n"
+                                ") AND (updated_at < :cutoff OR updated_at IS NULL)"
+                            ),
+                            {"keep_n": keep_n, "cutoff": cutoff},
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                victim_ids = [r["id"] for r in rows]
+
+                if not victim_ids:
+                    raise _PreviewOnlyError(counts)
+
+                placeholders = ",".join(f":v{i}" for i in range(len(victim_ids)))
+                id_params = {f"v{i}": vid for i, vid in enumerate(victim_ids)}
+
+                branch_count = (
+                    (
+                        await conn.execute(
+                            text(
+                                f"SELECT COUNT(*) AS n FROM branches "  # noqa: S608
+                                f"WHERE session_id IN ({placeholders})"
+                            ),
+                            id_params,
+                        )
+                    )
+                    .mappings()
+                    .first()["n"]
+                )
+
+                # progressions carry no ownership edge back to the session or
+                # branch that made them, so nothing removes them when their
+                # owner goes. They are collected here while the owners are still
+                # readable, and the collection is held in a scratch table rather
+                # than in a parameter list so a large prune does not run into the
+                # bound-parameter ceiling.
+                await conn.execute(text("DROP TABLE IF EXISTS prune_orphan_progressions"))
+                await conn.execute(
+                    text("CREATE TEMPORARY TABLE prune_orphan_progressions (id TEXT PRIMARY KEY)")
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO prune_orphan_progressions (id) "  # noqa: S608
+                        f"SELECT progression_id FROM sessions WHERE id IN ({placeholders}) "
+                        "  AND progression_id IS NOT NULL "
+                        "UNION "
+                        f"SELECT progression_id FROM branches WHERE session_id IN ({placeholders})"
+                        "  AND progression_id IS NOT NULL"
+                    ),
+                    id_params,
+                )
+
+                await conn.execute(
+                    text(
+                        f"DELETE FROM sessions WHERE id IN ({placeholders})"  # noqa: S608
+                    ),
+                    id_params,
+                )
+
+                # Branches cascade with their session, so what is still
+                # referenced now is what survives the prune. A progression a
+                # survivor still points at is not an orphan, whoever else
+                # pointed at it.
+                await conn.execute(
+                    text(
+                        "DELETE FROM prune_orphan_progressions WHERE id IN ("
+                        "  SELECT progression_id FROM sessions WHERE progression_id IS NOT NULL"
+                        "  UNION"
+                        "  SELECT progression_id FROM branches WHERE progression_id IS NOT NULL"
+                        ")"
                     )
                 )
-                .mappings()
-                .all()
-            )
-        victim_ids = [r["id"] for r in rows]
 
-        if not victim_ids:
-            return {"sessions": 0, "branches": 0, "messages": 0}
-
-        placeholders = ",".join(f":v{i}" for i in range(len(victim_ids)))
-        id_params = {f"v{i}": vid for i, vid in enumerate(victim_ids)}
-
-        async with db._read() as conn:
-            branch_count = (
-                (
+                # Messages are addressed only through a progression's collection
+                # or through one of the three id columns that name one directly,
+                # so a message no surviving referent mentions is unreachable.
+                # This runs while the orphaned progressions still exist, since
+                # their collections are what says which messages are in play.
+                deleted_messages = (
                     await conn.execute(
                         text(
-                            f"SELECT COUNT(*) AS n FROM branches "  # noqa: S608
-                            f"WHERE session_id IN ({placeholders})"
-                        ),
-                        id_params,
+                            "DELETE FROM messages WHERE id IN ("
+                            "  SELECT value FROM progressions, json_each(progressions.collection)"
+                            "  WHERE progressions.id IN (SELECT id FROM prune_orphan_progressions)"
+                            ") AND id NOT IN ("
+                            "  SELECT value FROM progressions, json_each(progressions.collection)"
+                            "  WHERE progressions.id NOT IN"
+                            "    (SELECT id FROM prune_orphan_progressions)"
+                            ") AND id NOT IN ("
+                            "  SELECT first_msg_id FROM sessions WHERE first_msg_id IS NOT NULL"
+                            "  UNION"
+                            "  SELECT last_msg_id FROM sessions WHERE last_msg_id IS NOT NULL"
+                            "  UNION"
+                            "  SELECT system_msg_id FROM branches WHERE system_msg_id IS NOT NULL"
+                            ")"
+                        )
+                    )
+                ).rowcount
+
+                await conn.execute(
+                    text(
+                        "DELETE FROM progressions "
+                        "WHERE id IN (SELECT id FROM prune_orphan_progressions)"
                     )
                 )
-                .mappings()
-                .first()["n"]
-            )
+                await conn.execute(text("DROP TABLE IF EXISTS prune_orphan_progressions"))
 
-            msgs_before = (
-                (await conn.execute(text("SELECT COUNT(*) AS n FROM messages")))
-                .mappings()
-                .first()["n"]
-            )
+                counts = {
+                    "sessions": len(victim_ids),
+                    "branches": branch_count,
+                    "messages": deleted_messages,
+                }
+                if dry_run:
+                    raise _PreviewOnlyError(counts)
+        except _PreviewOnlyError as preview:
+            return preview.counts
 
-        if dry_run:
-            return {
-                "sessions": len(victim_ids),
-                "branches": branch_count,
-                "messages": 0,  # can't preview without doing the delete
-            }
-
-        async with db._tx() as conn:
-            await conn.execute(
-                text(
-                    f"DELETE FROM sessions WHERE id IN ({placeholders})"  # noqa: S608
-                ),
-                id_params,
-            )
-            await conn.execute(
-                text(
-                    "DELETE FROM messages "
-                    "WHERE id NOT IN ("
-                    "  SELECT value FROM progressions, json_each(progressions.collection)"
-                    ")"
-                )
-            )
-
-        async with db._read() as conn:
-            msgs_after = (
-                (await conn.execute(text("SELECT COUNT(*) AS n FROM messages")))
-                .mappings()
-                .first()["n"]
-            )
-
-        return {
-            "sessions": len(victim_ids),
-            "branches": branch_count,
-            "messages": msgs_before - msgs_after,
-        }
+    return counts
 
 
 async def _doctor(
