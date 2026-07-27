@@ -585,3 +585,62 @@ def test_the_fingerprint_is_not_a_claim_that_anyone_read_the_schema(submitted):
         ]
     )
     assert answer["ops"][0]["ok"] is True
+
+
+# ── a run that could not start ───────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("op", "args"),
+    [
+        ("agent.submit", {"prompt": "do it"}),
+        ("flow.submit", {"prompt": "do it"}),
+        ("fanout.submit", {"prompt": "do it"}),
+    ],
+)
+def test_a_submission_with_no_model_is_refused_instead_of_handed_a_handle(submitted, op, args):
+    # Every spawning command refuses to start without a model, and it refuses
+    # after its own startup — so a submission that reached the spawn came back
+    # describing a started run, with a pid, while the run was already over. Such
+    # a run never reaches the terminal hook, so it never becomes terminal and no
+    # terminal notice is ever delivered: a caller waiting for one waits forever.
+    # What the caller is told AT SUBMIT is the subject here, so the assertion is
+    # on the submit result and not on the job record.
+    answer = call(ops=[spawn_op(op, args)])["ops"][0]
+    assert answer["ok"] is False
+    assert answer["error"]["kind"] == "invalid_input"
+    assert "no model" in answer["error"]["message"]
+    # The refusal names the schema it judged against, as every other one does.
+    assert answer["error"]["schema"]["title"] == op
+    # Nothing was spawned, so there is no run_id for a caller to go on waiting on.
+    assert submitted == {}
+    assert "run_id" not in answer
+
+
+@pytest.mark.parametrize(
+    ("op", "args"),
+    [
+        ("agent.submit", {"query": ["a-model"], "prompt": "do it"}),
+        ("agent.submit", {"agent": "a-profile", "prompt": "do it"}),
+        ("flow.submit", {"query": ["a-model"], "prompt": "do it"}),
+        ("flow.submit", {"query": ["a-model", "do it"]}),
+        ("flow.submit", {"agent": "a-profile", "prompt": "do it"}),
+        ("fanout.submit", {"agent": "a-profile", "prompt": "do it"}),
+    ],
+)
+def test_a_submission_that_names_a_model_still_spawns(submitted, op, args):
+    # The refusal above is conservative on purpose: it fires only where no source
+    # of a model exists at all. This pins the other side of that line, so a
+    # tightening that started refusing ordinary submissions is caught here.
+    answer = call(ops=[spawn_op(op, args)])["ops"][0]
+    assert answer["ok"] is True
+    assert submitted["kind"]
+
+
+def test_a_spec_file_may_be_the_thing_that_names_the_model(submitted):
+    # A flow spec declares the orchestrator in content the server does not read.
+    # Refusing it would reject valid submissions, so its presence hands the
+    # question back to the command. A playbook is the same case and takes the
+    # same branch, but naming one here would require it to exist on the machine.
+    answer = call(ops=[spawn_op("flow.submit", {"file": "/tmp/spec.yaml"})])["ops"][0]
+    assert answer["ok"] is True, answer

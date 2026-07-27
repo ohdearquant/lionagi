@@ -506,8 +506,66 @@ def _resolve_prompt(args: dict[str, Any]) -> str | None:
     return text
 
 
+def _has_model_source(kind: str, args: dict[str, Any], prompt: str | None) -> bool:
+    """Whether this submission gives the run any way to obtain a model.
+
+    Every spawning command refuses to start without one, and it refuses within
+    its first second — long after the handle describing a started run has gone
+    back to the caller. The same question is answerable from the arguments
+    alone, so it is answered before anything is spawned.
+
+    Answered conservatively: true whenever any source of a model is present,
+    false only when none is. A profile, a spec file and a playbook each name one
+    in content this does not read, so any of them present makes the question the
+    command's to answer, not this one's.
+
+    Where the model would sit in the positional bucket differs by command
+    because the prompt is delivered differently: an agent reads its prompt from
+    a file, so its bucket holds the model alone, while flow and fanout take the
+    prompt as the last positional, so a model is present only when a second
+    token accompanies it.
+    """
+    if args.get("agent") or args.get("resume") or args.get("continue_last"):
+        return True
+    query = args.get("query") or []
+    if kind == "agent":
+        return bool(query)
+    if args.get("file") or args.get("playbook"):
+        return True
+    bucket = [*query, *([prompt] if prompt is not None else [])]
+    return len(bucket) >= 2
+
+
+def _refuse_without_model(verb: Verb, args: dict[str, Any], prompt: str | None) -> None:
+    """Refuse a submission the command would reject on start, naming the fix.
+
+    A run rejected for its arguments dies before it can report anything: it
+    never reaches the terminal hook that records an end, so the job stays
+    non-terminal, no terminal notice is ever delivered, and a caller waiting for
+    one waits on a run that is already over. Refusing here costs the caller a
+    dictionary lookup and gives them the reason in the result.
+    """
+    kind = verb.job_kind
+    if kind is None or _has_model_source(kind, args, prompt):
+        return
+    sources = (
+        "pass a model as the first positional in 'query', or name a profile with 'agent'"
+        if kind == "agent"
+        else (
+            "pass a model as the first positional in 'query', or name a profile with "
+            "'agent', a spec with 'file', or a playbook with 'playbook'"
+        )
+    )
+    raise OpError(
+        "invalid_input",
+        f"{verb.name!r} has no model and nothing to supply one, so the run would be "
+        f"refused on start and would never reach a terminal status: {sources}",
+    )
+
+
 def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
     prompt = _resolve_prompt(args)
+    _refuse_without_model(verb, args, prompt)
     flags = render_argv(schema, args)
     assert verb.job_kind is not None
     result = jobs.submit(
