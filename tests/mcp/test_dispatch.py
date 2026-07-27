@@ -715,8 +715,10 @@ def test_a_command_whose_kind_the_table_does_not_name_is_still_refused_as_a_resu
     Indexing the sources table by kind makes a kind it does not name an
     exception out of dispatch, which reaches the caller as an internal failure
     and tells them their submission was fine. It was not: it carries no model
-    and the run would die on start. So it is the ordinary refusal, minus the
-    list of arguments the table cannot vouch for.
+    and the run would die on start. So it is the ordinary refusal, and it still
+    has to name a correction the caller can make: one assembled from arguments
+    the command itself declares, so acting on it cannot land in a second
+    refusal from argument validation.
     """
     probe = verbs.Verb(
         name="probe.submit",
@@ -730,6 +732,46 @@ def test_a_command_whose_kind_the_table_does_not_name_is_still_refused_as_a_resu
     answer = call(ops=[spawn_op("probe.submit", {"prompt": "do it"})])["ops"][0]
     assert answer["ok"] is False, answer
     assert answer["error"]["kind"] == "invalid_input", answer
-    assert "has no model and nothing to supply one" in answer["error"]["message"]
+    message = answer["error"]["message"]
+    assert "has no model and nothing to supply one" in message
+    # The caller has to be able to write the corrected request from this. It
+    # says the sources are not recorded for this command, and then names the
+    # arguments that both satisfy the check and appear in this command's own
+    # schema, so sending one of them cannot be refused as an unknown parameter.
+    assert "no model sources recorded for the 'probe' command" in message, message
+    declared = dispatch.verb_schema(probe)["properties"]
+    assert {"query", "agent"} <= set(declared), sorted(declared)
+    assert "first value of 'query'" in message, message
+    assert "name a profile with 'agent'" in message, message
+    # 'file' and 'playbook' are model sources the check accepts but this command
+    # does not declare, so they are not offered.
+    assert "file" not in declared and "playbook" not in declared, sorted(declared)
+    assert "'file'" not in message and "'playbook'" not in message, message
     # Nothing was spawned: the point of refusing here is that no run is started.
+    assert submitted == {}
+
+
+def test_an_unlisted_kind_declaring_no_model_argument_says_so_instead_of_guessing(
+    submitted, monkeypatch
+):
+    """With nothing to name, the refusal names the gap rather than an argument.
+
+    The correction is only as good as the arguments it can be assembled from. A
+    command declaring none of them leaves nothing true to say about where a
+    model goes, and a reassuring sentence there would be the guess the
+    per-command sources exist to avoid.
+    """
+    probe = verbs.Verb(
+        name="opaque.submit",
+        summary="A spawning verb declaring none of the arguments the check reads.",
+        executor="spawn",
+        own_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        job_kind="opaque",
+    )
+    monkeypatch.setattr(dispatch, "VERBS", {**verbs.VERBS, probe.name: probe})
+    answer = call(ops=[spawn_op("opaque.submit", {})])["ops"][0]
+    assert answer["ok"] is False, answer
+    message = answer["error"]["message"]
+    assert "declares no argument this check reads as one" in message, message
+    assert "per-command model sources" in message, message
     assert submitted == {}

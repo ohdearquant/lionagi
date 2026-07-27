@@ -557,17 +557,59 @@ _MODEL_SOURCES = {
     "play": _FLOW_MODEL_SOURCES,
 }
 
-# Every spawning command registered today has an entry above, and a test holds
-# the two together so a new one cannot arrive without its sources. A kind with
-# no entry is still answered rather than raised past the caller: the submission
-# is missing a model either way, and that is the caller's to fix, so it is the
-# same refusal. Only the list of places to put one is withheld, because naming
-# an argument this table cannot vouch for is what the per-command sources exist
-# to avoid.
-_UNLISTED_MODEL_SOURCES = "name a model in whichever of this command's arguments carries one"
+# What the check above accepts as a model source when it has no per-command
+# entry to consult, spelled the way the sources above spell it. Resuming an
+# existing run also satisfies the check, and is deliberately not offered here:
+# it supplies a model by continuing a run that already has one, which is not a
+# correction to the submission the caller is making.
+_GENERIC_MODEL_SOURCES = (
+    ("query", "pass a model as the first value of 'query' with the prompt after it"),
+    ("agent", "name a profile with 'agent'"),
+    ("file", "name a spec with 'file'"),
+    ("playbook", "name a playbook with 'playbook'"),
+)
 
 
-def _refuse_without_model(verb: Verb, args: dict[str, Any], prompt: str | None) -> None:
+def _unlisted_model_sources(kind: str, verb: Verb, schema: dict[str, Any]) -> str:
+    """The remediation for a command kind the sources table does not name.
+
+    Every spawning command registered today has an entry above, and a test holds
+    the two together so a new one cannot arrive without its sources. A kind with
+    no entry is still answered rather than raised past the caller, and the answer
+    still has to be one the caller can act on, so it is assembled from the two
+    things this refusal does know about a command it was not written for: which
+    arguments the check that refused would have accepted, and which of those the
+    command's own schema declares. The intersection is the correction — every
+    name in it is one the check takes as a model source and one this command
+    admits, so it cannot send the caller into a second refusal from argument
+    validation. No argument is named on the strength of a guess about the
+    command; a name absent from its schema is not offered.
+
+    That intersection can be empty, and then the refusal says so rather than
+    reaching for words: a command declaring none of these arguments has no
+    correction this server can state, and needs its own entry in the table above
+    before this message can direct anyone.
+    """
+    declared = schema.get("properties", {})
+    offered = [text for name, text in _GENERIC_MODEL_SOURCES if name in declared]
+    if not offered:
+        return (
+            f"this server has no model sources recorded for the {kind!r} command and the "
+            "command declares no argument this check reads as one, so there is no correction "
+            "to name here; the command needs an entry in the server's per-command model "
+            "sources before this refusal can point anywhere"
+        )
+    return (
+        f"this server has no model sources recorded for the {kind!r} command, so these are "
+        f"the arguments {verb.name!r} declares that this check accepts as a model source, "
+        "rather than the ones that command documents — a lone positional is read as the "
+        f"prompt, not as a model: {', or '.join(offered)}"
+    )
+
+
+def _refuse_without_model(
+    verb: Verb, schema: dict[str, Any], args: dict[str, Any], prompt: str | None
+) -> None:
     """Refuse a submission the command would reject on start, naming the fix.
 
     A run rejected for its arguments dies before it can report anything: it
@@ -579,7 +621,7 @@ def _refuse_without_model(verb: Verb, args: dict[str, Any], prompt: str | None) 
     kind = verb.job_kind
     if kind is None or _has_model_source(kind, args, prompt):
         return
-    sources = _MODEL_SOURCES.get(kind, _UNLISTED_MODEL_SOURCES)
+    sources = _MODEL_SOURCES.get(kind) or _unlisted_model_sources(kind, verb, schema)
     raise OpError(
         "invalid_input",
         f"{verb.name!r} has no model and nothing to supply one, so the run would be "
@@ -589,7 +631,7 @@ def _refuse_without_model(verb: Verb, args: dict[str, Any], prompt: str | None) 
 
 def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
     prompt = _resolve_prompt(args)
-    _refuse_without_model(verb, args, prompt)
+    _refuse_without_model(verb, schema, args, prompt)
     flags = render_argv(schema, args)
     assert verb.job_kind is not None
     result = jobs.submit(
