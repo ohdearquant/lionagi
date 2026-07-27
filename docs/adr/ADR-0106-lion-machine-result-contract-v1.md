@@ -99,7 +99,7 @@ wake it. A consumer restart across a successful delivery loses it the same way.
 | Distinguishing absence from failure | D7: every read-derived field carries its own availability and reason |
 | Process-level faults | D8: a valid envelope is authoritative; exit status is the transport-level answer, with a defined precedence |
 | Terminal notification | D9: a notification is a prompt to read state, never proof and never the only path |
-| Bounded observation | D10: `wait` is bounded, returns partial results, and takes ADR-0066 D6 with two marked extensions |
+| Bounded observation | D10: `wait` is bounded, returns partial results, and takes ADR-0066 D6 with two marked extensions and one marked divergence |
 
 Out of scope:
 
@@ -110,7 +110,8 @@ Out of scope:
   binary path.
 - **The MCP tool surface itself.** ADR-0066 decides that. This ADR constrains what
   those tools return, which is a strictly smaller question, and D10 takes ADR-0066 D6
-  as written rather than re-deciding it, marking its two additions as additions.
+  as written rather than re-deciding it, marking its two additions as additions and its
+  one departure as a departure.
 - **Hosted / multi-tenant concerns.** No tenancy appears in this contract; a hosted
   join is built above it, not inside it.
 - **Playbook and flow semantics.** What a flow *does* is unchanged here.
@@ -540,7 +541,7 @@ is configured, sends a terminal notice.
 - Artifacts are written before the notice is sent, so a consumer woken by the notice
   finds the outputs already present.
 
-### D10 — Bounded observation, taken from ADR-0066 D6 and extended in two places
+### D10 — Bounded observation, taken from ADR-0066 D6, extended in two places and departed from in one
 
 `wait` takes ids, a maximum wait, and a poll interval; both numbers are clamped to
 documented bounds and the effective values are echoed back. `0` is a legal snapshot
@@ -763,7 +764,9 @@ the escape hatch: a breaking change is expressible as a version increment rather
 negotiation. D8 could be dropped without touching the envelope, at the cost of P7
 returning. D10 cannot be dropped without re-opening the contradiction with ADR-0066, and
 its two marked extensions cannot be dropped without leaving the two documents disagreeing
-about what a wait entry contains and what a disconnect does.
+about what a wait entry contains and what a disconnect does. Its one marked departure is
+the opposite case: it is what puts the two documents into disagreement, and it is
+reversible only until a consumer has been written against it.
 
 ## Alternatives considered
 
