@@ -44,6 +44,19 @@ def _record(rid: str, **fields) -> None:
     jobs._write_job(base)
 
 
+def _live_process(monkeypatch, alive=lambda pid: True) -> None:
+    """Make both process probes agree that the pid holds a live process.
+
+    A pid is asked two separate questions: whether it holds a live process at
+    all, and when that process started. Answering only the first describes a
+    state no operating system produces — a pid that answers ``kill -0`` and is
+    absent from the process table is a process that has exited and is waiting to
+    be reaped, which is the opposite of alive.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", alive)
+    monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", 1_700_000_000.0))
+
+
 # --- terminal / outcome derivation ---------------------------------------------
 
 
@@ -107,7 +120,7 @@ def test_preparing_record_is_not_a_spawn_failure(sandbox, monkeypatch):
 
 
 def test_running_job_carries_null_outcome(sandbox, monkeypatch):
-    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    _live_process(monkeypatch)
     rid = jobs.new_run_id()
     _record(rid, pid=4242)
 
@@ -234,7 +247,7 @@ async def test_wait_returns_one_entry_per_id_in_input_order(sandbox, monkeypatch
 
 async def test_wait_snapshot_with_zero_max_wait(sandbox, monkeypatch):
     """max_wait=0 is a legal request for one observation, not an error."""
-    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    _live_process(monkeypatch)
     slept: list[float] = []
 
     async def no_sleep(seconds):
@@ -257,7 +270,7 @@ async def test_wait_snapshot_with_zero_max_wait(sandbox, monkeypatch):
 
 async def test_wait_expiry_keeps_what_was_learned(sandbox, monkeypatch):
     """A closed window is not an error: finished ids are still reported."""
-    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    _live_process(monkeypatch)
     done = jobs.new_run_id()
     _record(done, status="completed", finished_at="2026-07-25T00:01:00+00:00")
     busy = jobs.new_run_id()
@@ -305,7 +318,7 @@ async def test_wait_clamps_and_echoes_the_effective_numbers(sandbox, monkeypatch
 
 async def test_wait_does_not_touch_the_run(sandbox, monkeypatch):
     """An expired wait leaves the durable record byte-for-byte as it was."""
-    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    _live_process(monkeypatch)
     rid = jobs.new_run_id()
     _record(rid, pid=4242)
     before = (config.job_dir(rid) / "job.json").read_text()
@@ -470,6 +483,29 @@ async def test_wait_snapshot_of_a_stopped_run_is_still_a_snapshot(sandbox, monke
     assert res["stopped_without_end"] == [rid]
 
 
+async def test_wait_does_not_hold_the_window_open_for_a_reused_pid(sandbox, monkeypatch):
+    """A run whose pid now belongs to someone else has stopped, not stalled.
+
+    wait observes through status, so a liveness answer taken from whatever holds
+    the number keeps the run in ``pending`` for the whole window and leaves
+    ``stopped_without_end`` empty — the caller waits out its budget on a run that
+    already ended, and is told nothing about why.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", 1_700_005_000.0))
+    rid = jobs.new_run_id()
+    _record(rid, pid=4242, pid_create_time=1_700_000_000.0, pgid=4242)
+
+    res = await jobs.wait([rid], max_wait=0, poll_interval=5)
+
+    assert res["pending"] == []
+    assert res["stopped_without_end"] == [rid]
+    assert res["all_terminal"] is False
+    assert res["runs"][0]["possibly_orphaned"] is True
+    assert res["runs"][0]["terminal"] is False
+    assert res["runs"][0]["error"] is None
+
+
 async def test_the_floor_never_outruns_the_window(sandbox, monkeypatch):
     """The floor is bounded by what is left of the window, not by the interval.
 
@@ -508,7 +544,7 @@ async def test_every_unresolved_id_is_named_somewhere_in_the_result(sandbox, mon
     text sits unchanged while the shape it describes stops occurring, which is
     exactly how the obligation this replaces stopped covering a stopped run.
     """
-    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: pid == 4242)
+    _live_process(monkeypatch, alive=lambda pid: pid == 4242)
     running = jobs.new_run_id()
     _record(running, pid=4242)
     stopped = jobs.new_run_id()

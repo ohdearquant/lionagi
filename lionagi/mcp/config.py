@@ -27,6 +27,13 @@ JOBS_DIR = LIONAGI_HOME / "mcp" / "jobs"
 # the child starts, so the id we return is race-free.
 RUN_ID_ENV_VAR = "LIONAGI_RUN_ID"
 
+# Stamped into every job's child environment at spawn and read back off live
+# processes to confirm they belong to the run that started them. Deliberately
+# not RUN_ID_ENV_VAR, which the CLI consumes to pick a run directory and which
+# a descendant is free to rewrite for its own sub-run: a kill decision must not
+# rest on a variable another subsystem owns and can reassign.
+JOB_MARKER_ENV_VAR = "LIONAGI_MCP_JOB_RUN_ID"
+
 # Explicit override for the argv prefix that invokes the ``li`` CLI, split on
 # whitespace. Rarely needed: the server runs inside lionagi's own environment,
 # so the interpreter running it already resolves the CLI (see li_command).
