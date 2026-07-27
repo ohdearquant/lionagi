@@ -31,6 +31,7 @@ from lionagi.state import provenance as _provenance
 
 from .._logging import hint
 from .._providers import (
+    _CLAUDE_PROVIDER_NAMES,
     AgentProfile,
     build_imodel_from_spec,
     list_agents,
@@ -421,6 +422,10 @@ class OrchestrationEnv:
     # role configuration and AgentSpec prompt construction.
     pack: Pack | None = None
 
+    # The MCP servers every worker in this run is handed, resolved once when the
+    # run was set up. None when the caller refused a set or none was found.
+    mcp_servers: dict | None = None
+
     # None = no budget configured; workers skip the BUDGET preamble.
     total_budget: int | None = None
     _live_persist: dict | None = field(default=None, repr=False)
@@ -443,6 +448,19 @@ class OrchestrationEnv:
         return list(self._all_names)
 
 
+def _hand_mcp_servers(imodel, servers: dict | None) -> None:
+    """Give one branch's model the run's server set, where it can carry one.
+
+    Only the Claude CLI lane accepts a server set per request; the other CLI
+    providers read a user-level config that no caller directory affects, so
+    handing them this here would drop it without a word.
+    """
+    if servers is None:
+        return
+    if imodel.endpoint.config.provider in _CLAUDE_PROVIDER_NAMES:
+        imodel.endpoint.config.kwargs["mcp_servers"] = servers
+
+
 async def setup_orchestration(
     *,
     pattern_name: str,
@@ -459,9 +477,22 @@ async def setup_orchestration(
     fast: bool = False,
     total_budget: int | None = None,
     pack: str | None = None,
+    mcp_config: str | None = None,
+    no_mcp_config: bool = False,
 ) -> OrchestrationEnv:
     """Resolve orchestrator config, allocate run, build branch+session."""
+    from lionagi.cli._mcp_resolve import resolve_spawn_mcp_servers
     from lionagi.ln.concurrency.errors import cache_cancelled_exc_class
+
+    # Read from *this* process's directory, before --cwd is applied to anything.
+    # Every worker this run builds is handed the same set, so it is resolved
+    # once here — the only point at which the directory the run was started
+    # from is still the one in effect.
+    mcp_resolution = resolve_spawn_mcp_servers(
+        mcp_config,
+        launch_dir=os.getcwd(),
+        disabled=no_mcp_config,
+    )
 
     # Fail fast: a nonexistent --cwd must never silently spawn into a
     # provider-created directory. Forward the tilde-expanded path (providers never expand `~`).
@@ -502,6 +533,7 @@ async def setup_orchestration(
         fast=fast,
     )
     _orc_provider = orc_imodel.endpoint.config.provider
+    _hand_mcp_servers(orc_imodel, mcp_resolution.servers)
     effort = resolve_persisted_effort(_orc_provider, orc_imodel, effort)
     if cwd:
         orc_imodel.endpoint.config.kwargs.setdefault("repo", Path(cwd))
@@ -554,6 +586,7 @@ async def setup_orchestration(
         cwd=cwd,
         total_budget=total_budget,
         pack=loaded_pack,
+        mcp_servers=mcp_resolution.servers,
     )
 
 
@@ -640,6 +673,7 @@ async def build_worker_branch(
         theme=env.theme,
         fast=w_fast,
     )
+    _hand_mcp_servers(w_imodel, getattr(env, "mcp_servers", None))
     artifact_dir = env.run.agent_artifact_dir(agent_id)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     w_imodel.endpoint.config.kwargs["repo"] = artifact_dir

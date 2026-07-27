@@ -86,6 +86,8 @@ async def _run_fanout(
     project: str | None = None,
     pack: str | None = None,
     notify: str | None = None,
+    mcp_config: str | None = None,
+    no_mcp_config: bool = False,
 ) -> tuple[str, str]:
     """Three-phase fan-out: decompose → fan out → synthesize.
 
@@ -110,6 +112,8 @@ async def _run_fanout(
         bare=False,
         fast=fast,
         pack=pack,
+        mcp_config=mcp_config,
+        no_mcp_config=no_mcp_config,
     )
     _shared: dict = {}
 
