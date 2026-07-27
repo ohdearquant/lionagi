@@ -230,13 +230,17 @@ def _read_job_state(run_id: str) -> tuple[dict[str, Any] | None, str]:
     more plainly, a path whose directory cannot be searched is not a path that was
     found to be missing. Only "the file is not there" is absence; every other way
     the read can fail is a record that is present and could not be got at.
+
+    Bytes that are not valid UTF-8 are one of those ways, and they are named
+    explicitly because they do not arrive as ``OSError``: the file opens and reads,
+    and the decode is what fails.
     """
     p = config.job_dir(run_id) / "job.json"
     try:
         raw = p.read_text()
     except FileNotFoundError:
         return None, "absent"
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None, "unreadable"
     try:
         record = json.loads(raw)
@@ -306,7 +310,7 @@ def _read_lifecycle(run_id: str) -> dict[str, Any] | None:
 def _read_run_manifest(run_id: str) -> dict[str, Any] | None:
     try:
         return json.loads(config.run_manifest(run_id).read_text())
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
 
 

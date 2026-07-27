@@ -1602,6 +1602,62 @@ def test_every_surface_survives_a_run_directory_it_cannot_get_at(sandbox, monkey
         os.chmod(run_dir, 0o700)
 
 
+def test_a_record_of_invalid_bytes_is_an_unusable_record_not_an_exception(sandbox):
+    """Corruption that is not JSON corruption.
+
+    The record is bytes on disk, and bytes can fail to be text before they ever
+    fail to be JSON. That failure does not arrive as ``OSError`` — the file opens
+    and reads fine — so a reader guarding only the open and the parse lets it out.
+
+    Every surface here shares one reader, which is what makes this worth asserting
+    at the surfaces rather than at the helper: the listing in particular promises
+    that one damaged record does not cost the caller the runs beside it, and an
+    exception out of the shared reader breaks that promise for every run at once.
+    """
+    ok_rid = jobs.new_run_id()
+    jobs._write_job({"run_id": ok_rid, "pid": None, "kind": "agent", "status": "running"})
+
+    bad_rid = jobs.new_run_id()
+    bad_dir = config.job_dir(bad_rid)
+    bad_dir.mkdir(parents=True, exist_ok=True)
+    (bad_dir / "job.json").write_bytes(b'\xff\xfe{"run_id": "not utf-8"}')
+
+    # Control: the truncated-JSON case already reports unusable, so a passing
+    # assertion below is about the bytes and not about damaged records generally.
+    trunc_rid = jobs.new_run_id()
+    trunc_dir = config.job_dir(trunc_rid)
+    trunc_dir.mkdir(parents=True, exist_ok=True)
+    (trunc_dir / "job.json").write_text('{"run_id": "truncated"')
+    assert jobs.status(trunc_rid)["record_state"] == "unreadable"
+
+    assert jobs.status(bad_rid)["record_state"] == "unreadable"
+    assert jobs.status(bad_rid)["known"] is False
+    assert jobs.output(bad_rid)["record_state"] == "unreadable"
+    assert jobs.kill(bad_rid)["reason_code"] == jobs.KILL_RECORD_UNREADABLE
+
+    listed = {j["run_id"]: j.get("record_state") for j in jobs.list_jobs()}
+    assert listed[bad_rid] == "unreadable"
+    assert listed[ok_rid] == "ok", "one damaged record must not cost the runs beside it"
+
+
+def test_a_run_manifest_of_invalid_bytes_does_not_escape_the_surface_that_reads_it(sandbox):
+    """The manifest is advisory, which is an argument about its value and not a
+    licence to raise. A read that returns nothing costs the caller one display
+    field; a read that raises costs them the whole surface.
+    """
+    rid = jobs.new_run_id()
+    jobs._write_job({"run_id": rid, "pid": None, "kind": "agent", "status": "running"})
+    manifest = config.run_manifest(rid)
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+
+    manifest.write_text('{"run_id": "readable"}')
+    assert jobs.status(rid)["run"] == {"run_id": "readable"}, "control: the manifest is read"
+
+    manifest.write_bytes(b"\xff\xfe not utf-8")
+    assert jobs.status(rid)["run"] is None
+    assert jobs.status(rid)["known"] is True, "the record is fine; only the manifest is not"
+
+
 def test_an_artifacts_directory_that_denies_its_own_read_is_not_a_run_that_wrote_nothing(
     sandbox,
 ):
