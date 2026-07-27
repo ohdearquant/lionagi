@@ -590,7 +590,7 @@ def _run_roster(verb: Verb, args: dict[str, Any]) -> dict[str, Any]:
         raise OpError("invalid_input", f"cwd {cwd!r} is not a directory")
     try:
         if verb.name == "profile.list":
-            return roster.profile_list(cwd=cwd)
+            return roster.profile_list(cwd=cwd, names=args.get("names"), fields=args.get("fields"))
         return roster.profile_show(args["name"], cwd=cwd)
     except FileNotFoundError as exc:
         # The loader's own miss already names every available profile; re-listing

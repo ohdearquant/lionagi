@@ -346,7 +346,32 @@ _ROSTER_CWD = {
     ),
 }
 
-_PROFILE_LIST_SCHEMA = _own({"cwd": _ROSTER_CWD})
+_PROFILE_LIST_SCHEMA = _own(
+    {
+        "cwd": _ROSTER_CWD,
+        "names": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Answer for these profile names only, matched exactly as the roster "
+                "spells them. A name nothing declares is simply absent from the reply, "
+                "so asking for three and reading back two says which one is missing. "
+                "Omit it for the whole roster."
+            ),
+        },
+        "fields": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Return only these keys per profile: 'source', 'shadowed', 'ambiguous', "
+                "'resolved' for the whole configuration block, or 'resolved.<key>' for "
+                "one of its fields ('resolved.model', 'resolved.effort', ...). 'name' is "
+                "always returned. An unrecognised field is an error rather than an empty "
+                "one. Omit it for the full record."
+            ),
+        },
+    }
+)
 
 _PROFILE_SHOW_SCHEMA = _own(
     {
