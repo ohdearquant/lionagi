@@ -158,13 +158,19 @@ def test_status_running_then_terminal(sandbox, monkeypatch):
     _live_process(monkeypatch)
     assert jobs.status(rid)["status"] == "running"
 
-    # pid gone, no terminal record captured -> exited
-    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
-    assert jobs.status(rid)["status"] == "exited"
-
-    # authoritative terminal recorded by the notify hook
+    # authoritative terminal recorded by the notify hook, which runs while the
+    # run's own process is still there to run it
     jobs.mark_terminal(rid, "completed")
-    assert jobs.status(rid)["status"] == "completed"
+    st = jobs.status(rid)
+    assert st["status"] == "completed"
+    assert st["terminal"] is True and st["outcome"] == "succeeded"
+
+    # the process going away afterwards adds nothing and takes nothing away:
+    # the end is on the record, and that is what every reader answers from
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    st = jobs.status(rid)
+    assert st["status"] == "completed"
+    assert st["terminal"] is True and st["outcome"] == "succeeded"
 
 
 def test_pid_alive_reaps_zombie_child():
@@ -2215,7 +2221,7 @@ def test_mark_terminal_and_list(sandbox, monkeypatch):
     monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **k: _FakeProc(4242))
     rid = jobs.submit("agent", [], prompt="x")["run_id"]
 
-    job = jobs.mark_terminal(rid, "failed")
+    job = jobs.mark_terminal(rid, "failed").record
     assert job["status"] == "failed" and job["finished_at"]
     assert job["cli_status"] == "failed"
 

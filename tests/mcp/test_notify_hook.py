@@ -342,8 +342,8 @@ def test_unknown_run_id_is_noop(monkeypatch, tmp_path):
     calls: list = []
     monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: calls.append(a))
     _no_settings_notifier(monkeypatch)
-    # No job record on disk: mark_terminal returns None, delivery still resolves
-    # to nothing, and the hook exits cleanly.
+    # No job record on disk: mark_terminal reports an absent record, delivery
+    # still resolves to nothing, and the hook exits cleanly.
     rc = _notify_hook.main(["--run-id", "nope", "--status", "completed"])
     assert rc == 0
     assert calls == []
