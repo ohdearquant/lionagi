@@ -122,6 +122,7 @@ DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
 # rebuilt CHECK constraint, a column whose meaning changed. Version "1" is the
 # original shape, before the migrations now applied on open existed.
 SCHEMA_VERSION = "2"
+_SCHEMA_MIGRATION_LOCK_KEY = "lionagi.state.schema.migration"
 
 
 class SchemaTooNewError(RuntimeError):
@@ -801,39 +802,7 @@ class StateDB:
 
     # ── Schema management ──────────────────────────────────────────────
 
-    async def _recorded_schema_version(self) -> str | None:
-        """The version stamped in the database, or None when there is none yet.
-
-        Read before any migration runs, so it describes the database as this
-        process found it. A database with no ``schema_meta`` table is one this
-        open is about to create.
-        """
-        async with self._engine.connect() as conn:
-            # AUTOCOMMIT, because on SQLite an implicit transaction here would
-            # be a BEGIN IMMEDIATE: this read runs before every migration, and
-            # taking the write lock to perform it would make concurrent opens
-            # of the same database contend on a lock none of them needs yet.
-            conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
-            if not await conn.run_sync(lambda c: inspect(c).has_table("schema_meta")):
-                return None
-            row = (
-                (await conn.execute(text("SELECT value FROM schema_meta WHERE key = 'version'")))
-                .mappings()
-                .first()
-            )
-        return row["value"] if row else None
-
-    async def _refuse_newer_schema(self) -> None:
-        """Refuse to open a database stamped with a version above SCHEMA_VERSION.
-
-        Everything ``_apply_schema`` does afterwards -- adding columns,
-        rebuilding tables to widen CHECK constraints, then recording
-        SCHEMA_VERSION as the shape that resulted -- is written against the
-        schema this release knows. Against a newer one it would rewrite tables
-        on assumptions it cannot check and replace a truthful version stamp
-        with a lower one, leaving a database that reads as understood.
-        """
-        recorded = await self._recorded_schema_version()
+    def _raise_if_schema_too_new(self, recorded: str | None) -> None:
         if recorded is None:
             return
         try:
@@ -853,8 +822,47 @@ class StateDB:
             "Upgrade lionagi to open it, or open it read-only to inspect it."
         )
 
+    async def _refuse_newer_schema(self, conn) -> None:
+        """Refuse to open a database stamped with a version above SCHEMA_VERSION.
+
+        Everything ``_apply_schema`` does afterwards -- adding columns,
+        rebuilding tables to widen CHECK constraints, then recording
+        SCHEMA_VERSION as the shape that resulted -- is written against the
+        schema this release knows. Against a newer one it would rewrite tables
+        on assumptions it cannot check and replace a truthful version stamp
+        with a lower one, leaving a database that reads as understood.
+        """
+        if self.dialect == "postgresql":
+            # The version table or row may not exist yet, so a row lock cannot
+            # serialize first-time schema creation. This transaction-scoped
+            # database-local lock is available before any schema object exists.
+            await conn.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                {"key": _SCHEMA_MIGRATION_LOCK_KEY},
+            )
+        if not await conn.run_sync(lambda c: inspect(c).has_table("schema_meta")):
+            return
+        query = "SELECT value FROM schema_meta WHERE key = 'version'"
+        if self.dialect == "postgresql":
+            query += " FOR UPDATE"
+        row = (await conn.execute(text(query))).mappings().first()
+        self._raise_if_schema_too_new(row["value"] if row else None)
+
+    async def _refuse_newer_sqlite_schema(self, driver) -> None:
+        """Check the version through a raw driver holding BEGIN IMMEDIATE."""
+        table = await (
+            await driver.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
+            )
+        ).fetchone()
+        if table is None:
+            return
+        row = await (
+            await driver.execute("SELECT value FROM schema_meta WHERE key = 'version'")
+        ).fetchone()
+        self._raise_if_schema_too_new(row[0] if row else None)
+
     async def _apply_schema(self) -> None:
-        await self._refuse_newer_schema()
         await self._reconcile_columns()
         if self.dialect == "sqlite":
             await self._drop_legacy_session_status_check()
@@ -876,6 +884,7 @@ class StateDB:
             # schedule_runs was generalized into the task-application entity.
             await self._drop_legacy_schedule_runs_check()
         async with self._engine.begin() as conn:
+            await self._refuse_newer_schema(conn)
             await conn.run_sync(metadata.create_all)
             await self._reconcile_indexes(conn)
             # Seed immutable reference rows; ON CONFLICT DO NOTHING is safe to
@@ -935,6 +944,7 @@ class StateDB:
                         add_column = f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {defn}"
                     try:
                         async with self._engine.begin() as conn:
+                            await self._refuse_newer_schema(conn)
                             await conn.execute(text(add_column))
                             if table == "schedule_runs" and name == "dispatched_at":
                                 await self._backfill_dispatched_at(conn)
@@ -1104,6 +1114,7 @@ class StateDB:
                     await driver.commit()
                     await driver.execute("BEGIN IMMEDIATE")
                     try:
+                        await self._refuse_newer_sqlite_schema(driver)
                         # The foreign keys below are the ones the declared schema
                         # carries, so a rebuilt table ends up with the same
                         # constraints a freshly created one gets. They are what
@@ -1289,6 +1300,7 @@ class StateDB:
                     await driver.commit()
                     await driver.execute("BEGIN IMMEDIATE")
                     try:
+                        await self._refuse_newer_sqlite_schema(driver)
                         await driver.execute(create_stmt)
                         insert_sql = f"INSERT INTO schedules_new ({col_list}) SELECT {col_list} FROM schedules"  # noqa: S608
                         await driver.execute(insert_sql)
@@ -1408,6 +1420,7 @@ class StateDB:
                     await driver.commit()
                     await driver.execute("BEGIN IMMEDIATE")
                     try:
+                        await self._refuse_newer_sqlite_schema(driver)
                         await driver.execute(create_stmt)
                         insert_sql = f"INSERT INTO schedules_new ({col_list}) SELECT {col_list} FROM schedules"  # noqa: S608
                         await driver.execute(insert_sql)
@@ -1495,6 +1508,7 @@ class StateDB:
                     await driver.commit()
                     await driver.execute("BEGIN IMMEDIATE")
                     try:
+                        await self._refuse_newer_sqlite_schema(driver)
                         await driver.execute(create_stmt)
                         insert_sql = f"INSERT INTO schedules_new ({col_list}) SELECT {col_list} FROM schedules"  # noqa: S608
                         await driver.execute(insert_sql)
@@ -1594,6 +1608,7 @@ class StateDB:
                     # data in invocations_new.
                     await driver.commit()
                     await driver.execute("BEGIN IMMEDIATE")
+                    await self._refuse_newer_sqlite_schema(driver)
                     await driver.execute(
                         """
                         CREATE TABLE invocations_new (
@@ -1762,6 +1777,7 @@ class StateDB:
                     # data in schedule_runs_new.
                     await driver.commit()
                     await driver.execute("BEGIN IMMEDIATE")
+                    await self._refuse_newer_sqlite_schema(driver)
                     await driver.execute(
                         """
                         CREATE TABLE schedule_runs_new (

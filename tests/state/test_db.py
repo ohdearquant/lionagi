@@ -10,6 +10,7 @@ asyncio_mode = "auto" in pyproject.toml — no @pytest.mark.asyncio needed.
 
 from __future__ import annotations
 
+import sqlite3
 import time
 import uuid
 from types import SimpleNamespace
@@ -432,6 +433,89 @@ async def test_open_refuses_a_newer_recorded_schema_version(tmp_path):
     assert SCHEMA_VERSION in str(excinfo.value)
     # And the stamp it refused to write is still the one on disk.
     assert _read_version(path) == newer
+
+
+async def test_schema_version_is_rechecked_after_migration_lock(tmp_path, monkeypatch):
+    """A concurrent upgrade before the migration lock is refused before ALTER TABLE."""
+    from lionagi.state.db import SchemaTooNewError
+
+    path = tmp_path / "raced_newer.db"
+    async with StateDB(path=path):
+        pass
+
+    state = StateDB(path=path)
+    state._MIGRATION_COLUMNS = {"sessions": [("raced_column", "TEXT")]}
+    reconcile = state._reconcile_columns
+    newer = str(int(SCHEMA_VERSION) + 1)
+
+    async def upgrade_then_reconcile():
+        _stamp_version(path, newer)
+        await reconcile()
+
+    monkeypatch.setattr(state, "_reconcile_columns", upgrade_then_reconcile)
+
+    with pytest.raises(SchemaTooNewError):
+        async with state:
+            pass
+
+    assert _read_version(path) == newer
+    conn = sqlite3.connect(path)
+    try:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+    finally:
+        conn.close()
+    assert "raced_column" not in columns
+
+
+async def test_postgres_schema_lock_rechecks_when_version_table_appears(monkeypatch):
+    """A newer migrator may create and stamp schema_meta while this opener waits."""
+    import lionagi.state.db as db_mod
+    from lionagi.state.db import SchemaTooNewError
+
+    state = StateDB(url="postgresql+asyncpg://user:pw@localhost/state")
+    newer = str(int(SCHEMA_VERSION) + 1)
+    race = {"table_exists": False}
+    events: list[str] = []
+
+    class FakeInspector:
+        def has_table(self, name):
+            assert name == "schema_meta"
+            events.append("inspect")
+            return race["table_exists"]
+
+    class FakeResult:
+        def __init__(self, row=None):
+            self.row = row
+
+        def mappings(self):
+            return self
+
+        def first(self):
+            return self.row
+
+    class FakeConnection:
+        async def execute(self, statement, params=None):
+            sql = str(statement)
+            if "pg_advisory_xact_lock" in sql:
+                events.append("lock")
+                # The competing newer release commits before this transaction
+                # obtains the lock, so the table absent at entry now exists.
+                race["table_exists"] = True
+                return FakeResult()
+            if "SELECT value FROM schema_meta" in sql:
+                events.append("version")
+                return FakeResult({"value": newer})
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+        async def run_sync(self, callback):
+            return callback(object())
+
+    monkeypatch.setattr(db_mod, "inspect", lambda _conn: FakeInspector())
+
+    with pytest.raises(SchemaTooNewError):
+        await state._refuse_newer_schema(FakeConnection())
+
+    assert events == ["lock", "inspect", "version"]
 
 
 async def test_readonly_open_reads_a_newer_recorded_schema_version(tmp_path):
