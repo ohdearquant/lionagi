@@ -869,6 +869,27 @@ async def test_run_preserves_endpoint_gemini_print_timeout_without_timeout():
     assert model.endpoint.config.kwargs["print_timeout"] == "50m"
 
 
+async def test_run_preserves_endpoint_gemini_print_timeout_with_caller_timeout():
+    """The fourth precedence case: endpoint cap set AND a caller deadline set.
+
+    The other three combinations of (caller timeout, explicit cap) are covered
+    above. This is the one where a derived value exists and could plausibly
+    overwrite an explicit one, so it is the cell most worth pinning down.
+    """
+    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+
+    model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
+    model.endpoint._request_model = GeminiCodeRequest
+    model.endpoint.config = types.SimpleNamespace(kwargs={"print_timeout": "50m"})
+    branch = Branch()
+    branch.chat_model = model
+
+    await _collect(run(branch, "hi", RunParam(imodel_kw={"timeout": 1200})))
+
+    assert "print_timeout" not in captured
+    assert model.endpoint.config.kwargs["print_timeout"] == "50m"
+
+
 async def test_gemini_timeout_arms_produce_distinct_caps():
     """A caller deadline receives headroom; the configured default is the cap."""
     from lionagi.providers.google.gemini_code import GeminiCodeRequest

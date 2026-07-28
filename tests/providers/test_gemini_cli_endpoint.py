@@ -17,6 +17,7 @@ from lionagi.providers.google.gemini_code import (
     GeminiCodeRequest,
     GeminiSession,
     derive_print_timeout,
+    format_print_timeout,
     stream_gemini_cli,
 )
 
@@ -84,6 +85,29 @@ class TestCmdArgs:
         args = GeminiCodeRequest(prompt="hi").as_cmd_args()
 
         assert "--print-timeout" not in args
+
+    @pytest.mark.parametrize(
+        "unbounded",
+        [float("inf"), 1e300, 1e10],
+        ids=["infinite", "astronomically-large", "just-over-go-max"],
+    )
+    def test_unbounded_caps_stay_parseable_instead_of_raising(self, unbounded):
+        """A cap longer than Go can express clamps rather than breaking.
+
+        A Go duration is int64 nanoseconds, so anything past ~9.2e9 seconds
+        overflows, and a non-finite value cannot be made an integer at all.
+        Both would reach agy as something it cannot parse, which surfaces as
+        agy's own uninformative timeout error -- the failure this path exists
+        to stop producing. Asking for longer than Go can express is asking for
+        as long as possible, so clamping is the honest answer.
+        """
+        for emitted in (format_print_timeout(unbounded), derive_print_timeout(unbounded)):
+            assert emitted.endswith("s")
+            # int() rejects "inf", "1e+300" and every other non-integer
+            # spelling, so this asserts parseability rather than restating the
+            # clamping expression.
+            seconds = int(emitted.removesuffix("s"))
+            assert 0 < seconds <= (2**63 - 1) // 10**9
 
 
 # ---------------------------------------------------------------------------
