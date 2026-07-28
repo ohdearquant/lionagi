@@ -4,6 +4,7 @@
 """Tests for BashTool: request model, response model, execution, security."""
 
 import asyncio
+import re
 import sys
 
 import pytest
@@ -388,46 +389,61 @@ async def test_bash_tool_timeout_invalid_pid_calls_kill_not_killpg(monkeypatch, 
 # ---------------------------------------------------------------------------
 
 
-async def test_docstring_recovery_advice_is_executable(tmp_path):
-    """Advice the tool gives for oversized output must survive its own guard.
+def _truncation_advice(doc: str) -> tuple[list[str], list[str]]:
+    """Split the oversized-output advice into the commands it offers and the ones it rules out.
 
-    Two halves, so advice and guard cannot drift apart in either direction:
-    the remedy the guard rejects is neither advised nor runnable, and each
-    remedy the advice does name is run here through the guard that would have
-    to accept it. The assertions pin which remedy is recommended, not the
-    sentence recommending it — a reworded docstring keeping the same two
-    remedies still passes.
+    Returns (offered, ruled_out) as literal command templates, read off the
+    docstring's own structure rather than matched against expected wording.
+    """
+    offered_at = doc.index("Supported remedies:")
+    ruled_out_at = doc.index("Not available here:")
+    offered = re.findall(r"`([^`]+)`", doc[offered_at:ruled_out_at])
+    ruled_out = re.findall(r"`([^`]+)`", doc[ruled_out_at:].split("\n\n")[0])
+    return offered, ruled_out
+
+
+async def test_docstring_recovery_advice_is_executable(tmp_path):
+    """The commands the oversized-output advice names must match what the guard allows.
+
+    Every command listed as a supported remedy is run here and must succeed;
+    every command listed as unavailable is run here and must be refused by the
+    guard. Neither list is compared against expected prose — both are read out
+    of the docstring — so rewording the advice keeps this green, while moving a
+    command between the lists, or changing the guard so a listed remedy stops
+    running, turns it red.
     """
     tool = BashTool()
     doc = tool.to_tool().func_callable.__doc__
+    offered, ruled_out = _truncation_advice(doc)
+    assert offered, "advice must name at least one supported remedy"
+    assert ruled_out, "advice must name at least one unavailable alternative"
 
-    # The rejected remedy: not advised, and demonstrably unusable.
-    resp = await tool.handle_request(BashRequest(command=f"echo x > {tmp_path / 'redirected.txt'}"))
-    assert resp.return_code == -1, "redirection is expected to be rejected"
-    assert "redirect to a file" not in doc
-
-    # Remedy 1 — narrow what the command prints. Named, and a narrowed command runs.
-    assert "narrow" in doc, "advice must name narrowing the command's own output"
-    noisy = tmp_path / "noisy.txt"
-    noisy.write_text("line\n" * 200)
-    resp = await tool.handle_request(BashRequest(command=f"head -n 1 {noisy}"))
-    assert resp.return_code == 0, resp.stderr
-    assert resp.stdout.strip() == "line"
-
-    # Remedy 2 — let the program write its own file, then read it with the
-    # reader tool. Named, and an --output style invocation runs.
-    assert "--output" in doc, "advice must name the program's own output flag"
-    assert "reader tool" in doc, "advice must name what reads the file back"
+    # Placeholders the listed commands may use, bound to things this test can
+    # run inside tmp_path. A remedy using an unknown placeholder is a failure,
+    # not a silent skip.
+    payload = tmp_path / "payload.txt"
+    payload.write_text("line\n" * 200)
     writer = tmp_path / "writer.py"
     writer.write_text(
         "import sys\n"
         "out = sys.argv[sys.argv.index('--output') + 1]\n"
         "open(out, 'w').write('generated\\n')\n"
     )
-    produced = tmp_path / "produced.txt"
-    resp = await tool.handle_request(
-        BashRequest(command=f"{sys.executable} {writer} --output {produced}")
-    )
-    assert resp.return_code == 0, resp.stderr
-    assert produced.read_text() == "generated\n"
-    assert resp.stdout == "", "the remedy only helps if the bulk never comes back as output"
+    fixtures = {"FILE": str(payload), "PROG": f"{sys.executable} {writer}"}
+
+    def runnable(template: str) -> str:
+        used = set(re.findall(r"\b[A-Z]{2,}\b", template))
+        assert used <= set(fixtures), f"advice names remedies this test cannot run: {template!r}"
+        for name, value in fixtures.items():
+            template = template.replace(name, value)
+        return template
+
+    for template in offered:
+        resp = await tool.handle_request(BashRequest(command=runnable(template)))
+        assert resp.return_code == 0, f"advised remedy {template!r} does not run: {resp.stderr}"
+
+    for template in ruled_out:
+        resp = await tool.handle_request(BashRequest(command=runnable(template)))
+        assert resp.return_code == -1, (
+            f"{template!r} is advertised as unavailable but the guard let it through"
+        )
