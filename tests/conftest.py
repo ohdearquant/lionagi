@@ -50,10 +50,19 @@ def _remove_test_home(root):
     a person needs to find it and clear it. Only the removal is guarded --
     anything else escapes, because a bug in this function is not a cleanup
     failure and should not be dressed up as one.
+
+    ``OSError`` is what the filesystem raises: permissions, a busy file, a full
+    disk. ``RecursionError`` is what the walk itself raises -- ``rmtree``
+    descends recursively, so a tree deep enough to exhaust the stack fails
+    without the filesystem objecting to anything. Both leave the root on disk
+    and both are the caller's to clear, so both get the message. Nothing wider:
+    a bare ``except Exception`` would also swallow a ``TypeError`` or a
+    ``NameError`` from this function itself and report a bug here as a
+    directory the machine refused to delete.
     """
     try:
         shutil.rmtree(root)
-    except OSError as e:
+    except (OSError, RecursionError) as e:
         sys.stderr.write(
             f"\nlionagi tests: could not remove the temporary run directory {root}\n"
             f"  {e}\n"
