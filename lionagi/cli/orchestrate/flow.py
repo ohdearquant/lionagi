@@ -477,6 +477,46 @@ class _ExecResult:
 # ── Phase 1: build DAG ────────────────────────────────────────────────────────
 
 
+def _deps_from_built_graph(builder, label_by_node: dict[str, str]) -> dict[str, list[str]]:
+    """Read each node's incoming edges out of the graph the executor walks.
+
+    A dependency list re-derived from what the planner declared is a statement
+    about the *input* to the build step, not an observation of its *output*:
+    the builder can add or omit edges, the executor waits on every incoming
+    edge whatever its label, and nothing downstream would notice the two
+    disagreeing. Reading the graph makes the reported structure and the
+    executed one the same object.
+
+    `label_by_node` names the nodes a reader already has a name for — plan
+    steps, by their 1-based ordinal, matching how deps have always been shown.
+    A head outside it is a node that has no plan ordinal because it did not
+    exist at plan time; it is named by the spawn id stamped on it (the same id
+    its own result record carries), falling back to the raw node id so an edge
+    is never dropped for want of a name.
+    """
+    graph = builder.get_graph()
+    nodes = getattr(graph, "internal_nodes", None)
+    mapping = getattr(graph, "node_edge_mapping", None) or {}
+
+    def _name(head_id: str) -> str:
+        known = label_by_node.get(head_id)
+        if known is not None:
+            return known
+        node = nodes.get(head_id) if nodes is not None else None
+        stamped = node.metadata.get("spawn_id") if node is not None else None
+        return stamped or head_id
+
+    deps: dict[str, list[str]] = {}
+    for node_id, slots in mapping.items():
+        names: list[str] = []
+        for head_id in (slots.get("in") or {}).values():
+            name = _name(str(head_id))
+            if name not in names:
+                names.append(name)
+        deps[str(node_id)] = names
+    return deps
+
+
 async def _build_dag(
     env: OrchestrationEnv,
     prompt: str,
@@ -588,8 +628,13 @@ async def _build_dag(
         node_ids.append(node)
 
     known_nodes = set(node_ids)
+    # Observed from the graph just built, not re-derived from the plan that
+    # asked for it — see _deps_from_built_graph.
+    graph_deps = _deps_from_built_graph(
+        env.builder, {str(node_ids[i]): str(i + 1) for i in range(len(assignments))}
+    )
     deps_by_node = {
-        node_ids[i]: [str(j + 1) for j in dep_indices[i]] for i in range(len(assignments))
+        node_ids[i]: graph_deps.get(str(node_ids[i]), []) for i in range(len(assignments))
     }
 
     # Early DAG snapshot for Studio.
@@ -603,7 +648,7 @@ async def _build_dag(
                 "id": agent_ids[i],
                 "agent_id": agent_ids[i],
                 "control": False,
-                "depends_on": [str(j + 1) for j in dep_indices[i]],
+                "depends_on": deps_by_node[node_ids[i]],
             }
             for i in range(len(assignments))
         ],
@@ -1303,6 +1348,13 @@ async def _execute_dag(
     # below without this — makes it loud at teardown. Spawned nodes aren't
     # in node_ids/agent_ids (fixed-size, plan-time only), so checked separately.
     graph_nodes = getattr(env.builder.get_graph(), "internal_nodes", {}) or {}
+    # Re-read the edges now that the run is over: the durable record and the
+    # Studio DAG outlive the terminal, so they get the final graph rather than
+    # the plan-time one. Nodes absent from the graph (never built) keep their
+    # plan-time entry — there is nothing to observe for them.
+    final_deps = _deps_from_built_graph(
+        env.builder, {str(node_ids[i]): str(i + 1) for i in range(len(assignments))}
+    )
     escalated_op_ids = {str(x) for x in dag_result.get("escalated_operations", [])}
     escalated_evidence = [
         {"kind": "escalated_operation", "id": agent_ids[i], "label": assignments[i].assignee}
@@ -1343,7 +1395,7 @@ async def _execute_dag(
                 "agent_id": agent_ids[i],
                 "name": agent_ids[i],
                 "model": worker_models[i],
-                "depends_on": deps_by_node[nid],
+                "depends_on": final_deps.get(str(nid), deps_by_node[nid]),
                 "spawned": False,
                 "response": str(res) if res is not None else "(no response)",
                 "time_ms": t_exec_elapsed * 1000,
@@ -1411,7 +1463,9 @@ async def _execute_dag(
                 "name": assignee or "spawned",
                 "model": spawn_model,
                 "assignee": assignee,
-                "depends_on": [],
+                # A node injected mid-run has real predecessors; read them off
+                # the graph like every other node rather than reporting none.
+                "depends_on": final_deps.get(str(nid), []),
                 "spawned": True,
                 "response": str(res) if res is not None else "(no response)",
                 "time_ms": t_exec_elapsed * 1000,
@@ -2148,10 +2202,21 @@ async def _run_flow_inner(
     for i, ta in enumerate(assignments):
         deps = f" ← {','.join(str(j + 1) for j in dep_indices[i])}" if dep_indices[i] else ""
         dag_lines.append(f"{i + 1}:{ta.assignee}{deps}")
-    progress(f"Plan done ({t_plan:.1f}s): {len(assignments)} assignments — {' | '.join(dag_lines)}")
+    # Says "as declared" because that is all it can say: no node exists yet for
+    # any of these assignments, so this line is the planner's input to the build
+    # and not an observation of the graph that will run.
+    progress(
+        f"Plan done ({t_plan:.1f}s): {len(assignments)} assignments, dependencies as declared "
+        f"by the planner (the run graph is not built yet) — {' | '.join(dag_lines)}"
+    )
 
     if dry_run:
-        lines = [f"Plan ({len(assignments)} assignments):", ""]
+        lines = [
+            f"Plan ({len(assignments)} assignments):",
+            "Dependencies below are the ones the planner declared. A dry run builds no run",
+            "graph, so nothing here has been checked against the structure that would run.",
+            "",
+        ]
         for i, ta in enumerate(assignments):
             deps = (
                 f"  depends_on: {', '.join(str(j + 1) for j in dep_indices[i])}"
