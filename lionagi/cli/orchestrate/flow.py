@@ -34,6 +34,7 @@ from ._common import (
     _format_result_json,
     _format_result_text,
     _post_results_to_team,
+    retarget_artifact_section,
 )
 from ._notify import register_flow_notify_scope, unregister_flow_notify_scope
 from ._orchestration import (
@@ -96,6 +97,29 @@ def _leg_artifact_entries(node_id: str, role_defaults: dict | None) -> list[dict
             }
         )
     return entries
+
+
+def _retarget_spawn_prompt(branch, artifact_dir) -> None:
+    """Rewrite a spawned clone's artifact directive to name its own directory.
+
+    Best-effort: a prompt that cannot be rewritten is warned about rather than
+    raised, since a stale directive is a worse outcome for the spawned node
+    alone, while an exception here would abort the whole run.
+    """
+    msgs = getattr(branch, "msgs", None)
+    if msgs is None:
+        _warn(f"spawned worker prompt not retargeted to {artifact_dir}: branch has no messages")
+        return
+    sys_msg = msgs.system
+    if sys_msg is None:
+        return
+    current = sys_msg.content.system_message or ""
+    if not isinstance(current, str):
+        _warn(f"spawned worker prompt not retargeted to {artifact_dir}: prompt is not text")
+        return
+    updated = retarget_artifact_section(current, artifact_dir)
+    if updated != current:
+        msgs.set_system(msgs.create_system(system=updated))
 
 
 def _artifact_directive(run, node_id: str, leg_expected: list[dict]) -> str:
@@ -480,6 +504,12 @@ async def _build_dag(
     worker_branches: dict[str, object] = {}
     worker_messenger_bound: dict[str, bool] = {}
     spawn_assignees = sorted({ta.assignee for ta in assignments})
+
+    # The plan is the run's own statement of which workers it will have, made
+    # before any of them is built. Recording it here is what lets finalization
+    # notice a worker that was launched without being given a directory.
+    for agent_id in agent_ids:
+        env.expect_worker(agent_id)
 
     for i, ta in enumerate(assignments):
         w_branch, w_model, w_profile, messenger_bound = await build_worker_branch(
@@ -1171,20 +1201,36 @@ async def _execute_dag(
         role_defaults = dag_state.role_artifact_defaults.get(req.assignee) if req.assignee else None
         leg_expected = _leg_artifact_entries(spawn_id, role_defaults)
         note = _artifact_directive(env.run, spawn_id, leg_expected)
+        # A node whose instruction has been composed is a worker this run
+        # intends to have, whatever provider it turns out to run under.
+        env.expect_worker(spawn_id)
         return f"{req.instruction}\n\n{note}"
 
     def _spawn_branch_setup(operation: Any, branch: Any) -> None:
-        """Retarget a spawned node's cloned CLI workspace to its own spawn_id
-        subdir (Branch.clone inherits the emitter's repo kwarg otherwise).
-        No-op for non-CLI chat models."""
+        """Give a spawned node its own artifact directory.
+
+        Every spawned node gets the directory recorded on the run roster and its
+        inherited prompt retargeted at it. Only the workspace move is specific
+        to a CLI provider: `Branch.clone` carries the emitter's `repo` kwarg
+        over, and a non-CLI model has no such kwarg to move. The prompt it
+        inherited names the emitter's directory either way, and being absent
+        from the roster is not a provider-specific outcome — so neither of those
+        may be skipped for a non-CLI worker.
+        """
         spawn_id = operation.metadata.get("spawn_id") if operation is not None else None
         if not spawn_id:
             return
+        artifact_dir = env.run.agent_artifact_dir(spawn_id)
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        env.worker_artifact_dirs[spawn_id] = artifact_dir
+        # The clone inherits the emitter's prompt, which names the emitter's
+        # directory. Retarget it, or the spawned worker is pointed at a
+        # directory that is no longer its own.
+        _retarget_spawn_prompt(branch, artifact_dir)
+
         chat_model = getattr(branch, "chat_model", None)
         if chat_model is None or not getattr(chat_model, "is_cli", False):
             return
-        artifact_dir = env.run.agent_artifact_dir(spawn_id)
-        artifact_dir.mkdir(parents=True, exist_ok=True)
         kwargs = chat_model.endpoint.config.kwargs
         kwargs["repo"] = artifact_dir
         project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())

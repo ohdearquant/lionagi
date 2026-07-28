@@ -40,6 +40,11 @@ def _make_env(tmp_path, *, bare=True, total_budget=None, team_data=None, live_pe
 
     builder = _FakeBuilder()
     session = _FakeSession()
+    expected_worker_ids: list[str] = []
+
+    def expect_worker(agent_id: str) -> None:
+        if agent_id not in expected_worker_ids:
+            expected_worker_ids.append(agent_id)
 
     return SimpleNamespace(
         run=SimpleNamespace(
@@ -67,7 +72,27 @@ def _make_env(tmp_path, *, bare=True, total_budget=None, team_data=None, live_pe
         register_name=register_name,
         _live_persist=live_persist,
         _finalize_extras=None,
+        worker_artifact_dirs={},
+        expected_worker_ids=expected_worker_ids,
+        expect_worker=expect_worker,
     )
+
+
+class _FakeMsgs:
+    """Enough of the `Branch.msgs` surface to observe a system-prompt rewrite."""
+
+    def __init__(self, system_text: str):
+        self.system_text = system_text
+
+    @property
+    def system(self):
+        return SimpleNamespace(content=SimpleNamespace(system_message=self.system_text))
+
+    def create_system(self, *, system):
+        return system
+
+    def set_system(self, system) -> None:
+        self.system_text = system
 
 
 class _FakeOrcBranch:
@@ -184,6 +209,12 @@ async def test_build_dag_populates_node_ids(tmp_path):
     assert len(dag_state.worker_models) == 2
     assert dag_state.reactive is False
     assert dag_state.known_nodes == set(dag_state.node_ids)
+    # The plan is also the run's statement of which workers it will have, kept
+    # apart from the directories actually handed out so the two can disagree.
+    # `build_worker_branch` is patched out here, so nothing registered a
+    # directory — and the roster still names both workers.
+    assert env.expected_worker_ids == ["researcher", "implementer"]
+    assert env.worker_artifact_dirs == {}
 
 
 @pytest.mark.asyncio
@@ -369,8 +400,12 @@ async def test_execute_dag_reactive_wires_spawn_branch_setup_for_cli_workspace(t
     dir. Branch.clone() otherwise carries the emitting leg's repo forward
     unchanged — a sibling directory outside the spawned artifact contract —
     so without this seam a spawned CLI child can only write where its
-    emitter can, not where its own artifact contract expects. Non-CLI
-    branches (no writable-root concept) must be left untouched."""
+    emitter can, not where its own artifact contract expects.
+
+    Only the workspace move is CLI-specific. A non-CLI spawned branch has no
+    `repo` kwarg to retarget, but it inherited the same prompt naming the
+    emitter's directory and it belongs on the same end-of-run roster, so it
+    must still be registered and have its prompt retargeted."""
     env = _make_env(tmp_path)
     assignments = [TaskAssignment(task="x", assignee="researcher")]
     plan_result = _PlanResult(
@@ -419,14 +454,24 @@ async def test_execute_dag_reactive_wires_spawn_branch_setup_for_cli_workspace(t
     assert cli_branch.chat_model.endpoint.config.kwargs["repo"] == expected_dir
     assert expected_dir.exists()
 
+    assert env.worker_artifact_dirs["spawn-1"] == expected_dir
+
+    non_cli_op = SimpleNamespace(metadata={"spawn_id": "spawn-2"})
     non_cli_branch = SimpleNamespace(
         chat_model=SimpleNamespace(
             is_cli=False,
             endpoint=SimpleNamespace(config=SimpleNamespace(kwargs={})),
-        )
+        ),
+        msgs=_FakeMsgs("ARTIFACT DIRECTORY: /somewhere/else/emitter"),
     )
-    spawn_branch_setup(operation, non_cli_branch)
+    spawn_branch_setup(non_cli_op, non_cli_branch)
+
+    non_cli_dir = env.run.agent_artifact_dir("spawn-2")
+    # No writable-root concept, so no workspace move …
     assert "repo" not in non_cli_branch.chat_model.endpoint.config.kwargs
+    # … but it is on the roster and its prompt names its own directory.
+    assert env.worker_artifact_dirs["spawn-2"] == non_cli_dir
+    assert non_cli_branch.msgs.system_text == f"ARTIFACT DIRECTORY: {non_cli_dir}"
 
 
 @pytest.mark.asyncio
@@ -824,7 +869,7 @@ def _flow_phase_state_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pat
     ],
 )
 async def test_reactive_spawn_required_artifact_persistence_matrix(
-    _flow_phase_state_db, tmp_path, role, outcome, file_content
+    _flow_phase_state_db, tmp_path, monkeypatch, role, outcome, file_content
 ):
     """A spawned node running under reviewer/critic (both declare a required
     review.md) must flip the run to failed at teardown when that artifact is
@@ -844,6 +889,10 @@ async def test_reactive_spawn_required_artifact_persistence_matrix(
 
     orc_branch = Branch(name="orchestrator")
     session = Session(default_branch=orc_branch)
+    # `save_dir` only moves the artifact root; the run's state dirs still land
+    # under the module-level runs root, which is the user's real one. Redirect
+    # it so the test allocates entirely inside tmp_path.
+    monkeypatch.setattr("lionagi.cli._runs.RUNS_ROOT", tmp_path / "runs")
     run = allocate_run(save_dir=str(tmp_path / "artifacts"))
 
     env = OrchestrationEnv(
