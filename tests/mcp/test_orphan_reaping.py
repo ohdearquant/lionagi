@@ -519,6 +519,27 @@ def test_the_notice_is_the_one_the_run_configured(sandbox, monkeypatch):
     assert seen["sender"] == "who"
 
 
+def test_an_orphan_notice_runs_from_the_job_working_directory(sandbox, monkeypatch):
+    _pid_absent(monkeypatch)
+    job_cwd = sandbox / "project"
+    job_cwd.mkdir()
+    seen: dict[str, Any] = {}
+
+    class _Delivered:
+        returncode = 0
+
+    def _capture(argv, **kwargs):
+        seen.update({"argv": argv, **kwargs})
+        return _Delivered()
+
+    monkeypatch.setattr(_notify_hook.subprocess, "run", _capture)
+    rid = _stranded(cwd=str(job_cwd), notify_command='["notify-me", "{run_id}"]')
+
+    jobs.status(rid)
+
+    assert seen.get("cwd") == str(job_cwd)
+
+
 # --- verify-by 9: records written before this existed --------------------------
 
 

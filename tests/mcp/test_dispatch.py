@@ -16,7 +16,7 @@ import sys
 
 import pytest
 
-from lionagi.mcp import dispatch, jobs, verbs
+from lionagi.mcp import _notify_hook, dispatch, jobs, verbs
 
 
 def call(**kwargs):
@@ -148,6 +148,37 @@ def test_ops_alone_still_run():
     answer = call(ops=[{"op": "server.info"}])
     assert answer["status"] == "success"
     assert answer["ops"][0]["ok"] is True
+
+
+def test_a_relative_job_directory_stays_valid_for_its_terminal_notice(
+    tmp_path, monkeypatch, submitted
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    answer = call(
+        ops=[
+            spawn_op(
+                "agent.submit",
+                {"prompt": "hi", "agent": "implementer", "cwd": project.name},
+            )
+        ]
+    )
+    assert answer["ops"][0]["ok"] is True
+
+    # The terminal hook runs from inside the submitted job directory. Persisting
+    # a caller-relative path would resolve it a second time as project/project.
+    monkeypatch.chdir(project)
+    outcome = _notify_hook.deliver_terminal_notice(
+        "rid",
+        {"cwd": submitted["cwd"], "kind": "agent"},
+        "completed",
+        command=json.dumps([sys.executable, "-c", "pass"]),
+    )
+
+    assert outcome["ok"] is True, outcome
+    assert submitted["cwd"] == str(project)
 
 
 def test_help_with_an_empty_ops_list_is_a_plain_help_call():
