@@ -558,9 +558,12 @@ def _locked_job(run_id: str) -> Iterator[_GuardedJob]:
         # obvious repair is worse than the problem: by the time a retry ran the
         # runtime may have handed that number to something else, so it would
         # close a file belonging to whatever got it next. What bounds the damage
-        # is not this block but the lock itself — an advisory lock lives with
-        # the open file description, so the worst case lasts as long as this
-        # process and goes when it exits.
+        # is not this block but the lock itself: both of the platform locks this
+        # module takes are held by way of the descriptor rather than recorded
+        # anywhere outside the process, so the worst case lasts as long as this
+        # process and goes when it exits. The two mechanisms are not the same
+        # one and the bound is what they agree on, so the bound is what gets
+        # stated here.
         try:
             with contextlib.suppress(OSError):
                 _unlock_fd(fd)
