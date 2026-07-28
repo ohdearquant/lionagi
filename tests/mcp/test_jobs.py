@@ -3161,10 +3161,10 @@ def test_an_interrupt_arriving_during_release_is_not_swallowed_and_still_closes(
     request entirely.
 
     The close is still attempted on that way out, which is what this asserts: a
-    lock nobody released is worse than either failure, and it stays held for the
-    rest of this process's life: the lock is held by way of the descriptor on
-    every platform this module locks on, so it goes when the process exits and
-    not before. Attempted is
+    lock nobody released is worse than either failure, and process exit is the
+    only thing that puts a ceiling on how long it stays held. A ceiling is not a
+    schedule — the close attempted right here takes the lock down earlier every
+    time it succeeds, which is the whole reason for attempting it. Attempted is
     all that can be asserted, here or anywhere: a close that raises may or may
     not have released the descriptor, and there is no second call that could
     settle it safely.
