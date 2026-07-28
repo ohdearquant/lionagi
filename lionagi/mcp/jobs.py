@@ -1387,14 +1387,17 @@ def submit(
     log_path = d / "console.log"
 
     # Nothing is written into the reserved directory until the whole command line
-    # is assembled, and a submission that does not become a job takes the
-    # reservation back on its way out — a run that never started leaves no trace,
-    # and a directory here is not nothing: every directory under the jobs root is
-    # listed as a job, so one left behind reads back as a job with no kind that
-    # never finishes. That holds however far the submission got, so the block
-    # runs to the last write this function makes before the record exists rather
-    # than stopping where the assembly does: a failure at the second of two
-    # writes leaves the same unfinishable job as a failure at the first.
+    # is assembled, and a submission that does not become a job gives the
+    # reservation back on its way out. A directory here is not nothing: every
+    # directory under the jobs root is listed as a job, so one left behind reads
+    # back as a job with no kind that never finishes. What that give-back does
+    # and does not promise is _discard_reservation's to say rather than this
+    # block's, exception included — a removal the filesystem refuses leaves the
+    # directory standing, and insisting past a refusal is worse than accepting
+    # it. What this block decides is the reach: it runs to the last write this
+    # function makes before the record exists rather than stopping where the
+    # assembly does, so a failure at the second of two writes gives the
+    # reservation back the same way a failure at the first does.
     #
     # It ends at the record. Once _write_job has run the directory is a real job
     # with real state, and correcting it is the business of the marking that
