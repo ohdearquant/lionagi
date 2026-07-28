@@ -882,6 +882,10 @@ async def _execute_dag(
     spawn doesn't overwrite `spawned` with `[]` and lose reconstructed work."""
     assignments = plan_result.assignments
     agent_ids = plan_result.agent_ids
+    role_by_worker = {
+        agent_id: assignment.assignee
+        for agent_id, assignment in zip(agent_ids, assignments, strict=True)
+    }
 
     reactive = dag_state.reactive
     spawn_roles = dag_state.spawn_roles
@@ -1157,6 +1161,25 @@ async def _execute_dag(
         env.messenger.on("done", _team_coordinator.on_done)
         env.messenger.on("finished", _team_coordinator.on_finished)
 
+    def _artifact_defaults_for_assignee(assignee: str | None) -> dict | None:
+        role = role_by_worker.get(assignee, assignee)
+        return dag_state.role_artifact_defaults.get(role) if role else None
+
+    def _decorate_team_round_artifacts(operation: Any) -> None:
+        """Tell a stamped team round about the contract its result will register."""
+        assignee = operation.metadata.get("assignee")
+        spawn_id = operation.metadata.get("spawn_id")
+        if not spawn_id:
+            return
+        leg_expected = _leg_artifact_entries(spawn_id, _artifact_defaults_for_assignee(assignee))
+        artifact_note = _artifact_directive(env.run, spawn_id, leg_expected)
+        params = operation.parameters
+        if not isinstance(params, dict):
+            raise TypeError("team round operation parameters must be a dictionary")
+        context = params.setdefault("context", [])
+        context.append({"artifact_instructions": artifact_note})
+        env.expect_worker(spawn_id)
+
     def _on_team_op_complete(node: Any) -> None:
         """ReactiveExecutor.on_op_complete callback: race-free inject() for
         team wakeup rounds. Called for every completed node."""
@@ -1190,6 +1213,7 @@ async def _execute_dag(
             return
         injected = []
         for op in new_ops:
+            _decorate_team_round_artifacts(op)
             if executor.inject(op, independent=True):
                 injected.append(op)
             else:
@@ -1474,10 +1498,10 @@ async def _execute_dag(
 
         # Record the spawned node's role-declared artifacts in the session
         # contract, namespaced under its own subdir — required entries stay
-        # enforceable, not just observability, since decorate_instruction
-        # already told the spawned node its dir + REQUIRED files before it ran.
+        # enforceable, not just observability, since the node received its
+        # artifact directive before it was injected.
         if assignee:
-            role_defaults = dag_state.role_artifact_defaults.get(assignee)
+            role_defaults = _artifact_defaults_for_assignee(assignee)
             spawned_contract_entries.extend(_leg_artifact_entries(sid, role_defaults))
 
     ctx_lp = getattr(env, "_live_persist", None)
