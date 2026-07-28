@@ -2233,12 +2233,14 @@ def status(run_id: str) -> dict[str, Any]:
     a finished run reads them rather than opening the record on disk.
     ``mcp_config_servers`` names the servers by name. ``[]`` and null are different
     answers: ``[]`` says the question was settled and the answer was none, null says
-    no set was resolved — either because the caller named their own config file,
-    which this run does not read, or because the record predates the field. It
-    reports what was RESOLVED, which is not a claim that the child's provider then
-    started each one; a server can be listed here and still fail to come up in the
-    child's own session. What it settles is the prior question, whether a server the
-    run was supposed to have was in its set at all.
+    no set was resolved. Three things read as null — the caller named their own
+    config file, which this run does not read; no config was found at or above the
+    launch directory; or the record predates the field. ``mcp_config_reason`` names
+    which of the first two, and a record older than the field carries no reason
+    either. It reports what was RESOLVED, which is not a claim that the child's
+    provider then started each one; a server can be listed here and still fail to
+    come up in the child's own session. What it settles is the prior question,
+    whether a server the run was supposed to have was in its set at all.
 
     ``known`` says whether a usable record was obtained, and ``record_state`` says
     what was read to answer that: ``"ok"``, or ``"absent"``, ``"unreadable"`` or
