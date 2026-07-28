@@ -18,6 +18,7 @@ __all__ = (
     "HookDict",
     "StreamHandlers",
     "AssociatedEventInfo",
+    "StreamTerminalState",
 )
 
 
@@ -25,6 +26,22 @@ class HookEventTypes(str, Enum):
     PreEventCreate = "pre_event_create"
     PreInvocation = "pre_invocation"
     PostInvocation = "post_invocation"
+
+
+class StreamTerminalState(str, Enum):
+    """How a hooked stream ended, as seen by its post-invocation hook."""
+
+    Completed = "completed"
+    """The source stream was consumed to exhaustion."""
+
+    Failed = "failed"
+    """The source stream raised; the exception still propagates to the caller."""
+
+    Closed = "closed"
+    """The consumer stopped early, so the stream was closed before exhaustion."""
+
+    Cancelled = "cancelled"
+    """The consuming task was cancelled, including by an enclosing timeout."""
 
 
 ALLOWED_HOOKS_TYPES = HookEventTypes.allowed()
