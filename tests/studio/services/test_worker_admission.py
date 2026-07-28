@@ -185,6 +185,50 @@ async def test_concurrency_block_holds_across_a_fresh_pass_via_db_state(db: Stat
     assert (await _status_of(db, waiter_2))["status"] == "queued"
 
 
+async def test_duration_invalid_waiter_does_not_consume_cap_after_affinity_sort(
+    db: StateDB,
+) -> None:
+    holder_id = await _submit(db)
+    result = await transition(
+        db,
+        TransitionRequest(
+            entity_type="schedule_run",
+            entity_id=holder_id,
+            from_state="queued",
+            to_state="running",
+            reason=StateReason(code=RunReasons.STARTED_OK, summary="held"),
+            actor=Actor(type="system", id="test-holder"),
+            idempotency_key=f"claim:{holder_id}",
+        ),
+        patch={"leased_by": "test-holder", "lease_expires_at": None, "lease_attempts": 1},
+    )
+    assert result.applied is True
+
+    invalid_id = await _submit(
+        db,
+        args={"admission": {"max_duration_seconds": 120}},
+    )
+    valid_id = await _submit(
+        db,
+        required_capabilities=["gpu-exclusive", "warmed-cache"],
+    )
+
+    claimed = await claim_and_execute(
+        db,
+        worker_id="w1",
+        execute=_never_completes_execute,
+        advertised_capabilities=["gpu-exclusive", "warmed-cache"],
+        lease_ttl=60,
+        waiter_cap_multiplier=1,
+    )
+
+    assert claimed == 0
+    invalid_row = await _status_of(db, invalid_id)
+    assert invalid_row["status"] == "skipped"
+    assert invalid_row["status_reason_code"] == RunReasons.SKIPPED_DURATION_EXCEEDS_LEASE
+    assert (await _status_of(db, valid_id))["status"] == "queued"
+
+
 # ── 2. Claim-time rejection surfaces observably ──────────────────────────
 
 
