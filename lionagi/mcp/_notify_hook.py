@@ -131,7 +131,11 @@ def _delivery_env(sender: str) -> dict[str, str] | None:
 
 
 def _deliver(
-    argv: list[str], payload: dict[str, str], env: dict[str, str] | None = None
+    argv: list[str],
+    payload: dict[str, str],
+    env: dict[str, str] | None = None,
+    *,
+    program: str | None = None,
 ) -> dict[str, Any]:
     """Run the delivery command best-effort; return its outcome for the record.
 
@@ -140,6 +144,13 @@ def _deliver(
     fail silently would cost the detached-spawn pattern its reliability. Only
     the exit code is kept: the command's stdout/stderr is free text that can
     carry a credential, so it goes to DEVNULL and is never captured.
+
+    *program* is recorded alongside it so the record names which notifier this
+    was. It is the program token of the configured argv template, before any run
+    field is substituted into it — operator configuration, which whoever wrote it
+    can already read, and not something the command produced at runtime. That is
+    the whole difference: it says *what* failed without keeping a byte of what
+    the command said, which stays discarded.
     """
     try:
         proc = subprocess.run(  # noqa: S603 — argv is the operator-configured delivery command, no shell
@@ -153,13 +164,23 @@ def _deliver(
             env=env,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        # never fail the run's terminal path; record the failure instead
-        return {"attempted": True, "ok": False, "exit_code": None, "error": type(exc).__name__}
+        # never fail the run's terminal path; record the failure instead.
+        # The exception *type* names how the delivery came apart — never started,
+        # or ran past the timeout — and the exception's message is left out: it
+        # is the one string here whose content this hook does not choose.
+        return {
+            "attempted": True,
+            "ok": False,
+            "exit_code": None,
+            "error": type(exc).__name__,
+            "command": program,
+        }
     return {
         "attempted": True,
         "ok": proc.returncode == 0,
         "exit_code": proc.returncode,
         "error": None,
+        "command": program,
     }
 
 
@@ -218,6 +239,10 @@ def main(argv: list[str] | None = None) -> int:
         args.command or os.environ.get("LIONAGI_MCP_NOTIFY_COMMAND"),
         cwd=(job or {}).get("cwd"),
     )
+    # Taken before the sender check below can drop the template: a notifier
+    # refused for want of a sender is one an operator most wants named, and the
+    # program token is the only part of it that survives the refusal.
+    program = template[0] if template else None
     if template and not sender and any("{sender}" in tok for tok in template):
         # The command asks who the notice is from and there is no answer. An
         # empty string is not one: it puts a blank where an identity belongs,
@@ -235,12 +260,22 @@ def main(argv: list[str] | None = None) -> int:
             "target": target,
             "sender": sender,
         }
-        outcome = _deliver(_substitute(template, fields), fields, _delivery_env(sender))
+        outcome = _deliver(
+            _substitute(template, fields), fields, _delivery_env(sender), program=program
+        )
     elif unusable:
         # Configured but unusable. Recorded as a failure so job_status shows a
         # notifier that cannot deliver, rather than the silence of one that was
-        # never asked to.
-        outcome = {"attempted": False, "ok": False, "exit_code": None, "error": unusable}
+        # never asked to. ``command`` is None when the configuration never
+        # yielded a program to name — an unparseable override has no program in
+        # it, and saying so beats inventing one.
+        outcome = {
+            "attempted": False,
+            "ok": False,
+            "exit_code": None,
+            "error": unusable,
+            "command": program,
+        }
     else:
         outcome = {"attempted": False}  # nothing configured — not a failure
     jobs.record_notify_delivery(args.run_id, outcome)

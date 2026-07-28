@@ -2615,3 +2615,121 @@ def test_an_artifact_whose_metadata_is_refused_does_make_the_listing_unreadable(
 
     assert found == ["kept.txt"]
     assert state == "unreadable"
+
+
+def _terminal_run(outcome, status="completed"):
+    """A finished run carrying *outcome* as its recorded delivery result."""
+    rid = jobs.new_run_id()
+    jobs._write_job(
+        {
+            "run_id": rid,
+            "status": status,
+            "kind": "agent",
+            "pid": None,
+            "log": None,
+            "finished_at": "2026-01-01T00:00:00Z" if status == "completed" else None,
+        }
+    )
+    if outcome is not None:
+        jobs.record_notify_delivery(rid, outcome)
+    return rid
+
+
+_DELIVERED = {"attempted": True, "ok": True, "exit_code": 0, "error": None, "command": "notify"}
+_EXITED_NONZERO = {
+    "attempted": True,
+    "ok": False,
+    "exit_code": 1,
+    "error": None,
+    "command": "notify",
+}
+_NEVER_STARTED = {
+    "attempted": True,
+    "ok": False,
+    "exit_code": None,
+    "error": "OSError",
+    "command": "notify",
+}
+_REFUSED_BEFORE_RUNNING = {
+    "attempted": False,
+    "ok": False,
+    "exit_code": None,
+    "error": "delivery_command_is_empty",
+    "command": None,
+}
+_NOTHING_CONFIGURED = {"attempted": False}
+
+
+def test_listing_tells_a_failed_notice_apart_from_a_delivered_one(sandbox):
+    """The listing distinguishes a run whose notice failed from one that is fine.
+
+    This is the surface a caller polls while waiting on several runs. Reporting
+    only the run status there leaves a finished run whose notice never went out
+    looking exactly like a run still working — the failure resolving in the
+    reassuring direction, which is the worst way for it to resolve.
+    """
+    delivered = _terminal_run(_DELIVERED)
+    exited_nonzero = _terminal_run(_EXITED_NONZERO)
+    never_started = _terminal_run(_NEVER_STARTED)
+    refused = _terminal_run(_REFUSED_BEFORE_RUNNING)
+
+    states = {j["run_id"]: j["notify_delivery_state"] for j in jobs.list_jobs()}
+    assert states[delivered] == "delivered"
+    # every way a configured notifier came to nothing reads the same here: to a
+    # caller waiting on the notice they are one fact, and status carries the rest
+    assert states[exited_nonzero] == "failed"
+    assert states[never_started] == "failed"
+    assert states[refused] == "failed"
+
+
+def test_listing_does_not_read_an_absent_notifier_as_a_failure(sandbox):
+    """Silence that was chosen, and a run not yet finished, are not failures.
+
+    Nothing configured is the documented default, so a run that asked for no
+    notice must never appear alongside the ones whose notice was lost.
+    """
+    nothing_configured = _terminal_run(_NOTHING_CONFIGURED)
+    still_running = _terminal_run(None, status="running")
+    delivered = _terminal_run(_DELIVERED)
+    failed = _terminal_run(_EXITED_NONZERO)
+
+    states = {j["run_id"]: j["notify_delivery_state"] for j in jobs.list_jobs()}
+    assert states[nothing_configured] == "none"
+    assert states[still_running] == "none"
+    # the three outcomes a caller branches on are three different words
+    assert len({states[nothing_configured], states[delivered], states[failed]}) == 3
+
+
+def test_listing_reads_a_damaged_delivery_record_as_no_delivery(sandbox):
+    """A record whose delivery field is not an object must not break the listing.
+
+    One damaged record cannot be allowed to cost the caller the runs beside it,
+    and an unreadable field is not evidence that a notice failed.
+    """
+    rid = jobs.new_run_id()
+    jobs._write_job(
+        {
+            "run_id": rid,
+            "status": "completed",
+            "kind": "agent",
+            "pid": None,
+            "log": None,
+            "notify_delivery": "delivered!",
+        }
+    )
+
+    assert jobs.list_jobs()[0]["notify_delivery_state"] == "none"
+
+
+def test_status_still_reports_the_whole_delivery_outcome(sandbox):
+    """status is the diagnosis surface and is unchanged: it carries the object.
+
+    The listing's collapsed state is an addition to the listing, not a
+    replacement for what status has always reported.
+    """
+    rid = _terminal_run(_EXITED_NONZERO)
+
+    st = jobs.status(rid)
+    assert st["notify_delivery"] == _EXITED_NONZERO
+    # and the collapsed form stays out of status: one field, one meaning
+    assert "notify_delivery_state" not in st

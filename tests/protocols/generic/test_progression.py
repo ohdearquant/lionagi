@@ -115,14 +115,21 @@ def test_iter(sample_progression, sample_elements):
         assert prog_item == element.id
 
 
-def test_next(sample_progression, sample_elements):
-    assert next(sample_progression) == sample_elements[0].id
+def test_progression_is_not_an_iterator(sample_progression):
+    # Iterable, not an iterator: next() on the container itself is a TypeError
+    # rather than a call that keeps returning the first id forever.
+    with pytest.raises(TypeError):
+        next(sample_progression)
+
+
+def test_next_over_iter(sample_progression, sample_elements):
+    assert next(iter(sample_progression)) == sample_elements[0].id
 
 
 def test_next_empty():
     empty_prog = Progression()
     with pytest.raises(StopIteration):
-        next(empty_prog)
+        next(iter(empty_prog))
 
 
 def test_direct_order_mutation_keeps_contains_accurate():

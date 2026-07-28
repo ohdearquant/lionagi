@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from lionagi._errors import TimeoutError as LionTimeoutError
+from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.libs.path_safety import validate_path_component as validate_path_component
 from lionagi.ln.concurrency import is_cancelled, run_async
 
@@ -431,8 +432,10 @@ def _validate_spec_fields(spec: dict) -> str | None:
         prompt = spec["prompt"]
         if not isinstance(prompt, str):
             return f"spec field 'prompt' must be a string, got {type(prompt).__name__}"
-        if len(prompt) > 8192:
-            return "spec field 'prompt' exceeds maximum length of 8192 characters"
+        if len(prompt) > MAX_SPEC_PROMPT_CHARS:
+            return (
+                f"spec field 'prompt' exceeds maximum length of {MAX_SPEC_PROMPT_CHARS} characters"
+            )
 
     if "save" in spec:
         save = spec["save"]
@@ -1008,10 +1011,10 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             return 1
         args.model, args.prompt = resolved
 
-        has_model = args.model is not None or args.agent is not None
-        if not has_model:
-            log_error("model or --agent is required")
-            return 1
+        # Naming neither a model nor an agent is not an incomplete command here:
+        # setup_orchestration reads it as a request to orchestrate and resolves
+        # the default orchestrator profile. A prompt is still required, because
+        # nothing downstream can supply one.
         if not args.prompt:
             log_error("prompt is required")
             return 1
@@ -1175,11 +1178,10 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             args.prompt = args.model
             args.model = None
 
-        has_model = args.model is not None or args.agent is not None
-        if not has_model:
-            log_error("model or --agent is required")
-            return 1
-
+        # Naming neither a model nor an agent is not an incomplete command here:
+        # setup_orchestration reads it as a request to orchestrate and resolves
+        # the default orchestrator profile. A prompt is still required, because
+        # nothing downstream can supply one.
         if not args.prompt:
             log_error("prompt is required (positional or via -f spec file)")
             return 1

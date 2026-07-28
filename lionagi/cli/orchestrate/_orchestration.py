@@ -35,6 +35,7 @@ from .._logging import hint, warn
 from .._providers import (
     _CLAUDE_PROVIDER_NAMES,
     AgentProfile,
+    AgentProfileNotFoundError,
     build_imodel_from_spec,
     list_agents,
     load_agent_profile,
@@ -79,7 +80,11 @@ __all__ = (
     "role_config",
     "resolve_modes",
     "parse_orchestrator_provider",
+    "DEFAULT_ORCHESTRATOR_AGENT",
 )
+
+#: Profile used when a submit names neither an agent nor a model.
+DEFAULT_ORCHESTRATOR_AGENT = "orchestrator"
 
 
 def parse_orchestrator_provider(model_spec: str) -> tuple[str | None, str | None]:
@@ -466,6 +471,20 @@ class OrchestrationEnv:
     builder: OperationGraphBuilder
 
     orc_profile: AgentProfile | None
+
+    # The name of the profile above, carried separately so anything recording
+    # the run can name it. Deliberately not defaulted: a construction site that
+    # cannot say which profile the run used has to say so out loud rather than
+    # record a null the reader will mistake for "no profile".
+    orc_profile_name: str | None
+    """Which agent profile this run actually orchestrated under.
+
+    Not necessarily the one the caller named, because a caller who named
+    neither an agent nor a model named none, and the run resolves one on their
+    behalf — this is the one it resolved and loaded. ``None`` means no profile
+    was used at all, which is the caller who named only a model.
+    """
+
     default_model_spec: str
 
     bare: bool
@@ -605,9 +624,37 @@ async def setup_orchestration(
 
     cache_cancelled_exc_class()
 
+    # Naming no agent and no model is a request to orchestrate, not an
+    # incomplete command: orchestration is what this entry point does, so the
+    # orchestrator profile is the answer rather than a question to ask back.
+    # Only the fully unspecified case defaults. A caller who named either one
+    # gets it honoured, and still gets the refusal below if it cannot resolve
+    # to a model, because there the caller did choose and we could not comply.
+    defaulted_agent = not agent_name and not model_spec
+    if defaulted_agent:
+        agent_name = DEFAULT_ORCHESTRATOR_AGENT
+
     orc_profile: AgentProfile | None = None
     if agent_name:
-        orc_profile = load_agent_profile(agent_name)
+        try:
+            orc_profile = load_agent_profile(agent_name)
+        except AgentProfileNotFoundError as exc:
+            if not defaulted_agent:
+                raise
+            # The caller never mentioned this profile, so an error naming it as
+            # if they had asked for it explains nothing. Say what was assumed
+            # and what would satisfy it instead.
+            #
+            # Only the not-found case is translated. The loader reads the file
+            # once it has found one, and a file that disappears between those
+            # two steps raises the same builtin type — reported as a missing
+            # default profile it would send the reader somewhere else entirely.
+            raise ConfigurationError(
+                "Naming neither an agent nor a model orchestrates under the "
+                f"{DEFAULT_ORCHESTRATOR_AGENT!r} agent profile, and no such profile "
+                "was found. Create one in .lionagi/agents/ or ~/.lionagi/agents/, "
+                "or name an agent or a model on this call."
+            ) from exc
         if orc_profile.model and not model_spec:
             model_spec = orc_profile.model
         if orc_profile.effort and not effort:
@@ -618,8 +665,12 @@ async def setup_orchestration(
             fast = True
 
     if not model_spec:
+        # Only reachable when the caller named an agent, since naming nothing
+        # defaults above and naming a model satisfies this outright. So the
+        # caller did choose, and the profile they chose carries no model.
         raise ConfigurationError(
-            "Provide a model spec or use -a/--agent to load a profile with a model."
+            f"Agent profile {agent_name!r} declares no model, and no model spec was given. "
+            "Add a model: line to the profile, or pass a model spec."
         )
 
     from lionagi.casts.catalog import _load_packaged_pack
@@ -685,6 +736,9 @@ async def setup_orchestration(
         orc_branch=orc_branch,
         builder=builder,
         orc_profile=orc_profile,
+        # Read off the loaded profile rather than off `agent_name`, so the
+        # recorded name cannot name a profile other than the one loaded.
+        orc_profile_name=orc_profile.name if orc_profile is not None else None,
         default_model_spec=model_spec,
         bare=bare,
         effort=effort,

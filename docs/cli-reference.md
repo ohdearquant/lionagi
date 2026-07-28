@@ -569,14 +569,18 @@ li kill --all-stale --dry-run
 | `--grace SECS` | 5.0 | Wait after SIGTERM before escalating to SIGKILL |
 
 **`--recursive` scope boundary.** Recursion only reaches PID-bearing workers,
-and orchestrator rows have no path to theirs:
+and an orchestrator row reaches them only through a link it recorded:
 
-- Killing a **play** cannot reach its workers. A play row stores no link to
-  the sessions it started, and a worker session stores no play reference, so
-  there is no key to resolve them by. The kill marks the play row `blocked`,
-  prints an error naming the workers it could not stop, and **exits 1** — a
-  play kill never reports success it did not achieve. Kill the worker session
-  ids directly (`li monitor` lists them).
+- Killing a **play** reaches its worker chain only if the play row records the
+  session it started, in `plays.session_id`. One path binds that column: the
+  Studio show importer, which resolves the session by name when it mirrors a
+  show directory. A play created by a live run leaves it unset, and a worker
+  session stores no play reference either, so there is no key to resolve those
+  workers by. In that case the kill marks the play row `blocked`, prints an
+  error saying no worker was stopped, and **exits 1** — a play kill never
+  reports success it did not achieve. Kill the worker session ids directly
+  (`li monitor` lists them). `--recursive` is not needed for either case: a
+  play row carries no PID of its own, so resolving its workers is the kill.
 - Killing a **session** with `--recursive` also cancels its linked invocation.
 - A **show** id cannot be killed directly today: only `running` rows are
   killable, and show rows persist as `active` (never `running`), so
@@ -585,9 +589,13 @@ and orchestrator rows have no path to theirs:
 
 To stop everything under a show, kill the play id or session id directly
 (`li monitor <show-id>` lists its plays). `--all-stale` covers the abandoned
-case: a play whose stale worker session is swept is cancelled with it, and a
-show row is cancelled only once it is older than `--threshold` **and** all of
-its plays are terminal.
+case only as far as the recorded links allow: a play older than `--threshold`
+whose recorded worker session has gone terminal is marked `blocked`; a play
+that records no worker session is left alone, because age by itself cannot
+tell an abandoned play from one still doing hours of work. The sweep prints
+one line naming how many rows it skipped for that reason, and reports them as
+`skipped_unlinked_plays` in its closing counts. A show row is marked `aborted`
+only once it is older than `--threshold` **and** all of its plays are terminal.
 
 ---
 
@@ -698,7 +706,10 @@ list), and `notify_seat` fills the `{target}` placeholder. The environment
 variables `LIONAGI_MCP_NOTIFY_COMMAND` and `LIONAGI_MCP_NOTIFY_TARGET` set a
 process-wide default. Delivery outcome is recorded on the job and surfaced in
 `job.status` (`notify_delivery`), so a notice that failed to send is visible
-rather than silently lost.
+rather than silently lost. `job.list` carries the same outcome collapsed to one
+word in `notify_delivery_state` — `delivered`, `failed`, or `none` when no
+notifier was configured — so a run whose notice never went out is spotted while
+scanning runs, not only when one is looked up.
 
 ---
 

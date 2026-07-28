@@ -234,7 +234,9 @@ async def operate(
         # this call, so transport must follow the effective model's CLI flag
         # rather than the branch's — otherwise a per-call CLI model on an API
         # branch takes the non-streaming path.
-        effective_imodel = _cctx.imodel or branch.chat_model
+        # Sentinel status, not truthiness: a supplied model that defines
+        # __bool__ as False is still a supplied model and must win here.
+        effective_imodel = branch.chat_model if _cctx._is_sentinel(_cctx.imodel) else _cctx.imodel
         if isinstance(_cctx, RunParam) or getattr(effective_imodel, "is_cli", False):
             from ..run.run import run_and_collect
 
