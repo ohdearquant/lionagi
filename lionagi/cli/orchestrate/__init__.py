@@ -497,6 +497,30 @@ def _interpolate_prompt(template: str, positional: str | None, playbook_args: di
     return re.sub(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", _sub, template)
 
 
+def _check_assembled_prompt(prompt: str) -> str | None:
+    """Measure the prompt that will run, not the one it was written from.
+
+    A spec's prompt field is checked when the file is read, but that is a
+    template: the caller's positional and the playbook's arguments are
+    substituted into it afterwards, and either can make the result far longer
+    than the text that passed. A caller that names no spec at all skips the
+    file check outright. Both forms arrive here holding the finished text,
+    which is the only version that reaches a run.
+
+    Same bound as the spec field, deliberately: the number exists to refuse a
+    file that is not a prompt, and it sits far enough out that template plus
+    arguments together stay well under it. A second, larger bound here would
+    mean the assembled prompt could pass while the template it came from could
+    not, which is the asymmetry this check is closing.
+    """
+    if len(prompt) > MAX_SPEC_PROMPT_CHARS:
+        return (
+            f"assembled prompt exceeds maximum length of {MAX_SPEC_PROMPT_CHARS} "
+            f"characters (got {len(prompt)})"
+        )
+    return None
+
+
 def _add_mcp_config_args(parser: argparse.ArgumentParser) -> None:
     """Where this run's workers get their MCP servers from.
 
@@ -1019,6 +1043,11 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             log_error("prompt is required")
             return 1
 
+        prompt_err = _check_assembled_prompt(args.prompt)
+        if prompt_err is not None:
+            log_error(prompt_err)
+            return 1
+
         synth = args.with_synthesis
         with_synthesis = synth is not False
         synthesis_model = synth if isinstance(synth, str) else None
@@ -1184,6 +1213,11 @@ def run_orchestrate(args: argparse.Namespace) -> int:
         # nothing downstream can supply one.
         if not args.prompt:
             log_error("prompt is required (positional or via -f spec file)")
+            return 1
+
+        prompt_err = _check_assembled_prompt(args.prompt)
+        if prompt_err is not None:
+            log_error(prompt_err)
             return 1
 
         if args.team_mode is not None and getattr(args, "team_attach", None) is not None:
