@@ -371,6 +371,7 @@ def test_1173_prune_does_not_touch_running_old_sessions(tmp_path, monkeypatch):
                     "name": "ancient-running",
                     "status": "running",
                     "started_at": ancient,
+                    "updated_at": ancient,
                 }
             )
             return sid
@@ -405,6 +406,7 @@ def test_1173_prune_status_transitions_cleanup(tmp_path, monkeypatch):
                     "name": "old-completed",
                     "status": "completed",
                     "started_at": old_ts,
+                    "updated_at": old_ts,
                 }
             )
             # Insert a fake status_transition for this session
@@ -455,6 +457,7 @@ def test_1173_prune_preserves_recent_terminal_sessions(tmp_path, monkeypatch):
                     "name": "recent-completed",
                     "status": "completed",
                     "started_at": recent_ts,
+                    "updated_at": recent_ts,
                 }
             )
             return sid

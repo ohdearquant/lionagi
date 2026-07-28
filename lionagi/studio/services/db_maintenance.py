@@ -177,7 +177,7 @@ async def prune_old_data(
     async with StateDB() as db:
         async with db.transaction() as conn:
             # ── find session IDs to prune ─────────────────────────────────
-            sql = f"SELECT id FROM sessions WHERE status IN ({sess_ph}) AND started_at <= ?"  # noqa: S608
+            sql = f"SELECT id FROM sessions WHERE status IN ({sess_ph}) AND updated_at <= ?"  # noqa: S608
             rows = (await conn.execute(*_q(sql, (*_TERMINAL_SESSION_STATUSES, cutoff)))).fetchall()
             session_ids = [r[0] for r in rows]
 
@@ -204,14 +204,15 @@ async def prune_old_data(
                     session_ids,
                 )
 
-                # Now that the rows are held, re-read the status and drop any
-                # that came back to life before the lock, so the batch is never
-                # assembled around a session with a live leg on it.
+                # Now that the rows are held, re-read both retention predicates
+                # and drop any session that came back to life or received recent
+                # activity before the lock.
                 rows = await _fetch_chunked(
                     conn,
-                    f"SELECT id FROM sessions WHERE status IN ({sess_ph}) AND id",  # noqa: S608
+                    f"SELECT id FROM sessions WHERE status IN ({sess_ph}) "  # noqa: S608
+                    "AND updated_at <= ? AND id",
                     session_ids,
-                    _TERMINAL_SESSION_STATUSES,
+                    (*_TERMINAL_SESSION_STATUSES, cutoff),
                 )
                 session_ids = sorted({r[0] for r in rows})
 
