@@ -3150,6 +3150,51 @@ def test_releasing_the_lock_does_not_answer_in_place_of_what_the_body_raised(san
             raise ValueError("what the caller needs to see")
 
 
+def test_an_unlock_failure_after_a_successful_body_reaches_the_caller(sandbox, monkeypatch):
+    run_id = "20260101T000000-bbb333"
+    (config.JOBS_DIR / run_id).mkdir(parents=True)
+    jobs._write_job({"run_id": run_id, "kind": "agent", "status": "running"})
+
+    real_unlock = jobs._unlock_fd
+
+    def unlock_then_refuse(fd):
+        real_unlock(fd)
+        raise OSError(errno.EIO, "unlock failed")
+
+    monkeypatch.setattr(jobs, "_unlock_fd", unlock_then_refuse)
+
+    with pytest.raises(OSError, match="unlock failed"):
+        with jobs._locked_job(run_id) as guard:
+            assert guard.record is not None
+
+
+def test_a_close_failure_after_a_successful_body_reaches_the_caller(sandbox, monkeypatch):
+    run_id = "20260101T000000-bbb444"
+    (config.JOBS_DIR / run_id).mkdir(parents=True)
+    jobs._write_job({"run_id": run_id, "kind": "agent", "status": "running"})
+
+    taken = {}
+    real_lock = jobs._lock_fd
+    real_close = os.close
+
+    def remember_the_fd(fd):
+        taken["fd"] = fd
+        return real_lock(fd)
+
+    def close_then_refuse(fd):
+        if fd == taken.get("fd"):
+            real_close(fd)
+            raise OSError(errno.EIO, "close failed")
+        return real_close(fd)
+
+    monkeypatch.setattr(jobs, "_lock_fd", remember_the_fd)
+    monkeypatch.setattr(os, "close", close_then_refuse)
+
+    with pytest.raises(OSError, match="close failed"):
+        with jobs._locked_job(run_id) as guard:
+            assert guard.record is not None
+
+
 def test_an_interrupt_arriving_during_release_is_not_swallowed_and_still_closes(
     sandbox, monkeypatch
 ):
