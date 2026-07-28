@@ -659,6 +659,28 @@ async def _prune(
                     id_params,
                 )
 
+                # Direct message references disappear with their owner and may
+                # not also occur in a progression. Keep them as candidates
+                # until survivor references can be checked after the cascade.
+                await conn.execute(text("DROP TABLE IF EXISTS prune_direct_messages"))
+                await conn.execute(
+                    text("CREATE TEMPORARY TABLE prune_direct_messages (id TEXT PRIMARY KEY)")
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO prune_direct_messages (id) "  # noqa: S608
+                        f"SELECT first_msg_id FROM sessions WHERE id IN ({placeholders}) "
+                        "  AND first_msg_id IS NOT NULL "
+                        "UNION "
+                        f"SELECT last_msg_id FROM sessions WHERE id IN ({placeholders}) "
+                        "  AND last_msg_id IS NOT NULL "
+                        "UNION "
+                        f"SELECT system_msg_id FROM branches WHERE session_id IN ({placeholders}) "
+                        "  AND system_msg_id IS NOT NULL"
+                    ),
+                    id_params,
+                )
+
                 await conn.execute(
                     text(
                         f"DELETE FROM sessions WHERE id IN ({placeholders})"  # noqa: S608
@@ -691,6 +713,8 @@ async def _prune(
                             "DELETE FROM messages WHERE id IN ("
                             "  SELECT value FROM progressions, json_each(progressions.collection)"
                             "  WHERE progressions.id IN (SELECT id FROM prune_orphan_progressions)"
+                            "  UNION"
+                            "  SELECT id FROM prune_direct_messages"
                             ") AND id NOT IN ("
                             "  SELECT value FROM progressions, json_each(progressions.collection)"
                             "  WHERE progressions.id NOT IN"
@@ -713,6 +737,7 @@ async def _prune(
                     )
                 )
                 await conn.execute(text("DROP TABLE IF EXISTS prune_orphan_progressions"))
+                await conn.execute(text("DROP TABLE IF EXISTS prune_direct_messages"))
 
                 counts = {
                     "sessions": len(victim_ids),
