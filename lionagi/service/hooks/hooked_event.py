@@ -273,11 +273,7 @@ class HookedEvent(Event):
         two kinds of cancellation are genuinely indistinguishable there and both
         propagate.
         """
-        try:
-            backend = sniffio.current_async_library()
-        except sniffio.AsyncLibraryNotFoundError:
-            backend = None
-        if backend != "asyncio":
+        if sniffio.current_async_library() != "asyncio":
             await self._invoke_post_stream_hook(h_ev)
             return
 
