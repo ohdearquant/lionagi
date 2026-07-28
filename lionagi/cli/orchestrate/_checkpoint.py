@@ -13,6 +13,7 @@ from typing import Any
 
 from lionagi._errors import LionError
 from lionagi._paths import RUNS_ROOT
+from lionagi.ln._json_dump import raise_if_non_finite
 
 from .._runs import RunDir
 from .._util import AmbiguousIdError
@@ -155,7 +156,11 @@ class CheckpointWriter:
         self._seq += 1
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_name(f"checkpoint.{self._seq}.tmp")
-        payload = json.dumps(self.to_dict(), default=str)
+        state = self.to_dict()
+        # A non-finite float would be written as the token NaN/Infinity, which
+        # Python reads back and strict readers reject; refuse it at the write.
+        raise_if_non_finite(state, default=str)
+        payload = json.dumps(state, default=str)
         tmp.write_text(payload)
         os.replace(tmp, self.path)
 

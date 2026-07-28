@@ -64,8 +64,24 @@ async def _write_branch_snapshot(branch: Branch, snapshot_dir: str | Path) -> No
     )
     tmp_fp = anyio.Path(str(fp) + ".tmp")
     async with await anyio.open_file(tmp_fp, "w") as f:
-        await f.write(json_dumps(branch.to_dict()))
+        # A non-finite float would be written as `null`, which no reader can
+        # tell apart from a genuine null once the snapshot is on disk.
+        await f.write(json_dumps(branch.to_dict(), check_non_finite=True))
     await anyio.to_thread.run_sync(partial(os.replace, str(tmp_fp), str(fp)))
+
+
+async def _append_chunk(buffer_path, chunk) -> None:
+    """Append one streamed chunk to the live JSONL buffer.
+
+    The buffer is replayed after the run, so a non-finite float is refused here
+    rather than written as `null` — by replay time nothing distinguishes it from
+    a value that was genuinely null.
+    """
+    # Serialized before the file is opened, so a refused chunk does not leave an
+    # empty buffer behind for a run that never wrote one.
+    line = json_dumps(chunk.to_dict(), check_non_finite=True) + "\n"
+    async with await anyio.open_file(buffer_path, "a") as f:
+        await f.write(line)
 
 
 async def _stream_with_deadline(model, api_call, deadline: float | None):
@@ -457,8 +473,7 @@ async def run(
 
             async def _persist_chunk(chunk):
                 if hasattr(chunk, "to_dict"):
-                    async with await anyio.open_file(bfp, "a") as f:
-                        await f.write(json_dumps(chunk.to_dict()) + "\n")
+                    await _append_chunk(bfp, chunk)
                 if prev_stream_func is not None:
                     from lionagi.ln import is_coro_func
 

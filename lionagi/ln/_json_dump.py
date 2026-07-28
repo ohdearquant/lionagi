@@ -28,6 +28,7 @@ __all__ = [
     "json_dumpb",
     "json_dumps",
     "json_lines_iter",
+    "raise_if_non_finite",
 ]
 
 # Types orjson serializes natively; routed through default() only when passthrough is requested.
@@ -327,6 +328,41 @@ def _locate_non_finite(
     return _locate_non_finite(converted, default, opt, path)
 
 
+def raise_if_non_finite(
+    obj: Any,
+    *,
+    default: Callable[[Any], Any] | None = None,
+    options: int = 0,
+) -> None:
+    """Raise ValueError naming the path of the first non-finite float in *obj*.
+
+    For callers that persist a payload through a serializer other than
+    json_dumpb -- notably the standard library's ``json``, which writes inf,
+    -inf and nan as the tokens ``Infinity``/``NaN``. Python reads those tokens
+    back, so the writer never notices; every strict parser rejects them, so the
+    file breaks at whatever boundary reads it next. Check before writing and the
+    refusal names the offending field instead.
+
+    ``default`` should be the conversion the writer itself applies to values it
+    cannot encode (``str`` for a stdlib ``json.dumps(..., default=str)``);
+    omitted, the orjson default is used. The walk mirrors orjson, which is a
+    superset of what the stdlib traverses: it descends into dataclass fields and
+    Enum values, where the stdlib would have handed the whole object to
+    ``default``. A non-finite float hidden in one of those is therefore refused
+    even though the stdlib would have written it as part of a string.
+    """
+    if default is None:
+        default = _cached_default(False, False, False, False, False, 2048)
+    found = _locate_non_finite(obj, default, options)
+    if found is not None:
+        raise ValueError(
+            f"cannot serialize non-finite float at {found}: JSON has no "
+            "representation for inf, -inf or nan, and writing it records "
+            "something no reader can recover -- a null indistinguishable from a "
+            "real one, or the tokens NaN and Infinity that strict parsers reject"
+        )
+
+
 def _dumpb(
     obj: Any, default: Callable[[Any], Any], opt: int, check_non_finite: bool = False
 ) -> bytes:
@@ -347,13 +383,7 @@ def _dumpb(
     # provably clean and the walk is skipped. This only pays off once the caller has
     # already opted into the check; as a gate on every dump it costs more than it saves.
     if check_non_finite and b"null" in out:
-        found = _locate_non_finite(obj, default, opt)
-        if found is not None:
-            raise ValueError(
-                f"cannot serialize non-finite float at {found}: JSON has no "
-                "representation for inf, -inf or nan, and writing it would "
-                "silently record null in its place"
-            )
+        raise_if_non_finite(obj, default=default, options=opt)
     return out
 
 

@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from lionagi._paths import ensure_lionagi_dir
 from lionagi.cli._util import AmbiguousIdError
+from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.ln._utils import now_utc
 from lionagi.utils import LIONAGI_HOME
 
@@ -90,6 +91,10 @@ def _locked_team(team_id: str, *, create_path: Path | None = None):
             raw = fp.read()
             data = json.loads(raw) if raw.strip() else {}
             yield data
+            # Checked before the file is truncated, so a payload json.dumps
+            # would write as the token NaN/Infinity — read back only by Python,
+            # rejected by every strict reader — leaves the previous file intact.
+            raise_if_non_finite(data, default=str)
             fp.seek(0)
             fp.truncate()
             fp.write(json.dumps(data, indent=2, default=str))

@@ -15,6 +15,7 @@ from ._json_dump import (
     json_dumps,
     json_lines_iter,
     make_options,
+    raise_if_non_finite,
 )
 from ._lazy_init import LazyInit, lazy_import
 from ._list_call import lcall
@@ -113,6 +114,7 @@ __all__ = (
     "make_options",
     "json_dumpb",
     "json_lines_iter",
+    "raise_if_non_finite",
     "lcall",
     "to_list",
     "acreate_path",
