@@ -9,12 +9,14 @@ on the argv/env the engine builds and on the on-disk job records it reads back.
 from __future__ import annotations
 
 import builtins
+import errno
 import os
 import signal
 from pathlib import Path
 
 import pytest
 
+from lionagi.cli import _mcp_resolve
 from lionagi.mcp import config, jobs
 
 
@@ -2739,3 +2741,190 @@ def test_status_still_reports_the_whole_delivery_outcome(sandbox):
     assert st["notify_delivery"] == _EXITED_NONZERO
     # and the collapsed form stays out of status: one field, one meaning
     assert "notify_delivery_state" not in st
+
+
+def _popen_that_writes_the_runs_own_line(runs_written: list):
+    """A stand-in child that writes one line down the descriptor it was handed.
+
+    The descriptor is what a collision is felt through — two runs holding a
+    writable handle to one file — so the double has to use it rather than only
+    record it.
+    """
+
+    def fake_popen(argv, **kw):
+        line = kw["env"][config.RUN_ID_ENV_VAR]
+        kw["stdout"].write(f"{line} wrote this\n".encode())
+        runs_written.append(line)
+        return _FakeProc()
+
+    return fake_popen
+
+
+def test_a_second_submission_never_lands_on_a_running_runs_directory(sandbox, monkeypatch):
+    """An id already taken costs a retry, not the run that holds it.
+
+    A run id is a timestamp to the second plus six random hex digits, so two
+    submissions in one second can mint the same one. What that used to mean was
+    not a collision of names but a collision of runs: the second wrote its record
+    over the first's and its child wrote into the first's log, and afterwards
+    nothing could tell the two apart or say what the first one had been.
+
+    Asserted on what an operator can see — two ids, two directories, each log
+    holding only its own run's output and each record naming only its own run.
+    How the retry gets there is this function's business and is not asserted.
+    """
+    written: list[str] = []
+    monkeypatch.setattr(jobs.subprocess, "Popen", _popen_that_writes_the_runs_own_line(written))
+
+    # Positive control first: ordinary submissions, ids that differ on their own.
+    # Without it, a change that refused every second submission — or handed every
+    # one of them a fresh id it never used — would read as this test passing.
+    minted = iter(["20260101T000000-aaaaaa", "20260101T000000-bbbbbb"])
+    monkeypatch.setattr(jobs, "new_run_id", lambda: next(minted))
+    first = jobs.submit("agent", [], label="first")["run_id"]
+    second = jobs.submit("agent", [], label="second")["run_id"]
+
+    assert first != second
+    for rid, label in ((first, "first"), (second, "second")):
+        assert (config.JOBS_DIR / rid).is_dir()
+        assert (config.JOBS_DIR / rid / "console.log").read_text() == f"{rid} wrote this\n"
+        assert jobs._read_job(rid)["label"] == label
+
+    # Now the collision: the next submission mints an id that is already taken
+    # before it mints one that is not.
+    minted = iter(["20260101T000000-bbbbbb", "20260101T000000-cccccc"])
+    monkeypatch.setattr(jobs, "new_run_id", lambda: next(minted))
+    third = jobs.submit("agent", [], label="third")["run_id"]
+
+    assert third not in (first, second)
+    assert (config.JOBS_DIR / third / "console.log").read_text() == f"{third} wrote this\n"
+    assert jobs._read_job(third)["label"] == "third"
+    # The run whose id was taken is untouched: its log holds its own line alone
+    # and its record still says whose it is.
+    assert (config.JOBS_DIR / second / "console.log").read_text() == f"{second} wrote this\n"
+    assert jobs._read_job(second)["label"] == "second"
+    assert written == [first, second, third]
+
+
+def test_a_submission_that_is_refused_leaves_no_directory_behind(sandbox, monkeypatch):
+    """The reservation is taken back when the submission does not happen.
+
+    Every directory under the jobs root is a job to the listing, so one left
+    behind by a rejected submission is a job with no kind that never finishes.
+    """
+
+    def refuse(argv, env, *, kind):
+        raise ValueError("argv is too long for this platform")
+
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-dddddd")
+    monkeypatch.setattr(jobs, "_reject_oversized_argv", refuse)
+
+    with pytest.raises(ValueError):
+        jobs.submit("agent", [], prompt="x")
+
+    assert not (config.JOBS_DIR / "20260101T000000-dddddd").exists()
+    assert jobs.list_jobs() == []
+
+
+def test_a_submission_that_fails_between_its_writes_leaves_no_job_behind(sandbox, monkeypatch):
+    """A submission that gets partway through writing is still not a job.
+
+    The refusal above happens before anything is written, so an empty directory
+    is all it leaves. A submission that writes its prompt and then fails to write
+    its MCP snapshot leaves a directory with a file in it, and giving that back
+    takes more than a removal that only works on an empty one. Both leave the
+    same thing behind for an operator: a listed job with no kind that never
+    finishes, which is why the listing is what this asserts on.
+    """
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda argv, **kw: _FakeProc(4242))
+    monkeypatch.setattr(
+        _mcp_resolve,
+        "resolve_spawn_mcp_servers",
+        lambda launch_dir: _mcp_resolve.McpResolution(
+            servers={"a-server": {"command": "true"}},
+            reason=None,
+            source=Path("/somewhere/.mcp.json"),
+            searched_from=Path("/somewhere"),
+        ),
+    )
+
+    # Positive control: the same call, unobstructed. Without it a change that
+    # refused every submission of this shape would read as this test passing.
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-eeeeee")
+    control = jobs.submit("agent", [], prompt="x", label="control")["run_id"]
+    assert [(j["run_id"], j["kind"]) for j in jobs.list_jobs()] == [(control, "agent")]
+
+    # Now fail the second of the two writes. The first has already landed, so
+    # what is left behind is a directory that is not empty.
+    prompt_was_already_written: list[bool] = []
+    real_write_text = Path.write_text
+
+    def refuse_the_snapshot(self, *args, **kwargs):
+        if self.name == "mcp-servers.json":
+            prompt_was_already_written.append((self.parent / "prompt.txt").exists())
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", refuse_the_snapshot)
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-ffffff")
+
+    with pytest.raises(OSError):
+        jobs.submit("agent", [], prompt="x", label="interrupted")
+
+    # The failure landed after the first write, not before it — otherwise this
+    # would be the empty-directory case the test above already covers.
+    assert prompt_was_already_written == [True]
+    assert [(j["run_id"], j["kind"]) for j in jobs.list_jobs()] == [(control, "agent")]
+
+
+def test_discarding_a_reservation_removes_what_the_submission_wrote(sandbox):
+    """Both of the names a submission writes come back with the directory."""
+    d = config.JOBS_DIR / "20260101T000000-111111"
+    d.mkdir(parents=True)
+    (d / "prompt.txt").write_text("x")
+    (d / "mcp-servers.json").write_text("{}")
+
+    jobs._discard_reservation(d)
+
+    assert not d.exists()
+
+
+def test_a_failed_submission_does_not_delete_the_config_its_caller_named(
+    sandbox, tmp_path, monkeypatch
+):
+    """A caller's own MCP config is theirs, wherever they keep it.
+
+    Being named by a submission that failed does not make a file part of the
+    directory being given back, and the file a caller names is not under it.
+    """
+    callers_own_config = tmp_path / "elsewhere" / ".mcp.json"
+    callers_own_config.parent.mkdir()
+    callers_own_config.write_text('{"mcpServers": {}}')
+
+    def refuse(self, *args, **kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-333333")
+    monkeypatch.setattr(Path, "write_text", refuse)
+
+    with pytest.raises(OSError):
+        jobs.submit("agent", [], prompt="x", mcp_config=str(callers_own_config))
+
+    assert callers_own_config.read_text() == '{"mcpServers": {}}'
+    assert jobs.list_jobs() == []
+
+
+def test_discarding_a_reservation_refuses_a_directory_holding_anything_else(sandbox):
+    """The refusal is the safeguard, and nothing is checked ahead of it.
+
+    A directory with a run's own state in it survives being handed to this, so
+    the removal cannot cost a real job whatever sends us there.
+    """
+    d = config.JOBS_DIR / "20260101T000000-222222"
+    d.mkdir(parents=True)
+    (d / "prompt.txt").write_text("x")
+    (d / "console.log").write_bytes(b"a run wrote this\n")
+
+    jobs._discard_reservation(d)
+
+    assert (d / "console.log").read_bytes() == b"a run wrote this\n"

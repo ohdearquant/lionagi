@@ -264,6 +264,82 @@ def new_run_id() -> str:
     return f"{ts}-{uuid4().hex[:6]}"
 
 
+# How many ids a submission will mint before giving up. An id is a timestamp to
+# the second plus six random hex digits, so a taken one is already unlikely and
+# a run of them is the shape of something else being wrong — a clock pinned to
+# one second, a directory that reports every name as taken. Retrying without a
+# bound would hang the submission there instead of saying so.
+_RUN_ID_ATTEMPTS = 8
+
+# What a submission writes into its own reserved directory before that directory
+# becomes a job. Named here so the writes and the removal that gives them back
+# cannot drift apart, and so the removal is a fixed list rather than whatever
+# happens to be lying in the directory.
+_PROMPT_FILENAME = "prompt.txt"
+_MCP_SNAPSHOT_FILENAME = "mcp-servers.json"
+_RESERVATION_CONTENTS = (_PROMPT_FILENAME, _MCP_SNAPSHOT_FILENAME)
+
+
+def _reserve_run_dir() -> tuple[str, Path]:
+    """Mint a run_id nobody else holds, and return it with its directory.
+
+    Minting an id and creating its directory are one step, and the creation is
+    the thing that decides: ``mkdir`` without ``exist_ok`` either creates the
+    directory or says the name is taken, in one operation the filesystem makes
+    indivisible. Checking first and creating second would leave a window for
+    another submission between the two answers, and the id is not random enough
+    to leave that to chance — two submissions in the same second can mint the
+    same six hex digits.
+
+    What a taken name would otherwise cost is a whole run, not a retry: the
+    second submission would write its record over the first's and hand its child
+    a log the first is still writing into, and both runs would answer to one id
+    for the rest of their lives.
+    """
+    for _ in range(_RUN_ID_ATTEMPTS):
+        run_id = new_run_id()
+        d = config.job_dir(run_id)
+        try:
+            d.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            continue
+        return run_id, d
+    raise RuntimeError(
+        f"could not reserve a run directory under {config.JOBS_DIR}: "
+        f"{_RUN_ID_ATTEMPTS} freshly minted ids were all already taken"
+    )
+
+
+def _discard_reservation(d: Path) -> None:
+    """Give a reserved directory back, along with what a submission put in it.
+
+    A submission that fails partway through writing has already left files
+    behind, so removing only an empty directory would give the reservation back
+    for some failures and not others. The files a submission writes into its own
+    reservation are named here, and only those: they are addressed as fixed
+    names under *d*, never through a path a caller handed in. A caller may name
+    an MCP config that lives anywhere at all, and that file is theirs — it is not
+    part of this reservation whatever it points at, and nothing here can be
+    talked into deleting it.
+
+    ``rmdir`` refuses a directory with anything in it, and that refusal stays the
+    safety here rather than becoming a check taken beforehand: whatever this is
+    asked to remove, a directory holding a run's state survives it — anything not
+    on the short list above stops the removal. A removal that fails for any other
+    reason leaves a directory nobody claimed, which is worth less than the error
+    that sent us here.
+    """
+    for name in _RESERVATION_CONTENTS:
+        try:
+            (d / name).unlink()
+        except OSError:
+            pass
+    try:
+        d.rmdir()
+    except OSError:
+        pass
+
+
 # --- record I/O ----------------------------------------------------------------
 
 
@@ -1256,130 +1332,148 @@ def submit(
     if kind not in _KIND_ARGV:
         raise ValueError(f"unknown job kind {kind!r}; expected one of {sorted(_KIND_ARGV)}")
 
-    run_id = new_run_id()
-    d = config.job_dir(run_id)
+    run_id, d = _reserve_run_dir()
     log_path = d / "console.log"
 
-    # The whole command line is assembled before anything is created on disk, so a
-    # run that cannot be spawned leaves no trace. Creating the directory first
-    # would leave an empty one behind on a rejection, and that reads back as a job
-    # with no kind that never finishes.
-    # `flags` may already carry a `--` sentinel, after which every token is a
-    # positional. Options this function adds have to go in front of it, or they
-    # arrive as text: appending `--prompt-file` past the sentinel would hand the
-    # agent two words of prompt instead of a file to read.
-    options, positionals = _split_at_sentinel(flags)
-    prompt_path = None
-    if prompt is not None:
-        if kind == "agent":
-            prompt_path = d / "prompt.txt"
-            options += ["--prompt-file", str(prompt_path)]
+    # Nothing is written into the reserved directory until the whole command line
+    # is assembled, and a submission that does not become a job takes the
+    # reservation back on its way out — a run that never started leaves no trace,
+    # and a directory here is not nothing: every directory under the jobs root is
+    # listed as a job, so one left behind reads back as a job with no kind that
+    # never finishes. That holds however far the submission got, so the block
+    # runs to the last write this function makes before the record exists rather
+    # than stopping where the assembly does: a failure at the second of two
+    # writes leaves the same unfinishable job as a failure at the first.
+    #
+    # It ends at the record. Once _write_job has run the directory is a real job
+    # with real state, and correcting it is the business of the marking that
+    # follows, not of a removal.
+    try:
+        # `flags` may already carry a `--` sentinel, after which every token is a
+        # positional. Options this function adds have to go in front of it, or they
+        # arrive as text: appending `--prompt-file` past the sentinel would hand the
+        # agent two words of prompt instead of a file to read.
+        options, positionals = _split_at_sentinel(flags)
+        prompt_path = None
+        if prompt is not None:
+            if kind == "agent":
+                prompt_path = d / _PROMPT_FILENAME
+                options += ["--prompt-file", str(prompt_path)]
+            else:
+                # flow/fanout take the prompt as a positional, and a prompt may well
+                # begin with a dash, so it goes behind a sentinel whether or not the
+                # rendered flags already opened one.
+                if not positionals:
+                    positionals = ["--"]
+                positionals.append(prompt)
+
+        # A run discovers MCP servers from the directory it is told to work in,
+        # which for a detached run is a checkout and not the directory holding this
+        # server's config. Resolve it here, where the submitting directory is still
+        # the one in effect, and hand the resolved set to the child.
+        # Both outcomes are reported on the handle: a run that starts without the
+        # tools its brief assumes should be visible at submit, not deduced later
+        # from its own confused output. An orchestration builds many workers from
+        # the one set its process holds, so leaving the choice to whatever each
+        # provider CLI finds for itself scatters the same question across every
+        # worker and answers it where nobody is looking.
+        #
+        # The servers are read here and written into this run's own directory, and
+        # that copy is what the child is pointed at. Naming the discovered file
+        # instead would leave the run's tool surface tied to a file anyone may edit
+        # between submission and execution — and a run that resumes hours later
+        # would re-read it again, so the same submission could start with a
+        # different set of tools every time. A file only this run writes cannot
+        # change under it, and staying a path keeps the child's existing flag
+        # working. A config that exists but cannot be used fails the submission,
+        # because a child that discovers the problem reports it minutes later and
+        # only in its own log, while the submitter was told the run started.
+        #
+        # A snapshot is taken only when the caller left the choice open. Whether
+        # they did is answered from the values they passed, never by looking through
+        # the tokens for a flag: those tokens are built by the same surface, in a
+        # form (`--flag=value`) chosen so that nothing downstream can take them
+        # apart, so a scan of them reports on spelling rather than on intent.
+        mcp_config_path: str | None = None
+        mcp_config_source: str | None = None
+        mcp_config_reason: str | None = None
+        mcp_servers: dict[str, Any] | None = None
+        if no_mcp_config:
+            # The caller asked for no servers. That is an answer, not an absence, so
+            # nothing is resolved and the handle says whose decision it was.
+            mcp_config_reason = "mcp_disabled_by_caller"
+        elif mcp_config is not None:
+            # The caller named the file, and their flag is already on the line. No
+            # snapshot is taken and none is prepended: a second --mcp-config would
+            # let the parser pick between them, and the handle would go on naming
+            # the one the child did not read. What the child reads is what the
+            # handle reports, and its source is the caller's own path, which this
+            # run does not own and cannot promise will hold still.
+            mcp_config_path = mcp_config
+            mcp_config_source = mcp_config
+            mcp_config_reason = "mcp_config_named_by_caller"
         else:
-            # flow/fanout take the prompt as a positional, and a prompt may well
-            # begin with a dash, so it goes behind a sentinel whether or not the
-            # rendered flags already opened one.
-            if not positionals:
-                positionals = ["--"]
-            positionals.append(prompt)
+            from lionagi.cli._mcp_resolve import McpConfigError, resolve_spawn_mcp_servers
 
-    # A run discovers MCP servers from the directory it is told to work in,
-    # which for a detached run is a checkout and not the directory holding this
-    # server's config. Resolve it here, where the submitting directory is still
-    # the one in effect, and hand the resolved set to the child.
-    # Both outcomes are reported on the handle: a run that starts without the
-    # tools its brief assumes should be visible at submit, not deduced later
-    # from its own confused output. An orchestration builds many workers from
-    # the one set its process holds, so leaving the choice to whatever each
-    # provider CLI finds for itself scatters the same question across every
-    # worker and answers it where nobody is looking.
-    #
-    # The servers are read here and written into this run's own directory, and
-    # that copy is what the child is pointed at. Naming the discovered file
-    # instead would leave the run's tool surface tied to a file anyone may edit
-    # between submission and execution — and a run that resumes hours later
-    # would re-read it again, so the same submission could start with a
-    # different set of tools every time. A file only this run writes cannot
-    # change under it, and staying a path keeps the child's existing flag
-    # working. A config that exists but cannot be used fails the submission,
-    # because a child that discovers the problem reports it minutes later and
-    # only in its own log, while the submitter was told the run started.
-    #
-    # A snapshot is taken only when the caller left the choice open. Whether
-    # they did is answered from the values they passed, never by looking through
-    # the tokens for a flag: those tokens are built by the same surface, in a
-    # form (`--flag=value`) chosen so that nothing downstream can take them
-    # apart, so a scan of them reports on spelling rather than on intent.
-    mcp_config_path: str | None = None
-    mcp_config_source: str | None = None
-    mcp_config_reason: str | None = None
-    mcp_servers: dict[str, Any] | None = None
-    if no_mcp_config:
-        # The caller asked for no servers. That is an answer, not an absence, so
-        # nothing is resolved and the handle says whose decision it was.
-        mcp_config_reason = "mcp_disabled_by_caller"
-    elif mcp_config is not None:
-        # The caller named the file, and their flag is already on the line. No
-        # snapshot is taken and none is prepended: a second --mcp-config would
-        # let the parser pick between them, and the handle would go on naming
-        # the one the child did not read. What the child reads is what the
-        # handle reports, and its source is the caller's own path, which this
-        # run does not own and cannot promise will hold still.
-        mcp_config_path = mcp_config
-        mcp_config_source = mcp_config
-        mcp_config_reason = "mcp_config_named_by_caller"
-    else:
-        from lionagi.cli._mcp_resolve import McpConfigError, resolve_spawn_mcp_servers
-
-        launch_dir = os.getcwd()
-        resolution = resolve_spawn_mcp_servers(launch_dir=launch_dir)
-        if resolution.servers is None:
-            if resolution.reason and resolution.reason.startswith("mcp_config_unusable:"):
-                raise McpConfigError(
-                    f"cannot submit this agent run: the MCP config found at "
-                    f"{resolution.source} cannot be used "
-                    f"({resolution.reason.split(':', 1)[1].strip()})"
+            launch_dir = os.getcwd()
+            resolution = resolve_spawn_mcp_servers(launch_dir=launch_dir)
+            if resolution.servers is None:
+                if resolution.reason and resolution.reason.startswith("mcp_config_unusable:"):
+                    raise McpConfigError(
+                        f"cannot submit this agent run: the MCP config found at "
+                        f"{resolution.source} cannot be used "
+                        f"({resolution.reason.split(':', 1)[1].strip()})"
+                    )
+                mcp_config_reason = (
+                    f"{resolution.reason}_at_or_above:{launch_dir}"
+                    if resolution.reason == "no_mcp_config_found"
+                    else resolution.reason
                 )
-            mcp_config_reason = (
-                f"{resolution.reason}_at_or_above:{launch_dir}"
-                if resolution.reason == "no_mcp_config_found"
-                else resolution.reason
-            )
-        else:
-            mcp_servers = resolution.servers
-            mcp_config_source = str(resolution.source) if resolution.source else None
-            mcp_config_path = str(d / "mcp-servers.json")
-            options = ["--mcp-config", mcp_config_path, *options]
+            else:
+                mcp_servers = resolution.servers
+                mcp_config_source = str(resolution.source) if resolution.source else None
+                mcp_config_path = str(d / _MCP_SNAPSHOT_FILENAME)
+                options = ["--mcp-config", mcp_config_path, *options]
 
-    # Wire the CLI's terminal hook back to the MCP server so we record a reliable
-    # finished_at/status (and fire the configured delivery) even across a restart.
-    options = [
-        "--notify",
-        _notify_template(run_id, notify_target, notify_command, notify_sender),
-        *options,
-    ]
+        # Wire the CLI's terminal hook back to the MCP server so we record a reliable
+        # finished_at/status (and fire the configured delivery) even across a restart.
+        options = [
+            "--notify",
+            _notify_template(run_id, notify_target, notify_command, notify_sender),
+            *options,
+        ]
 
-    argv = [*config.li_command(), *_KIND_ARGV[kind], *options, *positionals]
+        argv = [*config.li_command(), *_KIND_ARGV[kind], *options, *positionals]
 
-    # Drop the parent harness marker so the detached child does not inherit an
-    # environment that claims it is running under an interactive harness.
-    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-    env[config.RUN_ID_ENV_VAR] = run_id
-    # The child carries the run that started it. Every process it goes on to
-    # spawn inherits this, so a live member of the group can later be asked
-    # what it belongs to instead of being guessed at from when it started.
-    env[config.JOB_MARKER_ENV_VAR] = run_id
+        # Drop the parent harness marker so the detached child does not inherit an
+        # environment that claims it is running under an interactive harness.
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        env[config.RUN_ID_ENV_VAR] = run_id
+        # The child carries the run that started it. Every process it goes on to
+        # spawn inherits this, so a live member of the group can later be asked
+        # what it belongs to instead of being guessed at from when it started.
+        env[config.JOB_MARKER_ENV_VAR] = run_id
 
-    # Only "agent" hands the instruction over in a file; flow and fanout take it
-    # as a positional, so a long one has to fit in the process argument vector.
-    # Checked before anything is written, because Popen raising this late would
-    # leave a job recorded as "running" for a run that never started.
-    _reject_oversized_argv(argv, env, kind=kind)
+        # Only "agent" hands the instruction over in a file; flow and fanout take it
+        # as a positional, so a long one has to fit in the process argument vector.
+        # Checked before anything is written, because Popen raising this late would
+        # leave a job recorded as "running" for a run that never started.
+        _reject_oversized_argv(argv, env, kind=kind)
 
-    d.mkdir(parents=True, exist_ok=True)
-    if prompt_path is not None:
-        prompt_path.write_text(prompt)
-    if mcp_servers is not None and mcp_config_path is not None:
-        Path(mcp_config_path).write_text(json.dumps({"mcpServers": mcp_servers}, indent=2))
+        # The durable writes sit inside this same block rather than under a
+        # handler of their own. One block, because one question is being asked:
+        # did this submission become a job? Everything from here back to the
+        # reservation answers "no" the same way — a full disk on the second write
+        # strands a run exactly as an argv the platform will not carry does — and
+        # a second handler would only invite the two to be given back
+        # differently, which is the state this block exists to prevent.
+        if prompt_path is not None:
+            prompt_path.write_text(prompt)
+        if mcp_servers is not None and mcp_config_path is not None:
+            Path(mcp_config_path).write_text(json.dumps({"mcpServers": mcp_servers}, indent=2))
+    except BaseException:
+        _discard_reservation(d)
+        raise
 
     # Persist the record BEFORE spawning, so the child's terminal --notify hook
     # always finds a record to mark. mark_terminal no-ops on a missing record, so
@@ -1416,7 +1510,20 @@ def submit(
     _write_job(record)
 
     try:
-        log_f = open(log_path, "wb")
+        # Append mode, not truncate: every write from the child has to land at
+        # end-of-file rather than at an offset the child carries with it. The
+        # terminal hook appends to this same log while the child is still alive
+        # and still holding this descriptor, so with an offset-carrying
+        # descriptor the child's next write — its final output, or just the
+        # flush the interpreter does on its way out — starts back where the
+        # child left off and overwrites whatever was appended behind its back.
+        # What it overwrites is the one line written only when something went
+        # wrong: the notice that a terminal notice could not be delivered.
+        #
+        # There is nothing here to append after: the directory this log sits in
+        # was created for this run and no other, by a creation that fails rather
+        # than accepts a name already taken.
+        log_f = open(log_path, "ab")
         try:
             proc = subprocess.Popen(  # noqa: S603 — argv is the resolved li_command + CLI flags, no shell
                 argv,

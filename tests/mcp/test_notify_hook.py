@@ -12,6 +12,9 @@ no real command is spawned.
 from __future__ import annotations
 
 import json
+import sys
+import time
+from pathlib import Path
 
 import pytest
 
@@ -535,3 +538,89 @@ def test_the_delivery_commands_own_output_is_still_never_kept(job, monkeypatch):
     assert seen["stderr"] is _notify_hook.subprocess.DEVNULL
     outcome = jobs._read_job(job)["notify_delivery"]
     assert set(outcome) == {"attempted", "ok", "exit_code", "error", "command"}
+
+
+# The run whose log this is, standing in for the CLI: it writes ordinary output,
+# fires its --notify template the way the CLI does (shlex-split, ``{status}``
+# replaced), and then writes more output before exiting. That last part is the
+# whole point — the hook appends to a log whose writer is still running and
+# still holding the descriptor it was spawned with.
+_LI_SHIM_THAT_KEEPS_WRITING = """\
+import shlex, subprocess, sys
+
+argv = sys.argv[1:]
+template = argv[argv.index("--notify") + 1]
+
+sys.stdout.write("ordinary output before the notice\\n")
+subprocess.run(
+    [tok.replace("{status}", "completed") for tok in shlex.split(template)],
+    check=False,
+)
+sys.stdout.write("ordinary final output\\n")
+"""
+
+
+def test_the_failure_notice_survives_the_runs_own_remaining_output(monkeypatch, tmp_path):
+    """The appended notice must not be overwritten by the run that is still writing.
+
+    The hook appends to the log while the run that owns it is alive, so the two
+    write to one file through different descriptors. A run whose descriptor
+    carries its own offset writes its next line back over whatever was appended
+    behind it, and the notice — the only trace of a notice that never arrived —
+    goes with it, on a log that was perfectly writable.
+
+    End to end through ``submit`` because that is where the descriptor is
+    opened: the mode it is opened in is the behaviour under test, and a test
+    that opened its own would assert about itself.
+    """
+    # A lionagi home of this test's own, for this process and for every process
+    # it starts: the hook runs in one of those and derives its own job directory
+    # from the environment, so patching the constant here alone would leave the
+    # two halves of this test writing to two different directories.
+    monkeypatch.setenv("LIONAGI_HOME", str(tmp_path))
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "mcp" / "jobs")
+    # The run is launched by absolute script path, so it imports whichever
+    # lionagi its interpreter resolves — which is this checkout only when the
+    # installed distribution happens to point here.
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[2]))
+    # A real delivery that really fails: the outcome the code builds from an
+    # exit code of its own, not one handed to it.
+    monkeypatch.setenv("LIONAGI_MCP_NOTIFY_COMMAND", json.dumps(["/bin/sh", "-c", "exit 1"]))
+    shim = tmp_path / "li_shim.py"
+    shim.write_text(_LI_SHIM_THAT_KEEPS_WRITING)
+    monkeypatch.setattr(config, "li_command", lambda: [sys.executable, str(shim)])
+
+    handle = jobs.submit("agent", [], no_mcp_config=True)
+    _wait_for_run_to_finish(handle["run_id"])
+
+    log = _console_log(handle["run_id"])
+    # Positive control: the run itself wrote, and wrote last, so a missing
+    # notice cannot be read as a probe that never ran the hook at all.
+    assert "ordinary output before the notice" in log
+    assert "ordinary final output" in log
+    assert jobs._read_job(handle["run_id"])["notify_delivery"] == {
+        "attempted": True,
+        "ok": False,
+        "exit_code": 1,
+        "error": None,
+        "command": "/bin/sh",
+    }
+    assert "[notify]" in log
+    assert "NOT delivered" in log
+
+
+def _wait_for_run_to_finish(run_id: str, timeout: float = 60.0) -> None:
+    """Wait until the run's last write has landed.
+
+    The run is spawned detached, so there is nothing to wait on here. Waiting
+    for its final line rather than for the delivery record is what makes the
+    read that follows deterministic: that line is written after the hook has
+    already run, so once it is on disk both writers are done and what the log
+    holds is what it will hold.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if "ordinary final output" in _console_log(run_id):
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"the run never finished writing. log:\n{_console_log(run_id)}")
