@@ -368,10 +368,19 @@ def _write_job(record: dict[str, Any]) -> None:
     try:
         tmp.write_text(json.dumps(record, indent=2))
         os.replace(tmp, d / "job.json")
-    except OSError:
+    except BaseException:
         # Do not leave the staging file behind: a run whose writes keep failing
         # would otherwise accumulate orphans in its job dir. The original error
         # still propagates.
+        #
+        # Every exception, not the errno family alone, because the caller that
+        # gives a reservation back on a failed publication catches every one and
+        # then removes the directory with rmdir — which refuses a directory
+        # holding anything at all. A staging file left by an interrupt would
+        # therefore survive as the one thing standing between that cleanup and
+        # an empty directory, and the run would be stranded by the file written
+        # to make its record atomic. The two have to answer for the same set of
+        # failures or the narrower one decides the outcome.
         tmp.unlink(missing_ok=True)
         raise
 

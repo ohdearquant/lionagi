@@ -2933,6 +2933,39 @@ def test_a_submission_whose_record_never_publishes_leaves_no_job_behind(sandbox,
     assert [(j["run_id"], j["kind"]) for j in jobs.list_jobs()] == [(control, "agent")]
 
 
+def test_an_interrupted_publication_leaves_nothing_that_blocks_the_cleanup(sandbox, monkeypatch):
+    """An interrupt is one of the failures the reservation is given back for.
+
+    Giving it back ends in an rmdir, which refuses a directory holding anything
+    at all — so the staging file the record write uses to be atomic is the one
+    thing able to defeat the cleanup that runs because that write failed. The
+    two have to answer for the same set of failures, which is why this asserts
+    on an exception outside the errno family.
+    """
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda argv, **kw: _FakeProc(4242))
+
+    # Positive control: the same call, unobstructed.
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-eee111")
+    control = jobs.submit("agent", [], prompt="x", label="control")["run_id"]
+    assert [(j["run_id"], j["kind"]) for j in jobs.list_jobs()] == [(control, "agent")]
+
+    real_replace = os.replace
+
+    def interrupt_the_publication(src, dst, *args, **kwargs):
+        if str(dst).endswith("job.json"):
+            raise KeyboardInterrupt
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", interrupt_the_publication)
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-fff222")
+
+    with pytest.raises(KeyboardInterrupt):
+        jobs.submit("agent", [], prompt="x", label="interrupted")
+
+    assert not (config.JOBS_DIR / "20260101T000000-fff222").exists()
+    assert [(j["run_id"], j["kind"]) for j in jobs.list_jobs()] == [(control, "agent")]
+
+
 def test_discarding_a_reservation_removes_what_the_submission_wrote(sandbox):
     """Both of the names a submission writes come back with the directory."""
     d = config.JOBS_DIR / "20260101T000000-111111"
