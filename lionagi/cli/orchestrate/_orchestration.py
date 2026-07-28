@@ -471,6 +471,20 @@ class OrchestrationEnv:
     builder: OperationGraphBuilder
 
     orc_profile: AgentProfile | None
+
+    # The name of the profile above, carried separately so anything recording
+    # the run can name it. Deliberately not defaulted: a construction site that
+    # cannot say which profile the run used has to say so out loud rather than
+    # record a null the reader will mistake for "no profile".
+    orc_profile_name: str | None
+    """Which agent profile this run actually orchestrated under.
+
+    Not necessarily the one the caller named, because a caller who named
+    neither an agent nor a model named none, and the run resolves one on their
+    behalf — this is the one it resolved and loaded. ``None`` means no profile
+    was used at all, which is the caller who named only a model.
+    """
+
     default_model_spec: str
 
     bare: bool
@@ -716,6 +730,9 @@ async def setup_orchestration(
         orc_branch=orc_branch,
         builder=builder,
         orc_profile=orc_profile,
+        # Read off the loaded profile rather than off `agent_name`, so the
+        # recorded name cannot name a profile other than the one loaded.
+        orc_profile_name=orc_profile.name if orc_profile is not None else None,
         default_model_spec=model_spec,
         bare=bare,
         effort=effort,

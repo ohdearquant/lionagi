@@ -37,6 +37,7 @@ def _fanout_env(tmp_path) -> tuple[OrchestrationEnv, RunDir, Session]:
         orc_branch=orchestrator,
         builder=OperationGraphBuilder(),
         orc_profile=None,
+        orc_profile_name=None,
         default_model_spec="codex/model",
         bare=False,
         effort=None,
