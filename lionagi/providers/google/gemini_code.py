@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import os
 import re
 from collections.abc import AsyncIterator, Callable
@@ -59,6 +60,7 @@ __all__ = (
     "GeminiChunk",
     "GeminiCodeRequest",
     "GeminiSession",
+    "derive_print_timeout",
     "stream_gemini_cli",
     "stream_gemini_cli_events",
     "GeminiCLIEndpoint",
@@ -202,6 +204,33 @@ def resolve_agy_model(
 
 
 # --------------------------------------------------------------------------- request model
+
+
+# A Go duration is an int64 count of nanoseconds, so nothing longer than this
+# parses. It is about 292 years, which is the longest "effectively no cap" that
+# can still be expressed.
+_MAX_GO_DURATION_SECONDS = (2**63 - 1) // 10**9
+
+
+def format_print_timeout(seconds: int | float) -> str:
+    """Format a seconds value as a Go duration `agy` will parse."""
+    # Whole seconds only, and bounded at both ends of what Go can represent.
+    # General float formatting reaches scientific notation for large values
+    # ("1e+06"), an unbounded value overflows Go's int64 nanoseconds, and a
+    # non-finite one cannot be converted to an integer at all. Every one of
+    # those ends the same way: a cap agy cannot parse, so the run fails with
+    # agy's own uninformative timeout error, which is the failure this whole
+    # path exists to stop producing. Asking for longer than Go can express is
+    # asking for as long as possible, so it clamps rather than raising.
+    if not math.isfinite(seconds) or seconds >= _MAX_GO_DURATION_SECONDS:
+        return f"{_MAX_GO_DURATION_SECONDS}s"
+    return f"{math.ceil(seconds)}s"
+
+
+def derive_print_timeout(timeout: int | float) -> str:
+    """Return an agy Go-duration cap that stays behind lionagi's deadline."""
+    # One minute lets lionagi's deadline cancel and preserve its clearer error first.
+    return format_print_timeout(timeout + 60)
 
 
 class GeminiCodeRequest(BaseModel):
