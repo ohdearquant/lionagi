@@ -5,13 +5,14 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from typing import TYPE_CHECKING, Any
 
 from lionagi._errors import ConfigurationError
 from lionagi.ln import Unset
 from lionagi.ln.concurrency import is_coro_func
 from lionagi.ln.types import UnsetType
+from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
 from lionagi.session.branch import Branch
 
 from .spec import AgentSpec
@@ -605,35 +606,37 @@ async def _load_mcp(
                 _attach_hooks(tool, spec, tool_name)
 
 
-_MCP_FORWARDING_PROVIDERS = frozenset({"claude_code", "codex"})
+_MCP_FORWARDING_PROVIDERS = frozenset({*_CLAUDE_PROVIDER_NAMES, "codex"})
 
 
 def provider_accepts_forwarded_mcp(provider: str | None) -> bool:
     """Whether a provider's request can carry an MCP server set resolved by the caller.
 
-    One answer for a capability with two transports: claude_code takes the set
-    as a request kwarg, codex takes it as `-c mcp_servers.<name>.<field>`
-    overrides. Both are implemented in ``_forward_mcp_to_cli_request`` below,
+    One answer for a capability with two transports: the Claude CLI takes the
+    set as a request kwarg, codex takes it as `-c mcp_servers.<name>.<field>`
+    overrides. Both are implemented in ``apply_forwarded_mcp_servers`` below,
     which is why the predicate lives here rather than in a second list kept by
-    a caller. It answers what a provider is *capable* of, which is not the same
-    question as whether a given spawn handed anything over — for that, read
-    ``request_carries_forwarded_mcp`` off the request the spawn produced.
+    a caller — every spawn path asks this one function. Each spelling the CLI
+    accepts for the Claude lane counts: which alias a caller typed is not a
+    capability of the provider behind it. It answers what a provider is
+    *capable* of, which is not the same question as whether a given spawn
+    handed anything over — for that, read ``request_carries_forwarded_mcp`` off
+    the request the spawn produced.
     """
     return provider in _MCP_FORWARDING_PROVIDERS
 
 
-def request_carries_forwarded_mcp(branch: Branch) -> bool:
-    """Whether a built CLI request actually carries a forwarded MCP server set.
+def request_kwargs_carry_forwarded_mcp(kwargs: dict[str, Any] | None) -> bool:
+    """Whether CLI request kwargs actually carry a forwarded MCP server set.
 
-    The read counterpart of the writes ``_forward_mcp_to_cli_request`` makes
-    below: the two transports put the set in different places, so a caller that
+    The read counterpart of the writes ``apply_forwarded_mcp_servers`` makes:
+    the two transports put the set in different places, so a caller that
     reports what a leg is getting asks the request that was built rather than
     re-deriving it from the provider name or from what it resolved itself.
     Codex entries that only disable a server by name are not a set being handed
     over, so they do not count.
     """
-    config = getattr(getattr(branch.chat_model, "endpoint", None), "config", None)
-    kwargs = getattr(config, "kwargs", None) or {}
+    kwargs = kwargs or {}
     if kwargs.get("mcp_servers"):
         return True
     overrides = kwargs.get("config_overrides") or {}
@@ -641,6 +644,112 @@ def request_carries_forwarded_mcp(branch: Branch) -> bool:
         key.startswith("mcp_servers.") and not (key.endswith(".enabled") and value is False)
         for key, value in overrides.items()
     )
+
+
+def request_carries_forwarded_mcp(branch: Branch) -> bool:
+    """``request_kwargs_carry_forwarded_mcp`` for a branch's built CLI request."""
+    config = getattr(getattr(branch.chat_model, "endpoint", None), "config", None)
+    return request_kwargs_carry_forwarded_mcp(getattr(config, "kwargs", None))
+
+
+def apply_forwarded_mcp_servers(
+    kwargs: dict[str, Any],
+    servers: dict[str, Any] | None,
+    *,
+    provider: str | None,
+    exclusive: bool = False,
+    allowed_names: Collection[str] | None = None,
+    known_server_names: Collection[str] = (),
+) -> bool:
+    """Write a resolved MCP server set into a CLI request's kwargs.
+
+    Every spawn path that resolves a server set applies it here, so that "can
+    this leg be given a set?" has one answer and one implementation. Returns
+    whether *servers* reached the request: False means this provider has no
+    transport for a caller-resolved set, and the caller is the one who has to
+    say what was lost.
+
+    *exclusive* is the caller stating that *servers* is the whole set rather
+    than an addition to whatever the provider finds for itself. It is what
+    makes an empty set mean "no servers": the Claude CLI needs
+    ``strict_mcp_config``, and codex, which has no wholesale clear, needs each
+    server it would otherwise load disabled by name.
+
+    *allowed_names* is the caller's allowlist when it is wider than the set
+    being forwarded — a name the caller allows but did not itself describe
+    stays enabled rather than being disabled as excluded. *known_server_names*
+    adds names the caller knows the provider may load which ambient discovery
+    would not report. Both only matter under *exclusive*.
+    """
+    if servers is None:
+        return False
+    if not provider_accepts_forwarded_mcp(provider):
+        return False
+
+    if provider in _CLAUDE_PROVIDER_NAMES:
+        kwargs["mcp_servers"] = servers
+        if exclusive:
+            # The handed set alone is merged with whatever the CLI discovers
+            # for itself. The strict flag is what makes it the entire set.
+            kwargs["strict_mcp_config"] = True
+        return True
+
+    # codex: the CLI takes no JSON MCP-config input; each server is forwarded
+    # as `-c mcp_servers.<name>.<field>=<value>` config overrides, which the
+    # request model already serializes onto the command line as TOML. Only
+    # the fields the codex CLI's own McpServerConfig schema understands are
+    # forwarded (verified against the installed codex CLI: `codex mcp list
+    # --json` echoes back exactly this field set); a field outside that set
+    # is a caller mistake, not a value to silently drop, so it's a loud
+    # ConfigurationError. Server shapes lacking both `command` and `url`
+    # aren't a real MCP server transport at all and are skipped outright.
+    overrides = dict(kwargs.get("config_overrides") or {})
+    # `env` and `http_headers` can carry arbitrary secret-bearing literal
+    # values (API keys/tokens, an `Authorization: Bearer ...` header) and
+    # must never land on argv (visible via `ps`, request logs, etc).
+    # `env_http_headers` values are env-var *names*, not secrets -- the
+    # actual header values are resolved by codex from its own environment at
+    # runtime, so those stay on the `-c` override path. Every other
+    # supported field is a name, path, flag, or timeout -- safe as a
+    # `-c` override.
+    secret_fields: dict[str, dict[str, Any]] = {}
+    for server_name, server_cfg in servers.items():
+        if not isinstance(server_cfg, dict) or not ("command" in server_cfg or "url" in server_cfg):
+            continue
+        unsupported = [k for k in server_cfg if k not in _CODEX_MCP_SERVER_FIELDS]
+        if unsupported:
+            raise ConfigurationError(
+                f"MCP server {server_name!r} sets field(s) {unsupported!r} that "
+                "the codex CLI's `-c mcp_servers.<name>.<field>` passthrough "
+                f"does not support. Supported fields: {sorted(_CODEX_MCP_SERVER_FIELDS)!r}."
+            )
+        for field_key in _CODEX_MCP_SERVER_FIELDS:
+            value = server_cfg.get(field_key)
+            if value is None:
+                continue
+            if field_key in _SECRET_CODEX_MCP_FIELDS:
+                secret_fields.setdefault(server_name, {})[field_key] = value
+            else:
+                overrides[f"mcp_servers.{server_name}.{field_key}"] = value
+
+    if exclusive:
+        # codex has no wholesale "clear mcp_servers" override -- `-c
+        # mcp_servers={}` merges onto, rather than replaces, the existing table
+        # (verified against the installed CLI) -- so every server the caller's
+        # set leaves out is disabled by name instead. What codex would load on
+        # its own counts as left out too: an exclusive set enforced only
+        # against names the caller happens to know about leaves every ambient
+        # server enabled, which is the opposite of what it asked for.
+        allowed = set(servers) if allowed_names is None else set(allowed_names)
+        discovered = set(known_server_names) | _discover_ambient_codex_mcp_server_names()
+        for excluded_name in sorted(discovered - allowed):
+            overrides[f"mcp_servers.{excluded_name}.enabled"] = False
+
+    if secret_fields:
+        _write_codex_mcp_secret_profile(kwargs, secret_fields)
+    if overrides:
+        kwargs["config_overrides"] = overrides
+    return True
 
 
 def _forward_mcp_to_cli_request(
@@ -747,69 +856,19 @@ def _forward_mcp_to_cli_request(
     # caller-supplied chat_model by reference, so mutating in place would
     # cross-contaminate other branches sharing the same iModel.
     branch.chat_model = branch.chat_model.copy(share_session=True, share_executor=True)
-    if provider == "claude_code":
-        branch.chat_model.endpoint.config.kwargs["mcp_servers"] = servers
-        return
-
-    # codex: the CLI takes no JSON MCP-config input; each server is forwarded
-    # as `-c mcp_servers.<name>.<field>=<value>` config overrides, which the
-    # request model already serializes onto the command line as TOML. Only
-    # the fields the codex CLI's own McpServerConfig schema understands are
-    # forwarded (verified against the installed codex CLI: `codex mcp list
-    # --json` echoes back exactly this field set); a field outside that set
-    # is a caller mistake, not a value to silently drop, so it's a loud
-    # ConfigurationError. Server shapes lacking both `command` and `url`
-    # aren't a real MCP server transport at all and are skipped outright.
-    overrides = dict(branch.chat_model.endpoint.config.kwargs.get("config_overrides") or {})
-    # `env` and `http_headers` can carry arbitrary secret-bearing literal
-    # values (API keys/tokens, an `Authorization: Bearer ...` header) and
-    # must never land on argv (visible via `ps`, request logs, etc).
-    # `env_http_headers` values are env-var *names*, not secrets -- the
-    # actual header values are resolved by codex from its own environment at
-    # runtime, so those stay on the `-c` override path. Every other
-    # supported field is a name, path, flag, or timeout -- safe as a
-    # `-c` override.
-    secret_fields: dict[str, dict[str, Any]] = {}
-    for server_name, server_cfg in servers.items():
-        if not isinstance(server_cfg, dict) or not ("command" in server_cfg or "url" in server_cfg):
-            continue
-        unsupported = [k for k in server_cfg if k not in _CODEX_MCP_SERVER_FIELDS]
-        if unsupported:
-            raise ConfigurationError(
-                f"MCP server {server_name!r} sets field(s) {unsupported!r} that "
-                "the codex CLI's `-c mcp_servers.<name>.<field>` passthrough "
-                f"does not support. Supported fields: {sorted(_CODEX_MCP_SERVER_FIELDS)!r}."
-            )
-        for field_key in _CODEX_MCP_SERVER_FIELDS:
-            value = server_cfg.get(field_key)
-            if value is None:
-                continue
-            if field_key in _SECRET_CODEX_MCP_FIELDS:
-                secret_fields.setdefault(server_name, {})[field_key] = value
-            else:
-                overrides[f"mcp_servers.{server_name}.{field_key}"] = value
-
-    if spec.mcp_servers is not None:
-        # Explicit allowlist (including an explicit empty one): every
-        # discovered server it excluded must be actively disabled, or codex
-        # keeps loading it from ambient/profile config regardless. codex has
-        # no wholesale "clear mcp_servers" override -- `-c mcp_servers={}`
-        # merges onto, rather than replaces, the existing table (verified
-        # against the installed CLI) -- so each excluded server is disabled
-        # by name instead. "Discovered" must include ambient/profile servers
-        # codex would load on its own, not just the ones lionagi's own MCP
-        # config resolved -- otherwise an allowlist enforced against an empty
-        # `available_servers` (no lionagi MCP config file resolved) is a
-        # no-op, leaving every ambient server enabled.
-        discovered_names = set(available_servers) | _discover_ambient_codex_mcp_server_names()
-        for excluded_name in discovered_names:
-            if excluded_name not in spec.mcp_servers:
-                overrides[f"mcp_servers.{excluded_name}.enabled"] = False
-
-    if secret_fields:
-        _write_codex_mcp_secret_profile(branch, secret_fields)
-    if overrides:
-        branch.chat_model.endpoint.config.kwargs["config_overrides"] = overrides
+    # An explicit allowlist (including an explicit empty one) is the caller
+    # saying which servers this agent gets and no others, so it is applied as
+    # the whole set. It is enforced against the servers this call read as well
+    # as the ones the provider would load on its own; a name the allowlist
+    # permits but the config file did not describe is not an exclusion.
+    apply_forwarded_mcp_servers(
+        branch.chat_model.endpoint.config.kwargs,
+        servers,
+        provider=provider,
+        exclusive=spec.mcp_servers is not None,
+        allowed_names=spec.mcp_servers,
+        known_server_names=tuple(available_servers),
+    )
 
 
 # Fields the codex CLI's MCP server config schema accepts, verified against
@@ -929,7 +988,7 @@ def _reap_stale_codex_mcp_profiles(codex_home: Path) -> None:
 
 
 def _write_codex_mcp_secret_profile(
-    branch: Branch, secret_fields: dict[str, dict[str, Any]]
+    kwargs: dict[str, Any], secret_fields: dict[str, dict[str, Any]]
 ) -> None:
     """Route MCP server fields that may carry secret values (`env`,
     `http_headers`) to codex via a private, on-disk config profile instead
@@ -948,7 +1007,7 @@ def _write_codex_mcp_secret_profile(
 
     import toml
 
-    existing_profile = branch.chat_model.endpoint.config.kwargs.get("profile")
+    existing_profile = kwargs.get("profile")
     if existing_profile:
         raise ConfigurationError(
             "Cannot forward MCP server secret fields for codex: the request "
@@ -973,4 +1032,4 @@ def _write_codex_mcp_secret_profile(
         fh.write(toml.dumps(profile_doc))
     atexit.register(lambda: profile_path.unlink(missing_ok=True))
 
-    branch.chat_model.endpoint.config.kwargs["profile"] = profile_name
+    kwargs["profile"] = profile_name

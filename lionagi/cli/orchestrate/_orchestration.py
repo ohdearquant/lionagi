@@ -34,7 +34,6 @@ from lionagi.state import provenance as _provenance
 
 from .._logging import hint, warn
 from .._providers import (
-    _CLAUDE_PROVIDER_NAMES,
     AgentProfile,
     AgentProfileNotFoundError,
     build_imodel_from_spec,
@@ -561,38 +560,47 @@ class OrchestrationEnv:
 
 
 def _hand_mcp_servers(imodel, servers: dict | None, *, label: str) -> None:
-    """Give one branch's model the run's server set, where it can carry one.
+    """Give one worker's model the run's server set, or say it could not be given.
+
+    A caller who named a set for this run gets that set applied to every worker
+    whose provider has a transport for one, and is told about every worker whose
+    provider has none. Which providers those are is not decided here — the
+    request is where the set lands, so the function that writes it is the one
+    that answers whether it landed.
 
     An empty set and no set are different requests. ``{}`` is the caller having
-    asked for no servers, and only a provider that accepts a server set per
-    request can express it: handed ``{}``, the Claude CLI lane is told the whole
-    set is empty rather than being left to find its own. ``None`` is there being
-    nothing to hand over, and the model keeps whatever it would have used.
+    asked for no servers, so it is applied as the whole set rather than as
+    nothing to add. ``None`` is there being nothing to hand over, and the model
+    keeps whatever it would have used.
 
-    The other CLI providers read a user-level config that no caller directory
-    affects, so a set given here would be dropped without a word. That is
-    tolerable for servers the model would mostly have found anyway, but not for
-    a refusal — the caller who asked for none would go on believing they got
-    none, so *label* names the worker whose request could not carry it.
+    *label* names the worker, because a run's workers can resolve different
+    providers and a caller reading the warning needs to know which leg lost
+    what.
     """
     if servers is None:
         return
+    from lionagi.agent.factory import apply_forwarded_mcp_servers
+
     provider = imodel.endpoint.config.provider
-    if provider in _CLAUDE_PROVIDER_NAMES:
-        imodel.endpoint.config.kwargs["mcp_servers"] = servers
-        if not servers:
-            # An empty set alone is merged with whatever the CLI discovers for
-            # itself, which leaves the discovered servers in place. The strict
-            # flag is what makes the handed set the entire set.
-            imodel.endpoint.config.kwargs["strict_mcp_config"] = True
+    applied = apply_forwarded_mcp_servers(
+        imodel.endpoint.config.kwargs,
+        servers,
+        provider=provider,
+        exclusive=not servers,
+    )
+    if applied:
         return
-    if not servers:
-        warn(
-            f"{label}: --no-mcp-config was not applied. The {provider} provider "
-            "takes its MCP servers from its own configuration rather than from "
-            "the request, so this worker keeps the servers that configuration "
-            "gives it."
-        )
+    lost = (
+        "--no-mcp-config was not applied, so this worker keeps the servers that "
+        "configuration gives it"
+        if not servers
+        else f"the {len(servers)} resolved server(s) ({', '.join(sorted(servers))}) "
+        "are not reachable for this worker"
+    )
+    warn(
+        f"{label}: the {provider} provider takes its MCP servers from its own "
+        f"configuration rather than from the request, so {lost}."
+    )
 
 
 async def setup_orchestration(
