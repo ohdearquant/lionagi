@@ -272,13 +272,10 @@ async def _import_one_run(
         total_branches += 1
 
     if session_msg_ids:
-        from sqlalchemy import text
-
-        async with db._tx() as conn:
-            await conn.execute(
-                text("UPDATE progressions SET collection = :col WHERE id = :id"),
-                {"col": json.dumps(session_msg_ids), "id": session_prog_id},
-            )
+        # Through the DB operation rather than a local UPDATE: the ids come from
+        # an imported file, and a hand-rolled json.dumps here would hand the
+        # driver a finished string that no serializer gets to check.
+        await db.set_progression(session_prog_id, session_msg_ids)
         await db.update_session(
             run_id,
             first_msg_id=session_msg_ids[0],
@@ -892,7 +889,7 @@ async def _import_runs() -> dict[str, int]:
 
 async def _import_teams() -> dict[str, int]:
     """Backfill ~/.lionagi/teams/*.json into the teams + team_messages tables."""
-    from sqlalchemy import text
+    from sqlalchemy import JSON, bindparam, text
 
     from lionagi.state.db import StateDB
 
@@ -942,7 +939,7 @@ async def _import_teams() -> dict[str, int]:
                     "created_at": created_at,
                     "updated_at": created_at,
                     "member_count": len(members),
-                    "members": json.dumps(members),
+                    "members": members,
                     "status": "active",
                 }
             )
@@ -979,34 +976,34 @@ async def _import_teams() -> dict[str, int]:
                         "recipient": recipient,
                         "content": content,
                         "summary": (content[:200] + "…") if len(content) > 200 else None,
-                        "read_by": json.dumps(read_by_arr),
+                        "read_by": read_by_arr,
                         "session_id": None,
                     }
                 )
                 counts["messages"] += 1
 
+            # members and read_by are bound as JSON so the engine's serializer
+            # encodes them; imported team files are outside data, and a
+            # pre-serialized string would be handed to the driver unchecked.
+            team_stmt = text(
+                "INSERT INTO teams "
+                "(id, name, created_at, updated_at, member_count, members, status) "
+                "VALUES (:id, :name, :created_at, :updated_at, "
+                ":member_count, :members, :status)"
+            ).bindparams(bindparam("members", type_=JSON))
+            msg_stmt = text(
+                "INSERT INTO team_messages "
+                "(id, team_id, created_at, sender, recipient, content, "
+                "summary, read_by, session_id) "
+                "VALUES (:id, :team_id, :created_at, :sender, :recipient, "
+                ":content, :summary, :read_by, :session_id)"
+            ).bindparams(bindparam("read_by", type_=JSON))
+
             async with db._tx() as conn:
                 for row in rows_to_insert:
-                    await conn.execute(
-                        text(
-                            "INSERT INTO teams "
-                            "(id, name, created_at, updated_at, member_count, members, status) "
-                            "VALUES (:id, :name, :created_at, :updated_at, "
-                            ":member_count, :members, :status)"
-                        ),
-                        row,
-                    )
+                    await conn.execute(team_stmt, row)
                 for mrow in msg_rows:
-                    await conn.execute(
-                        text(
-                            "INSERT INTO team_messages "
-                            "(id, team_id, created_at, sender, recipient, content, "
-                            "summary, read_by, session_id) "
-                            "VALUES (:id, :team_id, :created_at, :sender, :recipient, "
-                            ":content, :summary, :read_by, :session_id)"
-                        ),
-                        mrow,
-                    )
+                    await conn.execute(msg_stmt, mrow)
 
     return counts
 

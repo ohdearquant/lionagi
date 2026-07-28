@@ -443,10 +443,17 @@ def _validate_columns(fields: dict[str, Any], allowed: frozenset[str]) -> None:
 
 
 def _to_json_column(value: Any) -> Any:
-    """Serialize value to JSON string for round-trippable storage."""
+    """Serialize value to a JSON string for a TEXT column holding JSON.
+
+    Columns bound as ``type_=JSON`` are serialized by the engine instead; this
+    is for the writes that hand the driver a finished string. Both reject inf,
+    -inf and nan rather than storing them, because neither the `null` orjson
+    writes nor the bare `NaN` the stdlib writes can be read back as the value
+    that was handed in.
+    """
     if value is None or isinstance(value, bytes | bytearray | memoryview):
         return value
-    return _json_dumps(value)
+    return _json_dumps(value, check_non_finite=True)
 
 
 def _validate_session_status(status: Any) -> None:
@@ -1962,7 +1969,25 @@ class StateDB:
                     "INSERT INTO progressions (id, created_at, collection) VALUES (:id, :ca, :col) "
                     "ON CONFLICT (id) DO NOTHING"
                 ),
-                {"id": progression_id, "ca": time.time(), "col": json.dumps(collection or [])},
+                {
+                    "id": progression_id,
+                    "ca": time.time(),
+                    "col": _to_json_column(collection or []),
+                },
+            )
+
+    async def set_progression(self, progression_id: str, collection: list[str]) -> None:
+        """Replace a progression's collection wholesale.
+
+        Exists so callers outside this module never have to hand the driver a
+        finished JSON string of their own: ``collection`` is a TEXT column, so a
+        pre-serialized value would bypass both the engine's JSON serializer and
+        the checked helper used here.
+        """
+        async with self._tx() as conn:
+            await conn.execute(
+                text("UPDATE progressions SET collection = :col WHERE id = :id"),
+                {"col": _to_json_column(collection or []), "id": progression_id},
             )
 
     async def get_progression(self, progression_id: str) -> list[str]:

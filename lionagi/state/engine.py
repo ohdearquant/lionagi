@@ -69,7 +69,14 @@ def _json_serializer(obj):
 
 
 def _dumps_with_uuid(value):
-    return json.dumps(value, default=_json_serializer)
+    """Serializer for every JSON bind on every engine this module builds.
+
+    ``allow_nan=False`` makes the encoder raise on inf, -inf and nan instead of
+    writing the non-standard ``Infinity``/``NaN`` literals into durable storage,
+    where nothing downstream can read them back as JSON. It is a flag on the
+    encode pass that already runs, not an extra traversal of the payload.
+    """
+    return json.dumps(value, default=_json_serializer, allow_nan=False)
 
 
 def normalize_state_db_url(value: str | Path | None) -> str:
