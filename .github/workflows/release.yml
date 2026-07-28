@@ -111,18 +111,11 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
-  # A job of its own, for two reasons. It reads the tag back from the registry
-  # rather than trusting the push step's exit, because those are different claims
-  # and the second is the one a user depends on. And it runs even when the docker
-  # job failed or was cancelled, which is what happened to the two releases that
-  # shipped no image: their only signal was a run-level conclusion that stands for
-  # every job in the run and goes red for unrelated reasons. A named job that
-  # fails says which thing is missing.
-  #
-  # Limit worth knowing: nothing inside a workflow run survives a run-level
-  # cancellation, so a cancelled release run still publishes nothing and reports
-  # nothing. Covering that needs a check outside this workflow, comparing the
-  # published package version against the registry.
+  # Reads the tag back from the registry rather than trusting the push step's
+  # exit, because those are different claims and the second is the one a user
+  # depends on. Its own job so it still runs when the docker job failed or was
+  # cancelled, which is how both missing images happened, and so an absent image
+  # fails something whose name says what is missing.
   verify-image:
     needs: docker
     if: ${{ always() && needs.docker.result != 'skipped' }}
@@ -141,23 +134,33 @@ jobs:
 
         list_tags() {
           local token
-          token="$(curl -sSf "https://ghcr.io/token?scope=repository:${repo}:pull" | jq -r '.token')"
+          token="$(curl -sSf "https://ghcr.io/token?scope=repository:${repo}:pull" | jq -r '.token')" || return 1
           curl -sSf -H "Authorization: Bearer ${token}" \
             "https://ghcr.io/v2/${repo}/tags/list" | jq -r '.tags[]?'
         }
 
+        query_ok=0
+        count=0
+
         # A newly pushed tag can take a moment to appear, so give it a few tries
         # before calling it absent.
         for attempt in 1 2 3 4 5; do
-          tags="$(list_tags || true)"
+          if tags="$(list_tags)"; then
+            query_ok=1
+          else
+            query_ok=0
+            tags=""
+          fi
           count="$(printf '%s\n' "${tags}" | grep -c . || true)"
 
-          # Positive control. An absence only means something if the same query
-          # can return a presence: an empty listing and a missing tag read
-          # identically, so a listing that resolved nothing is an instrument
-          # failure rather than an answer.
-          if [ "${count}" -eq 0 ]; then
-            echo "Attempt ${attempt}: tag listing returned nothing."
+          # Positive control. An absence only means something if the query that
+          # reported it finished and returned some other tag. Both halves are
+          # needed: an empty listing and a missing tag read identically, and a
+          # read that dies partway leaves output behind, so output alone would
+          # let a broken read be reported as a missing image. Status and content
+          # are separate claims and this asks for both.
+          if [ "${query_ok}" -eq 0 ] || [ "${count}" -eq 0 ]; then
+            echo "Attempt ${attempt}: could not list tags for ${repo}."
           elif printf '%s\n' "${tags}" | grep -qxF "${VERSION}"; then
             echo "ghcr.io/${repo}:${VERSION} is present; ${count} tags listed."
             exit 0
@@ -167,7 +170,7 @@ jobs:
           sleep 15
         done
 
-        if [ "${count}" -eq 0 ]; then
+        if [ "${query_ok}" -eq 0 ] || [ "${count}" -eq 0 ]; then
           echo "::error::Could not list tags for ${repo}. This check cannot tell a missing image from a broken read, so it is failing rather than passing."
         else
           echo "::error::ghcr.io/${repo}:${VERSION} is not in the registry. The registry answered with ${count} other tags, so this is the image missing rather than the check failing. Check the docker job for why the push did not land."
