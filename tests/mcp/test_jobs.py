@@ -2733,3 +2733,86 @@ def test_status_still_reports_the_whole_delivery_outcome(sandbox):
     assert st["notify_delivery"] == _EXITED_NONZERO
     # and the collapsed form stays out of status: one field, one meaning
     assert "notify_delivery_state" not in st
+
+
+def _popen_that_writes_the_runs_own_line(runs_written: list):
+    """A stand-in child that writes one line down the descriptor it was handed.
+
+    The descriptor is what a collision is felt through — two runs holding a
+    writable handle to one file — so the double has to use it rather than only
+    record it.
+    """
+
+    def fake_popen(argv, **kw):
+        line = kw["env"][config.RUN_ID_ENV_VAR]
+        kw["stdout"].write(f"{line} wrote this\n".encode())
+        runs_written.append(line)
+        return _FakeProc()
+
+    return fake_popen
+
+
+def test_a_second_submission_never_lands_on_a_running_runs_directory(sandbox, monkeypatch):
+    """An id already taken costs a retry, not the run that holds it.
+
+    A run id is a timestamp to the second plus six random hex digits, so two
+    submissions in one second can mint the same one. What that used to mean was
+    not a collision of names but a collision of runs: the second wrote its record
+    over the first's and its child wrote into the first's log, and afterwards
+    nothing could tell the two apart or say what the first one had been.
+
+    Asserted on what an operator can see — two ids, two directories, each log
+    holding only its own run's output and each record naming only its own run.
+    How the retry gets there is this function's business and is not asserted.
+    """
+    written: list[str] = []
+    monkeypatch.setattr(jobs.subprocess, "Popen", _popen_that_writes_the_runs_own_line(written))
+
+    # Positive control first: ordinary submissions, ids that differ on their own.
+    # Without it, a change that refused every second submission — or handed every
+    # one of them a fresh id it never used — would read as this test passing.
+    minted = iter(["20260101T000000-aaaaaa", "20260101T000000-bbbbbb"])
+    monkeypatch.setattr(jobs, "new_run_id", lambda: next(minted))
+    first = jobs.submit("agent", [], label="first")["run_id"]
+    second = jobs.submit("agent", [], label="second")["run_id"]
+
+    assert first != second
+    for rid, label in ((first, "first"), (second, "second")):
+        assert (config.JOBS_DIR / rid).is_dir()
+        assert (config.JOBS_DIR / rid / "console.log").read_text() == f"{rid} wrote this\n"
+        assert jobs._read_job(rid)["label"] == label
+
+    # Now the collision: the next submission mints an id that is already taken
+    # before it mints one that is not.
+    minted = iter(["20260101T000000-bbbbbb", "20260101T000000-cccccc"])
+    monkeypatch.setattr(jobs, "new_run_id", lambda: next(minted))
+    third = jobs.submit("agent", [], label="third")["run_id"]
+
+    assert third not in (first, second)
+    assert (config.JOBS_DIR / third / "console.log").read_text() == f"{third} wrote this\n"
+    assert jobs._read_job(third)["label"] == "third"
+    # The run whose id was taken is untouched: its log holds its own line alone
+    # and its record still says whose it is.
+    assert (config.JOBS_DIR / second / "console.log").read_text() == f"{second} wrote this\n"
+    assert jobs._read_job(second)["label"] == "second"
+    assert written == [first, second, third]
+
+
+def test_a_submission_that_is_refused_leaves_no_directory_behind(sandbox, monkeypatch):
+    """The reservation is taken back when the submission does not happen.
+
+    Every directory under the jobs root is a job to the listing, so one left
+    behind by a rejected submission is a job with no kind that never finishes.
+    """
+
+    def refuse(argv, env, *, kind):
+        raise ValueError("argv is too long for this platform")
+
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-dddddd")
+    monkeypatch.setattr(jobs, "_reject_oversized_argv", refuse)
+
+    with pytest.raises(ValueError):
+        jobs.submit("agent", [], prompt="x")
+
+    assert not (config.JOBS_DIR / "20260101T000000-dddddd").exists()
+    assert jobs.list_jobs() == []
