@@ -141,6 +141,12 @@ class TestCmdArgs:
     def test_numeric_caps_have_a_useful_minimum(self, seconds):
         emitted = format_print_timeout(seconds)
 
+        # Whatever the numeric paths emit has to survive the same guard an
+        # explicitly supplied value passes through. Asserting the number alone
+        # would not notice a dropped unit suffix, because int("1") is also 1.
+        args = GeminiCodeRequest(prompt="hi", print_timeout=emitted).as_cmd_args()
+        assert args[args.index("--print-timeout") + 1] == emitted
+        assert emitted.endswith("s")
         assert int(emitted.removesuffix("s")) >= 1
 
 
