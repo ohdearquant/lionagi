@@ -698,25 +698,25 @@ then report it:
 | Field | Value |
 |-------|-------|
 | `terminal` | `true` |
-| `outcome` | `lost` |
+| `outcome` | `indeterminate` |
 | `reason_code` | `process_gone_without_outcome` |
 | `terminal_source` | `mcp_orphan_reaper` |
 
-`outcome: "lost"` means the process is conclusively gone and **no authoritative
+`outcome: "indeterminate"` means the process is conclusively gone and **no authoritative
 outcome was reported**. It does not mean the work failed: the run may well have
 finished what it was doing before it died, and nothing survived to say either
 way. `failed` stays reserved for a reported terminal status classified as a
 failure, and a caller may retry a `failed` run under its own policy. **Do not
-automatically retry a `lost` run** — an external side effect it never got to
+automatically retry such a run** — an external side effect it never got to
 report may already have committed.
 
 `terminal_source` says what wrote the end: `cli_terminal_hook` (the run's own
 terminal hook), `lifecycle_cache` (an end read back from the lifecycle store),
-`spawn_failure` (the spawn was caught failing), or `mcp_orphan_reaper` (this
-server, from the conclusive observation above). It is null on records written
-before the field existed.
+`spawn_failure` (the spawn was caught failing), `mcp_kill` (the run was killed
+through this server), or `mcp_orphan_reaper` (this server, from the conclusive
+observation above). It is null on records written before the field existed.
 
-For a `lost` run, **`finished_at` is when the loss was established and recorded,
+For a run ended this way, **`finished_at` is when the loss was established and recorded,
 not when the process exited** — nothing surviving can report that instant. Any
 duration derived from it is therefore an **upper bound** on how long the run
 actually ran.
@@ -728,7 +728,7 @@ probe — never does, and such a run stays non-terminal and advisory
 (`possibly_orphaned`), reported by `job.wait` under `stopped_without_end`.
 
 `job.wait`'s **`all_terminal` means every valid requested run has a recorded
-end**, including runs whose outcome is `lost`. It does not mean every run
+end**, including runs whose outcome is `indeterminate`. It does not mean every run
 succeeded or reported an outcome; read each entry's `outcome` for that.
 
 ### Terminal notices

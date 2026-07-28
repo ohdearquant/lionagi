@@ -103,7 +103,7 @@ def test_a_conclusively_gone_process_ends_the_run_as_lost(sandbox, monkeypatch):
 
     st = jobs.status(rid)
     assert st["terminal"] is True
-    assert st["outcome"] == jobs.OUTCOME_LOST
+    assert st["outcome"] == jobs.OUTCOME_INDETERMINATE
     assert st["reason_code"] == jobs.LOST_REASON
     assert st["possibly_orphaned"] is False
     assert st["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
@@ -401,7 +401,7 @@ async def test_a_stopped_run_costs_one_poll_interval_and_no_more(sandbox, monkey
     assert res["timed_out"] is False
     assert res["all_terminal"] is True
     assert res["runs"][0]["terminal"] is True
-    assert res["runs"][0]["outcome"] == jobs.OUTCOME_LOST
+    assert res["runs"][0]["outcome"] == jobs.OUTCOME_INDETERMINATE
     assert res["runs"][0]["possibly_orphaned"] is False
     assert res["runs"][0]["error"] is None
 
@@ -419,6 +419,11 @@ async def test_wait_still_waits_for_a_running_id_beside_a_stopped_one(sandbox, m
     _record(gone, pid=999_999)
     busy = jobs.new_run_id()
     _record(busy, pid=4242)
+    # A run that ended badly, so the aggregate below covers all four outcomes a
+    # wait can carry at once rather than three of them.
+    dud = jobs.new_run_id()
+    _record(dud, pid=999_998)
+    jobs.mark_terminal(dud, "failed")
 
     polls = {"n": 0}
     real_status = jobs.status
@@ -432,18 +437,23 @@ async def test_wait_still_waits_for_a_running_id_beside_a_stopped_one(sandbox, m
         return real_status(run_id)
 
     monkeypatch.setattr(jobs, "status", counting_status)
-    res = await jobs.wait([gone, busy], max_wait=30, poll_interval=0.01)
+    res = await jobs.wait([gone, busy, dud], max_wait=30, poll_interval=0.01)
 
     assert polls["n"] == 2  # the wait did keep observing the running id
     assert res["pending"] == []
     assert res["stopped_without_end"] == []
     assert res["timed_out"] is False
-    # Both ids have a recorded end, so the aggregate is true — and it is the
-    # per-entry outcomes, in the order they were asked for, that say the two
+    # Every id has a recorded end, so the aggregate is true — and it is the
+    # per-entry outcomes, in the order they were asked for, that say the three
     # runs came out differently.
     assert res["all_terminal"] is True
-    assert [r["outcome"] for r in res["runs"]] == [jobs.OUTCOME_LOST, "succeeded"]
+    assert [r["outcome"] for r in res["runs"]] == [
+        jobs.OUTCOME_INDETERMINATE,
+        "succeeded",
+        "failed",
+    ]
     assert res["runs"][1]["terminal"] is True
+    assert res["runs"][2]["terminal"] is True
 
 
 async def test_a_stopped_run_that_later_records_an_end_is_terminal(sandbox, monkeypatch):
@@ -458,7 +468,7 @@ async def test_a_stopped_run_that_later_records_an_end_is_terminal(sandbox, monk
 
     ended = await jobs.wait([rid], max_wait=0, poll_interval=1)
     assert ended["stopped_without_end"] == []
-    assert ended["runs"][0]["outcome"] == jobs.OUTCOME_LOST
+    assert ended["runs"][0]["outcome"] == jobs.OUTCOME_INDETERMINATE
 
     # A hook arriving afterwards cannot replace an end that is already recorded.
     jobs.mark_terminal(rid, "completed")
@@ -468,7 +478,7 @@ async def test_a_stopped_run_that_later_records_an_end_is_terminal(sandbox, monk
     assert res["pending"] == []
     assert res["all_terminal"] is True
     assert res["runs"][0]["terminal"] is True
-    assert res["runs"][0]["outcome"] == jobs.OUTCOME_LOST
+    assert res["runs"][0]["outcome"] == jobs.OUTCOME_INDETERMINATE
     assert res["runs"][0]["possibly_orphaned"] is False
 
 
@@ -496,7 +506,7 @@ async def test_wait_snapshot_of_a_stopped_run_is_still_a_snapshot(sandbox, monke
     assert slept == []
     assert res["max_wait"] == 0.0
     assert res["stopped_without_end"] == []
-    assert res["runs"][0]["outcome"] == jobs.OUTCOME_LOST
+    assert res["runs"][0]["outcome"] == jobs.OUTCOME_INDETERMINATE
 
 
 async def test_wait_does_not_hold_the_window_open_for_a_reused_pid(sandbox, monkeypatch):
@@ -519,7 +529,7 @@ async def test_wait_does_not_hold_the_window_open_for_a_reused_pid(sandbox, monk
     assert res["all_terminal"] is True
     assert res["runs"][0]["possibly_orphaned"] is False
     assert res["runs"][0]["terminal"] is True
-    assert res["runs"][0]["outcome"] == jobs.OUTCOME_LOST
+    assert res["runs"][0]["outcome"] == jobs.OUTCOME_INDETERMINATE
     assert res["runs"][0]["error"] is None
 
 

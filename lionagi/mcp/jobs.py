@@ -32,11 +32,13 @@ The third writer is this module's own orphan observer. A run whose process died
 before the terminal hook ran has no surviving producer at all: nothing will ever
 write its end, and a caller waiting for one waits forever. So when — and only
 when — an observation positively establishes that this run's process is gone,
-``status()`` publishes that end itself, as ``outcome="lost"``, before returning
-it. Every mutation of a job record goes through one per-run lock, and the first
-recorded end wins: a later writer may add what is missing beside it but never
-replaces it, so no two readers of one record can disagree about whether the run
-ended.
+``status()`` publishes that end itself, as ``outcome="indeterminate"``, before
+returning it. Every mutation of a job record goes through one per-run lock, and
+the first recorded end wins: a later writer may add what is missing beside it but
+never replaces it, so no two readers of one record can disagree about whether the
+run ended. A mutation that cannot take that lock records nothing and says so —
+the record stays non-terminal and the next observation retries it, rather than a
+terminal fact being announced that no reader can find.
 """
 
 from __future__ import annotations
@@ -116,13 +118,20 @@ _SPAWN_FAILED_REASON = "spawn_failed"
 # survived to say either way. That is exactly why a caller may retry a `failed`
 # run under its own policy and must not automatically retry this one — an
 # external side effect may already have committed.
-OUTCOME_LOST = "lost"
+#
+# The value is the one the closed outcome vocabulary already reserves for a run
+# that ended and whose result cannot be established, rather than a new word for
+# this producer. Widening a closed vocabulary without moving the contract
+# version would be a silent contract change; what makes this transition
+# recognisable is the reason code and the terminal source beside it, which is
+# where the mechanism was always meant to live.
+OUTCOME_INDETERMINATE = "indeterminate"
 LOST_REASON = "process_gone_without_outcome"
 
 # The outcomes this module publishes. Consulted only to decide whether an
 # `outcome` already recorded on a job record may be reported back, so a damaged
 # record cannot invent a value a caller would branch on.
-_OUTCOMES = frozenset({"succeeded", "failed", "cancelled", OUTCOME_LOST})
+_OUTCOMES = frozenset({"succeeded", "failed", "cancelled", OUTCOME_INDETERMINATE})
 
 # What made a recorded end. Additive: it answers who wrote the end, which
 # neither `status` (open, and the producer's) nor `reason_code` (why the run
@@ -131,6 +140,15 @@ TERMINAL_SOURCE_HOOK = "cli_terminal_hook"
 TERMINAL_SOURCE_LIFECYCLE = "lifecycle_cache"
 TERMINAL_SOURCE_SPAWN_FAILURE = "spawn_failure"
 TERMINAL_SOURCE_ORPHAN_REAPER = "mcp_orphan_reaper"
+# The kill path is the fifth writer of an end. Like the four above, the value
+# names the mechanism that made the transition rather than the run's fate.
+TERMINAL_SOURCE_KILL = "mcp_kill"
+
+# Why a guarded mutation has no record to work on. Only the first means the run
+# is unknown; the last means the write was refused rather than attempted, so the
+# record is untouched and the operation is the caller's to retry or report.
+RECORD_ABSENT = "absent"
+LOCK_UNAVAILABLE = "lock_unavailable"
 
 # What the orphan observer records as its evidence. Deliberately bounded to the
 # kind and the named finding: nothing about argv, environment, logs, delivery
@@ -191,6 +209,11 @@ KILL_RECORD_WRONG_SHAPE = "job_record_wrong_shape"
 KILL_RECORD_FOREIGN_RUN = "job_record_names_another_run"
 KILL_NO_PID = "no_pid_on_record"
 KILL_SIGNALLED = "signalled"
+# The signal went out and the record of it could not be written, because the
+# record could not be serialized. Its own code, and not one of the refusals
+# above: those say nothing was signalled, while this says something was and the
+# durable trace of it is missing, which the caller may want to retry for.
+KILL_NOT_RECORDED = "kill_not_recorded"
 KILL_PROCESS_GONE = "process_gone"
 KILL_PERMISSION_DENIED = "permission_denied"
 # The record carries neither identity field, so the pid on it cannot be told
@@ -299,6 +322,30 @@ class _GuardedJob:
     state: str
 
 
+@dataclass(frozen=True)
+class WriteResult:
+    """What one guarded mutation came to, said in a way a caller can act on.
+
+    *record* is the record as it stands after the attempt, or None when there
+    was no usable one to work on. *state* says which of those it is, so the two
+    reasons a mutation comes back empty stay apart: a run nothing recorded, and
+    a write that was refused because its critical section could not be entered.
+
+    The distinction is the point. A caller told only "no record" has to guess,
+    and the guess that costs something is treating a refused write as a
+    completed one — announcing an end that is not on disk. ``refused`` names
+    that single case so nobody has to compare strings to find it.
+    """
+
+    record: dict[str, Any] | None
+    state: str
+
+    @property
+    def refused(self) -> bool:
+        """The mutation was not attempted: the record could not be serialized."""
+        return self.state == LOCK_UNAVAILABLE
+
+
 @contextlib.contextmanager
 def _locked_job(run_id: str) -> Iterator[_GuardedJob]:
     """Read-modify-write one run's record inside one per-run critical section.
@@ -327,17 +374,30 @@ def _locked_job(run_id: str) -> Iterator[_GuardedJob]:
     taken for any other reason yields no record either, and every mutation below
     is written to do nothing without one — an unserialized write is exactly what
     this exists to prevent.
+
+    Those two are reported as different states, and the difference is the whole
+    point of reporting them. An absent record is a settled answer about the run;
+    an unavailable lock is no answer at all, and a caller that treats it as one
+    publishes a fact it never wrote. Failing to create the lock file and failing
+    to acquire the lock are the same fact — this section was not entered — so
+    they yield the same state rather than one of them escaping as an exception
+    from a context manager whose contract is that it yields.
     """
     try:
         fd = os.open(config.job_dir(run_id) / _LOCK_NAME, os.O_RDWR | os.O_CREAT, 0o600)
     except FileNotFoundError:
-        yield _GuardedJob(None, "absent")
+        yield _GuardedJob(None, RECORD_ABSENT)
         return
     except OSError:
-        yield _GuardedJob(None, "lock_unavailable")
+        yield _GuardedJob(None, LOCK_UNAVAILABLE)
         return
     try:
         _lock_fd(fd)
+    except OSError:
+        os.close(fd)
+        yield _GuardedJob(None, LOCK_UNAVAILABLE)
+        return
+    try:
         record, state = _read_job_state(run_id)
         guard = _GuardedJob(record, state)
         before = copy.deepcopy(record)
@@ -1789,7 +1849,7 @@ def reap_orphan(run_id: str, *, finding: str, observed_at: str) -> ReapResult:
         job.update(
             {
                 "status": "exited",
-                "outcome": OUTCOME_LOST,
+                "outcome": OUTCOME_INDETERMINATE,
                 "reason_code": LOST_REASON,
                 "finished_at": observed_at,
                 "terminal_source": TERMINAL_SOURCE_ORPHAN_REAPER,
@@ -1848,7 +1908,11 @@ def _deliver_reap_notice(run_id: str, record: dict[str, Any]) -> dict[str, Any] 
         )
     except Exception:  # noqa: BLE001 — the end is published; delivery may not undo it
         return None
-    return record_notify_delivery(run_id, outcome)
+    # A result that could not be recorded reads back the same way a crash
+    # between the two writes does: the end is durable and the delivery outcome
+    # is absent. Nothing here can be failed by that — this is a read path, and
+    # the end it reports is already published.
+    return record_notify_delivery(run_id, outcome).record
 
 
 def _reap_if_conclusively_gone(
@@ -2038,7 +2102,7 @@ def _kill_result(
     }
 
 
-def _mark_killed(job: dict[str, Any]) -> None:
+def _mark_killed(job: dict[str, Any]) -> WriteResult:
     """Record the kill on the job record.
 
     A record that already carries an end keeps it. The run really did finish
@@ -2050,20 +2114,24 @@ def _mark_killed(job: dict[str, Any]) -> None:
     it stands there rather than against the copy the kill decision was made
     from: the signal takes time, and an end can be recorded while it is being
     sent. The kill still happened either way — this write is the record of it,
-    not the act.
+    not the act. What the caller is told is whether the record was made: a kill
+    nothing recorded leaves a run that reads as running to everyone who asks,
+    and that is a different thing to report than a kill that was recorded.
     """
     run_id = job.get("run_id")
     if not isinstance(run_id, str):
-        return
+        return WriteResult(None, "no_run_id_on_record")
     with _locked_job(run_id) as guard:
         current = guard.record
         if current is None:
-            return
+            return WriteResult(None, guard.state)
         if _record_is_terminal(current):
             current["group_reaped_at"] = _now_iso()
         else:
             current["status"] = "killed"
             current["finished_at"] = _now_iso()
+            current["terminal_source"] = TERMINAL_SOURCE_KILL
+        return WriteResult(current, guard.state)
 
 
 def _signal_group(
@@ -2095,7 +2163,20 @@ def _signal_group(
             pid=pid,
             pgid=pgid,
         )
-    _mark_killed(job)
+    written = _mark_killed(job)
+    if written.refused:
+        # The signal went out and nothing durable says so. Reported as its own
+        # code rather than as a plain success: a caller that reads `killed=True`
+        # and then finds the run still recorded as running has been told two
+        # things, and only one of them is on disk.
+        return _kill_result(
+            run_id,
+            killed=True,
+            reason="signalled, but the kill could not be recorded: the run record could not be locked",
+            reason_code=KILL_NOT_RECORDED,
+            pid=pid,
+            pgid=pgid,
+        )
     return _kill_result(
         run_id, killed=True, reason=None, reason_code=reason_code, pid=pid, pgid=pgid
     )
@@ -2719,8 +2800,8 @@ async def wait(
     A run whose process is gone with no end recorded meets that same criterion:
     it has stopped, and both writers of an end are past it, so the window is not
     held open for it either. Where that loss is established conclusively, the
-    observation ends the run — durably, with ``outcome="lost"`` — so the entry
-    comes back terminal like any other and is neither pending nor named below.
+    observation ends the run — durably, with ``outcome="indeterminate"`` — so the
+    entry comes back terminal like any other and is neither pending nor named below.
     ``all_terminal`` covers it: the field means every requested run has a
     recorded end, not that every run succeeded, and a caller reads each entry's
     ``outcome`` to tell those apart.
@@ -2798,7 +2879,7 @@ async def wait(
     }
 
 
-def mark_terminal(run_id: str, cli_status: str) -> dict[str, Any] | None:
+def mark_terminal(run_id: str, cli_status: str) -> WriteResult:
     """Record a terminal status for *run_id* (called by the CLI notify hook).
 
     The CLI's terminal status string is authoritative and recorded verbatim. An
@@ -2816,19 +2897,24 @@ def mark_terminal(run_id: str, cli_status: str) -> dict[str, Any] | None:
     goes ahead on the record it read back, so a run whose end was inferred can
     still have its notice filled in by the child that turned out to be alive
     enough to send one.
+
+    A record this could not serialize is reported as refused rather than as no
+    record. The end is not on disk in that case, and the caller's next act is to
+    announce one — so the two have to be told apart here or the announcement
+    goes out for a record that still reads as running.
     """
     with _locked_job(run_id) as guard:
         job = guard.record
         if job is None or job.get("finished_at") is not None:
-            return job
+            return WriteResult(job, guard.state)
         job["status"] = cli_status
         job["cli_status"] = cli_status
         job["finished_at"] = _now_iso()
         job["terminal_source"] = TERMINAL_SOURCE_HOOK
-        return job
+        return WriteResult(job, guard.state)
 
 
-def record_notify_delivery(run_id: str, outcome: dict[str, Any]) -> dict[str, Any] | None:
+def record_notify_delivery(run_id: str, outcome: dict[str, Any]) -> WriteResult:
     """Record whether the terminal notice was delivered (called by the notify hook).
 
     Surfaced by ``status`` so a completion notice that failed to send is visible
@@ -2840,12 +2926,19 @@ def record_notify_delivery(run_id: str, outcome: dict[str, Any]) -> dict[str, An
     A delivery outcome never changes how the run came out — a notice that failed
     to send is a fact about the notice.
 
+    The last delivery result recorded is the one kept. Only one caller attempts
+    a given run's notice, and where a second one exists — a child hook filling in
+    the notice for an end an observer inferred — the later attempt is the more
+    recent fact about the notice, which is the whole of what this field says.
+
     Returns the record as it stands afterwards, so a caller that has to report
-    the delivery alongside the run does not have to read it again.
+    the delivery alongside the run does not have to read it again, and reports a
+    refused write as refused: a delivery whose result was never recorded is not
+    a delivery anyone can read back.
     """
     with _locked_job(run_id) as guard:
         job = guard.record
         if job is None:
-            return None
+            return WriteResult(None, guard.state)
         job["notify_delivery"] = outcome
-        return job
+        return WriteResult(job, guard.state)

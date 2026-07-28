@@ -113,7 +113,7 @@ def test_each_conclusive_finding_writes_one_terminal_transition(
 
     first = jobs.status(rid)
     assert first["terminal"] is True
-    assert first["outcome"] == jobs.OUTCOME_LOST
+    assert first["outcome"] == jobs.OUTCOME_INDETERMINATE
     assert first["reason_code"] == jobs.LOST_REASON
     assert first["liveness_conclusion"] == "process_gone"
     assert first["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
@@ -124,7 +124,7 @@ def test_each_conclusive_finding_writes_one_terminal_transition(
 
     on_disk = jobs._read_job(rid)
     assert on_disk["finished_at"] == first["finished_at"] is not None
-    assert on_disk["outcome"] == jobs.OUTCOME_LOST
+    assert on_disk["outcome"] == jobs.OUTCOME_INDETERMINATE
 
     # The second reader answers from the record alone. It is given the opposite
     # observation — a live, confirmed process at that pid — and must still
@@ -135,7 +135,7 @@ def test_each_conclusive_finding_writes_one_terminal_transition(
     second = jobs.status(rid)
     assert second["alive"] is True
     assert second["terminal"] is True
-    assert second["outcome"] == jobs.OUTCOME_LOST
+    assert second["outcome"] == jobs.OUTCOME_INDETERMINATE
     assert second["finished_at"] == first["finished_at"]
     assert len(no_delivery) == 1
 
@@ -259,7 +259,7 @@ def test_two_observers_produce_one_transition_and_one_notice(sandbox, monkeypatc
 
     assert len(results) == 2
     assert all(r["terminal"] is True for r in results)
-    assert all(r["outcome"] == jobs.OUTCOME_LOST for r in results)
+    assert all(r["outcome"] == jobs.OUTCOME_INDETERMINATE for r in results)
     # One transition: both readers report the same recorded moment.
     assert results[0]["finished_at"] == results[1]["finished_at"]
     assert len(no_delivery) == 1
@@ -341,7 +341,7 @@ def test_the_pid_attachment_cannot_roll_back_a_reaped_end(sandbox, monkeypatch, 
     rid = _stranded(pid_create_time=None, pgid=None, spawn_state="started")
 
     reaped = jobs.status(rid)
-    assert reaped["outcome"] == jobs.OUTCOME_LOST
+    assert reaped["outcome"] == jobs.OUTCOME_INDETERMINATE
 
     with jobs._locked_job(rid) as guard:
         guard.record["pid"] = 4242
@@ -352,7 +352,7 @@ def test_the_pid_attachment_cannot_roll_back_a_reaped_end(sandbox, monkeypatch, 
     after = jobs._read_job(rid)
     assert after["pid"] == 4242
     assert after["finished_at"] == reaped["finished_at"]
-    assert after["outcome"] == jobs.OUTCOME_LOST
+    assert after["outcome"] == jobs.OUTCOME_INDETERMINATE
     assert after["notify_delivery"]["ok"] is True
 
 
@@ -373,9 +373,9 @@ def test_a_delivery_result_never_rolls_terminal_fields_backward(sandbox, monkeyp
 
     after = jobs._read_job(rid)
     assert after["finished_at"] == reaped["finished_at"]
-    assert after["outcome"] == jobs.OUTCOME_LOST
+    assert after["outcome"] == jobs.OUTCOME_INDETERMINATE
     assert after["notify_delivery"]["exit_code"] == 7
-    assert jobs.status(rid)["outcome"] == jobs.OUTCOME_LOST
+    assert jobs.status(rid)["outcome"] == jobs.OUTCOME_INDETERMINATE
 
 
 def test_a_hook_arriving_after_a_reap_keeps_the_recorded_end(sandbox, monkeypatch, no_delivery):
@@ -390,11 +390,12 @@ def test_a_hook_arriving_after_a_reap_keeps_the_recorded_end(sandbox, monkeypatc
     rid = _stranded()
     reaped = jobs.status(rid)
 
-    assert jobs.mark_terminal(rid, "completed")["finished_at"] == reaped["finished_at"]
+    kept = jobs.mark_terminal(rid, "completed").record
+    assert kept["finished_at"] == reaped["finished_at"]
 
     st = jobs.status(rid)
     assert st["status"] == "exited"
-    assert st["outcome"] == jobs.OUTCOME_LOST
+    assert st["outcome"] == jobs.OUTCOME_INDETERMINATE
     assert st["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
 
 
@@ -418,7 +419,7 @@ def test_list_and_status_classify_and_attribute_a_reaped_run_identically(
 
     row = next(r for r in rows if r["run_id"] == rid)
     assert row["terminal"] == st["terminal"] is True
-    assert row["outcome"] == st["outcome"] == jobs.OUTCOME_LOST
+    assert row["outcome"] == st["outcome"] == jobs.OUTCOME_INDETERMINATE
     assert row["reason_code"] == st["reason_code"] == jobs.LOST_REASON
     assert row["finished_at"] == st["finished_at"]
     assert row["terminal_source"] == st["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
@@ -455,7 +456,7 @@ def test_every_delivery_outcome_is_visible_and_none_of_them_changes_the_run(
     st = jobs.status(rid)
 
     assert st["notify_delivery"] == outcome
-    assert st["outcome"] == jobs.OUTCOME_LOST
+    assert st["outcome"] == jobs.OUTCOME_INDETERMINATE
     assert st["terminal"] is True
 
 
@@ -479,7 +480,7 @@ def test_a_delivery_that_comes_apart_leaves_a_terminal_run_to_be_reconciled(sand
     st = jobs.status(rid)
 
     assert st["terminal"] is True
-    assert st["outcome"] == jobs.OUTCOME_LOST
+    assert st["outcome"] == jobs.OUTCOME_INDETERMINATE
     assert st["notify_delivery"] is None
 
     on_disk = jobs._read_job(rid)
@@ -549,7 +550,147 @@ def test_a_record_written_before_any_of_this_is_reaped_on_its_next_read(
 
     st = jobs.status(rid)
 
-    assert st["outcome"] == jobs.OUTCOME_LOST
+    assert st["outcome"] == jobs.OUTCOME_INDETERMINATE
     assert st["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
     assert st["submitted_at"] == "2026-01-01T00:00:00+00:00"
     assert len(no_delivery) == 1
+
+
+# --- a mutation that cannot be serialized refuses, loudly ----------------------
+
+
+def _lock_file_cannot_be_created(monkeypatch) -> None:
+    """Make creating the per-run lock file fail, and only that."""
+    real_open = jobs.os.open
+
+    def _refuse(path, *args, **kwargs):
+        if str(path).endswith(jobs._LOCK_NAME):
+            raise PermissionError(13, "permission denied")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(jobs.os, "open", _refuse)
+
+
+def _lock_cannot_be_acquired(monkeypatch) -> None:
+    """Make the lock file open and the lock itself unobtainable."""
+
+    def _refuse(fd):
+        raise OSError(11, "resource temporarily unavailable")
+
+    monkeypatch.setattr(jobs, "_lock_fd", _refuse)
+
+
+def _console(rid: str) -> str:
+    path = config.job_dir(rid) / "console.log"
+    return path.read_text() if path.exists() else ""
+
+
+@pytest.mark.parametrize(
+    "break_the_lock",
+    [_lock_file_cannot_be_created, _lock_cannot_be_acquired],
+    ids=["lock_file_cannot_be_created", "lock_cannot_be_acquired"],
+)
+def test_a_terminal_write_that_cannot_be_serialized_sends_no_notice(
+    sandbox, monkeypatch, no_delivery, break_the_lock
+):
+    """No lock, no terminal record, no notice — and the refusal is visible.
+
+    The two ways the critical section is not entered are exercised separately
+    because they fail at different lines and only one of them was ever
+    classified. Either way the record must be left as it stands: a notice sent
+    here would assert an end that every reader of the record contradicts, which
+    is worse than the missing write it would be papering over, because the
+    missing write is at least still missing on the next observation.
+    """
+    rid = _stranded()
+    break_the_lock(monkeypatch)
+
+    rc = _notify_hook.main(["--run-id", rid, "--status", "completed"])
+
+    assert rc != 0
+    assert no_delivery == []
+    on_disk = jobs._read_job(rid)
+    assert on_disk["finished_at"] is None
+    assert on_disk["status"] == "running"
+    assert "could not record the terminal status" in _console(rid)
+
+
+def test_a_delivery_result_that_cannot_be_recorded_is_reported(sandbox, monkeypatch, no_delivery):
+    """The notice went out against a durable end; its result did not land.
+
+    A different case from the one above and reported the same way: the end is
+    on disk, so the notice was owed and was attempted, and what is missing is
+    the record of how it went. A hook that exits 0 here would say the run's
+    completion signal is accounted for when nothing on disk accounts for it.
+    """
+    rid = _stranded()
+    real_lock = jobs._lock_fd
+    taken: list[int] = []
+
+    def _refuse_after_the_first(fd):
+        taken.append(fd)
+        if len(taken) > 1:
+            raise OSError(11, "resource temporarily unavailable")
+        real_lock(fd)
+
+    monkeypatch.setattr(jobs, "_lock_fd", _refuse_after_the_first)
+
+    rc = _notify_hook.main(["--run-id", rid, "--status", "completed"])
+
+    assert rc != 0
+    assert no_delivery == [rid]
+    assert jobs._read_job(rid).get("notify_delivery") is None
+    assert "could not record the delivery result" in _console(rid)
+
+
+def test_an_absent_record_is_unchanged_by_any_of_this(sandbox, monkeypatch, no_delivery):
+    """A run nobody submitted still resolves its notice and still exits 0.
+
+    The refusal above is about a write that could not be attempted. A run with
+    no record is a settled answer, not a refused write, and it keeps the
+    behaviour it had: whatever is configured is resolved and the hook reports
+    no failure of its own.
+    """
+    rc = _notify_hook.main(["--run-id", "no-such-run", "--status", "completed"])
+
+    assert rc == 0
+    assert no_delivery == ["no-such-run"]
+
+
+def test_a_kill_that_cannot_be_recorded_says_so(sandbox, monkeypatch):
+    """The signal went out and nothing durable says it did.
+
+    The kill is not undone by the failure to record it — it already happened —
+    so `killed` stays true and the code carries the part that did not. Reported
+    rather than swallowed: a caller that reads a success and then finds the run
+    still recorded as running has no way to tell which of the two to believe.
+    """
+    rid = _stranded()
+    signalled: list[tuple[int, int]] = []
+    monkeypatch.setattr(jobs.os, "killpg", lambda pgid, sig: signalled.append((pgid, sig)))
+    _lock_cannot_be_acquired(monkeypatch)
+
+    result = jobs._signal_group(rid, jobs._read_job(rid), 4242, 4242, 15, jobs.KILL_SIGNALLED)
+
+    assert signalled == [(4242, 15)]
+    assert result["killed"] is True
+    assert result["reason_code"] == jobs.KILL_NOT_RECORDED
+    assert jobs._read_job(rid)["finished_at"] is None
+
+
+def test_a_recorded_kill_names_the_kill_as_what_ended_the_run(sandbox, monkeypatch):
+    """The fifth writer of an end attributes it like the other four.
+
+    No writer inside the serialization discipline may publish a terminal fact
+    without saying what made it; an unattributed end is exactly what the
+    attribution field exists to prevent.
+    """
+    rid = _stranded()
+    monkeypatch.setattr(jobs.os, "killpg", lambda pgid, sig: None)
+
+    result = jobs._signal_group(rid, jobs._read_job(rid), 4242, 4242, 15, jobs.KILL_SIGNALLED)
+
+    assert result["reason_code"] == jobs.KILL_SIGNALLED
+    on_disk = jobs._read_job(rid)
+    assert on_disk["status"] == "killed"
+    assert on_disk["terminal_source"] == jobs.TERMINAL_SOURCE_KILL

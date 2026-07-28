@@ -319,7 +319,7 @@ def test_a_lifecycle_read_that_fails_leaves_the_run_where_it_was(home, monkeypat
     # record: the end this run gets is the observer's own, attributed to it and
     # carrying no status, reason or time from a store that never answered.
     assert st["status"] == "exited"
-    assert st["outcome"] == jobs.OUTCOME_LOST
+    assert st["outcome"] == jobs.OUTCOME_INDETERMINATE
     assert st["reason_code"] == jobs.LOST_REASON
     assert st["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
     assert st["possibly_orphaned"] is False
@@ -348,7 +348,7 @@ def test_a_lifecycle_read_that_times_out_leaves_the_run_where_it_was(home, monke
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
 
     st = jobs.status(run_id)
-    assert st["outcome"] == jobs.OUTCOME_LOST
+    assert st["outcome"] == jobs.OUTCOME_INDETERMINATE
     assert st["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER, (
         "a read that learned nothing must not be credited with the end"
     )
@@ -398,7 +398,7 @@ def test_an_unavailable_lifecycle_answer_is_not_read_as_no_record(home, monkeypa
 
     assert jobs._read_lifecycle(run_id) is None
     st = jobs.status(run_id)
-    assert st["outcome"] == jobs.OUTCOME_LOST
+    assert st["outcome"] == jobs.OUTCOME_INDETERMINATE
     assert st["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER, (
         "a read that learned nothing must not be credited with the end"
     )
@@ -438,7 +438,7 @@ def test_output_that_defeats_the_parser_is_a_read_that_learned_nothing(home, mon
 
     assert jobs._read_lifecycle(run_id) is None
     st = jobs.status(run_id)
-    assert st["outcome"] == jobs.OUTCOME_LOST
+    assert st["outcome"] == jobs.OUTCOME_INDETERMINATE
     assert st["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER, (
         "a read that learned nothing must not be credited with the end"
     )
@@ -479,7 +479,7 @@ def test_a_spawn_failure_nobody_anticipated_is_also_a_read_that_learned_nothing(
 
     assert jobs._read_lifecycle(run_id) is None
     st = jobs.status(run_id)
-    assert st["outcome"] == jobs.OUTCOME_LOST
+    assert st["outcome"] == jobs.OUTCOME_INDETERMINATE
     assert st["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER, (
         "a read that learned nothing must not be credited with the end"
     )

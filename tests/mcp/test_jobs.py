@@ -2221,7 +2221,7 @@ def test_mark_terminal_and_list(sandbox, monkeypatch):
     monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **k: _FakeProc(4242))
     rid = jobs.submit("agent", [], prompt="x")["run_id"]
 
-    job = jobs.mark_terminal(rid, "failed")
+    job = jobs.mark_terminal(rid, "failed").record
     assert job["status"] == "failed" and job["finished_at"]
     assert job["cli_status"] == "failed"
 

@@ -217,6 +217,29 @@ def _note_failure_in_console_log(run_id: str, outcome: dict[str, Any]) -> None:
         pass
 
 
+def _note_persistence_failure(run_id: str, what: str) -> None:
+    """Append one line to the run's own log when a record could not be written.
+
+    The same fallback as a failed delivery, for the same reason: the record is
+    where a failure would ordinarily be reported, and this is the case where the
+    record is exactly what could not be written. The log is the one place left,
+    and it is the place someone reading a run that stops mid-sentence looks.
+
+    Best-effort in the same way. This runs in the dying process of a run that is
+    already over, and a log that cannot be appended to must not turn a refusal
+    that was handled into a crash.
+    """
+    try:
+        path = config.job_dir(run_id) / "console.log"
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(
+                f"\n[notify] could not record the {what} for run {run_id}: the job "
+                f"record could not be locked. The record was left unchanged.\n"
+            )
+    except OSError:
+        pass
+
+
 def deliver_terminal_notice(
     run_id: str,
     job: dict[str, Any] | None,
@@ -303,18 +326,33 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
 
-    job = jobs.mark_terminal(args.run_id, args.status)
+    terminal = jobs.mark_terminal(args.run_id, args.status)
+    if terminal.refused:
+        # The end is not on disk. A notice sent now would assert a completion
+        # that every reader of the record contradicts, so it is not sent: the
+        # record stays non-terminal and the next observation of this run ends it
+        # the way a run whose hook never ran is ended. The refusal is reported
+        # where the run's own log and this process's exit status are the two
+        # places anything is left to look.
+        _note_persistence_failure(args.run_id, "terminal status")
+        return 1
 
     outcome = deliver_terminal_notice(
         args.run_id,
-        job,
+        terminal.record,
         args.status,
         target=args.target,
         command=args.command,
         sender=args.sender,
     )
-    jobs.record_notify_delivery(args.run_id, outcome)
+    recorded = jobs.record_notify_delivery(args.run_id, outcome)
     _note_failure_in_console_log(args.run_id, outcome)
+    if recorded.refused:
+        # The notice was attempted against a durable end; what is missing is the
+        # record of how it went. Reported the same way, because a delivery
+        # nobody can read back is one an operator has to be told about.
+        _note_persistence_failure(args.run_id, "delivery result")
+        return 1
     return 0
 
 
