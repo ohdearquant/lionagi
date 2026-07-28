@@ -1179,7 +1179,17 @@ def submit(
     _write_job(record)
 
     try:
-        log_f = open(log_path, "wb")
+        # Append mode, not truncate: every write from the child has to land at
+        # end-of-file rather than at an offset the child carries with it. The
+        # terminal hook appends to this same log while the child is still alive
+        # and still holding this descriptor, so with an offset-carrying
+        # descriptor the child's next write — its final output, or just the
+        # flush the interpreter does on its way out — starts back where the
+        # child left off and overwrites whatever was appended behind its back.
+        # What it overwrites is the one line written only when something went
+        # wrong: the notice that a terminal notice could not be delivered. Each
+        # run gets a directory of its own, so nothing is here to append after.
+        log_f = open(log_path, "ab")
         try:
             proc = subprocess.Popen(  # noqa: S603 — argv is the resolved li_command + CLI flags, no shell
                 argv,
