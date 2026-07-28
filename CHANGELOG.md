@@ -50,7 +50,8 @@ be inspected.
 
 - Non-finite floats are rejected where durable JSON reaches the filesystem, and
   where a JSON `null` would be undetectable. See the upgrade note above.
-- A database stamped with a newer schema version is refused at open.
+- A database stamped with a newer schema version is refused on a writable open.
+  Read-only opens are unaffected. See the upgrade note above.
 
 ### Fixed
 
@@ -63,6 +64,15 @@ be inspected.
   them. A release that fails cannot replace the error the caller raised, and an
   interrupt arriving during release is neither swallowed nor allowed to skip the
   close.
+- An expected artifact named by a bare filename matches the file a worker
+  produced in its own directory. Verification joined every declared path
+  directly under the artifacts root, where in a multi-worker run the file never
+  lands, so a run that had completed successfully was rewritten as failed. An
+  entry that names a directory still matches exactly.
+- The diagnostics for MCP passthrough describe the branch they observed rather
+  than the whole run, and name the provider actually in hand. One branch's
+  inability to carry a server set read as a verdict on every worker in a flow,
+  and a codex agent was told the message was about the Claude CLI.
 - The post-invocation hook on a streamed event runs however the stream ends,
   not only when it runs to completion. A source error, a consumer that stopped
   early, and a cancelled consuming task each bypassed it before. Whatever ended
