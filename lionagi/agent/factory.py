@@ -53,6 +53,7 @@ async def create_agent(
     chat_model: Any = None,
     log_config: Any = None,
     resolved_mcp_servers: dict[str, Any] | None | UnsetType = Unset,
+    resolved_mcp_explicit: bool = False,
 ) -> Branch:
     """Create a fully wired Branch from AgentSpec: settings → hooks → prompt → model → tools.
 
@@ -60,7 +61,8 @@ async def create_agent(
     its own — it is handed to the CLI request verbatim and suppresses the
     discovery this factory would otherwise do from the agent's own working
     directory. ``None`` means "hand nothing over"; leaving it unset keeps the
-    discovery behaviour.
+    discovery behaviour. ``resolved_mcp_explicit`` says that set was named by
+    the caller rather than found near its launch directory.
     """
     spec = config
 
@@ -164,6 +166,7 @@ async def create_agent(
         spec,
         trust_project_settings=trust_project_settings,
         resolved_servers=resolved_mcp_servers,
+        resolved_servers_explicit=resolved_mcp_explicit,
     )
     _wire_external_hooks(branch, spec)
 
@@ -608,6 +611,7 @@ async def _load_mcp(
 
 
 _MCP_FORWARDING_PROVIDERS = frozenset({*_CLAUDE_PROVIDER_NAMES, "codex"})
+_ANTIGRAVITY_PROVIDER_NAMES = frozenset({"gemini-cli", "gemini_cli", "gemini-code", "gemini_code"})
 
 
 def provider_accepts_forwarded_mcp(provider: str | None) -> bool:
@@ -759,6 +763,7 @@ def _forward_mcp_to_cli_request(
     *,
     trust_project_settings: bool = False,
     resolved_servers: dict[str, Any] | None | UnsetType = Unset,
+    resolved_servers_explicit: bool = False,
 ) -> None:
     """Forward an MCP server set into the CLI provider's own request.
 
@@ -770,6 +775,10 @@ def _forward_mcp_to_cli_request(
     config file is looked for: a caller that already resolved a set is saying
     which servers this agent gets, and discovering a second one from the
     agent's working directory would silently replace it.
+
+    ``resolved_servers_explicit`` says the handed-over set was named by the
+    caller rather than discovered near the launch directory. Both arrive here as
+    the same dict, so only the caller can tell them apart.
     """
     caller_resolved = resolved_servers is not Unset
     mcp_path = (
@@ -786,6 +795,18 @@ def _forward_mcp_to_cli_request(
     provider = getattr(branch.chat_model.endpoint.config, "provider", None)
 
     if not provider_accepts_forwarded_mcp(provider):
+        # Refusing is only right when someone asked for these servers by name.
+        # A set the caller merely discovered near the launch directory is not an
+        # ask, and an empty set is the opposite of one, so neither can turn a
+        # working spawn into a hard failure.
+        named_explicitly = bool(spec.mcp_config_path) or resolved_servers_explicit
+        asked_for_servers = bool(resolved_servers) if caller_resolved else has_config
+        if named_explicitly and asked_for_servers and provider in _ANTIGRAVITY_PROVIDER_NAMES:
+            raise ConfigurationError(
+                f"The {provider!r} provider runs the Antigravity CLI (`agy`), "
+                "which does not support MCP servers; the explicitly supplied "
+                "MCP configuration cannot be forwarded."
+            )
         if has_config:
             import logging
 

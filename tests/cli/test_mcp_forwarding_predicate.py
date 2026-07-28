@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from lionagi._errors import ConfigurationError
 from lionagi.agent.factory import (
     _forward_mcp_to_cli_request,
     provider_accepts_forwarded_mcp,
@@ -79,6 +80,12 @@ def _capture_warnings(fn):
 def test_predicate_matches_what_the_forwarder_does(provider, mcp_config):
     """The predicate is true exactly when the request comes back carrying servers."""
     branch = _fake_branch(provider)
+    if provider == "gemini-cli":
+        with pytest.raises(ConfigurationError, match="Antigravity.*does not support MCP"):
+            _forward_mcp_to_cli_request(branch, _fake_spec(mcp_config))
+        assert provider_accepts_forwarded_mcp(provider) is False
+        return
+
     _forward_mcp_to_cli_request(branch, _fake_spec(mcp_config))
 
     kwargs = branch.chat_model.endpoint.config.kwargs
@@ -87,6 +94,59 @@ def test_predicate_matches_what_the_forwarder_does(provider, mcp_config):
     )
 
     assert request_carries_servers is provider_accepts_forwarded_mcp(provider)
+
+
+def _antigravity_spec():
+    """A spec that named no config of its own — the CLI hands the set over."""
+    return SimpleNamespace(
+        mcp_config_path=None,
+        mcp_servers=None,
+        cwd=None,
+        profile=SimpleNamespace(role=SimpleNamespace(name="reviewer")),
+    )
+
+
+@pytest.mark.parametrize(
+    ("resolved", "explicit", "case"),
+    [
+        ({"khive": {"command": "kkernel"}}, False, "discovered near the launch directory"),
+        ({}, False, "handed an empty set, which is a refusal"),
+        ({}, True, "named a config that declares no servers"),
+        (None, False, "handed nothing at all"),
+    ],
+)
+def test_antigravity_refusal_needs_servers_someone_asked_for(resolved, explicit, case):
+    """Refusing to spawn is only right when a caller named servers by name.
+
+    Every one of these arrives as the same handed-over dict a named config
+    produces, so a guard that keys on "a set was handed over" turns working
+    spawns into hard failures: the CLI hands over what it found near the
+    submitting directory on every leg, and an orchestrator opting out of MCP
+    hands over an empty set.
+    """
+    branch = _fake_branch("gemini-cli")
+
+    _forward_mcp_to_cli_request(
+        branch,
+        _antigravity_spec(),
+        resolved_servers=resolved,
+        resolved_servers_explicit=explicit,
+    )
+
+    assert "mcp_servers" not in branch.chat_model.endpoint.config.kwargs, case
+
+
+def test_antigravity_refusal_fires_for_a_named_server_set():
+    """The counterpart: naming servers this provider cannot reach is an error."""
+    branch = _fake_branch("gemini-cli")
+
+    with pytest.raises(ConfigurationError, match="Antigravity.*does not support MCP"):
+        _forward_mcp_to_cli_request(
+            branch,
+            _antigravity_spec(),
+            resolved_servers={"khive": {"command": "kkernel"}},
+            resolved_servers_explicit=True,
+        )
 
 
 def test_forwarding_providers_are_the_two_cli_transports():
