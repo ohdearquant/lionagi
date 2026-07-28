@@ -53,6 +53,33 @@ def test_allocate_run_artifact_root_creation_is_idempotent(tmp_path, monkeypatch
     assert second.artifact_root.is_dir()
 
 
+def test_inherited_run_id_is_consumed_by_one_allocation(tmp_path, monkeypatch):
+    """A one-hop handoff cannot leak into a later descendant allocation."""
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setenv("LIONAGI_RUN_ID", "handoff-run")
+
+    handed_off = allocate_run()
+    handed_off.write_manifest({"status": "running", "owner": "handoff"})
+    descendant = allocate_run(save_dir=tmp_path / "descendant-artifacts")
+
+    assert descendant.run_id != handed_off.run_id
+    assert runs_mod.current_run_id() is None
+    assert handed_off.read_manifest()["owner"] == "handoff"
+
+
+def test_explicit_run_id_still_consumes_inherited_handoff(tmp_path, monkeypatch):
+    """An explicit child identity must not leave its parent's handoff for a sibling."""
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setenv("LIONAGI_RUN_ID", "parent-run")
+
+    explicit_child = allocate_run(run_id="explicit-child")
+    next_child = allocate_run()
+
+    assert explicit_child.run_id == "explicit-child"
+    assert next_child.run_id not in {"explicit-child", "parent-run"}
+    assert runs_mod.current_run_id() is None
+
+
 def test_allocate_run_writes_running_placeholder_manifest(tmp_path, monkeypatch):
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
 
