@@ -74,7 +74,17 @@ jobs:
     - name: Set up QEMU
       uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8  # v4
 
+    # Setting up buildx pulls the BuildKit image from Docker Hub, so this step
+    # depends on a registry outside this project. A transient 502 there is what
+    # cost the 0.31.0 release its image. One retry covers the transient case; a
+    # sustained outage still fails the job, which is the right outcome.
     - name: Set up Docker Buildx
+      id: buildx
+      continue-on-error: true
+      uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4
+
+    - name: Set up Docker Buildx (second attempt)
+      if: steps.buildx.outcome == 'failure'
       uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4
 
     - name: Log in to GitHub Container Registry
@@ -100,3 +110,50 @@ jobs:
           ghcr.io/ohdearquant/lion-studio:${{ steps.version.outputs.version }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+
+    # Read the tag back from the registry rather than trusting the push step's
+    # own exit. Two releases shipped no image before anyone noticed, because the
+    # only signal was a run-level conclusion that stands for every job in the run
+    # and goes red for unrelated reasons. This asks the registry the question a
+    # user would ask, over the anonymous path a user would use.
+    - name: Verify the image is in the registry
+      env:
+        VERSION: ${{ steps.version.outputs.version }}
+      run: |
+        set -euo pipefail
+        repo=ohdearquant/lion-studio
+
+        list_tags() {
+          local token
+          token="$(curl -sSf "https://ghcr.io/token?scope=repository:${repo}:pull" | jq -r '.token')"
+          curl -sSf -H "Authorization: Bearer ${token}" \
+            "https://ghcr.io/v2/${repo}/tags/list" | jq -r '.tags[]?'
+        }
+
+        # A newly pushed tag can take a moment to appear, so give it a few tries
+        # before calling it absent.
+        for attempt in 1 2 3 4 5; do
+          tags="$(list_tags || true)"
+          count="$(printf '%s\n' "${tags}" | grep -c . || true)"
+
+          # Positive control. An absence only means something if the same query
+          # can return a presence: an empty listing and a missing tag read
+          # identically, so a listing that resolved nothing is an instrument
+          # failure rather than an answer.
+          if [ "${count}" -eq 0 ]; then
+            echo "Attempt ${attempt}: tag listing returned nothing."
+          elif printf '%s\n' "${tags}" | grep -qxF "${VERSION}"; then
+            echo "ghcr.io/${repo}:${VERSION} is present; ${count} tags listed."
+            exit 0
+          else
+            echo "Attempt ${attempt}: ${count} tags listed, ${VERSION} not among them."
+          fi
+          sleep 15
+        done
+
+        if [ "${count}" -eq 0 ]; then
+          echo "::error::Could not list tags for ${repo}. This check cannot tell a missing image from a broken read, so it is failing rather than passing."
+        else
+          echo "::error::ghcr.io/${repo}:${VERSION} is not in the registry, although the push step reported success and the registry answered with ${count} other tags."
+        fi
+        exit 1
