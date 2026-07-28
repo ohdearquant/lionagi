@@ -5,6 +5,7 @@ import asyncio
 import logging
 
 import anyio
+import sniffio
 from pydantic import PrivateAttr
 
 from lionagi.ln.concurrency import get_cancelled_exc_class, move_on_after
@@ -20,6 +21,24 @@ POST_STREAM_TEARDOWN_GRACE = 5.0
 
 Teardown on those paths runs shielded so it is not cut short by the cancellation that
 caused it, but it must not stall the unwind either, so it is bounded by this grace.
+"""
+
+POST_STREAM_HOOK_STOP_GRACE = 1.0
+"""Seconds a post-stream hook is given to stop after it has been cancelled.
+
+A hook that swallows its own cancellation cannot be waited on forever, so once this
+expires its task is abandoned: reported at WARNING and left running, rather than
+dropped on the floor for the interpreter to complain about later.
+"""
+
+_abandoned_post_stream_hooks: set = set()
+"""Post-stream hook tasks that did not stop when cancelled.
+
+Held for the life of the process so a hook that outlived its cancellation is not
+destroyed mid-await while the program is still running; each entry drops out on its own
+if the hook ever finishes. At interpreter shutdown a still-pending one is released and
+CPython reports it as destroyed while pending, which by then is an accurate description
+of it.
 """
 
 global_hook_logger = DataLogger(
@@ -225,36 +244,94 @@ class HookedEvent(Event):
                 )
 
     async def _invoke_post_stream_hook_isolated(self, h_ev: HookEvent) -> None:
-        """Run the post-hook in a child task, so a cancellation it raises is attributable.
+        """Run the post-hook so a cancellation it raises cannot pass for the consumer's.
 
         Within one task a cancellation raised by the awaited code and one delivered to
-        the task at that await are the same exception arriving at the same place, and
-        cannot be told apart -- shielding does not help, since a direct ``Task.cancel()``
-        reaches a shielded await anyway. Running the hook in a child task separates them:
-        if a cancellation surfaces here and the child has finished, it came out of the
-        hook and must not replace the stream's own ending; if the child is still running,
-        the cancellation was delivered to the consuming task and is the consumer's, so
-        the hook is cancelled with it and the cancellation propagates.
+        the task at that await are the same exception arriving at the same place.
+        Shielding does not separate them, since a direct ``Task.cancel()`` reaches a
+        shielded await anyway, and neither does asking afterwards whether the hook has
+        finished: a hook finishing and a cancellation being delivered can be queued in
+        the same loop turn, so that answer is a sample of a race, not a provenance.
 
-        Off asyncio there is no task to branch into, so the hook runs inline and the two
-        are indistinguishable; a cancellation then propagates.
+        The collision is therefore removed rather than resolved. The hook runs in a child
+        task that CAPTURES whatever ends it and RETURNS it instead of raising it, so that
+        task can never end cancelled because of something the hook did. A cancellation
+        surfacing at the await below then has exactly one possible origin -- delivery to
+        this task -- and is honoured: the hook's task is cancelled, given
+        ``POST_STREAM_HOOK_STOP_GRACE`` seconds to stop, and the cancellation propagates.
+        A hook that will not stop within that grace is abandoned: it is reported at
+        WARNING and left running, held so that it is not destroyed mid-await while the
+        program is still going.
+
+        A cancellation the hook raised at itself comes back as a returned value and is
+        logged; anything else the hook ended with is re-raised for the caller to record,
+        which keeps ``KeyboardInterrupt`` and ``SystemExit`` propagating.
+
+        The backend is decided before any asyncio object exists, because an asyncio task
+        or future is not awaitable on another backend and constructing one there fails at
+        the await rather than at the construction. Off asyncio the hook runs inline: the
+        two kinds of cancellation are genuinely indistinguishable there and both
+        propagate.
         """
         try:
-            child = asyncio.ensure_future(self._invoke_post_stream_hook(h_ev))
-        except RuntimeError:
+            backend = sniffio.current_async_library()
+        except sniffio.AsyncLibraryNotFoundError:
+            backend = None
+        if backend != "asyncio":
             await self._invoke_post_stream_hook(h_ev)
             return
 
+        child = asyncio.get_running_loop().create_task(self._capture_post_stream_hook(h_ev))
         try:
-            await asyncio.shield(child)
+            hook_ended_with = await asyncio.shield(child)
         except get_cancelled_exc_class():
-            if child.done():
-                _logger.warning(
-                    "Post-stream hook cancelled itself (data already sent)",
-                )
-                return
-            child.cancel()
+            await self._stop_post_stream_hook(child)
             raise
+
+        if hook_ended_with is None:
+            return
+        if isinstance(hook_ended_with, get_cancelled_exc_class()):
+            _logger.warning(
+                "Post-stream hook cancelled itself (data already sent)",
+            )
+            return
+        raise hook_ended_with
+
+    async def _capture_post_stream_hook(self, h_ev: HookEvent) -> BaseException | None:
+        """Run the post-hook and return whatever ended it instead of raising it.
+
+        Returning the outcome is what makes this task's own ending unambiguous: it can
+        complete, but it cannot end cancelled because of what the hook did.
+        """
+        try:
+            await self._invoke_post_stream_hook(h_ev)
+        except BaseException as e:
+            return e
+        return None
+
+    async def _stop_post_stream_hook(self, child: asyncio.Task) -> None:
+        """Cancel the hook's task and wait a bounded time for it to actually stop.
+
+        Runs shielded, so the cancellation that got us here does not cut the wait short,
+        and abandons the task with a warning if the hook outlasts the grace.
+        """
+        if child.done():
+            return
+
+        child.cancel()
+        with anyio.CancelScope(shield=True):
+            try:
+                with move_on_after(POST_STREAM_HOOK_STOP_GRACE):
+                    await asyncio.shield(child)
+            finally:
+                if not child.done():
+                    _abandoned_post_stream_hooks.add(child)
+                    child.add_done_callback(_abandoned_post_stream_hooks.discard)
+                    _logger.warning(
+                        "Post-stream hook did not stop within %ss of being cancelled; "
+                        "it is left running and is not waited on again",
+                        POST_STREAM_HOOK_STOP_GRACE,
+                    )
 
     async def _invoke_post_stream_hook(self, h_ev: HookEvent) -> None:
         try:

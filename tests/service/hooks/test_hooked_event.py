@@ -5,6 +5,7 @@
 
 import asyncio
 import gc
+import logging
 from types import SimpleNamespace
 
 import anyio
@@ -669,3 +670,168 @@ async def test_consumer_cancelled_during_teardown_is_still_cancelled():
         await task
 
     assert task.cancelled(), "a consumer cancelled from outside must stay cancelled"
+
+
+@pytest.mark.asyncio
+async def test_consumer_cancelled_as_the_hook_ends_is_still_cancelled():
+    """A cancellation delivered in the same loop turn the hook finishes in still wins.
+
+    The ordering is forced rather than raced. The hook queues the consumer's
+    ``Task.cancel()`` with ``call_soon`` and then raises its own cancellation without
+    awaiting, so the cancel callback is already on the ready queue while the hook is
+    still running, and the hook's task finishes before that callback is drained. Any
+    rule that decides whose cancellation this was by looking at whether the hook has
+    finished reads "the hook's" here, every time, and loses a consumer cancellation
+    that was delivered from outside.
+    """
+    holder: dict = {}
+
+    class SelfCancellingPostHook:
+        execution = SimpleNamespace(status=EventStatus.COMPLETED, error=None)
+        _should_exit = False
+        _exit_cause = None
+
+        async def invoke(self):
+            asyncio.get_running_loop().call_soon(holder["task"].cancel)
+            raise asyncio.CancelledError("post hook cancelled itself")
+
+    h = SimpleHooked()
+    h._post_invoke_hook_event = SelfCancellingPostHook()
+
+    async def consume():
+        async for _ in h._stream():
+            pass
+
+    task = asyncio.create_task(consume())
+    holder["task"] = task
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert task.cancelled(), "a consumer cancelled from outside must stay cancelled"
+
+
+def test_post_hook_runs_on_a_non_asyncio_backend():
+    """The hook must actually run on Trio, not fail on an asyncio object.
+
+    An asyncio task or future is not awaitable under Trio, and creating one there does
+    not fail where it is created -- it fails at the await, far enough away that the
+    teardown guard logs it and the hook never runs at all. So the backend has to be
+    settled before any asyncio object exists.
+    """
+    seen: list[StreamTerminalState | None] = []
+    h = SimpleHooked()
+
+    class _RecordingHookEvent:
+        execution = SimpleNamespace(status=EventStatus.COMPLETED, error=None)
+        _should_exit = False
+        _exit_cause = None
+
+        async def invoke(self):
+            seen.append(h.stream_terminal_state)
+
+    h._post_invoke_hook_event = _RecordingHookEvent()
+
+    async def main():
+        return [c async for c in h._stream()]
+
+    chunks = anyio.run(main, backend="trio")
+
+    assert chunks == ["chunk1", "chunk2"]
+    assert seen == [StreamTerminalState.Completed]
+
+
+def test_cancellation_during_teardown_propagates_on_a_non_asyncio_backend():
+    """Off asyncio the two cancellations are indistinguishable, so both propagate.
+
+    That is the documented behaviour on such a backend, and it is what must execute:
+    a cancellation delivered while the hook is running reaches the consumer.
+    """
+    started: list[bool] = []
+
+    class BlockingPostHook:
+        execution = SimpleNamespace(status=EventStatus.COMPLETED, error=None)
+        _should_exit = False
+        _exit_cause = None
+
+        async def invoke(self):
+            started.append(True)
+            await anyio.sleep(30)
+
+    h = SimpleHooked()
+    h._post_invoke_hook_event = BlockingPostHook()
+
+    async def main():
+        with anyio.move_on_after(0.1) as scope:
+            async for _ in h._stream():
+                pass
+        return scope.cancelled_caught
+
+    cancelled_caught = anyio.run(main, backend="trio")
+
+    assert started, "the post hook must have run on this backend"
+    assert cancelled_caught, "the cancellation must reach the consumer, not be swallowed"
+
+
+def test_a_hook_that_will_not_stop_is_reported_not_destroyed_pending():
+    """A hook that swallows its cancellation is abandoned loudly, not silently.
+
+    It cannot be waited on forever, so after the stop grace it is left running -- but
+    reported at WARNING and kept referenced, so the interpreter does not destroy it
+    mid-await and announce that itself.
+    """
+    from lionagi.service.hooks.hooked_event import (
+        POST_STREAM_HOOK_STOP_GRACE,
+        _abandoned_post_stream_hooks,
+    )
+
+    class ResistantPostHook:
+        execution = SimpleNamespace(status=EventStatus.COMPLETED, error=None)
+        _should_exit = False
+        _exit_cause = None
+
+        async def invoke(self):
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                pass  # refuses the first cancellation
+            await asyncio.sleep(30)
+
+    h = SlowStream()
+    h._post_invoke_hook_event = ResistantPostHook()
+
+    async def main():
+        started = asyncio.Event()
+
+        async def consume():
+            async for _ in h._stream():
+                started.set()
+
+        task = asyncio.create_task(consume())
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    records: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    handler = _Capture()
+    logging.getLogger("asyncio").addHandler(handler)
+    logging.getLogger(hooked_event.__name__).addHandler(handler)
+    known = set(_abandoned_post_stream_hooks)
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(main())
+    finally:
+        loop.close()
+        logging.getLogger("asyncio").removeHandler(handler)
+        logging.getLogger(hooked_event.__name__).removeHandler(handler)
+
+    gc.collect()
+
+    assert set(_abandoned_post_stream_hooks) - known, "the abandoned hook must be retained"
+    assert any(f"did not stop within {POST_STREAM_HOOK_STOP_GRACE}s" in r for r in records)
+    assert not [r for r in records if "destroyed but it is pending" in r], records
