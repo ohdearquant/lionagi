@@ -2935,6 +2935,10 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
     unknown status. That is a per-run failure, and one damaged record must not cost
     the caller the runs beside it.
 
+    A directory without a job record is not listed. Submissions reserve their
+    directory before command preparation, and publishing ``job.json`` is the
+    boundary that turns that reservation into a job.
+
     The directory read itself is different, and is allowed to fail. A listing has
     no field in which to say it could not be read, so answering the empty list
     would say "there are no jobs at all" about a directory nobody could look in.
@@ -2950,6 +2954,14 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
     for d in entries:
         if not d.is_dir():
             continue
+        try:
+            (d / "job.json").stat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            # Let status classify an inaccessible record rather than hiding a
+            # directory that may already have crossed the publication boundary.
+            pass
         st = status(d.name)
         if status_filter and st["status"] != status_filter:
             continue

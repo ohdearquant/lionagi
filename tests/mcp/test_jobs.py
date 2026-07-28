@@ -2843,6 +2843,16 @@ def test_a_submission_that_is_refused_leaves_no_directory_behind(sandbox, monkey
     assert jobs.list_jobs() == []
 
 
+def test_a_reserved_directory_is_not_listed_until_its_job_record_is_published(sandbox):
+    run_id, _ = jobs._reserve_run_dir()
+
+    assert jobs.list_jobs() == []
+
+    jobs._write_job({"run_id": run_id, "kind": "agent", "status": "running"})
+
+    assert [entry["run_id"] for entry in jobs.list_jobs()] == [run_id]
+
+
 def test_a_submission_that_fails_between_its_writes_leaves_no_job_behind(sandbox, monkeypatch):
     """A submission that gets partway through writing is still not a job.
 
