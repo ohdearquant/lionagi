@@ -304,6 +304,11 @@ async def _run_fanout_inner(
     fanned_nodes: list[str] = []
     fanned_labels: list[str] = []
 
+    # The worker names are settled before any branch is built; recording them
+    # here is what lets finalization notice one that never got a directory.
+    for wname in worker_names:
+        env.expect_worker(wname)
+
     for i, ta in enumerate(assignments):
         model_override = pool[i % len(pool)] if pool else None
         wname = worker_names[i]

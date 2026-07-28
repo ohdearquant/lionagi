@@ -530,6 +530,20 @@ class OrchestrationEnv:
     # directories happen to be non-empty.
     worker_artifact_dirs: dict[str, Path] = field(default_factory=dict)
 
+    # Every agent_id the run intends to have a worker for, recorded where the
+    # work is decided — from the plan before any branch is built, and from a
+    # spawn request before its branch is set up. This is deliberately a second
+    # record rather than a view over `worker_artifact_dirs`: a roster derived
+    # from the registrations can only ever agree with them, so it could never
+    # show a worker whose registration was skipped. Two independent records
+    # disagreeing is the whole signal.
+    expected_worker_ids: list[str] = field(default_factory=list)
+
+    def expect_worker(self, agent_id: str) -> None:
+        """Declare that this run intends to run a worker under *agent_id*."""
+        if agent_id not in self.expected_worker_ids:
+            self.expected_worker_ids.append(agent_id)
+
     def assign_name(self, role: str) -> str:
         self._name_counts[role] = self._name_counts.get(role, 0) + 1
         n = self._name_counts[role]
@@ -811,7 +825,11 @@ async def build_worker_branch(
     """Resolve model/profile/system and build a worker Branch. The fourth
     return value, ``messenger_bound``, is True when this worker got the
     in-process messenger tool registered — see docs/internals/cli.md."""
-    from ._common import bare_worker_system, worker_artifact_section
+    from ._common import (
+        bare_worker_system,
+        retarget_artifact_section,
+        worker_artifact_section,
+    )
 
     w_model, w_profile, w_cfg = _resolve_worker_model_spec(env, role, model_override)
 
@@ -881,11 +899,18 @@ async def build_worker_branch(
     # the string directly (no Role to compose from). A profile takes the
     # verbatim path only when it authored a body — one that just sets a model
     # or an effort has no body to run, and leaves the role composing as usual.
+    #
+    # An authored body is prose the harness did not write, so it carries no
+    # artifact directive of its own — and if it does carry one, the directory it
+    # names is whatever its author typed, not the directory this worker was
+    # launched in. Both cases are handled by retargeting: the section is
+    # appended when absent and rewritten when present, so every verbatim prompt
+    # ends up naming the cwd the worker can actually write.
     verbatim_system: str | None = None
     if system_prompt_override is not None:
-        verbatim_system = system_prompt_override
+        verbatim_system = retarget_artifact_section(system_prompt_override, worker_cwd)
     elif not env.bare and w_profile and w_profile.raw_body:
-        verbatim_system = w_profile.system_prompt
+        verbatim_system = retarget_artifact_section(w_profile.system_prompt, worker_cwd)
     elif env.bare or not _is_casts_role(role):
         verbatim_system = bare_worker_system(grant_spawn=grant_spawn, artifact_dir=worker_cwd)
 
@@ -1176,7 +1201,7 @@ def make_team_lifecycle_coordinator(
 
 
 def collect_worker_artifacts(env: OrchestrationEnv) -> list[dict]:
-    """List what each worker actually wrote, one entry per worker built.
+    """List what each worker actually wrote, one entry per worker the run expected.
 
     The roster comes from the directories the run handed out, not from a scan
     for non-empty ones, so a worker that wrote nothing is still an entry — with
@@ -1184,20 +1209,59 @@ def collect_worker_artifacts(env: OrchestrationEnv) -> list[dict]:
     written therefore reports every worker as having produced nothing, instead
     of rendering as a clean report with no rows.
 
-    A directory that cannot be read is reported with its error rather than as
-    empty; "we could not look" and "there was nothing there" are different
-    answers and must not collapse into one.
+    That roster is then checked against the workers the run said it would have.
+    A worker the run expected but never registered a directory for is emitted as
+    an ``unregistered`` entry rather than dropped: the failure it represents —
+    a code path that launches a worker without giving it a directory — is
+    exactly the one an omission would hide, because an omission and a run that
+    simply had fewer workers look identical in the output.
+
+    Each entry carries a ``status``, because the ways a directory can fail to
+    yield files are not interchangeable:
+
+    ``unreadable``
+        traversal raised — we could not look.
+    ``missing``
+        the path is gone. Registration creates the directory, so a registered
+        path that no longer exists was removed after the fact; that is a
+        different event from a worker declining to write, and reporting it as
+        "produced nothing" would attribute someone else's deletion to the
+        worker.
+    ``unregistered``
+        the run expected this worker and no directory was ever recorded for it.
+    ``reported``
+        we looked and ``files`` is what was there, empty or not.
     """
     entries: list[dict] = []
-    for agent_id, adir in env.worker_artifact_dirs.items():
-        entry: dict = {"agent_id": agent_id, "dir": str(adir), "files": []}
-        try:
-            files = sorted(str(p.relative_to(adir)) for p in adir.rglob("*") if p.is_file())
-        except OSError as exc:
-            entry["error"] = f"{type(exc).__name__}: {exc}"
+    registered = env.worker_artifact_dirs
+    for agent_id, adir in registered.items():
+        entry: dict = {"agent_id": agent_id, "dir": str(adir), "files": [], "status": "reported"}
+        adir = Path(adir)
+        if not adir.exists():
+            entry["status"] = "missing"
+            entry["error"] = "the directory recorded for this worker does not exist"
         else:
-            entry["files"] = files
+            try:
+                files = sorted(str(p.relative_to(adir)) for p in adir.rglob("*") if p.is_file())
+            except OSError as exc:
+                entry["status"] = "unreadable"
+                entry["error"] = f"{type(exc).__name__}: {exc}"
+            else:
+                entry["files"] = files
         entries.append(entry)
+
+    for agent_id in getattr(env, "expected_worker_ids", None) or ():
+        if agent_id in registered:
+            continue
+        entries.append(
+            {
+                "agent_id": agent_id,
+                "dir": None,
+                "files": [],
+                "status": "unregistered",
+                "error": "no artifact directory was recorded for this worker",
+            }
+        )
     return entries
 
 
@@ -1206,7 +1270,12 @@ def _emit_worker_artifact_report(entries: list[dict]) -> None:
         return
     hint("\n[artifacts] files written by each worker:")
     for e in entries:
-        if "error" in e:
+        status = e.get("status", "reported")
+        if status == "unregistered":
+            hint(f"  {e['agent_id']}: NOT REGISTERED ({e['error']})")
+        elif status == "missing":
+            hint(f"  {e['agent_id']}: MISSING ({e['error']}) — {e['dir']}")
+        elif "error" in e:
             hint(f"  {e['agent_id']}: UNREADABLE ({e['error']}) — {e['dir']}")
         elif not e["files"]:
             hint(f"  {e['agent_id']}: produced nothing — {e['dir']}")
@@ -1214,6 +1283,18 @@ def _emit_worker_artifact_report(entries: list[dict]) -> None:
             hint(f"  {e['agent_id']}: {len(e['files'])} file(s) in {e['dir']}")
             for name in e["files"]:
                 hint(f"      {name}")
+
+    unregistered = [e["agent_id"] for e in entries if e.get("status") == "unregistered"]
+    if unregistered:
+        warn(
+            "these workers were expected but never had an artifact directory "
+            f"recorded, so nothing they wrote can be located: {', '.join(unregistered)}"
+        )
+    gone = [e["agent_id"] for e in entries if e.get("status") == "missing"]
+    if gone:
+        warn(
+            f"the artifact directory recorded for these workers no longer exists: {', '.join(gone)}"
+        )
 
 
 def finalize_orchestration(
