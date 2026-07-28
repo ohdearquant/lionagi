@@ -389,16 +389,29 @@ async def test_bash_tool_timeout_invalid_pid_calls_kill_not_killpg(monkeypatch, 
 # ---------------------------------------------------------------------------
 
 
+_ADVICE_LABELS = ("Supported remedies", "Not available here")
+_LABEL_PATTERN = re.compile(r"(?<![`\w])([A-Z][A-Za-z ]{2,40}):")
+
+
 def _truncation_advice(doc: str) -> tuple[list[str], list[str]]:
     """Split the oversized-output advice into the commands it offers and the ones it rules out.
 
     Returns (offered, ruled_out) as literal command templates, read off the
     docstring's own structure rather than matched against expected wording.
+
+    Only two labels carry meaning: commands before the second one are offered,
+    commands after it are ruled out. A label this split has no rule for would be
+    silently folded into one of those two lists, so it fails here instead.
     """
     offered_at = doc.index("Supported remedies:")
     ruled_out_at = doc.index("Not available here:")
+    ruled_out_text = doc[ruled_out_at:].split("\n\n")[0]
+    labels = set(_LABEL_PATTERN.findall(doc[offered_at:ruled_out_at] + ruled_out_text))
+    assert labels == set(_ADVICE_LABELS), (
+        f"the advice uses a label with no defined meaning: {sorted(labels)}"
+    )
     offered = re.findall(r"`([^`]+)`", doc[offered_at:ruled_out_at])
-    ruled_out = re.findall(r"`([^`]+)`", doc[ruled_out_at:].split("\n\n")[0])
+    ruled_out = re.findall(r"`([^`]+)`", ruled_out_text)
     return offered, ruled_out
 
 
@@ -443,7 +456,20 @@ async def test_docstring_recovery_advice_is_executable(tmp_path):
         assert resp.return_code == 0, f"advised remedy {template!r} does not run: {resp.stderr}"
 
     for template in ruled_out:
-        resp = await tool.handle_request(BashRequest(command=runnable(template)))
+        command = runnable(template)
+        resp = await tool.handle_request(BashRequest(command=command))
         assert resp.return_code == -1, (
             f"{template!r} is advertised as unavailable but the guard let it through"
+        )
+        # -1 is also what a signalled or unspawnable child reports, so pin the
+        # refusal itself: the guard's own diagnostic, naming this command, and a
+        # response that never entered the timeout path because nothing ran.
+        assert "shell control operators are not supported" in resp.stderr.lower(), (
+            f"{template!r} returned -1 without the guard refusing it: {resp.stderr!r}"
+        )
+        assert command in resp.stderr, (
+            f"the refusal does not name the command it rejected: {resp.stderr!r}"
+        )
+        assert not resp.timed_out, (
+            f"{template!r} was refused before execution, so it cannot have timed out"
         )
