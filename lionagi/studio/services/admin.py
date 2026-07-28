@@ -15,7 +15,7 @@ from typing import Any, Literal
 import anyio
 from fastapi import HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import text
+from sqlalchemy import JSON, bindparam, text
 from sqlalchemy.exc import OperationalError as _SAOperationalError
 
 from lionagi.cli._util import pid_alive as _pid_is_live
@@ -679,13 +679,13 @@ async def transition_sessions(
                         "WHERE id=:sid AND status='running'"
                         "  AND (last_message_at IS :slast OR last_message_at = :slast)"
                         "  AND (updated_at      IS :supd  OR updated_at      = :supd)"
-                    ),
+                    ).bindparams(bindparam("erefs", type_=JSON)),
                     {
                         "status": target_status,
                         "now": now,
                         "rcode": effective_reason_code,
                         "rsummary": effective_reason_summary,
-                        "erefs": json.dumps(effective_evidence_refs),
+                        "erefs": effective_evidence_refs,
                         "sid": sid,
                         "slast": _snap_last_msg,
                         "supd": _snap_updated,
@@ -701,7 +701,7 @@ async def transition_sessions(
                             " source, actor, created_at, metadata) "
                             "VALUES (:id, :etype, :eid, :prev, :status, "
                             " :rcode, :rsummary, :erefs, :source, :actor, :now, :meta)"
-                        ),
+                        ).bindparams(bindparam("erefs", type_=JSON), bindparam("meta", type_=JSON)),
                         {
                             "id": uuid.uuid4().hex,
                             "etype": "session",
@@ -710,17 +710,15 @@ async def transition_sessions(
                             "status": target_status,
                             "rcode": effective_reason_code,
                             "rsummary": effective_reason_summary,
-                            "erefs": json.dumps(effective_evidence_refs),
+                            "erefs": effective_evidence_refs,
                             "source": "admin",
                             "actor": actor,
                             "now": now,
-                            "meta": json.dumps(
-                                {
-                                    "legacy_reason": legacy_reason,
-                                    "health": health.value,
-                                    "process_alive": process_alive,
-                                }
-                            ),
+                            "meta": {
+                                "legacy_reason": legacy_reason,
+                                "health": health.value,
+                                "process_alive": process_alive,
+                            },
                         },
                     )
             if not cas_hit:

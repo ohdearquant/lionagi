@@ -1896,6 +1896,20 @@ class StateDB:
                 },
             )
 
+    async def set_progression(self, progression_id: str, collection: list[str]) -> None:
+        """Replace a progression's collection wholesale.
+
+        Exists so callers outside this module never have to hand the driver a
+        finished JSON string of their own: ``collection`` is a TEXT column, so a
+        pre-serialized value would bypass both the engine's JSON serializer and
+        the checked helper used here.
+        """
+        async with self._tx() as conn:
+            await conn.execute(
+                text("UPDATE progressions SET collection = :col WHERE id = :id"),
+                {"col": _to_json_column(collection or []), "id": progression_id},
+            )
+
     async def get_progression(self, progression_id: str) -> list[str]:
         async with self._read() as conn:
             row = (
