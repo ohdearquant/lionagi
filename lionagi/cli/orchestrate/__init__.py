@@ -1011,10 +1011,10 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             return 1
         args.model, args.prompt = resolved
 
-        has_model = args.model is not None or args.agent is not None
-        if not has_model:
-            log_error("model or --agent is required")
-            return 1
+        # Naming neither a model nor an agent is not an incomplete command here:
+        # setup_orchestration reads it as a request to orchestrate and resolves
+        # the default orchestrator profile. A prompt is still required, because
+        # nothing downstream can supply one.
         if not args.prompt:
             log_error("prompt is required")
             return 1
@@ -1178,11 +1178,10 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             args.prompt = args.model
             args.model = None
 
-        has_model = args.model is not None or args.agent is not None
-        if not has_model:
-            log_error("model or --agent is required")
-            return 1
-
+        # Naming neither a model nor an agent is not an incomplete command here:
+        # setup_orchestration reads it as a request to orchestrate and resolves
+        # the default orchestrator profile. A prompt is still required, because
+        # nothing downstream can supply one.
         if not args.prompt:
             log_error("prompt is required (positional or via -f spec file)")
             return 1
