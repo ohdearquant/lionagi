@@ -328,6 +328,45 @@ def _locate_non_finite(
     return _locate_non_finite(converted, default, opt, path)
 
 
+def _locate_stdlib_non_finite(
+    obj: Any, default: Callable[[Any], Any], path: str = "$"
+) -> str | None:
+    """Follow the standard-library JSON encoder and return a non-finite path."""
+    if isinstance(obj, float):
+        return None if math.isfinite(obj) else path
+    if isinstance(obj, str | int | bool) or obj is None:
+        return None
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if isinstance(key, float) and not math.isfinite(key):
+                return f"{path}.<key>"
+            found = _locate_stdlib_non_finite(value, default, f"{path}.{key}")
+            if found is not None:
+                return found
+        return None
+    if isinstance(obj, list | tuple):
+        for index, value in enumerate(obj):
+            found = _locate_stdlib_non_finite(value, default, f"{path}[{index}]")
+            if found is not None:
+                return found
+        return None
+    try:
+        converted = default(obj)
+    except Exception:
+        return None
+    return _locate_stdlib_non_finite(converted, default, path)
+
+
+def _raise_non_finite(found: str | None) -> None:
+    if found is not None:
+        raise ValueError(
+            f"cannot serialize non-finite float at {found}: JSON has no "
+            "representation for inf, -inf or nan, and writing it records "
+            "something no reader can recover -- a null indistinguishable from a "
+            "real one, or the tokens NaN and Infinity that strict parsers reject"
+        )
+
+
 def raise_if_non_finite(
     obj: Any,
     *,
@@ -344,23 +383,16 @@ def raise_if_non_finite(
     refusal names the offending field instead.
 
     ``default`` should be the conversion the writer itself applies to values it
-    cannot encode (``str`` for a stdlib ``json.dumps(..., default=str)``);
-    omitted, the orjson default is used. The walk mirrors orjson, which is a
-    superset of what the stdlib traverses: it descends into dataclass fields and
-    Enum values, where the stdlib would have handed the whole object to
-    ``default``. A non-finite float hidden in one of those is therefore refused
-    even though the stdlib would have written it as part of a string.
+    cannot encode (``str`` for a stdlib ``json.dumps(..., default=str)``). When
+    supplied, the walk follows the standard-library encoder and checks the
+    converted value. When omitted, the orjson default and traversal are used.
     """
     if default is None:
         default = _cached_default(False, False, False, False, False, 2048)
-    found = _locate_non_finite(obj, default, options)
-    if found is not None:
-        raise ValueError(
-            f"cannot serialize non-finite float at {found}: JSON has no "
-            "representation for inf, -inf or nan, and writing it records "
-            "something no reader can recover -- a null indistinguishable from a "
-            "real one, or the tokens NaN and Infinity that strict parsers reject"
-        )
+        found = _locate_non_finite(obj, default, options)
+    else:
+        found = _locate_stdlib_non_finite(obj, default)
+    _raise_non_finite(found)
 
 
 def _dumpb(
@@ -383,7 +415,7 @@ def _dumpb(
     # provably clean and the walk is skipped. This only pays off once the caller has
     # already opted into the check; as a gate on every dump it costs more than it saves.
     if check_non_finite and b"null" in out:
-        raise_if_non_finite(obj, default=default, options=opt)
+        _raise_non_finite(_locate_non_finite(obj, default, opt))
     return out
 
 
