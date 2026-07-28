@@ -8,16 +8,26 @@ orchestrator profile instead of refusing.
 
 The refusal survives for the case it was written for: a caller who did name an
 agent, whose profile carries no model.
+
+Because that resolution happens inside `setup_orchestration`, the record of the
+run has to be told about it: a defaulted run orchestrates under a profile its
+caller never named, and a record that repeats the caller's own (empty) argument
+cannot tell such a run from one that used no profile at all. The second half of
+this module follows the resolved name out to what lands on disk.
 """
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from lionagi._errors import ConfigurationError
-from lionagi.cli._providers import AgentProfileNotFoundError
+from lionagi.cli._providers import AgentProfile, AgentProfileNotFoundError
+from lionagi.cli._runs import RunDir
 from lionagi.cli.orchestrate._orchestration import (
     DEFAULT_ORCHESTRATOR_AGENT,
     setup_orchestration,
@@ -192,3 +202,218 @@ async def test_the_default_does_not_fire_when_a_modelless_agent_was_named(monkey
 
     assert loaded == ["profile-without-a-model"]
     assert DEFAULT_ORCHESTRATOR_AGENT not in loaded
+
+
+# ── The resolved name has to leave the function ───────────────────────────────
+
+
+@pytest.fixture
+def completing_setup(monkeypatch, tmp_path):
+    """Let `setup_orchestration` run to its return without building a provider,
+    a branch or a session, so the env it hands back can be inspected.
+
+    Only profile resolution is left live — that is what these tests are about.
+    """
+    import lionagi.cli.orchestrate._orchestration as orch_mod
+
+    def _profile(name, *a, **kw):
+        return AgentProfile(name=name, system_prompt="be an orchestrator", model="claude")
+
+    imodel = MagicMock()
+    imodel.endpoint.config.provider = "claude_code"
+    imodel.endpoint.config.kwargs = {}
+
+    def _allocate(save_dir=None, run_id=None):
+        run = RunDir(
+            run_id="setup-run",
+            state_root=tmp_path / "state",
+            artifact_root=tmp_path / "artifacts",
+        )
+        run.ensure_state_dirs()
+        return run
+
+    monkeypatch.setattr(orch_mod, "load_agent_profile", _profile)
+    monkeypatch.setattr(orch_mod, "build_imodel_from_spec", lambda *a, **kw: imodel)
+    monkeypatch.setattr(orch_mod, "allocate_run", _allocate)
+    monkeypatch.setattr(orch_mod, "resolve_persisted_effort", lambda *a, **kw: None)
+    monkeypatch.setattr(orch_mod, "Branch", MagicMock())
+    monkeypatch.setattr(orch_mod, "Session", MagicMock())
+    monkeypatch.setattr(orch_mod, "OperationGraphBuilder", MagicMock())
+    monkeypatch.setattr(orch_mod, "register_profile_injection", lambda *a, **kw: None)
+    monkeypatch.setattr(orch_mod, "create_agent", AsyncMock(return_value=MagicMock()))
+
+
+@pytest.mark.asyncio
+async def test_a_defaulted_run_carries_out_the_name_it_resolved(completing_setup):
+    """The caller named nothing, so nothing they passed can name the profile.
+    The env has to, or the run is unattributable from here on."""
+    env = await _run()
+
+    assert env.orc_profile_name == DEFAULT_ORCHESTRATOR_AGENT
+
+
+@pytest.mark.asyncio
+async def test_a_named_agent_carries_out_its_own_name(completing_setup):
+    env = await _run(agent_name="reviewer")
+
+    assert env.orc_profile_name == "reviewer"
+
+
+@pytest.mark.asyncio
+async def test_naming_only_a_model_carries_out_no_name(completing_setup):
+    """No profile was loaded, so there is no name to record. Recording one
+    would claim a profile shaped this run when none did."""
+    env = await _run(model_spec="claude_code/sonnet")
+
+    assert env.orc_profile is None
+    assert env.orc_profile_name is None
+
+
+@pytest.mark.asyncio
+async def test_the_carried_name_is_the_loaded_profiles_own(completing_setup, monkeypatch):
+    """Read off the profile, not off the argument: the two can differ, and it is
+    the profile that shaped the run."""
+    import lionagi.cli.orchestrate._orchestration as orch_mod
+
+    monkeypatch.setattr(
+        orch_mod,
+        "load_agent_profile",
+        lambda name, *a, **kw: AgentProfile(name="orchestrator", system_prompt="s", model="claude"),
+    )
+
+    env = await _run(agent_name="orchestrator-alias")
+
+    assert env.orc_profile_name == "orchestrator"
+
+
+# ── …and reach the record a later reader has ──────────────────────────────────
+
+
+@pytest.fixture
+def temp_db_path(tmp_path, monkeypatch):
+    """Keep the state DB the persist layer opens inside tmp_path."""
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+
+
+def _persisting_env(tmp_path, *, orc_profile_name):
+    """An env already past setup_orchestration, with a real run directory so the
+    manifest it writes can be read back off disk."""
+    from lionagi import Branch, Session
+    from lionagi.cli.orchestrate._orchestration import OrchestrationEnv
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    orc_branch = Branch(name="orchestrator")
+    run = RunDir(
+        run_id="record-run",
+        state_root=tmp_path / "run-state",
+        artifact_root=tmp_path / "run-artifacts",
+    )
+    run.ensure_state_dirs()
+    run.ensure_artifact_root()
+    profile = (
+        None
+        if orc_profile_name is None
+        else AgentProfile(name=orc_profile_name, system_prompt="s", model="codex/gpt-5.6-sol")
+    )
+    return OrchestrationEnv(
+        run=run,
+        session=Session(default_branch=orc_branch),
+        orc_branch=orc_branch,
+        builder=OperationGraphBuilder(),
+        orc_profile=profile,
+        orc_profile_name=orc_profile_name,
+        default_model_spec="codex/gpt-5.6-sol",
+        bare=False,
+        effort=None,
+        theme=None,
+        yolo=False,
+        bypass=False,
+        verbose=False,
+        fast=False,
+        cwd=None,
+    )
+
+
+def _manifest(env) -> dict:
+    return json.loads(Path(env.run.manifest_path).read_text())
+
+
+@pytest.mark.asyncio
+async def test_a_bare_fanout_run_names_the_profile_it_used_on_disk(temp_db_path, tmp_path):
+    """`li o fanout` with no agent and no model: the manifest a later reader
+    opens must say which profile the run orchestrated under. `agent_name=None`
+    is passed here on purpose — it is what the bare command line gives."""
+    from lionagi.cli.orchestrate import fanout as fanout_module
+
+    env = _persisting_env(tmp_path, orc_profile_name=DEFAULT_ORCHESTRATOR_AGENT)
+
+    with (
+        patch.object(fanout_module, "setup_orchestration", AsyncMock(return_value=env)),
+        # An empty assignment list is the shortest path from start_live_persist
+        # to a clean terminal status — no worker or DAG machinery runs.
+        patch.object(fanout_module, "plan", AsyncMock(return_value=[])),
+    ):
+        await fanout_module._run_fanout("codex/gpt-5.6-sol", "prompt", agent_name=None)
+
+    assert _manifest(env)["agent_name"] == DEFAULT_ORCHESTRATOR_AGENT
+
+    # The manifest and the session row are two records of the same run, and a
+    # reader may open either. Both have to name the profile.
+    from lionagi.state.db import StateDB
+
+    async with StateDB() as db:
+        row = await db.get_session(str(env.session.id))
+    assert row is not None
+    assert row["agent_name"] == DEFAULT_ORCHESTRATOR_AGENT
+
+
+@pytest.mark.asyncio
+async def test_a_fanout_run_that_named_only_a_model_names_no_profile_on_disk(
+    temp_db_path, tmp_path
+):
+    """No profile was used, so the record must not name one."""
+    from lionagi.cli.orchestrate import fanout as fanout_module
+
+    env = _persisting_env(tmp_path, orc_profile_name=None)
+
+    with (
+        patch.object(fanout_module, "setup_orchestration", AsyncMock(return_value=env)),
+        patch.object(fanout_module, "plan", AsyncMock(return_value=[])),
+    ):
+        await fanout_module._run_fanout("codex/gpt-5.6-sol", "prompt", agent_name=None)
+
+    assert _manifest(env)["agent_name"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_bare_flow_run_names_the_profile_it_used_on_disk(temp_db_path, tmp_path):
+    """The same for `li o flow`, which `li play` also expands into."""
+    from lionagi.cli.orchestrate import flow as flow_module
+
+    env = _persisting_env(tmp_path, orc_profile_name=DEFAULT_ORCHESTRATOR_AGENT)
+
+    with (
+        patch.object(flow_module, "setup_orchestration", AsyncMock(return_value=env)),
+        patch.object(flow_module, "_run_flow_inner", AsyncMock(return_value="ok")),
+    ):
+        await flow_module._run_flow("codex/gpt-5.6-sol", "prompt", agent_name=None)
+
+    assert _manifest(env)["agent_name"] == DEFAULT_ORCHESTRATOR_AGENT
+
+
+@pytest.mark.asyncio
+async def test_a_flow_run_that_named_an_agent_still_names_that_agent_on_disk(
+    temp_db_path, tmp_path
+):
+    """A caller who did name an agent is recorded exactly as before."""
+    from lionagi.cli.orchestrate import flow as flow_module
+
+    env = _persisting_env(tmp_path, orc_profile_name="reviewer")
+
+    with (
+        patch.object(flow_module, "setup_orchestration", AsyncMock(return_value=env)),
+        patch.object(flow_module, "_run_flow_inner", AsyncMock(return_value="ok")),
+    ):
+        await flow_module._run_flow("codex/gpt-5.6-sol", "prompt", agent_name="reviewer")
+
+    assert _manifest(env)["agent_name"] == "reviewer"

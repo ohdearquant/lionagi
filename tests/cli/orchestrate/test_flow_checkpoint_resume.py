@@ -61,6 +61,7 @@ def _minimal_real_env() -> OrchestrationEnv:
         orc_branch=orc_branch,
         builder=MagicMock(),
         orc_profile=None,
+        orc_profile_name=None,
         default_model_spec="claude",
         bare=False,
         effort=None,

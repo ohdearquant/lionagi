@@ -852,6 +852,7 @@ async def test_reactive_spawn_required_artifact_persistence_matrix(
         orc_branch=orc_branch,
         builder=MagicMock(),
         orc_profile=None,
+        orc_profile_name=None,
         default_model_spec="claude",
         bare=False,
         effort=None,
