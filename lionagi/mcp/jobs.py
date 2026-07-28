@@ -558,12 +558,11 @@ def _locked_job(run_id: str) -> Iterator[_GuardedJob]:
         # obvious repair is worse than the problem: by the time a retry ran the
         # runtime may have handed that number to something else, so it would
         # close a file belonging to whatever got it next. What bounds the damage
-        # is not this block but the lock itself: both of the platform locks this
-        # module takes are held by way of the descriptor rather than recorded
-        # anywhere outside the process, so the worst case lasts as long as this
-        # process and goes when it exits. The two mechanisms are not the same
-        # one and the bound is what they agree on, so the bound is what gets
-        # stated here.
+        # is not this block but the lock itself: if either platform lock is
+        # still held once cleanup has failed, process exit ends it. That ceiling
+        # is the whole of the claim. The two locks arrive at it by different
+        # routes and neither route is described here, because a description that
+        # fits one of them does not fit the other.
         try:
             with contextlib.suppress(OSError):
                 _unlock_fd(fd)
