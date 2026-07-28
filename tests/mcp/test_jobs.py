@@ -3086,3 +3086,111 @@ def test_discarding_a_reservation_refuses_a_directory_holding_anything_else(sand
     jobs._discard_reservation(d)
 
     assert (d / "console.log").read_bytes() == b"a run wrote this\n"
+
+
+def test_a_lock_that_cannot_be_taken_says_so_even_when_the_descriptor_will_not_close(
+    sandbox, monkeypatch
+):
+    """Failing to acquire the lock is a state, and tidying up cannot turn it into a raise.
+
+    Failing to create the lock file and failing to acquire it are the same fact —
+    this section was not entered — and both are reported as a state rather than
+    escaping a context manager whose contract is that it yields. Handing the
+    descriptor back is tidying up after that fact, so a close that refuses must
+    not become the answer: it is worth less than the fact underneath it, and it
+    would leave every caller of this receiving an exception where the contract
+    promises a state.
+    """
+    run_id = "20260101T000000-aaa111"
+    (config.JOBS_DIR / run_id).mkdir(parents=True)
+
+    taken = {}
+    real_close = os.close
+
+    def refuse_the_lock(fd):
+        taken["fd"] = fd
+        raise OSError(errno.EAGAIN, "Resource temporarily unavailable")
+
+    def refuse_to_close(fd):
+        if fd == taken.get("fd"):
+            real_close(fd)
+            raise OSError(errno.EBADF, "Bad file descriptor")
+        return real_close(fd)
+
+    monkeypatch.setattr(jobs, "_lock_fd", refuse_the_lock)
+    monkeypatch.setattr(os, "close", refuse_to_close)
+
+    with jobs._locked_job(run_id) as guard:
+        assert guard.record is None
+        assert guard.state == jobs.LOCK_UNAVAILABLE
+
+
+def test_releasing_the_lock_does_not_answer_in_place_of_what_the_body_raised(sandbox, monkeypatch):
+    """The body is where the failures a caller acts on come from.
+
+    A record that will not serialize, a write the filesystem refuses — those
+    reach a caller through this section, and a release that fails on the way out
+    is worth less than any of them. The release also runs on every exit, so an
+    unguarded one puts itself in front of every failure the section can produce
+    rather than in front of some rare one.
+    """
+    run_id = "20260101T000000-bbb222"
+    (config.JOBS_DIR / run_id).mkdir(parents=True)
+    jobs._write_job({"run_id": run_id, "kind": "agent", "status": "running"})
+
+    def refuse_to_release(fd):
+        raise OSError(errno.EBADF, "Bad file descriptor")
+
+    monkeypatch.setattr(jobs, "_unlock_fd", refuse_to_release)
+
+    # The body's ValueError, not the release's OSError.
+    with pytest.raises(ValueError, match="what the caller needs to see"):
+        with jobs._locked_job(run_id) as guard:
+            assert guard.record is not None
+            raise ValueError("what the caller needs to see")
+
+
+def test_an_interrupt_arriving_during_release_is_not_swallowed_and_still_closes(
+    sandbox, monkeypatch
+):
+    """Being asked to stop is not a release refusing, and neither costs the descriptor.
+
+    The release is allowed to fail without answering for the body, but only for
+    what a filesystem refusal looks like. An interrupt delivered while it runs is
+    a request for the process to stop, and cleanup that absorbs it loses the
+    request entirely. The descriptor is closed on that way out too — a lock left
+    held is a worse outcome than either failure, and it is the one that outlives
+    the process that hit it.
+    """
+    run_id = "20260101T000000-ccc333"
+    (config.JOBS_DIR / run_id).mkdir(parents=True)
+    jobs._write_job({"run_id": run_id, "kind": "agent", "status": "running"})
+
+    taken = {}
+    closed = []
+    real_lock = jobs._lock_fd
+    real_close = os.close
+
+    def remember_the_fd(fd):
+        taken["fd"] = fd
+        return real_lock(fd)
+
+    def stop_during_release(fd):
+        raise KeyboardInterrupt
+
+    def record_close(fd):
+        if fd == taken.get("fd"):
+            closed.append(fd)
+        return real_close(fd)
+
+    monkeypatch.setattr(jobs, "_lock_fd", remember_the_fd)
+    monkeypatch.setattr(jobs, "_unlock_fd", stop_during_release)
+    monkeypatch.setattr(os, "close", record_close)
+
+    # The interrupt, not the ValueError it arrived on top of.
+    with pytest.raises(KeyboardInterrupt):
+        with jobs._locked_job(run_id) as guard:
+            assert guard.record is not None
+            raise ValueError("the failure the interrupt arrived during")
+
+    assert closed == [taken["fd"]]

@@ -521,7 +521,14 @@ def _locked_job(run_id: str) -> Iterator[_GuardedJob]:
     try:
         _lock_fd(fd)
     except OSError:
-        os.close(fd)
+        # Giving the descriptor back is tidying up after a lock that was not
+        # taken, and tidying up does not get to answer for it. A close that
+        # fails here would leave this function raising out of a context manager
+        # whose whole contract, stated above, is that it yields a state instead
+        # — and it would report the wrong fact besides: the caller needs to know
+        # the section was not entered, not which descriptor could not be closed.
+        with contextlib.suppress(OSError):
+            os.close(fd)
         yield _GuardedJob(None, LOCK_UNAVAILABLE)
         return
     try:
@@ -532,8 +539,24 @@ def _locked_job(run_id: str) -> Iterator[_GuardedJob]:
         if guard.record is not None and guard.record != before:
             _write_job(guard.record)
     finally:
-        _unlock_fd(fd)
-        os.close(fd)
+        # Two releases that both have to happen, neither of them entitled to
+        # speak for the body. The body is where the failures a caller acts on
+        # come from — a refused record, a write that would not serialize — and a
+        # release that fails is worth less than any of them. So a refusal to
+        # release is suppressed, and the close still runs even when the unlock
+        # did not, because a lock left held is a worse outcome than either.
+        #
+        # Only what a refusal looks like, though. An interrupt or an exit
+        # arriving while the release runs is not the release failing, it is
+        # someone asking for the process to stop, and it goes on through — the
+        # nested block is what keeps that from leaking the descriptor on its way
+        # out.
+        try:
+            with contextlib.suppress(OSError):
+                _unlock_fd(fd)
+        finally:
+            with contextlib.suppress(OSError):
+                os.close(fd)
 
 
 def _short_repr(value: Any, limit: int = 60) -> str:
