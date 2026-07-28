@@ -266,7 +266,10 @@ class TestSpecValidationAcceptsValidFields:
 
 class TestSavePathContainment:
     def test_save_path_rejects_escape(self, tmp_path, caplog):
-        escape_path = str(Path.home().parent / "li_sec_test_escape_dir")
+        allowed_roots = (Path.cwd().resolve(), Path.home().resolve())
+        escape = (Path(Path.cwd().anchor) / "li_sec_test_escape_dir").resolve()
+        assert all(not escape.is_relative_to(root) for root in allowed_roots)
+        escape_path = str(escape)
         spec_file = tmp_path / "spec.yaml"
         spec_file.write_text(
             yaml.dump({"model": "claude/opus", "prompt": "task", "save": escape_path})
