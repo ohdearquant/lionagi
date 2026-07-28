@@ -1487,10 +1487,28 @@ def submit(
         mcp_config_source: str | None = None
         mcp_config_reason: str | None = None
         mcp_servers: dict[str, Any] | None = None
+        # Which servers the run gave its workers, by name. Empty list and null are
+        # different answers and neither stands in for the other: `[]` says this run
+        # settled the question and the answer was none, `null` says this run never
+        # resolved a set and cannot speak for one. Collapsing them would make the
+        # case a reader most needs -- a run whose workers got no servers -- read
+        # the same as a run where the question was never asked.
+        #
+        # Two different things settle it as none: a caller disabling MCP, and a
+        # config that was found and declares no servers. Both report `[]`.
+        #
+        # This reports what was RESOLVED. It is not a claim about what the child's
+        # provider then managed to start: a server can be in this list and still
+        # fail to come up in the child's own session. Distinguishing those needs
+        # the child's startup record, which this does not stand in for. What it
+        # does settle, in one read rather than a dig through the snapshot on disk,
+        # is whether a server a run was supposed to have was ever in its set.
+        mcp_config_servers: list[str] | None = None
         if no_mcp_config:
             # The caller asked for no servers. That is an answer, not an absence, so
             # nothing is resolved and the handle says whose decision it was.
             mcp_config_reason = "mcp_disabled_by_caller"
+            mcp_config_servers = []
         elif mcp_config is not None:
             # The caller named the file, and their flag is already on the line. No
             # snapshot is taken and none is prepended: a second --mcp-config would
@@ -1518,10 +1536,26 @@ def submit(
                     if resolution.reason == "no_mcp_config_found"
                     else resolution.reason
                 )
+                if resolution.reason == "mcp_config_declares_no_servers":
+                    # A config that was found and declares no servers is a
+                    # settled question whose answer is none, so it reports `[]`.
+                    # The resolver returns a null server map for this and for
+                    # finding no config at all, and only its reason tells the two
+                    # apart -- reading the map alone would report "cannot say"
+                    # about a file that said so explicitly. The source is kept for
+                    # the same reason: a reader is owed the name of the file that
+                    # answered, and an empty set beside a null source would send
+                    # them looking for one that was never consulted.
+                    mcp_config_servers = []
+                    mcp_config_source = str(resolution.source) if resolution.source else None
             else:
                 mcp_servers = resolution.servers
                 mcp_config_source = str(resolution.source) if resolution.source else None
                 mcp_config_path = str(d / _MCP_SNAPSHOT_FILENAME)
+                # Sorted so two runs over the same set report the same string and a
+                # reader can compare handles directly; the child reads the snapshot,
+                # never this list, so the order is free to be the readable one.
+                mcp_config_servers = sorted(mcp_servers)
                 options = ["--mcp-config", mcp_config_path, *options]
 
         # Wire the CLI's terminal hook back to the MCP server so we record a reliable
@@ -1590,6 +1624,7 @@ def submit(
         "mcp_config": mcp_config_path,
         "mcp_config_source": mcp_config_source,
         "mcp_config_reason": mcp_config_reason,
+        "mcp_config_servers": mcp_config_servers,
         "submitted_at": _now_iso(),
         "finished_at": None,
         "status": "running",
@@ -1697,6 +1732,7 @@ def submit(
         "mcp_config": mcp_config_path,
         "mcp_config_source": mcp_config_source,
         "mcp_config_reason": mcp_config_reason,
+        "mcp_config_servers": mcp_config_servers,
         "notify_sender": notify_sender,
     }
 
@@ -2192,6 +2228,20 @@ def status(run_id: str) -> dict[str, Any]:
     ``server`` identifies the implementation that answered, so a caller can tell
     which build it is talking to rather than inferring it from behaviour.
 
+    The ``mcp_config*`` fields say what tool surface the run was given, and are the
+    same values the submit handle returned, carried here so a caller investigating
+    a finished run reads them rather than opening the record on disk.
+    ``mcp_config_servers`` names the servers by name. ``[]`` and null are different
+    answers: ``[]`` says the question was settled and the answer was none, null says
+    no set was resolved. Three things read as null — the caller named their own
+    config file, which this run does not read; no config was found at or above the
+    launch directory; or the record predates the field. ``mcp_config_reason`` names
+    which of the first two, and a record older than the field carries no reason
+    either. It reports what was RESOLVED, which is not a claim that the child's
+    provider then started each one; a server can be listed here and still fail to
+    come up in the child's own session. What it settles is the prior question,
+    whether a server the run was supposed to have was in its set at all.
+
     ``known`` says whether a usable record was obtained, and ``record_state`` says
     what was read to answer that: ``"ok"``, or ``"absent"``, ``"unreadable"`` or
     ``"wrong_shape"`` when it was not. Only ``"absent"`` means the run is unknown.
@@ -2236,6 +2286,10 @@ def status(run_id: str) -> dict[str, Any]:
         "submitted_at": (job or {}).get("submitted_at"),
         "finished_at": (job or {}).get("finished_at"),
         "notify_delivery": (job or {}).get("notify_delivery"),
+        "mcp_config": (job or {}).get("mcp_config"),
+        "mcp_config_source": (job or {}).get("mcp_config_source"),
+        "mcp_config_reason": (job or {}).get("mcp_config_reason"),
+        "mcp_config_servers": (job or {}).get("mcp_config_servers"),
         "run": manifest,
         "log_tail": _tail((job or {}).get("log")),
         "known": job is not None,
