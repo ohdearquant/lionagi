@@ -51,6 +51,7 @@ from lionagi.studio.scheduler.admit import (
     AdmissionDecision,
     WorkerCaps,
     admit,
+    declared_max_duration_seconds,
     normalize_action_args,
     notify_request,
 )
@@ -338,7 +339,8 @@ async def claim_and_execute(
     D4 match rule: row R is claimable iff its capability tokens are a subset
     of *advertised_capabilities* AND its execution_target is in
     *execution_targets* (NULL/empty target = claimable by anyone). Candidates
-    are then ordered by affinity match, ties broken by ``queued_at``.
+    Static duration rejections are handled first, then remaining candidates
+    are ordered by affinity match, ties broken by ``queued_at``.
 
     ADR-0071 D3: each candidate is routed through
     ``lionagi.studio.scheduler.admit.admit()``, which folds in the
@@ -408,11 +410,19 @@ async def claim_and_execute(
             if len(page) < _CLAIM_PAGE_SIZE:
                 break  # queue exhausted
 
-    # Stable sort: preserves the SQL's queued_at ASC order among equal
-    # affinity scores, only reordering across different scores.
-    candidates.sort(key=lambda item: -capabilities.affinity_score(item[1], advertised))
-    # `limit` caps claim attempts, applied after affinity reordering so it
-    # never truncates before affinity gets a chance to reorder.
+    # Static duration-invalid rows must be terminalized before waiter-cap
+    # decisions: otherwise an affinity-preferred valid row can count an older
+    # invalid row as a waiter and be rejected before that invalid row is
+    # removed. Within each duration class, preserve affinity-first ordering
+    # and the SQL's queued_at order for ties.
+    def candidate_order(item: tuple[Any, list[str]]) -> tuple[bool, int]:
+        row, required = item
+        max_duration = declared_max_duration_seconds(normalize_action_args(row["action_args"]))
+        duration_valid = max_duration is None or max_duration < lease_ttl
+        return duration_valid, -capabilities.affinity_score(required, advertised)
+
+    candidates.sort(key=candidate_order)
+    # `limit` caps claim attempts, applied after duration/affinity reordering.
     candidates = candidates[:limit]
 
     # `running_keys` seeds admit()'s pass-local `claimed_keys`: a key claimed
