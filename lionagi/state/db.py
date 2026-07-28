@@ -124,6 +124,18 @@ DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
 SCHEMA_VERSION = "2"
 
 
+class SchemaTooNewError(RuntimeError):
+    """The database records a schema version this code does not understand.
+
+    Raised by a writable open when ``schema_meta.version`` is higher than
+    ``SCHEMA_VERSION``. A writable open rewrites the database into the shape
+    this code applies and then stamps that shape into the version row; neither
+    step has established anything about a shape written by a later release, so
+    both are refused rather than performed blind. Read-only opens apply no
+    schema and are unaffected.
+    """
+
+
 def state_db_file() -> Path | None:
     """The local file a default ``StateDB()`` would open, if it opens one at all.
 
@@ -782,7 +794,60 @@ class StateDB:
 
     # ── Schema management ──────────────────────────────────────────────
 
+    async def _recorded_schema_version(self) -> str | None:
+        """The version stamped in the database, or None when there is none yet.
+
+        Read before any migration runs, so it describes the database as this
+        process found it. A database with no ``schema_meta`` table is one this
+        open is about to create.
+        """
+        async with self._engine.connect() as conn:
+            # AUTOCOMMIT, because on SQLite an implicit transaction here would
+            # be a BEGIN IMMEDIATE: this read runs before every migration, and
+            # taking the write lock to perform it would make concurrent opens
+            # of the same database contend on a lock none of them needs yet.
+            conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+            if not await conn.run_sync(lambda c: inspect(c).has_table("schema_meta")):
+                return None
+            row = (
+                (await conn.execute(text("SELECT value FROM schema_meta WHERE key = 'version'")))
+                .mappings()
+                .first()
+            )
+        return row["value"] if row else None
+
+    async def _refuse_newer_schema(self) -> None:
+        """Refuse to open a database stamped with a version above SCHEMA_VERSION.
+
+        Everything ``_apply_schema`` does afterwards -- adding columns,
+        rebuilding tables to widen CHECK constraints, then recording
+        SCHEMA_VERSION as the shape that resulted -- is written against the
+        schema this release knows. Against a newer one it would rewrite tables
+        on assumptions it cannot check and replace a truthful version stamp
+        with a lower one, leaving a database that reads as understood.
+        """
+        recorded = await self._recorded_schema_version()
+        if recorded is None:
+            return
+        try:
+            recorded_n = int(recorded)
+        except (TypeError, ValueError):
+            # Not a version this code can order against its own, so there is no
+            # downgrade to detect. Leave it to the stamp below.
+            return
+        if recorded_n <= int(SCHEMA_VERSION):
+            return
+        where = self.path if self.dialect == "sqlite" and self.path is not None else self.url
+        raise SchemaTooNewError(
+            f"{where} records schema version {recorded} but this version of lionagi "
+            f"applies schema version {SCHEMA_VERSION}. It was written by a later "
+            "release whose shape this code cannot verify, and opening it for writing "
+            "would migrate it against that shape and record the lower version. "
+            "Upgrade lionagi to open it, or open it read-only to inspect it."
+        )
+
     async def _apply_schema(self) -> None:
+        await self._refuse_newer_schema()
         await self._reconcile_columns()
         if self.dialect == "sqlite":
             await self._drop_legacy_session_status_check()
@@ -811,7 +876,9 @@ class StateDB:
             # The version row is the exception: the migrations above rewrite an
             # older database into the current shape, so the stamp has to move
             # with them. DO UPDATE, not DO NOTHING, or a migrated database keeps
-            # reporting the version it was created at.
+            # reporting the version it was created at. The update only ever
+            # raises the recorded version: a database stamped higher than
+            # SCHEMA_VERSION never reaches here, it is refused at open.
             await conn.execute(
                 text(
                     "INSERT INTO schema_meta (key, value) VALUES ('version', :version) "
