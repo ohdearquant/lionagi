@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Callable, Collection
 from typing import TYPE_CHECKING, Any
 
@@ -962,6 +963,26 @@ def _discover_ambient_codex_mcp_server_names() -> set[str]:
     return {entry["name"] for entry in listed if isinstance(entry, dict) and "name" in entry}
 
 
+# Names of this shape are generated here and belong to lionagi. It is what
+# separates a profile this code minted from one the caller asked for, so the
+# minting, the reaping and the caller-profile check all read it from one place.
+#
+# It has to be the NAME that carries this, because the profile a resumed leg
+# arrives with was written by a different process: an in-process record of what
+# this run generated cannot recognise it. So the shape is narrow, a fixed prefix
+# and exactly 32 hex characters, and it is reserved: a caller who names a
+# profile in that exact shape is treated as having named one of ours and has it
+# replaced. Anything else, `lionagi-mcp-custom` included, is the caller's and is
+# refused rather than overwritten.
+_CODEX_MCP_PROFILE_PREFIX = "lionagi-mcp-"
+_GENERATED_CODEX_PROFILE_RE = re.compile(rf"^{re.escape(_CODEX_MCP_PROFILE_PREFIX)}[0-9a-f]{{32}}$")
+
+
+def _is_generated_codex_profile(name: object) -> bool:
+    """Whether *name* is a profile name `_write_codex_mcp_secret_profile` minted."""
+    return isinstance(name, str) and _GENERATED_CODEX_PROFILE_RE.match(name) is not None
+
+
 # Profile files older than this are considered abandoned (the process that
 # wrote them was killed before its `atexit` cleanup ran, e.g. SIGKILL/crash)
 # and safe to reap on the next write.
@@ -969,7 +990,7 @@ _STALE_PROFILE_MAX_AGE_SECONDS = 24 * 60 * 60
 
 
 def _reap_stale_codex_mcp_profiles(codex_home: Path) -> None:
-    """Delete `lionagi-mcp-*.config.toml` profile files older than 24h.
+    """Delete generated profile files older than 24h.
 
     `_write_codex_mcp_secret_profile`'s own cleanup is `atexit`-based, so a
     killed-not-terminated process (SIGKILL, crash) leaves its profile file
@@ -979,7 +1000,7 @@ def _reap_stale_codex_mcp_profiles(codex_home: Path) -> None:
     import time
 
     cutoff = time.time() - _STALE_PROFILE_MAX_AGE_SECONDS
-    for stale in codex_home.glob("lionagi-mcp-*.config.toml"):
+    for stale in codex_home.glob(f"{_CODEX_MCP_PROFILE_PREFIX}*.config.toml"):
         try:
             if stale.stat().st_mtime < cutoff:
                 stale.unlink(missing_ok=True)
@@ -1007,8 +1028,13 @@ def _write_codex_mcp_secret_profile(
 
     import toml
 
+    # Only a profile the caller asked for is a conflict. A resumed leg re-spawns
+    # from its persisted request, and that request carries the profile the first
+    # run generated here, whose file that run already deleted on its way out. So
+    # a name of our own generated shape is not a second profile to refuse, it is
+    # a spent one to replace.
     existing_profile = kwargs.get("profile")
-    if existing_profile:
+    if existing_profile and not _is_generated_codex_profile(existing_profile):
         raise ConfigurationError(
             "Cannot forward MCP server secret fields for codex: the request "
             f"already has an explicit profile={existing_profile!r}, and codex "
@@ -1020,7 +1046,7 @@ def _write_codex_mcp_secret_profile(
     codex_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
     codex_home.mkdir(parents=True, exist_ok=True)
     _reap_stale_codex_mcp_profiles(codex_home)
-    profile_name = f"lionagi-mcp-{uuid.uuid4().hex}"
+    profile_name = f"{_CODEX_MCP_PROFILE_PREFIX}{uuid.uuid4().hex}"
     profile_path = codex_home / f"{profile_name}.config.toml"
 
     profile_doc = {"mcp_servers": {name: dict(fields) for name, fields in secret_fields.items()}}
