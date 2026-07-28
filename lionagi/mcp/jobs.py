@@ -381,7 +381,19 @@ def _write_job(record: dict[str, Any]) -> None:
         # an empty directory, and the run would be stranded by the file written
         # to make its record atomic. The two have to answer for the same set of
         # failures or the narrower one decides the outcome.
-        tmp.unlink(missing_ok=True)
+        #
+        # The removal cannot be allowed to raise in place of what sent us here.
+        # Widening the catch is what makes that reachable: an interrupt used to
+        # pass straight through, and now it arrives inside a handler whose own
+        # failure would replace it, so a caller waiting on a KeyboardInterrupt
+        # would be handed a PermissionError from the tidying instead. This is the
+        # rule _discard_reservation already states for the same situation — a
+        # removal that fails leaves a file nobody claimed, which is worth less
+        # than the error that sent us here — and it is applied here rather than
+        # invented, because a second answer to one question is how the narrower
+        # handler came to decide for the wider one in the first place.
+        with contextlib.suppress(BaseException):
+            tmp.unlink(missing_ok=True)
         raise
 
 

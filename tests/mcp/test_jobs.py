@@ -2966,6 +2966,42 @@ def test_an_interrupted_publication_leaves_nothing_that_blocks_the_cleanup(sandb
     assert [(j["run_id"], j["kind"]) for j in jobs.list_jobs()] == [(control, "agent")]
 
 
+def test_a_failed_cleanup_does_not_answer_in_place_of_the_failure_that_caused_it(
+    sandbox, monkeypatch
+):
+    """Tidying up after a failure never becomes the failure a caller is told about.
+
+    The staging removal runs inside a handler that catches everything, so its own
+    error would otherwise take the place of the one that sent us there: a caller
+    waiting on an interrupt would be handed whatever the tidying refused with. The
+    file may then survive, which is the same trade the reservation give-back
+    already makes — a removal that fails leaves something nobody claimed, and that
+    is worth less than the error underneath it.
+    """
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda argv, **kw: _FakeProc(4242))
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-777aaa")
+
+    real_replace = os.replace
+    real_unlink = Path.unlink
+
+    def interrupt_the_publication(src, dst, *args, **kwargs):
+        if str(dst).endswith("job.json"):
+            raise KeyboardInterrupt
+        return real_replace(src, dst, *args, **kwargs)
+
+    def refuse_to_remove(self, *args, **kwargs):
+        if self.name.startswith(".job.json.") and self.name.endswith(".tmp"):
+            raise PermissionError(errno.EACCES, "cleanup denied")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", interrupt_the_publication)
+    monkeypatch.setattr(Path, "unlink", refuse_to_remove)
+
+    # The interrupt, not the PermissionError the tidying raised.
+    with pytest.raises(KeyboardInterrupt):
+        jobs.submit("agent", [], prompt="x", label="interrupted")
+
+
 def test_discarding_a_reservation_removes_what_the_submission_wrote(sandbox):
     """Both of the names a submission writes come back with the directory."""
     d = config.JOBS_DIR / "20260101T000000-111111"
