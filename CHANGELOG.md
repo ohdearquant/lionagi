@@ -20,13 +20,15 @@ Migration: if you persist computed floats, guard them at the point you build the
 record (`math.isfinite(x)`) and decide what a non-finite value should mean in
 your data, rather than letting it reach the writer.
 
-A database stamped with a newer schema version is also refused at open rather
-than being opened and migrated downward.
+A database stamped with a newer schema version is also refused when it is opened
+for writing, rather than being migrated down to the shape this release applies.
+Read-only opens apply no schema and are unaffected, so such a database can still
+be inspected.
 
 ### Added
 
 - A resolved MCP server set is handed to every CLI provider that can carry one,
-  rather than only to Claude providers. A codex leg that was given servers
+  rather than only to Claude providers. A codex agent that was given servers
   previously lost them: on two of the three spawn paths silently, and on the
   third with a message reporting a refusal while the set was dropped anyway. The
   decision is now one capability check applied in one place, so the paths cannot
@@ -36,6 +38,12 @@ than being opened and migrated downward.
   deliberately handing over none instead of arriving there by an empty search.
 - A flow that names neither an agent nor a model orchestrates by default rather
   than being refused.
+- `StreamTerminalState` is public. A streamed event now records how its stream
+  ended, as completed, closed early, cancelled, or failed, and exposes it as
+  `stream_terminal_state`.
+- `profile.list` takes `names` and `fields`, so a caller asking whether one
+  profile exists and what model it runs no longer pays for the whole roster.
+  Given neither, the reply is what it was.
 - Studio shows artifacts as they arrive instead of waiting for the run to end.
 
 ### Changed
@@ -55,6 +63,10 @@ than being opened and migrated downward.
   them. A release that fails cannot replace the error the caller raised, and an
   interrupt arriving during release is neither swallowed nor allowed to skip the
   close.
+- The post-invocation hook on a streamed event runs however the stream ends,
+  not only when it runs to completion. A source error, a consumer that stopped
+  early, and a cancelled consuming task each bypassed it before. Whatever ended
+  the stream still reaches the caller unchanged.
 - A run whose process is conclusively gone gets an attributable end instead of
   staying open, and `job.wait` stops holding its window open for it.
 - A terminal notice that could not be delivered is reported where callers wait,
@@ -69,6 +81,22 @@ than being opened and migrated downward.
 - `li kill` reaches a play's workers when the row records them, and says so when
   it cannot. A play awaiting a gate decision is no longer reported as running,
   and a kill that performed no termination exits non-zero.
+- One prompt-length limit for orchestration specs, raised from 8,192 to 262,144
+  characters. The check lived in three places, each with its own copy of the
+  number, so a spec the CLI accepted could still be refused by a schedule. They
+  now read one constant, and the refusal names the limit it enforced.
+- The planner roster carries each role's description. A role sharing its name
+  with a user profile showed the profile's line instead, which with the default
+  profiles present was every role. Roles whose two spellings differ only by `-`
+  or `_` are one entry rather than two, and a plan may still name either.
+- Profile lookup reports only the profiles that shadow the name asked for,
+  rather than every profile declared.
+- A model supplied for a single call chooses the transport for that call. A
+  CLI-backed branch given an API model for one call routed it into the CLI
+  streaming path, which rejects it, and was left holding the rejected model.
+- The terminal envelope a flow emits when finalization fails reports the
+  resolved outcome when resolution got that far, instead of restating the
+  flow's coarser status, and no longer labels an interrupted run a user abort.
 - Agent profile names treat `-` and `_` as the same spelling.
 - Long codex conversations can spawn: the prompt is passed over stdin rather
   than as a command-line argument.
