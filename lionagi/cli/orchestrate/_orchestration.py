@@ -27,6 +27,7 @@ from lionagi._errors import ConfigurationError
 from lionagi.agent import AgentSpec, create_agent
 from lionagi.agent.factory import register_profile_injection
 from lionagi.ln import Unset
+from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.state import provenance as _provenance
@@ -1297,6 +1298,19 @@ def _emit_worker_artifact_report(entries: list[dict]) -> None:
         )
 
 
+def _write_branch_snapshot(snap_path: Path, branch: Any) -> None:
+    """Serialize *branch* to *snap_path* so `li agent -r` can resume it.
+
+    A non-finite float is refused before the file is touched: json.dumps writes
+    it as the token ``NaN``/``Infinity``, which the writing process reads back
+    happily and every strict reader rejects, so the corruption would only
+    surface at whatever boundary consumes the snapshot next.
+    """
+    snapshot = branch.to_dict()
+    raise_if_non_finite(snapshot, default=str)
+    snap_path.write_text(json.dumps(snapshot, default=str))
+
+
 def finalize_orchestration(
     env: OrchestrationEnv,
     *,
@@ -1331,8 +1345,7 @@ def finalize_orchestration(
 
         # Snapshot failure must not abort finalize; only `li agent -r` is affected.
         try:
-            snap_path = env.run.branch_path(str(branch.id))
-            snap_path.write_text(json.dumps(branch.to_dict(), default=str))
+            _write_branch_snapshot(env.run.branch_path(str(branch.id)), branch)
         except Exception as exc:  # noqa: BLE001
             log.warning(
                 "finalize: branch snapshot write failed for %s: %s",

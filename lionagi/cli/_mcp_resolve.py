@@ -80,6 +80,22 @@ def discover_mcp_config(start: str | Path) -> Path | None:
     return None
 
 
+def _reject_json_constant(token: str) -> Any:
+    """Refuse ``NaN``/``Infinity``/``-Infinity``, which json.loads accepts by default.
+
+    Those three are a Python extension, not JSON. Accepting one here turns it
+    into a Python float that the snapshot handed to the child re-emits as the
+    same non-standard token, so a config nothing else could parse propagates
+    into a file the child's own reader has to parse. Refusing at the read names
+    the config the operator actually wrote, and does it before anything is
+    spawned; a refusal at the write would name a file this code generated.
+    """
+    raise ValueError(
+        f"{token} is not JSON: it is a Python extension the standard library "
+        "accepts on read, and no other reader of this config has to"
+    )
+
+
 def _read_servers(path: Path) -> dict[str, Any]:
     """Parse ``{"mcpServers": {...}}`` from *path*; raises ValueError on any
     shape this cannot hand to a provider."""
@@ -88,8 +104,10 @@ def _read_servers(path: Path) -> dict[str, Any]:
     except OSError as exc:
         raise McpConfigError(f"could not read {path}: {exc}") from exc
     try:
-        data = json.loads(raw)
+        data = json.loads(raw, parse_constant=_reject_json_constant)
     except json.JSONDecodeError as exc:
+        raise McpConfigError(f"{path} is not valid JSON: {exc}") from exc
+    except ValueError as exc:
         raise McpConfigError(f"{path} is not valid JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise McpConfigError(f"{path} must contain a JSON object, got {type(data).__name__}")

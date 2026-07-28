@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import builtins
 import errno
+import json
+import math
 import os
 import signal
 from pathlib import Path
@@ -275,7 +277,17 @@ def _live_process(monkeypatch, created: float = _SPAWNED_AT):
 
 
 def _identity_record(pid: int = 4242, pgid: int = 7777, created: float = _SPAWNED_AT, **extra):
-    """A job record carrying the process identity submit() now writes."""
+    """A job record carrying the process identity submit() now writes.
+
+    Some of these deliberately carry a start time that cannot act as one, to ask
+    what a *reader* does with it — and among those are the non-finite floats the
+    writer now refuses, because json.dumps would put the bare token NaN or
+    Infinity on disk. A reader still has to survive one: records written before
+    that refusal existed are on disk already, and the job store is shared with
+    whatever else writes into it. So a record the writer will not produce is
+    published directly here, and every record the writer *can* produce still goes
+    through it, which is what keeps this fixture's shape the production shape.
+    """
     rec = {
         "run_id": jobs.new_run_id(),
         "pid": pid,
@@ -286,7 +298,12 @@ def _identity_record(pid: int = 4242, pgid: int = 7777, created: float = _SPAWNE
         "log": None,
     }
     rec.update(extra)
-    jobs._write_job(rec)
+    if isinstance(created, float) and not math.isfinite(created):
+        d = config.job_dir(rec["run_id"])
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "job.json").write_text(json.dumps(rec, indent=2))
+    else:
+        jobs._write_job(rec)
     return rec["run_id"]
 
 
@@ -2875,6 +2892,147 @@ def test_a_submission_that_fails_between_its_writes_leaves_no_job_behind(sandbox
     # would be the empty-directory case the test above already covers.
     assert prompt_was_already_written == [True]
     assert [(j["run_id"], j["kind"]) for j in jobs.list_jobs()] == [(control, "agent")]
+
+
+def test_a_submission_whose_record_never_publishes_leaves_no_job_behind(sandbox, monkeypatch):
+    """The record is the last thing that can strand a reservation.
+
+    The two writes above it are covered; the write that publishes the record is
+    the one that decides whether any of it was a job at all. When it fails there
+    is no record to mark and no child to mark it, so what is left is the same
+    directory with no kind that never finishes — reached one step later than the
+    other failures, and given back the same way.
+    """
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda argv, **kw: _FakeProc(4242))
+
+    # Positive control: the same call, unobstructed. Without it a change that
+    # refused every submission of this shape would read as this test passing.
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-aaabbb")
+    control = jobs.submit("agent", [], prompt="x", label="control")["run_id"]
+    assert [(j["run_id"], j["kind"]) for j in jobs.list_jobs()] == [(control, "agent")]
+
+    # The prompt has already been written by the time the record is published,
+    # so this is the non-empty directory case, not the empty one.
+    prompt_was_already_written: list[bool] = []
+    real_replace = os.replace
+
+    def refuse_to_publish(src, dst, *args, **kwargs):
+        if str(dst).endswith("job.json"):
+            prompt_was_already_written.append((Path(dst).parent / "prompt.txt").exists())
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", refuse_to_publish)
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-cccddd")
+
+    with pytest.raises(OSError):
+        jobs.submit("agent", [], prompt="x", label="unpublished")
+
+    assert prompt_was_already_written == [True]
+    assert not (config.JOBS_DIR / "20260101T000000-cccddd").exists()
+    assert [(j["run_id"], j["kind"]) for j in jobs.list_jobs()] == [(control, "agent")]
+
+
+def test_an_interrupted_publication_leaves_nothing_that_blocks_the_cleanup(sandbox, monkeypatch):
+    """An interrupt is one of the failures the reservation is given back for.
+
+    Giving it back ends in an rmdir, which refuses a directory holding anything
+    at all — so the staging file the record write uses to be atomic is the one
+    thing able to defeat the cleanup that runs because that write failed. The
+    two have to answer for the same set of failures, which is why this asserts
+    on an exception outside the errno family.
+    """
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda argv, **kw: _FakeProc(4242))
+
+    # Positive control: the same call, unobstructed.
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-eee111")
+    control = jobs.submit("agent", [], prompt="x", label="control")["run_id"]
+    assert [(j["run_id"], j["kind"]) for j in jobs.list_jobs()] == [(control, "agent")]
+
+    real_replace = os.replace
+
+    def interrupt_the_publication(src, dst, *args, **kwargs):
+        if str(dst).endswith("job.json"):
+            raise KeyboardInterrupt
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", interrupt_the_publication)
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-fff222")
+
+    with pytest.raises(KeyboardInterrupt):
+        jobs.submit("agent", [], prompt="x", label="interrupted")
+
+    assert not (config.JOBS_DIR / "20260101T000000-fff222").exists()
+    assert [(j["run_id"], j["kind"]) for j in jobs.list_jobs()] == [(control, "agent")]
+
+
+def test_a_failed_cleanup_does_not_answer_in_place_of_the_failure_that_caused_it(
+    sandbox, monkeypatch
+):
+    """Tidying up after a failure never becomes the failure a caller is told about.
+
+    The staging removal runs inside a handler that catches everything, so its own
+    error would otherwise take the place of the one that sent us there: a caller
+    waiting on an interrupt would be handed whatever the tidying refused with. The
+    file may then survive, which is the same trade the reservation give-back
+    already makes — a removal that fails leaves something nobody claimed, and that
+    is worth less than the error underneath it.
+    """
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda argv, **kw: _FakeProc(4242))
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-777aaa")
+
+    real_replace = os.replace
+    real_unlink = Path.unlink
+
+    def interrupt_the_publication(src, dst, *args, **kwargs):
+        if str(dst).endswith("job.json"):
+            raise KeyboardInterrupt
+        return real_replace(src, dst, *args, **kwargs)
+
+    def refuse_to_remove(self, *args, **kwargs):
+        if self.name.startswith(".job.json.") and self.name.endswith(".tmp"):
+            raise PermissionError(errno.EACCES, "cleanup denied")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", interrupt_the_publication)
+    monkeypatch.setattr(Path, "unlink", refuse_to_remove)
+
+    # The interrupt, not the PermissionError the tidying raised.
+    with pytest.raises(KeyboardInterrupt):
+        jobs.submit("agent", [], prompt="x", label="interrupted")
+
+
+def test_an_interrupt_arriving_during_cleanup_is_not_swallowed_by_it(sandbox, monkeypatch):
+    """Being asked to stop is not the same as a removal being refused.
+
+    The removal is allowed to fail without answering in place of the failure
+    underneath it, but only for the failures a filesystem actually produces. An
+    interrupt arriving while it runs is nobody's removal failing — it is a
+    request for the process to stop, and answering that with whatever the run
+    was already failing at loses the request entirely.
+    """
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda argv, **kw: _FakeProc(4242))
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-888bbb")
+
+    real_replace = os.replace
+    real_unlink = Path.unlink
+
+    def fail_the_publication(src, dst, *args, **kwargs):
+        if str(dst).endswith("job.json"):
+            raise ValueError("publication failed")
+        return real_replace(src, dst, *args, **kwargs)
+
+    def interrupt_during_removal(self, *args, **kwargs):
+        if self.name.startswith(".job.json.") and self.name.endswith(".tmp"):
+            raise KeyboardInterrupt
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", fail_the_publication)
+    monkeypatch.setattr(Path, "unlink", interrupt_during_removal)
+
+    # The interrupt, not the ValueError it arrived on top of.
+    with pytest.raises(KeyboardInterrupt):
+        jobs.submit("agent", [], prompt="x", label="interrupted-while-tidying")
 
 
 def test_discarding_a_reservation_removes_what_the_submission_wrote(sandbox):

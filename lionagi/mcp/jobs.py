@@ -60,6 +60,8 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
+from lionagi.ln._json_dump import raise_if_non_finite
+
 from . import config
 
 # The per-run mutation lock is taken with the platform's own advisory file lock,
@@ -352,18 +354,67 @@ def _write_job(record: dict[str, Any]) -> None:
     # write in submit() and the terminal hook) never collide on the temp itself.
     # This makes each publish all-or-nothing; it does not serialize two writers,
     # so a read-modify-write pair can still lose an update (last replace wins).
+    # Checked before the temp file is opened, so a refused record leaves neither a
+    # staging file nor a published one. json.dumps would write a non-finite float
+    # as the bare token NaN or Infinity, which only Python reads back: every
+    # reader of this record that is not Python — and every strict parser — would
+    # fail on it long after the run that wrote it. The start time already has a
+    # representation for "unreadable" and it is null, so nothing here encodes a
+    # sentinel that this refuses.
+    raise_if_non_finite(record)
     d = config.job_dir(record["run_id"])
     d.mkdir(parents=True, exist_ok=True)
     tmp = d / f".job.json.{os.getpid()}.{uuid4().hex[:8]}.tmp"
     try:
         tmp.write_text(json.dumps(record, indent=2))
         os.replace(tmp, d / "job.json")
-    except OSError:
+    except BaseException:
         # Do not leave the staging file behind: a run whose writes keep failing
         # would otherwise accumulate orphans in its job dir. The original error
         # still propagates.
-        tmp.unlink(missing_ok=True)
+        #
+        # Every exception, not the errno family alone, because the caller that
+        # gives a reservation back on a failed publication catches every one and
+        # then removes the directory with rmdir — which refuses a directory
+        # holding anything at all. A staging file left by an interrupt would
+        # therefore survive as the one thing standing between that cleanup and
+        # an empty directory, and the run would be stranded by the file written
+        # to make its record atomic. The two have to answer for the same set of
+        # failures or the narrower one decides the outcome.
+        #
+        # A removal that fails does not get to answer in place of what sent us
+        # here. Widening the catch is what makes that reachable: an interrupt
+        # used to pass straight through, and now it arrives inside a handler
+        # whose own failure would replace it, so a caller waiting on a
+        # KeyboardInterrupt would be handed a PermissionError from the tidying
+        # instead. The rule is _discard_reservation's, not a new one — a removal
+        # that fails leaves a file nobody claimed, which is worth less than the
+        # error that sent us here — and the domain it suppresses is the same one:
+        # OSError, what a filesystem refusal actually looks like.
+        #
+        # Deliberately not everything. An interrupt or an exit arriving WHILE the
+        # removal runs is not this removal failing, it is someone asking for the
+        # process to stop, and swallowing it would answer a cancellation with
+        # whatever the run happened to be failing at already. A refusal to delete
+        # is worth less than the original error; a request to stop is not.
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
         raise
+
+
+def _write_mcp_server_snapshot(path: Path, servers: dict[str, Any]) -> None:
+    """Write the ``{"mcpServers": ...}`` file the spawned child is pointed at.
+
+    A server entry is arbitrary nested JSON — whatever the resolved config held —
+    so this is an open-shaped payload despite the closed-looking name. Config
+    resolution already refuses the non-standard constants on the way in, which is
+    where a failure names the config an operator actually wrote. Refusing again
+    here binds the guarantee to the file rather than to today's single source of
+    the map, so it holds for any later path that fills *servers* without going
+    through a config read.
+    """
+    raise_if_non_finite({"mcpServers": servers})
+    path.write_text(json.dumps({"mcpServers": servers}, indent=2))
 
 
 def _lock_fd(fd: int) -> None:
@@ -1336,14 +1387,17 @@ def submit(
     log_path = d / "console.log"
 
     # Nothing is written into the reserved directory until the whole command line
-    # is assembled, and a submission that does not become a job takes the
-    # reservation back on its way out — a run that never started leaves no trace,
-    # and a directory here is not nothing: every directory under the jobs root is
-    # listed as a job, so one left behind reads back as a job with no kind that
-    # never finishes. That holds however far the submission got, so the block
-    # runs to the last write this function makes before the record exists rather
-    # than stopping where the assembly does: a failure at the second of two
-    # writes leaves the same unfinishable job as a failure at the first.
+    # is assembled, and a submission that does not become a job gives the
+    # reservation back on its way out. A directory here is not nothing: every
+    # directory under the jobs root is listed as a job, so one left behind reads
+    # back as a job with no kind that never finishes. What that give-back does
+    # and does not promise is _discard_reservation's to say rather than this
+    # block's, exception included — a removal the filesystem refuses leaves the
+    # directory standing, and insisting past a refusal is worse than accepting
+    # it. What this block decides is the reach: it runs to the last write this
+    # function makes before the record exists rather than stopping where the
+    # assembly does, so a failure at the second of two writes gives the
+    # reservation back the same way a failure at the first does.
     #
     # It ends at the record. Once _write_job has run the directory is a real job
     # with real state, and correcting it is the business of the marking that
@@ -1470,7 +1524,7 @@ def submit(
         if prompt_path is not None:
             prompt_path.write_text(prompt)
         if mcp_servers is not None and mcp_config_path is not None:
-            Path(mcp_config_path).write_text(json.dumps({"mcpServers": mcp_servers}, indent=2))
+            _write_mcp_server_snapshot(Path(mcp_config_path), mcp_servers)
     except BaseException:
         _discard_reservation(d)
         raise
@@ -1507,7 +1561,17 @@ def submit(
         "spawn_state": "preparing",
         "log": str(log_path),
     }
-    _write_job(record)
+    try:
+        _write_job(record)
+    except BaseException:
+        # The record is what makes a reservation a job, so a publication that
+        # never landed leaves the prepared files behind with nothing claiming
+        # them — the same stranded directory every earlier failure here gives
+        # back, reached one step later. This is the last point where giving it
+        # back is the right answer: past this line the run exists, and a failure
+        # is marked on the record rather than erased along with it.
+        _discard_reservation(d)
+        raise
 
     try:
         # Append mode, not truncate: every write from the child has to land at
