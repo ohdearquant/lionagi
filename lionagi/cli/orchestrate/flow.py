@@ -550,7 +550,7 @@ async def _build_dag(
         node = _build_worker_operate_node(
             env.builder,
             branch=w_branch,
-            depends_on=dep_nodes or None,
+            depends_on=dep_nodes,
             instruction=instruction,
             context=ctx,
             messenger_bound=messenger_bound,
