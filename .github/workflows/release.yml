@@ -111,11 +111,27 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
-    # Read the tag back from the registry rather than trusting the push step's
-    # own exit. Two releases shipped no image before anyone noticed, because the
-    # only signal was a run-level conclusion that stands for every job in the run
-    # and goes red for unrelated reasons. This asks the registry the question a
-    # user would ask, over the anonymous path a user would use.
+  # A job of its own, for two reasons. It reads the tag back from the registry
+  # rather than trusting the push step's exit, because those are different claims
+  # and the second is the one a user depends on. And it runs even when the docker
+  # job failed or was cancelled, which is what happened to the two releases that
+  # shipped no image: their only signal was a run-level conclusion that stands for
+  # every job in the run and goes red for unrelated reasons. A named job that
+  # fails says which thing is missing.
+  #
+  # Limit worth knowing: nothing inside a workflow run survives a run-level
+  # cancellation, so a cancelled release run still publishes nothing and reports
+  # nothing. Covering that needs a check outside this workflow, comparing the
+  # published package version against the registry.
+  verify-image:
+    needs: docker
+    if: ${{ always() && needs.docker.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    steps:
+    - name: Extract version from tag
+      id: version
+      run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
     - name: Verify the image is in the registry
       env:
         VERSION: ${{ steps.version.outputs.version }}
@@ -154,6 +170,6 @@ jobs:
         if [ "${count}" -eq 0 ]; then
           echo "::error::Could not list tags for ${repo}. This check cannot tell a missing image from a broken read, so it is failing rather than passing."
         else
-          echo "::error::ghcr.io/${repo}:${VERSION} is not in the registry, although the push step reported success and the registry answered with ${count} other tags."
+          echo "::error::ghcr.io/${repo}:${VERSION} is not in the registry. The registry answered with ${count} other tags, so this is the image missing rather than the check failing. Check the docker job for why the push did not land."
         fi
         exit 1
