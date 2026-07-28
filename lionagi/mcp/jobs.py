@@ -181,6 +181,14 @@ def new_run_id() -> str:
 # bound would hang the submission there instead of saying so.
 _RUN_ID_ATTEMPTS = 8
 
+# What a submission writes into its own reserved directory before that directory
+# becomes a job. Named here so the writes and the removal that gives them back
+# cannot drift apart, and so the removal is a fixed list rather than whatever
+# happens to be lying in the directory.
+_PROMPT_FILENAME = "prompt.txt"
+_MCP_SNAPSHOT_FILENAME = "mcp-servers.json"
+_RESERVATION_CONTENTS = (_PROMPT_FILENAME, _MCP_SNAPSHOT_FILENAME)
+
 
 def _reserve_run_dir() -> tuple[str, Path]:
     """Mint a run_id nobody else holds, and return it with its directory.
@@ -213,14 +221,29 @@ def _reserve_run_dir() -> tuple[str, Path]:
 
 
 def _discard_reservation(d: Path) -> None:
-    """Give a reserved directory back, if it is still the empty thing reserved.
+    """Give a reserved directory back, along with what a submission put in it.
 
-    ``rmdir`` refuses a directory with anything in it, and that refusal is the
-    safety here rather than a check taken beforehand: whatever this is asked to
-    remove, a directory holding a run's state survives it. A removal that fails
-    for any other reason leaves a directory nobody claimed, which is worth less
-    than the error that sent us here.
+    A submission that fails partway through writing has already left files
+    behind, so removing only an empty directory would give the reservation back
+    for some failures and not others. The files a submission writes into its own
+    reservation are named here, and only those: they are addressed as fixed
+    names under *d*, never through a path a caller handed in. A caller may name
+    an MCP config that lives anywhere at all, and that file is theirs — it is not
+    part of this reservation whatever it points at, and nothing here can be
+    talked into deleting it.
+
+    ``rmdir`` refuses a directory with anything in it, and that refusal stays the
+    safety here rather than becoming a check taken beforehand: whatever this is
+    asked to remove, a directory holding a run's state survives it — anything not
+    on the short list above stops the removal. A removal that fails for any other
+    reason leaves a directory nobody claimed, which is worth less than the error
+    that sent us here.
     """
+    for name in _RESERVATION_CONTENTS:
+        try:
+            (d / name).unlink()
+        except OSError:
+            pass
     try:
         d.rmdir()
     except OSError:
@@ -1076,12 +1099,18 @@ def submit(
     log_path = d / "console.log"
 
     # Nothing is written into the reserved directory until the whole command line
-    # is assembled, and a submission this function refuses takes the reservation
-    # back on its way out — a run that never started leaves no trace, and an
-    # empty directory here is not nothing: every directory under the jobs root is
+    # is assembled, and a submission that does not become a job takes the
+    # reservation back on its way out — a run that never started leaves no trace,
+    # and a directory here is not nothing: every directory under the jobs root is
     # listed as a job, so one left behind reads back as a job with no kind that
-    # never finishes. The removal is of an empty directory only, so it can never
-    # take a run's own state with it.
+    # never finishes. That holds however far the submission got, so the block
+    # runs to the last write this function makes before the record exists rather
+    # than stopping where the assembly does: a failure at the second of two
+    # writes leaves the same unfinishable job as a failure at the first.
+    #
+    # It ends at the record. Once _write_job has run the directory is a real job
+    # with real state, and correcting it is the business of the marking that
+    # follows, not of a removal.
     try:
         # `flags` may already carry a `--` sentinel, after which every token is a
         # positional. Options this function adds have to go in front of it, or they
@@ -1091,7 +1120,7 @@ def submit(
         prompt_path = None
         if prompt is not None:
             if kind == "agent":
-                prompt_path = d / "prompt.txt"
+                prompt_path = d / _PROMPT_FILENAME
                 options += ["--prompt-file", str(prompt_path)]
             else:
                 # flow/fanout take the prompt as a positional, and a prompt may well
@@ -1166,7 +1195,7 @@ def submit(
             else:
                 mcp_servers = resolution.servers
                 mcp_config_source = str(resolution.source) if resolution.source else None
-                mcp_config_path = str(d / "mcp-servers.json")
+                mcp_config_path = str(d / _MCP_SNAPSHOT_FILENAME)
                 options = ["--mcp-config", mcp_config_path, *options]
 
         # Wire the CLI's terminal hook back to the MCP server so we record a reliable
@@ -1193,14 +1222,21 @@ def submit(
         # Checked before anything is written, because Popen raising this late would
         # leave a job recorded as "running" for a run that never started.
         _reject_oversized_argv(argv, env, kind=kind)
+
+        # The durable writes sit inside this same block rather than under a
+        # handler of their own. One block, because one question is being asked:
+        # did this submission become a job? Everything from here back to the
+        # reservation answers "no" the same way — a full disk on the second write
+        # strands a run exactly as an argv the platform will not carry does — and
+        # a second handler would only invite the two to be given back
+        # differently, which is the state this block exists to prevent.
+        if prompt_path is not None:
+            prompt_path.write_text(prompt)
+        if mcp_servers is not None and mcp_config_path is not None:
+            Path(mcp_config_path).write_text(json.dumps({"mcpServers": mcp_servers}, indent=2))
     except BaseException:
         _discard_reservation(d)
         raise
-
-    if prompt_path is not None:
-        prompt_path.write_text(prompt)
-    if mcp_servers is not None and mcp_config_path is not None:
-        Path(mcp_config_path).write_text(json.dumps({"mcpServers": mcp_servers}, indent=2))
 
     # Persist the record BEFORE spawning, so the child's terminal --notify hook
     # always finds a record to mark. mark_terminal no-ops on a missing record, so
