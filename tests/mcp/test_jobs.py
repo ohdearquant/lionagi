@@ -3153,14 +3153,20 @@ def test_releasing_the_lock_does_not_answer_in_place_of_what_the_body_raised(san
 def test_an_interrupt_arriving_during_release_is_not_swallowed_and_still_closes(
     sandbox, monkeypatch
 ):
-    """Being asked to stop is not a release refusing, and neither costs the descriptor.
+    """Being asked to stop is not a release refusing, and the close is tried anyway.
 
     The release is allowed to fail without answering for the body, but only for
     what a filesystem refusal looks like. An interrupt delivered while it runs is
     a request for the process to stop, and cleanup that absorbs it loses the
-    request entirely. The descriptor is closed on that way out too — a lock left
-    held is a worse outcome than either failure, and it is the one that outlives
-    the process that hit it.
+    request entirely.
+
+    The close is still attempted on that way out, which is what this asserts: a
+    lock nobody released is worse than either failure, and it stays held for the
+    rest of this process's life — an advisory lock lives with the open file
+    description, so it goes when the process exits and not before. Attempted is
+    all that can be asserted, here or anywhere: a close that raises may or may
+    not have released the descriptor, and there is no second call that could
+    settle it safely.
     """
     run_id = "20260101T000000-ccc333"
     (config.JOBS_DIR / run_id).mkdir(parents=True)

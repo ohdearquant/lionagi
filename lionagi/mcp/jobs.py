@@ -539,18 +539,28 @@ def _locked_job(run_id: str) -> Iterator[_GuardedJob]:
         if guard.record is not None and guard.record != before:
             _write_job(guard.record)
     finally:
-        # Two releases that both have to happen, neither of them entitled to
-        # speak for the body. The body is where the failures a caller acts on
+        # Two releases that both have to be attempted, neither of them entitled
+        # to speak for the body. The body is where the failures a caller acts on
         # come from — a refused record, a write that would not serialize — and a
         # release that fails is worth less than any of them. So a refusal to
-        # release is suppressed, and the close still runs even when the unlock
-        # did not, because a lock left held is a worse outcome than either.
+        # release is suppressed, and the close is still attempted when the
+        # unlock did not happen, because a lock nobody released is a worse
+        # outcome than either.
         #
         # Only what a refusal looks like, though. An interrupt or an exit
         # arriving while the release runs is not the release failing, it is
         # someone asking for the process to stop, and it goes on through — the
-        # nested block is what keeps that from leaking the descriptor on its way
-        # out.
+        # nested block is what keeps the close attempt on its way out.
+        #
+        # Attempted is the honest word for the close, and the reason it is not
+        # stronger is that nothing here can make it stronger. Whether a close
+        # that fails released the descriptor anyway is unspecified, and the
+        # obvious repair is worse than the problem: by the time a retry ran the
+        # runtime may have handed that number to something else, so it would
+        # close a file belonging to whatever got it next. What bounds the damage
+        # is not this block but the lock itself — an advisory lock lives with
+        # the open file description, so the worst case lasts as long as this
+        # process and goes when it exits.
         try:
             with contextlib.suppress(OSError):
                 _unlock_fd(fd)
