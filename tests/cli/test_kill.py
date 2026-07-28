@@ -108,12 +108,14 @@ async def _seed_play(
     show_id: str,
     *,
     status: str = "running",
+    session_id: str | None = None,
 ) -> str:
-    """Seed a play row the way a real one is written: with no session link.
+    """Seed a play row.
 
-    `session_id` is deliberately not a parameter here. No writer populates that
-    column, so a test that set it would be asserting against a state the
-    running system never reaches.
+    The default is the shape a live run produces: no session link, because
+    nothing on that path binds the column. Pass `session_id` for the shape the
+    Studio show importer produces, which resolves the session by name and
+    writes it.
     """
     play_id = str(uuid.uuid4())
     await db.create_play(
@@ -122,6 +124,7 @@ async def _seed_play(
             "show_id": show_id,
             "name": f"play-{play_id[:8]}",
             "status": status,
+            "session_id": session_id,
         }
     )
     return play_id
@@ -1233,7 +1236,7 @@ async def test_do_kill_play_leaves_workers_running_and_exits_non_zero(
     captured = capsys.readouterr()
 
     assert rc == 1
-    assert "worker processes were NOT stopped" in captured.err.replace("\n", " ")
+    assert "no worker process was stopped" in captured.err.replace("\n", " ")
     # No worker was signalled: the play row has no path to either of them.
     assert signalled_pids == []
     async with StateDB() as db:
@@ -1251,6 +1254,103 @@ async def test_do_kill_play_leaves_workers_running_and_exits_non_zero(
     # literal word here would pass just as well against a message that names a
     # status the kill never wrote, which is what it used to do.
     assert f"is marked {play_status}" in captured.err.replace("\n", " ")
+
+
+async def test_list_running_children_play_returns_worker_chain_deepest_first(
+    temp_db_path: Path,
+):
+    """A play with a recorded session resolves that session and its invocation.
+
+    The invocation comes first: a child is signalled before the parent that
+    owns it, so terminating the session never leaves its invocation orphaned.
+    """
+    async with StateDB() as db:
+        invocation_id = await _seed_invocation(db, status="running", pid=43002)
+        worker_session_id = await _seed_session(db, status="running", pid=43001)
+        await db.update_session(worker_session_id, invocation_id=invocation_id)
+        show_id = await _seed_show(db)
+        play_id = await _seed_play(db, show_id, session_id=worker_session_id)
+
+        children = await _list_running_children(db, "play", play_id)
+
+    assert [(kind, row["id"]) for _, kind, row in children] == [
+        ("invocation", invocation_id),
+        ("session", worker_session_id),
+    ]
+
+
+async def test_do_kill_play_with_recorded_session_reaps_the_worker_chain(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    """A play whose row records its worker session has that chain terminated.
+
+    This is the shape the Studio show importer writes: `plays.session_id` is
+    bound to the session it matched by name. Both worker pids are signalled,
+    both rows go terminal, and the kill exits 0 — it did stop the work.
+    """
+    import lionagi.cli.kill as kill_mod
+    from lionagi.cli._logging import configure_cli_logging
+
+    configure_cli_logging(verbose=False)
+
+    signalled_pids: list[int] = []
+
+    def fake_terminate(pid: int, **kwargs: Any) -> str:
+        signalled_pids.append(pid)
+        return "sigterm"
+
+    monkeypatch.setattr(kill_mod, "_terminate_pid", fake_terminate)
+
+    async with StateDB() as db:
+        invocation_id = await _seed_invocation(db, status="running", pid=44002)
+        worker_session_id = await _seed_session(db, status="running", pid=44001)
+        await db.update_session(worker_session_id, invocation_id=invocation_id)
+        show_id = await _seed_show(db)
+        play_id = await _seed_play(db, show_id, session_id=worker_session_id)
+
+    capsys.readouterr()
+    rc = await _do_kill(play_id)
+    captured = capsys.readouterr()
+
+    assert rc == 0
+    assert signalled_pids == [44002, 44001]
+    assert "no worker process was stopped" not in captured.err.replace("\n", " ")
+    async with StateDB() as db:
+        assert (
+            await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (worker_session_id,))
+        )["status"] == "cancelled"
+        assert (
+            await db.fetch_one("SELECT status FROM invocations WHERE id = ?", (invocation_id,))
+        )["status"] == "cancelled"
+        assert (await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,)))[
+            "status"
+        ] == "blocked"
+
+
+async def test_do_kill_play_reaps_worker_chain_without_recursive_flag(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The play's worker chain is not gated behind `--recursive`.
+
+    A play row carries no PID of its own, so resolving the sessions it started
+    is the whole kill rather than an opt-in extra.
+    """
+    import lionagi.cli.kill as kill_mod
+
+    signalled_pids: list[int] = []
+    monkeypatch.setattr(
+        kill_mod,
+        "_terminate_pid",
+        lambda pid, **kwargs: (signalled_pids.append(pid), "sigterm")[1],
+    )
+
+    async with StateDB() as db:
+        worker_session_id = await _seed_session(db, status="running", pid=45001)
+        show_id = await _seed_show(db)
+        play_id = await _seed_play(db, show_id, session_id=worker_session_id)
+
+    assert await _do_kill(play_id, recursive=False) == 0
+    assert signalled_pids == [45001]
 
 
 async def test_do_kill_active_show_succeeds(temp_db_path: Path):
@@ -1450,6 +1550,60 @@ def test_kill_subparser_registered():
     assert "kill" in result.stdout.lower() or "kill" in result.stderr.lower()
 
 
+def _kill_help_text() -> str:
+    """`li kill --help` stdout, whitespace-normalised so argparse's line
+    wrapping does not decide whether a sentence is present."""
+    result = subprocess.run(
+        [sys.executable, "-m", "lionagi.cli", "kill", "--help"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return " ".join(result.stdout.split())
+
+
+def test_help_states_what_the_sweep_does_to_a_play():
+    """The sweep's two conditions have to survive into the text people read.
+
+    A play does not go `cancelled` — that word belongs to sessions and
+    invocations — and the sweep does not act on every play: one whose row
+    records no worker session is left running, because its age says nothing
+    about whether its workers are gone. Help text that promises either of those
+    describes a command that does not exist, and the MCP schema below is
+    generated from the same strings, so a caller reading the projection gets
+    whatever this says.
+    """
+    help_text = _kill_help_text()
+
+    assert "is marked 'blocked'" in help_text
+    assert "records no worker session is left running" in help_text
+    assert "and ALL of its plays are terminal" in help_text
+    # The sweep is conditional; nothing may claim it acts on every play.
+    assert "cancels play and show rows once their workers are gone" not in help_text
+
+
+def test_mcp_projection_carries_the_same_sweep_contract():
+    """The projected schema is the same text by another route.
+
+    An MCP caller never sees `--help`; it sees this schema, and it cannot check
+    the claim against the database. Pinning the contract on both surfaces is
+    what stops a correction to one of them from leaving the other promising the
+    old behaviour.
+    """
+    golden = json.loads(
+        (
+            Path(__file__).resolve().parents[1] / "mcp" / "golden_projections" / "kill.json"
+        ).read_text()
+    )
+    schema = golden["schema"]
+    all_stale = schema["properties"]["all_stale"]["description"]
+
+    assert "is marked 'blocked'" in all_stale
+    assert "records no worker session is left running" in all_stale
+    assert "A show is marked 'aborted' only once" in all_stale
+    assert "cancels play and show rows once their workers are gone" not in schema["description"]
+
+
 def test_kill_all_stale_subparser_flags():
     """Verify --all-stale, --threshold, --dry-run are accepted."""
     import tempfile
@@ -1548,6 +1702,73 @@ async def test_do_kill_all_stale_does_NOT_touch_play_at_all(
         assert row is not None
         # Play must remain running — the sweep must not have touched it.
         assert row["status"] == "running"
+
+
+async def test_do_kill_all_stale_reports_plays_it_could_not_assess(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    """A play with no recorded worker session is counted and named once.
+
+    The sweep has no way to tell whether such a play is abandoned, so it leaves
+    it alone. Saying so once per sweep, with a count in the closing line, keeps
+    the operator from reading silence as "nothing was stale". A per-row message
+    would read as an observation about that row rather than the structural fact
+    it is.
+    """
+    from lionagi.cli._logging import configure_cli_logging
+
+    configure_cli_logging(verbose=False)
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        show_id = await _seed_show(db, status="active")
+        play_id = await _seed_play(db, show_id, status="running")
+        await db.execute("UPDATE plays SET started_at = ? WHERE id = ?", (old_start, play_id))
+
+    capsys.readouterr()
+    assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=False) == 0
+    captured = capsys.readouterr()
+
+    assert "skipped_unlinked_plays=1" in captured.out
+    assert "records no worker session" in captured.err.replace("\n", " ")
+
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,)))[
+            "status"
+        ] == "running"
+
+
+async def test_do_kill_all_stale_sweeps_play_whose_worker_session_is_terminal(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    """A play the sweep *can* assess is swept, and is marked blocked.
+
+    This is the case the CLI reference describes: an old play whose recorded
+    worker session has already gone terminal. The persisted status is `blocked`
+    — the word a play takes — not the `cancelled` a session takes.
+    """
+    from lionagi.cli._logging import configure_cli_logging
+
+    configure_cli_logging(verbose=False)
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        dead_session_id = await _seed_session(db, status="cancelled")
+        show_id = await _seed_show(db, status="active")
+        play_id = await _seed_play(db, show_id, status="running", session_id=dead_session_id)
+        await db.execute("UPDATE plays SET started_at = ? WHERE id = ?", (old_start, play_id))
+
+    capsys.readouterr()
+    assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=False) == 0
+    captured = capsys.readouterr()
+
+    assert "skipped_unlinked_plays=0" in captured.out
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,)))[
+            "status"
+        ] == "blocked"
 
 
 class TestTerminatePidIdentityRevalidation:

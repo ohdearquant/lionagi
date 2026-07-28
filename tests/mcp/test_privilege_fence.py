@@ -197,7 +197,9 @@ def test_a_positional_that_looks_like_a_switch_stays_a_positional(monkeypatch, v
         return {"run_id": "rid"}
 
     monkeypatch.setattr(jobs, "submit", fake_submit)
-    answer = call(ops=[spawn_op("agent.submit", {"query": [value]})])
+    # The prompt travels separately, which is also what leaves the sole
+    # positional free to be the model this command requires.
+    answer = call(ops=[spawn_op("agent.submit", {"query": [value], "prompt": "do it"})])
     assert answer["ops"][0]["ok"] is True
     # Asserted on the rendering rather than on what a parser makes of it: where
     # the sentinel sits is the same on every Python, and it is what decides
