@@ -91,13 +91,70 @@ def _undo_lock_and_remove(reported: dict) -> None:
     Works from what the probe wrote down rather than from a live handle, so it
     can run at any point after the probe locked the directory -- including
     after a call that raised before it could hand anything back.
+
+    Raises when the root is still there afterwards, naming the path and the
+    error. Attempting the removal and reporting that as having removed it is
+    the failure this whole module exists to catch: a directory nothing can
+    delete stays on disk and the suite says nothing about it. The removal is
+    therefore unguarded -- the error the filesystem gives is the only thing
+    that tells a reader whether to fix permissions or free some disk -- and the
+    path is checked again afterwards, because a removal that raises nothing has
+    still failed if the directory is there.
     """
     locked = reported.get("locked")
     if locked and os.path.exists(locked):
-        os.chmod(locked, stat.S_IRWXU)
+        try:
+            os.chmod(locked, stat.S_IRWXU)
+        except OSError as e:
+            raise RuntimeError(f"could not unlock {locked}: {e}") from e
     home = reported.get("lionagi_home")
-    if home:
-        shutil.rmtree(home, ignore_errors=True)
+    if not home or not os.path.exists(home):
+        # Nothing recorded, or the probe's own cleanup already got there --
+        # which is the ordinary case for a probe that locked nothing.
+        return
+    try:
+        shutil.rmtree(home)
+    except OSError as e:
+        raise RuntimeError(f"could not remove the probe run directory {home}: {e}") from e
+    if os.path.exists(home):
+        raise RuntimeError(
+            f"the probe run directory {home} is still on disk after a removal that raised nothing"
+        )
+
+
+def _recover_reported_roots(result_paths) -> None:
+    """Undo every recorded lock, and name every one that could not be undone.
+
+    Every record gets its turn even when an earlier one fails: the roots are
+    independent, and stopping at the first failure strands the later ones with
+    nothing coming back for them. The failures are collected and raised
+    together at the end, so a partial recovery cannot be read as a complete
+    one -- which is the same defect as a single removal that reports having
+    happened when it did not.
+
+    The per-record guard is deliberately wide. Nothing is swallowed by it:
+    whatever it catches is named in the consolidated failure, and catching
+    narrowly here would let one unexpected error decide that the remaining
+    roots are not worth attempting.
+    """
+    failures = []
+    for result_path in result_paths:
+        try:
+            reported = json.loads(Path(result_path).read_text())
+        except (OSError, ValueError):
+            # No record, or an unusable one: there is nothing to act on. A
+            # probe that never got as far as writing never got as far as
+            # locking either.
+            continue
+        try:
+            _undo_lock_and_remove(reported)
+        except Exception as e:  # noqa: BLE001 -- re-raised below, never discarded
+            failures.append(f"  {e}")
+    if failures:
+        raise RuntimeError(
+            "probe run directories were left behind and could not be recovered:\n"
+            + "\n".join(failures)
+        )
 
 
 @pytest.fixture
@@ -116,6 +173,9 @@ def probe(tmp_path):
     back at teardown is what clears up after a call that never returned -- a
     timeout, or a result that would not parse -- where the test itself never
     learns which directory to go and unlock.
+
+    The list of records is hung off the returned callable, so a test can drive
+    the same recovery this teardown runs and read what it reports.
     """
 
     reported_paths: list[Path] = []
@@ -158,17 +218,11 @@ def probe(tmp_path):
         finally:
             shutil.rmtree(probe_dir, ignore_errors=True)
 
+    _run.reported_paths = reported_paths
+
     yield _run
 
-    for result_path in reported_paths:
-        try:
-            reported = json.loads(result_path.read_text())
-        except (OSError, ValueError):
-            # No record, or an unusable one: there is nothing to act on. A
-            # probe that never got as far as writing never got as far as
-            # locking either.
-            continue
-        _undo_lock_and_remove(reported)
+    _recover_reported_roots(reported_paths)
 
 
 def test_preset_lionagi_home_does_not_become_the_suite_root(probe, tmp_path):
@@ -268,6 +322,79 @@ def test_a_root_that_cannot_be_removed_is_reported(probe, tmp_path):
     assert not Path(bound["lionagi_home"]).exists(), (
         "this test could not remove what it made unremovable"
     )
+
+
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root may unlink from a directory it cannot write to, so nothing here is unremovable",
+)
+def test_one_failed_recovery_neither_hides_itself_nor_strands_the_next_root(
+    probe, tmp_path, monkeypatch
+):
+    """Recovering two locked roots, where the first recovery cannot be done.
+
+    Two calls leave two roots that only the recorded paths can find again, and
+    the first is made irrecoverable: its unlocking is turned into a no-op, so
+    the recovery goes on to a removal that cannot succeed. That is the failure
+    worth forcing, because it is the one a removal asked to ignore its errors
+    would carry out and then report as done.
+
+    What has to hold is that the failure reaches the caller naming the root and
+    the reason, and that the second root is recovered anyway -- a loop that
+    stops at the first failure leaves it locked on disk with nothing coming
+    back for it.
+    """
+    caller_home = tmp_path / "caller-store"
+    caller_home.mkdir()
+
+    _, first = probe({"LIONAGI_HOME": str(caller_home)}, source=_UNREMOVABLE_PROBE_TEST)
+    _, second = probe({"LIONAGI_HOME": str(caller_home)}, source=_UNREMOVABLE_PROBE_TEST)
+
+    assert first and second, "a probe produced no result file"
+    first_home = Path(first["lionagi_home"])
+    second_home = Path(second["lionagi_home"])
+    assert first_home != second_home
+    assert first_home.exists() and second_home.exists(), (
+        "both probes were cleaned up after all, so this test forced no failure "
+        "and proves nothing about recovering from one"
+    )
+
+    real_chmod = os.chmod
+
+    def _leave_the_first_locked(path, mode, *args, **kwargs):
+        if str(path) == first["locked"]:
+            return None
+        return real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(os, "chmod", _leave_the_first_locked)
+    try:
+        with pytest.raises(RuntimeError) as failure:
+            _recover_reported_roots(probe.reported_paths)
+
+        reported = str(failure.value)
+        assert str(first_home) in reported, (
+            f"the failed recovery does not name the root it left behind:\n{reported}"
+        )
+        assert os.strerror(errno.EACCES) in reported, (
+            f"the failed recovery does not name the error that stopped it:\n{reported}"
+        )
+        # The failure was real, not a message about a directory that went away
+        # on its own.
+        assert first_home.exists(), (
+            f"{first_home} was recovered after all, so the reported failure is false"
+        )
+        # And the point: the later record was still attempted.
+        assert not second_home.exists(), (
+            f"{second_home} is still locked on disk because an earlier recovery failed; "
+            "it was recorded and nothing else will come back for it"
+        )
+    finally:
+        monkeypatch.setattr(os, "chmod", real_chmod)
+        # Now that permissions can be restored, the same recovery finishes the
+        # job -- and says nothing, because there is nothing left to say.
+        _recover_reported_roots(probe.reported_paths)
+
+    assert not first_home.exists(), "this test could not remove what it made unremovable"
 
 
 def test_a_removal_that_exhausts_the_stack_is_reported_too(monkeypatch, capsys):
