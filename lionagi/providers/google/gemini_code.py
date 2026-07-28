@@ -12,6 +12,7 @@ import math
 import os
 import re
 from collections.abc import AsyncIterator, Callable
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Literal
 
@@ -210,6 +211,61 @@ def resolve_agy_model(
 # parses. It is about 292 years, which is the longest "effectively no cap" that
 # can still be expressed.
 _MAX_GO_DURATION_SECONDS = (2**63 - 1) // 10**9
+_MAX_GO_DURATION_NANOSECONDS = 2**63 - 1
+_MIN_USEFUL_PRINT_TIMEOUT_NANOSECONDS = 10**9
+# The digit classes are spelled `[0-9]` rather than `\d` on purpose. Go's
+# duration grammar is ASCII decimal digits only, while Python's `\d` matches
+# every Unicode decimal digit, so `\d` would accept an Arabic-Indic or
+# fullwidth spelling here and hand it to a parser that rejects it.
+_GO_DURATION_PART = re.compile(
+    r"(?P<number>(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))"
+    r"(?P<unit>ns|us|µs|μs|ms|s|m|h)"
+)
+_GO_DURATION_UNIT_NANOSECONDS = {
+    "ns": 1,
+    "us": 1_000,
+    "µs": 1_000,
+    "μs": 1_000,
+    "ms": 1_000_000,
+    "s": 1_000_000_000,
+    "m": 60_000_000_000,
+    "h": 3_600_000_000_000,
+}
+
+
+def _validate_print_timeout(value: str) -> str:
+    """Reject a print cap that Go cannot parse or that expires too quickly."""
+    if not isinstance(value, str) or not value:
+        raise ValueError("print_timeout must be a Go duration of at least 1s")
+
+    unsigned = value
+    sign = 1
+    if unsigned[0] in "+-":
+        sign = -1 if unsigned[0] == "-" else 1
+        unsigned = unsigned[1:]
+
+    position = 0
+    nanoseconds = Decimal(0)
+    try:
+        while position < len(unsigned):
+            part = _GO_DURATION_PART.match(unsigned, position)
+            if part is None:
+                raise ValueError
+            nanoseconds += Decimal(part["number"]) * _GO_DURATION_UNIT_NANOSECONDS[part["unit"]]
+            position = part.end()
+    except (InvalidOperation, ValueError):
+        raise ValueError("print_timeout must be a parseable Go duration of at least 1s") from None
+
+    nanoseconds *= sign
+    if (
+        position == 0
+        or nanoseconds < _MIN_USEFUL_PRINT_TIMEOUT_NANOSECONDS
+        or nanoseconds > _MAX_GO_DURATION_NANOSECONDS
+    ):
+        raise ValueError(
+            "print_timeout must be a parseable Go duration between 1s and 9223372036854775807ns"
+        )
+    return value
 
 
 def format_print_timeout(seconds: int | float) -> str:
@@ -222,9 +278,11 @@ def format_print_timeout(seconds: int | float) -> str:
     # agy's own uninformative timeout error, which is the failure this whole
     # path exists to stop producing. Asking for longer than Go can express is
     # asking for as long as possible, so it clamps rather than raising.
-    if not math.isfinite(seconds) or seconds >= _MAX_GO_DURATION_SECONDS:
+    if math.isnan(seconds) or seconds == math.inf or seconds >= _MAX_GO_DURATION_SECONDS:
         return f"{_MAX_GO_DURATION_SECONDS}s"
-    return f"{math.ceil(seconds)}s"
+    if seconds == -math.inf:
+        return "1s"
+    return f"{max(1, math.ceil(seconds))}s"
 
 
 def derive_print_timeout(timeout: int | float) -> str:
@@ -341,7 +399,7 @@ class GeminiCodeRequest(BaseModel):
         elif self.continue_recent:
             args.append("--continue")
         if self.print_timeout:
-            args += ["--print-timeout", self.print_timeout]
+            args += ["--print-timeout", _validate_print_timeout(self.print_timeout)]
         return args
 
 

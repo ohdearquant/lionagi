@@ -81,6 +81,34 @@ class TestCmdArgs:
         i = args.index("--print-timeout")
         assert args[i + 1] == explicit
 
+    @pytest.mark.parametrize(
+        "explicit",
+        [
+            "not-a-duration",
+            "0s",
+            "-1s",
+            "999ms",
+            "9223372036854775808ns",
+            # Digits outside ASCII: a duration grammar of ASCII decimal digits
+            # does not accept these, so letting them through would send agy a
+            # value it cannot parse.
+            "١h",
+            "１h",
+        ],
+    )
+    def test_explicit_print_timeout_rejects_unusable_go_durations(self, explicit):
+        request = GeminiCodeRequest(prompt="hi", print_timeout=explicit)
+
+        with pytest.raises(ValueError, match="print_timeout"):
+            request.as_cmd_args()
+
+    def test_endpoint_config_print_timeout_is_checked_at_argv_boundary(self):
+        endpoint_kwargs = {"print_timeout": "0s"}
+        request = GeminiCodeRequest(prompt="hi", **endpoint_kwargs)
+
+        with pytest.raises(ValueError, match="print_timeout"):
+            request.as_cmd_args()
+
     def test_no_caller_timeout_omits_print_timeout(self):
         args = GeminiCodeRequest(prompt="hi").as_cmd_args()
 
@@ -108,6 +136,12 @@ class TestCmdArgs:
             # clamping expression.
             seconds = int(emitted.removesuffix("s"))
             assert 0 < seconds <= (2**63 - 1) // 10**9
+
+    @pytest.mark.parametrize("seconds", [float("-inf"), -1e300, -1, 0, 0.001])
+    def test_numeric_caps_have_a_useful_minimum(self, seconds):
+        emitted = format_print_timeout(seconds)
+
+        assert int(emitted.removesuffix("s")) >= 1
 
 
 # ---------------------------------------------------------------------------
