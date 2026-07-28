@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Callable, Collection
 from typing import TYPE_CHECKING, Any
 
@@ -962,10 +963,25 @@ def _discover_ambient_codex_mcp_server_names() -> set[str]:
     return {entry["name"] for entry in listed if isinstance(entry, dict) and "name" in entry}
 
 
-# Names under this prefix are generated here and belong to lionagi. It is what
+# Names of this shape are generated here and belong to lionagi. It is what
 # separates a profile this code minted from one the caller asked for, so the
 # minting, the reaping and the caller-profile check all read it from one place.
+#
+# It has to be the NAME that carries this, because the profile a resumed leg
+# arrives with was written by a different process: an in-process record of what
+# this run generated cannot recognise it. So the shape is narrow, a fixed prefix
+# and exactly 32 hex characters, and it is reserved: a caller who names a
+# profile in that exact shape is treated as having named one of ours and has it
+# replaced. Anything else, `lionagi-mcp-custom` included, is the caller's and is
+# refused rather than overwritten.
 _CODEX_MCP_PROFILE_PREFIX = "lionagi-mcp-"
+_GENERATED_CODEX_PROFILE_RE = re.compile(rf"^{re.escape(_CODEX_MCP_PROFILE_PREFIX)}[0-9a-f]{{32}}$")
+
+
+def _is_generated_codex_profile(name: object) -> bool:
+    """Whether *name* is a profile name `_write_codex_mcp_secret_profile` minted."""
+    return isinstance(name, str) and _GENERATED_CODEX_PROFILE_RE.match(name) is not None
+
 
 # Profile files older than this are considered abandoned (the process that
 # wrote them was killed before its `atexit` cleanup ran, e.g. SIGKILL/crash)
@@ -1015,10 +1031,10 @@ def _write_codex_mcp_secret_profile(
     # Only a profile the caller asked for is a conflict. A resumed leg re-spawns
     # from its persisted request, and that request carries the profile the first
     # run generated here, whose file that run already deleted on its way out. So
-    # a name under our own prefix is not a second profile to refuse, it is a
-    # spent one to replace.
+    # a name of our own generated shape is not a second profile to refuse, it is
+    # a spent one to replace.
     existing_profile = kwargs.get("profile")
-    if existing_profile and not str(existing_profile).startswith(_CODEX_MCP_PROFILE_PREFIX):
+    if existing_profile and not _is_generated_codex_profile(existing_profile):
         raise ConfigurationError(
             "Cannot forward MCP server secret fields for codex: the request "
             f"already has an explicit profile={existing_profile!r}, and codex "

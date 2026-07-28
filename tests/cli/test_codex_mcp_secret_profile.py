@@ -77,16 +77,51 @@ def test_a_caller_supplied_profile_still_refuses(codex_home):
     assert not list(codex_home.glob("*.config.toml"))
 
 
-def test_the_prefix_is_the_only_thing_that_distinguishes_the_two(codex_home):
-    """A caller profile that merely resembles ours is still a caller profile.
+@pytest.mark.parametrize(
+    "name",
+    [
+        "lionagi-mcp",  # the prefix without its trailing dash
+        "lionagi-mcp-custom",  # under the prefix but not the generated shape
+        "lionagi-mcp-" + "0" * 31,  # one hex character short
+        "lionagi-mcp-" + "0" * 33,  # one too many
+        "lionagi-mcp-" + "F" * 32,  # uppercase; generated names are lowercase
+        "prefix-lionagi-mcp-" + "0" * 32,  # the shape, but not at the start
+    ],
+)
+def test_a_name_that_resembles_a_generated_one_is_still_the_callers(codex_home, name):
+    """Only the exact generated shape is treated as ours.
 
-    The prefix is a namespace, and the check is a prefix check, so this records
-    where the boundary sits rather than leaving it to be inferred.
+    Recognition has to go by the name, because a resumed request arrives from a
+    different process, so the boundary is worth pinning rather than leaving to
+    be inferred from a prefix test. A caller who picks the exact generated shape,
+    prefix plus 32 lowercase hex, does lose their profile: that shape is
+    reserved, and nothing in the name can distinguish it from one of ours.
     """
-    kwargs = {"profile": "lionagi-mcp"}  # the prefix without its trailing dash
+    kwargs = {"profile": name}
 
-    with pytest.raises(ConfigurationError):
+    with pytest.raises(ConfigurationError) as excinfo:
         _write_codex_mcp_secret_profile(kwargs, SECRET_FIELDS)
+
+    assert name in str(excinfo.value)
+    assert kwargs["profile"] == name
+    assert not list(codex_home.glob("*.config.toml"))
+
+
+def test_a_failed_write_leaves_the_request_alone(codex_home, monkeypatch):
+    """A profile that could not be written must not be named on the request."""
+    original = {"profile": "lionagi-mcp-" + "a" * 32}
+    kwargs = dict(original)
+
+    def boom(*args, **kwargs_):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(os, "open", boom)
+
+    with pytest.raises(OSError):
+        _write_codex_mcp_secret_profile(kwargs, SECRET_FIELDS)
+
+    assert kwargs == original
+    assert not list(codex_home.glob("*.config.toml"))
 
 
 def test_generated_names_match_the_pattern_the_reaper_globs(codex_home):
