@@ -16,6 +16,7 @@ from lionagi.casts.emission import TaskAssignment
 from lionagi.cli.orchestrate.flow import (
     _build_dag,
     _DagState,
+    _deps_from_built_graph,
     _ExecResult,
     _execute_dag,
     _finalize_flow,
@@ -133,13 +134,35 @@ class _FakeSession:
 
 
 class _FakeBuilder:
+    """Stub that keeps the real builder's edge semantics: an explicit list of
+    dependencies makes exactly those edges, `None` chains onto the current
+    heads. Callers that want a graph disagreeing with the plan can drive that
+    through `add_operation` and read it back off `get_graph()`.
+    """
+
     def __init__(self):
         self._nodes: list[str] = []
         self._ops: list[dict] = []
+        self._mapping: dict[str, dict] = {}
+        self._graph_nodes: dict[str, SimpleNamespace] = {}
+        self._heads: list[str] = []
+        self._edges = 0
 
-    def add_operation(self, op_type, *, branch, depends_on=None, instruction="", context=None):
+    def add_operation(
+        self, op_type, *, branch, depends_on=None, instruction="", context=None, **kwargs
+    ):
         node_id = f"node-{len(self._nodes)}"
         self._nodes.append(node_id)
+        self._mapping[node_id] = {"in": {}, "out": {}}
+        self._graph_nodes[node_id] = SimpleNamespace(id=node_id, metadata={})
+        heads = list(depends_on) if depends_on is not None else list(self._heads)
+        for head_id in heads:
+            if head_id in self._mapping:
+                self._edges += 1
+                edge_id = f"edge-{self._edges}"
+                self._mapping[head_id]["out"][edge_id] = node_id
+                self._mapping[node_id]["in"][edge_id] = head_id
+        self._heads = [node_id]
         self._ops.append(
             {
                 "id": node_id,
@@ -151,7 +174,13 @@ class _FakeBuilder:
         return node_id
 
     def get_graph(self):
-        return SimpleNamespace(nodes=list(self._nodes))
+        return SimpleNamespace(
+            nodes=list(self._nodes),
+            internal_nodes=dict(self._graph_nodes),
+            node_edge_mapping={
+                k: {"in": dict(v["in"]), "out": dict(v["out"])} for k, v in self._mapping.items()
+            },
+        )
 
 
 class _FakeDB:
@@ -242,6 +271,99 @@ async def test_build_dag_deps_by_node_format(tmp_path):
     nid0, nid1 = dag_state.node_ids
     assert dag_state.deps_by_node[nid0] == []
     assert dag_state.deps_by_node[nid1] == ["1"]
+
+
+@pytest.mark.asyncio
+async def test_build_dag_deps_follow_the_built_graph_not_the_declared_plan(tmp_path):
+    """The reported dependencies are the edges that exist, not the ones asked for.
+
+    Four assignments wired so the declared plan and the built graph disagree in
+    both directions: step 2 is built exactly as declared and must still come out
+    right, step 3 loses a declared dependency, step 4 gains one no assignment
+    ever declared. Re-deriving from the plan would give [], ["1"], ["1", "2"], []
+    — three of the four wrong.
+    """
+    from lionagi.cli.orchestrate._common import _build_worker_operate_node as _real_build
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    env = _make_env(tmp_path)
+    env.builder = OperationGraphBuilder()
+
+    assignments = [
+        TaskAssignment(task="a", assignee="researcher"),
+        TaskAssignment(task="b", assignee="architect", depends_on=["1"]),
+        TaskAssignment(task="c", assignee="implementer", depends_on=["1", "2"]),
+        TaskAssignment(task="d", assignee="critic"),
+    ]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["researcher", "architect", "implementer", "critic"],
+        dep_indices=[[], [0], [0, 1], []],
+        pool=[],
+        budget_preambles={},
+    )
+
+    built: list[str] = []
+
+    def _diverging_build(builder, **kwargs):
+        step = len(built)
+        deps = kwargs.pop("depends_on")
+        if step == 2:
+            deps = [built[1]]  # declared on steps 1 and 2; only 2 gets built
+        elif step == 3:
+            deps = [built[0]]  # declared nothing; built onto step 1 anyway
+        node_id = _real_build(builder, depends_on=deps, **kwargs)
+        built.append(node_id)
+        return node_id
+
+    with (
+        patch(
+            "lionagi.cli.orchestrate.flow.build_worker_branch",
+            return_value=(_FakeBranch(), "codex/gpt-5.5", None, False),
+        ),
+        patch("lionagi.cli.orchestrate.flow._build_worker_operate_node", _diverging_build),
+    ):
+        dag_state = await _build_dag(env, "task", plan_result, reactive_spec="off")
+
+    nid0, nid1, nid2, nid3 = dag_state.node_ids
+    assert dag_state.deps_by_node[nid0] == []
+    assert dag_state.deps_by_node[nid1] == ["1"]  # declared and built agree
+    assert dag_state.deps_by_node[nid2] == ["2"]  # the plan says ["1", "2"]
+    assert dag_state.deps_by_node[nid3] == ["1"]  # the plan says []
+
+    # The Studio snapshot is rendered from the same reading, not a second one.
+    assert [op["depends_on"] for op in env._finalize_extras["operations"]] == [
+        [],
+        ["1"],
+        ["2"],
+        ["1"],
+    ]
+
+
+def test_deps_from_built_graph_names_a_head_that_has_no_plan_ordinal():
+    """A node injected after planning is named by its stamped spawn id."""
+    builder = _FakeBuilder()
+    planned = builder.add_operation("operate", branch=None, depends_on=[])
+    injected = builder.add_operation("operate", branch=None, depends_on=[planned])
+    child = builder.add_operation("operate", branch=None, depends_on=[injected])
+    builder._graph_nodes[injected].metadata["spawn_id"] = "spawn-1"
+
+    deps = _deps_from_built_graph(builder, {planned: "1"})
+
+    assert deps[planned] == []
+    assert deps[injected] == ["1"]
+    assert deps[child] == ["spawn-1"]
+
+
+def test_deps_from_built_graph_keeps_an_unnamed_head_rather_than_dropping_it():
+    """No ordinal and no spawn id: report the node id, never an empty list."""
+    builder = _FakeBuilder()
+    unnamed = builder.add_operation("operate", branch=None, depends_on=[])
+    child = builder.add_operation("operate", branch=None, depends_on=[unnamed])
+
+    deps = _deps_from_built_graph(builder, {})
+
+    assert deps[child] == [unnamed]
 
 
 @pytest.mark.asyncio
