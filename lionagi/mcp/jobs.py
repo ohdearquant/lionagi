@@ -1494,6 +1494,9 @@ def submit(
         # case a reader most needs -- a run whose workers got no servers -- read
         # the same as a run where the question was never asked.
         #
+        # Two different things settle it as none: a caller disabling MCP, and a
+        # config that was found and declares no servers. Both report `[]`.
+        #
         # This reports what was RESOLVED. It is not a claim about what the child's
         # provider then managed to start: a server can be in this list and still
         # fail to come up in the child's own session. Distinguishing those needs
@@ -1533,6 +1536,18 @@ def submit(
                     if resolution.reason == "no_mcp_config_found"
                     else resolution.reason
                 )
+                if resolution.reason == "mcp_config_declares_no_servers":
+                    # A config that was found and declares no servers is a
+                    # settled question whose answer is none, so it reports `[]`.
+                    # The resolver returns a null server map for this and for
+                    # finding no config at all, and only its reason tells the two
+                    # apart -- reading the map alone would report "cannot say"
+                    # about a file that said so explicitly. The source is kept for
+                    # the same reason: a reader is owed the name of the file that
+                    # answered, and an empty set beside a null source would send
+                    # them looking for one that was never consulted.
+                    mcp_config_servers = []
+                    mcp_config_source = str(resolution.source) if resolution.source else None
             else:
                 mcp_servers = resolution.servers
                 mcp_config_source = str(resolution.source) if resolution.source else None

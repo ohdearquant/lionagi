@@ -148,6 +148,63 @@ def test_no_config_found_reports_null_and_says_where_it_looked(sandbox, submit_d
     assert handle["mcp_config_reason"].startswith("no_mcp_config_found_at_or_above:")
 
 
+def test_a_config_declaring_no_servers_reports_an_empty_set(sandbox, submit_dir, no_spawn):
+    """The second way an answer of none is reached, and the one that was wrong.
+
+    A config was found and it declares no servers. The question was asked and
+    answered, so it reports `[]`. The resolver returns a null server map both for
+    this and for finding no config at all, and only its reason tells them apart,
+    so reading the map alone reported "cannot say" about a file that had said so
+    explicitly.
+    """
+    (submit_dir / ".mcp.json").write_text(json.dumps({"mcpServers": {}}))
+
+    handle = jobs.submit("agent", ["-m", "x"], prompt="hi", cwd=str(submit_dir))
+
+    assert handle["mcp_config_servers"] == []
+    assert handle["mcp_config_reason"] == "mcp_config_declares_no_servers"
+    # The file that answered is named, so a reader is not sent looking for a
+    # config that was never consulted.
+    assert handle["mcp_config_source"] == str(submit_dir / ".mcp.json")
+    assert jobs.status(handle["run_id"])["mcp_config_servers"] == []
+
+
+def test_declaring_none_and_finding_no_config_are_different_answers(
+    sandbox, submit_dir, no_spawn, tmp_path
+):
+    """The distinction the fix restores, asserted against its neighbour.
+
+    Both come back from the resolver with a null server map. One of them is a
+    settled answer of none and the other is genuinely nothing to report, and a
+    reader must be able to tell which without knowing the resolver's internals.
+    """
+    (submit_dir / ".mcp.json").write_text(json.dumps({"mcpServers": {}}))
+    declared_none = jobs.submit("agent", ["-m", "x"], prompt="hi", cwd=str(submit_dir))
+
+    (submit_dir / ".mcp.json").unlink()
+    nothing_found = jobs.submit("agent", ["-m", "x"], prompt="hi", cwd=str(submit_dir))
+
+    assert declared_none["mcp_config_servers"] == []
+    assert nothing_found["mcp_config_servers"] is None
+
+
+@pytest.mark.parametrize("kind", ["flow", "fanout"])
+def test_other_kinds_report_their_server_set_too(sandbox, submit_dir, no_spawn, kind):
+    """Resolution is not agent-only, so neither is the reporting.
+
+    One shared submit path serves every kind. A test that only ever calls `agent`
+    establishes the field for one caller and says nothing about the others.
+    """
+    (submit_dir / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"lion": {"command": "li"}, "khive": {"command": "kk"}}})
+    )
+
+    handle = jobs.submit(kind, ["-m", "x"], prompt="do a thing", cwd=str(submit_dir))
+
+    assert handle["mcp_config_servers"] == ["khive", "lion"]
+    assert jobs.status(handle["run_id"])["mcp_config_servers"] == ["khive", "lion"]
+
+
 def test_a_record_written_before_the_field_existed_reads_as_cannot_say(
     sandbox, submit_dir, no_spawn
 ):
