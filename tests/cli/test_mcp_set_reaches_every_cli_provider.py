@@ -380,7 +380,7 @@ async def _codex_worker(flow_run, servers: dict):
 
 @pytest.mark.asyncio
 async def test_the_flow_worker_these_tests_build_is_a_codex_worker(flow_run, codex_home):
-    """Guards the pin the two tests below depend on.
+    """The worker the two cases below build resolves to the codex provider.
 
     Agent profiles live outside the repository, so an unpinned worker makes
     this file's provider a property of the machine running it. Asserting the
