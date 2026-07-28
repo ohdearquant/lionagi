@@ -382,17 +382,22 @@ def _write_job(record: dict[str, Any]) -> None:
         # to make its record atomic. The two have to answer for the same set of
         # failures or the narrower one decides the outcome.
         #
-        # The removal cannot be allowed to raise in place of what sent us here.
-        # Widening the catch is what makes that reachable: an interrupt used to
-        # pass straight through, and now it arrives inside a handler whose own
-        # failure would replace it, so a caller waiting on a KeyboardInterrupt
-        # would be handed a PermissionError from the tidying instead. This is the
-        # rule _discard_reservation already states for the same situation — a
-        # removal that fails leaves a file nobody claimed, which is worth less
-        # than the error that sent us here — and it is applied here rather than
-        # invented, because a second answer to one question is how the narrower
-        # handler came to decide for the wider one in the first place.
-        with contextlib.suppress(BaseException):
+        # A removal that fails does not get to answer in place of what sent us
+        # here. Widening the catch is what makes that reachable: an interrupt
+        # used to pass straight through, and now it arrives inside a handler
+        # whose own failure would replace it, so a caller waiting on a
+        # KeyboardInterrupt would be handed a PermissionError from the tidying
+        # instead. The rule is _discard_reservation's, not a new one — a removal
+        # that fails leaves a file nobody claimed, which is worth less than the
+        # error that sent us here — and the domain it suppresses is the same one:
+        # OSError, what a filesystem refusal actually looks like.
+        #
+        # Deliberately not everything. An interrupt or an exit arriving WHILE the
+        # removal runs is not this removal failing, it is someone asking for the
+        # process to stop, and swallowing it would answer a cancellation with
+        # whatever the run happened to be failing at already. A refusal to delete
+        # is worth less than the original error; a request to stop is not.
+        with contextlib.suppress(OSError):
             tmp.unlink(missing_ok=True)
         raise
 

@@ -3002,6 +3002,39 @@ def test_a_failed_cleanup_does_not_answer_in_place_of_the_failure_that_caused_it
         jobs.submit("agent", [], prompt="x", label="interrupted")
 
 
+def test_an_interrupt_arriving_during_cleanup_is_not_swallowed_by_it(sandbox, monkeypatch):
+    """Being asked to stop is not the same as a removal being refused.
+
+    The removal is allowed to fail without answering in place of the failure
+    underneath it, but only for the failures a filesystem actually produces. An
+    interrupt arriving while it runs is nobody's removal failing — it is a
+    request for the process to stop, and answering that with whatever the run
+    was already failing at loses the request entirely.
+    """
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda argv, **kw: _FakeProc(4242))
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-888bbb")
+
+    real_replace = os.replace
+    real_unlink = Path.unlink
+
+    def fail_the_publication(src, dst, *args, **kwargs):
+        if str(dst).endswith("job.json"):
+            raise ValueError("publication failed")
+        return real_replace(src, dst, *args, **kwargs)
+
+    def interrupt_during_removal(self, *args, **kwargs):
+        if self.name.startswith(".job.json.") and self.name.endswith(".tmp"):
+            raise KeyboardInterrupt
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", fail_the_publication)
+    monkeypatch.setattr(Path, "unlink", interrupt_during_removal)
+
+    # The interrupt, not the ValueError it arrived on top of.
+    with pytest.raises(KeyboardInterrupt):
+        jobs.submit("agent", [], prompt="x", label="interrupted-while-tidying")
+
+
 def test_discarding_a_reservation_removes_what_the_submission_wrote(sandbox):
     """Both of the names a submission writes come back with the directory."""
     d = config.JOBS_DIR / "20260101T000000-111111"
