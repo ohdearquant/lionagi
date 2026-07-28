@@ -6,6 +6,90 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.31.1] - 2026-07-28
+
+### Upgrading from 0.31.0
+
+**Durable JSON now refuses non-finite floats.** Writing `NaN`, `Infinity`, or
+`-Infinity` through the paths that persist state to disk previously produced
+output that is not JSON, or a value that reads back as `null` with no way to
+tell it from an absent one. Those writes now raise, with the path to the
+offending value named in the error.
+
+Migration: if you persist computed floats, guard them at the point you build the
+record (`math.isfinite(x)`) and decide what a non-finite value should mean in
+your data, rather than letting it reach the writer.
+
+A database stamped with a newer schema version is also refused at open rather
+than being opened and migrated downward.
+
+### Added
+
+- A resolved MCP server set is handed to every CLI provider that can carry one,
+  rather than only to Claude providers. A codex leg that was given servers
+  previously lost them: on two of the three spawn paths silently, and on the
+  third with a message reporting a refusal while the set was dropped anyway. The
+  decision is now one capability check applied in one place, so the paths cannot
+  disagree. Fields carrying secrets are written to a private profile file
+  instead of the command line.
+- A flow or fanout run can choose the MCP servers its agents receive, including
+  deliberately handing over none instead of arriving there by an empty search.
+- A flow that names neither an agent nor a model orchestrates by default rather
+  than being refused.
+- Studio shows artifacts as they arrive instead of waiting for the run to end.
+
+### Changed
+
+- Non-finite floats are rejected where durable JSON reaches the filesystem, and
+  where a JSON `null` would be undetectable. See the upgrade note above.
+- A database stamped with a newer schema version is refused at open.
+
+### Fixed
+
+- A fanout with no declared dependencies runs its workers concurrently again. An
+  empty dependency list was being read as "unspecified", which chained the
+  workers into a sequence, so a fan of N workers took roughly N times longer
+  than it should. It still completed, which is why nothing caught it: it was
+  only slow, and no test measured speed.
+- Cleanup failures in the job store no longer answer for the failures underneath
+  them. A release that fails cannot replace the error the caller raised, and an
+  interrupt arriving during release is neither swallowed nor allowed to skip the
+  close.
+- A run whose process is conclusively gone gets an attributable end instead of
+  staying open, and `job.wait` stops holding its window open for it.
+- A terminal notice that could not be delivered is reported where callers wait,
+  and the run's log keeps the line saying so.
+- A submission naming no model is refused instead of returning a run id for
+  something that will not start. A spawn that fails is one failed operation
+  rather than a lost batch. `help` and `ops` in one request is refused instead
+  of silently dropping the ops.
+- Run records report what happened rather than what was asked for: the profile
+  the run used, the dependencies it has, the prompt that ran, and the artifact
+  directory each orchestration worker was given.
+- `li kill` reaches a play's workers when the row records them, and says so when
+  it cannot. A play awaiting a gate decision is no longer reported as running,
+  and a kill that performed no termination exits non-zero.
+- Agent profile names treat `-` and `_` as the same spelling.
+- Long codex conversations can spawn: the prompt is passed over stdin rather
+  than as a command-line argument.
+- `Pile` and `Progression` are iterables rather than iterators, so iterating one
+  twice works.
+- Messages that fail to render are no longer dropped, and an arbitrary payload's
+  `allowed()` is not called.
+- A pre-dispatch failure no longer consumes its `github_poll` trigger.
+- The schema stamp moves with the migrations, and SQLite is checked before WAL
+  is enabled.
+- `li state prune` reclaims message rows and previews a measured count.
+- Studio renders markdown artifacts as markdown, and spaces execution-graph
+  nodes by their real height.
+
+### Docs
+
+- ADR coverage for attributable run ends, and for four `job.wait` properties
+  that were previously left to the reader.
+- Corrected the provider path and list in the architecture guide.
+- Two tool docstrings that described behaviour the code refuses.
+
 ## [0.31.0] - 2026-07-26
 
 ### Upgrading from 0.30.2
