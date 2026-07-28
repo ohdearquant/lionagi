@@ -1532,7 +1532,17 @@ def submit(
         "spawn_state": "preparing",
         "log": str(log_path),
     }
-    _write_job(record)
+    try:
+        _write_job(record)
+    except BaseException:
+        # The record is what makes a reservation a job, so a publication that
+        # never landed leaves the prepared files behind with nothing claiming
+        # them — the same stranded directory every earlier failure here gives
+        # back, reached one step later. This is the last point where giving it
+        # back is the right answer: past this line the run exists, and a failure
+        # is marked on the record rather than erased along with it.
+        _discard_reservation(d)
+        raise
 
     try:
         # Append mode, not truncate: every write from the child has to land at

@@ -2894,6 +2894,45 @@ def test_a_submission_that_fails_between_its_writes_leaves_no_job_behind(sandbox
     assert [(j["run_id"], j["kind"]) for j in jobs.list_jobs()] == [(control, "agent")]
 
 
+def test_a_submission_whose_record_never_publishes_leaves_no_job_behind(sandbox, monkeypatch):
+    """The record is the last thing that can strand a reservation.
+
+    The two writes above it are covered; the write that publishes the record is
+    the one that decides whether any of it was a job at all. When it fails there
+    is no record to mark and no child to mark it, so what is left is the same
+    directory with no kind that never finishes — reached one step later than the
+    other failures, and given back the same way.
+    """
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda argv, **kw: _FakeProc(4242))
+
+    # Positive control: the same call, unobstructed. Without it a change that
+    # refused every submission of this shape would read as this test passing.
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-aaabbb")
+    control = jobs.submit("agent", [], prompt="x", label="control")["run_id"]
+    assert [(j["run_id"], j["kind"]) for j in jobs.list_jobs()] == [(control, "agent")]
+
+    # The prompt has already been written by the time the record is published,
+    # so this is the non-empty directory case, not the empty one.
+    prompt_was_already_written: list[bool] = []
+    real_replace = os.replace
+
+    def refuse_to_publish(src, dst, *args, **kwargs):
+        if str(dst).endswith("job.json"):
+            prompt_was_already_written.append((Path(dst).parent / "prompt.txt").exists())
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", refuse_to_publish)
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-cccddd")
+
+    with pytest.raises(OSError):
+        jobs.submit("agent", [], prompt="x", label="unpublished")
+
+    assert prompt_was_already_written == [True]
+    assert not (config.JOBS_DIR / "20260101T000000-cccddd").exists()
+    assert [(j["run_id"], j["kind"]) for j in jobs.list_jobs()] == [(control, "agent")]
+
+
 def test_discarding_a_reservation_removes_what_the_submission_wrote(sandbox):
     """Both of the names a submission writes come back with the directory."""
     d = config.JOBS_DIR / "20260101T000000-111111"
