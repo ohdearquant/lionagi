@@ -45,6 +45,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from lionagi.ln._json_dump import raise_if_non_finite
+
 from . import config
 
 # li subcommand for each job kind. "orchestrate" is the canonical parser name
@@ -186,6 +188,14 @@ def _write_job(record: dict[str, Any]) -> None:
     # write in submit() and the terminal hook) never collide on the temp itself.
     # This makes each publish all-or-nothing; it does not serialize two writers,
     # so a read-modify-write pair can still lose an update (last replace wins).
+    # Checked before the temp file is opened, so a refused record leaves neither a
+    # staging file nor a published one. json.dumps would write a non-finite float
+    # as the bare token NaN or Infinity, which only Python reads back: every
+    # reader of this record that is not Python — and every strict parser — would
+    # fail on it long after the run that wrote it. The start time already has a
+    # representation for "unreadable" and it is null, so nothing here encodes a
+    # sentinel that this refuses.
+    raise_if_non_finite(record)
     d = config.job_dir(record["run_id"])
     d.mkdir(parents=True, exist_ok=True)
     tmp = d / f".job.json.{os.getpid()}.{uuid4().hex[:8]}.tmp"
@@ -198,6 +208,21 @@ def _write_job(record: dict[str, Any]) -> None:
         # still propagates.
         tmp.unlink(missing_ok=True)
         raise
+
+
+def _write_mcp_server_snapshot(path: Path, servers: dict[str, Any]) -> None:
+    """Write the ``{"mcpServers": ...}`` file the spawned child is pointed at.
+
+    A server entry is arbitrary nested JSON — whatever the resolved config held —
+    so this is an open-shaped payload despite the closed-looking name. Config
+    resolution already refuses the non-standard constants on the way in, which is
+    where a failure names the config an operator actually wrote. Refusing again
+    here binds the guarantee to the file rather than to today's single source of
+    the map, so it holds for any later path that fills *servers* without going
+    through a config read.
+    """
+    raise_if_non_finite({"mcpServers": servers})
+    path.write_text(json.dumps({"mcpServers": servers}, indent=2))
 
 
 def _short_repr(value: Any, limit: int = 60) -> str:
@@ -1142,7 +1167,7 @@ def submit(
     if prompt_path is not None:
         prompt_path.write_text(prompt)
     if mcp_servers is not None and mcp_config_path is not None:
-        Path(mcp_config_path).write_text(json.dumps({"mcpServers": mcp_servers}, indent=2))
+        _write_mcp_server_snapshot(Path(mcp_config_path), mcp_servers)
 
     # Persist the record BEFORE spawning, so the child's terminal --notify hook
     # always finds a record to mark. mark_terminal no-ops on a missing record, so

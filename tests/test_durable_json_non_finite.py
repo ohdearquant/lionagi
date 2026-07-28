@@ -16,6 +16,7 @@ back unchanged. Without it a writer that refused everything would pass.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -140,6 +141,122 @@ async def test_run_branch_snapshot_refuses_non_finite(tmp_path):
     good = _Branch({"payload": CONTROL})
     await _write_branch_snapshot(good, tmp_path)
     _assert_control_roundtrip(tmp_path / f"{good.id}.json")
+
+
+def test_job_record_refuses_non_finite(tmp_path, monkeypatch):
+    """``job.json`` is an open-shaped durable record like the rest.
+
+    ``pid_create_time`` is the field that would carry one: it holds a process
+    start time, and a start time that could not be read is recorded as ``null``,
+    never as a non-finite float. So nothing here encodes a sentinel the refusal
+    would destroy, and a NaN reaching this file is damage rather than meaning.
+    """
+    from lionagi.mcp import config, jobs
+
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
+    run_id = jobs.new_run_id()
+    target = config.job_dir(run_id) / "job.json"
+
+    with pytest.raises(ValueError, match=r"non-finite float at \$\.pid_create_time"):
+        jobs._write_job({"run_id": run_id, "pid": 4242, "pid_create_time": float("nan")})
+    assert not target.exists()
+    # And no staging file was left behind by the refusal either.
+    assert not list(config.job_dir(run_id).glob(".job.json.*.tmp"))
+
+    jobs._write_job({"run_id": run_id, "pid": 4242, "pid_create_time": None, "payload": CONTROL})
+    _assert_control_roundtrip(target)
+    assert json.loads(target.read_text())["pid_create_time"] is None
+
+
+@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity"])
+def test_mcp_config_read_refuses_non_standard_json_constants(tmp_path, token):
+    """The three tokens cannot enter the resolved server map at all.
+
+    ``json.loads`` accepts them by default — they are a Python extension, not
+    JSON — so a config carrying one would otherwise resolve to a Python float and
+    be re-emitted into the snapshot the child is handed. The refusal names the
+    file an operator wrote, and happens before anything is spawned.
+    """
+    from lionagi.cli._mcp_resolve import McpConfigError, resolve_spawn_mcp_servers
+
+    (tmp_path / ".mcp.json").write_text(
+        f'{{"mcpServers": {{"x": {{"command": "y", "timeout": {token}}}}}}}'
+    )
+
+    resolution = resolve_spawn_mcp_servers(launch_dir=tmp_path)
+    assert resolution.servers is None
+    assert resolution.reason.startswith("mcp_config_unusable:")
+    assert token in resolution.reason
+
+    with pytest.raises(McpConfigError, match="not valid JSON"):
+        resolve_spawn_mcp_servers(tmp_path / ".mcp.json", launch_dir=tmp_path)
+
+    # Control: the same config with a finite timeout resolves and keeps its value.
+    (tmp_path / ".mcp.json").write_text(
+        '{"mcpServers": {"x": {"command": "y", "timeout": 1.5, "retries": null}}}'
+    )
+    ok = resolve_spawn_mcp_servers(launch_dir=tmp_path)
+    assert ok.servers == {"x": {"command": "y", "timeout": 1.5, "retries": None}}
+
+
+def test_mcp_server_snapshot_refuses_non_finite(tmp_path):
+    """And the write refuses too, for a server map that reached it some other way."""
+    from lionagi.mcp.jobs import _write_mcp_server_snapshot
+
+    target = tmp_path / "mcp-servers.json"
+
+    with pytest.raises(ValueError, match=r"non-finite float at \$\.mcpServers\.x\.timeout"):
+        _write_mcp_server_snapshot(target, {"x": {"command": "y", "timeout": float("inf")}})
+    assert not target.exists()
+
+    _write_mcp_server_snapshot(target, {"payload": CONTROL})
+    assert json.loads(target.read_text())["mcpServers"]["payload"] == CONTROL
+
+
+def test_mirror_offsets_refuse_non_finite(tmp_path, monkeypatch):
+    """The transcript cursor file is not the closed shape its fields suggest.
+
+    The offset is this module's own arithmetic, but the tool-name map comes out
+    of a transcript another program wrote and is never coerced to ``str``.
+    """
+    from lionagi.cli import mirror
+
+    target = tmp_path / "offsets.json"
+    monkeypatch.setattr(mirror, "_OFFSETS_PATH", target)
+
+    bad = mirror._FileState(session_uid="s", offset=12, tool_names={"t1": float("nan")})
+    with pytest.raises(ValueError, match=r"non-finite float at \$\.f\.tool_names\.t1"):
+        mirror._save_states({"f": bad})
+    assert not target.exists()
+
+    good = mirror._FileState(session_uid="s", offset=12, tool_names={"t1": "Read"})
+    mirror._save_states({"f": good})
+    assert json.loads(target.read_text())["f"] == {
+        "offset": 12,
+        "session_uid": "s",
+        "tool_names": {"t1": "Read"},
+        "leaf_uuid": None,
+    }
+
+
+def test_hypothesis_chains_export_refuses_non_finite(tmp_path):
+    """The chains artifact reaches the guard before ``chains.json`` is created."""
+    from lionagi.engines.hypothesis import HypothesisEngine, HypothesisRun
+
+    run = HypothesisRun(HypothesisEngine())
+    run.root = "r"
+    run.agents_made = float("inf")
+
+    with pytest.raises(ValueError, match=r"non-finite float at \$\.agents_made"):
+        run.export(tmp_path)
+    assert not (tmp_path / "chains.json").exists()
+
+    run.agents_made = 3
+    paths = run.export(tmp_path)
+    written = json.loads(Path(paths["chains"]).read_text())
+    assert written["agents_made"] == 3
+    assert written["root"] == "r"
+    assert written["events"] == [] and written["open_questions"] == []
 
 
 async def test_stream_buffer_chunk_refuses_non_finite(tmp_path):

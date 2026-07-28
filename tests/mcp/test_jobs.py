@@ -9,6 +9,8 @@ on the argv/env the engine builds and on the on-disk job records it reads back.
 from __future__ import annotations
 
 import builtins
+import json
+import math
 import os
 import signal
 from pathlib import Path
@@ -267,7 +269,17 @@ def _live_process(monkeypatch, created: float = _SPAWNED_AT):
 
 
 def _identity_record(pid: int = 4242, pgid: int = 7777, created: float = _SPAWNED_AT, **extra):
-    """A job record carrying the process identity submit() now writes."""
+    """A job record carrying the process identity submit() now writes.
+
+    Some of these deliberately carry a start time that cannot act as one, to ask
+    what a *reader* does with it — and among those are the non-finite floats the
+    writer now refuses, because json.dumps would put the bare token NaN or
+    Infinity on disk. A reader still has to survive one: records written before
+    that refusal existed are on disk already, and the job store is shared with
+    whatever else writes into it. So a record the writer will not produce is
+    published directly here, and every record the writer *can* produce still goes
+    through it, which is what keeps this fixture's shape the production shape.
+    """
     rec = {
         "run_id": jobs.new_run_id(),
         "pid": pid,
@@ -278,7 +290,12 @@ def _identity_record(pid: int = 4242, pgid: int = 7777, created: float = _SPAWNE
         "log": None,
     }
     rec.update(extra)
-    jobs._write_job(rec)
+    if isinstance(created, float) and not math.isfinite(created):
+        d = config.job_dir(rec["run_id"])
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "job.json").write_text(json.dumps(rec, indent=2))
+    else:
+        jobs._write_job(rec)
     return rec["run_id"]
 
 
