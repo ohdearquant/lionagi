@@ -136,11 +136,17 @@ def build_chat_model(
     effort = normalize_effort(effort)
     extra: dict = {}
     if mcp_servers is not None:
-        # Only the Claude CLI lane carries a server set on the request; the
-        # other CLI providers read a user-level config no caller directory
-        # affects, so handing them this here would drop it without a word.
-        if provider in _CLAUDE_PROVIDER_NAMES:
-            extra["mcp_servers"] = mcp_servers
+        from lionagi.agent.factory import apply_forwarded_mcp_servers
+
+        # Whether this provider can be given a set at all is one question with
+        # one answer, and applying it is that answer's implementation — a lane
+        # that carries a set over a different transport (codex, via config
+        # overrides) is a lane this caller must not decide about itself.
+        # An empty set is the caller stating the whole set; a non-empty one is
+        # added to whatever the provider finds for itself.
+        apply_forwarded_mcp_servers(
+            extra, mcp_servers, provider=provider, exclusive=not mcp_servers
+        )
     if bypass:
         extra.update(PROVIDER_BYPASS_KWARGS.get(provider, {}))
     elif yolo:

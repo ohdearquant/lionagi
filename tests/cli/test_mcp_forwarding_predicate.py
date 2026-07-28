@@ -90,8 +90,12 @@ def test_predicate_matches_what_the_forwarder_does(provider, mcp_config):
 
 
 def test_forwarding_providers_are_the_two_cli_transports():
+    """Two transports, every spelling the CLI accepts for the Claude one: which
+    alias a caller typed is not a capability of the provider behind it, and a
+    `claude/...` leg reaches the same endpoint a `claude_code/...` leg does."""
     accepted = {p for p in KNOWN_PROVIDERS if provider_accepts_forwarded_mcp(p)}
-    assert accepted == {"claude_code", "codex"}
+    assert accepted == {"claude", "claude_code", "codex"}
+    assert {"gemini-cli", "pi", "openai"}.isdisjoint(accepted)
 
 
 def test_unknown_provider_is_not_assumed_to_accept():

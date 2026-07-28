@@ -108,33 +108,69 @@ async def test_no_config_found_hands_over_nothing_and_says_nothing(tmp_run):
     assert "--strict-mcp-config" not in args
 
 
-def test_refusal_is_reported_when_the_provider_cannot_carry_it(caplog):
-    """A provider whose servers come from its own configuration cannot be told
-    the set is empty. Saying so is the point — the caller passed a flag."""
+def test_refusal_reaches_a_codex_worker_as_a_disabled_server(caplog, codex_home):
+    """codex has no per-request server set and no wholesale clear, so a refusal
+    reaches it as every server it would have loaded, disabled by name."""
     import logging
 
     from lionagi.cli._providers import build_imodel_from_spec
 
+    codex_home.write_config({"khive": {"command": "kkernel"}})
     imodel = build_imodel_from_spec("codex/gpt-5")
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        orch_mod._hand_mcp_servers(imodel, {}, label="reviewer-2")
+
+    assert imodel.endpoint.config.kwargs["config_overrides"] == {"mcp_servers.khive.enabled": False}
+    assert caplog.text == ""
+
+
+def test_a_resolved_set_reaches_a_codex_worker(caplog, codex_home):
+    """The run's set is what the worker gets, over whichever transport its
+    provider has for one."""
+    import logging
+
+    from lionagi.cli._providers import build_imodel_from_spec
+
+    codex_home.write_config({})
+    imodel = build_imodel_from_spec("codex/gpt-5")
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        orch_mod._hand_mcp_servers(imodel, {"khive": {"command": "kkernel"}}, label="reviewer-2")
+
+    assert imodel.endpoint.config.kwargs["config_overrides"] == {
+        "mcp_servers.khive.command": "kkernel"
+    }
+    assert caplog.text == ""
+
+
+def test_refusal_is_reported_when_the_provider_cannot_carry_it(caplog):
+    """A provider with no transport for a caller-resolved set cannot be told the
+    set is empty. Saying so is the point — the caller passed a flag."""
+    import logging
+
+    from lionagi.cli._providers import build_imodel_from_spec
+
+    imodel = build_imodel_from_spec("gemini-cli/gemini-3.5-flash")
+    provider = imodel.endpoint.config.provider
     with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
         orch_mod._hand_mcp_servers(imodel, {}, label="reviewer-2")
 
     assert "mcp_servers" not in imodel.endpoint.config.kwargs
     assert "reviewer-2" in caplog.text
     assert "--no-mcp-config" in caplog.text
-    assert "codex" in caplog.text
+    assert provider in caplog.text
 
 
-def test_a_discovered_server_set_is_still_handed_over_silently(caplog):
-    """The report is for a refusal that could not be applied, not for every
-    provider that reads its own config — a non-empty set stays a no-op there."""
+def test_a_dropped_grant_is_reported_as_well_as_a_dropped_refusal(caplog):
+    """A set the provider cannot carry leaves the worker without servers its
+    instructions assume, which is worth at least as much of a word as a refusal."""
     import logging
 
     from lionagi.cli._providers import build_imodel_from_spec
 
-    imodel = build_imodel_from_spec("codex/gpt-5")
+    imodel = build_imodel_from_spec("gemini-cli/gemini-3.5-flash")
     with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
         orch_mod._hand_mcp_servers(imodel, {"khive": {"command": "kkernel"}}, label="reviewer-2")
 
     assert "mcp_servers" not in imodel.endpoint.config.kwargs
-    assert caplog.text == ""
+    assert "reviewer-2" in caplog.text
+    assert "khive" in caplog.text
