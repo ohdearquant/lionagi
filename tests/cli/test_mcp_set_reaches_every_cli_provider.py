@@ -27,6 +27,8 @@ import pytest
 
 from lionagi.agent.factory import apply_forwarded_mcp_servers
 
+CODEX_SPEC = "codex/gpt-5.3-codex"
+
 SERVERS = {"khive": {"command": "kkernel", "args": ["serve"]}}
 SECRET = "sk-live-do-not-put-me-on-argv"
 SECRET_SERVERS = {"khive": {"command": "kkernel", "env": {"KHIVE_API_KEY": SECRET}}}
@@ -356,7 +358,7 @@ async def _codex_worker(flow_run, servers: dict):
     (flow_run / ".mcp.json").write_text(json.dumps({"mcpServers": servers}))
     env = await setup_orchestration(
         pattern_name="Fanout",
-        model_spec="codex/gpt-5.3-codex",
+        model_spec=CODEX_SPEC,
         agent_name=None,
         save_dir=None,
         cwd=None,
@@ -365,8 +367,30 @@ async def _codex_worker(flow_run, servers: dict):
         effort=None,
         theme=None,
     )
-    branch, _, _, _ = await build_worker_branch(env, agent_id="w1", role="implementer")
+    # A worker's role resolves through the agent profiles installed on the
+    # machine, and a profile's model beats the run's default spec. Without a
+    # pin, whichever model `implementer` happens to name locally is the one
+    # these codex assertions run against, and the file silently tests another
+    # provider. `model_override` is the only input that wins unconditionally.
+    branch, _, _, _ = await build_worker_branch(
+        env, agent_id="w1", role="implementer", model_override=CODEX_SPEC
+    )
     return env, branch
+
+
+@pytest.mark.asyncio
+async def test_the_flow_worker_these_tests_build_is_a_codex_worker(flow_run, codex_home):
+    """The worker the two cases below build resolves to the codex provider.
+
+    Agent profiles live outside the repository, so an unpinned worker makes
+    this file's provider a property of the machine running it. Asserting the
+    provider directly means removing the pin fails here, saying which provider
+    was built, rather than further down on an argv shape that no longer applies.
+    """
+    codex_home.write_config({})
+    _env, branch = await _codex_worker(flow_run, SERVERS)
+
+    assert branch.chat_model.endpoint.config.provider == "codex"
 
 
 @pytest.mark.asyncio
