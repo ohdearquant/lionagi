@@ -1,0 +1,171 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+"""A run says which servers it gave its workers, without a read of the snapshot.
+
+The set was already in hand when the snapshot was written and was simply not
+recorded, so a caller asking "did this leg even have the knowledge server" had to
+open the record on disk to find out. These tests pin the reported value in each
+way the question can be answered, and in particular that "none" and "cannot say"
+stay distinguishable — collapsing them would make the one case worth reporting,
+a run whose workers got no servers, read like a run nobody asked about.
+
+Popen is doubled so no real `li` process is spawned.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from lionagi.mcp import config, jobs
+
+
+@pytest.fixture
+def sandbox(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(config, "li_command", lambda: ["echo"])
+    monkeypatch.setattr(jobs, "_read_lifecycle", lambda run_id: None)
+    return tmp_path
+
+
+class _FakeProc:
+    def __init__(self, pid: int = 4242) -> None:
+        self.pid = pid
+
+
+@pytest.fixture
+def submit_dir(monkeypatch, tmp_path):
+    """A submitting directory with no MCP config above it.
+
+    The search walks to the filesystem root, so an ancestor's real .mcp.json
+    would otherwise decide these tests.
+    """
+    d = tmp_path / "submit"
+    d.mkdir()
+    monkeypatch.chdir(d)
+    return d
+
+
+@pytest.fixture
+def no_spawn(monkeypatch):
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda argv, **kw: _FakeProc())
+
+
+def test_a_resolved_set_is_reported_by_name_and_sorted(sandbox, submit_dir, no_spawn):
+    """The names the run resolved, on the handle, without opening the snapshot."""
+    (submit_dir / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"lion": {"command": "li"}, "khive": {"command": "kk"}}})
+    )
+
+    handle = jobs.submit("agent", ["-m", "x"], prompt="hi", cwd=str(submit_dir))
+
+    assert handle["mcp_config_servers"] == ["khive", "lion"]
+    # The snapshot on disk is the child's copy and has to agree with what the
+    # handle claims; a handle describing a set the child was not given would be
+    # worse than no handle at all.
+    written = json.loads((sandbox / "jobs" / handle["run_id"] / "mcp-servers.json").read_text())
+    assert sorted(written["mcpServers"]) == handle["mcp_config_servers"]
+
+
+def test_status_carries_the_same_answer_as_the_handle(sandbox, submit_dir, no_spawn):
+    """The point of the change: a finished run answers without a filesystem dig.
+
+    The submit handle is a one-shot. Anyone investigating afterwards -- which is
+    when the question actually gets asked -- reaches for status.
+    """
+    (submit_dir / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"lion": {"command": "li"}, "khive": {"command": "kk"}}})
+    )
+
+    handle = jobs.submit("agent", ["-m", "x"], prompt="hi", cwd=str(submit_dir))
+    st = jobs.status(handle["run_id"])
+
+    for field in ("mcp_config", "mcp_config_source", "mcp_config_reason", "mcp_config_servers"):
+        assert st[field] == handle[field], field
+    assert st["mcp_config_servers"] == ["khive", "lion"]
+
+
+def test_caller_asking_for_no_servers_reports_an_empty_set_not_null(sandbox, submit_dir, no_spawn):
+    """`[]` is an answer. The caller settled it and the answer was none."""
+    (submit_dir / ".mcp.json").write_text(json.dumps({"mcpServers": {"lion": {"command": "li"}}}))
+
+    handle = jobs.submit("agent", ["-m", "x"], prompt="hi", cwd=str(submit_dir), no_mcp_config=True)
+
+    assert handle["mcp_config_servers"] == []
+    assert handle["mcp_config_reason"] == "mcp_disabled_by_caller"
+    assert jobs.status(handle["run_id"])["mcp_config_servers"] == []
+
+
+def test_a_caller_named_config_reports_null_because_this_run_never_read_it(
+    sandbox, submit_dir, no_spawn, tmp_path
+):
+    """Null is the other answer: no set was resolved, so none can be named.
+
+    The caller's file belongs to the caller and this run does not open it, so
+    reporting names from it would be a claim about a file that may have changed
+    by the time the child reads it.
+    """
+    theirs = tmp_path / "theirs.json"
+    theirs.write_text(json.dumps({"mcpServers": {"whatever": {"command": "w"}}}))
+
+    handle = jobs.submit(
+        "agent", ["-m", "x"], prompt="hi", cwd=str(submit_dir), mcp_config=str(theirs)
+    )
+
+    assert handle["mcp_config_servers"] is None
+    assert handle["mcp_config_reason"] == "mcp_config_named_by_caller"
+
+
+def test_none_and_cannot_say_are_not_the_same_value(sandbox, submit_dir, no_spawn, tmp_path):
+    """The distinction the whole field exists for, asserted directly.
+
+    Two runs, both of which gave their workers no servers this run can vouch
+    for, and they must not report the same thing: one settled the question, the
+    other never asked it.
+    """
+    theirs = tmp_path / "theirs.json"
+    theirs.write_text(json.dumps({"mcpServers": {"whatever": {"command": "w"}}}))
+
+    settled = jobs.submit(
+        "agent", ["-m", "x"], prompt="hi", cwd=str(submit_dir), no_mcp_config=True
+    )
+    unasked = jobs.submit(
+        "agent", ["-m", "x"], prompt="hi", cwd=str(submit_dir), mcp_config=str(theirs)
+    )
+
+    assert settled["mcp_config_servers"] == []
+    assert unasked["mcp_config_servers"] is None
+    assert settled["mcp_config_servers"] != unasked["mcp_config_servers"]
+
+
+def test_no_config_found_reports_null_and_says_where_it_looked(sandbox, submit_dir, no_spawn):
+    """Nothing to resolve is "cannot say", and the reason names the search."""
+    handle = jobs.submit("agent", ["-m", "x"], prompt="hi", cwd=str(submit_dir))
+
+    assert handle["mcp_config_servers"] is None
+    assert handle["mcp_config_reason"].startswith("no_mcp_config_found_at_or_above:")
+
+
+def test_a_record_written_before_the_field_existed_reads_as_cannot_say(
+    sandbox, submit_dir, no_spawn
+):
+    """Old records answer null rather than crashing or claiming an empty set.
+
+    A pre-existing record has no key for this. Absent has to mean "cannot say",
+    which is the truth about it -- reading it as `[]` would turn every run that
+    predates the field into a run that reported having no servers.
+    """
+    (submit_dir / ".mcp.json").write_text(json.dumps({"mcpServers": {"lion": {"command": "li"}}}))
+    handle = jobs.submit("agent", ["-m", "x"], prompt="hi", cwd=str(submit_dir))
+    run_id = handle["run_id"]
+
+    record_path = sandbox / "jobs" / run_id / "job.json"
+    record = json.loads(record_path.read_text())
+    # Positive control: the key is there to begin with, so its removal is what
+    # the assertion below is reading and not a path that never had it.
+    assert record.pop("mcp_config_servers") == ["lion"]
+    record_path.write_text(json.dumps(record))
+
+    assert jobs.status(run_id)["mcp_config_servers"] is None

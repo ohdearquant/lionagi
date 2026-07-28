@@ -6,6 +6,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- A run reports which MCP servers it gave its workers. `mcp_config_servers` names
+  them on the submit handle, and `job.status` now carries the whole `mcp_config`
+  group, so a run that has already finished answers the question without anyone
+  opening its record on disk. An empty list and a null say different things: the
+  list means the question was settled and the answer was none, the null means no
+  set was resolved, which is what a caller naming their own config file gets. The
+  field reports what was resolved, which is not a claim that the child's provider
+  then started each server.
+
 ## [0.31.1] - 2026-07-28
 
 ### Upgrading from 0.31.0
