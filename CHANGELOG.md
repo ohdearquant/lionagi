@@ -20,6 +20,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   reports what was resolved, which is not a claim that the child's provider then
   started each server.
 
+### Fixed
+
+- Resuming a codex leg that was given MCP servers with `env` or `http_headers`
+  no longer fails before spawn. Those fields are handed to codex through a
+  generated config profile rather than the command line, and codex takes one
+  profile per invocation, so the code refuses to add a second one when the
+  caller already asked for a profile of their own. A resumed leg re-spawns from
+  its persisted request, which carries the profile the first run generated, and
+  that was being read as a caller's profile. A generated profile is now
+  recognised and replaced, which is also what the resumed leg needs: the first
+  run deleted its profile file on the way out, so the inherited name pointed at
+  nothing. A profile the caller supplied is still refused.
+
 ## [0.31.1] - 2026-07-28
 
 ### Upgrading from 0.31.0
