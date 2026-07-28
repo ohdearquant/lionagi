@@ -315,12 +315,14 @@ def test_a_lifecycle_read_that_fails_leaves_the_run_where_it_was(home, monkeypat
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
 
     st = jobs.status(run_id)
+    # The read established nothing, so nothing it could have said is on the
+    # record: the end this run gets is the observer's own, attributed to it and
+    # carrying no status, reason or time from a store that never answered.
     assert st["status"] == "exited"
-    assert st["terminal"] is False
-    assert st["outcome"] is None
-    assert st["possibly_orphaned"] is True
-    # Nothing was cached, so a later read that succeeds is still free to answer.
-    assert jobs._read_job(run_id)["finished_at"] is None
+    assert st["outcome"] == jobs.OUTCOME_LOST
+    assert st["reason_code"] == jobs.LOST_REASON
+    assert st["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
+    assert st["possibly_orphaned"] is False
 
 
 def test_a_lifecycle_read_that_times_out_leaves_the_run_where_it_was(home, monkeypatch):
@@ -346,8 +348,10 @@ def test_a_lifecycle_read_that_times_out_leaves_the_run_where_it_was(home, monke
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
 
     st = jobs.status(run_id)
-    assert st["terminal"] is False
-    assert st["possibly_orphaned"] is True
+    assert st["outcome"] == jobs.OUTCOME_LOST
+    assert st["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER, (
+        "a read that learned nothing must not be credited with the end"
+    )
 
 
 def test_an_unavailable_lifecycle_answer_is_not_read_as_no_record(home, monkeypatch):
@@ -394,8 +398,10 @@ def test_an_unavailable_lifecycle_answer_is_not_read_as_no_record(home, monkeypa
 
     assert jobs._read_lifecycle(run_id) is None
     st = jobs.status(run_id)
-    assert st["terminal"] is False
-    assert st["possibly_orphaned"] is True
+    assert st["outcome"] == jobs.OUTCOME_LOST
+    assert st["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER, (
+        "a read that learned nothing must not be credited with the end"
+    )
 
 
 def test_output_that_defeats_the_parser_is_a_read_that_learned_nothing(home, monkeypatch):
@@ -432,9 +438,10 @@ def test_output_that_defeats_the_parser_is_a_read_that_learned_nothing(home, mon
 
     assert jobs._read_lifecycle(run_id) is None
     st = jobs.status(run_id)
-    assert st["terminal"] is False
-    assert st["possibly_orphaned"] is True
-    assert jobs._read_job(run_id)["finished_at"] is None, "nothing was concluded and none cached"
+    assert st["outcome"] == jobs.OUTCOME_LOST
+    assert st["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER, (
+        "a read that learned nothing must not be credited with the end"
+    )
 
 
 def test_a_spawn_failure_nobody_anticipated_is_also_a_read_that_learned_nothing(home, monkeypatch):
@@ -472,8 +479,10 @@ def test_a_spawn_failure_nobody_anticipated_is_also_a_read_that_learned_nothing(
 
     assert jobs._read_lifecycle(run_id) is None
     st = jobs.status(run_id)
-    assert st["terminal"] is False
-    assert st["possibly_orphaned"] is True
+    assert st["outcome"] == jobs.OUTCOME_LOST
+    assert st["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER, (
+        "a read that learned nothing must not be credited with the end"
+    )
 
 
 def test_a_healthy_running_job_is_never_asked_about(home, monkeypatch):

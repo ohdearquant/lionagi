@@ -314,6 +314,46 @@ can travel together:
 Check each entry's `ok`: the second can fail while the first succeeds, and
 `status` would then be `"partial"`.
 
+## Terminal state of a background run
+
+`job.status`, `job.list` and `job.wait` all resolve through one classification
+path, so no two of them can disagree about the same run. Branch on `terminal`
+and `outcome`; `status` is an open producer vocabulary and is for display.
+
+`outcome` carries one additional value beyond a reported result: **`lost`**,
+paired with `reason_code: "process_gone_without_outcome"`. A run is `lost` when
+an observation positively established that its process is gone — the recorded
+pid held no process, it disappeared between two probes, or a live process holds
+the number and started at a different time — and no authoritative outcome was
+ever reported for it. Nothing survived to write one, so the run is ended here
+rather than left waiting forever.
+
+`lost` is not a failure. The work may have had its intended effect before the
+process died. Consumers must not map it to `failed`, to success, or to
+cancellation, and must not retry it automatically: an unreported external side
+effect may already have committed.
+
+Three fields describe such an end:
+
+| Field | Meaning |
+|-------|---------|
+| `terminal_source` | what wrote the end: `cli_terminal_hook`, `lifecycle_cache`, `spawn_failure`, or `mcp_orphan_reaper`. Null on records written before the field existed. Carried by both `job.status` and `job.list`. |
+| `terminal_evidence` | bounded evidence behind an end nobody reported: the kind, and the named finding. Never argv, environment, logs or payloads. |
+| `liveness_conclusion` | what the observation established: `process_gone`, `alive` or `unknown`. Only `process_gone` can end a run. |
+
+An `unknown` conclusion — a pid the OS cannot be asked about, an identity probe
+that was denied or unreadable — never ends a run. Those stay non-terminal and
+advisory (`possibly_orphaned`), and `job.wait` reports them under
+`stopped_without_end`.
+
+**`finished_at` on a `lost` run is when the end was established and recorded,
+not when the process exited**, which nothing surviving can report. Any duration
+derived from it is an upper bound on how long the run actually ran.
+
+`job.wait`'s **`all_terminal` means every valid requested run has a recorded
+end**, including `lost` ones. It does not mean every run succeeded or reported
+an outcome — read each entry's `outcome` for that.
+
 ## Compatibility
 
 An earlier version of this server advertised one tool per operation. Those flat
