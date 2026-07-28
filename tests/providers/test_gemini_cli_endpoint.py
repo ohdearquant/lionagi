@@ -16,6 +16,7 @@ import pytest
 from lionagi.providers.google.gemini_code import (
     GeminiCodeRequest,
     GeminiSession,
+    derive_print_timeout,
     stream_gemini_cli,
 )
 
@@ -62,6 +63,27 @@ class TestCmdArgs:
         assert req.full_prompt() == "be terse\n\nask"
         args = req.as_cmd_args()
         assert args[1] == "be terse\n\nask"
+
+    def test_caller_timeout_emits_derived_print_timeout(self):
+        caller_timeout = 1200
+        derived = derive_print_timeout(caller_timeout)
+        args = GeminiCodeRequest(prompt="hi", print_timeout=derived).as_cmd_args()
+
+        i = args.index("--print-timeout")
+        assert args[i + 1] == derived
+        assert int(derived.removesuffix("s")) > caller_timeout
+
+    def test_explicit_print_timeout_is_preserved(self):
+        explicit = "45m"
+        args = GeminiCodeRequest(prompt="hi", print_timeout=explicit).as_cmd_args()
+
+        i = args.index("--print-timeout")
+        assert args[i + 1] == explicit
+
+    def test_no_caller_timeout_omits_print_timeout(self):
+        args = GeminiCodeRequest(prompt="hi").as_cmd_args()
+
+        assert "--print-timeout" not in args
 
 
 # ---------------------------------------------------------------------------

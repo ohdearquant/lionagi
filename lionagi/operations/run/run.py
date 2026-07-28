@@ -538,6 +538,28 @@ async def run(
         if isinstance(_timeout, int | float) and _timeout > 0:
             _stream_deadline = anyio.current_time() + float(_timeout)
 
+        request_model = getattr(endpoint, "_request_model", None)
+        if request_model is not None:
+            from lionagi.providers.google.gemini_code import (
+                GeminiCodeRequest,
+                derive_print_timeout,
+                format_print_timeout,
+            )
+
+            endpoint_kwargs = getattr(getattr(endpoint, "config", None), "kwargs", {})
+            if (
+                request_model is GeminiCodeRequest
+                and kw.get("print_timeout") is None
+                and endpoint_kwargs.get("print_timeout") is None
+            ):
+                if _stream_deadline is not None:
+                    kw["print_timeout"] = derive_print_timeout(_timeout)
+                else:
+                    from lionagi.config import settings as _app_settings  # noqa: PLC0415
+
+                    default_cap = _app_settings.LIONAGI_ANTIGRAVITY_PRINT_TIMEOUT
+                    kw["print_timeout"] = format_print_timeout(default_cap)
+
         # Pop liveness_timeout before create_event — CLI providers don't consume it either.
         # Explicit values (including 0/negative-to-disable) are always honored. Absent
         # falls back to the configured default, but only for endpoints that declare

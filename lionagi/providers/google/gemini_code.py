@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import os
 import re
 from collections.abc import AsyncIterator, Callable
@@ -59,6 +60,7 @@ __all__ = (
     "GeminiChunk",
     "GeminiCodeRequest",
     "GeminiSession",
+    "derive_print_timeout",
     "stream_gemini_cli",
     "stream_gemini_cli_events",
     "GeminiCLIEndpoint",
@@ -202,6 +204,20 @@ def resolve_agy_model(
 
 
 # --------------------------------------------------------------------------- request model
+
+
+def format_print_timeout(seconds: int | float) -> str:
+    """Format a seconds value as a Go duration `agy` will parse."""
+    # Whole seconds only. General float formatting reaches scientific notation
+    # for large values ("1e+06"), which Go's duration parser rejects, and a cap
+    # that fails to parse is exactly the uninformative failure this avoids.
+    return f"{math.ceil(seconds)}s"
+
+
+def derive_print_timeout(timeout: int | float) -> str:
+    """Return an agy Go-duration cap that stays behind lionagi's deadline."""
+    # One minute lets lionagi's deadline cancel and preserve its clearer error first.
+    return format_print_timeout(math.ceil(timeout) + 60)
 
 
 class GeminiCodeRequest(BaseModel):
