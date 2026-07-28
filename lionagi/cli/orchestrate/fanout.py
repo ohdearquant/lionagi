@@ -329,6 +329,9 @@ async def _run_fanout_inner(
         node = _build_worker_operate_node(
             env.builder,
             branch=w_branch,
+            # Explicitly no dependencies: fanout workers are independent, and
+            # the builder chains onto its current heads when this is None.
+            depends_on=[],
             instruction=ta.task,
             context=ctx,
             messenger_bound=messenger_bound,

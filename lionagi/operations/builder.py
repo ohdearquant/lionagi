@@ -48,6 +48,23 @@ class OperationGraphBuilder:
         branch=None,
         **parameters,
     ) -> str:
+        """Add an operation node.
+
+        `depends_on` is three-valued, and the two falsy values do NOT mean the
+        same thing:
+
+        - a non-empty list: depend on exactly those nodes (`depends_on` edges).
+        - `[]`: explicitly no dependencies. The node is a root of its own fan
+          and gets no incoming edge, whatever the current heads are. This is
+          what a caller building a FAN wants.
+        - `None` (default): chain onto the current heads with `sequential`
+          edges, so a caller building a LINEAR CHAIN can add steps without
+          restating the previous node.
+
+        Passing `None` for a fan silently serializes it: `sequential` edges are
+        ordinary predecessors at execution time, so every worker waits for the
+        one added before it.
+        """
         node = create_operation(operation=operation, parameters=parameters)
 
         if inherit_context and depends_on:
@@ -63,7 +80,7 @@ class OperationGraphBuilder:
         if branch:
             node.branch_id = ID.get_id(branch)
 
-        if depends_on:
+        if depends_on is not None:
             for dep_id in depends_on:
                 if dep_id in self._operations:
                     edge = Edge(head=dep_id, tail=node.id, label=["depends_on"])

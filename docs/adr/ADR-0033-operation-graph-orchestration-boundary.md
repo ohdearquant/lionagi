@@ -25,14 +25,16 @@ injection would exceed capacity, introduce a cycle, or require a branch clone. T
 initial graph therefore arrives complete; live mutation passes through one locked
 admission path.
 
-**P3 — Two graph builders currently disagree about an omitted dependency list.**
-The role-task builders add only declared dependency or aggregation edges.
+**P3 — Two graph builders answer an omitted dependency list differently.** The
+role-task builders add only declared dependency or aggregation edges.
 `OperationGraphBuilder.add_operation()` instead links a new operation after all
-current heads when `depends_on` is falsey. The CLI uses that incremental builder,
-so nominal fan-out and dependency-free DAG roots can be serialized accidentally.
+current heads when `depends_on` is `None`, which is chaining shorthand for a
+caller building a linear sequence. A caller of the incremental builder that wants
+a fan-out worker or a second DAG root must therefore say so, by passing an empty
+list; a caller that omits the argument gets a chain.
 `lionagi/orchestration/patterns.py`, `lionagi/operations/builder.py`,
-`lionagi/cli/orchestrate/flow.py`, and `lionagi/cli/orchestrate/fanout.py` contain
-the divergence.
+`lionagi/cli/orchestrate/flow.py`, and `lionagi/cli/orchestrate/fanout.py` hold
+the two conventions.
 
 **P4 — Model-emitted work is a request, not execution authority.** A
 `SpawnRequest` can name an operation and assignee, but it must not reach arbitrary
@@ -56,7 +58,7 @@ equivalent to a completed child and does not necessarily fail the parent.
 | Concern | Decision |
 |---------|----------|
 | Shared execution boundary | D1: `Session.flow()` delegates every operation graph to the common dependency-aware or reactive executor. |
-| Initial graph topology | D2: callers own initial topology; the two builder semantics and their current divergence remain explicit. |
+| Initial graph topology | D2: callers own initial topology; the two builder surfaces keep different defaults, and each default is recorded explicitly. |
 | Planned and live work | D3: `TaskAssignment` and `SpawnRequest` are typed requests, with role routing before locked executor admission. |
 | Dependencies, branches, and concurrency | D4: the kernel owns waits, context propagation, branch allocation, edge conditions, and capacity. |
 | Lifecycle and result observation | D5: `op_id` is lifecycle identity; progress translation is opt-in today; result and rejection payloads are stable. |
@@ -176,7 +178,7 @@ operations. Keeping execution immediately below that facade gives every surface
 the same branch and signal context while leaving initial plan construction outside
 the kernel.
 
-### D2 — Caller-owned initial topology, with the shipped builder divergence recorded
+### D2 — Caller-owned initial topology, with both builder conventions recorded
 
 Initial graph design remains outside the kernel. The two shipped construction
 surfaces are not semantically interchangeable.
@@ -212,8 +214,9 @@ def build_dag_graph(
 
 | Construction case | Shipped edge semantics |
 |-------------------|------------------------|
-| `OperationGraphBuilder.add_operation(..., depends_on=[...])` | Add `depends_on` edges only for ids already present in `_operations`. Unknown ids are silently ignored. |
-| `OperationGraphBuilder.add_operation(..., depends_on=None or [])` with current heads | Add `sequential` edges from every current head, then make the new node the sole head. |
+| `OperationGraphBuilder.add_operation(..., depends_on=[...])` with a non-empty list | Add `depends_on` edges only for ids already present in `_operations`. Unknown ids are silently ignored. |
+| `OperationGraphBuilder.add_operation(..., depends_on=[])` | Add no incoming edge at all, whatever the current heads are: the node is an independent root of its own fan. |
+| `OperationGraphBuilder.add_operation(..., depends_on=None)`, the default, with current heads | Add `sequential` edges from every current head. |
 | `build_fanout_graph()` worker | Add a worker node with no worker-to-worker edge. |
 | `build_fanout_graph(..., synthesis_role=...)` | Add one synthesis node and an `aggregate` edge from every worker. |
 | `build_dag_graph()` | Convert each one-based `TaskAssignment.depends_on` reference to an index and add only declared `depends_on` edges. |
@@ -229,15 +232,25 @@ def build_dag_graph(
 - An assignment whose role is absent produces no node. Fan-out skips it; DAG
   preserves a `None` placeholder so ordinal references remain aligned.
 - If no assignment maps to a role, each role-task builder raises `ValueError`.
-- The incremental builder's falsey `depends_on` branch means `None` and `[]` are
-  indistinguishable. A caller cannot currently express an independent root after
-  a head exists through `add_operation()`.
+- `add_operation()` reads `depends_on` as three-valued, and its two falsy values
+  are not the same answer. `None`, the default, chains onto the current heads;
+  `[]` states that there are no dependencies and produces an independent root.
+  A caller can therefore express a fan root after a head already exists.
+- Whichever of the three cases applies, the new node becomes the sole current
+  head. An independent root does not preserve the heads it declined to depend on,
+  so a later chaining call attaches to that root alone.
+- `inherit_context=True` needs something to inherit from. With `[]` or `None` no
+  `primary_dependency` is recorded, and the flag has no effect.
 - The executor does not infer or repair intended initial topology. It executes
   the edges it receives.
 
 **Why this way**: initial topology is policy, while dependency waiting is
-mechanism. The divergence is retained as retrospective truth, not endorsed as
-ideal; delta 1 makes independent construction explicit.
+mechanism. Giving the empty list its literal meaning keeps that split intact: a
+caller states the shape it wants, and the kernel is never asked to guess which
+omission meant a chain and which meant a root. The chaining default is retained
+because a linear caller should not have to restate the previous node, but it is
+now one of three answers a caller can give rather than the only one reachable
+through this surface.
 
 ### D3 — Typed planned work, typed live requests, and two-stage authority
 
@@ -504,8 +517,10 @@ lionagi/cli/orchestrate/fanout.py       CLI fan-out construction and presentatio
 - CLI graph code may decorate instructions and metadata before submission and
   correlate reactive children afterward, but accepted live graph mutation remains
   inside `ReactiveExecutor`.
-- CLI use of `OperationGraphBuilder` means it currently participates in D2's
-  topology divergence. That is a recorded defect, not a second executor.
+- CLI use of `OperationGraphBuilder` makes the CLI an author of initial topology
+  under D2. Fan-out workers and DAG roots declare an empty dependency list rather
+  than inheriting the chaining default. That is topology authorship, not a second
+  executor.
 - Direct CLI flow calls do not uniformly install the lifecycle translation
   adapter, so absence of a canonical signal does not prove a node did not run.
 
@@ -522,9 +537,10 @@ entry point.
   exposing task-group or lock internals.
 - Callers must understand that initial topology is authoritative. The kernel does
   not infer “fan-out” from a list of nodes.
-- Correcting the incremental-builder divergence can expose races that accidental
-  serialization previously hid; migration therefore requires topology and
-  concurrency tests together.
+- Work that a chaining default previously serialized now runs concurrently where
+  the caller declared it independent. Any state such legs share is exercised in
+  parallel for the first time, so topology and concurrency have to be tested
+  together rather than separately.
 - Uniform lifecycle emission would increase observer traffic and make
   drain-before-return ordering a compatibility obligation for every caller.
 - Reactive admission is best-effort and non-transactional with parent work. A
@@ -541,7 +557,7 @@ entry point.
 
 | # | Delta | Size | Issue |
 |---|-------|------|-------|
-| 1 | Make sequential linking explicit in `OperationGraphBuilder`, migrate CLI fan-out and dependency-free DAG roots to independent-node construction, and add topology tests proving that no undeclared worker-to-worker edges exist. | M | (filled at issue-open time) |
+| 1 | Make sequential linking explicit in `OperationGraphBuilder`, migrate CLI fan-out and dependency-free DAG roots to independent-node construction, and add topology tests proving that no undeclared worker-to-worker edges exist. | M | delivered — `depends_on` is three-valued, with `[]` an independent root and `None` the chaining default; CLI fan-out workers pass `[]` and CLI DAG nodes pass their resolved dependency list unchanged; builder and CLI topology tests assert that a fan carries no `sequential` edge |
 | 2 | Implement one `TaskAssignment.depends_on` normalizer for pattern and CLI builders, document whether forward ordinal references are accepted, and validate the normalized graph for cycles before execution. | S | #2027 |
 | 3 | Move callback-to-node-signal conversion from `engines` to a neutral flow/session module, expose a named observed-flow facade, and migrate EngineRun, Studio, CLI fan-out, CLI synthesis, and main CLI flow without changing signal ordering or result shape. | M | (filled at issue-open time) |
 | 4 | Parameterize the shared role-task builders with branch, instruction, identity, and artifact decorators, then remove CLI-owned duplicate edge wiring while preserving checkpoint and artifact identities. | M | (filled at issue-open time) |
@@ -568,14 +584,16 @@ reason why the graph was chosen.
 
 This would fix fan-out callers but break the shipped incremental-builder
 convenience where successive operations intentionally form a chain. It lost as an
-unqualified compatibility change. The delta instead requires an explicit API so
-both independent and sequential intent are representable.
+unqualified compatibility change. The shipped answer instead separates the two
+falsy values, so both independent and sequential intent are representable and
+neither is inferred from an omission.
 
 ### Treat every omitted dependency as “after current heads”
 
-This is the current incremental-builder shape and makes simple chain construction
-compact. It lost as the universal rule because a fan-out loop becomes a chain and
-multiple independent DAG roots cannot be represented after the first node.
+This was the incremental builder's universal rule and makes simple chain
+construction compact. It lost as the universal rule because a fan-out loop becomes
+a chain and multiple independent DAG roots cannot be represented after the first
+node. It survives as the meaning of `None` alone.
 
 ### Let emitted `SpawnRequest` call any registered operation
 
