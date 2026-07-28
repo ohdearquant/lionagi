@@ -8,6 +8,7 @@ import argparse
 import json
 import time
 import uuid
+from typing import Any
 
 from ._logging import hint, log_error
 
@@ -109,17 +110,20 @@ def add_invoke_subparser(subparsers: argparse._SubParsersAction) -> None:
     start.add_argument(
         "--skill",
         required=True,
-        help="Skill name: 'show', 'codex-pr-review', 'reprompt', etc.",
+        help=(
+            "Name of the orchestration being recorded, e.g. 'show', 'codex-pr-review' or "
+            "'reprompt'. Every session spawned under this id groups by it."
+        ),
     )
     start.add_argument(
         "--plugin",
         default=None,
-        help="Marketplace plugin packaging the skill (optional).",
+        help="Marketplace plugin packaging that skill, when the skill came from one.",
     )
     start.add_argument(
         "--prompt",
         default=None,
-        help="The user's input that triggered the skill (free text).",
+        help="The request that triggered this work, stored as free text for later reading.",
     )
     start.add_argument(
         "--metadata",
@@ -131,7 +135,13 @@ def add_invoke_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
 
     end = inv_sub.add_parser("end", help="Close an invocation.")
-    end.add_argument("invocation_id", help="The id printed by `li invoke start`.")
+    end.add_argument(
+        "invocation_id",
+        help=(
+            "The id printed by `li invoke start`. An invocation never closed stays 'running' "
+            "forever."
+        ),
+    )
     end.add_argument(
         "--status",
         default="completed",
@@ -142,18 +152,43 @@ def add_invoke_subparser(subparsers: argparse._SubParsersAction) -> None:
             "aborted",
             "cancelled",
         ],
-        help="Terminal status (ADR-0057 vocabulary).",
+        help=(
+            "How the work ended, which also fixes the reason stored with it: 'completed' for "
+            "success, 'failed' for an exception, 'timed_out' for a deadline, 'aborted' for a "
+            "user interrupt, 'cancelled' for a system cancellation. Later listings and "
+            "dashboards filter on this, so leaving the default on work that did not succeed "
+            "records it as a success."
+        ),
     )
     end.add_argument(
         "--metadata",
         default=None,
-        help="Optional JSON to merge into the invocation's node_metadata.",
+        help=(
+            "JSON merged key-by-key into the invocation's existing metadata, so anything written "
+            "during the run survives unless this overwrites that key."
+        ),
     )
 
     ls = inv_sub.add_parser("list", help="List recent invocations.")
-    ls.add_argument("--skill", default=None, help="Filter by skill name.")
-    ls.add_argument("--status", default=None, help="Filter by status (one of the 6 values).")
-    ls.add_argument("--limit", type=int, default=20, help="Max rows to print (default 20).")
+    ls.add_argument(
+        "--skill",
+        default=None,
+        help="Show only invocations of this skill name, matched exactly.",
+    )
+    ls.add_argument(
+        "--status",
+        default=None,
+        help=(
+            "Show only invocations in this status: running, completed, failed, timed_out, "
+            "aborted or cancelled."
+        ),
+    )
+    ls.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum rows to print, newest first (default 20).",
+    )
 
 
 def _parse_metadata(raw: str | None) -> dict | None:
@@ -218,3 +253,74 @@ def run_invoke(args: argparse.Namespace) -> int:
         return 0
 
     return 1
+
+
+# ── machine result ────────────────────────────────────────────────────────────
+
+# What a listing reports about one invocation. `node_metadata` is deliberately
+# not here: the store holds it as a JSON document for some rows and as the text
+# of one for others, so a caller could not tell which it had been handed without
+# guessing, and a listing is not where that ambiguity should be settled.
+_INVOCATION_FIELDS = (
+    "id",
+    "skill",
+    "plugin",
+    "status",
+    "prompt",
+    "started_at",
+    "ended_at",
+    "updated_at",
+    "session_count",
+    "project",
+    "project_source",
+)
+
+
+async def _machine_list_data(
+    *, skill: str | None, status: str | None, limit: int
+) -> dict[str, Any]:
+    from .machine import available, readonly_state_db
+
+    result: dict[str, Any] = {
+        "filters": {"skill": skill, "status": status},
+        "limit": limit,
+    }
+    async with readonly_state_db() as (db, why):
+        if db is None:
+            result["invocations"] = why
+            return result
+        rows = await db.list_invocations(skill=skill, status=status, limit=limit)
+    result["invocations"] = available(
+        [{field: row.get(field) for field in _INVOCATION_FIELDS} for row in rows]
+    )
+    return result
+
+
+def _machine_list(argv: list[str]) -> dict[str, Any]:
+    from lionagi.ln.concurrency import run_async
+
+    from .machine import MachineError, machine_parser, parse_machine_argv
+
+    parser = machine_parser("li invoke list")
+    parser.add_argument("--skill", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--status", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--limit", type=int, default=20, help=argparse.SUPPRESS)
+    args = parse_machine_argv(parser, argv)
+    if args.limit < 1:
+        raise MachineError("invalid_input", "--limit must be at least 1")
+    return run_async(_machine_list_data(skill=args.skill, status=args.status, limit=args.limit))
+
+
+def machine_result(argv: list[str]) -> dict[str, Any]:
+    """`li invoke <sub> --machine`."""
+    from .machine import machine_subcommand
+
+    return machine_subcommand(
+        "invoke",
+        argv,
+        {"list": _machine_list},
+        without_seam={
+            "start": "it opens an invocation record, which is a write to the store",
+            "end": "it closes an invocation record, which is a write to the store",
+        },
+    )

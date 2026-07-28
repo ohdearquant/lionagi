@@ -115,6 +115,69 @@ def _default_reason_code_for_entity_status(entity_type: str, status: str) -> str
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
 
+# Shape of the schema this code applies. ``_apply_schema`` stamps it into
+# ``schema_meta.version`` on every open, so the recorded version describes the
+# database as it stands after migrations rather than as it was created. Bump it
+# whenever a migration changes the shape a reader would see -- a new table, a
+# rebuilt CHECK constraint, a column whose meaning changed. Version "1" is the
+# original shape, before the migrations now applied on open existed.
+SCHEMA_VERSION = "2"
+
+
+class SchemaTooNewError(RuntimeError):
+    """The database records a schema version this code does not understand.
+
+    Raised by a writable open when ``schema_meta.version`` is higher than
+    ``SCHEMA_VERSION``. A writable open rewrites the database into the shape
+    this code applies and then stamps that shape into the version row; neither
+    step has established anything about a shape written by a later release, so
+    both are refused rather than performed blind. Read-only opens apply no
+    schema and are unaffected.
+    """
+
+
+def state_db_file() -> Path | None:
+    """The local file a default ``StateDB()`` would open, if it opens one at all.
+
+    Resolved the same way ``StateDB.__init__`` resolves it, so the two cannot
+    disagree about which store is in play. Returns None when the configured
+    store is not a local file — a server, or an in-memory database — because
+    then there is no path to report and nothing a filesystem check can say
+    about it.
+    """
+    raw = settings.LIONAGI_STATE_DB_URL
+    if raw is None:
+        raw = DEFAULT_DB_PATH
+    url = normalize_state_db_url(raw)
+    if dialect_of(url) != "sqlite":
+        return None
+    from sqlalchemy.engine import make_url
+
+    database = make_url(url).database
+    if not database or database == ":memory:":
+        return None
+    return Path(database)
+
+
+def state_db_known_absent() -> bool:
+    """Whether the store a default ``StateDB()`` would open is known not to exist.
+
+    Callers use this to tell "there is no store, so there is no record of
+    anything" apart from "the store is there and something went wrong reading
+    it". Those are different answers and a caller acts differently on each, so
+    the check has to be about the store that will actually be opened. Testing
+    ``DEFAULT_DB_PATH`` instead asks about a file that need not be involved:
+    ``LIONAGI_STATE_DB_URL`` moves the store elsewhere, and then the default
+    path is absent while every row being asked about exists.
+
+    Only a positive answer is confident. Where existence is not a filesystem
+    question this reports False and leaves the open attempt to give the real
+    answer.
+    """
+    path = state_db_file()
+    return path is not None and not path.exists()
+
+
 # The single definition of which schedule_run statuses count as "fired and
 # resolved" for budget bookkeeping (max_runs, one-shot auto-disable). The
 # scheduler service layer must observe the same set — both its defaults and
@@ -327,6 +390,7 @@ TEAM_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["team"]
 EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     "session": frozenset({"ended_at", "node_metadata"}),
     "invocation": frozenset({"ended_at"}),
+    "schedule_run": frozenset({"ended_at", "error_detail", "exit_code"}),
 }
 
 # ── ADR-0035 status vocabulary (valid, not just terminal) ──────────────
@@ -379,10 +443,17 @@ def _validate_columns(fields: dict[str, Any], allowed: frozenset[str]) -> None:
 
 
 def _to_json_column(value: Any) -> Any:
-    """Serialize value to JSON string for round-trippable storage."""
+    """Serialize value to a JSON string for a TEXT column holding JSON.
+
+    Columns bound as ``type_=JSON`` are serialized by the engine instead; this
+    is for the writes that hand the driver a finished string. Both reject inf,
+    -inf and nan rather than storing them, because neither the `null` orjson
+    writes nor the bare `NaN` the stdlib writes can be read back as the value
+    that was handed in.
+    """
     if value is None or isinstance(value, bytes | bytearray | memoryview):
         return value
-    return _json_dumps(value)
+    return _json_dumps(value, check_non_finite=True)
 
 
 def _validate_session_status(status: Any) -> None:
@@ -730,7 +801,60 @@ class StateDB:
 
     # ── Schema management ──────────────────────────────────────────────
 
+    async def _recorded_schema_version(self) -> str | None:
+        """The version stamped in the database, or None when there is none yet.
+
+        Read before any migration runs, so it describes the database as this
+        process found it. A database with no ``schema_meta`` table is one this
+        open is about to create.
+        """
+        async with self._engine.connect() as conn:
+            # AUTOCOMMIT, because on SQLite an implicit transaction here would
+            # be a BEGIN IMMEDIATE: this read runs before every migration, and
+            # taking the write lock to perform it would make concurrent opens
+            # of the same database contend on a lock none of them needs yet.
+            conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+            if not await conn.run_sync(lambda c: inspect(c).has_table("schema_meta")):
+                return None
+            row = (
+                (await conn.execute(text("SELECT value FROM schema_meta WHERE key = 'version'")))
+                .mappings()
+                .first()
+            )
+        return row["value"] if row else None
+
+    async def _refuse_newer_schema(self) -> None:
+        """Refuse to open a database stamped with a version above SCHEMA_VERSION.
+
+        Everything ``_apply_schema`` does afterwards -- adding columns,
+        rebuilding tables to widen CHECK constraints, then recording
+        SCHEMA_VERSION as the shape that resulted -- is written against the
+        schema this release knows. Against a newer one it would rewrite tables
+        on assumptions it cannot check and replace a truthful version stamp
+        with a lower one, leaving a database that reads as understood.
+        """
+        recorded = await self._recorded_schema_version()
+        if recorded is None:
+            return
+        try:
+            recorded_n = int(recorded)
+        except (TypeError, ValueError):
+            # Not a version this code can order against its own, so there is no
+            # downgrade to detect. Leave it to the stamp below.
+            return
+        if recorded_n <= int(SCHEMA_VERSION):
+            return
+        where = self.path if self.dialect == "sqlite" and self.path is not None else self.url
+        raise SchemaTooNewError(
+            f"{where} records schema version {recorded} but this version of lionagi "
+            f"applies schema version {SCHEMA_VERSION}. It was written by a later "
+            "release whose shape this code cannot verify, and opening it for writing "
+            "would migrate it against that shape and record the lower version. "
+            "Upgrade lionagi to open it, or open it read-only to inspect it."
+        )
+
     async def _apply_schema(self) -> None:
+        await self._refuse_newer_schema()
         await self._reconcile_columns()
         if self.dialect == "sqlite":
             await self._drop_legacy_session_status_check()
@@ -756,11 +880,18 @@ class StateDB:
             await self._reconcile_indexes(conn)
             # Seed immutable reference rows; ON CONFLICT DO NOTHING is safe to
             # re-run on every open() because the rows are identity-stable.
+            # The version row is the exception: the migrations above rewrite an
+            # older database into the current shape, so the stamp has to move
+            # with them. DO UPDATE, not DO NOTHING, or a migrated database keeps
+            # reporting the version it was created at. The update only ever
+            # raises the recorded version: a database stamped higher than
+            # SCHEMA_VERSION never reaches here, it is refused at open.
             await conn.execute(
                 text(
-                    "INSERT INTO schema_meta (key, value) VALUES ('version', '1') "
-                    "ON CONFLICT (key) DO NOTHING"
-                )
+                    "INSERT INTO schema_meta (key, value) VALUES ('version', :version) "
+                    "ON CONFLICT (key) DO UPDATE SET value = excluded.value"
+                ),
+                {"version": SCHEMA_VERSION},
             )
             await conn.execute(
                 text(
@@ -988,6 +1119,7 @@ class StateDB:
                             CREATE TABLE sessions_new (
                               id              TEXT    PRIMARY KEY,
                               cc_session_id   TEXT,
+                              run_id          TEXT,
                               created_at      REAL    NOT NULL,
                               node_metadata   JSON,
                               name            TEXT,
@@ -1837,7 +1969,25 @@ class StateDB:
                     "INSERT INTO progressions (id, created_at, collection) VALUES (:id, :ca, :col) "
                     "ON CONFLICT (id) DO NOTHING"
                 ),
-                {"id": progression_id, "ca": time.time(), "col": json.dumps(collection or [])},
+                {
+                    "id": progression_id,
+                    "ca": time.time(),
+                    "col": _to_json_column(collection or []),
+                },
+            )
+
+    async def set_progression(self, progression_id: str, collection: list[str]) -> None:
+        """Replace a progression's collection wholesale.
+
+        Exists so callers outside this module never have to hand the driver a
+        finished JSON string of their own: ``collection`` is a TEXT column, so a
+        pre-serialized value would bypass both the engine's JSON serializer and
+        the checked helper used here.
+        """
+        async with self._tx() as conn:
+            await conn.execute(
+                text("UPDATE progressions SET collection = :col WHERE id = :id"),
+                {"col": _to_json_column(collection or []), "id": progression_id},
             )
 
     async def get_progression(self, progression_id: str) -> list[str]:
@@ -1913,7 +2063,7 @@ class StateDB:
         async with self._tx() as conn:
             result = await conn.execute(
                 text(
-                    """INSERT INTO sessions (id, cc_session_id, created_at, node_metadata, name, "user",
+                    """INSERT INTO sessions (id, cc_session_id, run_id, created_at, node_metadata, name, "user",
                        progression_id, first_msg_id, last_msg_id, updated_at,
                        playbook_name, agent_name, invocation_kind, show_topic,
                        show_play_name, artifacts_path, artifact_contract_json,
@@ -1921,7 +2071,7 @@ class StateDB:
                        status, started_at, ended_at, last_message_at, invocation_id,
                        model, provider, effort, agent_hash,
                        project, project_source)
-                       VALUES (:id, :cc_session_id, :created_at, :node_metadata, :name, :user,
+                       VALUES (:id, :cc_session_id, :run_id, :created_at, :node_metadata, :name, :user,
                                :progression_id, :first_msg_id, :last_msg_id, :updated_at,
                                :playbook_name, :agent_name, :invocation_kind, :show_topic,
                                :show_play_name, :artifacts_path, :artifact_contract_json,
@@ -1938,6 +2088,7 @@ class StateDB:
                 {
                     "id": session["id"],
                     "cc_session_id": session.get("cc_session_id"),
+                    "run_id": session.get("run_id"),
                     "created_at": session.get("created_at", now),
                     "node_metadata": session.get("node_metadata"),
                     "name": session.get("name"),
@@ -2008,6 +2159,29 @@ class StateDB:
                 .first()
             )
         return self._row_to_dict(row) if row else None
+
+    async def get_sessions_for_run(self, run_id: str) -> list[dict[str, Any]]:
+        """Every session recorded against CLI run *run_id*, oldest first.
+
+        A list rather than one row: one run can persist more than one session,
+        and a caller deciding whether the run is over has to see all of them.
+        An empty list means no session was ever recorded under this run id.
+        """
+        async with self._read() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT * FROM sessions WHERE run_id = :run_id "
+                            "ORDER BY created_at ASC, id ASC"
+                        ),
+                        {"run_id": run_id},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [self._row_to_dict(row) for row in rows]
 
     async def get_session_by_cc_id(self, cc_session_id: str) -> dict[str, Any] | None:
         async with self._read() as conn:
@@ -2655,6 +2829,7 @@ class StateDB:
                 project, threshold_config, last_alert_at,
                 spec_version, managed_by, owner_key, authored_spec,
                 resolved_target, resolved_digest, resolved_timezone,
+                effective_timezone, effective_timezone_source,
                 notify_on, notify_command,
                 created_at, updated_at)
                VALUES (:id, :name, :description, :enabled, :trigger_type,
@@ -2669,6 +2844,7 @@ class StateDB:
                        :project, :threshold_config, :last_alert_at,
                        :spec_version, :managed_by, :owner_key, :authored_spec,
                        :resolved_target, :resolved_digest, :resolved_timezone,
+                       :effective_timezone, :effective_timezone_source,
                        :notify_on, :notify_command,
                        :created_at, :updated_at)"""
         ).bindparams(
@@ -2726,6 +2902,8 @@ class StateDB:
             "resolved_target": schedule.get("resolved_target"),
             "resolved_digest": schedule.get("resolved_digest"),
             "resolved_timezone": schedule.get("resolved_timezone"),
+            "effective_timezone": schedule.get("effective_timezone"),
+            "effective_timezone_source": schedule.get("effective_timezone_source"),
             "notify_on": schedule.get("notify_on"),
             "notify_command": schedule.get("notify_command"),
             "created_at": schedule.get("created_at", now),
@@ -2868,6 +3046,8 @@ class StateDB:
             "last_alert_at",
             "last_healthy_poll_at",
             "poller_consecutive_401",
+            "predispatch_refusal_event",
+            "predispatch_refusal_count",
             "spec_version",
             "managed_by",
             "owner_key",
@@ -2875,18 +3055,30 @@ class StateDB:
             "resolved_target",
             "resolved_digest",
             "resolved_timezone",
+            "effective_timezone",
+            "effective_timezone_source",
             "notify_on",
             "notify_command",
         }
     )
 
-    async def update_schedule(self, schedule_id: str, **fields: Any) -> None:
-        stmt, params = self._build_update_schedule_stmt(schedule_id, fields)
+    async def update_schedule(
+        self, schedule_id: str, *, guard_cursor_forward: bool = False, **fields: Any
+    ) -> None:
+        stmt, params = self._build_update_schedule_stmt(
+            schedule_id, fields, guard_cursor_forward=guard_cursor_forward
+        )
         async with self._tx() as conn:
             await conn.execute(stmt, params)
 
     @classmethod
-    def _build_update_schedule_stmt(cls, schedule_id: str, fields: dict[str, Any]):
+    def _build_update_schedule_stmt(
+        cls,
+        schedule_id: str,
+        fields: dict[str, Any],
+        *,
+        guard_cursor_forward: bool = False,
+    ):
         """Validate + build the ``UPDATE schedules`` statement + bound
         params for *fields* without opening a transaction.
 
@@ -2895,6 +3087,18 @@ class StateDB:
         transaction as the occurrence insert) -- the single choke point for
         both the field allowlist and the SQL shape, so the two write paths
         can never drift apart.
+
+        ``guard_cursor_forward`` makes the ``github_cursor`` assignment
+        monotonic: the column moves only if the new value sorts above the
+        stored one. The scheduler passes it, because a poll reads the cursor
+        at tick start and writes it back much later, so its value is a
+        snapshot that an operator's deliberate cursor move can outrun. Without
+        the guard the stale write silently undoes that move, and a backlog the
+        operator had declined becomes eligible again.
+
+        It is a per-COLUMN condition rather than a row predicate on purpose:
+        the same statement carries ``last_fired_at``/``next_fire_at``, and
+        those must land whether or not the cursor is allowed to advance.
         """
         bad = set(fields) - cls._SCHEDULE_UPDATE_ALLOWED_FIELDS
         if bad:
@@ -2913,9 +3117,24 @@ class StateDB:
         }
         fields = dict(fields)
         fields["updated_at"] = time.time()
+        guarded_cursor = (
+            guard_cursor_forward
+            and "github_cursor" in fields
+            and fields["github_cursor"] is not None
+        )
         sets_parts = []
         bind_params = []
         for k in fields:
+            if k == "github_cursor" and guarded_cursor:
+                # Cursors are compared as strings everywhere (the poller
+                # compares them against GitHub's own timestamps), so plain
+                # lexical order IS the ordering.
+                sets_parts.append(
+                    '"github_cursor" = CASE WHEN github_cursor IS NULL '
+                    "OR github_cursor < :github_cursor "
+                    "THEN :github_cursor ELSE github_cursor END"
+                )
+                continue
             sets_parts.append(f'"{k}" = :{k}')
             if k in json_fields:
                 bind_params.append(bindparam(k, type_=JSON))
@@ -3001,7 +3220,12 @@ class StateDB:
         allowlist as ``update_schedule``.
         """
         run_stmt, run_params = self._build_schedule_run_insert_stmt(run)
-        sched_stmt, sched_params = self._build_update_schedule_stmt(schedule_id, schedule_fields)
+        # Engine-only path, so the monotonic cursor guard always applies: the
+        # value being written came from a poll snapshot taken before this
+        # transaction and must never walk an operator's cursor move backwards.
+        sched_stmt, sched_params = self._build_update_schedule_stmt(
+            schedule_id, schedule_fields, guard_cursor_forward=True
+        )
         async with self._tx() as conn:
             await conn.execute(run_stmt, run_params)
             await self._initialize_managed_entity_in_tx(
@@ -3595,7 +3819,9 @@ class StateDB:
         #
         # Also surface the schedule_run that fired this invocation (exit_code,
         # error_detail) so the UI can show why a scheduled run failed without
-        # a second round-trip. Unlike the sessions join above, this uses
+        # a second round-trip. action_kind comes from the same subquery: it is
+        # a property of the fired occurrence, not a column on invocations, and
+        # the lifecycle reaper's policy is per-kind. Unlike the sessions join above, this uses
         # correlated scalar subqueries rather than a ranked derived table:
         # ORDER BY + LIMIT/OFFSET on inv.updated_at narrows to the emitted
         # page first (sorting only invocations, not schedule_runs), and each
@@ -3613,7 +3839,11 @@ class StateDB:
             "  ( SELECT sr.error_detail FROM schedule_runs sr "
             "    WHERE sr.invocation_id = inv.id "
             "    ORDER BY COALESCE(sr.created_at, 0) DESC, sr.id DESC LIMIT 1 "
-            "  ) AS schedule_run_error_detail "
+            "  ) AS schedule_run_error_detail, "
+            "  ( SELECT sr.action_kind FROM schedule_runs sr "
+            "    WHERE sr.invocation_id = inv.id "
+            "    ORDER BY COALESCE(sr.created_at, 0) DESC, sr.id DESC LIMIT 1 "
+            "  ) AS action_kind "
             "FROM invocations inv "
             "LEFT JOIN ( "
             "  SELECT invocation_id, project, project_source FROM ( "

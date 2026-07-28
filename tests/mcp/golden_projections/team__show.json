@@ -1,0 +1,22 @@
+{
+  "path": "team show",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "team": {
+        "description": "Team to show \u2014 its id, its name, or an unambiguous id prefix.",
+        "type": "string",
+        "x-positional": true
+      }
+    },
+    "required": [
+      "team"
+    ],
+    "title": "team show",
+    "type": "object",
+    "x-positional-order": [
+      "team"
+    ]
+  },
+  "stage": "static"
+}

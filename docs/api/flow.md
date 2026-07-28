@@ -66,10 +66,15 @@ Returns the node ID used in `depends_on` lists and result lookups.
 
 `operation` must be the name of a `Branch` method: `"communicate"`, `"operate"`, `"ReAct"`, `"parse"`, etc.
 
-`Builder` is incremental. The first operation has no predecessor. After that,
-omitting `depends_on` (or passing an empty list) attaches the new operation after
-every current head with sequential edges. This is convenient for building a chain,
-but it does **not** create another independent root.
+`Builder` is incremental, and `depends_on` is three-valued:
+
+- a non-empty list — depend on exactly those nodes;
+- `[]` — explicitly no dependencies, so the node is an independent root whatever
+  the current heads are. This is what a fan-out caller wants;
+- `None`, the default — attach the new operation after every current head with
+  sequential edges. Convenient for a chain; it does **not** create another root.
+
+Whichever you pass, the new node becomes the builder's current head.
 
 ### `add_aggregation()`
 
@@ -192,10 +197,11 @@ The executor runs graph roots and newly-ready nodes concurrently, up to
 are satisfied.
 
 Do not confuse executor readiness with Builder shorthand: consecutive
-`add_operation()` calls without `depends_on` are linked sequentially by the builder.
-To express parallel work with this incremental API, expand concurrent children from
-a source node, then aggregate them. If constructing a `Graph` directly, independent
-root nodes are naturally eligible in the same wave.
+`add_operation()` calls that omit `depends_on` are linked sequentially by the
+builder. To express parallel work with this incremental API, pass `depends_on=[]`
+for each independent leg, or expand concurrent children from a source node and
+aggregate them. If constructing a `Graph` directly, independent root nodes are
+naturally eligible in the same wave.
 
 Assigning the same `branch=` controls which conversation executes an operation; it
 does not replace dependency edges. Add explicit edges whenever turns must be ordered

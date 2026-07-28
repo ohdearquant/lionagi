@@ -318,17 +318,21 @@ class Message(Node, Sendable):
         return self._chat_msg()
 
     def _chat_msg(self, *, use_render_cache: bool = True) -> dict[str, Any] | None:
-        """Build a provider chat message, reusing the stable content rendering when safe."""
-        try:
-            role_str = self.role.value if isinstance(self.role, MessageRole) else str(self.role)
-            return {
-                "role": role_str,
-                "content": self._render_cached("chat", lambda: self.rendered)
-                if use_render_cache
-                else self.rendered,
-            }
-        except Exception:
-            return None
+        """Build a provider chat message, reusing the stable content rendering
+        when safe.
+
+        A rendering failure propagates rather than degrading to ``None``: a
+        message that reaches a provider with its content missing is
+        indistinguishable from one that never had any, so content that cannot
+        be carried has to fail where it can be seen.
+        """
+        role_str = self.role.value if isinstance(self.role, MessageRole) else str(self.role)
+        return {
+            "role": role_str,
+            "content": self._render_cached("chat", lambda: self.rendered)
+            if use_render_cache
+            else self.rendered,
+        }
 
     def _render_cached(self, variant: str, render: Callable[[], Any]) -> Any:
         """Return a rendering cached by content identity and revision (not
@@ -476,13 +480,20 @@ def _has_untracked_mutable(root: Any) -> bool:
 
 
 def _content_has_untracked_mutable(content: Any) -> bool:
-    """True if any render-input field on `content` carries a value the
-    revision tracker cannot observe in-place mutation of — the cache must
-    not trust its revision counter and should re-render on every call."""
-    allowed = getattr(content, "allowed", None)
-    if not callable(allowed):
-        return False
-    return any(_has_untracked_mutable(getattr(content, name, None)) for name in allowed())
+    """True if any render input on `content` carries a value the revision
+    tracker cannot observe in-place mutation of — the cache must not trust its
+    revision counter and should re-render on every call.
+
+    Only `MessageContent` enumerates its render inputs through `allowed()`.
+    `Message.content` is typed `Any`, so an arbitrary payload may carry an
+    unrelated attribute of that name with its own signature and meaning;
+    calling it would be calling a stranger's method. Such a payload is instead
+    walked directly — it has no tracked revision, so an immutable one stays
+    cacheable and anything else bypasses the cache.
+    """
+    if not isinstance(content, MessageContent):
+        return _has_untracked_mutable(content)
+    return any(_has_untracked_mutable(getattr(content, name, None)) for name in content.allowed())
 
 
 def _copy_rendered(rendered: Any) -> Any:

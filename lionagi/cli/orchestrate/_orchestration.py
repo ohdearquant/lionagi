@@ -8,6 +8,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -25,13 +26,16 @@ from lionagi import Branch, Session
 from lionagi._errors import ConfigurationError
 from lionagi.agent import AgentSpec, create_agent
 from lionagi.agent.factory import register_profile_injection
+from lionagi.ln import Unset
+from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.state import provenance as _provenance
 
-from .._logging import hint
+from .._logging import hint, warn
 from .._providers import (
     AgentProfile,
+    AgentProfileNotFoundError,
     build_imodel_from_spec,
     list_agents,
     load_agent_profile,
@@ -46,6 +50,9 @@ from .._runs import (
     allocate_run,
     save_last_branch_pointer,
     teardown_persist,
+)
+from .._runs import (
+    active_run_id as _active_run_id,
 )
 from .._util import validate_cwd_exists
 
@@ -73,7 +80,11 @@ __all__ = (
     "role_config",
     "resolve_modes",
     "parse_orchestrator_provider",
+    "DEFAULT_ORCHESTRATOR_AGENT",
 )
+
+#: Profile used when a submit names neither an agent nor a model.
+DEFAULT_ORCHESTRATOR_AGENT = "orchestrator"
 
 
 def parse_orchestrator_provider(model_spec: str) -> tuple[str | None, str | None]:
@@ -85,27 +96,96 @@ def parse_orchestrator_provider(model_spec: str) -> tuple[str | None, str | None
     return ms.model, provider
 
 
+def _role_key(name: str) -> str:
+    """A name reduced to the separator-independent form the loaders key on.
+
+    Both spellings reach one built-in role module, so this is what decides
+    whether a profile names a built-in. It is not a claim that two spellings are
+    always one profile: when both files exist, profile resolution gives the exact
+    spelling priority and they are two profiles. ``available_roles`` handles that
+    case separately.
+    """
+    return name.replace("-", "_")
+
+
 def available_roles() -> list[str]:
-    """Casts roles + user profiles the orchestrator may assign to."""
+    """Casts roles + user profiles the orchestrator may assign to, one entry per role.
+
+    A profile whose file name spells the separator the other way is the same
+    role as the built-in it matches, so the built-in's spelling is the one
+    listed. Two profiles that differ only in separator and match no built-in
+    are a different case: profile resolution gives an exact spelling priority
+    over the other one, so both files are separately loadable and both stay on
+    the menu. Collapsing them would take a selectable profile off it.
+    """
     from lionagi.casts.pattern import list_roles
 
-    return sorted(set(list_roles()) | set(list_agents()))
+    builtins = {_role_key(r): r for r in list_roles()}
+    profiles = [name for name in list_agents() if _role_key(name) not in builtins]
+    return sorted({*builtins.values(), *profiles})
+
+
+def _first_sentence(text: str) -> str:
+    """Opening sentence of ``text``, truncated so one role cannot crowd out
+    the roster."""
+    first = text.split(". ", 1)[0].strip()
+    return (first[:160] + "…") if len(first) > 161 else first
+
+
+_MISSION_LABEL = re.compile(r"^\*\*mission\*\*\s*:?\s*", re.IGNORECASE)
+_MARKDOWN_FURNITURE = re.compile(r"^(#|-{3,}|\||>|```|`[^`]*`$)")
+
+
+def _profile_summary(profile: AgentProfile) -> str:
+    """One line describing what a user profile is for.
+
+    Profiles state their purpose on a ``**Mission**:`` line; when a file has
+    none, its first paragraph of prose is the next best summary.
+
+    Only the authored body is read. ``system_prompt`` also carries the shared
+    LION preamble, which every profile has and none of them is about.
+    """
+    body = profile.raw_body or ""
+    paragraphs = [
+        " ".join(line.strip() for line in block.splitlines() if line.strip())
+        for block in re.split(r"\n\s*\n", body)
+    ]
+    paragraphs = [p for p in paragraphs if p]
+    for p in paragraphs:
+        if _MISSION_LABEL.match(p):
+            return _MISSION_LABEL.sub("", p).strip(" `*")
+    prose = (p for p in paragraphs if not _MARKDOWN_FURNITURE.match(p))
+    return next(prose, "").strip(" `*")
 
 
 def _role_blurb(role: str, default_model: str) -> str:
+    """Roster line body: what the role is for, and what it will run on.
+
+    The description has to match the body that will actually run, or the roster
+    describes one thing while the worker does another. A profile with an
+    authored body replaces the built-in role body, so for those the profile's
+    own summary is the accurate description. A profile that only sets fields
+    like a model authors no body, leaves the built-in composing, and is
+    described by the built-in — the same authored-body signal decides both.
+    """
     try:
-        p = load_agent_profile(role)
-        return f"user profile (model: {p.model or default_model})"
+        profile = load_agent_profile(role)
     except FileNotFoundError:
-        pass
+        profile = None
+
     from lionagi.casts.pattern import Role
 
-    try:
-        desc = Role.load(role).description
-    except ValueError:
-        return ""
-    first = desc.split(". ", 1)[0].strip()
-    return (first[:160] + "…") if len(first) > 161 else first
+    summary = _first_sentence(_profile_summary(profile)) if profile is not None else ""
+    if not summary:
+        try:
+            summary = _first_sentence(Role.load(role).description)
+        except ValueError:
+            summary = ""
+
+    if profile is None:
+        return summary
+    model = f"(model: {profile.model or default_model})"
+    return f"{summary} {model}" if summary else f"user profile {model}"
 
 
 def role_roster(default_model: str) -> str:
@@ -391,6 +471,20 @@ class OrchestrationEnv:
     builder: OperationGraphBuilder
 
     orc_profile: AgentProfile | None
+
+    # The name of the profile above, carried separately so anything recording
+    # the run can name it. Deliberately not defaulted: a construction site that
+    # cannot say which profile the run used has to say so out loud rather than
+    # record a null the reader will mistake for "no profile".
+    orc_profile_name: str | None
+    """Which agent profile this run actually orchestrated under.
+
+    Not necessarily the one the caller named, because a caller who named
+    neither an agent nor a model named none, and the run resolves one on their
+    behalf — this is the one it resolved and loaded. ``None`` means no profile
+    was used at all, which is the caller who named only a model.
+    """
+
     default_model_spec: str
 
     bare: bool
@@ -418,12 +512,37 @@ class OrchestrationEnv:
     # role configuration and AgentSpec prompt construction.
     pack: Pack | None = None
 
+    # The MCP servers every worker in this run is handed, resolved once when the
+    # run was set up. An empty dict is the caller having asked for no servers at
+    # all; None is there being no set to hand over, because none was found.
+    mcp_servers: dict | None = None
+
     # None = no budget configured; workers skip the BUDGET preamble.
     total_budget: int | None = None
     _live_persist: dict | None = field(default=None, repr=False)
     _run_manifest: dict[str, Any] = field(default_factory=dict, repr=False)
     _name_counts: dict[str, int] = field(default_factory=dict)
     _all_names: list[str] = field(default_factory=list)
+
+    # agent_id -> the directory that worker was launched in and told to write
+    # to. Recorded at build time so the end-of-run report can name a worker
+    # that produced nothing, instead of inferring the roster from whichever
+    # directories happen to be non-empty.
+    worker_artifact_dirs: dict[str, Path] = field(default_factory=dict)
+
+    # Every agent_id the run intends to have a worker for, recorded where the
+    # work is decided — from the plan before any branch is built, and from a
+    # spawn request before its branch is set up. This is deliberately a second
+    # record rather than a view over `worker_artifact_dirs`: a roster derived
+    # from the registrations can only ever agree with them, so it could never
+    # show a worker whose registration was skipped. Two independent records
+    # disagreeing is the whole signal.
+    expected_worker_ids: list[str] = field(default_factory=list)
+
+    def expect_worker(self, agent_id: str) -> None:
+        """Declare that this run intends to run a worker under *agent_id*."""
+        if agent_id not in self.expected_worker_ids:
+            self.expected_worker_ids.append(agent_id)
 
     def assign_name(self, role: str) -> str:
         self._name_counts[role] = self._name_counts.get(role, 0) + 1
@@ -438,6 +557,50 @@ class OrchestrationEnv:
     @property
     def all_names(self) -> list[str]:
         return list(self._all_names)
+
+
+def _hand_mcp_servers(imodel, servers: dict | None, *, label: str) -> None:
+    """Give one worker's model the run's server set, or say it could not be given.
+
+    A caller who named a set for this run gets that set applied to every worker
+    whose provider has a transport for one, and is told about every worker whose
+    provider has none. Which providers those are is not decided here — the
+    request is where the set lands, so the function that writes it is the one
+    that answers whether it landed.
+
+    An empty set and no set are different requests. ``{}`` is the caller having
+    asked for no servers, so it is applied as the whole set rather than as
+    nothing to add. ``None`` is there being nothing to hand over, and the model
+    keeps whatever it would have used.
+
+    *label* names the worker, because a run's workers can resolve different
+    providers and a caller reading the warning needs to know which leg lost
+    what.
+    """
+    if servers is None:
+        return
+    from lionagi.agent.factory import apply_forwarded_mcp_servers
+
+    provider = imodel.endpoint.config.provider
+    applied = apply_forwarded_mcp_servers(
+        imodel.endpoint.config.kwargs,
+        servers,
+        provider=provider,
+        exclusive=not servers,
+    )
+    if applied:
+        return
+    lost = (
+        "--no-mcp-config was not applied, so this worker keeps the servers that "
+        "configuration gives it"
+        if not servers
+        else f"the {len(servers)} resolved server(s) ({', '.join(sorted(servers))}) "
+        "are not reachable for this worker"
+    )
+    warn(
+        f"{label}: the {provider} provider takes its MCP servers from its own "
+        f"configuration rather than from the request, so {lost}."
+    )
 
 
 async def setup_orchestration(
@@ -456,9 +619,27 @@ async def setup_orchestration(
     fast: bool = False,
     total_budget: int | None = None,
     pack: str | None = None,
+    mcp_config: str | None = None,
+    no_mcp_config: bool = False,
 ) -> OrchestrationEnv:
     """Resolve orchestrator config, allocate run, build branch+session."""
+    from lionagi.cli._mcp_resolve import resolve_spawn_mcp_servers
     from lionagi.ln.concurrency.errors import cache_cancelled_exc_class
+
+    # Read from *this* process's directory, before --cwd is applied to anything.
+    # Every worker this run builds is handed the same set, so it is resolved
+    # once here — the only point at which the directory the run was started
+    # from is still the one in effect.
+    mcp_resolution = resolve_spawn_mcp_servers(
+        mcp_config,
+        launch_dir=os.getcwd(),
+        disabled=no_mcp_config,
+    )
+    # A refusal resolves to no servers for the same reason a fruitless search
+    # does, and the two must not reach the workers as the same thing: one is a
+    # decision to hand over an empty set, the other is having nothing to hand
+    # over. Keep the decision as an empty set so it survives the handoff.
+    run_mcp_servers = {} if no_mcp_config else mcp_resolution.servers
 
     # Fail fast: a nonexistent --cwd must never silently spawn into a
     # provider-created directory. Forward the tilde-expanded path (providers never expand `~`).
@@ -466,9 +647,37 @@ async def setup_orchestration(
 
     cache_cancelled_exc_class()
 
+    # Naming no agent and no model is a request to orchestrate, not an
+    # incomplete command: orchestration is what this entry point does, so the
+    # orchestrator profile is the answer rather than a question to ask back.
+    # Only the fully unspecified case defaults. A caller who named either one
+    # gets it honoured, and still gets the refusal below if it cannot resolve
+    # to a model, because there the caller did choose and we could not comply.
+    defaulted_agent = not agent_name and not model_spec
+    if defaulted_agent:
+        agent_name = DEFAULT_ORCHESTRATOR_AGENT
+
     orc_profile: AgentProfile | None = None
     if agent_name:
-        orc_profile = load_agent_profile(agent_name)
+        try:
+            orc_profile = load_agent_profile(agent_name)
+        except AgentProfileNotFoundError as exc:
+            if not defaulted_agent:
+                raise
+            # The caller never mentioned this profile, so an error naming it as
+            # if they had asked for it explains nothing. Say what was assumed
+            # and what would satisfy it instead.
+            #
+            # Only the not-found case is translated. The loader reads the file
+            # once it has found one, and a file that disappears between those
+            # two steps raises the same builtin type — reported as a missing
+            # default profile it would send the reader somewhere else entirely.
+            raise ConfigurationError(
+                "Naming neither an agent nor a model orchestrates under the "
+                f"{DEFAULT_ORCHESTRATOR_AGENT!r} agent profile, and no such profile "
+                "was found. Create one in .lionagi/agents/ or ~/.lionagi/agents/, "
+                "or name an agent or a model on this call."
+            ) from exc
         if orc_profile.model and not model_spec:
             model_spec = orc_profile.model
         if orc_profile.effort and not effort:
@@ -479,8 +688,12 @@ async def setup_orchestration(
             fast = True
 
     if not model_spec:
+        # Only reachable when the caller named an agent, since naming nothing
+        # defaults above and naming a model satisfies this outright. So the
+        # caller did choose, and the profile they chose carries no model.
         raise ConfigurationError(
-            "Provide a model spec or use -a/--agent to load a profile with a model."
+            f"Agent profile {agent_name!r} declares no model, and no model spec was given. "
+            "Add a model: line to the profile, or pass a model spec."
         )
 
     from lionagi.casts.catalog import _load_packaged_pack
@@ -499,6 +712,7 @@ async def setup_orchestration(
         fast=fast,
     )
     _orc_provider = orc_imodel.endpoint.config.provider
+    _hand_mcp_servers(orc_imodel, run_mcp_servers, label="orchestrator")
     effort = resolve_persisted_effort(_orc_provider, orc_imodel, effort)
     if cwd:
         orc_imodel.endpoint.config.kwargs.setdefault("repo", Path(cwd))
@@ -519,11 +733,16 @@ async def setup_orchestration(
     else:
         # Built-in "orchestrator" casts role via AgentSpec.compose + factory.
         orc_spec = AgentSpec.compose("orchestrator", pack=loaded_pack, grant_emissions=False)
+        # The factory discovers a config from the agent's own directory unless a
+        # caller hands it a set. A refusal has to be handed over for the same
+        # reason a set does: left to discover, the factory would find one and
+        # overwrite the empty set the orchestrator was just given.
         orc_branch = await create_agent(
             orc_spec,
             load_settings=False,
             chat_model=orc_imodel,
             log_config=orc_log_config,
+            resolved_mcp_servers={} if no_mcp_config else Unset,
         )
         orc_branch.name = "orchestrator"
     _session_id_env = os.environ.get("LIONAGI_SESSION_ID")
@@ -540,6 +759,9 @@ async def setup_orchestration(
         orc_branch=orc_branch,
         builder=builder,
         orc_profile=orc_profile,
+        # Read off the loaded profile rather than off `agent_name`, so the
+        # recorded name cannot name a profile other than the one loaded.
+        orc_profile_name=orc_profile.name if orc_profile is not None else None,
         default_model_spec=model_spec,
         bare=bare,
         effort=effort,
@@ -551,6 +773,7 @@ async def setup_orchestration(
         cwd=cwd,
         total_budget=total_budget,
         pack=loaded_pack,
+        mcp_servers=run_mcp_servers,
     )
 
 
@@ -611,7 +834,11 @@ async def build_worker_branch(
     """Resolve model/profile/system and build a worker Branch. The fourth
     return value, ``messenger_bound``, is True when this worker got the
     in-process messenger tool registered — see docs/internals/cli.md."""
-    from ._common import bare_worker_system
+    from ._common import (
+        bare_worker_system,
+        retarget_artifact_section,
+        worker_artifact_section,
+    )
 
     w_model, w_profile, w_cfg = _resolve_worker_model_spec(env, role, model_override)
 
@@ -637,9 +864,18 @@ async def build_worker_branch(
         theme=env.theme,
         fast=w_fast,
     )
+    _hand_mcp_servers(w_imodel, getattr(env, "mcp_servers", None), label=agent_id)
     artifact_dir = env.run.agent_artifact_dir(agent_id)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     w_imodel.endpoint.config.kwargs["repo"] = artifact_dir
+    # The directory named in the worker's system prompt must be the one the
+    # worker can actually write. The file-editing tool refuses absolute paths
+    # outside the working directory, so only the cwd qualifies — read it back
+    # from the kwargs the worker is launched with rather than reusing the
+    # local, so a later change to how the cwd is chosen cannot leave the
+    # prompt naming a path the worker will be refused.
+    worker_cwd = Path(w_imodel.endpoint.config.kwargs["repo"])
+    env.worker_artifact_dirs[agent_id] = worker_cwd
     project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
     w_imodel.endpoint.config.kwargs.setdefault("add_dir", [])
     if project_root not in w_imodel.endpoint.config.kwargs["add_dir"]:
@@ -669,25 +905,42 @@ async def build_worker_branch(
     )
 
     # Casts-role workers route through the factory; verbatim-prompt workers set
-    # the string directly (no Role to compose from).
+    # the string directly (no Role to compose from). A profile takes the
+    # verbatim path only when it authored a body — one that just sets a model
+    # or an effort has no body to run, and leaves the role composing as usual.
+    #
+    # An authored body is prose the harness did not write, so it carries no
+    # artifact directive of its own — and if it does carry one, the directory it
+    # names is whatever its author typed, not the directory this worker was
+    # launched in. Both cases are handled by retargeting: the section is
+    # appended when absent and rewritten when present, so every verbatim prompt
+    # ends up naming the cwd the worker can actually write.
     verbatim_system: str | None = None
     if system_prompt_override is not None:
-        verbatim_system = system_prompt_override
-    elif not env.bare and w_profile and w_profile.system_prompt:
-        verbatim_system = w_profile.system_prompt
+        verbatim_system = retarget_artifact_section(system_prompt_override, worker_cwd)
+    elif not env.bare and w_profile and w_profile.raw_body:
+        verbatim_system = retarget_artifact_section(w_profile.system_prompt, worker_cwd)
     elif env.bare or not _is_casts_role(role):
-        verbatim_system = bare_worker_system(grant_spawn=grant_spawn)
+        verbatim_system = bare_worker_system(grant_spawn=grant_spawn, artifact_dir=worker_cwd)
 
     log_config = DataLoggerConfig(auto_save_on_exit=False)
     if verbatim_system is None:
         # Casts-role path: factory prepends LION_SYSTEM and renders the policy
         # block; grant_emissions off — spawn rights granted below if needed.
+        # A casts-role worker composes its prompt from the role body and never
+        # sees `bare_worker_system`, so the artifact directive is appended here
+        # too — otherwise the default (non-`--bare`) worker, which is the
+        # common case, would still be told nothing about where output belongs.
+        artifact_section = worker_artifact_section(worker_cwd)
+        composed_extra = (
+            f"{artifact_section}\n\n{team_section}" if team_section else artifact_section
+        )
         spec = AgentSpec.compose(
             role,
             modes=resolved_modes,
             pack=env.pack if env.pack is not None else "default",
             grant_emissions=False,
-            system_prompt=team_section,
+            system_prompt=composed_extra,
             khive_injection=(getattr(w_profile, "khive_injection", None) if w_profile else None),
         )
         wb = await create_agent(
@@ -956,6 +1209,116 @@ def make_team_lifecycle_coordinator(
     )
 
 
+def collect_worker_artifacts(env: OrchestrationEnv) -> list[dict]:
+    """List what each worker actually wrote, one entry per worker the run expected.
+
+    The roster comes from the directories the run handed out, not from a scan
+    for non-empty ones, so a worker that wrote nothing is still an entry — with
+    an empty ``files`` list — rather than an absence. A run where nothing was
+    written therefore reports every worker as having produced nothing, instead
+    of rendering as a clean report with no rows.
+
+    That roster is then checked against the workers the run said it would have.
+    A worker the run expected but never registered a directory for is emitted as
+    an ``unregistered`` entry rather than dropped: the failure it represents —
+    a code path that launches a worker without giving it a directory — is
+    exactly the one an omission would hide, because an omission and a run that
+    simply had fewer workers look identical in the output.
+
+    Each entry carries a ``status``, because the ways a directory can fail to
+    yield files are not interchangeable:
+
+    ``unreadable``
+        traversal raised — we could not look.
+    ``missing``
+        the path is gone. Registration creates the directory, so a registered
+        path that no longer exists was removed after the fact; that is a
+        different event from a worker declining to write, and reporting it as
+        "produced nothing" would attribute someone else's deletion to the
+        worker.
+    ``unregistered``
+        the run expected this worker and no directory was ever recorded for it.
+    ``reported``
+        we looked and ``files`` is what was there, empty or not.
+    """
+    entries: list[dict] = []
+    registered = env.worker_artifact_dirs
+    for agent_id, adir in registered.items():
+        entry: dict = {"agent_id": agent_id, "dir": str(adir), "files": [], "status": "reported"}
+        adir = Path(adir)
+        if not adir.exists():
+            entry["status"] = "missing"
+            entry["error"] = "the directory recorded for this worker does not exist"
+        else:
+            try:
+                files = sorted(str(p.relative_to(adir)) for p in adir.rglob("*") if p.is_file())
+            except OSError as exc:
+                entry["status"] = "unreadable"
+                entry["error"] = f"{type(exc).__name__}: {exc}"
+            else:
+                entry["files"] = files
+        entries.append(entry)
+
+    for agent_id in getattr(env, "expected_worker_ids", None) or ():
+        if agent_id in registered:
+            continue
+        entries.append(
+            {
+                "agent_id": agent_id,
+                "dir": None,
+                "files": [],
+                "status": "unregistered",
+                "error": "no artifact directory was recorded for this worker",
+            }
+        )
+    return entries
+
+
+def _emit_worker_artifact_report(entries: list[dict]) -> None:
+    if not entries:
+        return
+    hint("\n[artifacts] files written by each worker:")
+    for e in entries:
+        status = e.get("status", "reported")
+        if status == "unregistered":
+            hint(f"  {e['agent_id']}: NOT REGISTERED ({e['error']})")
+        elif status == "missing":
+            hint(f"  {e['agent_id']}: MISSING ({e['error']}) — {e['dir']}")
+        elif "error" in e:
+            hint(f"  {e['agent_id']}: UNREADABLE ({e['error']}) — {e['dir']}")
+        elif not e["files"]:
+            hint(f"  {e['agent_id']}: produced nothing — {e['dir']}")
+        else:
+            hint(f"  {e['agent_id']}: {len(e['files'])} file(s) in {e['dir']}")
+            for name in e["files"]:
+                hint(f"      {name}")
+
+    unregistered = [e["agent_id"] for e in entries if e.get("status") == "unregistered"]
+    if unregistered:
+        warn(
+            "these workers were expected but never had an artifact directory "
+            f"recorded, so nothing they wrote can be located: {', '.join(unregistered)}"
+        )
+    gone = [e["agent_id"] for e in entries if e.get("status") == "missing"]
+    if gone:
+        warn(
+            f"the artifact directory recorded for these workers no longer exists: {', '.join(gone)}"
+        )
+
+
+def _write_branch_snapshot(snap_path: Path, branch: Any) -> None:
+    """Serialize *branch* to *snap_path* so `li agent -r` can resume it.
+
+    A non-finite float is refused before the file is touched: json.dumps writes
+    it as the token ``NaN``/``Infinity``, which the writing process reads back
+    happily and every strict reader rejects, so the corruption would only
+    surface at whatever boundary consumes the snapshot next.
+    """
+    snapshot = branch.to_dict()
+    raise_if_non_finite(snapshot, default=str)
+    snap_path.write_text(json.dumps(snapshot, default=str))
+
+
 def finalize_orchestration(
     env: OrchestrationEnv,
     *,
@@ -990,8 +1353,7 @@ def finalize_orchestration(
 
         # Snapshot failure must not abort finalize; only `li agent -r` is affected.
         try:
-            snap_path = env.run.branch_path(str(branch.id))
-            snap_path.write_text(json.dumps(branch.to_dict(), default=str))
+            _write_branch_snapshot(env.run.branch_path(str(branch.id)), branch)
         except Exception as exc:  # noqa: BLE001
             log.warning(
                 "finalize: branch snapshot write failed for %s: %s",
@@ -1000,14 +1362,26 @@ def finalize_orchestration(
                 exc_info=True,
             )
 
+    # Where each worker actually wrote. Recorded in the run manifest as well as
+    # printed, so a stray write is visible at the end of the run rather than
+    # days later, and is machine-readable after the terminal output is gone.
+    artifact_entries = collect_worker_artifacts(env)
+
     finalize_extras = dict(extras or {})
     if injection_activity:
         finalize_extras["khive_injection"] = injection_stats
+    if artifact_entries:
+        finalize_extras["worker_artifacts"] = artifact_entries
     if finalize_extras:
         env._finalize_extras = finalize_extras
 
     orc_branch_id = str(env.orc_branch.id)
     save_last_branch_pointer(env.run.run_id, orc_branch_id)
+
+    # Not gated on `emit_hints`: a quieter resume-pointer block is a display
+    # preference, whereas suppressing the artifact report would leave a run
+    # with no record of where its output went.
+    _emit_worker_artifact_report(artifact_entries)
 
     if emit_hints:
         hint(f'\n[orchestrator] li agent -r {orc_branch_id} "..."')
@@ -1059,6 +1433,7 @@ async def setup_orchestration_persist(
         await db.create_session(
             {
                 "id": session_id,
+                "run_id": _active_run_id(),
                 "created_at": session_dict["created_at"],
                 "node_metadata": _node_meta,
                 "name": session_dict.get("name"),

@@ -38,6 +38,14 @@ class AnswerModel(BaseModel):
     answer: str
 
 
+class _FalsyModel(SimpleNamespace):
+    """A model stand-in that is False in a boolean context, as an adapter or a
+    wrapping subclass may legitimately be."""
+
+    def __bool__(self) -> bool:
+        return False
+
+
 class TwoFieldModel(BaseModel):
     answer: str
     detail: str
@@ -229,6 +237,50 @@ class TestRunRoundChatDispatch:
         fake = AsyncMock(return_value="api text")
         with patch("lionagi.operations.communicate.communicate.communicate", new=fake):
             result = await _run_round_chat(branch, "hi", ChatParam())
+        assert result == "api text"
+        fake.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_per_call_api_model_overrides_a_cli_branch(self):
+        """A model supplied on the chat param overrides the branch default for
+        this call, so an API model must take the non-streaming path even when
+        the branch's own chat_model is CLI-backed."""
+        branch = SimpleNamespace(chat_model=SimpleNamespace(is_cli=True))
+        fake = AsyncMock(return_value="api text")
+        with patch("lionagi.operations.communicate.communicate.communicate", new=fake):
+            result = await _run_round_chat(
+                branch, "hi", ChatParam(imodel=SimpleNamespace(is_cli=False))
+            )
+        assert result == "api text"
+        fake.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_per_call_cli_model_overrides_an_api_branch(self):
+        """The inverse override: a CLI model on the chat param takes the
+        streaming path even though the branch's chat_model is an API model."""
+        branch = SimpleNamespace(chat_model=SimpleNamespace(is_cli=False))
+        fake = AsyncMock(return_value="cli text")
+        with patch("lionagi.operations.run.run.run_and_collect", new=fake):
+            result = await _run_round_chat(
+                branch, "hi", ChatParam(imodel=SimpleNamespace(is_cli=True))
+            )
+        assert result == "cli text"
+        fake.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_supplied_model_that_is_falsy_still_overrides_the_branch(self):
+        """Whether a model was supplied is decided by sentinel status, not by
+        truthiness. The parameter bag stores whatever the caller passes, so a
+        model object defining ``__bool__`` as False — an adapter or a subclass
+        wrapping another model — is still a supplied model and must select the
+        transport, rather than being discarded for the branch default."""
+        branch = SimpleNamespace(chat_model=SimpleNamespace(is_cli=True))
+        supplied = _FalsyModel(is_cli=False)
+        assert not bool(supplied)
+
+        fake = AsyncMock(return_value="api text")
+        with patch("lionagi.operations.communicate.communicate.communicate", new=fake):
+            result = await _run_round_chat(branch, "hi", ChatParam(imodel=supplied))
         assert result == "api text"
         fake.assert_awaited_once()
 

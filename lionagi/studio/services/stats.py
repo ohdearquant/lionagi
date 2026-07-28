@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import HTTPException, Query
 
-from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+from lionagi.state.db import DEFAULT_DB_PATH, StateDB, state_db_known_absent
 
 from ..registry import studio_route
 from . import agents as agents_svc
@@ -48,10 +48,10 @@ async def get_activity_stats(window: str) -> dict[str, Any]:
     oldest_bucket_start = now_bucket_start - (bucket_count - 1) * bucket_seconds
 
     # A dashboard read must not create/migrate the DB on a fresh workspace.
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         rows: list[dict[str, Any]] = []
     else:
-        async with StateDB(DEFAULT_DB_PATH) as db:
+        async with StateDB() as db:
             rows = await db.activity_stats(
                 window_start=oldest_bucket_start, bucket_seconds=bucket_seconds
             )
@@ -220,7 +220,9 @@ async def get_stats() -> dict[str, Any]:
     return {
         "playbooks": len(playbooks_svc.list_playbooks()),
         "agents": len(agents_svc.list_agents()),
-        "runs": len(await sessions_svc.list_sessions()),
+        # Counted in SQL; materializing the rows just to take len() made the
+        # dashboard's cheapest number the most expensive query on the page.
+        "runs": await sessions_svc.count_sessions(),
         "shows": len(await shows_svc.list_shows()),
         "skills": len(skills_svc.list_skills()),
         "plugins": len(plugins_svc.list_plugins()),

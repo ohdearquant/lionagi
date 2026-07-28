@@ -1,0 +1,10 @@
+{
+  "path": "schedule list",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {},
+    "title": "schedule list",
+    "type": "object"
+  },
+  "stage": "static"
+}

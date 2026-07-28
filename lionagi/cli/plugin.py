@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+from typing import Any
 
 from ._logging import log_error
 
@@ -37,7 +38,10 @@ def add_plugin_subparser(subparsers: argparse._SubParsersAction) -> None:
         "info",
         help="Show a plugin's manifest and trust state.",
     )
-    info.add_argument("name", help="Plugin name (the manifest's `name:` field).")
+    info.add_argument(
+        "name",
+        help="Plugin to describe — its manifest `name:`, as listed by `li plugin list`.",
+    )
 
     trust = plugin_sub.add_parser(
         "trust",
@@ -50,7 +54,7 @@ def add_plugin_subparser(subparsers: argparse._SubParsersAction) -> None:
             "until re-trusted. Use --yes to skip the confirmation prompt."
         ),
     )
-    trust.add_argument("name", help="Plugin name.")
+    trust.add_argument("name", help="Plugin to trust, as named by `li plugin list`.")
     trust.add_argument(
         "--yes",
         action="store_true",
@@ -61,14 +65,23 @@ def add_plugin_subparser(subparsers: argparse._SubParsersAction) -> None:
         "enable",
         help="Enable a plugin (clears `enabled: false` in ~/.lionagi/settings.yaml).",
     )
-    enable.add_argument("name", help="Plugin name.")
+    enable.add_argument(
+        "name",
+        help="Plugin to load again, as named by `li plugin list`. It must already be trusted.",
+    )
 
     disable = plugin_sub.add_parser(
         "disable",
         help="Disable a plugin (sets `enabled: false` in ~/.lionagi/settings.yaml).",
         description="A settings flag, not a file mutation — the bundle stays pristine.",
     )
-    disable.add_argument("name", help="Plugin name.")
+    disable.add_argument(
+        "name",
+        help=(
+            "Plugin to leave installed and trusted but inert, as named by `li plugin list`. "
+            "Re-enable it with `li plugin enable`."
+        ),
+    )
 
 
 def _state_row(record) -> str:  # noqa: ANN001 — PluginRecord, imported lazily by callers
@@ -237,3 +250,81 @@ def run_plugin(args: argparse.Namespace) -> int:
         return _run_set_enabled(args.name, enabled=False)
     log_error(f"unknown plugin subcommand: {args.plugin_command!r}")
     return 1
+
+
+# ── machine result ────────────────────────────────────────────────────────────
+
+
+def _machine_info_data(name: str) -> dict[str, Any]:
+    from lionagi.plugins import PluginRegistry
+    from lionagi.plugins.trust import build_trust_disclosure
+
+    from .machine import MachineError
+
+    PluginRegistry.reset()
+    record = PluginRegistry.get(name)
+    if record is None:
+        raise MachineError("not_found", f"no plugin named {name!r}")
+
+    plugin: dict[str, Any] = {
+        "name": record.name,
+        "version": record.version,
+        "state": record.state.value,
+        "bundle_dir": str(record.bundle_dir),
+        "error": record.error,
+        # None, not an empty disclosure: a bundle whose manifest did not parse
+        # declares nothing that can be read, which is a different fact from a
+        # manifest that declares nothing.
+        "declares": None,
+    }
+    if record.manifest is None:
+        return {"plugin": plugin}
+
+    disclosure = build_trust_disclosure(record)
+    plugin["declares"] = {
+        "description": disclosure["description"],
+        "lionagi": disclosure["lionagi"],
+        "tools": disclosure["tools"],
+        "hooks_external": disclosure["hooks_external"],
+        "agents": disclosure["agents"],
+        "playbooks": disclosure["playbooks"],
+        "providers": disclosure["providers"],
+        "packs": disclosure["packs"],
+    }
+    return {"plugin": plugin}
+
+
+def _machine_info(argv: list[str]) -> dict[str, Any]:
+    from .machine import machine_parser, parse_machine_argv
+
+    parser = machine_parser("li plugin info")
+    parser.add_argument("name", help=argparse.SUPPRESS)
+    args = parse_machine_argv(parser, argv)
+    return _machine_info_data(args.name)
+
+
+def machine_result(argv: list[str]) -> dict[str, Any]:
+    """`li plugin <sub> --machine`.
+
+    `list` is not routed here. It garbage-collects trust records as part of
+    listing — it deletes the record of any plugin whose bundle directory is
+    gone — so it writes to user settings, and what it writes to is the trust
+    surface this whole surface is fenced away from. `trust` is fenced outright.
+    """
+    from .machine import machine_subcommand
+
+    return machine_subcommand(
+        "plugin",
+        argv,
+        {"info": _machine_info},
+        without_seam={
+            "list": (
+                "listing garbage-collects trust records — it deletes the record of "
+                "any plugin whose bundle directory is gone — so it writes to user "
+                "settings, and what it writes to is the trust surface"
+            ),
+            "trust": "recording trust is a human-at-a-terminal operation",
+            "enable": "it writes an enabled flag to user settings",
+            "disable": "it writes an enabled flag to user settings",
+        },
+    )

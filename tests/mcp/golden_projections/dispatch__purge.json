@@ -1,0 +1,36 @@
+{
+  "path": "dispatch purge",
+  "schema": {
+    "additionalProperties": false,
+    "description": "With ID: delete that one row (any status), auditable via admin_events action=dispatch_purge. Without ID: bulk-delete by --status/--before (at least one required, so a bare `purge` cannot mass-delete); --dry-run reports counts without deleting. An explicit --status is honored exactly as given, including pending/delivering (naming an in-flight status is deliberate operator intent). A bare --before with no --status is scoped to terminal statuses only (delivered/acked/dead_letter/expired) and never touches pending/delivering rows.",
+    "properties": {
+      "before": {
+        "description": "Bulk purge: match rows with updated_at <= this epoch-seconds value. Without --status, this is scoped to terminal statuses only (delivered/acked/dead_letter/expired) and never sweeps pending/delivering rows.",
+        "type": "number",
+        "x-flag": "--before"
+      },
+      "dry_run": {
+        "default": false,
+        "description": "Report what would be deleted without deleting (single-row and bulk).",
+        "type": "boolean",
+        "x-flag": "--dry-run"
+      },
+      "id": {
+        "description": "Id of a single dispatch to delete, whatever its status. Omit it to bulk-delete by --status/--before instead; one of the two is then required.",
+        "type": "string",
+        "x-positional": true
+      },
+      "status": {
+        "description": "Bulk purge: match this status exactly, including pending/delivering (explicit status is deliberate operator intent).",
+        "type": "string",
+        "x-flag": "--status"
+      }
+    },
+    "title": "dispatch purge",
+    "type": "object",
+    "x-positional-order": [
+      "id"
+    ]
+  },
+  "stage": "static"
+}

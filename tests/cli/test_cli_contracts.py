@@ -103,6 +103,8 @@ AGENT_HELP_FLAGS = [
     "--image",
     "--invocation",
     "--list-profiles",
+    "--mcp-config",
+    "--no-mcp-config",
     "--notify",
     "--preset",
     "--project",

@@ -1,0 +1,42 @@
+{
+  "path": "schedule runs",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "as_json": {
+        "default": false,
+        "description": "Emit JSON.",
+        "type": "boolean",
+        "x-flag": "--json"
+      },
+      "id": {
+        "description": "Id of the schedule, as returned by `li schedule list` in its `id` field.",
+        "type": "string",
+        "x-positional": true
+      },
+      "limit": {
+        "default": 20,
+        "description": "Max runs to return, 1-200 (default: 20).",
+        "type": "integer",
+        "x-flag": "--limit"
+      },
+      "status": {
+        "description": "Filter by run status; repeatable (e.g. --status failed --status timed_out).",
+        "items": {
+          "type": "string"
+        },
+        "type": "array",
+        "x-flag": "--status"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "title": "schedule runs",
+    "type": "object",
+    "x-positional-order": [
+      "id"
+    ]
+  },
+  "stage": "static"
+}

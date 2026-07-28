@@ -40,7 +40,12 @@ _CORE_DEPS: dict[str, str] = {
 
 _STUDIO_HEALTH_URL_DEFAULT = "http://127.0.0.1:8765/api/admin/health"
 
-_SYMBOLS = {"ok": "✓", "warn": "!", "fail": "✗"}
+_SYMBOLS = {"ok": "✓", "warn": "!", "fail": "✗", "unknown": "?"}
+
+# Statuses that must not be read as a passing check. `unknown` is here because a
+# check that could not be run has established nothing, and reporting it as a pass
+# is the failure mode this file exists to prevent.
+_NOT_PASSING = ("fail", "unknown")
 
 
 def _result(status: str, detail: str) -> dict[str, str]:
@@ -144,10 +149,58 @@ def _check_lionagi_home(home: Path | None = None) -> dict[str, str]:
     return _result("ok", f"{home} writable (runs/ dir ok)")
 
 
+def _check_code_identity() -> dict[str, str]:
+    """Fail when the code that answered is not the code the environment implies.
+
+    An install can be healthy in every other respect and still be serving a tree
+    that stopped tracking its upstream commits ago — the process loaded that tree
+    once, at startup, and nothing since has told anyone. This is the check that
+    tells them.
+    """
+    from ._code_identity import code_identity
+
+    try:
+        identity = code_identity()
+    except Exception as exc:  # noqa: BLE001 — an unanswerable check is unknown, not ok
+        return _result("unknown", f"could not establish code identity: {type(exc).__name__}: {exc}")
+
+    version = identity["version"]
+    path = identity["package_path"]
+    verbs = identity["verb_count"]
+    where = f"lionagi {version} at {path}, {verbs} verbs registered"
+
+    git = identity["git"]
+    if git["status"] == "ok":
+        position = git["commit_short"]
+        if git["branch"]:
+            position += f" on {git['branch']}"
+        else:
+            position += " (detached)"
+        if git.get("dirty"):
+            # A commit id next to a dirty tree reads as the whole story; it isn't.
+            position += " with uncommitted changes"
+        where += f", git {position}"
+        # The position is the one read when this process started, not the tree's
+        # position now, so it is quoted with the time it was true of.
+        taken_at = identity.get("git_snapshot_taken_at")
+        if taken_at:
+            where += f" as read at {taken_at}"
+    elif git["status"] == "not_a_git_checkout":
+        where += ", not a git checkout"
+
+    drift = identity["drift"]
+    if drift["status"] == "drift":
+        return _result("fail", f"{where} — " + "; ".join(drift["reasons"]))
+    if drift["status"] == "unknown":
+        return _result("unknown", f"{where} — " + "; ".join(drift["unknown"]))
+    return _result("ok", where)
+
+
 def collect_checks() -> dict[str, dict[str, str]]:
     """Run every check and return a flat name -> {status, detail} mapping."""
     checks: dict[str, dict[str, str]] = {}
     checks["lionagi_version"] = _check_version()
+    checks["code_identity"] = _check_code_identity()
     checks["python"] = _check_python()
     for mod, result in _check_imports().items():
         checks[f"import:{mod}"] = result
@@ -184,6 +237,6 @@ def run_doctor(args: argparse.Namespace) -> int:
         for name, result in checks.items():
             symbol = _SYMBOLS.get(result["status"], "?")
             print(f"{symbol} {name}: {result['detail']}")
-    if any(result["status"] == "fail" for result in checks.values()):
+    if any(result["status"] in _NOT_PASSING for result in checks.values()):
         return 1
     return 0

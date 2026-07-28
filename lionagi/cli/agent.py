@@ -32,6 +32,7 @@ from ._context_from import (
     resolve_and_build_context_block,
 )
 from ._logging import hint, log_error
+from ._mcp_resolve import McpConfigError, McpResolution, resolve_spawn_mcp_servers
 from ._providers import (
     _CLAUDE_PROVIDER_NAMES,
     BACKENDS,
@@ -294,6 +295,50 @@ class _ProgressReport:
         )
 
 
+def _report_mcp_resolution(
+    resolution: McpResolution, *, provider: str, cwd: str | None, forwarded: bool
+) -> None:
+    """Say at spawn time what tool surface the leg is actually getting.
+
+    The whole point of resolving here is that a leg starting without the
+    servers its instructions assume should be visible when it is launched
+    rather than inferred from its output an hour later. Silence is reserved
+    for the one case where it is accurate: servers resolved and handed over.
+
+    ``forwarded`` is the caller's answer to "does this spawn hand the resolved
+    set to the leg?", read off the request that spawn built. This function must
+    not re-derive it from the provider name: a second list here is what let the
+    message contradict the spawn.
+    """
+    from lionagi.cli._logging import warn
+
+    if not forwarded:
+        if resolution.servers is not None:
+            warn(
+                f"MCP servers resolved from {resolution.source} are not carried to "
+                f"provider {provider!r} on this spawn path. This leg gets whatever "
+                "its own provider resolves for itself."
+            )
+        return
+
+    if resolution.servers is not None:
+        names = ", ".join(sorted(resolution.servers))
+        hint(f"[mcp] {len(resolution.servers)} server(s) from {resolution.source}: {names}")
+        return
+
+    if resolution.reason is None:
+        return  # --no-mcp-config: chosen, not degraded
+
+    target = cwd or os.getcwd()
+    warn(
+        f"no MCP servers are being handed to this leg ({resolution.reason}; searched "
+        f"from {resolution.searched_from}). It will start with only whatever the "
+        f"{provider} CLI discovers from {target} itself, which is where a leg pointed at "
+        "a checkout silently loses them. Pass --mcp-config PATH, or --no-mcp-config "
+        "to state that this is intended."
+    )
+
+
 async def _run_agent(
     model_str: str | None,
     prompt: str,
@@ -316,6 +361,8 @@ async def _run_agent(
     context_budget: int | None = None,
     notify: str | None = None,
     images: list[str] | None = None,
+    mcp_config: str | None = None,
+    no_mcp_config: bool = False,
     _auto_resumed: bool = False,
 ) -> tuple[str, str, str, str, str | None]:
     """Execute one agent turn; returns (result, provider, branch_id, terminal_status, session_id).
@@ -327,6 +374,14 @@ async def _run_agent(
     # into a provider-created dir. Forward the tilde-expanded path — providers
     # never expand `~`.
     cwd = validate_cwd_exists(cwd)
+    # Read from *this* process's directory, before --cwd is applied to anything.
+    # The child's tool surface is meant to be a property of the submission, and
+    # this is the only point at which the submitting directory is still known.
+    mcp_resolution = resolve_spawn_mcp_servers(
+        mcp_config,
+        launch_dir=os.getcwd(),
+        disabled=no_mcp_config,
+    )
     if resume and continue_last:
         raise ConfigurationError("--resume / -r and --continue-last / -c are mutually exclusive.")
     if preset and (resume or continue_last):
@@ -453,16 +508,44 @@ async def _run_agent(
                 "sandboxed default, or use an agent profile (-a). --bypass also "
                 "works but disables the sandbox."
             )
-        chat_model = build_chat_model(provider, model, yolo, verbose, theme, effort, fast, bypass)
+        chat_model = build_chat_model(
+            provider,
+            model,
+            yolo,
+            verbose,
+            theme,
+            effort,
+            fast,
+            bypass,
+            mcp_servers=mcp_resolution.servers,
+        )
         effort = resolve_persisted_effort(provider, chat_model, effort)
+        # Two spawn shapes hand the set over in two different places, so the
+        # message has to read the one that applies. A plain leg gets only what
+        # build_chat_model already put on the request, which is knowable here;
+        # a create_agent leg is handed the set inside create_agent, so its
+        # message waits for the request that call produces (below).
+        takes_create_agent_path = preset == "coding" or has_role_key
+        if not takes_create_agent_path:
+            from lionagi.agent.factory import request_kwargs_carry_forwarded_mcp
+
+            # Read the request build_chat_model produced: the two transports
+            # put the set in different places, and a provider name is what got
+            # this wrong before.
+            built_config = getattr(getattr(chat_model, "endpoint", None), "config", None)
+            forwarded = request_kwargs_carry_forwarded_mcp(getattr(built_config, "kwargs", None))
+            _report_mcp_resolution(mcp_resolution, provider=provider, cwd=cwd, forwarded=forwarded)
 
         # Opt-in profile `role:` key switches a plain `-a <profile>` leg onto
         # the same create_agent path as --preset coding, parameterized by role.
-        if preset == "coding" or has_role_key:
+        if takes_create_agent_path:
             took_create_agent_path = True
             # Use create_agent so CodingToolkit tools and path-guards are wired;
             # compose the profile extension into the spec before calling it.
-            from lionagi.agent.factory import create_agent
+            from lionagi.agent.factory import (
+                create_agent,
+                request_carries_forwarded_mcp,
+            )
 
             # Use profile.raw_body, not profile.system_prompt, to avoid
             # duplicating LION_SYSTEM_MESSAGE (see docs/internals/cli.md).
@@ -479,11 +562,24 @@ async def _run_agent(
             # of the profile's frontmatter — propagate an explicit opt-out.
             if profile is not None and not profile.lion_system:
                 spec.lion_system = False
+            # Hand over the set resolved from the submitting directory. Without
+            # it the factory looks for a config of its own, and a leg pointed
+            # at a checkout gets whatever is found near the target instead of
+            # what this command resolved and reported.
             branch = await create_agent(
                 spec,
                 chat_model=chat_model,
                 log_config=DataLoggerConfig(auto_save_on_exit=False),
                 load_settings=False,
+                resolved_mcp_servers=mcp_resolution.servers,
+            )
+            # The hand-over happened inside create_agent, so the request it
+            # produced is the only honest source for what this leg is getting.
+            _report_mcp_resolution(
+                mcp_resolution,
+                provider=provider,
+                cwd=cwd,
+                forwarded=request_carries_forwarded_mcp(branch),
             )
         else:
             branch = Branch(
@@ -552,6 +648,29 @@ async def _run_agent(
             cfg.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
         if fast:
             cfg.update(PROVIDER_FAST_KWARGS.get(provider, {}))
+        # A resumed leg re-spawns a CLI child, so it needs the server set handed
+        # to it just as a new one does; the persisted branch carries the model,
+        # not the caller's directory. Which providers can be given a set, and
+        # over which transport, is not this call site's question to answer.
+        from lionagi.agent.factory import (
+            apply_forwarded_mcp_servers,
+            request_kwargs_carry_forwarded_mcp,
+        )
+
+        apply_forwarded_mcp_servers(
+            cfg,
+            mcp_resolution.servers,
+            provider=provider,
+            exclusive=not mcp_resolution.servers,
+        )
+        # A resumed leg re-spawns from the persisted request, which is the only
+        # thing that decides what it carries — read the answer off it.
+        _report_mcp_resolution(
+            mcp_resolution,
+            provider=provider,
+            cwd=cwd,
+            forwarded=request_kwargs_carry_forwarded_mcp(cfg),
+        )
 
     # Add the profile system prompt for every leg EXCEPT one whose branch carries
     # (or, on a brand-new leg, would carry) a create_agent-composed system message
@@ -803,6 +922,8 @@ async def _run_agent(
             bypass=bypass,
             resume_on_timeout=resume_on_timeout,
             notify=notify,
+            mcp_config=mcp_config,
+            no_mcp_config=no_mcp_config,
             _auto_resumed=True,
         )
 
@@ -840,13 +961,19 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         dest="prompt_flag",
         metavar="TEXT",
         default=None,
-        help="Prompt text (alternative to the positional PROMPT).",
+        help=(
+            "The instruction, as a flag instead of the positional PROMPT. Give it one way or "
+            "the other, never both."
+        ),
     )
     agent.add_argument(
         "--prompt-file",
         metavar="PATH",
         default=None,
-        help="Read the prompt from a file; '-' reads stdin (heredoc-friendly).",
+        help=(
+            "Read the instruction from a file; '-' reads stdin, which is heredoc-friendly. The "
+            "file is read once at spawn, so editing it afterwards cannot change the run."
+        ),
     )
     agent.add_argument(
         "-a",
@@ -865,20 +992,29 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     agent.add_argument(
         "--list-profiles",
         action="store_true",
-        help="Print the resolved agent-profile catalog as JSON and exit.",
+        help=(
+            "Print every agent profile -a would resolve, as JSON, and exit without running "
+            "anything. Use it to find out what names are available here."
+        ),
     )
     agent.add_argument(
         "-r",
         "--resume",
         metavar="BRANCH_ID",
         default=None,
-        help="Resume a previous branch by ID.",
+        help=(
+            "Continue a previous run by its branch id, keeping that conversation's history. "
+            "Cannot be combined with --context-from, which is for starting fresh."
+        ),
     )
     agent.add_argument(
         "-c",
         "--continue-last",
         action="store_true",
-        help="Continue the most recently used branch.",
+        help=(
+            "Continue the most recently used branch, keeping its history, without having to "
+            "look up its id."
+        ),
     )
     agent.add_argument(
         "--preset",
@@ -944,6 +1080,27 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         ),
     )
 
+    agent.add_argument(
+        "--mcp-config",
+        dest="mcp_config",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Read this MCP config and hand its servers to the leg explicitly. "
+            "By default the nearest .mcp.json at or above the directory this "
+            "command was run in is used, so the leg's tools come from the "
+            "submission rather than from --cwd. The file is read once at spawn."
+        ),
+    )
+    agent.add_argument(
+        "--no-mcp-config",
+        dest="no_mcp_config",
+        action="store_true",
+        help=(
+            "Hand the leg no MCP servers, and say so deliberately instead of "
+            "arriving there by an empty search."
+        ),
+    )
     add_common_cli_args(agent)
     return agent
 
@@ -1068,8 +1225,15 @@ def run_agent(args: argparse.Namespace) -> int:
                 context_budget=getattr(args, "context_budget", None),
                 notify=getattr(args, "notify", None),
                 images=image_uris,
+                mcp_config=getattr(args, "mcp_config", None),
+                no_mcp_config=getattr(args, "no_mcp_config", False),
             )
         )
+    except McpConfigError as exc:
+        # An explicitly named --mcp-config that cannot be used: refuse at spawn,
+        # rather than starting a leg whose tool surface is not what was asked for.
+        log_error(str(exc))
+        return 2
     except ContextFromError as exc:
         log_error(str(exc))
         return 2

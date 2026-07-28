@@ -169,9 +169,11 @@ def _all_tools() -> list:
 async def tool_list_runs(page: int = 1, per_page: int = 10) -> dict[str, Any]:
     """List recent studio runs (read-only)."""
     from lionagi.studio.services import runs as runs_svc
+    from lionagi.studio.services import sessions as sessions_svc
 
-    raw = await runs_svc.list_runs()
-    return runs_svc.paginate_runs(raw, page=page, per_page=per_page)
+    raw = await runs_svc.list_runs(limit=per_page, offset=(page - 1) * per_page)
+    total = await sessions_svc.count_sessions()
+    return runs_svc.paginate_runs(raw, page=page, per_page=per_page, total=total)
 
 
 async def tool_list_invocations(limit: int = 10, offset: int = 0) -> dict[str, Any]:
@@ -186,8 +188,8 @@ async def tool_list_sessions(limit: int = 10) -> dict[str, Any]:
     """List recent agent sessions (read-only)."""
     from lionagi.studio.services import sessions as sess_svc
 
-    rows = await sess_svc.list_sessions()
-    return {"sessions": rows[:limit]}
+    rows = await sess_svc.list_sessions(limit=limit)
+    return {"sessions": rows}
 
 
 async def tool_list_playbooks() -> dict[str, Any]:

@@ -207,9 +207,12 @@ def test_collect_checks_shape() -> None:
     assert "lionagi_home" in checks
     assert any(k.startswith("import:") for k in checks)
     assert any(k.startswith("dep:") for k in checks)
+    assert "code_identity" in checks
     for result in checks.values():
         assert set(result) == {"status", "detail"}
-        assert result["status"] in ("ok", "warn", "fail")
+        # `unknown` is a status in its own right: a check that could not be run
+        # has not passed, and collapsing it into `warn` would say it had.
+        assert result["status"] in ("ok", "warn", "fail", "unknown")
 
 
 def test_run_doctor_json_output(capsys: pytest.CaptureFixture) -> None:

@@ -14,6 +14,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from lionagi.casts.emission import Finding, Gap, Verdict
+from lionagi.ln._json_dump import raise_if_non_finite
 
 from .engine import ChainEvent, ChainRun, Engine, EngineEvent, EngineRun, role_profile_route
 
@@ -570,6 +571,10 @@ class HypothesisRun(ChainRun):
             "filing_queue": filing_queue(self),
         }
         chains_path = d / "chains.json"
+        # json.dumps writes a non-finite float as the token NaN/Infinity, which
+        # only Python reads back; refuse rather than emit an artifact that
+        # strict readers reject long after the run that produced it.
+        raise_if_non_finite(payload, default=str)
         chains_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
         trail = render_evidence(self)
         md = f"{report.strip()}\n\n---\n\n{trail}\n" if report.strip() else f"{trail}\n"

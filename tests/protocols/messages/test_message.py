@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+import pytest
+
 from lionagi.protocols.messages.base import (
     MESSAGE_FIELDS,
     MessageField,
@@ -460,3 +462,101 @@ def test_message_content_immutability_via_update():
 
     assert message.content is not original_content
     assert message.content.text == "Updated"
+
+
+class _PayloadWithUnrelatedAllowed:
+    """Generic `Message.content` payload that happens to expose an `allowed`
+    method unrelated to the `MessageContent` field enumerator."""
+
+    def __init__(self, text: str = "still renders"):
+        self.text = text
+
+    def allowed(self, required):
+        return ()
+
+    @property
+    def rendered(self) -> str:
+        return self.text
+
+
+def test_generic_content_with_unrelated_allowed_method_renders():
+    """A payload carrying its own `allowed` method is not mistaken for a
+    field enumerator, and its rendering survives the round trip."""
+    message = RoledMessage(content=_PayloadWithUnrelatedAllowed())
+
+    chat_msg = message.chat_msg
+    assert chat_msg is not None
+    assert chat_msg["content"] == "still renders"
+
+
+def test_generic_content_rendering_is_not_served_stale():
+    """A generic payload has no tracked revision, so its rendering is never
+    served from the cache after the payload changes underneath it."""
+    payload = _PayloadWithUnrelatedAllowed(text="first")
+    message = RoledMessage(content=payload)
+
+    assert message.chat_msg["content"] == "first"
+    payload.text = "second"
+    assert message.chat_msg["content"] == "second"
+
+
+def test_unrenderable_content_raises_rather_than_dropping_the_message():
+    """Content that cannot be rendered fails visibly instead of yielding a
+    message with no content."""
+
+    class _Unrenderable:
+        @property
+        def rendered(self) -> str:
+            raise RuntimeError("cannot render")
+
+    message = RoledMessage(content=_Unrenderable())
+
+    with pytest.raises(RuntimeError, match="cannot render"):
+        _ = message.chat_msg
+
+
+def test_unrenderable_content_surfaces_through_the_manager():
+    """A message that cannot be rendered aborts the conversion instead of
+    leaving a hole in the provider payload."""
+    from lionagi.protocols.messages.manager import MessageManager
+
+    class _Unrenderable:
+        @property
+        def rendered(self) -> str:
+            raise RuntimeError("cannot render")
+
+    manager = MessageManager()
+    manager.add_message(instruction="hello", sender="user", recipient="assistant")
+    manager.messages[manager.progression[0]].content = _Unrenderable()
+
+    with pytest.raises(ValueError):
+        manager.to_chat_msgs()
+
+
+def test_message_content_untracked_mutable_field_still_bypasses_cache():
+    """Guards the precondition the generic-payload change relies on: a
+    `MessageContent` field holding a value the revision tracker cannot watch
+    still re-renders on every call rather than being served from the cache."""
+
+    class _Counter:
+        def __init__(self):
+            self.value = 0
+
+    @dataclass(slots=True)
+    class _ContentWithOpaqueField(MessageContent):
+        counter: Any = None
+
+        @property
+        def rendered(self) -> str:
+            return f"count={self.counter.value}"
+
+        @classmethod
+        def from_dict(cls, data: dict[str, Any]) -> "_ContentWithOpaqueField":
+            return cls(counter=data.get("counter"))
+
+    counter = _Counter()
+    message = RoledMessage(content=_ContentWithOpaqueField(counter=counter))
+
+    assert message.chat_msg["content"] == "count=0"
+    counter.value = 1
+    assert message.chat_msg["content"] == "count=1"

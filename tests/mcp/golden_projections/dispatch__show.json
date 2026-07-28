@@ -1,0 +1,22 @@
+{
+  "path": "dispatch show",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "description": "Id of the dispatch row to show, as listed by `li dispatch ls`.",
+        "type": "string",
+        "x-positional": true
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "title": "dispatch show",
+    "type": "object",
+    "x-positional-order": [
+      "id"
+    ]
+  },
+  "stage": "static"
+}

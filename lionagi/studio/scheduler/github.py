@@ -73,10 +73,20 @@ _cached_token: str | None = None
 # Bounds how many pages github_poll() will fetch hunting for an older,
 # still-undispatched merged PR (merged_at can trail the API's updated_at
 # sort key -- see GithubPollResult.scan_complete). Worst case
-# _MERGED_MODE_MAX_PAGES * per_page (100) PRs inspected per poll; anything
-# buried deeper is picked up on a later poll once the noise ages out.
-# Bounded latency, not bounded correctness.
+# _MERGED_MODE_MAX_PAGES * per_page PRs inspected per poll, so 500 at the
+# per_page=100 the request sends; anything buried deeper is picked up on a
+# later poll once the noise ages out. Bounded latency, not bounded
+# correctness -- as long as the reach stays ahead of the backlog above the
+# stored cursor. It does not recover on its own if it falls behind: nothing
+# dispatches, so the cursor never advances, so the next scan is no shorter.
 _MERGED_MODE_MAX_PAGES = 5
+
+# Page size requested from the API (GitHub's maximum). The page budget above
+# is stated in terms of this, so lowering it shortens the scan's reach by the
+# same factor -- which is how a busy repo ends up with a backlog the scan can
+# never cross. Read it from here rather than restating the literal, so a
+# change to the reach cannot silently disagree with anything measuring it.
+_PER_PAGE = 100
 
 _LINK_NEXT_RE = re.compile(r'<([^>]+)>\s*;\s*rel="next"')
 
@@ -259,7 +269,7 @@ async def github_poll(schedule: dict) -> GithubPollResult:
         "state": "closed" if merged_mode else github_filter.get("state", "open"),
         "sort": "updated",
         "direction": "desc",
-        "per_page": "20",
+        "per_page": str(_PER_PAGE),
     }
     if "base" in github_filter:
         params["base"] = github_filter["base"]
@@ -382,6 +392,8 @@ async def github_poll(schedule: dict) -> GithubPollResult:
     # the oldest fetched updated_at can't be proven safe to dispatch -- drop
     # it entirely (not just mark non-dispatchable) so it's re-fetched and
     # reconsidered on a later poll instead of risking a skipped merge.
+    # (Dispatching one advances the cursor to ITS merged_at, which would step
+    # over any unfetched PR merged earlier -- losing it permanently.)
     unsafe_floor: str | None = None
     if merged_mode and not scan_complete and prs:
         unsafe_floor = min(pr.get("updated_at", "") for pr in prs)
@@ -389,6 +401,7 @@ async def github_poll(schedule: dict) -> GithubPollResult:
     draft_filter = github_filter.get("draft")
     same_repo_filter = github_filter.get("same_repo_only")
     items: list[GithubPollItem] = []
+    held_back: list[Any] = []
     for pr in prs:
         updated = pr.get("updated_at", "")
         if merged_mode:
@@ -405,6 +418,7 @@ async def github_poll(schedule: dict) -> GithubPollResult:
             continue
 
         if unsafe_floor is not None and cursor_at >= unsafe_floor:
+            held_back.append(pr.get("number"))
             continue
 
         is_draft = bool(pr.get("draft", False))
@@ -457,6 +471,27 @@ async def github_poll(schedule: dict) -> GithubPollResult:
         if merged_mode:
             event["pr_merged_at"] = merged_at
         items.append(GithubPollItem(event=event, updated_at=cursor_at, dispatchable=dispatchable))
+
+    # Holding some events back while returning others is ordinary: the caller
+    # advances the cursor past what it got, so the next scan starts higher and
+    # the held-back band drains. Holding back EVERYTHING is the stuck shape --
+    # an empty result means the caller advances no cursor at all, so the next
+    # scan repeats this one exactly, and it is indistinguishable from a quiet
+    # repo at every other signal (the result is "ok", the schedule keeps a
+    # future fire time, no run is recorded). Only that case warns; a truncation
+    # notice that fires on every truncated poll is not a signal.
+    if held_back and not items:
+        _log.warning(
+            "%s: merged-PR scan found %d event(s) past the cursor and dispatched "
+            "none -- all sit at or above the unproven boundary %s of a truncated "
+            "scan (PR numbers: %s). No cursor advances, so the next poll repeats "
+            "this one. If this persists, the backlog above the stored cursor is "
+            "deeper than the scan can reach.",
+            repo,
+            len(held_back),
+            unsafe_floor,
+            ", ".join(str(n) for n in held_back[:10]) + ("..." if len(held_back) > 10 else ""),
+        )
 
     # API order (updated_at desc) isn't contractually identical to the
     # cursor field in merged mode; sort explicitly so cursor advance stays

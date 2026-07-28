@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from lionagi._errors import TimeoutError as LionTimeoutError
+from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.libs.path_safety import validate_path_component as validate_path_component
 from lionagi.ln.concurrency import is_cancelled, run_async
 
@@ -87,7 +88,11 @@ def inject_playbook_schema_into_parser(
             )
             continue
         type_str = field.get("type", "str")
-        help_text = field.get("help", "")
+        # A playbook that declares no help for its own argument still gets a line worth
+        # reading, rather than a blank column in `--help`.
+        help_text = field.get("help") or (
+            f"Playbook argument {arg_name!r} ({type_str}), declared by this playbook's args: block."
+        )
         if type_str == "bool":
             flow_parser.add_argument(
                 cli_flag,
@@ -427,8 +432,10 @@ def _validate_spec_fields(spec: dict) -> str | None:
         prompt = spec["prompt"]
         if not isinstance(prompt, str):
             return f"spec field 'prompt' must be a string, got {type(prompt).__name__}"
-        if len(prompt) > 8192:
-            return "spec field 'prompt' exceeds maximum length of 8192 characters"
+        if len(prompt) > MAX_SPEC_PROMPT_CHARS:
+            return (
+                f"spec field 'prompt' exceeds maximum length of {MAX_SPEC_PROMPT_CHARS} characters"
+            )
 
     if "save" in spec:
         save = spec["save"]
@@ -490,6 +497,61 @@ def _interpolate_prompt(template: str, positional: str | None, playbook_args: di
     return re.sub(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", _sub, template)
 
 
+def _check_assembled_prompt(prompt: str) -> str | None:
+    """Measure the prompt that will run, not the one it was written from.
+
+    A spec's prompt field is checked when the file is read, but that is a
+    template: the caller's positional and the playbook's arguments are
+    substituted into it afterwards, and either can make the result far longer
+    than the text that passed. A caller that names no spec at all skips the
+    file check outright. Both forms arrive here holding the finished text,
+    which is the only version that reaches a run.
+
+    Same bound as the spec field, deliberately: the number exists to refuse a
+    file that is not a prompt, and it sits far enough out that template plus
+    arguments together stay well under it. A second, larger bound here would
+    mean the assembled prompt could pass while the template it came from could
+    not, which is the asymmetry this check is closing.
+    """
+    if len(prompt) > MAX_SPEC_PROMPT_CHARS:
+        return (
+            f"assembled prompt exceeds maximum length of {MAX_SPEC_PROMPT_CHARS} "
+            f"characters (got {len(prompt)})"
+        )
+    return None
+
+
+def _add_mcp_config_args(parser: argparse.ArgumentParser) -> None:
+    """Where this run's workers get their MCP servers from.
+
+    An orchestration builds every worker from the one set its own process
+    resolved, so the answer is given once here rather than left to each
+    provider CLI to find for itself from a directory the caller never chose.
+    """
+    parser.add_argument(
+        "--mcp-config",
+        dest="mcp_config",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Read this MCP config and hand its servers to every worker this run "
+            "builds. By default the nearest .mcp.json at or above the directory "
+            "this command was run in is used, so the workers' tools come from "
+            "the submission rather than from --cwd. The file is read once, at "
+            "startup."
+        ),
+    )
+    parser.add_argument(
+        "--no-mcp-config",
+        dest="no_mcp_config",
+        action="store_true",
+        help=(
+            "Hand the workers no MCP servers, and say so deliberately instead "
+            "of arriving there by an empty search."
+        ),
+    )
+
+
 def add_orchestrate_subparser(
     subparsers: argparse._SubParsersAction,
 ) -> dict[str, argparse.ArgumentParser]:
@@ -540,13 +602,19 @@ def add_orchestrate_subparser(
         "--num-workers",
         type=int,
         default=3,
-        help="Maximum assignments generated (default: 3).",
+        help=(
+            "Maximum assignments the orchestrator generates (default 3). It may generate fewer "
+            "if the task does not divide that far, and --workers specs beyond this cap go unused."
+        ),
     )
     fo.add_argument(
         "--workers",
         metavar="M1,M2,...",
         default=None,
-        help="Worker model pool, assigned round-robin (each spec can include effort).",
+        help=(
+            "Comma-separated worker model specs, assigned round-robin (each may carry an effort "
+            "suffix). This is how one fanout mixes cheap and expensive models across workers."
+        ),
     )
     fo.add_argument(
         "--pack",
@@ -561,7 +629,10 @@ def add_orchestrate_subparser(
         "--max-concurrent",
         type=int,
         default=0,
-        help="Max concurrent workers (default: all).",
+        help=(
+            "Cap on workers running at the same time. 0, the default, runs them all at once — "
+            "lower it to stay under a provider's rate limit."
+        ),
     )
     fo.add_argument(
         "--with-synthesis",
@@ -569,24 +640,33 @@ def add_orchestrate_subparser(
         const=True,
         default=False,
         metavar="MODEL",
-        help="Enable synthesis. Bare flag uses orchestrator model; with arg uses that model.",
+        help=(
+            "Run a final pass merging the workers' results into one answer. Bare flag uses the "
+            "orchestrator model; with an argument, that model instead."
+        ),
     )
     fo.add_argument(
         "--synthesis-prompt",
         default=None,
-        help="Custom synthesis instruction.",
+        help=(
+            "What the merged answer should be — a ranked list, a decision, a single patch. "
+            "Implies synthesis."
+        ),
     )
     fo.add_argument(
         "--output",
         choices=("text", "json"),
         default="text",
-        help="Output format (default: text).",
+        help="Result format: 'text' (default) for reading, 'json' for a machine-readable run.",
     )
     fo.add_argument(
         "--save",
         metavar="DIR",
         default=None,
-        help="Save outputs to directory.",
+        help=(
+            "Directory to write each worker's output and the run's artifacts into. Without it "
+            "they land in the run's own artifacts directory."
+        ),
     )
 
     fo.add_argument(
@@ -602,6 +682,7 @@ def add_orchestrate_subparser(
         ),
     )
 
+    _add_mcp_config_args(fo)
     add_common_cli_args(fo)
 
     fl = orch_sub.add_parser(
@@ -663,25 +744,34 @@ def add_orchestrate_subparser(
         const=True,
         default=False,
         metavar="MODEL",
-        help="Enable final synthesis. Bare flag uses orchestrator model.",
+        help=(
+            "Run a final pass merging the DAG's results into one answer. Bare flag uses the "
+            "orchestrator model; with an argument, that model instead."
+        ),
     )
     fl.add_argument(
         "--max-concurrent",
         type=int,
         default=0,
-        help="Max concurrent agents within a phase (default: all).",
+        help=(
+            "Cap on agents running at the same time within one phase. 0, the default, runs the "
+            "whole phase at once — lower it to stay under a provider's rate limit."
+        ),
     )
     fl.add_argument(
         "--output",
         choices=("text", "json"),
         default="text",
-        help="Output format (default: text).",
+        help="Result format: 'text' (default) for reading, 'json' for a machine-readable run.",
     )
     fl.add_argument(
         "--save",
         metavar="DIR",
         default=None,
-        help="Save outputs to directory.",
+        help=(
+            "Directory to write each agent's output and the run's artifacts into. Required by "
+            "--background, which has nowhere else to report."
+        ),
     )
     fl.add_argument(
         "--team-mode",
@@ -805,6 +895,7 @@ def add_orchestrate_subparser(
             "restore. Without this flag such ops refuse loudly, naming them."
         ),
     )
+    _add_mcp_config_args(fl)
     add_common_cli_args(fl)
 
     # `li o ctl status <id>` aliases the same status renderer as `li agent
@@ -824,9 +915,18 @@ def add_orchestrate_subparser(
             "/ `li play status` when the kind is known."
         ),
     )
-    ctl_status.add_argument("id", help="Session, invocation, or play ID (or short prefix).")
     ctl_status.add_argument(
-        "--json", action="store_true", dest="as_json", help="Emit a stable JSON object."
+        "id",
+        help=(
+            "Session, invocation or play id to report on — full, or an unambiguous prefix. "
+            "Required here: this command has no 'latest run' default."
+        ),
+    )
+    ctl_status.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="Print one JSON object with stable keys instead of the human table, for scripting.",
     )
 
     ctl_pause = ctl_sub.add_parser(
@@ -837,14 +937,26 @@ def add_orchestrate_subparser(
             "it at the next op boundary (idempotent — safe to queue more than once)."
         ),
     )
-    ctl_pause.add_argument("id", help="Session, invocation, or play ID (or short prefix).")
+    ctl_pause.add_argument(
+        "id",
+        help=(
+            "Running flow to pause, by session, invocation or play id (full, or an unambiguous "
+            "prefix). The pause lands at the next op boundary, not mid-op."
+        ),
+    )
 
     ctl_resume = ctl_sub.add_parser(
         "resume",
         help="Queue a resume for a paused flow.",
         description="Queues a resume control row, releasing a pending pause gate.",
     )
-    ctl_resume.add_argument("id", help="Session, invocation, or play ID (or short prefix).")
+    ctl_resume.add_argument(
+        "id",
+        help=(
+            "Paused flow to release, by session, invocation or play id (full, or an unambiguous "
+            "prefix)."
+        ),
+    )
 
     ctl_msg = ctl_sub.add_parser(
         "msg",
@@ -855,8 +967,20 @@ def add_orchestrate_subparser(
             "Op-mode injection (--as-op) is not supported by this command yet."
         ),
     )
-    ctl_msg.add_argument("id", help="Session, invocation, or play ID (or short prefix).")
-    ctl_msg.add_argument("text", help="Message text to inject into the flow context.")
+    ctl_msg.add_argument(
+        "id",
+        help=(
+            "Running flow to message, by session, invocation or play id (full, or an unambiguous "
+            "prefix)."
+        ),
+    )
+    ctl_msg.add_argument(
+        "text",
+        help=(
+            "Message merged into the flow's workspace context. Ops already started will not see "
+            "it; every op that has not started yet will."
+        ),
+    )
 
     return {"fanout": fo, "flow": fl, "ctl": ctl}
 
@@ -911,12 +1035,17 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             return 1
         args.model, args.prompt = resolved
 
-        has_model = args.model is not None or args.agent is not None
-        if not has_model:
-            log_error("model or --agent is required")
-            return 1
+        # Naming neither a model nor an agent is not an incomplete command here:
+        # setup_orchestration reads it as a request to orchestrate and resolves
+        # the default orchestrator profile. A prompt is still required, because
+        # nothing downstream can supply one.
         if not args.prompt:
             log_error("prompt is required")
+            return 1
+
+        prompt_err = _check_assembled_prompt(args.prompt)
+        if prompt_err is not None:
+            log_error(prompt_err)
             return 1
 
         synth = args.with_synthesis
@@ -950,6 +1079,8 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 project=getattr(args, "project", None),
                 pack=getattr(args, "pack", None),
                 notify=getattr(args, "notify", None),
+                mcp_config=getattr(args, "mcp_config", None),
+                no_mcp_config=getattr(args, "no_mcp_config", False),
             ),
             verbose=args.verbose,
             # planning produced no usable assignments — fail loud with actionable message
@@ -1076,13 +1207,17 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             args.prompt = args.model
             args.model = None
 
-        has_model = args.model is not None or args.agent is not None
-        if not has_model:
-            log_error("model or --agent is required")
-            return 1
-
+        # Naming neither a model nor an agent is not an incomplete command here:
+        # setup_orchestration reads it as a request to orchestrate and resolves
+        # the default orchestrator profile. A prompt is still required, because
+        # nothing downstream can supply one.
         if not args.prompt:
             log_error("prompt is required (positional or via -f spec file)")
+            return 1
+
+        prompt_err = _check_assembled_prompt(args.prompt)
+        if prompt_err is not None:
+            log_error(prompt_err)
             return 1
 
         if args.team_mode is not None and getattr(args, "team_attach", None) is not None:
@@ -1175,6 +1310,8 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 project=getattr(args, "project", None),
                 pack=getattr(args, "pack", None),
                 notify=getattr(args, "notify", None),
+                mcp_config=getattr(args, "mcp_config", None),
+                no_mcp_config=getattr(args, "no_mcp_config", False),
             ),
             verbose=args.verbose,
             # planning produced no usable DAG — fail loud with actionable message

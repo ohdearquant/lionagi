@@ -50,7 +50,7 @@ Override: `branch.operate(instruction=..., middle=my_callable)`. Force stream: `
 
 ### Service Layer (`service/`)
 
-**iModel** wraps any provider via `match_endpoint.py`. Providers in `connections/providers/`: OpenAI, Anthropic, Gemini, Ollama, NVIDIA NIM, Perplexity, Groq/OpenRouter.
+**iModel** wraps any provider via `service/connections/match_endpoint.py`. Providers live in `lionagi/providers/`, one package each: chat/model — `openai`, `anthropic`, `google`, `deepseek`, `groq`, `openrouter`, `ollama`, `nvidia_nim`, `perplexity`; search/retrieval — `exa`, `tavily`, `firecrawl`; framework and CLI integrations — `ag2`, `pi`.
 
 ### Operations (`operations/`)
 

@@ -4,17 +4,18 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .db import StateDB
+    from .db import SchemaTooNewError, StateDB
 
-__all__ = ("StateDB",)
+__all__ = ("SchemaTooNewError", "StateDB")
 
 
 def __getattr__(name: str):
-    if name == "StateDB":
-        from .db import StateDB
+    if name in __all__:
+        from . import db
 
-        globals()[name] = StateDB
-        return StateDB
+        value = getattr(db, name)
+        globals()[name] = value
+        return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

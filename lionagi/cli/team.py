@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from lionagi._paths import ensure_lionagi_dir
 from lionagi.cli._util import AmbiguousIdError
+from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.ln._utils import now_utc
 from lionagi.utils import LIONAGI_HOME
 
@@ -90,6 +91,10 @@ def _locked_team(team_id: str, *, create_path: Path | None = None):
             raw = fp.read()
             data = json.loads(raw) if raw.strip() else {}
             yield data
+            # Checked before the file is truncated, so a payload json.dumps
+            # would write as the token NaN/Infinity — read back only by Python,
+            # rejected by every strict reader — leaves the previous file intact.
+            raise_if_non_finite(data, default=str)
             fp.seek(0)
             fp.truncate()
             fp.write(json.dumps(data, indent=2, default=str))
@@ -529,12 +534,18 @@ def add_team_subparser(subparsers: argparse._SubParsersAction) -> None:
 
     # create
     cr = team_sub.add_parser("create", help="Create a new team.")
-    cr.add_argument("name", help="Team name.")
+    cr.add_argument(
+        "name",
+        help="Name for the new team. Every other team command accepts it in place of the team id.",
+    )
     cr.add_argument(
         "-m",
         "--members",
         required=True,
-        help="Comma-separated member names.",
+        help=(
+            "Comma-separated member names. Only these names can send or receive as themselves; "
+            "a message from or to anyone else still goes through, with a warning."
+        ),
     )
 
     # list
@@ -542,18 +553,31 @@ def add_team_subparser(subparsers: argparse._SubParsersAction) -> None:
 
     # show
     sh = team_sub.add_parser("show", help="Show team details and messages.")
-    sh.add_argument("team", help="Team ID or name.")
+    sh.add_argument("team", help="Team to show — its id, its name, or an unambiguous id prefix.")
 
     # send
     snd = team_sub.add_parser("send", help="Send a message to team members.")
-    snd.add_argument("content", help="Message content.")
-    snd.add_argument("--team", "-t", required=True, help="Team ID or name.")
+    snd.add_argument("content", help="Message body, as the recipients will read it.")
+    snd.add_argument(
+        "--team",
+        "-t",
+        required=True,
+        help="Team to send into — its id, its name, or an unambiguous id prefix.",
+    )
     snd.add_argument(
         "--to",
         required=True,
-        help="Recipients: 'all' or comma-separated names.",
+        help="Recipients: 'all' to broadcast to the whole team, or comma-separated member names.",
     )
-    snd.add_argument("--from", dest="sender", default=None, help="Sender name.")
+    snd.add_argument(
+        "--from",
+        dest="sender",
+        default=None,
+        help=(
+            "Name to send as, so recipients know who is asking (defaults to '_cli'). A name that "
+            "is not a member still sends, and is reported as a warning."
+        ),
+    )
     snd.add_argument(
         "--from-op",
         dest="from_op",
@@ -583,8 +607,21 @@ def add_team_subparser(subparsers: argparse._SubParsersAction) -> None:
 
     # receive
     rcv = team_sub.add_parser("receive", aliases=["recv"], help="Read inbox messages.")
-    rcv.add_argument("--team", "-t", required=True, help="Team ID or name.")
-    rcv.add_argument("--as", dest="member", default=None, help="Read as this member.")
+    rcv.add_argument(
+        "--team",
+        "-t",
+        required=True,
+        help="Team to read from — its id, its name, or an unambiguous id prefix.",
+    )
+    rcv.add_argument(
+        "--as",
+        dest="member",
+        default=None,
+        help=(
+            "Read as this member: returns only their unread mail and marks it read. Omit it to "
+            "dump every message and mark nothing read."
+        ),
+    )
 
 
 def run_team(args: argparse.Namespace) -> int:
@@ -601,3 +638,67 @@ def run_team(args: argparse.Namespace) -> int:
         return cmd_receive(args)
     log_error(f"Unknown team command: {cmd}")
     return 1
+
+
+# ── machine result ────────────────────────────────────────────────────────────
+
+
+def _machine_list_data() -> dict[str, Any]:
+    from .machine import REASON_UNREADABLE, available, list_directory, unavailable
+
+    # Read without creating: the human path ensures the directory exists as a
+    # side effect of being about to write to it, and a listing has nothing to
+    # write. A directory that was never created is a definitive zero teams,
+    # which is what the human path also reports once it has made one.
+    listing = list_directory(TEAMS_DIR, missing_is_empty=True)
+    if not listing["available"]:
+        return {"teams": listing, "unreadable": []}
+
+    teams: list[dict[str, Any]] = []
+    unreadable: list[dict[str, Any]] = []
+    for path in sorted(TEAMS_DIR.glob("*.json")):
+        data = read_team_json(path)
+        if data is None:
+            # The printed listing skips these silently. A machine caller is told,
+            # because "four teams" and "four teams and one file I could not read"
+            # are different answers and only one of them is complete.
+            unreadable.append(unavailable(REASON_UNREADABLE, str(path)))
+            continue
+        teams.append(
+            {
+                "id": data.get("id"),
+                "name": data.get("name"),
+                "members": data.get("members") or [],
+                "created_at": data.get("created_at"),
+                "message_count": len(data.get("messages") or []),
+                "path": str(path),
+            }
+        )
+    teams.sort(key=lambda t: (t["name"] or "", t["id"] or ""))
+    return {"teams": available(teams), "unreadable": unreadable}
+
+
+def _machine_list(argv: list[str]) -> dict[str, Any]:
+    from .machine import MachineError
+
+    if argv:
+        raise MachineError("invalid_input", f"li team list takes no arguments: {' '.join(argv)}")
+    return _machine_list_data()
+
+
+def machine_result(argv: list[str]) -> dict[str, Any]:
+    """`li team <sub> --machine`."""
+    from .machine import machine_subcommand
+
+    return machine_subcommand(
+        "team",
+        argv,
+        {"list": _machine_list, "ls": _machine_list},
+        without_seam={
+            "create": "it writes a new team file",
+            "show": "it prints a team's messages for a human reader",
+            "send": "it appends a message to a team file",
+            "receive": "it marks the messages it returns as read, which is a write",
+            "recv": "it marks the messages it returns as read, which is a write",
+        },
+    )

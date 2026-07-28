@@ -7,12 +7,19 @@ from __future__ import annotations
 import argparse
 import signal
 import sys
+import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import import_module
 from types import ModuleType
 
 from ._logging import configure_cli_logging, log_error
+from ._util import (
+    EXIT_CODE_ENVIRONMENT_ERROR,
+    begin_invocation,
+    end_invocation,
+    run_was_allocated,
+)
 
 
 def _load_agent() -> ModuleType:
@@ -45,6 +52,10 @@ def _load_invoke() -> ModuleType:
 
 def _load_kill() -> ModuleType:
     return import_module(".kill", __package__)
+
+
+def _load_machine() -> ModuleType:
+    return import_module(".machine", __package__)
 
 
 def _load_mcp() -> ModuleType:
@@ -216,6 +227,27 @@ _COMMAND_REGISTRY = (
         "run_hooks",
     ),
     _CommandSpec(
+        "handshake",
+        "Report the machine-result contract version this build speaks.",
+        _load_machine,
+        "add_handshake_subparser",
+        "run_handshake",
+    ),
+    _CommandSpec(
+        "runs",
+        "List recorded runs and what each one wrote.",
+        _load_machine,
+        "add_runs_subparser",
+        "run_runs",
+    ),
+    _CommandSpec(
+        "lifecycle",
+        "Report the recorded lifecycle state of a run.",
+        _load_machine,
+        "add_lifecycle_subparser",
+        "run_lifecycle",
+    ),
+    _CommandSpec(
         "mcp",
         "Serve the lionagi MCP server (background job submit/query) over stdio.",
         _load_mcp,
@@ -237,6 +269,15 @@ def _build_parser(selected: _CommandSpec | None) -> tuple[argparse.ArgumentParse
         "--version",
         action="version",
         version=f"%(prog)s {_get_version()}",
+        help="Print the installed lionagi version and exit.",
+    )
+    parser.add_argument(
+        "--machine",
+        action="store_true",
+        help=(
+            "Emit one machine-result JSON object on stdout and send every "
+            "human-facing line to stderr."
+        ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     # Every command is registered for usage/error listing; only the selected
@@ -295,6 +336,18 @@ def run_monitor(args: argparse.Namespace) -> int:
 
 def run_orchestrate(args: argparse.Namespace) -> int:
     return _load_orchestrate().run_orchestrate(args)
+
+
+def run_handshake(args: argparse.Namespace) -> int:
+    return _load_machine().run_handshake(args)
+
+
+def run_runs(args: argparse.Namespace) -> int:
+    return _load_machine().run_runs(args)
+
+
+def run_lifecycle(args: argparse.Namespace) -> int:
+    return _load_machine().run_lifecycle(args)
 
 
 def run_hooks(args: argparse.Namespace) -> int:
@@ -415,6 +468,19 @@ def _handle_play_check(argv: list[str]) -> int:
 
             profile = load_agent_profile(agent_name)
             agent_defaults = getattr(profile, "artifact_defaults", None)
+        except ModuleNotFoundError as exc:
+            # The profile is fine; this installation cannot load it. Nothing has
+            # run, so this is the environment, and returning the ordinary
+            # failure code here would make it indistinguishable from a check
+            # that found a genuinely broken playbook.
+            missing = exc.name or "a required module"
+            log_error(
+                f"playbook '{name}' references agent profile '{agent_name}', "
+                f"which needs {missing}, and it is not installed in this "
+                f"environment. Nothing was checked and no run was started. "
+                f"Install the missing dependency, then re-run."
+            )
+            return EXIT_CODE_ENVIRONMENT_ERROR
         except Exception as exc:  # noqa: BLE001 — match runtime behaviour
             log_error(
                 f"playbook '{name}' references agent profile "
@@ -554,9 +620,7 @@ def _get_version() -> str:
     return __version__
 
 
-def main(argv: list[str] | None = None) -> int:
-    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
-
+def _run(argv: list[str] | None = None) -> int:
     # Resolve verbose before any CLI code emits (argparse hasn't run yet).
     _argv = argv if argv is not None else sys.argv[1:]
     # Scan only before the '--' sentinel so a scheduled action_prompt
@@ -568,6 +632,33 @@ def main(argv: list[str] | None = None) -> int:
         _pre_sentinel = _argv
     verbose = "-v" in _pre_sentinel or "--verbose" in _pre_sentinel
     configure_cli_logging(verbose)
+
+    # Machine mode is answered here, before any other command path can write to
+    # stdout, and never inferred from the shape of the caller's terminal: the
+    # output shape follows what the caller asked for, not how it was invoked.
+    # The dispatcher owns stdout from this point and emits one JSON object on
+    # it; everything human-facing goes to stderr.
+    if "--machine" in _pre_sentinel:
+        machine = _load_machine()
+        return machine.dispatch_machine(machine.strip_machine_flag(_argv))
+
+    # From here on the reader is a person, usually with a pager: `li ... | head`
+    # should stop quietly rather than print a BrokenPipeError traceback, which
+    # is what the default disposition buys.
+    #
+    # The machine path above is deliberately left with the interpreter's own
+    # setting, where SIGPIPE is ignored and EPIPE arrives as a catchable OSError.
+    # Its caller reads the whole stream, so there is no pager to be quiet for,
+    # and this surface promises exactly one thing: every call answers with an
+    # envelope. Under the default disposition that promise is not ours to keep —
+    # any EPIPE anywhere in the process kills it outright, with no envelope and
+    # nothing on stderr, and not every write is one the command made. A database
+    # driver's worker thread signalling a result to an event loop that is closing
+    # underneath it writes to that loop's own wakeup socket, and if the loop got
+    # there first the write is on a socket whose other end is already gone. That
+    # is a routine internal race the interpreter absorbs; only the default
+    # disposition turns it into a command that stopped answering.
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
     # Same pre-argparse scan, so a project-scoped .lionagi/settings.yaml
     # next to a `--cwd DIR` target isn't missed in favor of the shell's cwd.
@@ -621,8 +712,24 @@ def main(argv: list[str] | None = None) -> int:
     selected = _COMMAND_BY_NAME.get(_argv[0]) if _argv else None
     try:
         parser, selected_parser = _build_parser(selected)
+    except ModuleNotFoundError as exc:
+        # A dependency missing from the environment is not a command-scoped
+        # error, even though it surfaces while loading one. Reported below it
+        # would exit 1, which is what a run that started and failed returns, so
+        # a caller could not tell an unusable environment from a real failure.
+        # Only the status changes here: the concise report stays, because a
+        # traceback for a command that never started was judged to be noise and
+        # naming the missing module is the whole diagnosis at this boundary.
+        # Nothing has run at this point — the parser is still being built.
+        missing = exc.name or "a required module"
+        log_error(
+            f"command {_argv[0]!r} cannot run: {missing} is not installed in this "
+            "environment. No run was started, so this is an unusable environment "
+            "rather than a failed run. Install the missing dependency, then re-run."
+        )
+        return EXIT_CODE_ENVIRONMENT_ERROR
     except Exception as exc:
-        # A lazy command module that fails to import surfaces here at
+        # Any other lazy command module that fails to import surfaces here at
         # dispatch; report it as a command-scoped error, not a traceback.
         log_error(f"command {_argv[0]!r} failed to load: {type(exc).__name__}: {exc}")
         return 1
@@ -719,6 +826,56 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.print_help()
     return 1
+
+
+def _report_broken_environment(exc: ModuleNotFoundError) -> int:
+    """Report a missing import as an environment fault, not a failed run.
+
+    A ``ModuleNotFoundError`` reaching the top of the CLI means some import
+    failed and nothing along the way handled it. Reporting it the way a failed
+    run is reported tells every caller the wrong thing: the command looks like
+    it executed and came back empty. That is how a dependency dropping out of an
+    environment reads downstream as a crashed agent.
+
+    Only called once it is established that no run was allocated, which is what
+    makes the message's claim true rather than merely likely. See ``main``.
+
+    The traceback is printed first because it names the import chain and is the
+    only thing that identifies which package went missing and from where. The
+    single-line summary goes last so that a caller which keeps only the tail of
+    stderr still receives the diagnosis rather than the middle of a stack.
+    """
+    traceback.print_exc()
+    missing = exc.name or "a required module"
+    log_error(
+        f"cannot start: {missing} is not installed in this environment. "
+        "No run was started, so this is an unusable environment rather than a "
+        "failed run. Install the missing dependency, then re-run."
+    )
+    return EXIT_CODE_ENVIRONMENT_ERROR
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Entry point for the ``li`` console script.
+
+    Wraps the real implementation so that a missing dependency is reported as a
+    broken environment rather than as a failed run, but only where that is
+    actually true. A lazily imported module can go missing after a command has
+    already allocated a run, and there a run id, a run directory and a manifest
+    exist on disk; calling that an unusable environment would tell the caller
+    nothing was executed while durable state sits in the runs directory. So the
+    allocation marker decides, and once a run exists the error is left to
+    propagate and be reported the way any other failure during a run is.
+    """
+    begin_invocation()
+    try:
+        return _run(argv)
+    except ModuleNotFoundError as exc:
+        if run_was_allocated():
+            raise
+        return _report_broken_environment(exc)
+    finally:
+        end_invocation()
 
 
 if __name__ == "__main__":

@@ -12,6 +12,9 @@ no real command is spawned.
 from __future__ import annotations
 
 import json
+import sys
+import time
+from pathlib import Path
 
 import pytest
 
@@ -88,12 +91,23 @@ def test_command_override_substitutes_and_delivers(job, monkeypatch):
     assert captured["argv"] == ["notify", job, "failed", "t1", "downstream"]
     # the same fields are offered as a JSON payload on stdin
     payload = json.loads(captured["input"])
-    assert payload == {"run_id": job, "status": "failed", "label": "t1", "target": "downstream"}
+    assert payload == {
+        "run_id": job,
+        "status": "failed",
+        "label": "t1",
+        "target": "downstream",
+        # Empty, not absent: no sender was given, and the notifier is told that
+        # rather than left to fill the gap from its working directory.
+        "sender": "",
+    }
     assert rec["notify_delivery"] == {
         "attempted": True,
         "ok": True,
         "exit_code": 0,
         "error": None,
+        # named from the configured template, so the record says which notifier
+        # this was without keeping anything the command itself printed
+        "command": "notify",
     }
 
 
@@ -109,6 +123,7 @@ def test_delivery_failure_is_recorded_not_silent(job, monkeypatch):
         "ok": False,
         "exit_code": 7,
         "error": None,
+        "command": "notify",
     }
 
 
@@ -330,8 +345,282 @@ def test_unknown_run_id_is_noop(monkeypatch, tmp_path):
     calls: list = []
     monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: calls.append(a))
     _no_settings_notifier(monkeypatch)
-    # No job record on disk: mark_terminal returns None, delivery still resolves
-    # to nothing, and the hook exits cleanly.
+    # No job record on disk: mark_terminal reports an absent record, delivery
+    # still resolves to nothing, and the hook exits cleanly.
     rc = _notify_hook.main(["--run-id", "nope", "--status", "completed"])
     assert rc == 0
     assert calls == []
+
+
+def _console_log(run_id: str) -> str:
+    path = config.job_dir(run_id) / "console.log"
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def test_failed_delivery_ends_the_leg_log_with_a_stated_failure(job, monkeypatch):
+    """The log is the fallback for the notice, so it must say the notice died.
+
+    Without this the log of a run whose notice never arrived is
+    indistinguishable from the log of a run still working: it simply ends.
+    """
+    config.job_dir(job).mkdir(parents=True, exist_ok=True)
+    (config.job_dir(job) / "console.log").write_text("work happened\n", encoding="utf-8")
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(7))
+
+    command = json.dumps(["notify", "{status}"])
+    _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+
+    log = _console_log(job)
+    assert "work happened" in log  # appended, never rewritten
+    assert "NOT delivered" in log
+    assert "exit code 7" in log
+
+
+def test_spawn_error_is_named_in_the_leg_log(job, monkeypatch):
+    def boom(*_a, **_k):
+        raise OSError("no such command")
+
+    config.job_dir(job).mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(_notify_hook.subprocess, "run", boom)
+
+    command = json.dumps(["nonexistent-notifier", "{status}"])
+    _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+
+    assert "OSError" in _console_log(job)
+
+
+def test_a_configured_but_unusable_notifier_also_reaches_the_log(job, monkeypatch):
+    """Recorded as a failure on the job, so it must read as one in the log too."""
+    config.job_dir(job).mkdir(parents=True, exist_ok=True)
+    _no_settings_notifier(monkeypatch)
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(0))
+
+    _notify_hook.main(["--run-id", job, "--status", "completed", "--command", "not json ["])
+
+    assert "delivery_command_is_not_valid_json" in _console_log(job)
+
+
+def test_successful_delivery_writes_nothing_to_the_log(job, monkeypatch):
+    config.job_dir(job).mkdir(parents=True, exist_ok=True)
+    (config.job_dir(job) / "console.log").write_text("work happened\n", encoding="utf-8")
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(0))
+
+    command = json.dumps(["notify", "{status}"])
+    _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+
+    assert _console_log(job) == "work happened\n"
+
+
+def test_silence_by_choice_writes_nothing_to_the_log(job, monkeypatch):
+    """Nothing configured is the documented default, not a delivery failure."""
+    config.job_dir(job).mkdir(parents=True, exist_ok=True)
+    (config.job_dir(job) / "console.log").write_text("work happened\n", encoding="utf-8")
+    _no_settings_notifier(monkeypatch)
+
+    _notify_hook.main(["--run-id", job, "--status", "completed"])
+
+    assert _console_log(job) == "work happened\n"
+
+
+def test_an_unwritable_log_does_not_break_the_terminal_path(job, monkeypatch):
+    """The run already finished; a log that cannot be appended to is not fatal."""
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(7))
+    # A directory where the log file belongs: opening it for append raises an
+    # OSError from the real filesystem rather than from a patched stand-in.
+    (config.job_dir(job) / "console.log").mkdir(parents=True, exist_ok=True)
+
+    command = json.dumps(["notify", "{status}"])
+    rc = _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+
+    assert rc == 0
+    assert jobs._read_job(job)["notify_delivery"]["ok"] is False
+
+
+def test_the_record_names_which_notifier_failed(job, monkeypatch):
+    """A failed delivery says which notifier it was, without keeping its output.
+
+    The exit code alone says a delivery failed; on a host with more than one
+    notifier configured over time it does not say which. The program name is
+    operator configuration, already readable by whoever wrote it, so naming it
+    costs nothing the command's own output would have cost.
+    """
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(3))
+
+    command = json.dumps(["notify-webhook", "--status", "{status}"])
+    rc = _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+
+    assert rc == 0
+    outcome = jobs._read_job(job)["notify_delivery"]
+    assert outcome["command"] == "notify-webhook"
+    assert outcome["exit_code"] == 3 and outcome["error"] is None
+
+
+def test_the_named_program_is_the_configured_token_not_the_substituted_one(job, monkeypatch):
+    """The name comes from the template, so no run field can reach the record.
+
+    Substitution puts run fields into the argv that is spawned. Taking the name
+    from the template instead means what lands on the record is exactly the token
+    an operator wrote in their settings, whatever the run was called.
+    """
+    spawned: list = []
+    monkeypatch.setattr(
+        _notify_hook.subprocess,
+        "run",
+        lambda argv, **_k: spawned.append(argv) or _FakeCompleted(1),
+    )
+
+    command = json.dumps(["notify-{status}"])
+    rc = _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+
+    assert rc == 0
+    assert spawned == [["notify-completed"]]  # the run's field reached the argv
+    assert jobs._read_job(job)["notify_delivery"]["command"] == "notify-{status}"
+
+
+def test_a_notifier_that_never_started_stays_tellable_from_one_that_ran(job, monkeypatch):
+    """Naming the program must not blur the two ways a delivery fails.
+
+    "the notifier is not there" and "the notifier ran and rejected this" send an
+    operator to different places, and the record has always told them apart by
+    which of exit_code / error is filled in. Adding the name leaves that intact.
+    """
+    command = json.dumps(["notify-webhook", "{status}"])
+
+    def _boom(*_a, **_k):
+        raise OSError("no such command")
+
+    monkeypatch.setattr(_notify_hook.subprocess, "run", _boom)
+    _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+    never_started = jobs._read_job(job)["notify_delivery"]
+
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(3))
+    _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+    ran_and_failed = jobs._read_job(job)["notify_delivery"]
+
+    assert never_started["command"] == ran_and_failed["command"] == "notify-webhook"
+    assert never_started["exit_code"] is None and never_started["error"] == "OSError"
+    assert ran_and_failed["exit_code"] == 3 and ran_and_failed["error"] is None
+
+
+def test_a_configuration_with_no_program_in_it_names_none(job, monkeypatch):
+    """An override that never parsed has no program, and none is invented."""
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(0))
+    _no_settings_notifier(monkeypatch)
+
+    rc = _notify_hook.main(["--run-id", job, "--status", "completed", "--command", "not json ["])
+
+    assert rc == 0
+    outcome = jobs._read_job(job)["notify_delivery"]
+    assert outcome["error"] == "delivery_command_is_not_valid_json"
+    assert outcome["command"] is None
+
+
+def test_the_delivery_commands_own_output_is_still_never_kept(job, monkeypatch):
+    """Naming the program changes nothing about what the command may say.
+
+    Its stdout and stderr are free text that can carry a credential the command
+    obtained anywhere, so the child inherits DEVNULL and the record holds only
+    fields this hook chose. Asserted here because the name is the boundary: it
+    is configuration, and everything on the far side of it stays discarded.
+    """
+    seen: dict = {}
+
+    def _run(argv, **kwargs):
+        seen.update(kwargs)
+        return _FakeCompleted(4)
+
+    monkeypatch.setattr(_notify_hook.subprocess, "run", _run)
+
+    command = json.dumps(["notify-webhook"])
+    _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+
+    assert seen["stdout"] is _notify_hook.subprocess.DEVNULL
+    assert seen["stderr"] is _notify_hook.subprocess.DEVNULL
+    outcome = jobs._read_job(job)["notify_delivery"]
+    assert set(outcome) == {"attempted", "ok", "exit_code", "error", "command"}
+
+
+# The run whose log this is, standing in for the CLI: it writes ordinary output,
+# fires its --notify template the way the CLI does (shlex-split, ``{status}``
+# replaced), and then writes more output before exiting. That last part is the
+# whole point — the hook appends to a log whose writer is still running and
+# still holding the descriptor it was spawned with.
+_LI_SHIM_THAT_KEEPS_WRITING = """\
+import shlex, subprocess, sys
+
+argv = sys.argv[1:]
+template = argv[argv.index("--notify") + 1]
+
+sys.stdout.write("ordinary output before the notice\\n")
+subprocess.run(
+    [tok.replace("{status}", "completed") for tok in shlex.split(template)],
+    check=False,
+)
+sys.stdout.write("ordinary final output\\n")
+"""
+
+
+def test_the_failure_notice_survives_the_runs_own_remaining_output(monkeypatch, tmp_path):
+    """The appended notice must not be overwritten by the run that is still writing.
+
+    The hook appends to the log while the run that owns it is alive, so the two
+    write to one file through different descriptors. A run whose descriptor
+    carries its own offset writes its next line back over whatever was appended
+    behind it, and the notice — the only trace of a notice that never arrived —
+    goes with it, on a log that was perfectly writable.
+
+    End to end through ``submit`` because that is where the descriptor is
+    opened: the mode it is opened in is the behaviour under test, and a test
+    that opened its own would assert about itself.
+    """
+    # A lionagi home of this test's own, for this process and for every process
+    # it starts: the hook runs in one of those and derives its own job directory
+    # from the environment, so patching the constant here alone would leave the
+    # two halves of this test writing to two different directories.
+    monkeypatch.setenv("LIONAGI_HOME", str(tmp_path))
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "mcp" / "jobs")
+    # The run is launched by absolute script path, so it imports whichever
+    # lionagi its interpreter resolves — which is this checkout only when the
+    # installed distribution happens to point here.
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[2]))
+    # A real delivery that really fails: the outcome the code builds from an
+    # exit code of its own, not one handed to it.
+    monkeypatch.setenv("LIONAGI_MCP_NOTIFY_COMMAND", json.dumps(["/bin/sh", "-c", "exit 1"]))
+    shim = tmp_path / "li_shim.py"
+    shim.write_text(_LI_SHIM_THAT_KEEPS_WRITING)
+    monkeypatch.setattr(config, "li_command", lambda: [sys.executable, str(shim)])
+
+    handle = jobs.submit("agent", [], no_mcp_config=True)
+    _wait_for_run_to_finish(handle["run_id"])
+
+    log = _console_log(handle["run_id"])
+    # Positive control: the run itself wrote, and wrote last, so a missing
+    # notice cannot be read as a probe that never ran the hook at all.
+    assert "ordinary output before the notice" in log
+    assert "ordinary final output" in log
+    assert jobs._read_job(handle["run_id"])["notify_delivery"] == {
+        "attempted": True,
+        "ok": False,
+        "exit_code": 1,
+        "error": None,
+        "command": "/bin/sh",
+    }
+    assert "[notify]" in log
+    assert "NOT delivered" in log
+
+
+def _wait_for_run_to_finish(run_id: str, timeout: float = 60.0) -> None:
+    """Wait until the run's last write has landed.
+
+    The run is spawned detached, so there is nothing to wait on here. Waiting
+    for its final line rather than for the delivery record is what makes the
+    read that follows deterministic: that line is written after the hook has
+    already run, so once it is on disk both writers are done and what the log
+    holds is what it will hold.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if "ordinary final output" in _console_log(run_id):
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"the run never finished writing. log:\n{_console_log(run_id)}")

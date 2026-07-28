@@ -35,7 +35,7 @@ async def test_get_invocation_returns_reason_fields_when_set(tmp_path, monkeypat
     status with a reason."""
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(invocations_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     async with StateDB(db_path) as db:
         inv_id = await _create_invocation(db)
@@ -61,7 +61,7 @@ async def test_get_invocation_returns_none_reason_fields_when_unset(tmp_path, mo
     invocation has never been transitioned (columns are NULL)."""
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(invocations_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     async with StateDB(db_path) as db:
         inv_id = await _create_invocation(db)
@@ -115,7 +115,7 @@ async def test_get_invocation_surfaces_schedule_run_failure_fields(tmp_path, mon
     error_detail so the UI can show WHY a scheduled run failed."""
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(invocations_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     async with StateDB(db_path) as db:
         inv_id = await _create_invocation(db, status="failed")
@@ -141,7 +141,7 @@ async def test_get_invocation_schedule_run_fields_none_for_interactive_invocatio
     run, not a scheduled one) reports None for both fields, not an error."""
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(invocations_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     async with StateDB(db_path) as db:
         inv_id = await _create_invocation(db)
@@ -158,7 +158,7 @@ async def test_list_invocations_includes_schedule_run_failure_fields(tmp_path, m
     existing JOIN, for both a failed-scheduled and a plain invocation."""
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(invocations_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     async with StateDB(db_path) as db:
         inv_a = await _create_invocation(db, status="failed")
@@ -179,7 +179,7 @@ async def test_list_invocations_includes_reason_fields(tmp_path, monkeypatch):
     status_reason_summary with exact values for both the set and null cases."""
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(invocations_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     async with StateDB(db_path) as db:
         inv_a = await _create_invocation(db)

@@ -299,7 +299,12 @@ class Event(Element):
         raise NotImplementedError("Override _invoke() in subclass.")
 
     async def stream(self):
-        """Streaming variant of invoke(). Same outcome contract."""
+        """Streaming variant of invoke(). Same outcome contract.
+
+        A consumer that stops before the stream is exhausted should close it, with
+        ``aclose()`` or ``contextlib.aclosing``, so the teardown below runs at that
+        point rather than whenever the interpreter finalizes the abandoned generator.
+        """
         if self.execution.status in self._TERMINAL_STATUSES:
             return
 
@@ -307,8 +312,12 @@ class Event(Element):
         start = ln.now_utc().timestamp()
 
         try:
-            async for chunk in self._stream():
-                yield chunk
+            # aclosing, not a bare `async for`: a consumer that stops early closes this
+            # generator, and the inner one has to be closed with it so its teardown runs
+            # now rather than whenever the interpreter finalizes it.
+            async with contextlib.aclosing(self._stream()) as source:
+                async for chunk in source:
+                    yield chunk
             self.status = EventStatus.COMPLETED
         except Exception as e:
             self.status = EventStatus.FAILED

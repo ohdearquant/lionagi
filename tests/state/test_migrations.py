@@ -1036,3 +1036,68 @@ async def test_dispatched_at_migration_backfills_preexisting_running_rows(tmp_pa
         assert orphans == []
     finally:
         await state.close()
+
+
+def _create_legacy_session_status_db(db_path: Path) -> None:
+    """Create a database whose sessions table still carries the four-value
+    status CHECK that ``_drop_legacy_session_status_check`` rebuilds away."""
+    from lionagi.state.db import _SCHEMA_PATH
+
+    schema = _SCHEMA_PATH.read_text()
+    current = "  status          TEXT,\n"
+    assert current in schema, "sessions.status declaration not found in schema.sql"
+    legacy = schema.replace(
+        current,
+        "  status          TEXT CHECK(status IS NULL OR status IN "
+        "('running', 'completed', 'failed', 'aborted')),\n",
+        1,
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(legacy)
+
+
+def _sessions_create_sql(db_path: Path) -> str:
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='sessions'"
+        ).fetchone()
+    return row[0] or ""
+
+
+def _schema_meta_version(db_path: Path) -> str | None:
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute("SELECT value FROM schema_meta WHERE key='version'").fetchone()
+    return row[0] if row else None
+
+
+async def test_migrated_db_reports_current_schema_version(tmp_path):
+    """A database whose tables were rewritten on open reports the version this
+    code applies, not the version it was created at."""
+    from lionagi.state.db import SCHEMA_VERSION, StateDB
+
+    db_path = tmp_path / "legacy.db"
+    _create_legacy_session_status_db(db_path)
+    # Stand in for a database created by an older release: the version row says
+    # "1" and the sessions table still has the old CHECK.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE schema_meta SET value = '1' WHERE key = 'version'")
+    assert _schema_meta_version(db_path) == "1"
+    assert "'aborted')" in _sessions_create_sql(db_path)
+
+    state = StateDB(f"sqlite+aiosqlite:///{db_path}")
+    async with state:
+        version = await state.schema_version()
+
+    # The migration ran ...
+    assert "'aborted')" not in _sessions_create_sql(db_path)
+    # ... so the stamp moved with it.
+    assert version == SCHEMA_VERSION
+    assert _schema_meta_version(db_path) == SCHEMA_VERSION
+
+
+def test_schema_sql_seed_version_matches_constant():
+    """schema.sql seeds the same version the applying code stamps."""
+    from lionagi.state.db import _SCHEMA_PATH, SCHEMA_VERSION
+
+    seed = f"INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '{SCHEMA_VERSION}');"
+    assert seed in _SCHEMA_PATH.read_text()

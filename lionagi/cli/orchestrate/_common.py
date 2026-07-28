@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
+from pathlib import Path
 
 from lionagi import json_dumps
 from lionagi.ln._utils import now_utc
@@ -58,10 +60,56 @@ def _format_result_json(
 # ── Default worker system prompt (shared by flow + fanout) ────────────────
 
 
-def bare_worker_system(*, grant_spawn: bool = False) -> str:
+def worker_artifact_section(artifact_dir: str | Path | None) -> str:
+    """Describe where a worker's output files belong.
+
+    ``artifact_dir`` MUST be the worker's working directory. The file-editing
+    tool a CLI worker runs under applies a narrower policy than the surrounding
+    sandbox and refuses absolute paths outside the working directory, so naming
+    any other directory would convert an invented destination into a refused
+    one. Callers derive the value from the cwd they actually launch the worker
+    with rather than recomputing it, and this function rejects a relative path
+    — a relative name would be resolved against whatever cwd the worker happens
+    to have, which is the ambiguity the directive exists to remove.
+
+    With no directory (the import-time default, before any run exists) the text
+    falls back to describing the working directory itself, so the prompt stays
+    coherent and still promises nothing about the caller's instruction.
+    """
+    if artifact_dir is None:
+        return _ARTIFACT_SECTION_NO_DIR
+    path = Path(artifact_dir)
+    if not path.is_absolute():
+        raise ValueError(
+            f"worker artifact directory must be an absolute path, got {artifact_dir!r}"
+        )
+    return _ARTIFACT_SECTION_WITH_DIR.format(artifact_dir=path)
+
+
+_ARTIFACT_DIR_LINE = re.compile(r"^ARTIFACT DIRECTORY: .*$", re.MULTILINE)
+
+
+def retarget_artifact_section(system_text: str, artifact_dir: str | Path) -> str:
+    """Point an inherited artifact directive at *artifact_dir*.
+
+    A reactively spawned worker clones its emitter's branch and so inherits a
+    prompt naming the emitter's directory, while being launched in one of its
+    own. Rewriting the directive keeps the named directory equal to the cwd,
+    which is the only reason it is writable. A prompt with no directive at all
+    gets the section appended.
+    """
+    section = worker_artifact_section(artifact_dir)
+    if _ARTIFACT_DIR_LINE.search(system_text):
+        return _ARTIFACT_DIR_LINE.sub(
+            f"ARTIFACT DIRECTORY: {Path(artifact_dir)}", system_text, count=1
+        )
+    return f"{system_text}\n\n{section}" if system_text else section
+
+
+def bare_worker_system(*, grant_spawn: bool = False, artifact_dir: str | Path | None = None) -> str:
     from lionagi.session.prompts import LION_SYSTEM_MESSAGE
 
-    body = _BARE_WORKER_BODY
+    body = _BARE_WORKER_BODY.format(artifact_section=worker_artifact_section(artifact_dir))
     if grant_spawn:
         body = body.replace(_LEAF_EXECUTOR_LINE, _SPAWN_AFFORDANCE)
     return LION_SYSTEM_MESSAGE.strip() + "\n\n" + body
@@ -76,15 +124,35 @@ outside this assignment. The request is a signal to the workflow orchestrator, \
 not provider-native delegation; use only the granted capability described below."""
 
 
+_ARTIFACT_SECTION_WITH_DIR = """\
+ARTIFACT DIRECTORY: {artifact_dir}
+
+Write every output file there. It is your working directory, it already \
+exists, and it is the one location you are guaranteed to be able to write — \
+paths outside it may be refused by the file-editing tool even when a shell \
+write to the same location would succeed. Do not place output anywhere else, \
+and do not infer a destination that is not named here or in your instruction. \
+Reference upstream artifacts only by paths you were given.\
+"""
+
+_ARTIFACT_SECTION_NO_DIR = """\
+ARTIFACT DIRECTORY: your working directory.
+
+Write every output file there, using relative paths. It is the one location \
+you are guaranteed to be able to write — paths outside it may be refused by \
+the file-editing tool even when a shell write to the same location would \
+succeed. Do not place output anywhere else, and do not infer a destination \
+that is not named here or in your instruction. Reference upstream artifacts \
+only by paths you were given.\
+"""
+
 _BARE_WORKER_BODY = """\
 You are a specialist worker agent in a DAG pipeline. \
 Complete your assigned task directly and precisely. \
 You may read files, use tools, and run commands as needed. \
 Do NOT spawn sub-agents or delegate further — you are a leaf executor.
 
-Follow artifact and path conventions specified in your instruction. \
-Your instruction tells you where to write output and how to reference \
-upstream artifacts from dependent ops.
+{artifact_section}
 
 SESSION PERSISTENCE: Your session persists. If given follow-up work \
 later, your conversation history is retained.

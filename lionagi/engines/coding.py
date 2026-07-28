@@ -19,6 +19,7 @@ from typing import Any
 from pydantic import Field
 
 from lionagi.casts.emission import Verdict
+from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.ln.concurrency import run_sync
 from lionagi.tools._subprocess import _SHELL_CONTROL, _subprocess_sync
 
@@ -368,6 +369,11 @@ class CodingRun(ChainRun):
         """Render each CodeResultRecorded as a ResultRecorded input dict for hypothesis ingestion."""
         seeds: list[dict[str, Any]] = []
         for k in self.events_of(CodeResultRecorded):
+            # The measurements are the likeliest place for a division by zero to
+            # surface, and they are serialized into a string that lands inside a
+            # durable artifact — a NaN token there breaks the nested document
+            # for every reader but Python's own.
+            raise_if_non_finite(k.measurements, default=str)
             seeds.append(
                 {
                     "experiment_ref": k.experiment_ref,
@@ -394,6 +400,7 @@ class CodingRun(ChainRun):
             "hypothesis_seeds": self.to_hypothesis_seeds(),
         }
         results_path = d / "results.json"
+        raise_if_non_finite(payload, default=str)
         results_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
         md = _render_report(self, report)
         report_path = d / "report.md"

@@ -129,8 +129,9 @@ print(result["operation_results"][summary])
 
 `Builder` is incremental: after the first node, omitting `depends_on` attaches the
 new operation after the builder's current head or heads. It is chaining shorthand,
-not a way to create a new independent root. Use explicit dependencies or
-`expand_from_result(..., strategy=ExpansionStrategy.CONCURRENT)` for parallel work.
+not a way to create a new independent root. For parallel work, pass
+`depends_on=[]` to declare a node independent, name explicit dependencies, or use
+`expand_from_result(..., strategy=ExpansionStrategy.CONCURRENT)`.
 
 The CLI's `li o flow` uses the same execution kernel but has a model plan the graph
 from a task. `li play NAME` runs a reusable, parameterized flow specification.

@@ -1,0 +1,67 @@
+{
+  "path": "studio start",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "dev": {
+        "description": "Run the in-repo frontend in dev mode (hot-reload, no build step)",
+        "type": "boolean",
+        "x-flag": "--dev"
+      },
+      "docker": {
+        "description": "Run the bundled frontend + backend via Docker",
+        "type": "boolean",
+        "x-flag": "--docker"
+      },
+      "frontend_port": {
+        "description": "Frontend port (default: 3000)",
+        "type": "integer",
+        "x-flag": "--frontend-port"
+      },
+      "host": {
+        "description": "Host to bind (default: 127.0.0.1)",
+        "type": "string",
+        "x-flag": "--host"
+      },
+      "no_docker": {
+        "description": "==SUPPRESS==",
+        "type": "boolean",
+        "x-flag": "--no-docker"
+      },
+      "no_frontend": {
+        "description": "Only start the backend API server",
+        "type": "boolean",
+        "x-flag": "--no-frontend"
+      },
+      "no_open": {
+        "description": "Don't open the hosted UI in a browser (--web only)",
+        "type": "boolean",
+        "x-flag": "--no-open"
+      },
+      "port": {
+        "description": "Backend API port (default: LIONAGI_STUDIO_PORT env or 8765)",
+        "type": "integer",
+        "x-flag": "--port"
+      },
+      "web": {
+        "description": "Start the backend only; frontend is the hosted UI (default)",
+        "type": "boolean",
+        "x-flag": "--web"
+      }
+    },
+    "title": "studio start",
+    "type": "object",
+    "x-mutually-exclusive": [
+      {
+        "parameters": [
+          "web",
+          "docker",
+          "no_frontend",
+          "dev"
+        ],
+        "required": false
+      }
+    ]
+  },
+  "stage": "static"
+}

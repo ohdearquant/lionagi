@@ -42,6 +42,7 @@ import pytest
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
+import lionagi.state.db as state_db_mod
 from lionagi.state.db import StateDB  # noqa: E402
 
 from ._helpers import run_async  # noqa: E402
@@ -68,6 +69,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/admin/doctor"),
     ("GET", "/api/admin/events"),
     ("GET", "/api/admin/health"),
+    ("GET", "/api/admin/readiness"),
     ("GET", "/api/agents/"),
     ("GET", "/api/agents/{name}"),
     ("GET", "/api/approvals/evidence/verify"),
@@ -235,7 +237,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 99
+    assert len(_GOLDEN_ROUTES) == 100
 
 
 def _compiled_match_shape(path_template: str) -> str:
@@ -349,7 +351,6 @@ def test_api_prefix_appears_exactly_once_in_every_route_path():
 
 def _patch_db(monkeypatch, db_path: Path) -> None:
     """Point every service module's DB reference at a fresh temp path; must run before any seeding call since StateDB() re-reads DEFAULT_DB_PATH fresh per instantiation, and admin.py/sessions.py additionally cache the path in their own module-level `_DB`."""
-    import lionagi.state.db as state_db_mod
     import lionagi.studio.services.admin as admin_mod
     import lionagi.studio.services.db_maintenance as db_maintenance_mod
     import lionagi.studio.services.schedules as schedules_mod
@@ -376,10 +377,10 @@ def _patch_db(monkeypatch, db_path: Path) -> None:
     monkeypatch.setattr(admin_mod, "_DB", str(db_path))
     monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
-    monkeypatch.setattr(schedules_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     # db_maintenance imports DEFAULT_DB_PATH by value, so the state_db_mod
     # patch above never reaches its own module-level binding.
-    monkeypatch.setattr(db_maintenance_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
 
 def _make_client() -> TestClient:
@@ -439,7 +440,13 @@ def test_admin_health_response_shape(tmp_path, monkeypatch):
 
     r = client.get("/api/admin/health")
     assert r.status_code == 200
-    assert sorted(r.json().keys()) == ["db", "diagnostic_run_at", "sessions"]
+    assert sorted(r.json().keys()) == [
+        "code_identity",
+        "db",
+        "diagnostic_run_at",
+        "scheduler_timezone",
+        "sessions",
+    ]
 
 
 def test_admin_events_response_shape(tmp_path, monkeypatch):
@@ -572,7 +579,14 @@ def test_sessions_list_response_shape(tmp_path, monkeypatch):
 
     r = client.get("/api/sessions/")
     assert r.status_code == 200
-    assert sorted(r.json().keys()) == ["sessions"]
+    # The listing is bounded, so it also reports what it left out.
+    assert sorted(r.json().keys()) == [
+        "limit",
+        "offset",
+        "sessions",
+        "total",
+        "truncated",
+    ]
 
 
 def test_sessions_detail_response_shape(tmp_path, monkeypatch):
@@ -632,6 +646,8 @@ _SCHEDULE_DETAIL_KEYS = sorted(
         "created_at",
         "cron_expr",
         "description",
+        "effective_timezone",
+        "effective_timezone_source",
         "enabled",
         "github_cursor",
         "github_filter",
@@ -655,6 +671,8 @@ _SCHEDULE_DETAIL_KEYS = sorted(
         "owner_key",
         "poll_interval_sec",
         "poller_consecutive_401",
+        "predispatch_refusal_count",
+        "predispatch_refusal_event",
         "project",
         "rate_limit",
         "recent_runs",
@@ -808,11 +826,33 @@ def test_schedules_patch_success_response_shape(tmp_path, monkeypatch):
 
     r = client.patch(f"/api/schedules/{schedule_id}", json={"description": "gate patch"})
     assert r.status_code == 200
-    assert r.json() == {"ok": True}
+    assert r.json() == {"ok": True, "updated": ["description"]}
 
     # The write actually landed, not just an accepted-and-dropped no-op.
     detail = client.get(f"/api/schedules/{schedule_id}")
     assert detail.json()["description"] == "gate patch"
+
+
+def test_schedules_patch_refuses_a_field_it_cannot_apply(tmp_path, monkeypatch):
+    """The same regression one level down: accepted, dropped, reported ok.
+
+    ``enabled`` is settable in the store and has its own routes, but is not on
+    the PATCH model. Before this was forbidden the request answered 200 ok and
+    changed nothing, so an operator disabling a schedule this way believed it
+    was off while it kept firing.
+    """
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    schedule_id = _create_gate_schedule(db_path)
+    client = _make_client()
+
+    r = client.patch(f"/api/schedules/{schedule_id}", json={"enabled": False})
+    assert r.status_code == 422
+    assert "enabled" in r.text
+
+    # And the schedule is untouched, rather than half-applied.
+    detail = client.get(f"/api/schedules/{schedule_id}")
+    assert detail.json()["enabled"] in (1, True)
 
 
 def test_schedules_delete_success_response_shape(tmp_path, monkeypatch):

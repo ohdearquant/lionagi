@@ -17,20 +17,20 @@ from pathlib import Path
 
 import pytest
 
+import lionagi.state.db as state_db_mod
 from lionagi.state.db import StateDB
 
 from ._helpers import run_async
 
 
 def _monkey_db(monkeypatch, db_path: Path) -> None:
-    import lionagi.state.db as state_db_mod
     import lionagi.studio.services.admin as admin_mod
     import lionagi.studio.services.lifecycle as lifecycle_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(admin_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(admin_mod, "_DB", str(db_path))
-    monkeypatch.setattr(lifecycle_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
 
 async def _seed_schedule(db_path: Path, *, schedule_id: str | None = None) -> str:
@@ -317,8 +317,6 @@ def test_reap_stale_schedule_runs_version_guard_skips_row_touched_between_scan_a
 
     sid = run_async(_seed_schedule(db_path))
     run_id = run_async(_seed_schedule_run(db_path, sid, status="running", updated_at=_STALE))
-
-    import lionagi.state.db as state_db_mod
 
     original_update_status = state_db_mod.StateDB.update_status
     flipped = {"done": False}

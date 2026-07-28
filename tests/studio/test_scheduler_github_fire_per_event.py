@@ -148,7 +148,9 @@ async def test_multi_event_poll_fires_once_per_dispatchable_event():
     # Trailing safety-net batched write still lands on the newest event too
     # (harmless re-write of what the last event's own atomic call already
     # persisted).
-    svc.update_schedule.assert_any_call("sched-001", github_cursor="2026-07-07T12:00:00Z")
+    svc.update_schedule.assert_any_call(
+        "sched-001", github_cursor="2026-07-07T12:00:00Z", guard_cursor_forward=True
+    )
     assert engine._global_inflight == 0
 
 
@@ -179,7 +181,9 @@ async def test_single_event_poll_behavior_unchanged():
     assert [e["pr_number"] for e in run_payload["trigger_context"]["github_events"]] == [7]
     assert run_payload["trigger_context"]["repo"] == "acme/widgets"
     assert kwargs["schedule_fields"]["github_cursor"] == "2026-07-07T10:00:00Z"
-    svc.update_schedule.assert_any_call("sched-001", github_cursor="2026-07-07T10:00:00Z")
+    svc.update_schedule.assert_any_call(
+        "sched-001", github_cursor="2026-07-07T10:00:00Z", guard_cursor_forward=True
+    )
     assert engine._global_inflight == 0
 
 
@@ -226,7 +230,9 @@ async def test_max_runs_exhaustion_mid_batch_stops_cursor_before_undispatched(ca
     assert svc.create_invocation.await_count == 2
 
     # Cursor stops at PR 2's updated_at, not PR 3's -- PR 3 was never dispatched.
-    svc.update_schedule.assert_any_call("sched-001", github_cursor="2026-07-07T11:00:00Z")
+    svc.update_schedule.assert_any_call(
+        "sched-001", github_cursor="2026-07-07T11:00:00Z", guard_cursor_forward=True
+    )
     cursor_calls = [c for c in svc.update_schedule.await_args_list if "github_cursor" in c.kwargs]
     assert all(c.kwargs["github_cursor"] != "2026-07-07T12:00:00Z" for c in cursor_calls)
 
@@ -274,7 +280,9 @@ async def test_global_slot_exhaustion_mid_batch_stops_cursor_before_undispatched
         await engine._tick_github(schedule, now=10_000.0)
 
     assert svc.create_invocation.await_count == 1
-    svc.update_schedule.assert_any_call("sched-001", github_cursor="2026-07-07T10:00:00Z")
+    svc.update_schedule.assert_any_call(
+        "sched-001", github_cursor="2026-07-07T10:00:00Z", guard_cursor_forward=True
+    )
     assert any(
         "sched-001" in r.message and "2" in r.message and "concurrent-fire" in r.message
         for r in caplog.records
@@ -311,7 +319,9 @@ async def test_filtered_event_between_dispatched_events_still_advances_cursor():
         await engine._tick_github(schedule, now=10_000.0)
 
     assert svc.create_invocation.await_count == 2
-    svc.update_schedule.assert_any_call("sched-001", github_cursor="2026-07-07T12:00:00Z")
+    svc.update_schedule.assert_any_call(
+        "sched-001", github_cursor="2026-07-07T12:00:00Z", guard_cursor_forward=True
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -431,14 +441,19 @@ async def test_undispatched_event_is_relisted_on_next_poll(monkeypatch, caplog):
 
 
 def _closed_page(hour: int, base_number: int, *, merges: dict[int, str] | None = None):
-    """20 closed PRs at a fixed hour, minutes descending -- one fake
-    "page" of a merged-mode poll response. ``merges`` maps a within-page
-    index to a merged_at value for that PR (closed-but-unmerged otherwise)."""
+    """One FULL page of closed PRs at a fixed hour, updated_at descending.
+
+    Size comes from ``gh_mod._PER_PAGE``: the poller treats a page shorter than
+    the requested size as terminal, so a fixture stating its own size turns
+    every pagination test into a single-page test as soon as the reach changes.
+    """
     merges = merges or {}
+    n = gh_mod._PER_PAGE
+    step = max(1, (3600 - 60) // n)
     items = []
-    for i in range(20):
-        minute = 59 - i * 3
-        updated_at = f"2026-07-06T{hour:02d}:{minute:02d}:00Z"
+    for i in range(n):
+        secs = 3540 - i * step
+        updated_at = f"2026-07-06T{hour:02d}:{secs // 60:02d}:{secs % 60:02d}Z"
         items.append(_pr(base_number + i, updated_at, state="closed", merged_at=merges.get(i)))
     return items
 

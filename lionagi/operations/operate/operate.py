@@ -16,10 +16,12 @@ from ..fields import Instruct
 from ..types import (
     ActionParam,
     ChatParam,
+    ExtractionError,
     HandleValidation,
     Middle,
     ParseParam,
     RunParam,
+    SchemaRejectedError,
 )
 
 if TYPE_CHECKING:
@@ -232,7 +234,9 @@ async def operate(
         # this call, so transport must follow the effective model's CLI flag
         # rather than the branch's — otherwise a per-call CLI model on an API
         # branch takes the non-streaming path.
-        effective_imodel = _cctx.imodel or branch.chat_model
+        # Sentinel status, not truthiness: a supplied model that defines
+        # __bool__ as False is still a supplied model and must win here.
+        effective_imodel = branch.chat_model if _cctx._is_sentinel(_cctx.imodel) else _cctx.imodel
         if isinstance(_cctx, RunParam) or getattr(effective_imodel, "is_cli", False):
             from ..run.run import run_and_collect
 
@@ -263,7 +267,18 @@ async def operate(
             case "raise":
                 expected_name = getattr(model_class, "__name__", repr(model_class))
                 received_snippet = repr(result)[:200]
-                raise ValueError(
+                if getattr(result, "failure_kind", None) == "validation":
+                    # JSON came back intact and the schema refused it. The
+                    # generic hint below blames the provider's structured-output
+                    # support, which sends the caller to the wrong place — the
+                    # pydantic error already names the offending field.
+                    raise SchemaRejectedError(
+                        f"Model response parsed as JSON but did not satisfy "
+                        f"'{expected_name}': {result.validation_error}. "
+                        f"Received (truncated): {received_snippet}.",
+                        validation_error=result.validation_error,
+                    )
+                raise ExtractionError(
                     f"Failed to parse LLM response into '{expected_name}'. "
                     f"Received (truncated): {received_snippet}. "
                     f"Hint: verify the model supports structured JSON output "

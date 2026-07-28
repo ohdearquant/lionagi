@@ -74,12 +74,32 @@ async def test_setup_orchestration_rejects_cwd_that_is_a_file(monkeypatch, tmp_p
 
 @pytest.mark.asyncio
 async def test_setup_orchestration_none_cwd_is_unaffected(monkeypatch):
-    """cwd=None (no --cwd given) must not be rejected by the new check —
-    it must reach the existing 'model spec required' validation instead."""
-    with pytest.raises(ConfigurationError) as exc_info:
+    """cwd=None (no --cwd given) must not be rejected by the cwd check — it
+    must carry on into the rest of setup.
+
+    This used to be shown by falling through to a 'model spec required' error.
+    A call naming neither an agent nor a model now resolves to the orchestrator
+    profile rather than refusing, so that error is no longer reachable here and
+    cannot serve as the marker. Stop the call at the first thing built instead,
+    which proves the same point: cwd validation let a cwd=None call through.
+
+    The call names a model so that nothing here depends on which agent profiles
+    happen to exist on the machine running the test.
+    """
+    import lionagi.cli.orchestrate._orchestration as orch_mod
+
+    class _ReachedBuild(Exception):
+        pass
+
+    def _stop(*a, **kw):
+        raise _ReachedBuild
+
+    monkeypatch.setattr(orch_mod, "build_imodel_from_spec", _stop)
+
+    with pytest.raises(_ReachedBuild):
         await setup_orchestration(
             pattern_name="Flow",
-            model_spec="",
+            model_spec="claude",
             agent_name=None,
             save_dir=None,
             cwd=None,
@@ -88,6 +108,3 @@ async def test_setup_orchestration_none_cwd_is_unaffected(monkeypatch):
             effort=None,
             theme=None,
         )
-    # Falls through to the pre-existing "model spec required" error, proving
-    # the cwd check did not short-circuit a legitimate cwd=None call.
-    assert "model spec" in str(exc_info.value).lower()

@@ -13,7 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from lionagi._errors import LionError
-from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+from lionagi.state.db import StateDB, state_db_known_absent
 
 _log = logging.getLogger(__name__)
 
@@ -100,7 +100,7 @@ async def checkpoint_state_db(
 
     Returns the PRAGMA result dict: busy, log_pages, checkpointed.
     """
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return {"mode": mode, "busy": None, "log_pages": None, "checkpointed": None}
 
     async with StateDB() as db:
@@ -119,7 +119,7 @@ async def checkpoint_state_db(
 
 async def get_last_checkpoint_at() -> float | None:
     """Return the ``created_at`` timestamp of the most recent checkpoint event."""
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return None
     try:
         async with StateDB() as db:
@@ -164,7 +164,7 @@ async def prune_old_data(
     if dispatch_dead_letter_keep_days is None:
         dispatch_dead_letter_keep_days = DISPATCH_RETENTION_DEAD_LETTER_DAYS
 
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return {"sessions_pruned": 0, "runs_pruned": 0, "dispatch_purged": 0}
 
     cutoff = time.time() - keep_days * 86400.0
@@ -450,7 +450,7 @@ async def vacuum_state_db(
     actor: str = "studio_db_maintenance",
 ) -> dict[str, str]:
     """Run ``VACUUM`` (exclusive lock) and write an audit event; call after ``prune_old_data()``."""
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return {"status": "skipped"}
 
     async with StateDB() as db:

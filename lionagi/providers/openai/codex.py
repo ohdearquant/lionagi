@@ -409,8 +409,13 @@ class CodexCodeRequest(BaseModel):
         # Working directory (always emit)
         args.extend(["-C", str(self.cwd())])
 
-        # Prompt always last, after -- to prevent flag interpretation
-        args.extend(["--", self.prompt])
+        # The prompt goes to the child's stdin, not the command line: a whole
+        # conversation easily exceeds the OS limit on total argument length,
+        # and the spawn then fails with "Argument list too long" instead of
+        # running. `-` is codex's documented way to say "read the
+        # instructions from stdin"; it stays after `--` so it is parsed as
+        # the prompt argument and never as a flag.
+        args.extend(["--", "-"])
 
         return args
 
@@ -431,7 +436,7 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
     cmd = [CODEX_CLI, *request.as_cmd_args()]
     # Do NOT pass cwd here — Codex CLI already gets the workspace via -C <repo>;
     # setting both double-resolves to 'repo/repo'. See docs/internals/runtime.md.
-    async with contextlib.aclosing(ndjson_from_cli(cmd)) as stream:
+    async with contextlib.aclosing(ndjson_from_cli(cmd, stdin_data=request.prompt)) as stream:
         async for obj in stream:
             yield obj
 

@@ -34,6 +34,7 @@ from ._common import (
     _format_result_json,
     _format_result_text,
     _post_results_to_team,
+    retarget_artifact_section,
 )
 from ._notify import register_flow_notify_scope, unregister_flow_notify_scope
 from ._orchestration import (
@@ -96,6 +97,29 @@ def _leg_artifact_entries(node_id: str, role_defaults: dict | None) -> list[dict
             }
         )
     return entries
+
+
+def _retarget_spawn_prompt(branch, artifact_dir) -> None:
+    """Rewrite a spawned clone's artifact directive to name its own directory.
+
+    Best-effort: a prompt that cannot be rewritten is warned about rather than
+    raised, since a stale directive is a worse outcome for the spawned node
+    alone, while an exception here would abort the whole run.
+    """
+    msgs = getattr(branch, "msgs", None)
+    if msgs is None:
+        _warn(f"spawned worker prompt not retargeted to {artifact_dir}: branch has no messages")
+        return
+    sys_msg = msgs.system
+    if sys_msg is None:
+        return
+    current = sys_msg.content.system_message or ""
+    if not isinstance(current, str):
+        _warn(f"spawned worker prompt not retargeted to {artifact_dir}: prompt is not text")
+        return
+    updated = retarget_artifact_section(current, artifact_dir)
+    if updated != current:
+        msgs.set_system(msgs.create_system(system=updated))
 
 
 def _artifact_directive(run, node_id: str, leg_expected: list[dict]) -> str:
@@ -362,9 +386,15 @@ async def _resolve_invocation_terminal_flow(
 
 def _fallback_notify_reason(status: str) -> str:
     """Reason code for a best-effort terminal-notify envelope emitted when
-    invocation finalization itself raised (see `_run_flow`'s finally block)
-    -- *status* here is the flow's own already-computed terminal status, not
-    a value read back from the (never-committed) invocation row."""
+    invocation finalization itself raised before resolving a reason (see
+    `_run_flow`'s finally block) -- *status* here is the flow's own
+    already-computed terminal status, not a value read back from the
+    (never-committed) invocation row.
+
+    The mapping deliberately matches what `_resolve_invocation_terminal_flow`
+    would have returned for the same status, so a consumer sees the same cause
+    for the same run whether or not finalization failed. In particular an
+    aborted flow is a SIGINT cancellation."""
     from lionagi.state.reasons import RunReasons
 
     return {
@@ -372,7 +402,7 @@ def _fallback_notify_reason(status: str) -> str:
         "completed_empty": RunReasons.COMPLETED_EMPTY_NO_EVIDENCE,
         "failed": RunReasons.FAILED_EXCEPTION,
         "timed_out": RunReasons.TIMED_OUT_DEADLINE,
-        "aborted": RunReasons.ABORTED_USER,
+        "aborted": RunReasons.CANCELLED_SIGINT,
         "cancelled": RunReasons.CANCELLED_SYSTEM,
     }.get(status, RunReasons.FAILED_EXCEPTION)
 
@@ -447,6 +477,46 @@ class _ExecResult:
 # ── Phase 1: build DAG ────────────────────────────────────────────────────────
 
 
+def _deps_from_built_graph(builder, label_by_node: dict[str, str]) -> dict[str, list[str]]:
+    """Read each node's incoming edges out of the graph the executor walks.
+
+    A dependency list re-derived from what the planner declared is a statement
+    about the *input* to the build step, not an observation of its *output*:
+    the builder can add or omit edges, the executor waits on every incoming
+    edge whatever its label, and nothing downstream would notice the two
+    disagreeing. Reading the graph makes the reported structure and the
+    executed one the same object.
+
+    `label_by_node` names the nodes a reader already has a name for — plan
+    steps, by their 1-based ordinal, matching how deps have always been shown.
+    A head outside it is a node that has no plan ordinal because it did not
+    exist at plan time; it is named by the spawn id stamped on it (the same id
+    its own result record carries), falling back to the raw node id so an edge
+    is never dropped for want of a name.
+    """
+    graph = builder.get_graph()
+    nodes = getattr(graph, "internal_nodes", None)
+    mapping = getattr(graph, "node_edge_mapping", None) or {}
+
+    def _name(head_id: str) -> str:
+        known = label_by_node.get(head_id)
+        if known is not None:
+            return known
+        node = nodes.get(head_id) if nodes is not None else None
+        stamped = node.metadata.get("spawn_id") if node is not None else None
+        return stamped or head_id
+
+    deps: dict[str, list[str]] = {}
+    for node_id, slots in mapping.items():
+        names: list[str] = []
+        for head_id in (slots.get("in") or {}).values():
+            name = _name(str(head_id))
+            if name not in names:
+                names.append(name)
+        deps[str(node_id)] = names
+    return deps
+
+
 async def _build_dag(
     env: OrchestrationEnv,
     prompt: str,
@@ -474,6 +544,12 @@ async def _build_dag(
     worker_branches: dict[str, object] = {}
     worker_messenger_bound: dict[str, bool] = {}
     spawn_assignees = sorted({ta.assignee for ta in assignments})
+
+    # The plan is the run's own statement of which workers it will have, made
+    # before any of them is built. Recording it here is what lets finalization
+    # notice a worker that was launched without being given a directory.
+    for agent_id in agent_ids:
+        env.expect_worker(agent_id)
 
     for i, ta in enumerate(assignments):
         w_branch, w_model, w_profile, messenger_bound = await build_worker_branch(
@@ -544,7 +620,7 @@ async def _build_dag(
         node = _build_worker_operate_node(
             env.builder,
             branch=w_branch,
-            depends_on=dep_nodes or None,
+            depends_on=dep_nodes,
             instruction=instruction,
             context=ctx,
             messenger_bound=messenger_bound,
@@ -552,8 +628,13 @@ async def _build_dag(
         node_ids.append(node)
 
     known_nodes = set(node_ids)
+    # Observed from the graph just built, not re-derived from the plan that
+    # asked for it — see _deps_from_built_graph.
+    graph_deps = _deps_from_built_graph(
+        env.builder, {str(node_ids[i]): str(i + 1) for i in range(len(assignments))}
+    )
     deps_by_node = {
-        node_ids[i]: [str(j + 1) for j in dep_indices[i]] for i in range(len(assignments))
+        node_ids[i]: graph_deps.get(str(node_ids[i]), []) for i in range(len(assignments))
     }
 
     # Early DAG snapshot for Studio.
@@ -567,7 +648,7 @@ async def _build_dag(
                 "id": agent_ids[i],
                 "agent_id": agent_ids[i],
                 "control": False,
-                "depends_on": [str(j + 1) for j in dep_indices[i]],
+                "depends_on": deps_by_node[node_ids[i]],
             }
             for i in range(len(assignments))
         ],
@@ -1165,20 +1246,36 @@ async def _execute_dag(
         role_defaults = dag_state.role_artifact_defaults.get(req.assignee) if req.assignee else None
         leg_expected = _leg_artifact_entries(spawn_id, role_defaults)
         note = _artifact_directive(env.run, spawn_id, leg_expected)
+        # A node whose instruction has been composed is a worker this run
+        # intends to have, whatever provider it turns out to run under.
+        env.expect_worker(spawn_id)
         return f"{req.instruction}\n\n{note}"
 
     def _spawn_branch_setup(operation: Any, branch: Any) -> None:
-        """Retarget a spawned node's cloned CLI workspace to its own spawn_id
-        subdir (Branch.clone inherits the emitter's repo kwarg otherwise).
-        No-op for non-CLI chat models."""
+        """Give a spawned node its own artifact directory.
+
+        Every spawned node gets the directory recorded on the run roster and its
+        inherited prompt retargeted at it. Only the workspace move is specific
+        to a CLI provider: `Branch.clone` carries the emitter's `repo` kwarg
+        over, and a non-CLI model has no such kwarg to move. The prompt it
+        inherited names the emitter's directory either way, and being absent
+        from the roster is not a provider-specific outcome — so neither of those
+        may be skipped for a non-CLI worker.
+        """
         spawn_id = operation.metadata.get("spawn_id") if operation is not None else None
         if not spawn_id:
             return
+        artifact_dir = env.run.agent_artifact_dir(spawn_id)
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        env.worker_artifact_dirs[spawn_id] = artifact_dir
+        # The clone inherits the emitter's prompt, which names the emitter's
+        # directory. Retarget it, or the spawned worker is pointed at a
+        # directory that is no longer its own.
+        _retarget_spawn_prompt(branch, artifact_dir)
+
         chat_model = getattr(branch, "chat_model", None)
         if chat_model is None or not getattr(chat_model, "is_cli", False):
             return
-        artifact_dir = env.run.agent_artifact_dir(spawn_id)
-        artifact_dir.mkdir(parents=True, exist_ok=True)
         kwargs = chat_model.endpoint.config.kwargs
         kwargs["repo"] = artifact_dir
         project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
@@ -1251,6 +1348,13 @@ async def _execute_dag(
     # below without this — makes it loud at teardown. Spawned nodes aren't
     # in node_ids/agent_ids (fixed-size, plan-time only), so checked separately.
     graph_nodes = getattr(env.builder.get_graph(), "internal_nodes", {}) or {}
+    # Re-read the edges now that the run is over: the durable record and the
+    # Studio DAG outlive the terminal, so they get the final graph rather than
+    # the plan-time one. Nodes absent from the graph (never built) keep their
+    # plan-time entry — there is nothing to observe for them.
+    final_deps = _deps_from_built_graph(
+        env.builder, {str(node_ids[i]): str(i + 1) for i in range(len(assignments))}
+    )
     escalated_op_ids = {str(x) for x in dag_result.get("escalated_operations", [])}
     escalated_evidence = [
         {"kind": "escalated_operation", "id": agent_ids[i], "label": assignments[i].assignee}
@@ -1291,7 +1395,7 @@ async def _execute_dag(
                 "agent_id": agent_ids[i],
                 "name": agent_ids[i],
                 "model": worker_models[i],
-                "depends_on": deps_by_node[nid],
+                "depends_on": final_deps.get(str(nid), deps_by_node[nid]),
                 "spawned": False,
                 "response": str(res) if res is not None else "(no response)",
                 "time_ms": t_exec_elapsed * 1000,
@@ -1359,7 +1463,9 @@ async def _execute_dag(
                 "name": assignee or "spawned",
                 "model": spawn_model,
                 "assignee": assignee,
-                "depends_on": [],
+                # A node injected mid-run has real predecessors; read them off
+                # the graph like every other node rather than reporting none.
+                "depends_on": final_deps.get(str(nid), []),
                 "spawned": True,
                 "response": str(res) if res is not None else "(no response)",
                 "time_ms": t_exec_elapsed * 1000,
@@ -1674,6 +1780,8 @@ async def _run_flow(
     resume_checkpoint: dict | None = None,
     allow_degraded_context: bool = False,
     notify: str | None = None,
+    mcp_config: str | None = None,
+    no_mcp_config: bool = False,
     **legacy_kwargs,
 ) -> tuple[str, str]:
     """Returns (output, terminal_status)."""
@@ -1737,6 +1845,8 @@ async def _run_flow(
         fast=fast,
         total_budget=timeout,
         pack=pack,
+        mcp_config=mcp_config,
+        no_mcp_config=no_mcp_config,
     )
 
     # `--notify` is compatibility sugar over the terminal-callback registry:
@@ -1819,7 +1929,10 @@ async def _run_flow(
         env,
         invocation_kind=_invocation_kind,
         playbook_name=playbook_name,
-        agent_name=agent_name,
+        # The profile the run resolved, not the one this call named: a call that
+        # named neither an agent nor a model named none, and recording that
+        # `agent_name` would leave the record unable to say what it ran under.
+        agent_name=env.orc_profile_name,
         artifacts_path=str(env.run.artifact_root),
         invocation_id=invocation_id,
         model=_orc_model,
@@ -1877,6 +1990,11 @@ async def _run_flow(
                 from lionagi.state.db import StateDB
 
                 _invocation_previous_status = "unknown"
+                # Populated once resolution succeeds, so the fallback below can
+                # tell "resolution never produced an outcome" from "resolution
+                # produced one and only the write failed".
+                inv_status: str | None = None
+                inv_rc: str | None = None
                 try:
                     async with StateDB() as _status_db:
                         _invocation_row = await _status_db.get_invocation(invocation_id)
@@ -1915,10 +2033,16 @@ async def _run_flow(
                     # invocation's entity -- any --notify / notify.on_terminal
                     # handler scoped to it would otherwise be silently
                     # dropped exactly when a notification is most needed.
-                    # Emit a best-effort envelope directly, using the flow's
-                    # own already-computed terminal status as a fallback
-                    # (mirrors the unconditional fire_terminal_notify() call
-                    # this code path replaced).
+                    # Emit a best-effort envelope directly (mirrors the
+                    # unconditional fire_terminal_notify() call this code path
+                    # replaced). Report the invocation status/reason that
+                    # resolution already settled when it got that far -- the
+                    # failure may have been only in the write, and the resolved
+                    # outcome can differ from the flow's own coarser status
+                    # (a clean flow whose children produced no evidence
+                    # resolves to completed_empty). Fall back to the flow's own
+                    # terminal status only when resolution itself never
+                    # produced one.
                     try:
                         import uuid as _uuid
 
@@ -1929,13 +2053,16 @@ async def _run_flow(
                             RunTerminalEnvelope,
                         )
 
+                        _notify_status = inv_status or _terminal_status
+                        _notify_reason = inv_rc or _fallback_notify_reason(_notify_status)
+
                         await DEFAULT_TERMINAL_CALLBACKS.emit(
                             RunTerminalEnvelope(
                                 event_id=str(_uuid.uuid4()),
                                 entity=EntityRef(kind="invocation", id=invocation_id),
                                 previous_status=_invocation_previous_status,
-                                terminal_status=_terminal_status,
-                                reason_code=_fallback_notify_reason(_terminal_status),
+                                terminal_status=_notify_status,
+                                reason_code=_notify_reason,
                                 occurred_at=_ended_at,
                                 correlation=Correlation(invocation_id=invocation_id),
                                 durable=False,
@@ -2075,10 +2202,21 @@ async def _run_flow_inner(
     for i, ta in enumerate(assignments):
         deps = f" ← {','.join(str(j + 1) for j in dep_indices[i])}" if dep_indices[i] else ""
         dag_lines.append(f"{i + 1}:{ta.assignee}{deps}")
-    progress(f"Plan done ({t_plan:.1f}s): {len(assignments)} assignments — {' | '.join(dag_lines)}")
+    # Says "as declared" because that is all it can say: no node exists yet for
+    # any of these assignments, so this line is the planner's input to the build
+    # and not an observation of the graph that will run.
+    progress(
+        f"Plan done ({t_plan:.1f}s): {len(assignments)} assignments, dependencies as declared "
+        f"by the planner (the run graph is not built yet) — {' | '.join(dag_lines)}"
+    )
 
     if dry_run:
-        lines = [f"Plan ({len(assignments)} assignments):", ""]
+        lines = [
+            f"Plan ({len(assignments)} assignments):",
+            "Dependencies below are the ones the planner declared. A dry run builds no run",
+            "graph, so nothing here has been checked against the structure that would run.",
+            "",
+        ]
         for i, ta in enumerate(assignments):
             deps = (
                 f"  depends_on: {', '.join(str(j + 1) for j in dep_indices[i])}"

@@ -36,6 +36,7 @@ __all__ = [
     # CLI entrypoints
     "add_state_subparser",
     "run_state",
+    "machine_result",
 ]
 
 
@@ -271,13 +272,10 @@ async def _import_one_run(
         total_branches += 1
 
     if session_msg_ids:
-        from sqlalchemy import text
-
-        async with db._tx() as conn:
-            await conn.execute(
-                text("UPDATE progressions SET collection = :col WHERE id = :id"),
-                {"col": json.dumps(session_msg_ids), "id": session_prog_id},
-            )
+        # Through the DB operation rather than a local UPDATE: the ids come from
+        # an imported file, and a hand-rolled json.dumps here would hand the
+        # driver a finished string that no serializer gets to check.
+        await db.set_progression(session_prog_id, session_msg_ids)
         await db.update_session(
             run_id,
             first_msg_id=session_msg_ids[0],
@@ -299,43 +297,94 @@ def _format_bytes(n: int) -> str:
     return f"{n:.1f} TiB"
 
 
+async def _collect_sessions(db: Any, *, limit: int, status: str | None) -> list[dict[str, Any]]:
+    """Sessions newest-first, each with its branch and message counts.
+
+    The one query the listing runs, so the printed table and the machine result
+    report the same rows and the same counts rather than two readings of the
+    store taken by two pieces of code.
+    """
+    from sqlalchemy import text
+
+    async with db._read() as conn:
+        if status:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT id, name, status, updated_at FROM sessions "
+                            "WHERE status = :st ORDER BY updated_at DESC LIMIT :lim"
+                        ),
+                        {"st": status, "lim": limit},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        else:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT id, name, status, updated_at FROM sessions "
+                            "ORDER BY updated_at DESC LIMIT :lim"
+                        ),
+                        {"lim": limit},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+
+    collected: list[dict[str, Any]] = []
+    for row in rows:
+        sid = row["id"]
+        async with db._read() as conn:
+            bc = (
+                (
+                    await conn.execute(
+                        text("SELECT COUNT(*) AS n FROM branches WHERE session_id = :sid"),
+                        {"sid": sid},
+                    )
+                )
+                .mappings()
+                .first()["n"]
+            )
+
+            prog_row = (
+                (
+                    await conn.execute(
+                        text("SELECT progression_id FROM sessions WHERE id = :id"),
+                        {"id": sid},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        msg_count = 0
+        if prog_row and prog_row["progression_id"]:
+            prog_data = await db.get_progression(prog_row["progression_id"])
+            msg_count = len(prog_data)
+        collected.append(
+            {
+                "id": sid,
+                "name": row["name"],
+                "status": row["status"],
+                "updated_at": row["updated_at"],
+                "branch_count": bc,
+                "message_count": msg_count,
+            }
+        )
+    return collected
+
+
 async def _list_sessions(*, limit: int = 50, status: str | None = None) -> None:
     import time
-
-    from sqlalchemy import text
 
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
-        async with db._read() as conn:
-            if status:
-                rows = (
-                    (
-                        await conn.execute(
-                            text(
-                                "SELECT id, name, status, updated_at FROM sessions "
-                                "WHERE status = :st ORDER BY updated_at DESC LIMIT :lim"
-                            ),
-                            {"st": status, "lim": limit},
-                        )
-                    )
-                    .mappings()
-                    .all()
-                )
-            else:
-                rows = (
-                    (
-                        await conn.execute(
-                            text(
-                                "SELECT id, name, status, updated_at FROM sessions "
-                                "ORDER BY updated_at DESC LIMIT :lim"
-                            ),
-                            {"lim": limit},
-                        )
-                    )
-                    .mappings()
-                    .all()
-                )
+        rows = await _collect_sessions(db, limit=limit, status=status)
 
         if not rows:
             print("(no sessions in state.db)")
@@ -348,117 +397,152 @@ async def _list_sessions(*, limit: int = 50, status: str | None = None) -> None:
         print(header)
         print("-" * len(header))
         for row in rows:
-            sid = row["id"]
             name = (row["name"] or "")[:16]
             sstat = (row["status"] or "")[:10]
             updated = row["updated_at"]
             updated_str = (
                 time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(updated)) if updated else ""
             )
-
-            async with db._read() as conn:
-                bc = (
-                    (
-                        await conn.execute(
-                            text("SELECT COUNT(*) AS n FROM branches WHERE session_id = :sid"),
-                            {"sid": sid},
-                        )
-                    )
-                    .mappings()
-                    .first()["n"]
-                )
-
-                prog_row = (
-                    (
-                        await conn.execute(
-                            text("SELECT progression_id FROM sessions WHERE id = :id"),
-                            {"id": sid},
-                        )
-                    )
-                    .mappings()
-                    .first()
-                )
-            msg_count = 0
-            if prog_row and prog_row["progression_id"]:
-                prog_data = await db.get_progression(prog_row["progression_id"])
-                msg_count = len(prog_data)
-
-            print(f"{sid:<36}  {name:<16}  {sstat:<10}  {bc:>8}  {msg_count:>8}  {updated_str:<20}")
+            print(
+                f"{row['id']:<36}  {name:<16}  {sstat:<10}  "
+                f"{row['branch_count']:>8}  {row['message_count']:>8}  {updated_str:<20}"
+            )
 
 
-async def _print_stats() -> None:
-    from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+# The tables a size report counts, and the pragmas it reads, in the order both
+# are printed. Named once so the machine result and the printout cannot come to
+# describe different databases.
+_STATS_TABLES = (
+    "messages",
+    "progressions",
+    "sessions",
+    "branches",
+    "definitions",
+    "shows",
+    "plays",
+)
 
-    db_path = DEFAULT_DB_PATH
-    db_size = db_path.stat().st_size if db_path.exists() else 0
+_STATS_PRAGMAS = (
+    "journal_mode",
+    "wal_autocheckpoint",
+    "busy_timeout",
+    "synchronous",
+    "foreign_keys",
+)
+
+
+def _db_sizes() -> dict[str, Any]:
+    """Bytes on disk for the configured store, when the configured store is a file.
+
+    Size and WAL are questions about a file. A server or in-memory URL still has
+    rows to report; it just has no bytes on disk to report them next to, and
+    answering with the default path's size there would describe a file nothing
+    is reading. ``is_file`` says which case this is, so a null size means "not
+    answerable" and can never be read as "empty".
+    """
+    from lionagi.state.db import StateDB, state_db_file
+
+    db_path = state_db_file()
+    if db_path is None:
+        return {
+            "path": StateDB().url,
+            "is_file": False,
+            "exists": False,
+            "size_bytes": None,
+            "wal_size_bytes": None,
+        }
     wal_path = db_path.with_name(db_path.name + "-wal")
-    wal_size = wal_path.stat().st_size if wal_path.exists() else 0
+    return {
+        "path": str(db_path),
+        "is_file": True,
+        "exists": db_path.exists(),
+        "size_bytes": db_path.stat().st_size if db_path.exists() else 0,
+        "wal_size_bytes": wal_path.stat().st_size if wal_path.exists() else 0,
+    }
 
-    print(f"state.db path:   {db_path}")
-    print(f"state.db size:   {_format_bytes(db_size)}")
-    print(f"state.db-wal:    {_format_bytes(wal_size)}")
-    print()
 
-    if not db_path.exists():
-        print("(no state.db yet — first run will create it)")
-        return
-
+async def _collect_stats(db: Any) -> dict[str, Any]:
+    """Row counts, the session status distribution, and the SQLite pragmas."""
     from sqlalchemy import text
 
-    async with StateDB() as db:
-        print("Row counts:")
-        for table in (
-            "messages",
-            "progressions",
-            "sessions",
-            "branches",
-            "definitions",
-            "shows",
-            "plays",
-        ):
-            async with db._read() as conn:
-                row = (
-                    (
-                        await conn.execute(
-                            text(f"SELECT COUNT(*) AS n FROM {table}")  # noqa: S608
-                        )
-                    )
-                    .mappings()
-                    .first()
-                )
-            print(f"  {table:<14} {row['n']:>10}")
-        print()
-
+    counts: dict[str, int] = {}
+    for table in _STATS_TABLES:
         async with db._read() as conn:
-            rows = (
+            row = (
                 (
                     await conn.execute(
-                        text(
-                            "SELECT COALESCE(status, '(null)') AS s, COUNT(*) AS n "
-                            "FROM sessions GROUP BY status ORDER BY n DESC"
-                        )
+                        text(f"SELECT COUNT(*) AS n FROM {table}")  # noqa: S608
                     )
                 )
                 .mappings()
-                .all()
+                .first()
             )
-        print("Sessions by status:")
-        for row in rows:
-            print(f"  {row['s']:<14} {row['n']:>10}")
-        print()
+        counts[table] = row["n"]
 
-        print("PRAGMAs:")
-        for pragma in (
-            "journal_mode",
-            "wal_autocheckpoint",
-            "busy_timeout",
-            "synchronous",
-            "foreign_keys",
-        ):
-            async with db._read() as conn:
-                row = (await conn.execute(text(f"PRAGMA {pragma}"))).first()
-            val = row[0] if row else "?"
-            print(f"  {pragma:<22} {val}")
+    async with db._read() as conn:
+        status_rows = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT status AS s, COUNT(*) AS n "
+                        "FROM sessions GROUP BY status ORDER BY n DESC"
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+
+    pragmas: dict[str, Any] = {}
+    for pragma in _STATS_PRAGMAS:
+        async with db._read() as conn:
+            row = (await conn.execute(text(f"PRAGMA {pragma}"))).first()
+        pragmas[pragma] = row[0] if row else None
+
+    return {
+        "row_counts": counts,
+        # A list of pairs, not an object: a session whose status was never
+        # recorded is a null key, and the printout's "(null)" placeholder for it
+        # would be indistinguishable from a status literally spelled that way.
+        "sessions_by_status": [{"status": r["s"], "count": r["n"]} for r in status_rows],
+        "pragmas": pragmas,
+    }
+
+
+async def _print_stats() -> None:
+    from lionagi.state.db import StateDB
+
+    sizes = _db_sizes()
+
+    print(f"state.db path:   {sizes['path']}")
+    if sizes["is_file"]:
+        print(f"state.db size:   {_format_bytes(sizes['size_bytes'])}")
+        print(f"state.db-wal:    {_format_bytes(sizes['wal_size_bytes'])}")
+    else:
+        print("state.db size:   (not a local file)")
+    print()
+
+    if sizes["is_file"] and not sizes["exists"]:
+        print("(no state.db yet — first run will create it)")
+        return
+
+    async with StateDB() as db:
+        collected = await _collect_stats(db)
+
+    print("Row counts:")
+    for table, n in collected["row_counts"].items():
+        print(f"  {table:<14} {n:>10}")
+    print()
+
+    print("Sessions by status:")
+    for entry in collected["sessions_by_status"]:
+        label = "(null)" if entry["status"] is None else entry["status"]
+        print(f"  {label:<14} {entry['count']:>10}")
+    print()
+
+    print("PRAGMAs:")
+    for pragma, value in collected["pragmas"].items():
+        print(f"  {pragma:<22} {'?' if value is None else value}")
 
 
 async def _checkpoint(mode: str) -> str:
@@ -478,12 +562,31 @@ async def _vacuum() -> None:
         await db.vacuum()
 
 
+class _PreviewOnlyError(Exception):
+    """Signals the end of a preview so its transaction unwinds instead of committing.
+
+    A preview has to answer "how many rows would this free", and the only answer
+    that cannot drift from the real one is the real one. The preview therefore
+    runs the prune and then refuses to commit it, carrying the counts out with it.
+    """
+
+    def __init__(self, counts: dict[str, int]) -> None:
+        super().__init__("preview complete")
+        self.counts = counts
+
+
 async def _prune(
     *,
     keep_days: int,
     keep_n: int,
     dry_run: bool,
 ) -> dict[str, int]:
+    """Delete old sessions and the branches, progressions and messages they owned.
+
+    ``dry_run`` runs exactly the same statements and then rolls the transaction
+    back, so the reported counts are measurements of the prune rather than an
+    estimate of it.
+    """
     import time as _time
 
     from lionagi.state.db import StateDB
@@ -492,87 +595,136 @@ async def _prune(
 
     from sqlalchemy import text
 
+    counts = {"sessions": 0, "branches": 0, "messages": 0}
+
     async with StateDB() as db:
-        async with db._read() as conn:
-            rows = (
-                (
-                    await conn.execute(
-                        text(
-                            "SELECT id FROM sessions "
-                            "WHERE id NOT IN ("
-                            "  SELECT id FROM sessions ORDER BY updated_at DESC LIMIT :keep_n"
-                            ") AND (updated_at < :cutoff OR updated_at IS NULL)"
-                        ),
-                        {"keep_n": keep_n, "cutoff": cutoff},
+        try:
+            async with db._tx() as conn:
+                rows = (
+                    (
+                        await conn.execute(
+                            text(
+                                "SELECT id FROM sessions "
+                                "WHERE id NOT IN ("
+                                "  SELECT id FROM sessions ORDER BY updated_at DESC LIMIT :keep_n"
+                                ") AND (updated_at < :cutoff OR updated_at IS NULL)"
+                            ),
+                            {"keep_n": keep_n, "cutoff": cutoff},
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                victim_ids = [r["id"] for r in rows]
+
+                if not victim_ids:
+                    raise _PreviewOnlyError(counts)
+
+                placeholders = ",".join(f":v{i}" for i in range(len(victim_ids)))
+                id_params = {f"v{i}": vid for i, vid in enumerate(victim_ids)}
+
+                branch_count = (
+                    (
+                        await conn.execute(
+                            text(
+                                f"SELECT COUNT(*) AS n FROM branches "  # noqa: S608
+                                f"WHERE session_id IN ({placeholders})"
+                            ),
+                            id_params,
+                        )
+                    )
+                    .mappings()
+                    .first()["n"]
+                )
+
+                # progressions carry no ownership edge back to the session or
+                # branch that made them, so nothing removes them when their
+                # owner goes. They are collected here while the owners are still
+                # readable, and the collection is held in a scratch table rather
+                # than in a parameter list so a large prune does not run into the
+                # bound-parameter ceiling.
+                await conn.execute(text("DROP TABLE IF EXISTS prune_orphan_progressions"))
+                await conn.execute(
+                    text("CREATE TEMPORARY TABLE prune_orphan_progressions (id TEXT PRIMARY KEY)")
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO prune_orphan_progressions (id) "  # noqa: S608
+                        f"SELECT progression_id FROM sessions WHERE id IN ({placeholders}) "
+                        "  AND progression_id IS NOT NULL "
+                        "UNION "
+                        f"SELECT progression_id FROM branches WHERE session_id IN ({placeholders})"
+                        "  AND progression_id IS NOT NULL"
+                    ),
+                    id_params,
+                )
+
+                await conn.execute(
+                    text(
+                        f"DELETE FROM sessions WHERE id IN ({placeholders})"  # noqa: S608
+                    ),
+                    id_params,
+                )
+
+                # Branches cascade with their session, so what is still
+                # referenced now is what survives the prune. A progression a
+                # survivor still points at is not an orphan, whoever else
+                # pointed at it.
+                await conn.execute(
+                    text(
+                        "DELETE FROM prune_orphan_progressions WHERE id IN ("
+                        "  SELECT progression_id FROM sessions WHERE progression_id IS NOT NULL"
+                        "  UNION"
+                        "  SELECT progression_id FROM branches WHERE progression_id IS NOT NULL"
+                        ")"
                     )
                 )
-                .mappings()
-                .all()
-            )
-        victim_ids = [r["id"] for r in rows]
 
-        if not victim_ids:
-            return {"sessions": 0, "branches": 0, "messages": 0}
-
-        placeholders = ",".join(f":v{i}" for i in range(len(victim_ids)))
-        id_params = {f"v{i}": vid for i, vid in enumerate(victim_ids)}
-
-        async with db._read() as conn:
-            branch_count = (
-                (
+                # Messages are addressed only through a progression's collection
+                # or through one of the three id columns that name one directly,
+                # so a message no surviving referent mentions is unreachable.
+                # This runs while the orphaned progressions still exist, since
+                # their collections are what says which messages are in play.
+                deleted_messages = (
                     await conn.execute(
                         text(
-                            f"SELECT COUNT(*) AS n FROM branches "  # noqa: S608
-                            f"WHERE session_id IN ({placeholders})"
-                        ),
-                        id_params,
+                            "DELETE FROM messages WHERE id IN ("
+                            "  SELECT value FROM progressions, json_each(progressions.collection)"
+                            "  WHERE progressions.id IN (SELECT id FROM prune_orphan_progressions)"
+                            ") AND id NOT IN ("
+                            "  SELECT value FROM progressions, json_each(progressions.collection)"
+                            "  WHERE progressions.id NOT IN"
+                            "    (SELECT id FROM prune_orphan_progressions)"
+                            ") AND id NOT IN ("
+                            "  SELECT first_msg_id FROM sessions WHERE first_msg_id IS NOT NULL"
+                            "  UNION"
+                            "  SELECT last_msg_id FROM sessions WHERE last_msg_id IS NOT NULL"
+                            "  UNION"
+                            "  SELECT system_msg_id FROM branches WHERE system_msg_id IS NOT NULL"
+                            ")"
+                        )
+                    )
+                ).rowcount
+
+                await conn.execute(
+                    text(
+                        "DELETE FROM progressions "
+                        "WHERE id IN (SELECT id FROM prune_orphan_progressions)"
                     )
                 )
-                .mappings()
-                .first()["n"]
-            )
+                await conn.execute(text("DROP TABLE IF EXISTS prune_orphan_progressions"))
 
-            msgs_before = (
-                (await conn.execute(text("SELECT COUNT(*) AS n FROM messages")))
-                .mappings()
-                .first()["n"]
-            )
+                counts = {
+                    "sessions": len(victim_ids),
+                    "branches": branch_count,
+                    "messages": deleted_messages,
+                }
+                if dry_run:
+                    raise _PreviewOnlyError(counts)
+        except _PreviewOnlyError as preview:
+            return preview.counts
 
-        if dry_run:
-            return {
-                "sessions": len(victim_ids),
-                "branches": branch_count,
-                "messages": 0,  # can't preview without doing the delete
-            }
-
-        async with db._tx() as conn:
-            await conn.execute(
-                text(
-                    f"DELETE FROM sessions WHERE id IN ({placeholders})"  # noqa: S608
-                ),
-                id_params,
-            )
-            await conn.execute(
-                text(
-                    "DELETE FROM messages "
-                    "WHERE id NOT IN ("
-                    "  SELECT value FROM progressions, json_each(progressions.collection)"
-                    ")"
-                )
-            )
-
-        async with db._read() as conn:
-            msgs_after = (
-                (await conn.execute(text("SELECT COUNT(*) AS n FROM messages")))
-                .mappings()
-                .first()["n"]
-            )
-
-        return {
-            "sessions": len(victim_ids),
-            "branches": branch_count,
-            "messages": msgs_before - msgs_after,
-        }
+    return counts
 
 
 async def _doctor(
@@ -592,7 +744,7 @@ async def _doctor(
     from sqlalchemy import text
 
     from lionagi.cli._util import pid_alive
-    from lionagi.cli.kill import _check_pid_identity_tristate, _read_pid_from_entity
+    from lionagi.cli.kill import _check_pid_identity, _read_pid_from_entity
 
     async with StateDB() as db:
         async with db._read() as conn:
@@ -641,7 +793,7 @@ async def _doctor(
                     expected_create_time = float(raw_ct) if raw_ct is not None else None
                 except (TypeError, ValueError):
                     expected_create_time = None
-                verdict = _check_pid_identity_tristate(
+                verdict = _check_pid_identity(
                     pid,
                     "lionagi",
                     expected_session_id=row["id"],
@@ -649,7 +801,9 @@ async def _doctor(
                 )
                 # "unverifiable" means the process could not be inspected, not
                 # that it is gone; skipping it leaves a row for the next run
-                # rather than reaping one out from under a worker.
+                # rather than reaping one out from under a worker. "zombie" is
+                # the opposite: the process has exited and is only waiting to
+                # be reaped, so the row is stale and belongs in the sweep.
                 if verdict in ("ours", "unverifiable"):
                     skipped += 1
                     continue
@@ -735,7 +889,7 @@ async def _import_runs() -> dict[str, int]:
 
 async def _import_teams() -> dict[str, int]:
     """Backfill ~/.lionagi/teams/*.json into the teams + team_messages tables."""
-    from sqlalchemy import text
+    from sqlalchemy import JSON, bindparam, text
 
     from lionagi.state.db import StateDB
 
@@ -785,7 +939,7 @@ async def _import_teams() -> dict[str, int]:
                     "created_at": created_at,
                     "updated_at": created_at,
                     "member_count": len(members),
-                    "members": json.dumps(members),
+                    "members": members,
                     "status": "active",
                 }
             )
@@ -822,34 +976,34 @@ async def _import_teams() -> dict[str, int]:
                         "recipient": recipient,
                         "content": content,
                         "summary": (content[:200] + "…") if len(content) > 200 else None,
-                        "read_by": json.dumps(read_by_arr),
+                        "read_by": read_by_arr,
                         "session_id": None,
                     }
                 )
                 counts["messages"] += 1
 
+            # members and read_by are bound as JSON so the engine's serializer
+            # encodes them; imported team files are outside data, and a
+            # pre-serialized string would be handed to the driver unchecked.
+            team_stmt = text(
+                "INSERT INTO teams "
+                "(id, name, created_at, updated_at, member_count, members, status) "
+                "VALUES (:id, :name, :created_at, :updated_at, "
+                ":member_count, :members, :status)"
+            ).bindparams(bindparam("members", type_=JSON))
+            msg_stmt = text(
+                "INSERT INTO team_messages "
+                "(id, team_id, created_at, sender, recipient, content, "
+                "summary, read_by, session_id) "
+                "VALUES (:id, :team_id, :created_at, :sender, :recipient, "
+                ":content, :summary, :read_by, :session_id)"
+            ).bindparams(bindparam("read_by", type_=JSON))
+
             async with db._tx() as conn:
                 for row in rows_to_insert:
-                    await conn.execute(
-                        text(
-                            "INSERT INTO teams "
-                            "(id, name, created_at, updated_at, member_count, members, status) "
-                            "VALUES (:id, :name, :created_at, :updated_at, "
-                            ":member_count, :members, :status)"
-                        ),
-                        row,
-                    )
+                    await conn.execute(team_stmt, row)
                 for mrow in msg_rows:
-                    await conn.execute(
-                        text(
-                            "INSERT INTO team_messages "
-                            "(id, team_id, created_at, sender, recipient, content, "
-                            "summary, read_by, session_id) "
-                            "VALUES (:id, :team_id, :created_at, :sender, :recipient, "
-                            ":content, :summary, :read_by, :session_id)"
-                        ),
-                        mrow,
-                    )
+                    await conn.execute(msg_stmt, mrow)
 
     return counts
 
@@ -899,12 +1053,15 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
         "--limit",
         type=int,
         default=50,
-        help="Max sessions to list (default 50).",
+        help="Maximum sessions to print, newest first (default 50).",
     )
     ls.add_argument(
         "--status",
         default=None,
-        help="Filter by session status (running|completed|failed|aborted).",
+        help=(
+            "Show only sessions in this status: running, completed, failed or aborted. "
+            "Omit to list every status."
+        ),
     )
 
     # li state stats
@@ -933,7 +1090,11 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
         "--mode",
         default="TRUNCATE",
         choices=["PASSIVE", "FULL", "RESTART", "TRUNCATE"],
-        help="Checkpoint mode (default TRUNCATE).",
+        help=(
+            "How hard to push the WAL back into the database. TRUNCATE (default) frees the WAL "
+            "file outright but needs no active readers; PASSIVE, FULL and RESTART give up "
+            "completeness to avoid blocking. No run data is lost in any mode."
+        ),
     )
 
     # li state vacuum
@@ -1089,3 +1250,89 @@ def run_state(args: argparse.Namespace) -> int:
         return 0
 
     return 1
+
+
+# ── machine result ────────────────────────────────────────────────────────────
+
+
+async def _machine_ls_data(*, limit: int, status: str | None) -> dict[str, Any]:
+    from .machine import available, readonly_state_db
+
+    result: dict[str, Any] = {"filters": {"status": status}, "limit": limit}
+    async with readonly_state_db() as (db, why):
+        if db is None:
+            result["sessions"] = why
+            return result
+        rows = await _collect_sessions(db, limit=limit, status=status)
+    result["sessions"] = available(rows)
+    return result
+
+
+async def _machine_stats_data() -> dict[str, Any]:
+    from .machine import available, readonly_state_db
+
+    sizes = _db_sizes()
+    result: dict[str, Any] = {"database": sizes}
+    async with readonly_state_db() as (db, why):
+        if db is None:
+            absent = why
+            result["row_counts"] = absent
+            result["sessions_by_status"] = absent
+            result["journal_mode"] = absent
+            return result
+        collected = await _collect_stats(db)
+    result["row_counts"] = available(collected["row_counts"])
+    result["sessions_by_status"] = available(collected["sessions_by_status"])
+    # Only the one pragma that describes the database rather than the connection
+    # that asked. busy_timeout, synchronous and the rest are settings of whichever
+    # connection reads them, so reporting them here would hand a caller this
+    # reader's configuration under a name that reads like the store's.
+    result["journal_mode"] = available(collected["pragmas"]["journal_mode"])
+    return result
+
+
+def _machine_ls(argv: list[str]) -> dict[str, Any]:
+    from lionagi.ln.concurrency import run_async
+
+    from .machine import MachineError, machine_parser, parse_machine_argv
+
+    parser = machine_parser("li state ls")
+    parser.add_argument("--limit", type=int, default=50, help=argparse.SUPPRESS)
+    parser.add_argument("--status", default=None, help=argparse.SUPPRESS)
+    args = parse_machine_argv(parser, argv)
+    if args.limit < 1:
+        raise MachineError("invalid_input", "--limit must be at least 1")
+    return run_async(_machine_ls_data(limit=args.limit, status=args.status))
+
+
+def _machine_stats(argv: list[str]) -> dict[str, Any]:
+    from lionagi.ln.concurrency import run_async
+
+    from .machine import MachineError
+
+    if argv:
+        raise MachineError("invalid_input", f"li state stats takes no arguments: {' '.join(argv)}")
+    return run_async(_machine_stats_data())
+
+
+def machine_result(argv: list[str]) -> dict[str, Any]:
+    """`li state <sub> --machine`.
+
+    `migrate` is not among the subcommands routed here and is not reachable from
+    the MCP surface at all; it rewrites the store every other reader reports on.
+    """
+    from .machine import machine_subcommand
+
+    return machine_subcommand(
+        "state",
+        argv,
+        {"ls": _machine_ls, "stats": _machine_stats},
+        without_seam={
+            "import": "it loads run directories into the store, which is a write",
+            "import-teams": "it loads team files into the store, which is a write",
+            "checkpoint": "it checkpoints the write-ahead log",
+            "vacuum": "it rebuilds the database file",
+            "prune": "it deletes rows",
+            "doctor": "it sweeps stale rows to a new status, which is a write",
+        },
+    )

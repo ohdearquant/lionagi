@@ -13,6 +13,7 @@ import pytest
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
+import lionagi.state.db as state_db_mod
 from lionagi.state.db import StateDB  # noqa: E402
 
 
@@ -41,7 +42,6 @@ async def _seed_two_sessions(db_path: Path) -> None:
 
 
 def _make_client(tmp_path, monkeypatch, db_path: Path) -> TestClient:
-    import lionagi.state.db as state_db_mod
     import lionagi.studio.services.sessions as sessions_mod
     import lionagi.studio.services.stats as stats_mod
 
@@ -101,7 +101,6 @@ def test_stats_size_comes_from_stats_db_path(tmp_path, monkeypatch):
     small_db = tmp_path / "small_state.db"
     _run(_seed_two_sessions(small_db))
 
-    import lionagi.state.db as state_db_mod
     import lionagi.studio.services.admin as admin_mod
     import lionagi.studio.services.sessions as sessions_mod
     import lionagi.studio.services.stats as stats_mod
@@ -146,7 +145,6 @@ async def _seed_invocation_with_bad_metadata(db_path: Path, inv_id: str) -> None
 
 def test_invocation_bad_metadata_becomes_none(tmp_path, monkeypatch):
     """Corrupted node_metadata must be None, not the raw invalid string."""
-    import lionagi.state.db as state_db_mod
     import lionagi.studio.services.invocations as inv_mod
 
     db_path = tmp_path / "state.db"
@@ -154,7 +152,7 @@ def test_invocation_bad_metadata_becomes_none(tmp_path, monkeypatch):
     _run(_seed_invocation_with_bad_metadata(db_path, inv_id))
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(inv_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     from lionagi.studio.app import app
 
@@ -169,7 +167,6 @@ def test_invocation_bad_metadata_becomes_none(tmp_path, monkeypatch):
 
 def test_invocation_list_bad_metadata_becomes_none(tmp_path, monkeypatch):
     """Corrupted node_metadata in list endpoint must also be None."""
-    import lionagi.state.db as state_db_mod
     import lionagi.studio.services.invocations as inv_mod
 
     db_path = tmp_path / "state.db"
@@ -177,7 +174,7 @@ def test_invocation_list_bad_metadata_becomes_none(tmp_path, monkeypatch):
     _run(_seed_invocation_with_bad_metadata(db_path, inv_id))
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(inv_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     from lionagi.studio.app import app
 

@@ -103,6 +103,52 @@ def warn_unknown_artifact_keys(
     return warnings
 
 
+def _resolve_produced(root: str, rel: str) -> str | None:
+    """Return the path an expected artifact was actually produced at, or None.
+
+    An entry naming a directory is matched exactly, so a contract that knows
+    where its artifact lands keeps saying so precisely.
+
+    A bare filename is matched at the root first and then in any immediate
+    subdirectory. In a multi-agent run each worker writes into its own
+    subdirectory, and which worker produces a given artifact is decided when
+    the plan is cast — so the author of a playbook contract cannot name that
+    directory in advance, and requiring one made a bare filename impossible to
+    satisfy. Declaring *what* is expected and knowing *who* produces it are
+    held by different parties; only the first belongs in the contract.
+
+    Subdirectories are searched in sorted order, so a filename produced by more
+    than one worker resolves to the same one on every run rather than to
+    whatever the filesystem happened to list first.
+    """
+    try:
+        direct = _safe_join(root, rel)
+    except ArtifactPathError:
+        return None
+    if os.path.isfile(direct):
+        return direct
+
+    if len(PurePosixPath(rel).parts) != 1:
+        return None
+
+    try:
+        subdirs = sorted(entry.name for entry in os.scandir(root) if entry.is_dir())
+    except OSError:
+        return None
+
+    for sub in subdirs:
+        try:
+            candidate = _safe_join(root, f"{sub}/{rel}")
+        except ArtifactPathError:
+            # A subdirectory whose name is not a legal path segment (a glob
+            # character, say) is skipped rather than failing the whole check:
+            # it is not somewhere we would have written an artifact.
+            continue
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
 def validate_artifact_contract(contract: dict[str, Any] | None) -> None:
     if contract is None:
         return
@@ -205,13 +251,16 @@ def verify_artifact_contract(
     produced: list[ProducedArtifact] = []
 
     for entry in expected:
-        full = _safe_join(root, entry["path"])
-        present = os.path.isfile(full) and os.path.getsize(full) > 0
+        full = _resolve_produced(root, entry["path"])
+        present = full is not None and os.path.getsize(full) > 0
         if present:
             produced.append(
                 {
                     "id": entry["id"],
-                    "path": entry["path"],
+                    # Report where it was found, not only what was asked for: a
+                    # bare filename may have resolved into a worker's own
+                    # subdirectory, and the reader wants the path that exists.
+                    "path": os.path.relpath(full, root),
                     "size": os.path.getsize(full),
                     "present": True,
                 }

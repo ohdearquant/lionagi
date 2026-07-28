@@ -239,6 +239,54 @@ surfaced as a UI note in `_detect_degraded`/`_audit_degraded` in that same modul
 not an internal failure — it lands in the same terminal bucket as a runtime-cancelled task
 (same reason class, same exit code 143) rather than a new status.
 
+**`EXIT_CODE_ENVIRONMENT_ERROR` (78)** — the installation cannot start. A `ModuleNotFoundError`
+reaching the top of `main()` means an import failed and nothing handled it, so no command ran at
+all. This is deliberately outside `EXIT_CODE_BY_STATUS`, because it is not a run status: there is
+no run. It exits 78 (`EX_CONFIG`) rather than 1 so that a caller can tell a broken environment
+from a run that started and failed, which both used to exit 1 with a traceback. A wrapper that
+reads only the exit status and the presence of an artifact would otherwise report a missing
+dependency as the agent's own empty or crashed result, and attribute an environment outage to
+whatever the agent had been asked to do.
+
+The traceback is printed first because it names the import chain that reached the missing module;
+the one-line summary is emitted last through the CLI error logger, so a caller keeping only the
+tail of stderr still receives the diagnosis. Callers distinguishing the two cases should test for
+78 specifically; every other exit code retains its existing meaning.
+
+The wrapper in `main()` catches whatever escapes, but a `ModuleNotFoundError` absorbed by a broad
+handler on the way to dispatch never reaches it. Every such handler ahead of the wrapper must
+therefore split the missing-module case out and return 78 itself, keeping its existing handling for
+everything else; a discriminator absorbed upstream is not a discriminator. Two do so today: the
+lazy command-module loader, and the agent-profile load in `li play check`. Both keep their concise
+report rather than switching to a traceback, because a command that never started has no stack
+worth printing and naming the missing module is the whole diagnosis. Any new broad handler in that
+region needs the same split.
+
+The boundary in the wrapper is a run having been allocated. `allocate_run` sets a marker, and once
+it is set a `ModuleNotFoundError` is *not* reported as an environment fault: a run id, a run
+directory and a manifest exist on disk, so telling the caller nothing was executed would be the
+same misattribution pointed the other way. Such an error propagates and is reported the way any
+other failure during a run is. This is why a lazily imported provider extra going missing mid-run
+does not exit 78.
+
+The marker is process-wide by necessity, not by convenience. `run_async` drives each command's
+async body on its own thread with its own event loop, so allocation happens on a different thread,
+in a fresh context, from the one the entry point returns on — a thread-local or a `ContextVar`
+would be invisible to the reader and would claim no run started while one existed. The cost is
+precision when two invocations overlap in one process, which is not a supported entry point. That
+is handled by making the unsafe direction impossible rather than by pretending it cannot happen:
+seeing another invocation's allocation only re-raises, which is the behaviour that predates this
+code, while *losing* one would assert something false, so the reset on entry is skipped whenever
+another invocation is in flight.
+
+The accepted limitation, stated so it is not rediscovered as a bug: while two invocations overlap,
+one that dies on a missing import before allocating anything can see the other's allocation and
+re-raise rather than reporting 78. Making that precise requires attributing an allocation to an
+invocation, and allocation happens on a thread the entry point did not create, so attribution means
+threading a token through `run_async` into every command's async body — a change to a shared
+concurrency primitive, for an entry point that is not supported, to turn an ambiguous report into a
+precise one. Revisit if concurrent in-process invocation ever becomes supported.
+
 ## `dispatch.py` — dispatch outbox (ADR-0059)
 
 Module docstring: `li dispatch` inspects and acknowledges durable `dispatch_outbox` rows.

@@ -16,6 +16,7 @@ from lionagi.casts.emission import TaskAssignment
 from lionagi.cli.orchestrate.flow import (
     _build_dag,
     _DagState,
+    _deps_from_built_graph,
     _ExecResult,
     _execute_dag,
     _finalize_flow,
@@ -40,6 +41,11 @@ def _make_env(tmp_path, *, bare=True, total_budget=None, team_data=None, live_pe
 
     builder = _FakeBuilder()
     session = _FakeSession()
+    expected_worker_ids: list[str] = []
+
+    def expect_worker(agent_id: str) -> None:
+        if agent_id not in expected_worker_ids:
+            expected_worker_ids.append(agent_id)
 
     return SimpleNamespace(
         run=SimpleNamespace(
@@ -67,7 +73,27 @@ def _make_env(tmp_path, *, bare=True, total_budget=None, team_data=None, live_pe
         register_name=register_name,
         _live_persist=live_persist,
         _finalize_extras=None,
+        worker_artifact_dirs={},
+        expected_worker_ids=expected_worker_ids,
+        expect_worker=expect_worker,
     )
+
+
+class _FakeMsgs:
+    """Enough of the `Branch.msgs` surface to observe a system-prompt rewrite."""
+
+    def __init__(self, system_text: str):
+        self.system_text = system_text
+
+    @property
+    def system(self):
+        return SimpleNamespace(content=SimpleNamespace(system_message=self.system_text))
+
+    def create_system(self, *, system):
+        return system
+
+    def set_system(self, system) -> None:
+        self.system_text = system
 
 
 class _FakeOrcBranch:
@@ -108,13 +134,35 @@ class _FakeSession:
 
 
 class _FakeBuilder:
+    """Stub that keeps the real builder's edge semantics: an explicit list of
+    dependencies makes exactly those edges, `None` chains onto the current
+    heads. Callers that want a graph disagreeing with the plan can drive that
+    through `add_operation` and read it back off `get_graph()`.
+    """
+
     def __init__(self):
         self._nodes: list[str] = []
         self._ops: list[dict] = []
+        self._mapping: dict[str, dict] = {}
+        self._graph_nodes: dict[str, SimpleNamespace] = {}
+        self._heads: list[str] = []
+        self._edges = 0
 
-    def add_operation(self, op_type, *, branch, depends_on=None, instruction="", context=None):
+    def add_operation(
+        self, op_type, *, branch, depends_on=None, instruction="", context=None, **kwargs
+    ):
         node_id = f"node-{len(self._nodes)}"
         self._nodes.append(node_id)
+        self._mapping[node_id] = {"in": {}, "out": {}}
+        self._graph_nodes[node_id] = SimpleNamespace(id=node_id, metadata={})
+        heads = list(depends_on) if depends_on is not None else list(self._heads)
+        for head_id in heads:
+            if head_id in self._mapping:
+                self._edges += 1
+                edge_id = f"edge-{self._edges}"
+                self._mapping[head_id]["out"][edge_id] = node_id
+                self._mapping[node_id]["in"][edge_id] = head_id
+        self._heads = [node_id]
         self._ops.append(
             {
                 "id": node_id,
@@ -126,7 +174,13 @@ class _FakeBuilder:
         return node_id
 
     def get_graph(self):
-        return SimpleNamespace(nodes=list(self._nodes))
+        return SimpleNamespace(
+            nodes=list(self._nodes),
+            internal_nodes=dict(self._graph_nodes),
+            node_edge_mapping={
+                k: {"in": dict(v["in"]), "out": dict(v["out"])} for k, v in self._mapping.items()
+            },
+        )
 
 
 class _FakeDB:
@@ -184,6 +238,12 @@ async def test_build_dag_populates_node_ids(tmp_path):
     assert len(dag_state.worker_models) == 2
     assert dag_state.reactive is False
     assert dag_state.known_nodes == set(dag_state.node_ids)
+    # The plan is also the run's statement of which workers it will have, kept
+    # apart from the directories actually handed out so the two can disagree.
+    # `build_worker_branch` is patched out here, so nothing registered a
+    # directory — and the roster still names both workers.
+    assert env.expected_worker_ids == ["researcher", "implementer"]
+    assert env.worker_artifact_dirs == {}
 
 
 @pytest.mark.asyncio
@@ -211,6 +271,99 @@ async def test_build_dag_deps_by_node_format(tmp_path):
     nid0, nid1 = dag_state.node_ids
     assert dag_state.deps_by_node[nid0] == []
     assert dag_state.deps_by_node[nid1] == ["1"]
+
+
+@pytest.mark.asyncio
+async def test_build_dag_deps_follow_the_built_graph_not_the_declared_plan(tmp_path):
+    """The reported dependencies are the edges that exist, not the ones asked for.
+
+    Four assignments wired so the declared plan and the built graph disagree in
+    both directions: step 2 is built exactly as declared and must still come out
+    right, step 3 loses a declared dependency, step 4 gains one no assignment
+    ever declared. Re-deriving from the plan would give [], ["1"], ["1", "2"], []
+    — three of the four wrong.
+    """
+    from lionagi.cli.orchestrate._common import _build_worker_operate_node as _real_build
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    env = _make_env(tmp_path)
+    env.builder = OperationGraphBuilder()
+
+    assignments = [
+        TaskAssignment(task="a", assignee="researcher"),
+        TaskAssignment(task="b", assignee="architect", depends_on=["1"]),
+        TaskAssignment(task="c", assignee="implementer", depends_on=["1", "2"]),
+        TaskAssignment(task="d", assignee="critic"),
+    ]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["researcher", "architect", "implementer", "critic"],
+        dep_indices=[[], [0], [0, 1], []],
+        pool=[],
+        budget_preambles={},
+    )
+
+    built: list[str] = []
+
+    def _diverging_build(builder, **kwargs):
+        step = len(built)
+        deps = kwargs.pop("depends_on")
+        if step == 2:
+            deps = [built[1]]  # declared on steps 1 and 2; only 2 gets built
+        elif step == 3:
+            deps = [built[0]]  # declared nothing; built onto step 1 anyway
+        node_id = _real_build(builder, depends_on=deps, **kwargs)
+        built.append(node_id)
+        return node_id
+
+    with (
+        patch(
+            "lionagi.cli.orchestrate.flow.build_worker_branch",
+            return_value=(_FakeBranch(), "codex/gpt-5.5", None, False),
+        ),
+        patch("lionagi.cli.orchestrate.flow._build_worker_operate_node", _diverging_build),
+    ):
+        dag_state = await _build_dag(env, "task", plan_result, reactive_spec="off")
+
+    nid0, nid1, nid2, nid3 = dag_state.node_ids
+    assert dag_state.deps_by_node[nid0] == []
+    assert dag_state.deps_by_node[nid1] == ["1"]  # declared and built agree
+    assert dag_state.deps_by_node[nid2] == ["2"]  # the plan says ["1", "2"]
+    assert dag_state.deps_by_node[nid3] == ["1"]  # the plan says []
+
+    # The Studio snapshot is rendered from the same reading, not a second one.
+    assert [op["depends_on"] for op in env._finalize_extras["operations"]] == [
+        [],
+        ["1"],
+        ["2"],
+        ["1"],
+    ]
+
+
+def test_deps_from_built_graph_names_a_head_that_has_no_plan_ordinal():
+    """A node injected after planning is named by its stamped spawn id."""
+    builder = _FakeBuilder()
+    planned = builder.add_operation("operate", branch=None, depends_on=[])
+    injected = builder.add_operation("operate", branch=None, depends_on=[planned])
+    child = builder.add_operation("operate", branch=None, depends_on=[injected])
+    builder._graph_nodes[injected].metadata["spawn_id"] = "spawn-1"
+
+    deps = _deps_from_built_graph(builder, {planned: "1"})
+
+    assert deps[planned] == []
+    assert deps[injected] == ["1"]
+    assert deps[child] == ["spawn-1"]
+
+
+def test_deps_from_built_graph_keeps_an_unnamed_head_rather_than_dropping_it():
+    """No ordinal and no spawn id: report the node id, never an empty list."""
+    builder = _FakeBuilder()
+    unnamed = builder.add_operation("operate", branch=None, depends_on=[])
+    child = builder.add_operation("operate", branch=None, depends_on=[unnamed])
+
+    deps = _deps_from_built_graph(builder, {})
+
+    assert deps[child] == [unnamed]
 
 
 @pytest.mark.asyncio
@@ -369,8 +522,12 @@ async def test_execute_dag_reactive_wires_spawn_branch_setup_for_cli_workspace(t
     dir. Branch.clone() otherwise carries the emitting leg's repo forward
     unchanged — a sibling directory outside the spawned artifact contract —
     so without this seam a spawned CLI child can only write where its
-    emitter can, not where its own artifact contract expects. Non-CLI
-    branches (no writable-root concept) must be left untouched."""
+    emitter can, not where its own artifact contract expects.
+
+    Only the workspace move is CLI-specific. A non-CLI spawned branch has no
+    `repo` kwarg to retarget, but it inherited the same prompt naming the
+    emitter's directory and it belongs on the same end-of-run roster, so it
+    must still be registered and have its prompt retargeted."""
     env = _make_env(tmp_path)
     assignments = [TaskAssignment(task="x", assignee="researcher")]
     plan_result = _PlanResult(
@@ -419,14 +576,24 @@ async def test_execute_dag_reactive_wires_spawn_branch_setup_for_cli_workspace(t
     assert cli_branch.chat_model.endpoint.config.kwargs["repo"] == expected_dir
     assert expected_dir.exists()
 
+    assert env.worker_artifact_dirs["spawn-1"] == expected_dir
+
+    non_cli_op = SimpleNamespace(metadata={"spawn_id": "spawn-2"})
     non_cli_branch = SimpleNamespace(
         chat_model=SimpleNamespace(
             is_cli=False,
             endpoint=SimpleNamespace(config=SimpleNamespace(kwargs={})),
-        )
+        ),
+        msgs=_FakeMsgs("ARTIFACT DIRECTORY: /somewhere/else/emitter"),
     )
-    spawn_branch_setup(operation, non_cli_branch)
+    spawn_branch_setup(non_cli_op, non_cli_branch)
+
+    non_cli_dir = env.run.agent_artifact_dir("spawn-2")
+    # No writable-root concept, so no workspace move …
     assert "repo" not in non_cli_branch.chat_model.endpoint.config.kwargs
+    # … but it is on the roster and its prompt names its own directory.
+    assert env.worker_artifact_dirs["spawn-2"] == non_cli_dir
+    assert non_cli_branch.msgs.system_text == f"ARTIFACT DIRECTORY: {non_cli_dir}"
 
 
 @pytest.mark.asyncio
@@ -824,7 +991,7 @@ def _flow_phase_state_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pat
     ],
 )
 async def test_reactive_spawn_required_artifact_persistence_matrix(
-    _flow_phase_state_db, tmp_path, role, outcome, file_content
+    _flow_phase_state_db, tmp_path, monkeypatch, role, outcome, file_content
 ):
     """A spawned node running under reviewer/critic (both declare a required
     review.md) must flip the run to failed at teardown when that artifact is
@@ -844,6 +1011,10 @@ async def test_reactive_spawn_required_artifact_persistence_matrix(
 
     orc_branch = Branch(name="orchestrator")
     session = Session(default_branch=orc_branch)
+    # `save_dir` only moves the artifact root; the run's state dirs still land
+    # under the module-level runs root, which is the user's real one. Redirect
+    # it so the test allocates entirely inside tmp_path.
+    monkeypatch.setattr("lionagi.cli._runs.RUNS_ROOT", tmp_path / "runs")
     run = allocate_run(save_dir=str(tmp_path / "artifacts"))
 
     env = OrchestrationEnv(
@@ -852,6 +1023,7 @@ async def test_reactive_spawn_required_artifact_persistence_matrix(
         orc_branch=orc_branch,
         builder=MagicMock(),
         orc_profile=None,
+        orc_profile_name=None,
         default_model_spec="claude",
         bare=False,
         effort=None,

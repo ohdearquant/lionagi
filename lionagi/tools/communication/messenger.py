@@ -51,7 +51,12 @@ class MessengerRequest(BaseModel):
     )
     to: str | list[str] | None = Field(
         None,
-        description="Recipient name(s). Required for 'send' and 'wakeup'.",
+        description=(
+            "Recipient name(s). Required for 'send' and 'wakeup'. 'send' accepts "
+            "a name or a list of names and delivers to every one of them. "
+            "'wakeup' wakes exactly one teammate: pass a name, or a list, in "
+            "which case only its first name is woken and the rest are ignored."
+        ),
     )
     content: str | None = Field(
         None,
@@ -132,13 +137,21 @@ class LionMessenger(LionTool):
             content: str = None,
             urgency: str = None,
         ) -> str:
-            """Send messages to teammates, receive pending ones, signal
+            """Team messaging and signals. 'wakeup' takes one name; a list's rest are ignored.
+
+            Only the summary line above is extracted into the generated tool
+            description, so the recipient rule a caller would otherwise be
+            surprised by is stated there rather than below.
+
+            Send messages to teammates, receive pending ones, signal
             done/finished, wake a teammate, or send a help signal. action in
-            {'send', 'receive', 'done', 'finished', 'wakeup', 'help'}; to
-            (name or list of names) and content are required for
-            send/wakeup, neither is required for receive; content (the
-            reason) is required for help, urgency is optional (defaults to
-            'fyi')."""
+            {'send', 'receive', 'done', 'finished', 'wakeup', 'help'}; to and
+            content are required for send/wakeup — 'send' takes a name or a
+            list of names and delivers to every one of them, 'wakeup' wakes
+            exactly one teammate and accepts a name or a list, in which case
+            only its first name is woken and the rest are ignored; neither is
+            required for receive; content (the reason) is required for help,
+            urgency is optional (defaults to 'fyi')."""
             if action == "receive":
                 pending = exchange.receive(sender_id)
                 if not pending:

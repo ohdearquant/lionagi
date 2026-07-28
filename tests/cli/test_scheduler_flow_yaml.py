@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import lionagi.state.db as state_db_mod
+
 # ---------------------------------------------------------------------------
 # subprocess.build_argv tests
 # ---------------------------------------------------------------------------
@@ -239,12 +241,11 @@ def _minimal_command_schedule(name: str) -> dict:
 def test_create_schedule_route_duplicate_name_returns_409(tmp_path, monkeypatch):
     """Creating a schedule with a name that already exists must return 409,
     not a generic server error."""
-    import lionagi.state.db as state_db_mod
     import lionagi.studio.services.schedules as schedules_mod
 
     fake_db = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(schedules_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
     from fastapi.testclient import TestClient
 
     from lionagi.studio.app import app
@@ -260,12 +261,11 @@ def test_create_schedule_route_duplicate_name_returns_409(tmp_path, monkeypatch)
 def test_create_schedule_route_storage_failure_is_not_409(tmp_path, monkeypatch):
     """A non-conflict exception from the storage layer (e.g. RuntimeError)
     must not be reported to the client as a 409 name conflict."""
-    import lionagi.state.db as state_db_mod
     import lionagi.studio.services.schedules as schedules_mod
 
     fake_db = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(schedules_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
 
     async def _boom(self, schedule):
         raise RuntimeError("storage offline")

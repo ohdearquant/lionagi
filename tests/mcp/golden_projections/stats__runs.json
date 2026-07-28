@@ -1,0 +1,30 @@
+{
+  "path": "stats runs",
+  "schema": {
+    "additionalProperties": false,
+    "description": "Aggregate sessions rows updated within --since into run_count, completed, and failed counts per group. Read-only: no writes, no schema changes, no PRAGMA mutations.",
+    "properties": {
+      "group_by": {
+        "default": "project,kind",
+        "description": "Comma-separated group keys from {project, kind, agent, model, status}. Default: project,kind.",
+        "type": "string",
+        "x-flag": "--group-by"
+      },
+      "json": {
+        "default": false,
+        "description": "Emit a JSON array of row objects instead of an aligned table.",
+        "type": "boolean",
+        "x-flag": "--json"
+      },
+      "since": {
+        "default": "7d",
+        "description": "Only include runs updated within this window. Format: 30m, 1h, 7d. Default: 7d.",
+        "type": "string",
+        "x-flag": "--since"
+      }
+    },
+    "title": "stats runs",
+    "type": "object"
+  },
+  "stage": "static"
+}
