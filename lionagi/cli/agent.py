@@ -572,6 +572,7 @@ async def _run_agent(
                 log_config=DataLoggerConfig(auto_save_on_exit=False),
                 load_settings=False,
                 resolved_mcp_servers=mcp_resolution.servers,
+                resolved_mcp_explicit=mcp_resolution.explicit,
             )
             # The hand-over happened inside create_agent, so the request it
             # produced is the only honest source for what this leg is getting.
