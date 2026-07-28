@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import sqlite3
+import struct
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -455,6 +457,35 @@ def _to_json_column(value: Any) -> Any:
     if value is None or isinstance(value, bytes | bytearray | memoryview):
         return value
     return _json_dumps(value, check_non_finite=True)
+
+
+def _unpack_embedding(value: Any) -> list[float] | None:
+    """Decode the messages.embedding little-endian float32 storage format."""
+    if value is None:
+        return None
+    if isinstance(value, list):
+        values = [float(item) for item in value]
+    elif isinstance(value, bytes | bytearray | memoryview):
+        raw = bytes(value)
+        if len(raw) % 4:
+            raise ValueError("messages.embedding BLOB length must be a multiple of 4 bytes")
+        values = list(struct.unpack(f"<{len(raw) // 4}f", raw))
+    else:
+        raise ValueError("messages.embedding must be a float list or packed float32 bytes")
+    if not all(math.isfinite(item) for item in values):
+        raise ValueError("messages.embedding values must be finite")
+    return values
+
+
+def _pack_embedding(value: Any) -> bytes | None:
+    """Encode an embedding as packed little-endian float32 bytes."""
+    if value is None:
+        return None
+    values = _unpack_embedding(value)
+    try:
+        return struct.pack(f"<{len(values)}f", *values)
+    except (OverflowError, struct.error) as exc:
+        raise ValueError("messages.embedding values must fit finite float32") from exc
 
 
 def _validate_session_status(status: Any) -> None:
@@ -1907,7 +1938,7 @@ class StateDB:
                 "created_at": msg["created_at"],
                 "node_metadata": msg.get("node_metadata"),
                 "content": msg["content"],
-                "embedding": msg.get("embedding"),
+                "embedding": _pack_embedding(msg.get("embedding")),
                 "sender": msg.get("sender"),
                 "recipient": msg.get("recipient"),
                 "channel": msg.get("channel"),
@@ -5297,6 +5328,8 @@ class StateDB:
     @staticmethod
     def _row_to_dict(row: Any) -> dict[str, Any]:
         d = dict(row)
+        if "embedding" in d:
+            d["embedding"] = _unpack_embedding(d["embedding"])
         for key in (
             "node_metadata",
             "content",

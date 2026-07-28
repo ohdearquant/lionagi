@@ -89,12 +89,14 @@ async def _run_parity_suite(db: StateDB) -> None:
 
     # 2. insert_message + get_message roundtrip
     msg_id = _uid()
+    embedding = [0.125, -0.25, 1.5, 0.0]
     await db.insert_message(
         {
             "id": msg_id,
             "created_at": now,
             "node_metadata": {"key": "val"},
             "content": {"text": "hello dual-backend"},
+            "embedding": embedding,
             "role": "user",
             "sender": "test",
             "recipient": "test",
@@ -109,6 +111,16 @@ async def _run_parity_suite(db: StateDB) -> None:
 
         content = json.loads(content)
     assert content["text"] == "hello dual-backend"
+    assert msg["embedding"] == pytest.approx(embedding)
+    async with db._read() as conn:
+        stored_embedding = (
+            await conn.execute(
+                text("SELECT embedding FROM messages WHERE id = :id"),
+                {"id": msg_id},
+            )
+        ).first()[0]
+    assert isinstance(stored_embedding, bytes)
+    assert len(stored_embedding) == 4 * len(embedding)
 
     # 3. update_status writes denormalized + transition row
     await db.update_status(

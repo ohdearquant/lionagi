@@ -387,11 +387,13 @@ messages
 └── lion_class    Integer, foreign key, NOT NULL
 ```
 
-`Message` inherits `Node.embedding: list[float] | None`. `StateDB.insert_message()` binds
-`msg.get("embedding")` and updates that column on id conflict. Repository search finds no
-message-construction call that supplies an embedding; only generic Node tests and state payload
-tests exercise embedding values. The field and column do not provide storage or search for
-`MemoryItem`.
+`Message` inherits `Node.embedding: list[float] | None`. `StateDB.insert_message()` packs that
+list as little-endian IEEE-754 float32 bytes before binding the SQLite BLOB or PostgreSQL BYTEA
+column and updates those bytes on id conflict. StateDB row conversion unpacks the bytes so
+`get_message()` and branch-message reads return the public `list[float]` shape. Repository search
+finds no message-construction call that supplies an embedding; only generic Node tests and state
+payload/parity tests exercise embedding values. The field and column do not provide storage or
+search for `MemoryItem`.
 
 **Exact non-behavior**:
 
