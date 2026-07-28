@@ -89,17 +89,24 @@ def test_terminal_outcome_from_recorded_end(sandbox, cli_status, outcome, reason
     assert st["reason_code"] == reason_code
 
 
-def test_orphan_is_not_terminal_and_has_no_outcome(sandbox, monkeypatch):
-    """A process gone with no end recorded has stopped and is still not terminal."""
+def test_a_conclusively_gone_process_ends_the_run_as_lost(sandbox, monkeypatch):
+    """A process positively established gone, with nothing reported, is over.
+
+    Nothing survived that could ever write this run's end, so leaving it
+    non-terminal leaves it non-terminal forever. The end is the observer's, and
+    it says so: `lost` is not a failure, and the reason names why there is no
+    result rather than classifying one.
+    """
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
     rid = jobs.new_run_id()
     _record(rid, pid=999_999)
 
     st = jobs.status(rid)
-    assert st["status"] == "exited"
-    assert st["terminal"] is False
-    assert st["outcome"] is None  # null whenever terminal is false, not just while running
-    assert st["possibly_orphaned"] is True
+    assert st["terminal"] is True
+    assert st["outcome"] == jobs.OUTCOME_INDETERMINATE
+    assert st["reason_code"] == jobs.LOST_REASON
+    assert st["possibly_orphaned"] is False
+    assert st["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
 
 
 def test_preparing_record_is_not_a_spawn_failure(sandbox, monkeypatch):
@@ -332,7 +339,9 @@ async def test_wait_does_not_touch_the_run(sandbox, monkeypatch):
 async def test_wait_stops_as_soon_as_every_id_is_terminal(sandbox, monkeypatch):
     """The call returns on the transition, not on the deadline."""
     alive = {"value": True}
-    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: alive["value"])
+    # Both probes, because a live pid whose creation time cannot be matched is
+    # now a run this module ends rather than one it keeps polling.
+    _live_process(monkeypatch, alive=lambda pid: alive["value"])
     rid = jobs.new_run_id()
     _record(rid, pid=4242)
 
@@ -384,15 +393,16 @@ async def test_a_stopped_run_costs_one_poll_interval_and_no_more(sandbox, monkey
     monkeypatch.setattr(anyio, "sleep", no_sleep)
     res = await jobs.wait([rid], max_wait=600, poll_interval=5)
 
-    assert slept == [5]
+    assert slept == []
     assert res["pending"] == []
-    assert res["stopped_without_end"] == [rid]
+    # The run was ended by the observation itself, so there is nothing left to
+    # wait for and nothing to report under the compatibility field.
+    assert res["stopped_without_end"] == []
     assert res["timed_out"] is False
-    # Stopped is not finished: nothing recorded how this run came out.
-    assert res["all_terminal"] is False
-    assert res["runs"][0]["terminal"] is False
-    assert res["runs"][0]["outcome"] is None
-    assert res["runs"][0]["possibly_orphaned"] is True
+    assert res["all_terminal"] is True
+    assert res["runs"][0]["terminal"] is True
+    assert res["runs"][0]["outcome"] == jobs.OUTCOME_INDETERMINATE
+    assert res["runs"][0]["possibly_orphaned"] is False
     assert res["runs"][0]["error"] is None
 
 
@@ -404,11 +414,16 @@ async def test_wait_still_waits_for_a_running_id_beside_a_stopped_one(sandbox, m
     extra for the stopped one sitting beside it.
     """
     alive = {"value": True}
-    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: pid == 4242 and alive["value"])
+    _live_process(monkeypatch, alive=lambda pid: pid == 4242 and alive["value"])
     gone = jobs.new_run_id()
     _record(gone, pid=999_999)
     busy = jobs.new_run_id()
     _record(busy, pid=4242)
+    # A run that ended badly, so the aggregate below covers all four outcomes a
+    # wait can carry at once rather than three of them.
+    dud = jobs.new_run_id()
+    _record(dud, pid=999_998)
+    jobs.mark_terminal(dud, "failed")
 
     polls = {"n": 0}
     real_status = jobs.status
@@ -422,15 +437,23 @@ async def test_wait_still_waits_for_a_running_id_beside_a_stopped_one(sandbox, m
         return real_status(run_id)
 
     monkeypatch.setattr(jobs, "status", counting_status)
-    res = await jobs.wait([gone, busy], max_wait=30, poll_interval=0.01)
+    res = await jobs.wait([gone, busy, dud], max_wait=30, poll_interval=0.01)
 
     assert polls["n"] == 2  # the wait did keep observing the running id
     assert res["pending"] == []
-    assert res["stopped_without_end"] == [gone]
+    assert res["stopped_without_end"] == []
     assert res["timed_out"] is False
-    assert res["all_terminal"] is False  # one id never recorded an end
+    # Every id has a recorded end, so the aggregate is true — and it is the
+    # per-entry outcomes, in the order they were asked for, that say the three
+    # runs came out differently.
+    assert res["all_terminal"] is True
+    assert [r["outcome"] for r in res["runs"]] == [
+        jobs.OUTCOME_INDETERMINATE,
+        "succeeded",
+        "failed",
+    ]
     assert res["runs"][1]["terminal"] is True
-    assert res["runs"][1]["outcome"] == "succeeded"
+    assert res["runs"][2]["terminal"] is True
 
 
 async def test_a_stopped_run_that_later_records_an_end_is_terminal(sandbox, monkeypatch):
@@ -443,9 +466,11 @@ async def test_a_stopped_run_that_later_records_an_end_is_terminal(sandbox, monk
     rid = jobs.new_run_id()
     _record(rid, pid=999_999)
 
-    stopped = await jobs.wait([rid], max_wait=0, poll_interval=1)
-    assert stopped["stopped_without_end"] == [rid]
+    ended = await jobs.wait([rid], max_wait=0, poll_interval=1)
+    assert ended["stopped_without_end"] == []
+    assert ended["runs"][0]["outcome"] == jobs.OUTCOME_INDETERMINATE
 
+    # A hook arriving afterwards cannot replace an end that is already recorded.
     jobs.mark_terminal(rid, "completed")
     res = await jobs.wait([rid], max_wait=0, poll_interval=1)
 
@@ -453,7 +478,7 @@ async def test_a_stopped_run_that_later_records_an_end_is_terminal(sandbox, monk
     assert res["pending"] == []
     assert res["all_terminal"] is True
     assert res["runs"][0]["terminal"] is True
-    assert res["runs"][0]["outcome"] == "succeeded"
+    assert res["runs"][0]["outcome"] == jobs.OUTCOME_INDETERMINATE
     assert res["runs"][0]["possibly_orphaned"] is False
 
 
@@ -480,7 +505,8 @@ async def test_wait_snapshot_of_a_stopped_run_is_still_a_snapshot(sandbox, monke
 
     assert slept == []
     assert res["max_wait"] == 0.0
-    assert res["stopped_without_end"] == [rid]
+    assert res["stopped_without_end"] == []
+    assert res["runs"][0]["outcome"] == jobs.OUTCOME_INDETERMINATE
 
 
 async def test_wait_does_not_hold_the_window_open_for_a_reused_pid(sandbox, monkeypatch):
@@ -499,10 +525,11 @@ async def test_wait_does_not_hold_the_window_open_for_a_reused_pid(sandbox, monk
     res = await jobs.wait([rid], max_wait=0, poll_interval=5)
 
     assert res["pending"] == []
-    assert res["stopped_without_end"] == [rid]
-    assert res["all_terminal"] is False
-    assert res["runs"][0]["possibly_orphaned"] is True
-    assert res["runs"][0]["terminal"] is False
+    assert res["stopped_without_end"] == []
+    assert res["all_terminal"] is True
+    assert res["runs"][0]["possibly_orphaned"] is False
+    assert res["runs"][0]["terminal"] is True
+    assert res["runs"][0]["outcome"] == jobs.OUTCOME_INDETERMINATE
     assert res["runs"][0]["error"] is None
 
 
@@ -516,7 +543,7 @@ async def test_the_floor_never_outruns_the_window(sandbox, monkeypatch):
     """
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
     rid = jobs.new_run_id()
-    _record(rid, pid=999_999)
+    _record(rid, pid="999999")  # unaskable: stopped-looking, never conclusive
 
     import anyio
 
@@ -548,7 +575,7 @@ async def test_every_unresolved_id_is_named_somewhere_in_the_result(sandbox, mon
     running = jobs.new_run_id()
     _record(running, pid=4242)
     stopped = jobs.new_run_id()
-    _record(stopped, pid=999_999)
+    _record(stopped, pid="999999")  # unaskable: stopped-looking, never conclusive
     done = jobs.new_run_id()
     _record(done, pid=999_999)
     jobs.mark_terminal(done, "completed")

@@ -217,26 +217,60 @@ def _note_failure_in_console_log(run_id: str, outcome: dict[str, Any]) -> None:
         pass
 
 
-def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="lionagi.mcp._notify_hook")
-    ap.add_argument("--run-id", required=True)
-    ap.add_argument("--status", default="completed")
-    ap.add_argument("--target", default=None, help="value for the {target} placeholder")
-    ap.add_argument("--command", default=None, help="delivery argv override (JSON list)")
-    ap.add_argument(
-        "--sender",
-        default=None,
-        help="value for the {sender} placeholder: who the notice is from",
-    )
-    args = ap.parse_args(argv)
+def _note_persistence_failure(run_id: str, what: str) -> None:
+    """Append one line to the run's own log when a record could not be written.
 
-    job = jobs.mark_terminal(args.run_id, args.status)
+    The same fallback as a failed delivery, for the same reason: the record is
+    where a failure would ordinarily be reported, and this is the case where the
+    record is exactly what could not be written. The log is the one place left,
+    and it is the place someone reading a run that stops mid-sentence looks.
 
-    target = args.target or os.environ.get("LIONAGI_MCP_NOTIFY_TARGET") or ""
-    sender = args.sender or os.environ.get("LIONAGI_MCP_NOTIFY_SENDER") or ""
+    Best-effort in the same way. This runs in the dying process of a run that is
+    already over, and a log that cannot be appended to must not turn a refusal
+    that was handled into a crash.
+    """
+    try:
+        path = config.job_dir(run_id) / "console.log"
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(
+                f"\n[notify] could not record the {what} for run {run_id}: the job "
+                f"record could not be locked. The record was left unchanged.\n"
+            )
+    except OSError:
+        pass
+
+
+def deliver_terminal_notice(
+    run_id: str,
+    job: dict[str, Any] | None,
+    status: str,
+    *,
+    target: str | None = None,
+    command: str | None = None,
+    sender: str | None = None,
+) -> dict[str, Any]:
+    """Attempt this run's configured terminal notice and report what came of it.
+
+    The whole of the delivery decision lives here: which command is configured,
+    what the run's fields substitute into it, whether a missing sender makes it
+    unusable, and how each of those is recorded. It is written as one function
+    because it has two callers — this hook, running in the run's own dying
+    process, and the job observer that publishes an end for a run whose process
+    never got this far — and a notice sent by the second must be the one the
+    first would have sent. Two resolution paths would mean two answers to
+    "what is configured here", and the run that needs the notice most is the one
+    whose own process is not around to be asked.
+
+    Nothing raises: the caller is either a terminal path that has already
+    finished or a read that has already published a durable end, and neither can
+    be failed by a notifier. Every way a delivery does not happen comes back as
+    an outcome describing it.
+    """
+    target = target or os.environ.get("LIONAGI_MCP_NOTIFY_TARGET") or ""
+    sender = sender or os.environ.get("LIONAGI_MCP_NOTIFY_SENDER") or ""
     label = (job or {}).get("label") or (job or {}).get("kind") or "run"
     template, unusable = _resolve_command(
-        args.command or os.environ.get("LIONAGI_MCP_NOTIFY_COMMAND"),
+        command or os.environ.get("LIONAGI_MCP_NOTIFY_COMMAND"),
         cwd=(job or {}).get("cwd"),
     )
     # Taken before the sender check below can drop the template: a notifier
@@ -254,32 +288,71 @@ def main(argv: list[str] | None = None) -> int:
 
     if template:
         fields = {
-            "run_id": args.run_id,
-            "status": args.status,
+            "run_id": run_id,
+            "status": status,
             "label": label,
             "target": target,
             "sender": sender,
         }
-        outcome = _deliver(
+        return _deliver(
             _substitute(template, fields), fields, _delivery_env(sender), program=program
         )
-    elif unusable:
+    if unusable:
         # Configured but unusable. Recorded as a failure so job_status shows a
         # notifier that cannot deliver, rather than the silence of one that was
         # never asked to. ``command`` is None when the configuration never
         # yielded a program to name — an unparseable override has no program in
         # it, and saying so beats inventing one.
-        outcome = {
+        return {
             "attempted": False,
             "ok": False,
             "exit_code": None,
             "error": unusable,
             "command": program,
         }
-    else:
-        outcome = {"attempted": False}  # nothing configured — not a failure
-    jobs.record_notify_delivery(args.run_id, outcome)
+    return {"attempted": False}  # nothing configured — not a failure
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="lionagi.mcp._notify_hook")
+    ap.add_argument("--run-id", required=True)
+    ap.add_argument("--status", default="completed")
+    ap.add_argument("--target", default=None, help="value for the {target} placeholder")
+    ap.add_argument("--command", default=None, help="delivery argv override (JSON list)")
+    ap.add_argument(
+        "--sender",
+        default=None,
+        help="value for the {sender} placeholder: who the notice is from",
+    )
+    args = ap.parse_args(argv)
+
+    terminal = jobs.mark_terminal(args.run_id, args.status)
+    if terminal.refused:
+        # The end is not on disk. A notice sent now would assert a completion
+        # that every reader of the record contradicts, so it is not sent: the
+        # record stays non-terminal and the next observation of this run ends it
+        # the way a run whose hook never ran is ended. The refusal is reported
+        # where the run's own log and this process's exit status are the two
+        # places anything is left to look.
+        _note_persistence_failure(args.run_id, "terminal status")
+        return 1
+
+    outcome = deliver_terminal_notice(
+        args.run_id,
+        terminal.record,
+        args.status,
+        target=args.target,
+        command=args.command,
+        sender=args.sender,
+    )
+    recorded = jobs.record_notify_delivery(args.run_id, outcome)
     _note_failure_in_console_log(args.run_id, outcome)
+    if recorded.refused:
+        # The notice was attempted against a durable end; what is missing is the
+        # record of how it went. Reported the same way, because a delivery
+        # nobody can read back is one an operator has to be told about.
+        _note_persistence_failure(args.run_id, "delivery result")
+        return 1
     return 0
 
 

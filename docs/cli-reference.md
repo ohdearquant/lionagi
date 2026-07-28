@@ -681,6 +681,56 @@ its own `status` may lag.
 The verb catalog, the `request` result contract, and a worked submit-and-poll
 example are in the [MCP server reference](reference/mcp-server.md).
 
+### When a run's process is gone and nothing recorded how it came out
+
+A background run normally records its own end: the CLI's terminal hook writes it,
+and a run stopped by `li kill` leaves it in the lifecycle store, which the server
+caches onto the job record. A run whose process dies before either of those
+happens leaves nothing behind at all — no surviving producer can ever write its
+end.
+
+Where an observation *positively establishes* that the run's process is gone —
+the recorded pid holds no process, it disappears between two probes, or a live
+process holds the number and started at a different time, so it is a different
+process — `job.status`, `job.list` and `job.wait` record that end themselves and
+then report it:
+
+| Field | Value |
+|-------|-------|
+| `terminal` | `true` |
+| `outcome` | `indeterminate` |
+| `reason_code` | `process_gone_without_outcome` |
+| `terminal_source` | `mcp_orphan_reaper` |
+
+`outcome: "indeterminate"` means the process is conclusively gone and **no authoritative
+outcome was reported**. It does not mean the work failed: the run may well have
+finished what it was doing before it died, and nothing survived to say either
+way. `failed` stays reserved for a reported terminal status classified as a
+failure, and a caller may retry a `failed` run under its own policy. **Do not
+automatically retry such a run** — an external side effect it never got to
+report may already have committed.
+
+`terminal_source` says what wrote the end: `cli_terminal_hook` (the run's own
+terminal hook), `lifecycle_cache` (an end read back from the lifecycle store),
+`spawn_failure` (the spawn was caught failing), `mcp_kill` (the run was killed
+through this server), or `mcp_orphan_reaper` (this server, from the conclusive
+observation above). It is null on records written before the field existed.
+
+For a run ended this way, **`finished_at` is when the loss was established and recorded,
+not when the process exited** — nothing surviving can report that instant. Any
+duration derived from it is therefore an **upper bound** on how long the run
+actually ran.
+
+`liveness_conclusion` on `job.status` says what the observation established:
+`process_gone`, `alive`, or `unknown`. Only `process_gone` can end a run.
+`unknown` — a pid the OS cannot be asked about, a denied or unreadable identity
+probe — never does, and such a run stays non-terminal and advisory
+(`possibly_orphaned`), reported by `job.wait` under `stopped_without_end`.
+
+`job.wait`'s **`all_terminal` means every valid requested run has a recorded
+end**, including runs whose outcome is `indeterminate`. It does not mean every run
+succeeded or reported an outcome; read each entry's `outcome` for that.
+
 ### Terminal notices
 
 When a background run finishes, the server records its terminal status and, if a
