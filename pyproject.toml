@@ -1,6 +1,6 @@
 [project]
 name = "lionagi"
-version = "0.30.2"
+version = "0.31.1"
 description = "An Intelligence Operating System."
 authors = [
     { name = "HaiyangLi", email = "quantocean.li@gmail.com" },
@@ -11,6 +11,10 @@ dependencies = [
     "aiocache>=0.12.0",
     "aiohttp>=3.14.1",
     "anyio>=4.10.0",
+    # Imported directly by the flow kernel to detect the running async backend.
+    # anyio dropped sniffio from its own dependencies in 4.10, the floor pinned
+    # above, so it is no longer supplied transitively and must be declared here.
+    "sniffio>=1.3.0",
     "json-repair>=0.58.0",
     "msgspec>=0.20.0",
     "pydantic>=2.8.0",
@@ -187,6 +191,12 @@ ignore = [
     "E501",   # line length (handled by formatter)
     "W293",   # blank line whitespace (handled by formatter)
 ]
+
+[tool.ruff.lint.flake8-bugbear]
+# pydantic.Field in a default is the documented way to attach a description to a
+# parameter; the FieldInfo it returns is inert, so B008's mutable-default hazard
+# does not apply.
+extend-immutable-calls = ["pydantic.Field", "lionagi.mcp.server._arg"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = [

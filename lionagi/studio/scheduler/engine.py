@@ -10,6 +10,7 @@ import logging
 import os
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,15 @@ _TICK_INTERVAL = 30  # seconds
 # this many deferrals (the first deferral always emits), so sustained
 # saturation doesn't spam schedule_runs.
 _DEFERRED_RECORD_EVERY = 10
+# How many consecutive times one github_poll event may refuse before dispatch
+# while still holding github_cursor back for it. A pre-dispatch refusal is not
+# necessarily a property of the schedule: the action's prompt and command
+# arguments are rendered per event, so one PR's title or author can fail argv
+# construction where the next PR's would not. Retrying loudly a few times keeps
+# a genuinely fixable misconfiguration re-offered; at this count the refusal is
+# recorded as terminal for that event and the cursor moves past it, so one
+# poison event cannot block the queue behind it forever.
+_MAX_PREDISPATCH_REFUSALS = 3
 
 
 def _register_schedule_notify(
@@ -191,20 +201,63 @@ class _ThresholdCooldownClaim:
         self._engine._threshold_pending.discard(self._schedule_id)
 
 
-def _resolve_scheduler_tzinfo(tz_name: str) -> ZoneInfo:
-    """Resolve the configured scheduler timezone name to a ZoneInfo.
+@dataclass(frozen=True)
+class ScheduleTimezone:
+    """The zone one schedule's cron fields are interpreted in, plus its provenance.
 
-    Falls back to UTC (with a warning) if the configured name isn't a valid
-    IANA zone — an invalid config must never crash cron resolution.
+    ``name`` alone is not diagnostic. A UTC an operator asked for and a UTC
+    that is all the resolver could produce are the same three letters, and
+    only the second one means every cron row is firing on an hour nobody
+    chose. ``source`` is what tells them apart -- see the ``TZ_SOURCE_*``
+    vocabulary in ``lionagi.studio.config``.
     """
+
+    name: str
+    source: str
+    tzinfo: ZoneInfo
+
+
+def resolve_schedule_timezone(schedule: dict) -> ScheduleTimezone:
+    """Resolve the zone *schedule*'s cron expression is interpreted in.
+
+    A row that names its own zone (``resolved_timezone``, set by the
+    declarative apply path) is resolved in that zone; a row that names none
+    falls back to the process-wide configured default, whose own provenance
+    (``SCHEDULER_TZ_SOURCE``) is carried through unchanged rather than
+    flattened into "configured". Either requested name that this host cannot
+    load resolves to UTC with a warning -- an unloadable name must never
+    crash cron resolution -- and that UTC is reported under its own source so
+    it stays distinguishable from a UTC that was actually requested.
+
+    Resolution is a pure read: nothing here consults or is influenced by the
+    ``effective_timezone``/``effective_timezone_source`` columns that record
+    its outcome, so recording the outcome cannot change it.
+    """
+    from lionagi.studio.config import (
+        SCHEDULER_TZ,
+        SCHEDULER_TZ_SOURCE,
+        TZ_SOURCE_SCHEDULE_DECLARED,
+        TZ_SOURCE_UTC_UNLOADABLE_NAME,
+    )
+
+    declared = schedule.get("resolved_timezone")
+    if declared:
+        requested, source = declared, TZ_SOURCE_SCHEDULE_DECLARED
+    else:
+        requested, source = SCHEDULER_TZ, SCHEDULER_TZ_SOURCE
     try:
-        return ZoneInfo(tz_name)
+        return ScheduleTimezone(requested, source, ZoneInfo(requested))
     except (ZoneInfoNotFoundError, ValueError):
         _log.warning(
-            "Invalid scheduler timezone %r (LIONAGI_SCHEDULER_TZ); falling back to UTC.",
-            tz_name,
+            "Schedule %s: timezone %r (from %s) is not a zone this host can "
+            "load; interpreting its cron expression in UTC instead. Every "
+            "fire time this schedule computes is shifted by the offset of "
+            "the zone that was asked for.",
+            schedule.get("id"),
+            requested,
+            source,
         )
-        return ZoneInfo("UTC")
+        return ScheduleTimezone("UTC", TZ_SOURCE_UTC_UNLOADABLE_NAME, ZoneInfo("UTC"))
 
 
 class SchedulerCwdInheritRefusedError(RuntimeError):
@@ -446,9 +499,93 @@ class SchedulerEngine:
     async def start(self) -> None:
         _log.info("Scheduler engine starting")
         self._stopping = False
+        self._log_scheduler_timezone()
         await self._backfill_action_cwd()
+        await self._stamp_effective_timezones()
         await self._recompute_armed_cron_schedules()
         self._task = asyncio.create_task(self._tick_loop())
+
+    def _log_scheduler_timezone(self) -> None:
+        """Say the effective cron timezone out loud, once, at startup.
+
+        The zone is resolved at import and frozen for the life of the
+        process, so nothing later in a daemon's lifetime restates it. A
+        resolution that fell back to UTC moved every cron schedule in the
+        process by the host's offset, which is a fleet-wide change with no
+        other symptom than jobs running early, so it is logged at warning
+        level rather than left for whoever goes looking.
+        """
+        from lionagi.studio.config import TZ_UTC_FALLBACK_SOURCES, scheduler_timezone_report
+
+        report = scheduler_timezone_report()
+        if report["source"] in TZ_UTC_FALLBACK_SOURCES:
+            _log.warning(
+                "Scheduler cron timezone FELL BACK to %s (source=%s, from=%s) -- "
+                "this is not a configured zone, and every cron schedule without "
+                "its own declared timezone is being interpreted in it. Set "
+                "LIONAGI_SCHEDULER_TZ to an IANA zone name to choose one.",
+                report["name"],
+                report["source"],
+                report["source_detail"],
+            )
+        else:
+            _log.info(
+                "Scheduler cron timezone: %s (source=%s, from=%s). Cron "
+                "schedules without their own declared timezone are "
+                "interpreted in this zone.",
+                report["name"],
+                report["source"],
+                report["source_detail"],
+            )
+
+    async def _stamp_effective_timezones(self) -> None:
+        """Record, on every cron schedule row, the zone it is actually being
+        interpreted in and how that zone was arrived at.
+
+        The startup log line says this once for the process default; this
+        says it per row, which is what makes it answerable after the fact
+        and per schedule -- a row carrying its own declared zone and a row
+        riding the process default resolve differently, and only the row
+        knows which it is. Rows are also stamped as they arm and as they
+        fire; this pass exists so a daemon that resolves its zone
+        differently from the previous run corrects every row at startup
+        rather than only the ones that happen to fire afterwards.
+
+        Idempotent: a row whose stamp already matches is left untouched, so
+        re-running this on every startup writes nothing once the fleet has
+        converged.
+        """
+        try:
+            schedules = await self._svc.list_schedules()
+        except Exception:
+            _log.exception("Failed to load schedules for startup timezone stamping")
+            return
+        for s in schedules:
+            fields = self._effective_timezone_fields(s)
+            if not fields or all(s.get(key) == value for key, value in fields.items()):
+                continue
+            try:
+                await self._svc.update_schedule(s["id"], **fields)
+            except Exception:
+                _log.exception("Failed to stamp effective timezone for schedule %s", s.get("id"))
+
+    def _effective_timezone_fields(self, schedule: dict) -> dict[str, str]:
+        """The columns recording how *schedule*'s fire times were resolved.
+
+        Empty for any trigger that resolves no wall-clock fields (interval,
+        at, github_poll): those compute a fire time from an offset, so there
+        is no zone in play and stamping one would invent a fact. Purely an
+        output -- ``resolve_schedule_timezone()`` never reads these back, so
+        merging them into a write cannot change what the next resolution
+        produces.
+        """
+        if schedule.get("trigger_type") != "cron" or not schedule.get("cron_expr"):
+            return {}
+        resolution = resolve_schedule_timezone(schedule)
+        return {
+            "effective_timezone": resolution.name,
+            "effective_timezone_source": resolution.source,
+        }
 
     async def _backfill_action_cwd(self) -> None:
         """One-shot startup backfill: give pre-migration schedules a persisted execution root.
@@ -582,7 +719,9 @@ class SchedulerEngine:
             return None
         if old is not None and abs(new - old) < 1e-6:
             return new
-        await self._svc.update_schedule(schedule["id"], next_fire_at=new)
+        await self._svc.update_schedule(
+            schedule["id"], next_fire_at=new, **self._effective_timezone_fields(schedule)
+        )
         if old is not None:
             from lionagi.studio.config import SCHEDULER_TZ
 
@@ -995,7 +1134,11 @@ class SchedulerEngine:
                     elif nfa is None:
                         next_at = self._compute_next_fire(s, now)
                         if next_at:
-                            await self._svc.update_schedule(s["id"], next_fire_at=next_at)
+                            await self._svc.update_schedule(
+                                s["id"],
+                                next_fire_at=next_at,
+                                **self._effective_timezone_fields(s),
+                            )
             except Exception:
                 _log.exception("Error evaluating schedule %s", s.get("name"))
 
@@ -1157,7 +1300,7 @@ class SchedulerEngine:
                     }
                     run_id = uuid.uuid4().hex[:12]
                     admission_handed_off = True
-                    await self._fire(
+                    fired = await self._fire(
                         schedule,
                         run_id,
                         trigger_context=ctx,
@@ -1179,6 +1322,54 @@ class SchedulerEngine:
                         # and re-fire every already-executed event.
                         extra_schedule_fields={"github_cursor": item.updated_at},
                     )
+                    if not fired:
+                        # The fire refused before it started a process, so
+                        # its cursor advance was never committed. Nothing
+                        # ran, so re-offering this event next poll is not a
+                        # re-execution -- but only up to a bound. A refusal
+                        # can be a property of the schedule (an unresolvable
+                        # execution root) OR of this one event's rendered
+                        # values (a PR title that cannot be turned into a
+                        # command argument), and holding the cursor forever
+                        # for the second kind blocks every later event
+                        # behind it. So: retry the same event loudly up to
+                        # _MAX_PREDISPATCH_REFUSALS, then take the refusal
+                        # as terminal for that event and step past it.
+                        refusals = await self._record_predispatch_refusal(schedule, item.updated_at)
+                        if refusals < _MAX_PREDISPATCH_REFUSALS:
+                            # Stop rather than trying the rest: if the cause
+                            # is the schedule, the remaining events refuse
+                            # identically and each burns a rate-limit and
+                            # max_runs unit doing it.
+                            drop_reason = (
+                                f"an earlier event refused before dispatch "
+                                f"({refusals}/{_MAX_PREDISPATCH_REFUSALS} attempts)"
+                            )
+                            dropped_prs = [
+                                e.event.get("pr_number") for e in polled[idx:] if e.dispatchable
+                            ]
+                            break
+                        _log.warning(
+                            "Schedule %s (%s): event (PR %s, updated_at %s) refused "
+                            "before dispatch %d times; recording the refusal as "
+                            "terminal for it and advancing the cursor past it so "
+                            "later events are not blocked behind it",
+                            schedule.get("name"),
+                            sid,
+                            item.event.get("pr_number"),
+                            item.updated_at,
+                            refusals,
+                        )
+                        cursor = item.updated_at
+                        await self._clear_predispatch_refusals(schedule)
+                        # The refusing fire already wrote its failed run row
+                        # without the cursor advance, so the advance rides
+                        # the trailing batched write below rather than that
+                        # transaction. A crash in between simply re-offers
+                        # the event, which is what every earlier attempt
+                        # already did.
+                        continue
+                    await self._clear_predispatch_refusals(schedule)
                     # Track locally too, for the batched trailing-write
                     # safety net below (covers only non-dispatched/filtered
                     # items after the last fire, or an all-filtered poll
@@ -1215,12 +1406,60 @@ class SchedulerEngine:
             # atomic with. For a dispatched item it re-writes the same
             # value already committed, a harmless no-op.
             if cursor != schedule.get("github_cursor"):
-                await self._svc.update_schedule(sid, github_cursor=cursor)
+                # guard_cursor_forward: this value derives from the snapshot
+                # read at tick start, so it must not undo a cursor an operator
+                # moved forward while the poll was in flight.
+                await self._svc.update_schedule(
+                    sid, github_cursor=cursor, guard_cursor_forward=True
+                )
         finally:
             if pre_rate_claim is not None:
                 pre_rate_claim.release()
             if pre_slot_claim is not None:
                 pre_slot_claim.release()
+
+    async def _record_predispatch_refusal(self, schedule: dict, event_cursor: str) -> int:
+        """Count one pre-dispatch refusal of the event at *event_cursor* and
+        return the new consecutive total.
+
+        The streak is keyed to the event it is holding the cursor back for,
+        so a refusal of a different event starts over at 1 -- the bound is
+        per event, not a running tally of everything the schedule ever
+        refused. Persisted on the schedule row (like the poller's
+        consecutive-401 counter) because the retries are spread across
+        polls and process restarts, not held in one loop.
+        """
+        prior = schedule.get("predispatch_refusal_count") or 0
+        if schedule.get("predispatch_refusal_event") != event_cursor:
+            prior = 0
+        count = prior + 1
+        await self._svc.update_schedule(
+            schedule["id"],
+            predispatch_refusal_event=event_cursor,
+            predispatch_refusal_count=count,
+        )
+        # Keep this tick's snapshot in step, so a second refusal within the
+        # same poll counts from the value just written.
+        schedule["predispatch_refusal_event"] = event_cursor
+        schedule["predispatch_refusal_count"] = count
+        return count
+
+    async def _clear_predispatch_refusals(self, schedule: dict) -> None:
+        """Drop the pre-dispatch refusal streak -- called once the cursor
+        moves past the event it was counting, whether because a fire
+        dispatched or because the bound was reached and the refusal was
+        taken as terminal."""
+        if not schedule.get("predispatch_refusal_count") and not schedule.get(
+            "predispatch_refusal_event"
+        ):
+            return
+        await self._svc.update_schedule(
+            schedule["id"],
+            predispatch_refusal_event=None,
+            predispatch_refusal_count=0,
+        )
+        schedule["predispatch_refusal_event"] = None
+        schedule["predispatch_refusal_count"] = 0
 
     async def _reserve_max_runs_budget(self, schedule: dict) -> tuple[bool, _MaxRunsClaim | None]:
         """Atomically claim one top-level fire against schedule['max_runs'].
@@ -1667,12 +1906,18 @@ class SchedulerEngine:
         source: str,
         actor: str,
         metadata: dict | None = None,
+        extra_fields: dict | None = None,
     ) -> bool:
         """Write a terminal ``schedule_run``/``invocation`` status without
         crashing (or losing follow-on side effects) when the row is already
         terminal — a concurrent writer (e.g. the deadline reaper) may have
         finalized it first. Guarded on the row still being ``running``, so a
         lost race is a checked no-op rather than a raised exception.
+
+        *extra_fields* carries same-row columns (``ended_at``, ``error_detail``)
+        that belong to this finalization, so they ride the same guard and the
+        same transaction as the status: when the race is lost, the winner's
+        values stay intact instead of being overwritten by ours.
         """
         written = await self._svc.update_status(
             entity_type,
@@ -1685,6 +1930,7 @@ class SchedulerEngine:
             actor=actor,
             metadata=metadata,
             expected_statuses={"running"},
+            extra_fields=extra_fields,
         )
         if not written:
             _log.debug(
@@ -1764,7 +2010,7 @@ class SchedulerEngine:
         threshold_cooldown_claim: _ThresholdCooldownClaim | None = None,
         extra_schedule_fields: dict[str, Any] | None = None,
         supersedes_run_id: str | None = None,
-    ) -> None:
+    ) -> bool:
         """Thin wrapper that releases every admission claim on all exit paths.
 
         Only top-level callers (_maybe_fire, fire_now, _tick_github) that
@@ -1777,9 +2023,12 @@ class SchedulerEngine:
         *extra_schedule_fields* and *supersedes_run_id* pass straight
         through to _fire_inner() (github cursor fold-in and recovery
         re-fire, respectively -- see its docstring).
+
+        Returns _fire_inner()'s flag: False for a refusal that happened
+        before anything was durably committed, True otherwise.
         """
         try:
-            await self._fire_inner(
+            return await self._fire_inner(
                 schedule,
                 run_id,
                 trigger_context=trigger_context,
@@ -1886,7 +2135,6 @@ class SchedulerEngine:
             inv_id,
             orphan_id,
         )
-        await self._svc.update_invocation(inv_id, ended_at=time.time())
         await self._guarded_terminal_status(
             "invocation",
             inv_id,
@@ -1900,6 +2148,7 @@ class SchedulerEngine:
             evidence_refs=[{"kind": "schedule_run", "id": orphan_id}],
             source="system",
             actor="scheduler_startup_recovery",
+            extra_fields={"ended_at": time.time()},
         )
 
     async def _fire_inner(
@@ -1914,8 +2163,23 @@ class SchedulerEngine:
         max_runs_claim: _MaxRunsClaim | None = None,
         extra_schedule_fields: dict[str, Any] | None = None,
         supersedes_run_id: str | None = None,
-    ) -> None:
-        """Fire one occurrence of *schedule*.
+    ) -> bool:
+        """Fire one occurrence of *schedule*. Returns False only when the
+        fire refused before anything was durably committed for it, so the
+        caller may keep offering the trigger; True once the occurrence (and
+        with it any *extra_schedule_fields* cursor advance) is committed,
+        whether or not a process ultimately ran -- a commit with no launch
+        is re-fired by startup recovery, not by the caller.
+
+        PRE-DISPATCH REFUSALS DO NOT CONSUME THE TRIGGER. Everything that
+        can refuse without starting a process -- resolving the `li`
+        executable, building argv, resolving the execution root -- runs
+        BEFORE the occurrence transaction, so its failure is recorded
+        without the cursor advance in *extra_schedule_fields*. Nothing ran,
+        so re-offering the trigger is not a re-execution, and the caller
+        learns that from the False return. Only a failure of something that
+        did start (non-zero exit, timeout, kill) keeps the at-most-once
+        advance below.
 
         DELIVERY CONTRACT -- at-least-once up to confirmed process launch,
         at-most-once past it. Three windows: (1) before the occurrence
@@ -1936,6 +2200,17 @@ class SchedulerEngine:
         """
         sid = schedule["id"]
         now = time.time()
+        # Flipped by on_launched below, the instant the OS process is
+        # confirmed to exist. Every exit path reads it to tell "nothing was
+        # started" apart from "something was started and then failed".
+        dispatched = False
+        # Flipped once the occurrence transaction commits -- the point past
+        # which the trigger (and, for a github_poll, its cursor advance) is
+        # durably spent. Between it and *dispatched* lies the window where a
+        # failure must leave the row for startup recovery instead of
+        # finalizing it.
+        occurrence_committed = False
+        _tmp_path: str | None = None
 
         inv_id = uuid.uuid4().hex[:12]
         # Registered before the invocation can possibly reach a terminal
@@ -1990,8 +2265,28 @@ class SchedulerEngine:
             argv, _tmp_path = _subprocess.build_argv(
                 schedule, trigger_context, executable_prefix=li_prefix
             )
+            # Resolved here, ahead of the occurrence transaction, precisely
+            # because it can refuse: a schedule whose configured execution
+            # root no longer exists raises rather than run the action under
+            # a substituted working directory. Resolving it after the
+            # transaction would durably advance the trigger past an event
+            # that never got a process. This is a read -- directory
+            # existence checks plus a project lookup -- so it is safe to run
+            # before anything is committed.
+            action_cwd = await _resolve_action_cwd(schedule)
         except Exception as exc:
-            _log.exception("Invalid schedule action for %s (run %s)", schedule.get("name"), run_id)
+            if isinstance(exc, SchedulerCwdInheritRefusedError):
+                # A deliberate fail-closed refusal, not an internal error: the
+                # message already names the configured root and the daemon
+                # directory that would have been substituted, so log it plainly
+                # without a stack trace.
+                _setup_reason = RunReasons.FAILED_CWD_INHERIT_REFUSED
+                _log.warning("Schedule fire %s (run %s): %s", schedule.get("name"), run_id, exc)
+            else:
+                _setup_reason = RunReasons.FAILED_EXCEPTION
+                _log.exception(
+                    "Invalid schedule action for %s (run %s)", schedule.get("name"), run_id
+                )
             # The notify unregister lives in this handler's own finally:
             # every exit (including a failing terminal write below) drops
             # the registration, and any terminal write that does land
@@ -2004,15 +2299,18 @@ class SchedulerEngine:
                 failed_schedule_fields.update(
                     self._threshold_alert_update_fields(schedule, chain_depth, now)
                 )
-                if extra_schedule_fields:
-                    failed_schedule_fields.update(extra_schedule_fields)
-                # Occurrence-insert + cursor-advance atomic even on this
-                # invalid-action failure path -- otherwise a permanently
-                # misconfigured github_poll schedule would never advance its
-                # cursor past the offending event and re-fail it forever.
-                # (A recovery re-fire skips the cursor advance and is instead
-                # atomic with tombstoning the orphan it supersedes -- see
-                # _write_occurrence()'s docstring.)
+                failed_schedule_fields.update(self._effective_timezone_fields(schedule))
+                # *extra_schedule_fields* -- the github_poll cursor advance --
+                # is deliberately NOT folded in here. This handler only runs
+                # for refusals raised before anything was dispatched, so no
+                # process ever saw the event; advancing past it would spend
+                # the trigger on a run that did nothing. last_fired_at /
+                # next_fire_at still move, so a cron schedule does not spin:
+                # only the event-consuming cursor is held back, and the next
+                # poll re-offers the same event once the schedule is fixed.
+                # (A recovery re-fire skips the cursor advance too, and is
+                # instead atomic with tombstoning the orphan it supersedes --
+                # see _write_occurrence()'s docstring.)
                 written_occurrence = await self._write_occurrence(
                     {
                         "id": run_id,
@@ -2039,7 +2337,7 @@ class SchedulerEngine:
                     await self._abandon_superseded_recovery_fire(
                         inv_id, orphan_id=supersedes_run_id
                     )
-                    return
+                    return False
                 if rate_limit_claim is not None:
                     # The durable row now accounts for this fire across process
                     # restarts; keeping the in-memory reservation would count it twice.
@@ -2052,7 +2350,7 @@ class SchedulerEngine:
                     "schedule_run",
                     run_id,
                     new_status="failed",
-                    reason_code=RunReasons.FAILED_EXCEPTION,
+                    reason_code=_setup_reason,
                     reason_summary=f"{type(exc).__name__}: {exc}",
                     evidence_refs=[{"kind": "schedule", "id": sid}],
                     source="executor",
@@ -2064,7 +2362,7 @@ class SchedulerEngine:
                         build_schedule_run_signal(
                             entity_id=run_id,
                             new_status="failed",
-                            reason_code=RunReasons.FAILED_EXCEPTION,
+                            reason_code=_setup_reason,
                             schedule_id=sid,
                             action_kind=schedule.get("action_kind", ""),
                             chain_depth=chain_depth,
@@ -2075,7 +2373,6 @@ class SchedulerEngine:
                 inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
                     self._svc, inv_id, fallback_status="failed", exception=exc
                 )
-                await self._svc.update_invocation(inv_id, ended_at=_end_time)
                 inv_written = await self._guarded_terminal_status(
                     "invocation",
                     inv_id,
@@ -2086,6 +2383,7 @@ class SchedulerEngine:
                     source="executor",
                     actor=inv_id,
                     metadata=inv_meta,
+                    extra_fields={"ended_at": _end_time},
                 )
                 if inv_written:
                     await flush_run_telemetry(
@@ -2099,29 +2397,32 @@ class SchedulerEngine:
                     # per-run_id map forever (it never gets a second flush call
                     # for this run_id to consume them).
                     self._signal_bus.pop_run_counters(run_id)
-                # last_fired_at/next_fire_at (and any extra_schedule_fields)
-                # already landed atomically with the occurrence insert above.
+                # last_fired_at/next_fire_at already landed atomically with
+                # the occurrence insert above.
                 await self._check_max_runs(schedule, chain_depth)
-                return
+                return False
             finally:
                 _unregister_schedule_notify(notify_scope)
+                self._discard_tmp_argv_file(_tmp_path)
         except BaseException:
             # Cancellation (or any other non-Exception) during action setup
-            # is not an invalid action: propagate it untouched. This window
-            # sits before the main try/finally below, so the registration
-            # must be dropped here; no invocation terminal write has
-            # happened yet on this path.
+            # is not an invalid action: propagate it untouched. Nothing is
+            # durable yet on this path, so the trigger is untouched too.
+            # This window sits before the main try/finally below, so the
+            # registration must be dropped here; no invocation terminal
+            # write has happened yet on this path.
             _unregister_schedule_notify(notify_scope)
+            self._discard_tmp_argv_file(_tmp_path)
             raise
 
         # Ensure the flow_yaml tmp file is removed on any exception or
         # cancellation in the DB ops below, before spawn_and_wait() runs.
-        # suppress(OSError) makes double-unlink (spawn_and_wait already cleaned up) safe.
         try:
             next_at = self._compute_next_fire(schedule, now)
             update_fields: dict[str, Any] = {"last_fired_at": now}
             update_fields.update(self._next_fire_field(schedule, next_at))
             update_fields.update(self._threshold_alert_update_fields(schedule, chain_depth, now))
+            update_fields.update(self._effective_timezone_fields(schedule))
             if extra_schedule_fields:
                 update_fields.update(extra_schedule_fields)
 
@@ -2158,7 +2459,8 @@ class SchedulerEngine:
             )
             if not written_occurrence:
                 await self._abandon_superseded_recovery_fire(inv_id, orphan_id=supersedes_run_id)
-                return
+                return False
+            occurrence_committed = True
             if rate_limit_claim is not None:
                 # The durable running row now owns the rolling-window slot.
                 rate_limit_claim.release()
@@ -2184,20 +2486,30 @@ class SchedulerEngine:
                 "Firing schedule %s (run %s, chain_depth=%d)", schedule["name"], run_id, chain_depth
             )
 
-            action_cwd = await _resolve_action_cwd(schedule)
+            async def _on_launched() -> None:
+                # Stamps dispatched_at the instant the OS process is
+                # confirmed to exist -- the signal _recover_undispatched_
+                # fires() uses to tell "committed but never launched" (safe
+                # to re-fire) apart from "launched, outcome merely lost"
+                # (never re-fired; see this method's docstring). The local
+                # flag is the same distinction in memory, for the exit paths
+                # that run before a restart could consult the column.
+                nonlocal dispatched
+                dispatched = True
+                await self._mark_dispatched(run_id)
+
             exit_code, stderr_tail = await _subprocess.spawn_and_wait(
                 argv,
                 inv_id,
                 tmp_path=_tmp_path,
                 cwd=action_cwd,
                 action_kind=schedule.get("action_kind"),
-                # Stamps dispatched_at the instant the OS process is
-                # confirmed to exist -- the signal _recover_undispatched_
-                # fires() uses to tell "committed but never launched" (safe
-                # to re-fire) apart from "launched, outcome merely lost"
-                # (never re-fired; see this method's docstring).
-                on_launched=lambda: self._mark_dispatched(run_id),
+                on_launched=_on_launched,
             )
+            # spawn_and_wait only returns once it has an exit code, which
+            # requires a process to have existed; on_launched flips the flag
+            # earlier so a cancellation mid-run is classified the same way.
+            dispatched = True
             end_time = time.time()
             status = "completed" if exit_code == 0 else "failed"
             if exit_code == 0:
@@ -2207,12 +2519,6 @@ class SchedulerEngine:
                 reason_code = RunReasons.FAILED_EXIT_NONZERO
                 reason_summary = f"Scheduled process exited non-zero: {exit_code}."
 
-            await self._svc.update_schedule_run(
-                run_id,
-                exit_code=exit_code,
-                ended_at=end_time,
-                error_detail=stderr_tail if exit_code != 0 else None,
-            )
             written = await self._guarded_terminal_status(
                 "schedule_run",
                 run_id,
@@ -2223,6 +2529,11 @@ class SchedulerEngine:
                 source="executor",
                 actor=run_id,
                 metadata={"exit_code": exit_code},
+                extra_fields={
+                    "exit_code": exit_code,
+                    "ended_at": end_time,
+                    "error_detail": stderr_tail if exit_code != 0 else None,
+                },
             )
             if written:
                 await self._dispatch_signal(
@@ -2240,7 +2551,6 @@ class SchedulerEngine:
             inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
                 self._svc, inv_id, fallback_status=status, exit_code=exit_code
             )
-            await self._svc.update_invocation(inv_id, ended_at=end_time)
             inv_written = await self._guarded_terminal_status(
                 "invocation",
                 inv_id,
@@ -2250,6 +2560,7 @@ class SchedulerEngine:
                 evidence_refs=inv_ev,
                 source="executor",
                 actor=inv_id,
+                extra_fields={"ended_at": end_time},
                 metadata=inv_meta,
             )
             if inv_written:
@@ -2301,16 +2612,30 @@ class SchedulerEngine:
                         chain_parent_id=run_id,
                         chain_depth=chain_depth + 1,
                     )
+            return dispatched
 
         except asyncio.CancelledError:
             _log.info("Schedule fire cancelled %s (run %s)", schedule.get("name"), run_id)
+            if not dispatched:
+                # Cancelled after the occurrence committed but before any
+                # process existed -- byte-for-byte the state a crash in that
+                # same window leaves behind: status "running" with
+                # dispatched_at still NULL. Writing a terminal "cancelled"
+                # here would take the row out of that recovery lane while
+                # the schedule's cursor has already advanced past the
+                # trigger, so the trigger would be spent on a run that never
+                # started anything. Leaving the row untouched lets
+                # _recover_undispatched_fires() re-fire it from its own
+                # trigger_context on the next startup -- which a shutdown
+                # cancellation is always followed by.
+                _log.info(
+                    "Leaving run %s undispatched for startup recovery: cancelled "
+                    "before its process was launched",
+                    run_id,
+                )
+                raise
             _end_time = time.time()
             try:
-                await self._svc.update_schedule_run(
-                    run_id,
-                    ended_at=_end_time,
-                    error_detail="Scheduler shutdown",
-                )
                 written = await self._guarded_terminal_status(
                     "schedule_run",
                     run_id,
@@ -2320,6 +2645,10 @@ class SchedulerEngine:
                     evidence_refs=[{"kind": "schedule", "id": sid}],
                     source="executor",
                     actor=run_id,
+                    extra_fields={
+                        "ended_at": _end_time,
+                        "error_detail": "Scheduler shutdown",
+                    },
                 )
                 if written:
                     await self._dispatch_signal(
@@ -2336,7 +2665,6 @@ class SchedulerEngine:
                 inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
                     self._svc, inv_id, fallback_status="cancelled"
                 )
-                await self._svc.update_invocation(inv_id, ended_at=_end_time)
                 inv_written = await self._guarded_terminal_status(
                     "invocation",
                     inv_id,
@@ -2347,6 +2675,7 @@ class SchedulerEngine:
                     source="executor",
                     actor=inv_id,
                     metadata=inv_meta,
+                    extra_fields={"ended_at": _end_time},
                 )
                 if inv_written:
                     await flush_run_telemetry(
@@ -2364,6 +2693,29 @@ class SchedulerEngine:
                 _log.exception("Failed to record cancellation for run %s during shutdown", run_id)
             raise
         except Exception as exc:
+            if occurrence_committed and not dispatched:
+                # Failed after the occurrence (and any cursor advance)
+                # committed but before any process existed -- the same
+                # window the cancellation branch above leaves alone, and
+                # reachable by any awaited call in it, the pre-launch
+                # running-status write included. Finalizing the row here
+                # would take it out of the undispatched-recovery lane while
+                # the trigger is already spent, so nothing would ever run
+                # for this event. Leaving it "running" with dispatched_at
+                # NULL is byte-for-byte the state a crash here leaves, and
+                # _recover_undispatched_fires() re-fires it from its own
+                # trigger_context at the next startup. The caller is told
+                # the trigger was consumed (True), because the cursor did
+                # advance and the work is not lost -- it is queued for
+                # recovery, not refused.
+                _log.exception(
+                    "Schedule fire %s (run %s) failed after its occurrence "
+                    "committed but before its process was launched; leaving the "
+                    "run undispatched for startup recovery",
+                    schedule.get("name"),
+                    run_id,
+                )
+                return True
             if isinstance(exc, SchedulerCwdInheritRefusedError):
                 # A deliberate fail-closed refusal, not an internal error: the
                 # message already names the configured root and the daemon
@@ -2375,11 +2727,6 @@ class SchedulerEngine:
                 _fire_exc_reason = RunReasons.FAILED_EXCEPTION
                 _log.exception("Error in schedule fire %s (run %s)", schedule.get("name"), run_id)
             _end_time = time.time()
-            await self._svc.update_schedule_run(
-                run_id,
-                ended_at=_end_time,
-                error_detail="Internal scheduler error",
-            )
             written = await self._guarded_terminal_status(
                 "schedule_run",
                 run_id,
@@ -2390,6 +2737,10 @@ class SchedulerEngine:
                 source="executor",
                 actor=run_id,
                 metadata={"exception_class": type(exc).__name__},
+                extra_fields={
+                    "ended_at": _end_time,
+                    "error_detail": f"{type(exc).__name__}: {exc}",
+                },
             )
             if written:
                 await self._dispatch_signal(
@@ -2407,7 +2758,6 @@ class SchedulerEngine:
             inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
                 self._svc, inv_id, fallback_status="failed", exception=exc
             )
-            await self._svc.update_invocation(inv_id, ended_at=_end_time)
             inv_written = await self._guarded_terminal_status(
                 "invocation",
                 inv_id,
@@ -2418,6 +2768,7 @@ class SchedulerEngine:
                 source="executor",
                 actor=inv_id,
                 metadata=inv_meta,
+                extra_fields={"ended_at": _end_time},
             )
             if inv_written:
                 await flush_run_telemetry(
@@ -2431,13 +2782,25 @@ class SchedulerEngine:
                 # per-run_id map forever.
                 self._signal_bus.pop_run_counters(run_id)
             await self._check_max_runs(schedule, chain_depth)
+            return dispatched
         finally:
             _unregister_schedule_notify(notify_scope)
             if chain_depth == 0:
                 self._running.pop(sid, None)
-            if _tmp_path is not None:
-                with contextlib.suppress(OSError):
-                    os.unlink(_tmp_path)
+            self._discard_tmp_argv_file(_tmp_path)
+
+    @staticmethod
+    def _discard_tmp_argv_file(tmp_path: str | None) -> None:
+        """Remove the flow_yaml tmp file build_argv may have written.
+
+        suppress(OSError) makes double-unlink (spawn_and_wait already
+        cleaned up) safe, and every path that can leave the file behind --
+        a pre-dispatch refusal, a cancellation, the ordinary fire -- goes
+        through here.
+        """
+        if tmp_path is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
 
     def _next_fire_field(self, schedule: dict, next_at: float | None) -> dict[str, float | None]:
         """Field(s) to merge into an ``update_schedule()`` call for *next_at*.
@@ -2464,8 +2827,6 @@ class SchedulerEngine:
             try:
                 from croniter import croniter
 
-                from lionagi.studio.config import SCHEDULER_TZ
-
                 # Resolve the cron expression's wall-clock fields in the
                 # schedule's own declared timezone when it has one (set by
                 # the declarative apply path); legacy rows with no
@@ -2473,9 +2834,9 @@ class SchedulerEngine:
                 # default. croniter honors DST transitions when given a
                 # tz-aware start_time; get_next(float) still returns an
                 # absolute UTC epoch, which is what next_fire_at stores.
-                tz_name = schedule.get("resolved_timezone") or SCHEDULER_TZ
-                tz = _resolve_scheduler_tzinfo(tz_name)
-                start = datetime.fromtimestamp(ref_time, tz=tz)
+                start = datetime.fromtimestamp(
+                    ref_time, tz=resolve_schedule_timezone(schedule).tzinfo
+                )
                 return croniter(expr, start_time=start).get_next(float)
             except Exception:
                 _log.exception("Invalid cron expression: %s", expr)

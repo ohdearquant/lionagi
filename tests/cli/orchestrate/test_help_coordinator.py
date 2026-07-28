@@ -42,6 +42,7 @@ def _make_env(tmp_path):
         orc_branch=SimpleNamespace(),
         builder=SimpleNamespace(),
         orc_profile=None,
+        orc_profile_name=None,
         default_model_spec="openai/gpt-4o-mini",
         bare=True,
         effort=None,

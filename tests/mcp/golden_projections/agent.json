@@ -1,0 +1,184 @@
+{
+  "path": "agent",
+  "schema": {
+    "additionalProperties": false,
+    "description": "Spawn a single subagent and wait for its final response. Flags may appear anywhere relative to the positionals. Use -r / -c to continue a previous conversation. Use -a to load a profile from .lionagi/agents/. Use --preset to apply a built-in agent configuration. Use --form to load and validate structured inputs before invoking. Use --context-from to hand a new agent distilled context from a prior session/branch/run/file.",
+    "properties": {
+      "agent": {
+        "description": "Load agent profile by name. Resolves .lionagi/agents/<NAME>/<NAME>.md first, then .lionagi/agents/<NAME>.md, then a trusted+enabled plugin's declared profile ('<plugin>/<NAME>', or a bare NAME when only one plugin declares it). Profile provides system prompt, default model, effort, yolo, timeout, resume_on_timeout. CLI flags override profile settings.",
+        "type": "string",
+        "x-aliases": [
+          "-a"
+        ],
+        "x-flag": "--agent"
+      },
+      "bypass": {
+        "default": false,
+        "description": "Bypass all codex approvals and sandbox (for cloud/codespace environments).",
+        "type": "boolean",
+        "x-flag": "--bypass"
+      },
+      "context_budget": {
+        "description": "Total token budget for --context-from content (default 8000; ~4 chars/token).",
+        "type": "integer",
+        "x-flag": "--context-budget"
+      },
+      "context_from": {
+        "description": "Inject distilled context from a prior session id, branch id, run id, or file path into this new branch's first instruction, above the prompt. Repeatable (concatenated in argv order); the total budget (see --context-budget) is shared across all refs. Rejected in combination with -r / --resume or -c / --continue-last.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array",
+        "x-flag": "--context-from"
+      },
+      "continue_last": {
+        "default": false,
+        "description": "Continue the most recently used branch, keeping its history, without having to look up its id.",
+        "type": "boolean",
+        "x-aliases": [
+          "-c"
+        ],
+        "x-flag": "--continue-last"
+      },
+      "cwd": {
+        "description": "Directory the agent's process runs in \u2014 the repo or worktree it acts on. Defaults to the current directory.",
+        "type": "string",
+        "x-flag": "--cwd"
+      },
+      "effort": {
+        "description": "Override effort (overrides spec suffix). claude: low|medium|high|xhigh|max. codex: none|minimal|low|medium|high|xhigh|max|ultra (max/ultra clamp per model support). gemini-code/gemini-cli: folded into --model as Low|Medium|High (Gemini 3.1 Pro has no Medium).",
+        "type": "string",
+        "x-flag": "--effort"
+      },
+      "fast": {
+        "default": false,
+        "description": "Route codex requests through OpenAI's priority service tier (lower latency; requires account eligibility). Does not change model or reasoning effort.",
+        "type": "boolean",
+        "x-flag": "--fast"
+      },
+      "form": {
+        "description": "Path to a YAML or JSON work-form spec file. The spec declares typed fields and values; validation runs BEFORE any LLM call. Exits rc=1 on validation error. Validated values are injected into the prompt as structured context.",
+        "type": "string",
+        "x-flag": "--form"
+      },
+      "image": {
+        "description": "Attach an image file to the prompt (repeatable, e.g. --image a.png --image b.jpg). Supported extensions: .gif, .jpeg, .jpg, .png, .webp. Each file is read, base64-encoded, and attached as an image content part on the user message.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array",
+        "x-flag": "--image"
+      },
+      "invocation": {
+        "description": "Parent invocation id (from `li invoke start`). Groups this session under a skill orchestration record. Optional.",
+        "type": "string",
+        "x-flag": "--invocation"
+      },
+      "list_profiles": {
+        "default": false,
+        "description": "Print every agent profile -a would resolve, as JSON, and exit without running anything. Use it to find out what names are available here.",
+        "type": "boolean",
+        "x-flag": "--list-profiles"
+      },
+      "mcp_config": {
+        "description": "Read this MCP config and hand its servers to the leg explicitly. By default the nearest .mcp.json at or above the directory this command was run in is used, so the leg's tools come from the submission rather than from --cwd. The file is read once at spawn.",
+        "type": "string",
+        "x-flag": "--mcp-config"
+      },
+      "no_mcp_config": {
+        "default": false,
+        "description": "Hand the leg no MCP servers, and say so deliberately instead of arriving there by an empty search.",
+        "type": "boolean",
+        "x-flag": "--no-mcp-config"
+      },
+      "notify": {
+        "description": "Shell command template run once this run reaches its terminal status. Overrides .lionagi/settings.yaml notify.on_terminal. Substitutes {payload} (full JSON), {status}, {invocation_id}.",
+        "type": "string",
+        "x-flag": "--notify"
+      },
+      "preset": {
+        "description": "Apply a built-in agent configuration preset. Supported values: coding. 'coding' wires CodingToolkit with path-guard hooks and a coding system prompt; cwd defaults to the invocation directory.",
+        "enum": [
+          "coding"
+        ],
+        "type": "string",
+        "x-flag": "--preset"
+      },
+      "project": {
+        "description": "Explicit project name for this session. Overrides auto-detection from .lionagi/config.toml or git remote.",
+        "type": "string",
+        "x-flag": "--project"
+      },
+      "prompt_file": {
+        "description": "Read the instruction from a file; '-' reads stdin, which is heredoc-friendly. The file is read once at spawn, so editing it afterwards cannot change the run.",
+        "type": "string",
+        "x-flag": "--prompt-file"
+      },
+      "prompt_flag": {
+        "description": "The instruction, as a flag instead of the positional PROMPT. Give it one way or the other, never both.",
+        "type": "string",
+        "x-flag": "--prompt"
+      },
+      "query": {
+        "description": "Optional model spec followed by the prompt. Model is one of 'claude', 'codex', 'gemini-code' (defaults), or a full spec like 'claude/opus'; omit it when -a / --resume / -c provides one. The prompt may instead be passed via --prompt or --prompt-file.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array",
+        "x-positional": true
+      },
+      "resume": {
+        "description": "Continue a previous run by its branch id, keeping that conversation's history. Cannot be combined with --context-from, which is for starting fresh.",
+        "type": "string",
+        "x-aliases": [
+          "-r"
+        ],
+        "x-flag": "--resume"
+      },
+      "resume_on_timeout": {
+        "default": false,
+        "description": "If the run terminates on --timeout, automatically fire one resume of the same session with 'continue and conclude the task' and report the combined result. Bounded to a single auto-resume; a timeout on the resumed leg terminates normally. Same effect as an agent profile's 'resume_on_timeout: once'.",
+        "type": "boolean",
+        "x-flag": "--resume-on-timeout"
+      },
+      "theme": {
+        "description": "Pick the colour scheme printed output is tuned for: 'light' or 'dark' terminal.",
+        "enum": [
+          "light",
+          "dark"
+        ],
+        "type": "string",
+        "x-flag": "--theme"
+      },
+      "timeout": {
+        "description": "Hard wall-clock timeout in seconds. When set, a [DEADLINE] preamble is injected into the agent's prompt so the agent knows its time budget and can pace reasoning accordingly.",
+        "type": "integer",
+        "x-flag": "--timeout"
+      },
+      "verbose": {
+        "default": false,
+        "description": "Stream the agent's output as it is produced instead of printing only the final result, and silence the progress lines that would interleave with it.",
+        "type": "boolean",
+        "x-aliases": [
+          "-v"
+        ],
+        "x-flag": "--verbose"
+      },
+      "yolo": {
+        "default": false,
+        "description": "Auto-approve the agent's tool calls, so an unattended run is never left waiting.",
+        "type": "boolean",
+        "x-flag": "--yolo"
+      }
+    },
+    "title": "agent",
+    "type": "object",
+    "x-positional-order": [
+      "query"
+    ],
+    "x-required-unenforced": [
+      "query"
+    ]
+  },
+  "stage": "static"
+}

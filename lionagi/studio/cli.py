@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from lionagi._paths import ensure_lionagi_dir
+from lionagi.cli._argtypes import JsonArgument
 from lionagi.cli._logging import log_error, warn
 from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES
 
@@ -721,14 +722,18 @@ def _warn_if_cron_far_out(cron_expr: str) -> None:
         )
 
 
-def _cmd_create(args: argparse.Namespace) -> int:
+def build_create_body(args: argparse.Namespace) -> tuple[dict[str, Any] | None, str | None]:
+    """The POST body `li schedule create` sends, or the reason it cannot be built.
+
+    Shared by the human path and the machine one so a rule only lives here: a
+    second copy would drift, and the two paths would then disagree about which
+    arguments are legal.
+    """
     if args.once and args.max_runs is not None:
-        print("Error: --once and --max-runs are mutually exclusive.", file=sys.stderr)
-        return 1
+        return None, "--once and --max-runs are mutually exclusive."
     max_runs = 1 if args.once else args.max_runs
     if max_runs is not None and max_runs < 1:
-        print(f"Error: --max-runs must be a positive integer, got {max_runs}.", file=sys.stderr)
-        return 1
+        return None, f"--max-runs must be a positive integer, got {max_runs}."
 
     # 'github' is a friendly alias; the DB CHECK and scheduler engine only
     # recognize the canonical 'github_poll' token.
@@ -753,45 +758,35 @@ def _cmd_create(args: argparse.Namespace) -> int:
         try:
             parsed_filter = json.loads(args.github_filter)
         except (ValueError, TypeError) as exc:
-            print(f"Error: --github-filter must be valid JSON: {exc}", file=sys.stderr)
-            return 1
+            return None, f"--github-filter must be valid JSON: {exc}"
         if not isinstance(parsed_filter, dict):
-            print("Error: --github-filter must be a JSON object.", file=sys.stderr)
-            return 1
+            return None, "--github-filter must be a JSON object."
         body["github_filter"] = parsed_filter
     if getattr(args, "threshold_config", None):
         try:
             parsed_threshold = json.loads(args.threshold_config)
         except (ValueError, TypeError) as exc:
-            print(f"Error: --threshold-config must be valid JSON: {exc}", file=sys.stderr)
-            return 1
+            return None, f"--threshold-config must be valid JSON: {exc}"
         if not isinstance(parsed_threshold, dict):
-            print("Error: --threshold-config must be a JSON object.", file=sys.stderr)
-            return 1
+            return None, "--threshold-config must be a JSON object."
         # Full value validation happens server-side; this is just a shape check.
         body["threshold_config"] = parsed_threshold
     if getattr(args, "poll_interval", None) is not None:
         if args.poll_interval < 1:
-            print("Error: --poll-interval must be a positive integer.", file=sys.stderr)
-            return 1
+            return None, "--poll-interval must be a positive integer."
         body["poll_interval_sec"] = args.poll_interval
     if max_runs is not None:
         body["max_runs"] = max_runs
     if getattr(args, "max_cost_usd", None) is not None:
         if not math.isfinite(args.max_cost_usd) or args.max_cost_usd <= 0:
-            print(
-                f"Error: --max-cost-usd must be a finite positive number, got {args.max_cost_usd}.",
-                file=sys.stderr,
+            return (
+                None,
+                f"--max-cost-usd must be a finite positive number, got {args.max_cost_usd}.",
             )
-            return 1
         body["budget_usd"] = args.max_cost_usd
     if getattr(args, "max_tokens", None) is not None:
         if args.max_tokens <= 0:
-            print(
-                f"Error: --max-tokens must be a positive integer, got {args.max_tokens}.",
-                file=sys.stderr,
-            )
-            return 1
+            return None, f"--max-tokens must be a positive integer, got {args.max_tokens}."
         body["budget_tokens"] = args.max_tokens
     if args.prompt:
         body["action_prompt"] = args.prompt
@@ -804,31 +799,19 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if getattr(args, "flow_yaml", None):
         p = Path(args.flow_yaml).expanduser()
         if not p.is_file():
-            print(f"Error: flow-yaml file not found: {p}", file=sys.stderr)
-            return 1
+            return None, f"flow-yaml file not found: {p}"
         body["action_flow_yaml"] = p.read_text()
     if getattr(args, "action_command", None):
         body["action_command"] = args.action_command
     if getattr(args, "action_command_args", None):
-        try:
-            parsed_command_args = json.loads(args.action_command_args)
-        except (ValueError, TypeError) as exc:
-            print(f"Error: --action-command-args must be valid JSON: {exc}", file=sys.stderr)
-            return 1
-        if not isinstance(parsed_command_args, list):
-            print("Error: --action-command-args must be a JSON array.", file=sys.stderr)
-            return 1
-        body["action_command_args"] = parsed_command_args
+        # Already a list: the argument's own type decoded and checked it.
+        body["action_command_args"] = args.action_command_args
     # ADR-0070 delta 1: persist a stable execution root instead of depending
     # on the daemon's cwd when it fires. An explicit --cwd always wins.
     if getattr(args, "cwd", None):
         resolved_cwd = Path(args.cwd).expanduser().resolve()
         if not resolved_cwd.is_dir():
-            print(
-                f"Error: --cwd path does not exist or is not a directory: {resolved_cwd}",
-                file=sys.stderr,
-            )
-            return 1
+            return None, f"--cwd path does not exist or is not a directory: {resolved_cwd}"
         body["action_cwd"] = str(resolved_cwd)
 
     if args.project:
@@ -855,15 +838,21 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if args.on_success:
         parsed, err = _parse_chain_action(args.on_success, "--on-success")
         if err:
-            print(f"Error: {err}", file=sys.stderr)
-            return 1
+            return None, err
         body["on_success"] = parsed
     if args.on_fail:
         parsed, err = _parse_chain_action(args.on_fail, "--on-fail")
         if err:
-            print(f"Error: {err}", file=sys.stderr)
-            return 1
+            return None, err
         body["on_fail"] = parsed
+    return body, None
+
+
+def _cmd_create(args: argparse.Namespace) -> int:
+    body, err = build_create_body(args)
+    if err is not None:
+        print(f"Error: {err}", file=sys.stderr)
+        return 1
     result = _api("/", method="POST", body=body)
     if result is None:
         return 1
@@ -1719,7 +1708,9 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         epilog="Example: li schedule get sched-abc123",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    get_p.add_argument("id", help="Schedule ID.")
+    get_p.add_argument(
+        "id", help="Id of the schedule, as returned by `li schedule list` in its `id` field."
+    )
 
     # limits
     sched_sub.add_parser(
@@ -1748,7 +1739,13 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    create_p.add_argument("name", help="Schedule name.")
+    create_p.add_argument(
+        "name",
+        help=(
+            "Unique name identifying this schedule. Reused as the display label in "
+            "listings; a name already in use is rejected rather than overwritten."
+        ),
+    )
     create_p.add_argument(
         "--trigger-type",
         dest="trigger_type",
@@ -1756,8 +1753,23 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         choices=("cron", "interval", "github", "github_poll"),
         help="Trigger type (default: cron). 'github' is an alias for 'github_poll'.",
     )
-    create_p.add_argument("--cron", metavar="EXPR", help='Cron expression, e.g. "0 * * * *".')
-    create_p.add_argument("--interval", type=int, metavar="SECONDS", help="Interval in seconds.")
+    create_p.add_argument(
+        "--cron",
+        metavar="EXPR",
+        help=(
+            'Cron expression, e.g. "0 * * * *". Required when --trigger-type is cron, '
+            "which is the default; ignored for other trigger types."
+        ),
+    )
+    create_p.add_argument(
+        "--interval",
+        type=int,
+        metavar="SECONDS",
+        help=(
+            "Seconds between fires. Required when --trigger-type is interval; "
+            "ignored for other trigger types."
+        ),
+    )
     create_p.add_argument(
         "--github-repo",
         dest="github_repo",
@@ -1803,9 +1815,23 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         choices=tuple(sorted(_VALID_ACTION_KINDS | set(_ALIAS_ACTION_KINDS))),
         help="Stored action kind or accepted alias (default: agent).",
     )
-    create_p.add_argument("--prompt", help="Prompt for agent action.")
+    create_p.add_argument(
+        "--prompt",
+        help=(
+            "Instruction the scheduled agent runs at each fire. Required when "
+            "--action-kind is agent, which is the default. A profile named by "
+            "--agent supplies the model and settings, never this instruction, so "
+            "a schedule created without it fires and fails."
+        ),
+    )
     create_p.add_argument("--model", help="Model spec for agent action.")
-    create_p.add_argument("--agent", help="Agent profile name.")
+    create_p.add_argument(
+        "--agent",
+        help=(
+            "Agent profile to run, resolved the same way `li agent --agent` resolves "
+            "it. Supplies the system prompt, model and effort the fire runs with."
+        ),
+    )
     create_p.add_argument("--playbook", help="Playbook name (for action-kind=play/playbook).")
     create_p.add_argument(
         "--flow-yaml",
@@ -1828,13 +1854,20 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         "--action-command-args",
         dest="action_command_args",
         metavar="JSON",
+        type=JsonArgument({"type": "array", "items": {"type": "string"}}),
         help=(
             "action-kind=command argv, as a JSON array of {{var}} templates "
             "rendered from trigger_context at fire time, e.g. "
             '\'["review-pr", "--pr", "{{pr_number}}"]\'.'
         ),
     )
-    create_p.add_argument("--project", help="Project name.")
+    create_p.add_argument(
+        "--project",
+        help=(
+            "Project this schedule's runs are recorded under. Defaults to the project "
+            "detected from the execution root."
+        ),
+    )
     create_p.add_argument(
         "--cwd",
         metavar="PATH",
@@ -2004,7 +2037,9 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
             epilog=f"Example: {example}",
             formatter_class=argparse.RawDescriptionHelpFormatter,
         )
-        p.add_argument("id", help="Schedule ID.")
+        p.add_argument(
+            "id", help="Id of the schedule, as returned by `li schedule list` in its `id` field."
+        )
 
     # trigger
     trigger_p = sched_sub.add_parser(
@@ -2013,7 +2048,9 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         epilog="Example: li schedule trigger sched-abc123 --wait",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    trigger_p.add_argument("id", help="Schedule ID.")
+    trigger_p.add_argument(
+        "id", help="Id of the schedule, as returned by `li schedule list` in its `id` field."
+    )
     trigger_p.add_argument(
         "--wait",
         action="store_true",
@@ -2032,7 +2069,9 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         epilog="Example: li schedule runs sched-abc123 --status failed --limit 5",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    runs_p.add_argument("id", help="Schedule ID.")
+    runs_p.add_argument(
+        "id", help="Id of the schedule, as returned by `li schedule list` in its `id` field."
+    )
     runs_p.add_argument(
         "--limit",
         type=int,
@@ -2065,7 +2104,9 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         epilog="Example: li schedule status sched-abc123 --wait",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    status_p.add_argument("id", help="Schedule ID.")
+    status_p.add_argument(
+        "id", help="Id of the schedule, as returned by `li schedule list` in its `id` field."
+    )
     status_p.add_argument(
         "--wait", action="store_true", help="Wait for the latest in-flight run to finish first."
     )

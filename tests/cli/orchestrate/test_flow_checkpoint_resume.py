@@ -61,6 +61,7 @@ def _minimal_real_env() -> OrchestrationEnv:
         orc_branch=orc_branch,
         builder=MagicMock(),
         orc_profile=None,
+        orc_profile_name=None,
         default_model_spec="claude",
         bare=False,
         effort=None,
@@ -144,6 +145,12 @@ def _make_resume_env(tmp_path: Path) -> SimpleNamespace:
     def register_name(name: str) -> None:
         pass
 
+    expected_worker_ids: list[str] = []
+
+    def expect_worker(agent_id: str) -> None:
+        if agent_id not in expected_worker_ids:
+            expected_worker_ids.append(agent_id)
+
     return SimpleNamespace(
         run=SimpleNamespace(
             run_id="run-resume-test",
@@ -173,6 +180,9 @@ def _make_resume_env(tmp_path: Path) -> SimpleNamespace:
         _name_counts=name_counts,
         _live_persist=None,
         _finalize_extras=None,
+        worker_artifact_dirs={},
+        expected_worker_ids=expected_worker_ids,
+        expect_worker=expect_worker,
     )
 
 

@@ -441,7 +441,9 @@ class TestCliActionKindChoices:
         )
         assert args.action_kind == "command"
         assert args.action_command == "kdev"
-        assert args.action_command_args == '["review-pr"]'
+        # The flag declares its shape as its argparse type, so the parser hands
+        # back the decoded list rather than the JSON text it arrived as.
+        assert args.action_command_args == ["review-pr"]
 
 
 # ---------------------------------------------------------------------------
@@ -540,30 +542,35 @@ class TestCmdCreateActionCommandArgsJSON:
         ]
 
     def test_invalid_json_rejected_before_api_call(self, capsys):
-        """Malformed JSON in --action-command-args must return 1 and never
-        reach the HTTP layer."""
-        from lionagi.studio.cli import _cmd_create
+        """Malformed JSON in --action-command-args is refused while parsing, so
+        no handler runs and nothing can reach the HTTP layer.
 
-        args = self._parse(self._argv("{not valid json"))
+        The shape is declared as the argument's type, which means the parser
+        rejects a bad value itself and exits 2 the way it does for every other
+        malformed argument, rather than a handler decoding the string later and
+        returning 1."""
         with patch("lionagi.studio.cli._api") as mock_api:
-            rc = _cmd_create(args)
+            with pytest.raises(SystemExit) as excinfo:
+                self._parse(self._argv("{not valid json"))
 
-        assert rc == 1
+        assert excinfo.value.code == 2
         mock_api.assert_not_called()
-        assert "--action-command-args must be valid JSON" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "--action-command-args" in err
+        assert "must be valid JSON" in err
 
     def test_valid_json_non_array_rejected_before_api_call(self, capsys):
-        """Valid JSON that parses to a non-array (e.g. an object) must return
-        1 and never reach the HTTP layer."""
-        from lionagi.studio.cli import _cmd_create
-
-        args = self._parse(self._argv('{"not": "an array"}'))
+        """Valid JSON that parses to a non-array (e.g. an object) is refused
+        while parsing, so no handler runs and nothing reaches the HTTP layer."""
         with patch("lionagi.studio.cli._api") as mock_api:
-            rc = _cmd_create(args)
+            with pytest.raises(SystemExit) as excinfo:
+                self._parse(self._argv('{"not": "an array"}'))
 
-        assert rc == 1
+        assert excinfo.value.code == 2
         mock_api.assert_not_called()
-        assert "--action-command-args must be a JSON array" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "--action-command-args" in err
+        assert "must be a JSON array" in err
 
     def test_valid_json_array_parsed_and_forwarded(self):
         """A well-formed JSON array must be parsed and forwarded as the

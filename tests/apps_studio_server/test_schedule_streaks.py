@@ -24,7 +24,7 @@ from lionagi.studio.services.schedules import (  # noqa: E402
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "state.db"
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr("lionagi.studio.services.schedules.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 
@@ -194,9 +194,12 @@ async def test_list_schedules_issues_constant_queries_not_per_row(temp_db_path):
         and "sqlite_master" not in s
         and "pragma" not in s.lower()
     ]
-    # one SELECT for the schedules themselves, one batched count, one batched
-    # streak query -- constant regardless of how many schedules exist.
-    assert len(select_statements) == 3, select_statements
+    # list_schedules() opens its own StateDB, and a writable open reads the
+    # recorded schema version once before applying anything -- so that read,
+    # one SELECT for the schedules themselves, one batched count, and one
+    # batched streak query. All four are per-open or per-call: the count moves
+    # only when the path gains a query, never when it gains a row.
+    assert len(select_statements) == 4, select_statements
 
     for sid in sids:
         row = next(r for r in rows if r["id"] == sid)

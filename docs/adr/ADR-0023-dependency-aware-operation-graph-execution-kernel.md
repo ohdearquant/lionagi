@@ -183,8 +183,9 @@ Exact node and builder semantics:
 - `node_id` on builder methods is a human reference stored as
   `metadata["reference_id"]`; it does not replace the generated element UUID.
 - `add_operation()` adds `depends_on` edges only for dependency ids already known to that builder.
-  With no explicit dependency, it links every current head to the new node using a `"sequential"`
-  label. A supplied branch is normalized through `ID.get_id()`.
+  With `depends_on` omitted or `None`, it links every current head to the new node using a
+  `"sequential"` label; an explicit empty list adds no incoming edge at all. A supplied branch is
+  normalized through `ID.get_id()`.
 - `inherit_context=True` with dependencies records one `primary_dependency`, always the first
   `depends_on` entry. This metadata controls conversation-message inheritance under D3.
 - `expand_from_result()` raises `OperationError` when the source is unknown. Model items are dumped

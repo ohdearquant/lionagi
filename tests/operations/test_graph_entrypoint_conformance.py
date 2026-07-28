@@ -121,6 +121,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+import lionagi.state.db as state_db_mod
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LIONAGI_ROOT = REPO_ROOT / "lionagi"
 
@@ -3943,6 +3945,7 @@ def _persistence_seam_env(tmp_path):
         orc_branch=orc_branch,
         builder=mock.MagicMock(),
         orc_profile=None,
+        orc_profile_name=None,
         default_model_spec="claude",
         bare=False,
         effort=None,
@@ -4257,8 +4260,8 @@ async def test_run_workflow_def_delegates_to_session_flow_with_progress_wrapper(
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(wf_svc, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(engine_defs_svc, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(sessions_svc, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(sessions_svc, "_DB", str(db_path))
 
@@ -4312,7 +4315,7 @@ async def test_compile_workflow_def_never_calls_session_flow(tmp_path, monkeypat
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(engine_defs_svc, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     from tests.apps_studio_server.test_workflow_run import _spec
 

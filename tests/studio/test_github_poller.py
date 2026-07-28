@@ -14,6 +14,7 @@ GithubPollItem list instead of a StateDB write.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import httpx
 import pytest
@@ -657,23 +658,15 @@ def test_github_poll_merged_mode_pages_past_closed_unmerged_noise(monkeypatch):
     updated_at is older than every unmerged PR on page 1, but its merged_at is
     still after the cursor, so it must be found and dispatched.
 
-    Page 1 is exactly per_page (20) items long -- the poller's own signal
+    Page 1 is exactly per_page items long -- the poller's own signal
     that there may be more -- and its oldest item's updated_at is still newer
     than the cursor, so github_poll must follow the Link: rel="next" header
     onto page 2 rather than stopping at page 1.
     """
     cursor = "2026-06-01T00:00:00Z"
-    page1 = [
-        _pr(
-            100 + n,
-            f"2026-07-06T{10 - n // 10:02d}:{59 - (n % 10) * 5:02d}:00Z",
-            state="closed",
-            merged_at=None,
-        )
-        for n in range(20)
-    ]
+    page1 = _closed_page(10, 100)
     # Sanity: page1 is a full page, strictly newer than the cursor throughout.
-    assert len(page1) == 20
+    assert len(page1) == gh_mod._PER_PAGE
     assert all(pr["updated_at"] > cursor for pr in page1)
 
     merged_pr = _pr(
@@ -713,7 +706,7 @@ def test_github_poll_merged_mode_stops_paging_once_cursor_reached(monkeypatch):
             state="closed",
             merged_at=None,
         )
-        for n in range(20)
+        for n in range(gh_mod._PER_PAGE)
     ]
     # Oldest item on page1 must already be at/under the cursor.
     assert page1[-1]["updated_at"] <= cursor
@@ -737,13 +730,23 @@ def test_github_poll_merged_mode_stops_paging_once_cursor_reached(monkeypatch):
 
 
 def _closed_page(hour: int, base_number: int, *, merges: dict[int, str] | None = None):
-    """20 closed PRs at a fixed hour, minutes descending. ``merges`` maps a
-    within-page index to a merged_at value for that PR (unmerged otherwise)."""
+    """One FULL page of closed PRs at a fixed hour, updated_at descending.
+
+    The size is read from ``gh_mod._PER_PAGE`` rather than hard-coded: the
+    poller decides a page is terminal via ``len(page) < per_page``, so a
+    fixture that states its own size silently turns every page short — and
+    every pagination test into a single-page test — the moment the reach
+    changes. ``merges`` maps a within-page index to a merged_at value for that
+    PR (unmerged otherwise).
+    """
     merges = merges or {}
+    n = gh_mod._PER_PAGE
+    # Spread across the hour so timestamps stay strictly descending at any n.
+    step = max(1, (3600 - 60) // n)
     items = []
-    for i in range(20):
-        minute = 59 - i * 3
-        updated_at = f"2026-07-06T{hour:02d}:{minute:02d}:00Z"
+    for i in range(n):
+        secs = 3540 - i * step
+        updated_at = f"2026-07-06T{hour:02d}:{secs // 60:02d}:{secs % 60:02d}Z"
         items.append(_pr(base_number + i, updated_at, state="closed", merged_at=merges.get(i)))
     return items
 
@@ -1052,10 +1055,7 @@ def test_github_poll_pagination_401_clears_cached_token(monkeypatch):
     still clears the cache -- GitHub has rejected the credential, so the next
     poll must re-resolve instead of reusing a proven-dead token."""
     cursor = "2026-06-01T00:00:00Z"
-    page1 = [
-        _pr(200 + n, f"2026-07-06T{10 - n // 10:02d}:00:00Z", state="closed", merged_at=None)
-        for n in range(20)
-    ]
+    page1 = _closed_page(10, 200)
 
     async def _fake_token(prefer_cli: bool = False):
         return "faketoken"
@@ -1168,3 +1168,116 @@ def test_github_poll_result_default_poll_status_is_ok():
     construction that predates the observer-self-health signal."""
     result = gh_mod.GithubPollResult(items=[], scan_complete=True)
     assert result.poll_status == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Scan reach: how far back a single merged-mode poll can actually see
+# ---------------------------------------------------------------------------
+
+
+def _all_merged(page):
+    """Mark every PR on a page as merged at its own updated_at.
+
+    The realistic shape for a merge that was never touched again, and the one
+    that puts every event at or above the unproven boundary of a truncated
+    scan.
+    """
+    for pr in page:
+        pr["merged_at"] = pr["updated_at"]
+    return page
+
+
+def test_github_poll_requests_the_page_size_the_reach_is_stated_in(monkeypatch):
+    """The page size sent to the API is the one the page budget is written
+    against, and it is the largest the API allows.
+
+    A merged-mode scan can only see ``_MERGED_MODE_MAX_PAGES * per_page`` PRs
+    back from the newest. If the request quietly asks for fewer per page than
+    the budget comment assumes, the reach shrinks by that factor with nothing
+    to say so -- and a repo whose backlog above the stored cursor grows past
+    the reach deadlocks, because held-back events never advance the cursor and
+    so never shorten the next scan. Tying the sent value to the constant keeps
+    the reach a single number instead of two that can disagree.
+    """
+    client = _install(monkeypatch, [_pr(1, "2026-07-07T10:00:00Z")])
+    _poll({"id": "s1", "github_repo": "owner/name"})
+    assert client.requests[0]["params"]["per_page"] == str(gh_mod._PER_PAGE)
+    assert gh_mod._PER_PAGE == 100  # GitHub's documented maximum
+
+
+def test_github_poll_truncated_scan_holding_everything_back_warns(monkeypatch, caplog):
+    """A truncated scan that holds back every event says so at WARNING.
+
+    This is the deadlock's own shape and it is invisible from every other
+    signal: the poll returns ``items == []`` with ``poll_status == "ok"``, so
+    the observer reports a healthy poller, no cursor advances, and the next
+    scan starts exactly where this one did. Nothing distinguishes it from a
+    quiet repo except a line saying events were found and discarded.
+    """
+    caplog.set_level(logging.WARNING, logger=gh_mod.__name__)
+    gh_log = logging.getLogger(gh_mod.__name__)
+    monkeypatch.setattr(gh_log, "propagate", True)
+
+    # One page more than the poller will fetch, so the scan hits its cap and
+    # reports itself incomplete rather than reaching a natural end.
+    pages = [
+        _all_merged(_closed_page(10 - i, 1000 + i * 1000))
+        for i in range(gh_mod._MERGED_MODE_MAX_PAGES + 1)
+    ]
+    _install_paginated(monkeypatch, pages)
+
+    result = _poll_result(
+        {
+            "id": "s1",
+            "github_repo": "owner/name",
+            "github_filter": {"event": "pr_merged"},
+            "github_cursor": "2026-01-01T00:00:00Z",
+        }
+    )
+
+    # The healthy-looking shape the warning exists to contradict.
+    assert result.items == []
+    assert result.scan_complete is False
+    assert result.poll_status == "ok"
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings, "a scan that found events and dispatched none logged nothing"
+    msg = warnings[-1].getMessage()
+    held = gh_mod._PER_PAGE * gh_mod._MERGED_MODE_MAX_PAGES
+    assert f"found {held} event(s) past the cursor and dispatched none" in msg
+    assert "owner/name" in msg
+
+
+def test_github_poll_truncated_scan_that_still_dispatches_does_not_warn(monkeypatch, caplog):
+    """Holding some events back while returning others is not the stuck shape.
+
+    The caller advances the cursor past what it got, so the next scan starts
+    higher and the held-back band drains on its own. Warning here too would
+    fire on every truncated poll of a busy repo, and a line that fires
+    constantly stops carrying the one case that matters.
+    """
+    caplog.set_level(logging.WARNING, logger=gh_mod.__name__)
+    gh_log = logging.getLogger(gh_mod.__name__)
+    monkeypatch.setattr(gh_log, "propagate", True)
+
+    pages = [
+        _all_merged(_closed_page(10 - i, 1000 + i * 1000))
+        for i in range(gh_mod._MERGED_MODE_MAX_PAGES + 1)
+    ]
+    # One PR on the first page merged long before the boundary, so it is
+    # provably safe to dispatch while its page-mates are held back.
+    pages[0][0]["merged_at"] = "2026-02-01T00:00:00Z"
+    _install_paginated(monkeypatch, pages)
+
+    result = _poll_result(
+        {
+            "id": "s1",
+            "github_repo": "owner/name",
+            "github_filter": {"event": "pr_merged"},
+            "github_cursor": "2026-01-01T00:00:00Z",
+        }
+    )
+
+    assert [i.event["pr_number"] for i in result.items] == [1000]
+    assert result.scan_complete is False
+    assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING] == []

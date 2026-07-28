@@ -7,7 +7,7 @@ import time
 from typing import Any
 
 import aiosqlite
-from fastapi import HTTPException
+from fastapi import HTTPException, Query
 
 from lionagi._errors import NotFoundError
 from lionagi.state.claude_mirror import session_db_id
@@ -94,13 +94,109 @@ def _format_message(row: aiosqlite.Row | dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def list_sessions() -> list[dict[str, Any]]:
+# A listing whose SQL carries no LIMIT examines every session, every branch and
+# every progression regardless of how few rows the caller asked for -- appending
+# LIMIT to that statement does not help, because a limit bounds rows returned
+# and not rows examined. So the page is chosen first, from an indexed scan of
+# `sessions` alone, and only that page is joined against branches/progressions.
+# Callers that want a whole-store answer must ask for it a page at a time.
+MAX_SESSION_PAGE = 500
+
+
+class SessionFilter:
+    """Filters the runs/sessions listings share, pushed into SQL so they select
+    the page rather than discard rows after the whole store has been read."""
+
+    def __init__(
+        self,
+        *,
+        playbook: str | None = None,
+        statuses: set[str] | None = None,
+        project: str | None = None,
+        project_null: bool = False,
+        tags: list[str] | None = None,
+    ) -> None:
+        self.playbook = playbook
+        self.statuses = statuses
+        self.project = project
+        self.project_null = project_null
+        self.tags = list(dict.fromkeys(tags)) if tags else None
+
+    def where(self) -> tuple[str, list[Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if self.playbook:
+            clauses.append("LOWER(COALESCE(s.playbook_name, '')) LIKE '%' || LOWER(?) || '%'")
+            params.append(self.playbook)
+        if self.statuses:
+            ordered = sorted(self.statuses)
+            placeholders = ",".join("?" for _ in ordered)
+            # Legacy rows carry NULL status and read as "completed" everywhere else.
+            null_clause = " OR s.status IS NULL" if "completed" in self.statuses else ""
+            clauses.append(f"(COALESCE(s.status, 'completed') IN ({placeholders}){null_clause})")
+            params.extend(ordered)
+        if self.project_null:
+            clauses.append("s.project IS NULL")
+        elif self.project:
+            clauses.append("s.project = ?")
+            params.append(self.project)
+        if self.tags:
+            placeholders = ",".join("?" for _ in self.tags)
+            clauses.append(
+                f"s.id IN (SELECT session_id FROM run_tags WHERE tag IN ({placeholders})"  # noqa: S608
+                " GROUP BY session_id HAVING COUNT(DISTINCT tag) = ?)"
+            )
+            params.extend([*self.tags, len(self.tags)])
+        if not clauses:
+            return "", []
+        return "WHERE " + " AND ".join(clauses), params
+
+
+async def count_sessions(where: SessionFilter | None = None) -> int:
+    """Total matching sessions, without reading a single branch or progression."""
+    if not DEFAULT_DB_PATH.exists():
+        return 0
+    clause, params = (where or SessionFilter()).where()
+    async with _open_db(_DB) as db:
+        cur = await db.execute(
+            f"SELECT COUNT(*) AS n FROM sessions s {clause}",  # noqa: S608
+            params,
+        )
+        row = await cur.fetchone()
+    return int(row["n"]) if row else 0
+
+
+async def list_sessions(
+    *,
+    limit: int = MAX_SESSION_PAGE,
+    offset: int = 0,
+    where: SessionFilter | None = None,
+) -> list[dict[str, Any]]:
+    """One page of sessions, newest first. Cost is proportional to `limit`, not
+    to the size of the store."""
     if not DEFAULT_DB_PATH.exists():
         return []
 
+    limit = max(1, min(int(limit), MAX_SESSION_PAGE))
+    offset = max(0, int(offset))
+    clause, params = (where or SessionFilter()).where()
+
     async with _open_db(_DB) as db:
+        # run_tags is created lazily on first tag write, so a tag filter would
+        # fail on a store that has never been tagged.
+        if (where or SessionFilter()).tags:
+            from .run_tags import _ensure_table
+
+            await _ensure_table(db)
         cur = await db.execute(
-            """
+            f"""
+            WITH page AS (
+                SELECT s.id AS page_id
+                FROM sessions s
+                {clause}
+                ORDER BY s.updated_at DESC
+                LIMIT ? OFFSET ?
+            )
             SELECT
                 s.id,
                 s.name,
@@ -133,12 +229,14 @@ async def list_sessions() -> list[dict[str, Any]]:
                 COALESCE(SUM(
                     json_array_length(p.collection)
                 ), 0) AS message_count
-            FROM sessions s
+            FROM page
+            JOIN sessions s ON s.id = page.page_id
             LEFT JOIN branches b ON b.session_id = s.id
             LEFT JOIN progressions p ON p.id = b.progression_id
             GROUP BY s.id
             ORDER BY s.updated_at DESC
-            """
+            """,  # noqa: S608
+            [*params, limit, offset],
         )
         rows = await cur.fetchall()
 
@@ -775,8 +873,26 @@ def is_session_stream_done(state: dict[str, Any] | None, *, now: float) -> bool:
 
 
 @studio_route("/sessions/", method="GET", area="sessions", name="list_sessions")
-async def list_sessions_route() -> dict[str, Any]:
-    return {"sessions": await list_sessions()}
+async def list_sessions_route(
+    limit: int = Query(
+        default=MAX_SESSION_PAGE,
+        ge=1,
+        le=MAX_SESSION_PAGE,
+        description=f"Rows to return, newest first (max {MAX_SESSION_PAGE})",
+    ),
+    offset: int = Query(default=0, ge=0, description="Rows to skip, newest first"),
+) -> dict[str, Any]:
+    """One page of sessions. The response always reports `total` and
+    `truncated` so a bounded answer can never be mistaken for a complete one."""
+    sessions = await list_sessions(limit=limit, offset=offset)
+    total = await count_sessions()
+    return {
+        "sessions": sessions,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "truncated": offset + len(sessions) < total,
+    }
 
 
 @studio_route("/sessions/{session_id}", method="GET", area="sessions", name="get_session")

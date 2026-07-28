@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import os
 import stat
@@ -455,6 +456,45 @@ def _session_liveness(s: dict[str, Any], ps_snapshot: str | None = None) -> bool
     return process_liveness(s, Path(ap) if ap else None, ps_snapshot)
 
 
+def _provisional_verification(contract: Any, artifacts_path: str | None) -> dict[str, Any] | None:
+    """Check a contract against what is on disk right now, for a run whose
+    verification has not been recorded yet.
+
+    Verification is recorded once, when a run finalises. Until then the panel has
+    nothing to read, so every declared artifact shows as pending even after its
+    worker has written it and the viewer is watching the file exist. Answering
+    from the disk costs one stat per declared artifact and makes the panel track
+    the run instead of trailing it.
+
+    The result is marked provisional, because it is a reading taken now rather
+    than the verdict the run was judged on: artifacts may still appear, and this
+    answer is never what decides the run's status.
+    """
+    if not contract or not artifacts_path:
+        return None
+    if isinstance(contract, str):
+        try:
+            contract = json.loads(contract)
+        except ValueError:
+            return None
+    if not isinstance(contract, dict):
+        return None
+
+    from lionagi.state.artifact_verifier import ArtifactPathError, verify_artifact_contract
+
+    try:
+        result = verify_artifact_contract(contract, artifacts_root=artifacts_path)
+    except (ArtifactPathError, OSError):
+        # A contract the run itself will reject, or a root that cannot be read.
+        # Neither is this endpoint's to report: the run's own finalisation says
+        # so, and inventing a status here would put a verdict on the panel that
+        # nothing else agrees with.
+        return None
+    if result is None:
+        return None
+    return {**result, "provisional": True}
+
+
 def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None) -> dict[str, Any]:
     """Canonical Run row shape shared by list and detail routes."""
     from lionagi.state.health import classify_session_health
@@ -508,27 +548,27 @@ async def list_runs(
     project: str | None = None,
     project_null: bool = False,
     tag: list[str] | None = None,
+    *,
+    limit: int = _sessions_svc.MAX_SESSION_PAGE,
+    offset: int = 0,
 ) -> list[dict[str, Any]]:
+    """One page of runs. Filters are applied in SQL so the page is selected
+    rather than sieved out of a whole-store read; per-row liveness and tag
+    hydration then touch only the rows actually being returned."""
     from . import run_tags
 
-    sessions = await _sessions_svc.list_sessions()
-    status_set = _normalize_status_filter(status)
-    tagged = await run_tags.session_ids_with_tags(tag) if (tag and sessions) else None
+    where = _sessions_svc.SessionFilter(
+        playbook=playbook,
+        statuses=_normalize_status_filter(status),
+        project=project,
+        project_null=project_null,
+        tags=tag,
+    )
+    sessions = await _sessions_svc.list_sessions(limit=limit, offset=offset, where=where)
     now = time.time()
     out = []
     snapshot: str | None = None
     for s in sessions:
-        if playbook and playbook.lower() not in (s.get("playbook_name") or "").lower():
-            continue
-        if project_null:
-            if s.get("project") is not None:
-                continue
-        elif project and s.get("project") != project:
-            continue
-        if status_set and s.get("status") not in status_set:
-            continue
-        if tagged is not None and s["id"] not in tagged:
-            continue
         alive: bool | None = None
         if s.get("status") == "running":
             if snapshot is None:
@@ -545,15 +585,16 @@ async def list_runs(
 
 
 def paginate_runs(
-    runs: list[dict[str, Any]],
+    page_runs: list[dict[str, Any]],
     *,
     page: int,
     per_page: int,
+    total: int,
 ) -> dict[str, Any]:
-    total = len(runs)
+    """Wrap an already-selected page in the listing envelope. `total` is counted
+    separately in SQL; it is never inferred from the length of the page, which
+    would report a bounded answer as a complete one."""
     total_pages = math.ceil(total / per_page) if total else 0
-    start = (page - 1) * per_page
-    page_runs = runs[start : start + per_page]
     return {
         "runs": page_runs,
         "page": page,
@@ -625,6 +666,11 @@ async def get_run(
     alive = _session_liveness(detail_session) if detail_session.get("status") == "running" else None
     row = _run_row(detail_session, time.time(), process_alive=alive)
 
+    if row.get("artifact_verification_json") is None:
+        row["artifact_verification_json"] = _provisional_verification(
+            row.get("artifact_contract_json"), artifacts_path
+        )
+
     from . import run_tags
 
     tagmap = await run_tags.tags_for_sessions([run_id])
@@ -695,7 +741,14 @@ def _build_steps_from_db(branches: list[dict[str, Any]]) -> list[dict[str, Any]]
 @studio_route("/runs/", method="GET", area="runs", name="list_runs")
 async def list_runs_route(
     page: int = Query(default=1, ge=1, description="1-based page number"),
-    per_page: int = Query(default=20, ge=1, le=5000, description="Rows per page"),
+    # Refused above the cap rather than served slowly: a caller can react to a
+    # 422 and ask for pages, but it cannot react to a daemon that stops answering.
+    per_page: int = Query(
+        default=20,
+        ge=1,
+        le=_sessions_svc.MAX_SESSION_PAGE,
+        description=f"Rows per page (max {_sessions_svc.MAX_SESSION_PAGE})",
+    ),
     status: list[str] | None = Query(default=None, description="Repeated status filter"),  # noqa: B008
     # ADR-0079: renamed from ?worker= to ?playbook= — "worker" is
     # not in lionagi's Studio vocabulary per ADR-0079.
@@ -708,14 +761,24 @@ async def list_runs_route(
         default=None, description="Repeated tag filter (AND-composed)"
     ),
 ) -> dict[str, Any]:
+    where = _sessions_svc.SessionFilter(
+        playbook=playbook,
+        statuses=_normalize_status_filter(status),
+        project=project,
+        project_null=project_null,
+        tags=tag,
+    )
     runs = await list_runs(
         playbook=playbook,
         status=status,
         project=project,
         project_null=project_null,
         tag=tag,
+        limit=per_page,
+        offset=(page - 1) * per_page,
     )
-    return paginate_runs(runs, page=page, per_page=per_page)
+    total = await _sessions_svc.count_sessions(where)
+    return paginate_runs(runs, page=page, per_page=per_page, total=total)
 
 
 # Registered before /runs/{run_id} so the literal path is not captured as a run id.

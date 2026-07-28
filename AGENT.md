@@ -53,9 +53,13 @@ When editing `session/`, `operations/`, or `cli/orchestrate/`: preserve these co
 - `lionagi/protocols/*` → `tests/protocols/*`
 - `lionagi/service/*` → `tests/service/*`
 - `lionagi/ln/*` → `tests/libs/concurrency/*`, `tests/ln/*`
-- `lionagi/cli/*` → smoke with `li o flow ... --dry-run` for structure or `--bare --yolo` for a short real run; add smoke assertions in `tests/docs/` when changing user-facing output shape.
+- `lionagi/cli/*` → `tests/cli/*`; additionally smoke with `li o flow ... --dry-run` for structure or `--bare --yolo` for a short real run, and add smoke assertions in `tests/docs/` when changing user-facing output shape.
 
-CLI has no dedicated unit test suite.
+### Proving a guard is actually covered
+
+A test that fails when you revert the whole fix proves only that *some* part of it matters. When a change has more than one part, revert each part on its own and check that the test still fails. Parts frequently reach the same outcome by different paths, and a part that stays green when reverted alone is pinned by nothing.
+
+A part that is individually redundant is not necessarily wrong — redundancy across entry points is often deliberate. What is wrong is the belief that a test covers it. Find the caller where that part is *not* redundant and pin it there.
 
 ## Coding Standards
 

@@ -16,13 +16,14 @@ import pytest
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
+import lionagi.state.db as state_db_mod
+
 
 def _patch_db(monkeypatch, db_path: Path) -> None:
-    import lionagi.state.db as state_db_mod
     import lionagi.studio.services.schedules as schedules_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(schedules_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
 
 def _make_client() -> TestClient:

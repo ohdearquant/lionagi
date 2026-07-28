@@ -12,6 +12,7 @@ import pytest
 
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
+import lionagi.state.db as state_db_mod
 from lionagi.state.db import StateDB  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -58,8 +59,7 @@ def patched_engine_runs_svc(tmp_path: Path, monkeypatch):
     import lionagi.studio.services.engine_runs as svc
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr(svc, "_DB", str(db_path))
-    monkeypatch.setattr(svc, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     return svc, db_path
 
 
@@ -184,8 +184,7 @@ def patched_app(tmp_path: Path, monkeypatch):
     import lionagi.studio.services.engine_runs as er_svc
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr(er_svc, "_DB", str(db_path))
-    monkeypatch.setattr(er_svc, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     from lionagi.studio.app import app
 
@@ -317,8 +316,7 @@ def test_list_endpoint_bearer_auth(tmp_path: Path, monkeypatch):
     import lionagi.studio.services.engine_runs as er_svc
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr(er_svc, "_DB", str(db_path))
-    monkeypatch.setattr(er_svc, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "secret-engine-token")
 
     from lionagi.studio.app import app

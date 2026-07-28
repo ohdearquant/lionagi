@@ -9,7 +9,7 @@ import os
 import time
 from pathlib import Path
 
-from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+from lionagi.state.db import StateDB, state_db_known_absent
 from lionagi.state.reasons import RunReasons, SessionReasons, ShowReasons
 
 from . import admin as admin_svc
@@ -33,6 +33,15 @@ _REAPABLE_PLAY_STATUSES = frozenset({"running", "running_complete", "prepared", 
 
 
 # ── invocation deadline + zero-session reaper ────────────────────────────────
+
+# Action kinds whose child process never creates a lionagi session. The
+# zero-session condition below infers "this launch is stuck" from a session
+# count that never left zero; for these kinds zero is the correct steady
+# state for the whole run, so that inference would reap a perfectly healthy
+# process. A 'command' action spawns an allow-listed executable directly —
+# a shell script, a test runner — which has no reason to ever open a Branch.
+# The wall-clock deadline still applies to them; only this heuristic is off.
+_SESSIONLESS_ACTION_KINDS = frozenset({"command"})
 
 
 def _deadline_for_kind(action_kind: str | None, global_default: int) -> int:
@@ -73,7 +82,7 @@ async def reap_stale_invocations(
     if zero_session_grace_seconds is None:
         zero_session_grace_seconds = ZERO_SESSION_GRACE_SECONDS
 
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return 0
 
     now = time.time()
@@ -88,7 +97,7 @@ async def reap_stale_invocations(
                 started_at = inv.get("started_at") or now
                 updated_at = inv.get("updated_at") or started_at
                 session_count = inv.get("session_count") or 0
-                action_kind = inv.get("action_kind")  # SELECT inv.* includes this column
+                action_kind = inv.get("action_kind")  # joined from the firing occurrence
 
                 # Per-kind override: check env var before falling back to global.
                 effective_deadline = _deadline_for_kind(action_kind, deadline_seconds)
@@ -127,7 +136,16 @@ async def reap_stale_invocations(
                         _log.debug("Invocation %s skipped (status changed before CAS lock)", inv_id)
                     continue
 
-                # Condition 2: zero sessions and past grace period.
+                # Condition 2: zero sessions and past grace period. Skipped
+                # for kinds that never open a session — see
+                # _SESSIONLESS_ACTION_KINDS. Reaping one of those writes a
+                # terminal status onto a row whose process is still running,
+                # and because the executor's own terminal write is guarded on
+                # the row still being 'running', the real outcome is then
+                # refused for good: the run reports the reaper's verdict
+                # forever, whatever the child went on to do.
+                if action_kind in _SESSIONLESS_ACTION_KINDS:
+                    continue
                 if session_count == 0 and updated_at < grace_cutoff:
                     _log.info(
                         "Reaping invocation %s: zero sessions past grace period (%ss)",
@@ -181,7 +199,7 @@ async def reap_null_status_sessions(*, stale_hours: float | None = None) -> int:
         stale_hours = PHANTOM_STALE_HOURS
     stale_seconds = stale_hours * 3600
 
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return 0
 
     now = time.time()
@@ -260,7 +278,7 @@ async def reap_phantom_sessions(
     if stale_hours is None:
         stale_hours = PHANTOM_STALE_HOURS
 
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return 0
 
     phantoms = await admin_svc.list_phantom_sessions(stale_hours=stale_hours)
@@ -353,7 +371,7 @@ async def reap_stale_plays(*, stale_hours: float | None = None) -> int:
         stale_hours = PLAY_STALE_HOURS
     stale_seconds = stale_hours * 3600
 
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return 0
 
     now = time.time()
@@ -500,7 +518,7 @@ async def reap_stale_schedule_runs(*, stale_hours: float | None = None) -> int:
         stale_hours = SCHEDULE_RUN_STALE_HOURS
     stale_seconds = stale_hours * 3600
 
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return 0
 
     now = time.time()
@@ -629,7 +647,7 @@ async def reap_stale_shows(*, stale_hours: float | None = None) -> int:
         stale_hours = SHOW_STALE_HOURS
     stale_seconds = stale_hours * 3600
 
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return 0
 
     now = time.time()

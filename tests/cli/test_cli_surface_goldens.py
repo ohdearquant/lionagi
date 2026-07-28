@@ -138,9 +138,11 @@ TOP_LEVEL_COMMANDS = [
     "dispatch",
     "doctor",
     "engine",
+    "handshake",
     "hooks",
     "invoke",
     "kill",
+    "lifecycle",
     "mcp",
     "mirror",
     "mon",
@@ -148,6 +150,7 @@ TOP_LEVEL_COMMANDS = [
     "o",
     "orchestrate",
     "plugin",
+    "runs",
     "schedule",
     "state",
     "stats",
@@ -164,6 +167,8 @@ ORCHESTRATE_FANOUT_FLAGS = [
     "--help",
     "--invocation",
     "--max-concurrent",
+    "--mcp-config",
+    "--no-mcp-config",
     "--notify",
     "--num-workers",
     "--output",
@@ -202,6 +207,8 @@ ORCHESTRATE_FLOW_FLAGS = [
     "--max-agents",
     "--max-concurrent",
     "--max-ops",
+    "--mcp-config",
+    "--no-mcp-config",
     "--notify",
     "--output",
     "--pack",
@@ -313,18 +320,18 @@ class TestInProcessContractErrors:
         assert "bogus-top-level-command" in captured.err
         assert captured.out == ""
 
-    def test_flow_missing_model_or_agent_is_nonzero(self, capsys):
+    def test_flow_missing_prompt_is_nonzero(self, capsys):
         rc = _run_main(["o", "flow"])
         captured = capsys.readouterr()
         assert rc == 1
-        assert "model or --agent is required" in captured.err
+        assert "prompt is required" in captured.err
         assert captured.out == ""
 
-    def test_fanout_missing_model_or_agent_is_nonzero(self, capsys):
+    def test_fanout_missing_prompt_is_nonzero(self, capsys):
         rc = _run_main(["o", "fanout"])
         captured = capsys.readouterr()
         assert rc == 1
-        assert "model or --agent is required" in captured.err
+        assert "prompt is required" in captured.err
 
     def test_flow_unknown_flag_is_nonzero_and_named(self, capsys):
         rc = _run_main(["o", "flow", "--this-flag-does-not-exist"])

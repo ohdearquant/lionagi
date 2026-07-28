@@ -212,7 +212,10 @@ async def test_abandonment_failure_still_unregisters():
 
     svc = _make_engine_svc()
     svc.tombstone_and_replace_schedule_run = AsyncMock(return_value=False)
-    svc.update_invocation = AsyncMock(side_effect=RuntimeError("db down"))
+    # The abandonment's end timestamp rides its guarded terminal write rather
+    # than a separate update_invocation, so that write is where a database
+    # failure now surfaces.
+    svc.update_status = AsyncMock(side_effect=RuntimeError("db down"))
     engine = SchedulerEngine(svc=svc)
 
     with (

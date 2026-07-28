@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
+from lionagi.ln._json_dump import raise_if_non_finite
 
 from ._logging import hint, log_error, progress, warn
 
@@ -41,14 +42,17 @@ def add_mirror_subparser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--once",
         action="store_true",
-        help="Do a single catch-up pass and exit (backfill), instead of tailing.",
+        help=(
+            "Do a single catch-up pass over existing transcripts and exit, instead of tailing "
+            "for new ones. Use it to backfill history without leaving a process running."
+        ),
     )
     p.add_argument(
         "--interval",
         type=float,
         default=3.0,
         metavar="SECS",
-        help="Poll interval while tailing (default 3).",
+        help="Seconds between passes over the transcript directory while tailing (default 3).",
     )
     p.add_argument(
         "--since",
@@ -194,6 +198,13 @@ def _save_states(states: dict[str, _FileState]) -> None:
         }
         for key, st in states.items()
     }
+    # Only the byte offset is this module's own arithmetic. The session uid, the
+    # leaf uuid and the tool-name map are copied out of a transcript another
+    # program wrote, through a json.loads that accepts NaN and Infinity, and none
+    # of them is coerced to str on the way in. So a token no strict reader accepts
+    # can reach this file, and once here it round-trips through the equally
+    # permissive read above and never leaves. Refuse at the write instead.
+    raise_if_non_finite(payload)
     tmp = _OFFSETS_PATH.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload))
     tmp.replace(_OFFSETS_PATH)

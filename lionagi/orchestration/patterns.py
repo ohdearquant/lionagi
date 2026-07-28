@@ -212,11 +212,22 @@ async def plan(
     )
     raw = list(getattr(res, "assignments", None) or [])
     known = set(roles)
+    # '-' and '_' are interchangeable in a role name, so an assignment that
+    # spells the separator the other way still names a listed role. It is
+    # rewritten to the listed spelling, so everything downstream of the plan
+    # sees one name per role. An exact match always wins, and a spelling that
+    # would match more than one listed role is not resolved by guessing.
+    by_separator: dict[str, list[str]] = {}
+    for r in roles:
+        by_separator.setdefault(r.replace("-", "_"), []).append(r)
     valid: list[TaskAssignment] = []
     for ta in raw:
         if ta.assignee not in known:
-            logger.warning("plan: dropping assignment with unknown assignee %r", ta.assignee)
-            continue
+            matches = by_separator.get(ta.assignee.replace("-", "_"), [])
+            if len(matches) != 1:
+                logger.warning("plan: dropping assignment with unknown assignee %r", ta.assignee)
+                continue
+            ta = ta.model_copy(update={"assignee": matches[0]})
         valid.append(ta)
     if max_tasks and len(valid) > max_tasks:
         raise ValueError(

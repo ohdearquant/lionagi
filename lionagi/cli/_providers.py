@@ -52,10 +52,13 @@ __all__ = (
     "resolve_model_spec",
     "resolve_persisted_effort",
     "AgentProfile",
+    "AgentProfileNotFoundError",
+    "AmbiguousProfileNameError",
     "build_agent_profile_catalog",
     "build_deadline_preamble",
     "list_agents",
     "load_agent_profile",
+    "profile_config",
     "_parse_profile",
     "_resolve_profile_path",
     "_validate_bare_name",
@@ -127,10 +130,23 @@ def build_chat_model(
     effort: str | None = None,
     fast: bool = False,
     bypass: bool = False,
+    mcp_servers: dict | None = None,
 ) -> iModel | str:
     """Legacy: for agent.py compat. Returns bare spec string when no flags."""
     effort = normalize_effort(effort)
     extra: dict = {}
+    if mcp_servers is not None:
+        from lionagi.agent.factory import apply_forwarded_mcp_servers
+
+        # Whether this provider can be given a set at all is one question with
+        # one answer, and applying it is that answer's implementation — a lane
+        # that carries a set over a different transport (codex, via config
+        # overrides) is a lane this caller must not decide about itself.
+        # An empty set is the caller stating the whole set; a non-empty one is
+        # added to whatever the provider finds for itself.
+        apply_forwarded_mcp_servers(
+            extra, mcp_servers, provider=provider, exclusive=not mcp_servers
+        )
     if bypass:
         extra.update(PROVIDER_BYPASS_KWARGS.get(provider, {}))
     elif yolo:
@@ -197,7 +213,11 @@ def resolve_model_spec(spec: str) -> tuple[str, str]:
 
 def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
     """Add shared CLI flags to any subparser."""
-    parser.add_argument("--yolo", action="store_true", help="Auto-approve tool calls.")
+    parser.add_argument(
+        "--yolo",
+        action="store_true",
+        help="Auto-approve the agent's tool calls, so an unattended run is never left waiting.",
+    )
     parser.add_argument(
         "--bypass",
         action="store_true",
@@ -212,8 +232,21 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
             "Does not change model or reasoning effort."
         ),
     )
-    parser.add_argument("-v", "--verbose", action="store_true", help="Stream real-time output.")
-    parser.add_argument("--theme", choices=("light", "dark"), default=None, help="Terminal theme.")
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help=(
+            "Stream the agent's output as it is produced instead of printing only the final "
+            "result, and silence the progress lines that would interleave with it."
+        ),
+    )
+    parser.add_argument(
+        "--theme",
+        choices=("light", "dark"),
+        default=None,
+        help="Pick the colour scheme printed output is tuned for: 'light' or 'dark' terminal.",
+    )
     parser.add_argument(
         "--effort",
         metavar="LEVEL",
@@ -231,7 +264,10 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
         "--cwd",
         metavar="DIR",
         default=None,
-        help="Working directory for CLI endpoints.",
+        help=(
+            "Directory the agent's process runs in — the repo or worktree it acts on. "
+            "Defaults to the current directory."
+        ),
     )
     parser.add_argument(
         "--timeout",
@@ -350,21 +386,84 @@ def _unreadable_symlink_target(path: Path) -> str | None:
         return "<unreadable>"
 
 
+class AmbiguousProfileNameError(ValueError):
+    """One agents dir declares a name under both '-' and '_' spellings."""
+
+
+class AgentProfileNotFoundError(FileNotFoundError):
+    """No profile of that name exists on the search path.
+
+    A subclass rather than a bare FileNotFoundError so a caller can tell "there
+    is no such profile" from "a profile was found and then could not be read".
+    The two are the same exception type otherwise, and a caller acting on the
+    first would silently swallow the second.
+    """
+
+
+def _name_spellings(name: str) -> tuple[str, ...]:
+    """NAME plus its separator spellings, requested spelling first.
+
+    '-' and '_' are interchangeable in a profile name, so a role written
+    ``postmortem-lead`` everywhere else still finds ``postmortem_lead.md``.
+    """
+    return tuple(dict.fromkeys((name, name.replace("-", "_"), name.replace("_", "-"))))
+
+
+def _profile_path_candidates(agents_dir: Path, name: str) -> tuple[Path, ...]:
+    """Where NAME may live in one agents dir, in the order resolution tries them.
+
+    Two layouts share a directory, and either may spell the name with '-' or
+    '_', so a root can hold more than one declaration of the same name.
+    Anything reporting which files declare a profile has to walk the same
+    candidates in the same order as the resolver, or it reports a displaced
+    file in one root while missing one in another.
+    """
+    return tuple(
+        path
+        for spelling in _name_spellings(name)
+        for path in (agents_dir / spelling / f"{spelling}.md", agents_dir / f"{spelling}.md")
+    )
+
+
 def _resolve_profile_path(
     agents_dir: Path,
     name: str,
     *,
     unreadable_symlinks: list[tuple[Path, str]] | None = None,
 ) -> Path | None:
-    """Return profile path for NAME, recording unreadable candidate symlinks."""
-    candidates = (agents_dir / name / f"{name}.md", agents_dir / f"{name}.md")
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-        target = _unreadable_symlink_target(candidate)
-        if target is not None and unreadable_symlinks is not None:
-            unreadable_symlinks.append((candidate, target))
-    return None
+    """Return profile path for NAME, recording unreadable candidate symlinks.
+
+    The spelling actually asked for wins outright when it exists. Only a
+    request that does *not* name an existing file falls back to the other
+    separator spelling, so a directory deliberately holding two profiles that
+    differ only in separator keeps resolving both, exactly as it did before
+    the spellings became interchangeable.
+
+    Failing that, two spellings matching one request in a single directory are
+    an error rather than a ranking: whichever one lost would be invisible to
+    the caller. Two spellings in *different* roots are ordinary shadowing,
+    decided by root order, and are resolved by the caller walking the roots.
+    """
+    resolved: dict[str, Path] = {}
+    for spelling in _name_spellings(name):
+        for candidate in (agents_dir / spelling / f"{spelling}.md", agents_dir / f"{spelling}.md"):
+            if candidate.is_file():
+                resolved.setdefault(spelling, candidate)
+                continue
+            target = _unreadable_symlink_target(candidate)
+            if target is not None and unreadable_symlinks is not None:
+                unreadable_symlinks.append((candidate, target))
+
+    if name in resolved:
+        return resolved[name]
+    if len(resolved) > 1:
+        matched = ", ".join(str(p) for p in resolved.values())
+        raise AmbiguousProfileNameError(
+            f"Agent profile name '{name}' is ambiguous in {agents_dir}: "
+            f"'-' and '_' are interchangeable, and both spellings exist ({matched}). "
+            "Rename or remove one of them."
+        )
+    return next(iter(resolved.values()), None)
 
 
 def _plugin_agent_profiles() -> dict[str, tuple[str, Path]]:
@@ -406,29 +505,32 @@ def list_agents() -> list[str]:
     return sorted(seen)
 
 
-def build_agent_profile_catalog() -> dict[str, dict[str, Any]]:
-    """Index discoverable profiles by name and resolved runtime configuration.
+def profile_config(profile: AgentProfile) -> dict[str, Any]:
+    """The runtime configuration a loaded profile contributes, as plain JSON values.
 
-    Prompt bodies are deliberately omitted: the catalog is a discovery surface,
-    not a second path for exposing or copying profile instructions.
+    The one place that decides which fields a discovery surface reports — and
+    which it withholds. Prompt bodies are deliberately absent: discovery is not a
+    second path for exposing or copying profile instructions. Every reader of the
+    roster goes through here so they cannot disagree about either half.
     """
-    catalog: dict[str, dict[str, Any]] = {}
-    for name in list_agents():
-        profile = load_agent_profile(name)
-        catalog[name] = {
-            "model": profile.model,
-            "effort": profile.effort,
-            "role": profile.extra.get("role"),
-            "pack": profile.extra.get("pack"),
-            "yolo": profile.yolo,
-            "bypass": profile.bypass,
-            "fast_mode": profile.fast_mode,
-            "lion_system": profile.lion_system,
-            "khive_injection": profile.khive_injection,
-            "timeout": profile.timeout,
-            "resume_on_timeout": profile.resume_on_timeout,
-        }
-    return catalog
+    return {
+        "model": profile.model,
+        "effort": profile.effort,
+        "role": profile.extra.get("role"),
+        "pack": profile.extra.get("pack"),
+        "yolo": profile.yolo,
+        "bypass": profile.bypass,
+        "fast_mode": profile.fast_mode,
+        "lion_system": profile.lion_system,
+        "khive_injection": profile.khive_injection,
+        "timeout": profile.timeout,
+        "resume_on_timeout": profile.resume_on_timeout,
+    }
+
+
+def build_agent_profile_catalog() -> dict[str, dict[str, Any]]:
+    """Index discoverable profiles by name and resolved runtime configuration."""
+    return {name: profile_config(load_agent_profile(name)) for name in list_agents()}
 
 
 def _resolve_plugin_profile_path(name: str) -> Path | None:
@@ -507,7 +609,7 @@ def load_agent_profile(name: str) -> AgentProfile:
         return _parse_profile(name, plugin_path.read_text())
 
     if not dirs and not plugin_token:
-        raise FileNotFoundError(
+        raise AgentProfileNotFoundError(
             "No .lionagi/ directory found. Create .lionagi/agents/ in your repo "
             "or ~/.lionagi/agents/ globally."
         )
@@ -518,7 +620,7 @@ def load_agent_profile(name: str) -> AgentProfile:
         msg += f"\n{path} exists but its symlink target is unreadable: {target}"
     if available:
         msg += f"\nAvailable: {', '.join(available)}"
-    raise FileNotFoundError(msg)
+    raise AgentProfileNotFoundError(msg)
 
 
 def _parse_profile_timeout(name: str, raw: Any) -> int | None:

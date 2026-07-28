@@ -6,18 +6,21 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import sqlite3
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
+from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.service.providers import EFFORT_LEVELS as _VALID_EFFORT_LEVELS
-from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+from lionagi.state.db import StateDB, state_db_known_absent
 
 from ..registry import studio_route
 from . import run_view
@@ -56,6 +59,36 @@ def _svc_validate_identifier(value: str | None, field_name: str) -> None:
     from lionagi.studio.scheduler.subprocess import _validate_identifier
 
     _validate_identifier(value, field_name)
+
+
+_GITHUB_CURSOR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+
+def _svc_validate_github_cursor(cursor: str | None) -> None:
+    """Service-boundary check: a github_cursor must be a UTC ISO-8601 instant
+    spelled exactly as GitHub spells it, ``YYYY-MM-DDTHH:MM:SSZ``.
+
+    The poller compares cursors as STRINGS against the API's own timestamps, so
+    the format is a correctness contract rather than a presentation choice: a
+    space separator, a fractional part, or a ``+00:00`` offset all denote the
+    right instant and all order wrongly against ``2026-07-20T15:21:57Z``, which
+    silently makes the poller skip or replay events.
+
+    ``None`` is allowed and clears the cursor, meaning "no bookmark". That is a
+    legitimate operator action and a consequential one -- an unbookmarked
+    merged-mode poll dispatches everything its scan reaches.
+    """
+    if cursor is None:
+        return
+    if not isinstance(cursor, str) or not _GITHUB_CURSOR_RE.match(cursor):
+        raise ValueError(
+            "github_cursor must be a UTC ISO-8601 timestamp of the form "
+            f"YYYY-MM-DDTHH:MM:SSZ (got {cursor!r})"
+        )
+    try:
+        datetime.strptime(cursor, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as exc:
+        raise ValueError(f"github_cursor is not a real timestamp: {cursor!r}") from exc
 
 
 def _svc_validate_action_cwd(cwd: str | None) -> None:
@@ -342,8 +375,10 @@ def _validate_flow_yaml_spec(yaml_text: str) -> str | None:
         prompt = spec["prompt"]
         if not isinstance(prompt, str):
             return f"spec field 'prompt' must be a string, got {type(prompt).__name__}"
-        if len(prompt) > 8192:
-            return "spec field 'prompt' exceeds maximum length of 8192 characters"
+        if len(prompt) > MAX_SPEC_PROMPT_CHARS:
+            return (
+                f"spec field 'prompt' exceeds maximum length of {MAX_SPEC_PROMPT_CHARS} characters"
+            )
 
     if "save" in spec:
         save = spec["save"]
@@ -442,7 +477,7 @@ async def list_schedules(
     trigger_type: str | None = None,
     project: str | None = None,
 ) -> list[dict[str, Any]]:
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return []
     async with StateDB() as db:
         rows = await db.list_schedules(enabled=enabled, trigger_type=trigger_type, project=project)
@@ -459,7 +494,7 @@ async def list_schedules(
 
 
 async def get_schedule(schedule_id: str) -> dict[str, Any] | None:
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return None
     async with StateDB() as db:
         row = await db.get_schedule(schedule_id)
@@ -477,7 +512,7 @@ async def get_schedule(schedule_id: str) -> dict[str, Any] | None:
 
 
 async def get_schedule_by_name(name: str) -> dict[str, Any] | None:
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return None
     async with StateDB() as db:
         return await db.get_schedule_by_name(name)
@@ -606,6 +641,8 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
             _svc_validate_github_repo(fields["github_repo"])
         if "github_filter" in fields:
             _svc_validate_github_filter(fields["github_filter"])
+        if "github_cursor" in fields:
+            _svc_validate_github_cursor(fields["github_cursor"])
         if "max_runs" in fields:
             _svc_validate_max_runs(fields["max_runs"])
         if "budget_usd" in fields:
@@ -707,7 +744,7 @@ async def list_schedule_runs(
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return []
     async with StateDB() as db:
         return await db.list_schedule_runs(schedule_id, status=status, limit=limit, offset=offset)
@@ -721,7 +758,7 @@ async def list_schedule_run_views(
     offset: int = 0,
 ) -> list[dict[str, Any]]:
     """RunView list — each row additionally carries a reconciled ``outcome``."""
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return []
     async with StateDB() as db:
         return await run_view.list_run_views(
@@ -730,7 +767,7 @@ async def list_schedule_run_views(
 
 
 async def get_schedule_run(run_id: str) -> dict[str, Any] | None:
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return None
     async with StateDB() as db:
         run = await db.get_schedule_run(run_id)
@@ -754,7 +791,7 @@ async def get_schedule_run(run_id: str) -> dict[str, Any] | None:
 
 async def get_schedule_status(schedule_id: str) -> dict[str, Any] | None:
     """'Did it work?' view: schedule header + latest RunView + shared exit code."""
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return None
     async with StateDB() as db:
         return await run_view.get_schedule_status_view(db, schedule_id)
@@ -766,6 +803,12 @@ async def get_schedule_status(schedule_id: str) -> dict[str, Any] | None:
 
 
 class CreateScheduleRequest(BaseModel):
+    # An unknown key is a caller mistake, and silently dropping it means the
+    # request reports success for a change that never happened. The schedule
+    # declaration models next door already forbid extras; these two were the
+    # holdouts.
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     description: str | None = None
     trigger_type: str
@@ -798,6 +841,12 @@ class CreateScheduleRequest(BaseModel):
 
 
 class UpdateScheduleRequest(BaseModel):
+    # An unknown key is a caller mistake, and silently dropping it means the
+    # request reports success for a change that never happened. The schedule
+    # declaration models next door already forbid extras; these two were the
+    # holdouts.
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = None
     description: str | None = None
     trigger_type: str | None = None
@@ -805,6 +854,10 @@ class UpdateScheduleRequest(BaseModel):
     interval_sec: int | None = None
     github_repo: str | None = None
     github_filter: dict | None = None
+    # The poller's own bookmark, patchable so an operator can move it
+    # deliberately -- forward to skip a backlog the schedule would
+    # otherwise dispatch all at once, or back to replay one.
+    github_cursor: str | None = None
     poll_interval_sec: int | None = None
     action_kind: str | None = None
     action_model: str | None = None
@@ -897,7 +950,10 @@ async def update_schedule_route(schedule_id: str, body: UpdateScheduleRequest) -
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not ok:
         raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' not found")
-    return {"ok": True}
+    # Naming what was applied: an empty body is a legitimate no-op on an
+    # existing schedule, but a bare "ok" reads the same as a change that
+    # landed. The caller can tell the two apart from the list.
+    return {"ok": True, "updated": sorted(fields)}
 
 
 @studio_route(

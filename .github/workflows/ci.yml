@@ -48,6 +48,47 @@ jobs:
     - name: Lint publication hygiene
       run: scripts/ci.sh lint-hygiene
 
+  core-install:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install uv
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+    # The other Python jobs all install extras, most with --all-extras and the
+    # studio job with --extra studio. Under any of them a module which is
+    # imported on a core path, but only ever supplied by some extra's
+    # transitive tree, is indistinguishable from a properly declared
+    # dependency: it is always present, so nothing ever fails. Installing the
+    # base dependency set by itself is the only configuration in which that
+    # distinction is observable, which is why this job exists separately
+    # rather than as another step somewhere green.
+    - name: Install with no extras
+      run: |
+        uv venv
+        uv pip install .
+    # Starting the CLI traverses the real import chain rather than a subset a
+    # test happens to reach, so an undeclared import on a startup path fails
+    # here instead of in a seat's environment.
+    - name: Core surface starts without extras
+      run: |
+        .venv/bin/li --version
+        .venv/bin/python - <<'PY'
+        import importlib
+
+        for module in (
+            "lionagi",
+            "lionagi.cli.main",
+            "lionagi.operations.flow",
+            "lionagi.session.branch",
+            "lionagi.session.session",
+            "lionagi.service.imodel",
+        ):
+            importlib.import_module(module)
+        print("core surface imported with base dependencies only")
+        PY
+
   docs:
     needs: changes
     # The `needs: changes` edge exists only so the ADR steps below can read
@@ -112,7 +153,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # PRs: oldest + newest only (60% faster). Full matrix on main/develop pushes.
+        # PRs: oldest + newest only. Full matrix on main/develop pushes. This
+        # saves runner minutes rather than wall-clock time, because the legs run
+        # in parallel and the ones dropped were not the slowest.
         python-version: ${{ fromJSON((github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.python-matrix == 'endpoints')) && '["3.10","3.14"]' || '["3.10","3.11","3.12","3.13","3.14"]') }}
     # Force every `uv` call (venv, sync, run) onto the matrix interpreter; the
     # repo's .python-version (3.10) otherwise pins all legs to 3.10.
@@ -145,18 +188,27 @@ jobs:
         uv venv
         uv sync --all-extras
 
-    # Coverage runs on 3.10 only (present in both the PR and the full matrix);
-    # other versions run without coverage instrumentation — 5-10x faster.
-    # Codecov is uploaded only from the coverage run.
+    # Coverage runs on 3.10, and only on pushes — never on a pull request.
+    #
+    # Running the suite under coverage instrumentation is materially slower than
+    # running it plain. The 3.10 leg is kept in the reduced pull-request matrix
+    # and ci-gate hard-gates on `test`, so before this split that extra time sat
+    # directly on the path every pull request had to clear before it could merge.
+    #
+    # Coverage is a report rather than a gate, so pushes to a long-lived branch
+    # are a sufficient place to produce it. Pull requests run the same tests on
+    # the same interpreters, uninstrumented — no test is skipped on a pull
+    # request, the 3.10 leg is switched from the instrumented command to the
+    # plain one.
     - name: Run tests with coverage
-      if: matrix.python-version == '3.10'
+      if: matrix.python-version == '3.10' && github.event_name != 'pull_request'
       run: scripts/ci.sh test-python-cov
       env:
         MAXFAIL: 25
         PYTEST_RSS_LOG: ${{ github.workspace }}/.pytest-rss
 
     - name: Run tests
-      if: matrix.python-version != '3.10'
+      if: matrix.python-version != '3.10' || github.event_name == 'pull_request'
       run: scripts/ci.sh test-python
       env:
         MAXFAIL: 0
@@ -195,7 +247,7 @@ jobs:
         fi
 
     - name: Upload coverage reports to Codecov
-      if: matrix.python-version == '3.10'
+      if: matrix.python-version == '3.10' && github.event_name != 'pull_request'
       uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
@@ -424,7 +476,7 @@ jobs:
   # path-filter job itself succeeded and reported no Studio image inputs changed.
   ci-gate:
     if: ${{ always() }}
-    needs: [lint, docs, test, frontend, studio-e2e, changes, studio-docker, vscode, marketplace]
+    needs: [lint, core-install, docs, test, frontend, studio-e2e, changes, studio-docker, vscode, marketplace]
     runs-on: ubuntu-latest
     steps:
     - name: Check aggregate result
@@ -439,6 +491,7 @@ jobs:
         needs = json.loads(os.environ["NEEDS_CONTEXT"])
         hard_gates = [
             "lint",
+            "core-install",
             "docs",
             "test",
             "frontend",

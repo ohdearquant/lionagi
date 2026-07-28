@@ -1,0 +1,22 @@
+{
+  "path": "dispatch ls",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "limit": {
+        "default": 50,
+        "description": "Maximum rows to print, newest first (default 50).",
+        "type": "integer",
+        "x-flag": "--limit"
+      },
+      "status": {
+        "description": "Show only rows in this status: pending, delivering, delivered, acked, dead_letter or expired. Omit to list every status.",
+        "type": "string",
+        "x-flag": "--status"
+      }
+    },
+    "title": "dispatch ls",
+    "type": "object"
+  },
+  "stage": "static"
+}

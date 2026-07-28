@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import text
 
-from lionagi.state.db import StateDB
+from lionagi.state.db import SCHEMA_VERSION, StateDB
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -129,7 +129,7 @@ async def test_open_close():
 
     # Schema is available after open
     version = await state.schema_version()
-    assert version == "1"
+    assert version == SCHEMA_VERSION
 
     await state.close()
     assert state._engine is None
@@ -139,7 +139,7 @@ async def test_context_manager():
     """async with opens and closes cleanly."""
     async with StateDB(":memory:") as state:
         version = await state.schema_version()
-        assert version == "1"
+        assert version == SCHEMA_VERSION
     assert state._engine is None
 
 
@@ -359,8 +359,110 @@ async def test_schema_creates_all_tables(db: StateDB):
 
 
 async def test_schema_version(db: StateDB):
-    """schema_version() returns '1'."""
-    assert await db.schema_version() == "1"
+    """schema_version() returns the version this code applies."""
+    assert await db.schema_version() == SCHEMA_VERSION
+
+
+def _stamp_version(path, value: str) -> None:
+    """Write schema_meta.version directly, the way another release would have."""
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            "INSERT INTO schema_meta (key, value) VALUES ('version', ?) "
+            "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            (value,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _read_version(path) -> str | None:
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    try:
+        row = conn.execute("SELECT value FROM schema_meta WHERE key = 'version'").fetchone()
+    finally:
+        conn.close()
+    return row[0] if row else None
+
+
+async def test_open_upgrades_an_older_recorded_schema_version(tmp_path):
+    """A database stamped below SCHEMA_VERSION is migrated and re-stamped.
+
+    The stamp records the shape the database has after the migrations that
+    ``_apply_schema`` runs, so an older recording must move up to it.
+    """
+    path = tmp_path / "older.db"
+    async with StateDB(path=path):
+        pass
+    _stamp_version(path, "1")
+    assert _read_version(path) == "1"
+
+    async with StateDB(path=path) as state:
+        assert await state.schema_version() == SCHEMA_VERSION
+    assert _read_version(path) == SCHEMA_VERSION
+
+
+async def test_open_refuses_a_newer_recorded_schema_version(tmp_path):
+    """A database stamped above SCHEMA_VERSION is refused, not downgraded.
+
+    A later release wrote that stamp, and this code cannot establish that its
+    schema has the shape the migrations in ``_apply_schema`` assume. Opening
+    for writing would run those migrations anyway and then record the lower
+    version, leaving a database that reads as one this code understands.
+    """
+    from lionagi.state.db import SchemaTooNewError
+
+    path = tmp_path / "newer.db"
+    async with StateDB(path=path):
+        pass
+    newer = str(int(SCHEMA_VERSION) + 1)
+    _stamp_version(path, newer)
+
+    with pytest.raises(SchemaTooNewError) as excinfo:
+        async with StateDB(path=path):
+            pass
+
+    # The refusal names both versions, so the caller can act on it.
+    assert newer in str(excinfo.value)
+    assert SCHEMA_VERSION in str(excinfo.value)
+    # And the stamp it refused to write is still the one on disk.
+    assert _read_version(path) == newer
+
+
+async def test_readonly_open_reads_a_newer_recorded_schema_version(tmp_path):
+    """Read-only opens apply no schema, so a newer database stays readable.
+
+    This is the way out of the refusal above: inspecting a database written by
+    a later release never rewrites it, so there is nothing to refuse.
+    """
+    path = tmp_path / "newer_readonly.db"
+    async with StateDB(path=path):
+        pass
+    newer = str(int(SCHEMA_VERSION) + 1)
+    _stamp_version(path, newer)
+
+    async with StateDB(path=path, readonly=True) as state:
+        assert await state.schema_version() == newer
+
+
+async def test_open_stamps_over_an_unparsable_recorded_version(tmp_path):
+    """A version this code cannot order against its own is replaced.
+
+    Nothing can be said about whether such a value is newer, so there is no
+    downgrade to prevent; the open records the shape it applied.
+    """
+    path = tmp_path / "garbage.db"
+    async with StateDB(path=path):
+        pass
+    _stamp_version(path, "not-a-version")
+
+    async with StateDB(path=path) as state:
+        assert await state.schema_version() == SCHEMA_VERSION
 
 
 async def test_apply_schema_adds_missing_columns_on_old_db(tmp_path):
@@ -1793,3 +1895,78 @@ async def test_readonly_rejects_write_attempt(tmp_path):
             await ro.execute("INSERT INTO schema_meta (key, value) VALUES ('x', 'y')")
     finally:
         await ro.close()
+
+
+# ── update_status extra_fields: schedule_run ────────────────────────────────
+
+
+async def _make_running_schedule_run(db) -> str:
+    schedule_id = uid()
+    await db.create_schedule(
+        {
+            "id": schedule_id,
+            "name": "extras",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    run_id = uid()
+    await db.create_schedule_run(
+        {
+            "id": run_id,
+            "schedule_id": schedule_id,
+            "trigger_context": {},
+            "action_kind": "agent",
+            "action_args": [],
+            "status": "running",
+            "fired_at": time.time(),
+        }
+    )
+    return run_id
+
+
+async def test_schedule_run_status_write_carries_ended_at_and_error_detail(db):
+    """A schedule_run's terminal write may set ended_at and error_detail in the
+    same guarded transaction as the status, so the two can never disagree."""
+    run_id = await _make_running_schedule_run(db)
+    ended = time.time()
+
+    assert await db.update_status(
+        "schedule_run",
+        run_id,
+        new_status="failed",
+        reason_code="run.failed.exception",
+        reason_summary="RuntimeError: boom",
+        source="executor",
+        actor="test",
+        expected_statuses={"running"},
+        extra_fields={"ended_at": ended, "error_detail": "RuntimeError: boom"},
+    )
+
+    row = await db.get_schedule_run(run_id)
+    assert row["status"] == "failed"
+    assert row["error_detail"] == "RuntimeError: boom"
+    assert row["ended_at"] == pytest.approx(ended)
+
+
+async def test_schedule_run_status_write_rejects_an_unlisted_extra_field(db):
+    """Only the columns declared for schedule_run ride a status write; anything
+    else is refused rather than written."""
+    run_id = await _make_running_schedule_run(db)
+
+    with pytest.raises(ValueError, match="extra_fields"):
+        await db.update_status(
+            "schedule_run",
+            run_id,
+            new_status="failed",
+            reason_code="run.failed.exception",
+            reason_summary="RuntimeError: boom",
+            source="executor",
+            actor="test",
+            expected_statuses={"running"},
+            extra_fields={"stderr_tail": "nope"},
+        )
+
+    row = await db.get_schedule_run(run_id)
+    assert row["status"] == "running"

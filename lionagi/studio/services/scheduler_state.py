@@ -27,7 +27,9 @@ class SchedulerStateService(Protocol):
 
     async def list_schedules(self, *, enabled: bool | None = None) -> list[dict[str, Any]]: ...
 
-    async def update_schedule(self, schedule_id: str, **fields: Any) -> None: ...
+    async def update_schedule(
+        self, schedule_id: str, *, guard_cursor_forward: bool = False, **fields: Any
+    ) -> None: ...
 
     async def count_schedule_runs(
         self,
@@ -89,6 +91,7 @@ class SchedulerStateService(Protocol):
         actor: str,
         metadata: dict | None = None,
         expected_statuses: set[str | None] | frozenset[str | None] | None = None,
+        extra_fields: dict[str, Any] | None = None,
     ) -> bool: ...
 
     async def list_sessions_for_invocation(self, invocation_id: str) -> list[dict[str, Any]]: ...
@@ -105,9 +108,13 @@ class _DBSchedulerStateService:
         async with StateDB() as db:
             return await db.list_schedules(enabled=enabled)
 
-    async def update_schedule(self, schedule_id: str, **fields: Any) -> None:
+    async def update_schedule(
+        self, schedule_id: str, *, guard_cursor_forward: bool = False, **fields: Any
+    ) -> None:
         async with StateDB() as db:
-            await db.update_schedule(schedule_id, **fields)
+            await db.update_schedule(
+                schedule_id, guard_cursor_forward=guard_cursor_forward, **fields
+            )
 
     async def count_schedule_runs(
         self,
@@ -204,6 +211,7 @@ class _DBSchedulerStateService:
         actor: str,
         metadata: dict | None = None,
         expected_statuses: set[str | None] | frozenset[str | None] | None = None,
+        extra_fields: dict[str, Any] | None = None,
     ) -> bool:
         async with StateDB() as db:
             return await db.update_status(
@@ -217,6 +225,7 @@ class _DBSchedulerStateService:
                 actor=actor,
                 metadata=metadata,
                 expected_statuses=expected_statuses,
+                extra_fields=extra_fields,
             )
 
     async def list_sessions_for_invocation(self, invocation_id: str) -> list[dict[str, Any]]:

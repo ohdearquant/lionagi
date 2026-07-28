@@ -25,7 +25,7 @@ worker.
 | `li monitor run ID...` | Wait for scheduled runs and their chains; optionally keep watching |
 | `li agent status [ID]` | Read stable session/invocation status, optionally as JSON |
 | `li o ctl {status,pause,resume,msg}` | Inspect or steer a live flow by ID |
-| `li kill ID` | Terminate one running entity or sweep stale processes; play kills also reap the linked worker chain; show ids are not directly killable ([details](#li-kill)) |
+| `li kill ID` | Terminate one running entity or sweep stale processes; play kills cannot reach their workers and exit non-zero saying so; show ids are not directly killable ([details](#li-kill)) |
 
 ### Reuse, coordination, and operation
 
@@ -550,7 +550,7 @@ already dead. Source: `cli/kill.py` (`add_kill_subparser`).
 
 ```bash
 li kill abc123                        # kill by id prefix
-li kill <play-id>                     # also reaps the play's linked worker session
+li kill <session-id>                  # stop a worker process
 li kill abc123 --reason 'stuck'
 li kill abc123 --recursive            # kill + direct children (session -> invocation)
 li kill --all-stale                   # sweep dead-PID sessions/invocations
@@ -569,10 +569,18 @@ li kill --all-stale --dry-run
 | `--grace SECS` | 5.0 | Wait after SIGTERM before escalating to SIGKILL |
 
 **`--recursive` scope boundary.** Recursion only reaches PID-bearing workers,
-and it stops at the play level:
+and an orchestrator row reaches them only through a link it recorded:
 
-- Killing a **play** always reaps its linked worker session (and that
-  session's invocation), with or without `--recursive`.
+- Killing a **play** reaches its worker chain only if the play row records the
+  session it started, in `plays.session_id`. One path binds that column: the
+  Studio show importer, which resolves the session by name when it mirrors a
+  show directory. A play created by a live run leaves it unset, and a worker
+  session stores no play reference either, so there is no key to resolve those
+  workers by. In that case the kill marks the play row `blocked`, prints an
+  error saying no worker was stopped, and **exits 1** — a play kill never
+  reports success it did not achieve. Kill the worker session ids directly
+  (`li monitor` lists them). `--recursive` is not needed for either case: a
+  play row carries no PID of its own, so resolving its workers is the kill.
 - Killing a **session** with `--recursive` also cancels its linked invocation.
 - A **show** id cannot be killed directly today: only `running` rows are
   killable, and show rows persist as `active` (never `running`), so
@@ -581,9 +589,13 @@ and it stops at the play level:
 
 To stop everything under a show, kill the play id or session id directly
 (`li monitor <show-id>` lists its plays). `--all-stale` covers the abandoned
-case: a play whose stale worker session is swept is cancelled with it, and a
-show row is cancelled only once it is older than `--threshold` **and** all of
-its plays are terminal.
+case only as far as the recorded links allow: a play older than `--threshold`
+whose recorded worker session has gone terminal is marked `blocked`; a play
+that records no worker session is left alone, because age by itself cannot
+tell an abandoned play from one still doing hours of work. The sweep prints
+one line naming how many rows it skipped for that reason, and reports them as
+`skipped_unlinked_plays` in its closing counts. A show row is marked `aborted`
+only once it is older than `--threshold` **and** all of its plays are terminal.
 
 ---
 
@@ -634,41 +646,90 @@ li hooks trust --yes                     # record trust without the prompt
 
 ## `li mcp`
 
-Serve an [MCP](https://modelcontextprotocol.io) server over stdio that submits
-`li` runs as **detached background jobs** and exposes tools to query, tail, and
-stop them. Each `submit_*` tool mirrors a `li` command but returns a `run_id`
-immediately instead of blocking; the run keeps going in its own process group,
-so it survives an MCP-server restart. Requires the `mcp` extra
+Serve an [MCP](https://modelcontextprotocol.io) server over stdio. The server is
+a control plane over this CLI: it submits `li` runs as **detached background
+jobs** and answers questions about them, so a submit returns a `run_id`
+immediately instead of blocking and the run keeps going in its own process
+group, surviving an MCP-server restart. Requires the `mcp` extra
 (`pip install 'lionagi[mcp]'`). Source: `lionagi/mcp/`.
 
 ```bash
 li mcp            # serve over stdio (same as: python -m lionagi.mcp)
 ```
 
-Register it with any MCP client (e.g. an `.mcp.json`):
+The server advertises a **single** tool, `request`, and every operation is a
+namespaced verb passed to it. Seeing one entry in a client's `tools/list` is
+correct. Call `request` with `help=true` for the catalog of verbs.
+
+Register it with any MCP client (e.g. an `.mcp.json`). The key here is the local
+name your client uses to launch the server; the name the server reports over the
+protocol is `lion`:
 
 ```json
 {
   "mcpServers": {
-    "lionagi": { "command": "li", "args": ["mcp"] }
+    "lion": { "command": "li", "args": ["mcp"] }
   }
 }
 ```
 
-| Tool | Purpose |
-|------|---------|
-| `submit_agent` | Background `li agent` — returns `{run_id, pid, status}` |
-| `submit_flow` | Background `li o flow` (DAG orchestration) |
-| `submit_fanout` | Background `li o fanout` (flat parallel workers) |
-| `job_status RUN_ID` | Liveness + authoritative terminal status + CLI manifest |
-| `job_output RUN_ID` | Console (an agent's final response) + artifacts |
-| `job_kill RUN_ID` | Signal the run's whole process group |
-| `jobs_list` | Recent jobs, newest first; optional `status` filter |
-
 Job records live under `~/.lionagi/mcp/jobs/<run_id>/`; the authoritative run
-state is the CLI's own `~/.lionagi/runs/<run_id>/`. In `job_status`, the
-top-level `status` is authoritative — the embedded `run` manifest is advisory
-and its own `status` may lag.
+state is the CLI's own `~/.lionagi/runs/<run_id>/`. In `job.status`, the
+top-level `status` is authoritative: the embedded `run` manifest is advisory and
+its own `status` may lag.
+
+The verb catalog, the `request` result contract, and a worked submit-and-poll
+example are in the [MCP server reference](reference/mcp-server.md).
+
+### When a run's process is gone and nothing recorded how it came out
+
+A background run normally records its own end: the CLI's terminal hook writes it,
+and a run stopped by `li kill` leaves it in the lifecycle store, which the server
+caches onto the job record. A run whose process dies before either of those
+happens leaves nothing behind at all — no surviving producer can ever write its
+end.
+
+Where an observation *positively establishes* that the run's process is gone —
+the recorded pid holds no process, it disappears between two probes, or a live
+process holds the number and started at a different time, so it is a different
+process — `job.status`, `job.list` and `job.wait` record that end themselves and
+then report it:
+
+| Field | Value |
+|-------|-------|
+| `terminal` | `true` |
+| `outcome` | `indeterminate` |
+| `reason_code` | `process_gone_without_outcome` |
+| `terminal_source` | `mcp_orphan_reaper` |
+
+`outcome: "indeterminate"` means the process is conclusively gone and **no authoritative
+outcome was reported**. It does not mean the work failed: the run may well have
+finished what it was doing before it died, and nothing survived to say either
+way. `failed` stays reserved for a reported terminal status classified as a
+failure, and a caller may retry a `failed` run under its own policy. **Do not
+automatically retry such a run** — an external side effect it never got to
+report may already have committed.
+
+`terminal_source` says what wrote the end: `cli_terminal_hook` (the run's own
+terminal hook), `lifecycle_cache` (an end read back from the lifecycle store),
+`spawn_failure` (the spawn was caught failing), `mcp_kill` (the run was killed
+through this server), or `mcp_orphan_reaper` (this server, from the conclusive
+observation above). It is null on records written before the field existed.
+
+For a run ended this way, **`finished_at` is when the loss was established and recorded,
+not when the process exited** — nothing surviving can report that instant. Any
+duration derived from it is therefore an **upper bound** on how long the run
+actually ran.
+
+`liveness_conclusion` on `job.status` says what the observation established:
+`process_gone`, `alive`, or `unknown`. Only `process_gone` can end a run.
+`unknown` — a pid the OS cannot be asked about, a denied or unreadable identity
+probe — never does, and such a run stays non-terminal and advisory
+(`possibly_orphaned`), reported by `job.wait` under `stopped_without_end`.
+
+`job.wait`'s **`all_terminal` means every valid requested run has a recorded
+end**, including runs whose outcome is `indeterminate`. It does not mean every run
+succeeded or reported an outcome; read each entry's `outcome` for that.
 
 ### Terminal notices
 
@@ -694,8 +755,122 @@ Or per submit: `notify` overrides the delivery command for one run (a JSON argv
 list), and `notify_seat` fills the `{target}` placeholder. The environment
 variables `LIONAGI_MCP_NOTIFY_COMMAND` and `LIONAGI_MCP_NOTIFY_TARGET` set a
 process-wide default. Delivery outcome is recorded on the job and surfaced in
-`job_status` (`notify_delivery`), so a notice that failed to send is visible
-rather than silently lost.
+`job.status` (`notify_delivery`), so a notice that failed to send is visible
+rather than silently lost. `job.list` carries the same outcome collapsed to one
+word in `notify_delivery_state` — `delivered`, `failed`, or `none` when no
+notifier was configured — so a run whose notice never went out is spotted while
+scanning runs, not only when one is looked up.
+
+---
+
+## `li handshake`
+
+Report what this installation is, for a program deciding whether it can talk to
+it. Pair it with `--machine`, since a program is the only caller this is for.
+
+```bash
+li handshake --machine
+```
+
+```json
+{"ok": true, "contract_version": 1,
+ "data": {"contract_version": 1, "min_supported_version": 1,
+          "implementation": "lionagi", "implementation_version": "0.30.2",
+          "module": "/path/to/lionagi/cli"},
+ "error": null}
+```
+
+`contract_version` is the machine-result contract this build speaks and
+`min_supported_version` is the oldest it still accepts. A caller checks both
+once at startup, then validates `contract_version` on every envelope afterwards
+— the binary at a pinned path is replaced during normal operation, so a
+handshake governs registration and never stands in for per-response checking.
+
+`module` is where the code being served actually lives, which answers "is this
+the checkout I think it is" without guessing from a version number.
+
+---
+
+## `li runs`
+
+List the runs recorded on disk and what each one wrote.
+
+```bash
+li runs --machine [--limit N]
+```
+
+Each entry carries the run id, its state root, its artifact root, and the
+artifacts found there. It reports which runs EXIST and what they left behind,
+not whether any of them finished or succeeded — for that, ask `li job status` or
+the MCP `request` operation `job.status`, which carry the terminal and outcome
+derivations.
+
+The artifact list is wrapped in the availability shape, so a directory that could
+not be read is reported as unavailable with a reason rather than as a run that
+produced nothing.
+
+---
+
+## `li lifecycle`
+
+Report what the lifecycle store records about one CLI run.
+
+```bash
+li lifecycle <run-id> --machine
+```
+
+This is the one path from a run id to the rows the lifecycle writers actually
+write. A normal teardown records an end; so does `li kill`, which writes the
+row and signals the process without touching the MCP job record or the run
+manifest. A caller holding only a run id and reading only those two would see a
+dead process with no recorded end, which is what an orphaned run looks like.
+
+The answer is read-only and carries its own availability. An established answer
+with `found: false` means no session was ever recorded under this id. An
+unavailable one means the store could not be read at all, which is not a
+statement about the run. A caller that collapsed the two would report a run as
+finished, or as never started, on the strength of a database it never opened.
+
+The store consulted is the one `LIONAGI_STATE_DB_URL` names when it is set, and
+the default otherwise — including for the question of whether a store exists at
+all, so a configured store is never reported missing because the default path
+is absent.
+
+---
+
+## Machine mode: `--machine`
+
+Any command that reaches the dispatcher accepts `--machine`, which turns its
+output into exactly one JSON object on stdout:
+
+```json
+{"ok": true, "contract_version": 1, "data": {...}, "error": null}
+```
+
+Exactly one of `data` and `error` is present, and `error.kind` is a closed set a
+caller may branch on. Diagnostics, progress and warnings go to stderr, so stdout
+carries the object and nothing else — a caller can parse it without scanning for
+where the JSON starts.
+
+Anything derived from a read that can fail is wrapped rather than flattened:
+
+```json
+{"available": false, "value": null, "reason_code": "unreadable",
+ "detail": "permission denied"}
+```
+
+This keeps "there are no artifacts" and "the artifacts directory could not be
+read" from sharing an encoding, which is the difference between a caller
+reporting an empty result and reporting a broken one.
+
+Check the exit status before parsing. **78 means nothing executed** — the
+environment could not run the work at all — and stdout must not be parsed on it,
+because attributing an environment fault to the submitted work is the
+misattribution the code exists to prevent.
+
+The full contract, including how `status`, `terminal` and `outcome` divide the
+question of whether a run is over, is in
+[ADR-0106](adr/ADR-0106-lion-machine-result-contract-v1.md).
 
 ---
 

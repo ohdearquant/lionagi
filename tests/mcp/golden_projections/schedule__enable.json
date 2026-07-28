@@ -1,0 +1,22 @@
+{
+  "path": "schedule enable",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "description": "Id of the schedule, as returned by `li schedule list` in its `id` field.",
+        "type": "string",
+        "x-positional": true
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "title": "schedule enable",
+    "type": "object",
+    "x-positional-order": [
+      "id"
+    ]
+  },
+  "stage": "static"
+}

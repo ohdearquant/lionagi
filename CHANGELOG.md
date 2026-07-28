@@ -8,18 +8,198 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
-- `li mcp` serves an MCP server (over stdio) that submits `li` runs — agent, flow, and fanout —
-  as detached background jobs and exposes tools to query, tail, and stop them. Each `submit_*`
-  tool mirrors a `li` command but returns a `run_id` immediately while the run continues in its
-  own process group, so it survives an MCP-server restart. `fastmcp` stays behind the optional
-  `[mcp]` extra; importing `lionagi` never pulls it, and the job engine plus terminal notify hook
-  are standard-library only. Terminal notices are delivered through a configured command
-  (lionagi's own `notify.on_terminal` setting, a per-submit override, or an environment default),
-  never a hardcoded one, and the delivery outcome is recorded on the job and surfaced in
-  `job_status`. See `docs/cli-reference.md` for the tool list and `.mcp.json` registration.
+- A run reports which MCP servers it gave its workers. `mcp_config_servers` names
+  them on the submit handle, and `job.status` now carries the whole `mcp_config`
+  group, so a run that has already finished answers the question without anyone
+  opening its record on disk. An empty list and a null say different things: the
+  list means the question was settled and the answer was none, which covers both
+  a caller disabling MCP for the run and a config that was found and declares no
+  servers. The null means no set was resolved, which happens three ways: a caller
+  named their own config file, which this run does not read; no config was found
+  at or above the launch directory; or the record predates the field. The field
+  reports what was resolved, which is not a claim that the child's provider then
+  started each server.
 
 ### Fixed
 
+- Resuming a codex leg that was given MCP servers with `env` or `http_headers`
+  no longer fails before spawn. Those fields are handed to codex through a
+  generated config profile rather than the command line, and codex takes one
+  profile per invocation, so the code refuses to add a second one when the
+  caller already asked for a profile of their own. A resumed leg re-spawns from
+  its persisted request, which carries the profile the first run generated, and
+  that was being read as a caller's profile. A profile named in the generated
+  shape, `lionagi-mcp-` followed by 32 hex characters, is now replaced instead,
+  which is also what the resumed leg needs: the first run deleted its profile
+  file on the way out, so the inherited name pointed at nothing. That shape is
+  reserved. Any other profile name, including another name under the same
+  prefix, is the caller's and is still refused.
+
+## [0.31.1] - 2026-07-28
+
+### Upgrading from 0.31.0
+
+**Durable JSON now refuses non-finite floats.** Writing `NaN`, `Infinity`, or
+`-Infinity` through the paths that persist state to disk previously produced
+output that is not JSON, or a value that reads back as `null` with no way to
+tell it from an absent one. Those writes now raise, with the path to the
+offending value named in the error.
+
+Migration: if you persist computed floats, guard them at the point you build the
+record (`math.isfinite(x)`) and decide what a non-finite value should mean in
+your data, rather than letting it reach the writer.
+
+A database stamped with a newer schema version is also refused when it is opened
+for writing, rather than being migrated down to the shape this release applies.
+Read-only opens apply no schema and are unaffected, so such a database can still
+be inspected.
+
+### Added
+
+- A resolved MCP server set is handed to every CLI provider that can carry one,
+  rather than only to Claude providers. A codex agent that was given servers
+  previously lost them: on two of the three spawn paths silently, and on the
+  third with a message reporting a refusal while the set was dropped anyway. The
+  decision is now one capability check applied in one place, so the paths cannot
+  disagree. Fields carrying secrets are written to a private profile file
+  instead of the command line.
+- A flow or fanout run can choose the MCP servers its agents receive, including
+  deliberately handing over none instead of arriving there by an empty search.
+- A flow that names neither an agent nor a model orchestrates by default rather
+  than being refused.
+- `StreamTerminalState` is public. A streamed event now records how its stream
+  ended, as completed, closed early, cancelled, or failed, and exposes it as
+  `stream_terminal_state`.
+- `profile.list` takes `names` and `fields`, so a caller asking whether one
+  profile exists and what model it runs no longer pays for the whole roster.
+  Given neither, the reply is what it was.
+- Studio shows artifacts as they arrive instead of waiting for the run to end.
+
+### Changed
+
+- Non-finite floats are rejected where durable JSON reaches the filesystem, and
+  where a JSON `null` would be undetectable. See the upgrade note above.
+- A database stamped with a newer schema version is refused on a writable open.
+  Read-only opens are unaffected. See the upgrade note above.
+
+### Fixed
+
+- A fanout with no declared dependencies runs its workers concurrently again. An
+  empty dependency list was being read as "unspecified", which chained the
+  workers into a sequence, so a fan of N workers took roughly N times longer
+  than it should. It still completed, which is why nothing caught it: it was
+  only slow, and no test measured speed.
+- Cleanup failures in the job store no longer answer for the failures underneath
+  them. A release that fails cannot replace the error the caller raised, and an
+  interrupt arriving during release is neither swallowed nor allowed to skip the
+  close.
+- An expected artifact named by a bare filename matches the file a worker
+  produced in its own directory. Verification joined every declared path
+  directly under the artifacts root, where in a multi-worker run the file never
+  lands, so a run that had completed successfully was rewritten as failed. An
+  entry that names a directory still matches exactly.
+- The diagnostics for MCP passthrough describe the branch they observed rather
+  than the whole run, and name the provider actually in hand. One branch's
+  inability to carry a server set read as a verdict on every worker in a flow,
+  and a codex agent was told the message was about the Claude CLI.
+- The post-invocation hook on a streamed event runs however the stream ends,
+  not only when it runs to completion. A source error, a consumer that stopped
+  early, and a cancelled consuming task each bypassed it before. Whatever ended
+  the stream still reaches the caller unchanged.
+- A run whose process is conclusively gone gets an attributable end instead of
+  staying open, and `job.wait` stops holding its window open for it.
+- A terminal notice that could not be delivered is reported where callers wait,
+  and the run's log keeps the line saying so.
+- A submission naming no model is refused instead of returning a run id for
+  something that will not start. A spawn that fails is one failed operation
+  rather than a lost batch. `help` and `ops` in one request is refused instead
+  of silently dropping the ops.
+- Run records report what happened rather than what was asked for: the profile
+  the run used, the dependencies it has, the prompt that ran, and the artifact
+  directory each orchestration worker was given.
+- `li kill` reaches a play's workers when the row records them, and says so when
+  it cannot. A play awaiting a gate decision is no longer reported as running,
+  and a kill that performed no termination exits non-zero.
+- One prompt-length limit for orchestration specs, raised from 8,192 to 262,144
+  characters. The check lived in three places, each with its own copy of the
+  number, so a spec the CLI accepted could still be refused by a schedule. They
+  now read one constant, and the refusal names the limit it enforced.
+- The planner roster carries each role's description. A role sharing its name
+  with a user profile showed the profile's line instead, which with the default
+  profiles present was every role. Roles whose two spellings differ only by `-`
+  or `_` are one entry rather than two, and a plan may still name either.
+- Profile lookup reports only the profiles that shadow the name asked for,
+  rather than every profile declared.
+- A model supplied for a single call chooses the transport for that call. A
+  CLI-backed branch given an API model for one call routed it into the CLI
+  streaming path, which rejects it, and was left holding the rejected model.
+- The terminal envelope a flow emits when finalization fails reports the
+  resolved outcome when resolution got that far, instead of restating the
+  flow's coarser status, and no longer labels an interrupted run a user abort.
+- Agent profile names treat `-` and `_` as the same spelling.
+- Long codex conversations can spawn: the prompt is passed over stdin rather
+  than as a command-line argument.
+- `Pile` and `Progression` are iterables rather than iterators, so iterating one
+  twice works.
+- Messages that fail to render are no longer dropped, and an arbitrary payload's
+  `allowed()` is not called.
+- A pre-dispatch failure no longer consumes its `github_poll` trigger.
+- The schema stamp moves with the migrations, and SQLite is checked before WAL
+  is enabled.
+- `li state prune` reclaims message rows and previews a measured count.
+- Studio renders markdown artifacts as markdown, and spaces execution-graph
+  nodes by their real height.
+
+### Docs
+
+- ADR coverage for attributable run ends, and for four `job.wait` properties
+  that were previously left to the reader.
+- Corrected the provider path and list in the architecture guide.
+- Two tool docstrings that described behaviour the code refuses.
+
+## [0.31.0] - 2026-07-26
+
+### Upgrading from 0.30.2
+
+0.30.2 does not contain the MCP server. Its published wheel has no `lionagi/mcp/` files and its
+`li` entry point registers no `mcp` subcommand, so installing `lionagi[mcp]` at that version
+installs `fastmcp` and no server: the extra appears to succeed while `li mcp` fails with an
+invalid-choice error. The MCP client wrapper under `lionagi/service/connections/` is a separate,
+long-standing feature and is unaffected. 0.31.0 is the first release that ships the server.
+
+### Added
+
+- `li mcp` serves an MCP server (over stdio) that submits `li` runs — agent, flow, and fanout —
+  as detached background jobs and answers questions about them. The server advertises a single
+  tool, `request`, and every operation is a namespaced verb passed to it. A submit returns a
+  `run_id` immediately while the run continues in its own process group, so it survives an
+  MCP-server restart. `fastmcp` stays behind the optional
+  `[mcp]` extra; importing `lionagi` never pulls it, and the job engine plus terminal notify hook
+  are standard-library only. Terminal notices are delivered through a configured command
+  (lionagi's own `notify.on_terminal` setting, a per-submit override, or an environment default),
+  never a hardcoded one, and the delivery outcome is recorded on the job and surfaced by the
+  `job.status` operation. See `docs/reference/mcp-server.md` for the verb catalog and `.mcp.json`
+  registration.
+- `/api/admin/health` reports `code_identity`: which commit the Studio daemon's code was loaded
+  from, whether that checkout has since moved or been edited, how far behind its comparison ref it
+  is, and a `drift` verdict over all of it. Under an editable install the code being served is
+  whatever commit the working tree sits on, and it keeps being served after the tree moves — a
+  state the version string cannot show, since it is identical between a current checkout and one
+  many commits behind. A reading that cannot be taken is reported as `unknown` with the reason
+  rather than omitted, because an absent key is indistinguishable from a healthy one to anything
+  scanning the response. The reading runs off the event loop, so a daemon never stalls on its own
+  health check.
+
+### Fixed
+
+- The Studio daemon no longer reports a commit it never loaded. `code_identity` reads its git
+  position once and keeps it, initialising lazily, and the daemon left that initialisation to the
+  first `/api/admin/health` request. A checkout moved after startup but before that request — an
+  ordinary deploy or branch switch — was then read as the position the process had loaded from, so
+  the response named the new commit with `checkout_moved` false and a clean `drift` verdict, which
+  is the exact condition the field exists to detect. The daemon now takes the snapshot in its
+  lifespan, before the scheduler starts and before it serves anything, as the MCP server already
+  did.
 - The built-in provider collision filter no longer misses a plugin entry whose endpoint class
   comes from a helper module. `_reject_builtin_collisions` identified an activation's entries by
   requiring the class to be defined in the activated provider module, but a provider module may

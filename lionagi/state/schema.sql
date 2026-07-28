@@ -17,7 +17,9 @@ CREATE TABLE IF NOT EXISTS schema_meta (
   value   TEXT NOT NULL
 );
 
-INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '1');
+-- Must match SCHEMA_VERSION in db.py, which re-stamps this row on every open
+-- so a migrated database reports the shape it now has.
+INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '2');
 INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('created_at', strftime('%s', 'now'));
 
 -- ── Message types (int enum for lion_class) ───────────────────────────────
@@ -107,6 +109,9 @@ CREATE INDEX IF NOT EXISTS idx_run_tags_tag ON run_tags(tag);
 CREATE TABLE IF NOT EXISTS sessions (
   id              TEXT    PRIMARY KEY,
   cc_session_id   TEXT,
+  -- The CLI run this session belongs to. NULL for a session no run started,
+  -- and for rows written before this column existed.
+  run_id          TEXT,
   created_at      REAL    NOT NULL,
   node_metadata   JSON,
   name            TEXT,
@@ -209,6 +214,23 @@ CREATE INDEX IF NOT EXISTS idx_sessions_project
   ON sessions(project) WHERE project IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_cc_session
   ON sessions(cc_session_id) WHERE cc_session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sessions_run_id
+  ON sessions(run_id) WHERE run_id IS NOT NULL;
+-- first_msg_id / last_msg_id are child keys of messages(id). Deleting a
+-- message makes sqlite look for rows here that still point at it, and with
+-- no index on the column that search is a scan of the whole table, once per
+-- deleted row -- a cost that is a function of the store rather than of the
+-- delete. Measured on a 3.9 GB store, indexing these two columns and
+-- branches(system_msg_id) took a message delete from 8.47 ms/row to
+-- 0.86 ms/row. Not partial: the search sqlite runs for a foreign key is not
+-- the query planner's, and only a plain index is certain to serve it.
+CREATE INDEX IF NOT EXISTS idx_sessions_first_msg_id
+  ON sessions(first_msg_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_last_msg_id
+  ON sessions(last_msg_id);
+-- Same shape one level up: progressions(id) is this column's parent.
+CREATE INDEX IF NOT EXISTS idx_sessions_progression_id
+  ON sessions(progression_id);
 
 -- ── Branches ──────────────────────────────────────────────────────────────
 -- A progression with identity.  Branch config (provider, model,
@@ -239,6 +261,11 @@ CREATE TABLE IF NOT EXISTS branches (
 
 CREATE INDEX IF NOT EXISTS idx_branches_session
   ON branches(session_id);
+-- Child keys of messages(id) / progressions(id); see idx_sessions_first_msg_id.
+CREATE INDEX IF NOT EXISTS idx_branches_system_msg_id
+  ON branches(system_msg_id);
+CREATE INDEX IF NOT EXISTS idx_branches_progression_id
+  ON branches(progression_id);
 
 -- ── Definitions (versioned agent + playbook files) ───────────────────────────
 -- Disk files remain source of truth; this table tracks edit history.
@@ -476,6 +503,17 @@ CREATE TABLE IF NOT EXISTS schedules (
   -- github_poll_consecutive_401 threshold metrics.
   last_healthy_poll_at    REAL,
   poller_consecutive_401  INTEGER NOT NULL DEFAULT 0,
+  -- Bounded retry for a github_poll fire that refuses before it dispatches
+  -- anything. Such a refusal holds github_cursor back so the event is
+  -- re-offered, but the refusal can be a property of that one event's
+  -- rendered values rather than of the schedule, so an unbounded hold would
+  -- block every later event forever. predispatch_refusal_event names the
+  -- event (its updated_at, the cursor value being held back) the streak
+  -- applies to and predispatch_refusal_count counts the consecutive
+  -- refusals of that same event; both reset when a different event refuses
+  -- or when a fire dispatches.
+  predispatch_refusal_event  TEXT,
+  predispatch_refusal_count  INTEGER NOT NULL DEFAULT 0,
   -- Declarative ScheduleSet layer: versioned document identity, resolved
   -- target/trigger snapshot + digest, and set ownership. NULL on every row
   -- created before this layer (legacy) or by an unmanaged quick-create.
@@ -487,6 +525,17 @@ CREATE TABLE IF NOT EXISTS schedules (
   resolved_target     JSON,
   resolved_digest     TEXT,
   resolved_timezone   TEXT,
+  -- The zone this schedule's cron expression was last actually interpreted
+  -- in, and how that zone was arrived at (declared on this row, the
+  -- process-wide configured default and its own provenance, or a UTC
+  -- fallback). Written by the scheduler whenever it resolves a fire time and
+  -- never read back when resolving, so it records the outcome without being
+  -- able to change it. The name alone is not diagnostic -- a requested UTC
+  -- and a fallback UTC are the same string -- which is why the source is
+  -- stored beside it. NULL for triggers that resolve no wall-clock fields
+  -- (interval/at/github_poll) and for cron rows not yet armed or fired.
+  effective_timezone        TEXT,
+  effective_timezone_source TEXT,
   -- Terminal notification (declaration-layer `notify`): registers the
   -- existing run terminal-callback machinery on the invocation this
   -- schedule spawns, filtered to notify_on. Replaces on_fail for

@@ -1,10 +1,73 @@
 # ADR-0104: `li kill` reaping of detached-play workers and terminal-notify on kill
 
-- **Status**: Accepted (2026-07-15; implementation merged)
-- **Kind**: Implemented (the reaping and terminal-notify behavior specified here is on main)
+- **Status**: Accepted (2026-07-15), amended 2026-07-27 — see Amendment 1
+- **Kind**: Partially implemented. D1/D2 (play-worker reaping) shipped code that
+  cannot reach a worker; that code is removed and the guidance corrected. D3/D5
+  (terminal-notify on kill) are unaffected.
 - **Area**: cli-surface
 - **Date**: 2026-07-13
 - **Relations**: extends ADR-0058 (unified lifecycle transition service, whose terminal-callback emit this ADR relies on); none superseded
+
+## Amendment 1 (2026-07-27) — D1 and D2 shipped a reap that reaches nothing
+
+**The delivered-behaviour claim in this ADR was wrong.** D1/D2 below state that
+`li kill <play_id>` reaps the play's worker chain, and the status line above used
+to say the behaviour was on main. Code implementing that shape did merge, so the
+claim was not fabricated — but the code cannot do what the ADR says it does, and
+so the operator expectation this ADR set out to fix was left in place under a new
+description.
+
+The mechanism is the `plays.session_id` linkage D1 resolves through. The play
+creation path never binds it: a play row is written without a session id, and the
+worker sessions a play starts carry no back-reference to the play. So
+`_list_running_children` on a play resolves to zero children on every play this
+code path produces, and the transitive walk added for it terminates immediately.
+The result was a kill that reported success while every worker process kept
+running — a worse failure than the original no-op, because the original at least
+did not claim to have stopped anything.
+
+**A writer for the column does exist.** The Studio show importer binds
+`plays.session_id` when it materialises a play from an imported show, so the
+column is not dead by construction and the join D1 added is not unreachable in
+principle. Measured against a development store carrying 400 play rows: none had
+`session_id` bound, no session was named for an imported show, and none carried
+a show topic; a control query on the same table returned 400 rows with a non-NULL
+status, so the store and the query were both live. **The correction is therefore
+"measured-unreachable", not "impossible by construction".** Anyone reinstating
+the join should establish that the binding writer is reachable on the path they
+care about, rather than inferring reachability from the column's existence.
+
+**What replaces it.** `li kill <play_id>` no longer pretends. It marks the play
+row `blocked` — the terminal status a play has always taken on kill, as distinct
+from the `cancelled` a session or invocation takes — states plainly that the
+worker processes were not stopped and why (a play records no link to the sessions
+it started), points the operator at `li monitor` to find the running session ids,
+and exits non-zero. `--recursive` on a play is documented as a no-op for the same
+reason.
+
+**Everything below that depends on D1 or D2 is historical.** The decision bodies,
+their exact semantics, the D3 sentence about one notification per reaped child,
+the D5 reaping test, the transitive-walk entries under Consequences, the
+current-vs-ideal deltas, and the alternatives rejected in favour of reaping all
+describe a contract that was never delivered. They are kept because an ADR is a
+record of what was decided and why, not a description of the current system, and
+because the reasoning is what a future attempt should argue with. None of them
+should be read as a statement about how the command behaves.
+
+**The kill path is not the only consumer.** `--all-stale` decides whether to
+sweep a play by asking whether its linked session has terminated, and that check
+returns false whenever the link is unset — so the sweep skips every play for the
+same reason the reap reached none, and the CLI reference describes a swept play
+being cancelled alongside its worker session, which cannot happen. That is a
+distinct command with its own decision to make (skip silently, or say so the way
+the kill now does), so it is reported separately rather than folded in here.
+Recorded because the premise is shared: anyone fixing the binding fixes both, and
+anyone reading only this amendment would fix one.
+
+**What is still open.** Making a play kill actually reach its workers needs the
+missing link written at play-creation time. That is a capability change with its
+own design question (which writer owns the binding, and what a play with several
+worker sessions means), tracked separately. This amendment does not decide it.
 
 ## Depth contract
 
@@ -95,8 +158,10 @@ resolves notify from settings only, and never sees a run's per-run override.
 | the kill→terminal-emit behavior is untested | D5: add a regression test locking that a kill emits a terminal envelope and reaps play workers |
 
 **Out of scope:**
-- The identity-guard `_check_pid_identity` behavior (create_time + `LIONAGI_SESSION_ID`
-  + cmdline) — unchanged; owned by the existing kill safety design.
+
+- The identity-guard `_check_pid_identity` behavior (create_time,
+  `LIONAGI_SESSION_ID`, cmdline) — unchanged; owned by the existing kill safety
+  design.
 - `--all-stale` sweep semantics — unchanged (it already excludes plays/shows by
   design as orchestrators without direct PIDs).
 - Show-level reaping — shows are not in `EXECUTION_ENTITY_KINDS` and are out of the
@@ -105,6 +170,10 @@ resolves notify from settings only, and never sees a run's per-run override.
 ## Decision
 
 ### D1 — Transitive `play → session[→ invocation]` reaping
+
+> **Amended 2026-07-27 — this decision is withdrawn.** The linkage it resolves
+> through is never bound on the play-creation path, so the branch described below
+> reaches zero children on every play it was written for. See Amendment 1.
 
 `_list_running_children` gains a `play` branch that resolves the play's running
 worker chain, and the recursive kill walks transitively (BFS) rather than one
@@ -125,6 +194,7 @@ to each.
 ```
 
 **Exact semantics:**
+
 - `li kill <play_id> --recursive`: reap the play's running session and that
   session's running invocation (each a real PID kill via `_kill_one`), then mark
   the play row `blocked`. Order: children before parent (a worker is stopped before
@@ -151,6 +221,10 @@ join semantics to validate.
 
 ### D2 — Killing a play implies recursing into its workers
 
+> **Amended 2026-07-27 — this decision is withdrawn.** It rests on D1's reaping,
+> which reaches nothing. A play kill now reports the workers it cannot stop and
+> exits non-zero instead of implying it stopped them. See Amendment 1.
+
 Because a play row has no PID, `li kill <play_id>` **without** `--recursive` is
 close to useless — it blocks the row while the workers run on. This ADR decides
 that a play kill treats worker reaping as implied: `li kill <play_id>` reaps the
@@ -158,6 +232,7 @@ worker chain by default, and `--recursive` remains the explicit form for the
 session/invocation case (and a no-op-if-already-implied for plays).
 
 **Exact semantics:**
+
 - `li kill <play_id>`: reaps the play's worker chain (same as D1) and blocks the
   play row. No separate `--recursive` needed for the play case.
 - The output names each reaped child and the parent, so the operator sees the full
@@ -180,6 +255,11 @@ on a per-leg `cmd; notify` wrapper (which SIGKILL bypasses) or a per-run `--noti
 transition emits its own envelope, so with settings-notify a `li kill <play_id>`
 that reaps three workers fires the notify for each.
 
+> **Amended 2026-07-27.** The notify contract in this decision shipped and holds.
+> The last sentence does not: a play kill reaps no workers, so it fires one
+> envelope for the play row itself and none for the workers, which keep running.
+> A kill of a session or invocation still fires per entity as described.
+
 ### D4 — Persist a run's resolved `--notify` override (DEFERRED)
 
 **DEFERRED.** To close the last notify case — a run launched with a per-run
@@ -197,6 +277,7 @@ scope. Target design retained here so it is not a lost design.
 ### D5 — Regression test for kill→terminal-emit and play-worker reaping
 
 Add tests to `tests/cli/test_kill.py` that lock:
+
 - `li kill <play_id>` reaps the play's seeded running session + invocation (their
   rows go `cancelled`) and blocks the play row.
 - A kill of a session/invocation/play emits exactly one `RunTerminalEnvelope` to a
@@ -207,37 +288,66 @@ Add tests to `tests/cli/test_kill.py` that lock:
 - A play with `NULL`/dangling `session_id` blocks the play row and warns, reaping
   nothing (no crash).
 
+> **Amended 2026-07-27.** The first and third bullets test D1/D2 and are
+> withdrawn with them; no test can lock a reap that cannot happen. What shipped
+> instead is a test that a play kill leaves both worker rows running, marks the
+> play row `blocked`, reports the workers it did not stop naming that same
+> status, and exits non-zero. The second bullet, the terminal-envelope test, is
+> unaffected and did ship.
+
 ## Consequences
 
-- **Easier:** the operator expectation becomes true — one `li kill <play_id>` stops
-  a detached play and its workers; no manual child-id enumeration. The documented
-  caveat that `li kill` "does not yet stop detached `li play` workers" retires.
-- **Behavior change (D2):** `li kill <play_id>` now terminates the worker processes,
-  where before it only blocked the row. An operator who relied on the old row-only
-  behavior (rare — it stranded workers) sees processes actually stop. Called out in
-  the CHANGELOG under Changed.
-- **Harder / new failure modes:** the transitive walk touches more processes per
+> **Amended 2026-07-27.** The first two bullets describe D1/D2, which are
+> withdrawn. What actually shipped is corrected inline below; see Amendment 1.
+
+- ~~**Easier:** the operator expectation becomes true — one `li kill <play_id>`
+  stops a detached play and its workers; no manual child-id enumeration.~~ It did
+  not become true. The caveat that `li kill` does not stop detached `li play`
+  workers stands, and is now stated by the command itself at the moment it
+  applies rather than left to documentation.
+- ~~**Behavior change (D2):** `li kill <play_id>` now terminates the worker
+  processes, where before it only blocked the row.~~ The worker processes were
+  never terminated. The behaviour change that shipped is the report: a play kill
+  marks the row `blocked`, says which processes it did not stop and how to find
+  them, and exits non-zero.
+- ~~**Harder / new failure modes:** the transitive walk touches more processes per
   kill; a partial reap (one child identity-mismatches or is already dead) is now a
-  normal, reported outcome rather than an all-or-nothing. The result shape must make
-  "reaped X, skipped Y" legible.
-- **Maintenance:** a contributor must know that (a) plays reach workers via
-  `plays.session_id`, (b) the terminal-emit condition in `service.py` is what makes
-  kill-path notify work and is now covered by a test, (c) the per-run `--notify`
-  override case is a documented DEFERRED gap, not an accidental one.
-- **Cost of reversal:** D1/D2 are localized to `cli/kill.py` and revert cleanly.
-  D3 is documentation. D5 is additive tests.
+  normal, reported outcome rather than an all-or-nothing.~~ There is no transitive
+  walk; it was removed with D1. A play kill touches no worker process, so there is
+  no partial reap to make legible.
+- **Maintenance:** a contributor must know that ~~(a) plays reach workers via
+  `plays.session_id`,~~ (a) plays do **not** reach workers — neither end of the
+  pair references the other on the path that creates them, which is why the kill
+  reports rather than reaps; (b) the terminal-emit condition in `service.py` is
+  what makes kill-path notify work and is covered by a test; (c) the per-run
+  `--notify` override case is a documented DEFERRED gap, not an accidental one.
+- **Cost of reversal:** D1/D2 were localized to `cli/kill.py` and did revert
+  cleanly, which is how they came out. D3 is documentation. D5 is additive tests.
 
 ## Current-vs-ideal delta
 
-| # | Delta | Size | Issue |
-|---|-------|------|-------|
-| 1 | Add `play → session[→ invocation]` transitive reaping to `_list_running_children` + recursive driver | M | (filled at issue-open) |
-| 2 | Make `li kill <play_id>` reap workers by default (D2) | S | (filled at issue-open) |
-| 3 | Document settings `notify.on_terminal` as the kill-notify contract; default-config recommendation | S | (filled at issue-open) |
-| 4 | Regression tests: play-worker reaping + kill→terminal-emit (D5) | S | (filled at issue-open) |
-| 5 | DEFERRED: persist resolved per-run `--notify` override for the kill process (D4) | M | (deferred) |
+> **Amended 2026-07-27.** Rows 1, 2 and the reaping half of row 4 were delivered
+> as code that reaches nothing, and are withdrawn — see the Status column. They
+> are listed rather than deleted so the record shows what was attempted.
+
+| # | Delta | Size | Status |
+|---|-------|------|--------|
+| 1 | Add `play → session[→ invocation]` transitive reaping to `_list_running_children` + recursive driver | M | WITHDRAWN — the link it resolves through is never bound |
+| 2 | Make `li kill <play_id>` reap workers by default (D2) | S | WITHDRAWN — depends on row 1 |
+| 3 | Document settings `notify.on_terminal` as the kill-notify contract; default-config recommendation | S | Delivered |
+| 4 | Regression tests: play-worker reaping + kill→terminal-emit (D5) | S | Terminal-emit delivered; the reaping test withdrawn with rows 1-2 |
+| 5 | DEFERRED: persist resolved per-run `--notify` override for the kill process (D4) | M | Still deferred |
+| 6 | Report the unreachable workers, exit non-zero, and name the status actually written | S | Delivered in place of rows 1-2 |
+| 7 | Bind a play to the sessions it starts, so a play kill can reach them at all | M | Open — the capability rows 1-2 assumed already existed |
 
 ## Alternatives considered
+
+> **Amended 2026-07-27.** Both process-model alternatives below were rejected in
+> favour of reaping the recorded worker entities, and that comparison assumed the
+> recorded link exists. It does not. So the rejections stand on their own
+> reasoning but not on the comparison that decided them, and the option the
+> amendment actually took — report the workers the command cannot reach, and exit
+> non-zero — is not among them because it was not considered.
 
 - **Require `--recursive` for plays (keep bare `li kill <play_id>` row-only).**
   Rejected: preserves the exact footgun reported — the common invocation keeps

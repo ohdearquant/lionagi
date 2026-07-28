@@ -15,6 +15,21 @@ import pytest
 
 NY = ZoneInfo("America/New_York")
 
+
+async def _cancel_after_launch(*args, on_launched=None, **kwargs):
+    """spawn_and_wait double for a cancellation that arrives once the child
+    process already exists.
+
+    Calling ``on_launched`` first is what makes this the post-dispatch case:
+    something ran, so the run is recorded as cancelled and its trigger stays
+    consumed. A cancellation that arrives before the process exists takes the
+    other branch entirely.
+    """
+    if on_launched is not None:
+        await on_launched()
+    raise asyncio.CancelledError()
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -209,13 +224,31 @@ async def test_fire_happy_path_records_invocation_and_run():
     assert run_payload["status"] == "running"
     assert kwargs["schedule_id"] == "sched-001"
     assert "last_fired_at" in kwargs["schedule_fields"]
-    svc.update_schedule_run.assert_awaited_once()
+    # The run's outcome columns are NOT written on their own. exit_code,
+    # ended_at and error_detail belong to the terminal transition, so they ride
+    # the guarded write and are subject to the same race check: a fire that
+    # loses to a concurrent finalizer must leave the winner's values alone
+    # rather than land its own beside a status it was refused.
+    svc.update_schedule_run.assert_not_awaited()
     # update_status called for schedule_run AND invocation
     assert svc.update_status.await_count == 3  # running + completed + invocation
-    # update_invocation is called twice: once to stamp ended_at, once more by
-    # flush_run_telemetry's read-modify-write of node_metadata["coordination"]
-    # after the invocation's terminal write lands (see scheduler_state.py).
-    assert svc.update_invocation.await_count == 2
+    # Only flush_run_telemetry's read-modify-write of
+    # node_metadata["coordination"] remains; the ended_at stamp that used to
+    # precede the terminal write now rides it.
+    assert svc.update_invocation.await_count == 1
+
+    terminal_run = [
+        call
+        for call in svc.update_status.await_args_list
+        if call.args[:2] == ("schedule_run", "run-001") and call.kwargs["new_status"] == "completed"
+    ]
+    assert len(terminal_run) == 1
+    extra = terminal_run[0].kwargs["extra_fields"]
+    assert set(extra) == {"exit_code", "ended_at", "error_detail"}
+    assert extra["exit_code"] == 0
+    assert extra["error_detail"] is None
+    assert isinstance(extra["ended_at"], float) and extra["ended_at"] > 0
+    assert terminal_run[0].kwargs["expected_statuses"] == {"running"}
     # update_schedule() itself isn't called for a plain fire -- its old job
     # (last_fired_at/next_fire_at) now rides create_schedule_run_and_advance's
     # schedule_fields above; update_schedule stays for other paths (backfill,
@@ -384,23 +417,46 @@ async def test_fire_cancellation_records_cancelled_run():
         ),
         patch(
             "lionagi.studio.scheduler.subprocess.spawn_and_wait",
-            new=AsyncMock(side_effect=asyncio.CancelledError()),
+            new=_cancel_after_launch,
         ),
     ):
         with pytest.raises(asyncio.CancelledError):
             await engine._fire(schedule, "run-004", trigger_context={"scheduled": True})
 
-    svc.update_schedule_run.assert_awaited()
+    # "Scheduler shutdown" is a placeholder, not a measured cause, and it used
+    # to be written unguarded ahead of the guarded transition. A run already
+    # finalized by another writer (the deadline reaper recording a timeout, say)
+    # would keep its real status while that placeholder replaced the cause it
+    # recorded. The text now rides the guarded write, so losing the race writes
+    # nothing at all.
+    # on_launched's dispatched_at stamp is the only update_schedule_run write;
+    # nothing writes a status or cause through it.
+    assert svc.update_schedule_run.await_count == 1
+    assert set(svc.update_schedule_run.await_args_list[0].kwargs) == {"dispatched_at"}
     cancelled_calls = [
         c for c in svc.update_status.await_args_list if c.kwargs.get("new_status") == "cancelled"
     ]
     assert cancelled_calls
+    run_cancel = [c for c in cancelled_calls if c.args[:2] == ("schedule_run", "run-004")]
+    assert len(run_cancel) == 1
+    extra = run_cancel[0].kwargs["extra_fields"]
+    assert extra["error_detail"] == "Scheduler shutdown"
+    assert isinstance(extra["ended_at"], float) and extra["ended_at"] > 0
+    assert run_cancel[0].kwargs["expected_statuses"] == {"running"}
 
 
 @pytest.mark.asyncio
 async def test_fire_inner_exception_records_failed_and_does_not_reraise():
     """Unexpected exception inside the main try block is caught, recorded, and swallowed."""
     from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    async def _raise_after_launch(*args, on_launched=None, **kwargs):
+        # Confirms the launch first: a failure of something that started is
+        # what gets recorded terminally. (An exception raised before any
+        # process exists instead leaves the run for startup recovery.)
+        if on_launched is not None:
+            await on_launched()
+        raise RuntimeError("unexpected")
 
     svc = _make_svc()
     engine = SchedulerEngine(svc=svc)
@@ -413,7 +469,7 @@ async def test_fire_inner_exception_records_failed_and_does_not_reraise():
         ),
         patch(
             "lionagi.studio.scheduler.subprocess.spawn_and_wait",
-            new=AsyncMock(side_effect=RuntimeError("unexpected")),
+            new=AsyncMock(side_effect=_raise_after_launch),
         ),
     ):
         # Should not raise
@@ -745,7 +801,7 @@ async def test_fire_cancellation_schedule_run_cas_miss_does_not_skip_side_effect
         ),
         patch(
             "lionagi.studio.scheduler.subprocess.spawn_and_wait",
-            new=AsyncMock(side_effect=asyncio.CancelledError()),
+            new=_cancel_after_launch,
         ),
     ):
         with pytest.raises(asyncio.CancelledError):
@@ -920,12 +976,20 @@ async def test_fire_telemetry_flush_failure_does_not_alter_run_outcome():
     ):
         await engine._fire(schedule, "run-flush-fails", trigger_context={"scheduled": True})
 
-    # Exactly the one update_schedule_run call from the normal completion
-    # path -- no second rewrite from a broad-except handler catching a
-    # telemetry failure that leaked out of flush_run_telemetry().
-    svc.update_schedule_run.assert_awaited_once()
-    _, kwargs = svc.update_schedule_run.await_args
-    assert kwargs["error_detail"] is None
+    # Exactly the one terminal write from the normal completion path -- no
+    # second rewrite from a broad-except handler catching a telemetry failure
+    # that leaked out of flush_run_telemetry(). The run's outcome columns ride
+    # that write, so there is no standalone update_schedule_run to count.
+    svc.update_schedule_run.assert_not_awaited()
+    run_terminal_calls = [
+        c
+        for c in svc.update_status.await_args_list
+        if c.args[:2] == ("schedule_run", "run-flush-fails")
+        and c.kwargs.get("new_status") != "running"
+    ]
+    assert len(run_terminal_calls) == 1
+    assert run_terminal_calls[0].kwargs["new_status"] == "completed"
+    assert run_terminal_calls[0].kwargs["extra_fields"]["error_detail"] is None
     # The invocation's own terminal write is untouched by the telemetry
     # failure too.
     invocation_terminal_calls = [
@@ -1173,7 +1237,7 @@ def test_invalid_scheduler_tz_falls_back_to_utc(monkeypatch, caplog):
     assert next_at is not None
     got_utc = datetime.fromtimestamp(next_at, tz=timezone.utc)
     assert got_utc == datetime(2026, 7, 2, 18, 0, 0, tzinfo=timezone.utc)
-    assert any("Invalid scheduler timezone" in r.message for r in caplog.records)
+    assert any("is not a zone this host can load" in r.getMessage() for r in caplog.records)
 
 
 def test_compute_next_fire_cron_prefers_resolved_timezone_over_scheduler_tz(monkeypatch):
@@ -1422,7 +1486,15 @@ async def test_recompute_next_fire_persists_and_logs_on_shift(monkeypatch, caplo
 
     assert new is not None
     assert new != 100.0
-    svc.update_schedule.assert_awaited_once_with(schedule["id"], next_fire_at=new)
+    # The same write also carries the zone the new value was resolved in, so
+    # a shifted fire time and the interpretation that produced it land
+    # together rather than as two separately-discoverable facts.
+    svc.update_schedule.assert_awaited_once_with(
+        schedule["id"],
+        next_fire_at=new,
+        effective_timezone="America/New_York",
+        effective_timezone_source=studio_config.SCHEDULER_TZ_SOURCE,
+    )
     shift_logs = [r for r in caplog.records if "next_fire_at shifted" in r.message]
     assert len(shift_logs) == 1
 
@@ -2587,3 +2659,233 @@ async def test_fire_command_kind_nonzero_exit_records_failed_status():
         if c.args[0] == "schedule_run" and c.kwargs.get("new_status") == "failed"
     ]
     assert failed_calls, "Expected update_status('schedule_run', ..., new_status='failed')"
+
+
+# ---------------------------------------------------------------------------
+# error_detail on the broad-except handler (real StateDB)
+# ---------------------------------------------------------------------------
+
+
+class _DbSvc:
+    """SchedulerStateService over one open StateDB (in-memory, one connection)."""
+
+    def __init__(self, db):
+        self._db = db
+
+    def __getattr__(self, name):
+        return getattr(self._db, name)
+
+    async def compute_files_overlap(self, invocation_id: str, *, top_n: int = 5) -> dict:
+        return {"count": 0, "top": []}
+
+
+async def _seed_schedule(db, schedule: dict) -> None:
+    await db.create_schedule(
+        {
+            "id": schedule["id"],
+            "name": schedule["name"],
+            "trigger_type": "interval",
+            "interval_sec": 3600,
+            "action_kind": schedule["action_kind"],
+        }
+    )
+
+
+@pytest.fixture
+async def state_db():
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+    yield state
+    await state.close()
+
+
+@pytest.mark.asyncio
+async def test_fire_exception_keeps_the_error_detail_a_prior_finalizer_wrote(state_db):
+    """A concurrent finalizer that already moved the run to a terminal status
+    owns its error_detail. The broad-except handler's write is guarded on the
+    row still being 'running', so a lost race must leave the winner's text in
+    place instead of replacing it with the handler's own."""
+    from lionagi.state.reasons import RunReasons
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _DbSvc(state_db)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule()
+    await _seed_schedule(state_db, schedule)
+    run_id = "run-race-detail"
+
+    async def _reaper_then_raise(*args, **kwargs):
+        # Stand in for the deadline reaper winning this row mid-fire: it
+        # finalizes with the real cause, then the fire path blows up.
+        await state_db.update_status(
+            "schedule_run",
+            run_id,
+            new_status="timed_out",
+            reason_code=RunReasons.TIMED_OUT_DEADLINE,
+            reason_summary="Run exceeded its deadline.",
+            evidence_refs=[],
+            source="system",
+            actor="reaper",
+            expected_statuses={"running"},
+            extra_fields={"error_detail": "TimeoutError: run exceeded its deadline"},
+        )
+        raise RuntimeError("spawn exploded")
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(side_effect=_reaper_then_raise),
+        ),
+    ):
+        await engine._fire(schedule, run_id, trigger_context={"scheduled": True})
+
+    row = await state_db.get_schedule_run(run_id)
+    assert row["error_detail"] == "TimeoutError: run exceeded its deadline"
+
+
+@pytest.mark.asyncio
+async def test_fire_cancellation_keeps_the_error_detail_a_prior_finalizer_wrote(state_db):
+    """Same guarantee on the cancellation branch. "Scheduler shutdown" is a
+    placeholder rather than a measured cause, so a shutdown arriving after some
+    other writer already finalized the row must not replace the cause that
+    writer recorded."""
+    from lionagi.state.reasons import RunReasons
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _DbSvc(state_db)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule()
+    await _seed_schedule(state_db, schedule)
+    run_id = "run-race-cancel"
+
+    async def _reaper_then_cancel(*args, **kwargs):
+        await state_db.update_status(
+            "schedule_run",
+            run_id,
+            new_status="timed_out",
+            reason_code=RunReasons.TIMED_OUT_DEADLINE,
+            reason_summary="Run exceeded its deadline.",
+            evidence_refs=[],
+            source="system",
+            actor="reaper",
+            expected_statuses={"running"},
+            extra_fields={"error_detail": "TimeoutError: run exceeded its deadline"},
+        )
+        raise asyncio.CancelledError()
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(side_effect=_reaper_then_cancel),
+        ),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await engine._fire(schedule, run_id, trigger_context={"scheduled": True})
+
+    row = await state_db.get_schedule_run(run_id)
+    assert row["status"] == "timed_out"
+    assert row["error_detail"] == "TimeoutError: run exceeded its deadline"
+
+
+@pytest.mark.asyncio
+async def test_fire_completion_keeps_the_outcome_a_prior_finalizer_wrote(state_db):
+    """And on the ordinary completion path, whose columns are measured rather
+    than placeholders. A nonzero exit still does not entitle this path to
+    overwrite the exit_code, end time and cause of a row someone else already
+    finalized -- the terminal record belongs to whoever won the transition."""
+    from lionagi.state.reasons import RunReasons
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _DbSvc(state_db)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule()
+    await _seed_schedule(state_db, schedule)
+    run_id = "run-race-complete"
+
+    async def _reaper_then_exit_nonzero(*args, **kwargs):
+        # Deliberately writes only error_detail through extra_fields. Adding
+        # exit_code here would make this fixture itself unrunnable against a
+        # tree whose allowlist lacks that key, and the test would then fail for
+        # its own incompatibility rather than for the overwrite it exists to
+        # catch. exit_code is instead asserted to stay unset below.
+        await state_db.update_status(
+            "schedule_run",
+            run_id,
+            new_status="timed_out",
+            reason_code=RunReasons.TIMED_OUT_DEADLINE,
+            reason_summary="Run exceeded its deadline.",
+            evidence_refs=[],
+            source="system",
+            actor="reaper",
+            expected_statuses={"running"},
+            extra_fields={"error_detail": "TimeoutError: run exceeded its deadline"},
+        )
+        return (2, "some stderr the loser measured")
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(side_effect=_reaper_then_exit_nonzero),
+        ),
+    ):
+        await engine._fire(schedule, run_id, trigger_context={"scheduled": True})
+
+    row = await state_db.get_schedule_run(run_id)
+    assert row["status"] == "timed_out"
+    assert row["error_detail"] == "TimeoutError: run exceeded its deadline"
+    # The losing path measured exit code 2 and its own stderr. Neither belongs
+    # on a row it did not finalize.
+    assert row["exit_code"] is None
+
+
+@pytest.mark.asyncio
+async def test_fire_exception_records_the_real_exception_text_as_error_detail(state_db):
+    """On the ordinary path (nothing else finalized the row) the handler owns
+    the record, and the error_detail it stores is the same text the signal
+    carries — real exception type and message, not a generic placeholder."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _DbSvc(state_db)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule()
+    await _seed_schedule(state_db, schedule)
+    run_id = "run-real-detail"
+
+    async def _raise_after_launch(*args, on_launched=None, **kwargs):
+        # A failure of something that started: that is what the handler
+        # records terminally (an exception before any process exists leaves
+        # the run undispatched for startup recovery instead).
+        if on_launched is not None:
+            await on_launched()
+        raise ModuleNotFoundError("No module named 'nope'")
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(side_effect=_raise_after_launch),
+        ),
+    ):
+        await engine._fire(schedule, run_id, trigger_context={"scheduled": True})
+
+    row = await state_db.get_schedule_run(run_id)
+    assert row["status"] == "failed"
+    assert row["error_detail"] == "ModuleNotFoundError: No module named 'nope'"
+    assert row["ended_at"] is not None

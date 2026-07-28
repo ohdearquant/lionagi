@@ -400,9 +400,9 @@ def _render_human(view: dict[str, Any]) -> str:
 async def _run_status_inner(
     *, command: str, entity_id: str | None, as_json: bool
 ) -> tuple[str, int]:
-    from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+    from lionagi.state.db import StateDB, state_db_known_absent
 
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         return f"state.db not found — no {command} runs recorded yet", EXIT_UNKNOWN
 
     async with StateDB() as db:
@@ -498,9 +498,9 @@ async def _audit_degraded(db: Any) -> dict[str, Any]:
 
 def _dispatch_audit(*, as_json: bool) -> int:
     from lionagi.ln.concurrency import run_async
-    from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+    from lionagi.state.db import StateDB, state_db_known_absent
 
-    if not DEFAULT_DB_PATH.exists():
+    if state_db_known_absent():
         log_error("state.db not found — no runs recorded yet")
         return EXIT_UNKNOWN
 
@@ -546,10 +546,19 @@ def run_agent_status(argv: list[str]) -> int:
     """Entry point for `li agent status [<id>] [--json]`."""
     parser = argparse.ArgumentParser(prog="li agent status", add_help=True)
     parser.add_argument(
-        "id", nargs="?", default=None, help="Session or invocation ID (or short prefix)."
+        "id",
+        nargs="?",
+        default=None,
+        help=(
+            "Session id, invocation id or branch id to report on — full, or an unambiguous "
+            "prefix. Omit it for the most recent agent run in this project."
+        ),
     )
     parser.add_argument(
-        "--json", action="store_true", dest="as_json", help="Emit a stable JSON object."
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="Print one JSON object with stable keys instead of the human table, for scripting.",
     )
     args = parser.parse_args(argv)
     return _dispatch("agent", args.id, args.as_json)
@@ -559,10 +568,19 @@ def run_play_status(argv: list[str]) -> int:
     """Entry point for `li play status [<id>] [--json] [--audit-degraded]`."""
     parser = argparse.ArgumentParser(prog="li play status", add_help=True)
     parser.add_argument(
-        "id", nargs="?", default=None, help="Session, invocation, or play ID (or short prefix)."
+        "id",
+        nargs="?",
+        default=None,
+        help=(
+            "Session, invocation or play id to report on — full, or an unambiguous prefix. "
+            "Omit it for the most recent play or flow run in this project."
+        ),
     )
     parser.add_argument(
-        "--json", action="store_true", dest="as_json", help="Emit a stable JSON object."
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="Print one JSON object with stable keys instead of the human table, for scripting.",
     )
     parser.add_argument(
         "--audit-degraded",
