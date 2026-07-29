@@ -4,6 +4,10 @@
 **Date**: 2026-06-20
 **Builds on**: ADR-0008 (runs read-only / sessions stream for live monitoring) · ADR-0026 (project detection) · ADR-0083 (lifecycle signal contract)
 
+> **2026-07-29**: moved here from the archive directory. Content is unchanged.
+> The status above is what says whether this decision binds, and an archived path
+> said the opposite to anyone who read the location first.
+
 ## Context
 
 Lion Studio ships today as a standalone web app: a FastAPI backend
