@@ -612,6 +612,94 @@ async def test_execute_dag_real_executor_wakes_alice_before_task_group_closes(tm
     assert round_result["response"] == "all clear now"
 
 
+async def test_execute_dag_team_round_communicates_matching_required_artifact_contract(tmp_path):
+    """A team wakeup stamped as a spawned round must receive the same
+    per-round artifact directive that its finalize-time contract registers.
+
+    The worker name deliberately differs from its role so both sides must
+    resolve the planned worker-to-role assignment rather than accidentally
+    relying on those names being equal.
+    """
+    team_id = "e2e-real-team-artifacts"
+    _make_team(team_id, ["orchestrator", "alice"])
+
+    env = _make_env(tmp_path)
+    env.team_data = {"id": team_id, "name": "e2e", "members": ["orchestrator", "alice"]}
+    env.messenger = _FakeMessenger()
+    # A false-y live-persist context exercises the append-only in-memory
+    # contract path without installing message-persistence hooks on the stub.
+    env._live_persist = {}
+
+    calls: list[dict] = []
+
+    async def alice_operate(**kw):
+        calls.append(kw)
+        if len(calls) == 1:
+            with team._locked_team(team_id) as data:
+                data["messages"].append(
+                    {
+                        "id": "m1",
+                        "from": "orchestrator",
+                        "to": ["alice"],
+                        "content": "please publish the report",
+                        "kind": "message",
+                        "read_by": {},
+                        "timestamp": "2026-01-01T00:00:00",
+                    }
+                )
+            team.post_done_signal(team_id, worker="alice", summary="first pass done")
+            return "first pass done"
+        team.post_done_signal(team_id, worker="alice", summary="report published")
+        return "report published"
+
+    alice_branch = _build_stub_branch(alice_operate)
+    session = Session()
+    session.default_branch = alice_branch
+    env.session = session
+
+    graph = Graph()
+    node = Operation(operation="operate", parameters={"instruction": "do the work"})
+    node.branch_id = alice_branch.id
+    graph.add_node(node)
+    env.builder.get_graph = lambda: graph
+
+    plan_result, dag_state = _plan_and_dag_real(
+        node, "alice", worker_branches={"alice": alice_branch}, messenger_bound={"alice": True}
+    )
+    dag_state.role_artifact_defaults = {
+        "researcher": {"expected": [{"id": "report", "path": "report.md", "required": True}]}
+    }
+
+    await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0, team_max_rounds=1)
+
+    assert len(calls) == 2
+    round_context = calls[1]["context"]
+    artifact_context = [
+        entry["artifact_instructions"]
+        for entry in round_context
+        if "artifact_instructions" in entry
+    ]
+    round_dir = env.run.agent_artifact_dir("alice-round1")
+    assert artifact_context == [
+        f"Your artifact directory: {round_dir}/ — write output files here. "
+        "REQUIRED: write report.md in that directory — the run is marked failed "
+        "if it is missing at completion."
+    ]
+    assert "alice-round1" in env.expected_worker_ids
+
+    contract = env._live_persist["artifact_contract"]
+    assert contract == {
+        "expected": [
+            {
+                "id": "alice-round1__report",
+                "path": "alice-round1/report.md",
+                "required": True,
+                "source": "role_default",
+            }
+        ]
+    }
+
+
 async def test_execute_dag_real_executor_respects_team_max_rounds_bound(tmp_path):
     """Alice leaves new mail every turn; team_max_rounds=1 caps it at one
     injected round against the real executor."""
