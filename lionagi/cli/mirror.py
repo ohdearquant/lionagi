@@ -602,19 +602,30 @@ async def mirror_forever(
     *,
     root: Path | None = None,
     codex_root: Path | None = None,
+    source: str = "claude",
     since: str | None = "24h",
     interval: float = 5.0,
     live_window: float = _DEFAULT_LIVE_WINDOW,
 ) -> None:
-    """Tail recent Claude and Codex transcripts into StateDB until ``stop`` is set.
+    """Tail recent transcripts into StateDB until ``stop`` is set.
+
+    ``source`` selects which transcript trees to read ("claude", "codex", or
+    "both") and defaults to claude alone. A caller that scopes ``root`` has
+    scoped the mirror, and must not silently acquire an unscoped codex tree
+    under the home directory; asking for codex is therefore explicit.
 
     Studio's in-process entry point; ``li mirror`` keeps its own loop in ``_run``.
     """
     from lionagi.state.db import StateDB
 
+    if source not in ("both", "claude", "codex"):
+        raise ValueError(f"unknown mirror source: {source!r}")
+    want_claude = source in ("both", "claude")
+    want_codex = source in ("both", "codex")
+
     root = Path(root).expanduser() if root else CLAUDE_PROJECTS_DIR
     codex_root = Path(codex_root).expanduser() if codex_root else CODEX_SESSIONS_DIR
-    if not root.exists() and not codex_root.exists():
+    if not (want_claude and root.exists()) and not (want_codex and codex_root.exists()):
         return
     since_secs = _parse_window(since) if since else None
     states = _load_states()
@@ -629,7 +640,7 @@ async def mirror_forever(
             async with StateDB() as db:
                 while not stop.is_set():
                     try:
-                        if root.exists():
+                        if want_claude and root.exists():
                             await _one_pass(
                                 db,
                                 root,
@@ -639,7 +650,7 @@ async def mirror_forever(
                                 live_window=live_window,
                                 lineage=lineage,
                             )
-                        if codex_root.exists():
+                        if want_codex and codex_root.exists():
                             await _codex_pass(
                                 db,
                                 codex_root,
@@ -669,31 +680,61 @@ async def _run(args: argparse.Namespace) -> int:
 
     from lionagi.state.db import StateDB
 
+    source = getattr(args, "source", "both")
+    want_claude = source in ("both", "claude")
+    want_codex = source in ("both", "codex")
+
     root = Path(args.root).expanduser() if args.root else CLAUDE_PROJECTS_DIR
-    if not root.exists():
+    codex_root = (
+        Path(args.codex_root).expanduser()
+        if getattr(args, "codex_root", None)
+        else CODEX_SESSIONS_DIR
+    )
+    # A requested source whose tree is missing drops out with a warning; only when
+    # nothing requested is readable is there no work to do at all.
+    if want_claude and not root.exists():
         warn(f"no Claude projects directory at {root}")
+        want_claude = False
+    if want_codex and not codex_root.exists():
+        warn(f"no Codex sessions directory at {codex_root}")
+        want_codex = False
+    if not want_claude and not want_codex:
         return 1
 
     since = args.since  # argparse already parsed --since to seconds (or None)
     states = _load_states()
     offsets = {key: st.offset for key, st in states.items()}  # _one_pass new-file seed
     lineage = _Lineage()
+    threads: dict[str, str] = {}
     _seed_lineage(lineage, states)
 
     mode = "catch-up pass" if args.once else f"tailing (every {args.interval:g}s)"
-    hint(f"li mirror: {mode} over {root}")
+    trees = ", ".join(str(p) for p, want in ((root, want_claude), (codex_root, want_codex)) if want)
+    hint(f"li mirror: {mode} over {trees}")
 
     async with StateDB() as db:
         while True:
-            n = await _one_pass(
-                db,
-                root,
-                states,
-                offsets,
-                since=since,
-                live_window=args.live_window,
-                lineage=lineage,
-            )
+            n = 0
+            if want_claude:
+                n += await _one_pass(
+                    db,
+                    root,
+                    states,
+                    offsets,
+                    since=since,
+                    live_window=args.live_window,
+                    lineage=lineage,
+                )
+            if want_codex:
+                n += await _codex_pass(
+                    db,
+                    codex_root,
+                    states,
+                    offsets,
+                    since=since,
+                    live_window=args.live_window,
+                    threads=threads,
+                )
             _save_states(states)
             if n:
                 progress(f"  mirrored {n} new message(s)")

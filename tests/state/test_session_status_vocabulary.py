@@ -183,7 +183,7 @@ async def test_drop_legacy_check_is_idempotent(tmp_path: Path):
     await state1.update_session(s["id"], status="cancelled")
     await state1.close()
 
-    # Second open — _drop_legacy_session_status_check should find no
+    # Second open — _rebuild_legacy_sessions_table should find no
     # marker and return immediately.
     state2 = StateDB(path)
     await state2.open()
