@@ -753,7 +753,7 @@ def _resolve_cwd(args: dict[str, Any]) -> str | None:
     cwd = args.get("cwd")
     if cwd is None:
         return None
-    resolved = Path(cwd).expanduser()
+    resolved = Path(cwd).expanduser().resolve()
     if not resolved.is_dir():
         raise OpError("invalid_input", f"cwd {cwd!r} is not a directory")
     return str(resolved)
