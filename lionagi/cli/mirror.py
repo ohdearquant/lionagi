@@ -107,6 +107,11 @@ class _FileState:
     leaf_uuid: str | None = None  # this file's newest event uuid (lineage index)
     head_checked: bool = False  # whether the file's root parentUuid was examined
     attr_peeked: bool = False  # whether idle project attribution was attempted
+    # Most recent codex turn_context (model/effort/turn_id). Carried across passes
+    # so a message mirrored after a resume is still attributed to the turn that
+    # produced it rather than to nothing.
+    turn: dict[str, str] = field(default_factory=dict)
+    barren_reported: bool = False  # whether "read records, mirrored none" was surfaced
 
 
 @dataclass
@@ -183,8 +188,10 @@ def _resolve_project_for_mirror(cwd: str) -> tuple[str, str]:
 
 
 def _load_states() -> dict[str, _FileState]:
-    # Persist tool_names + leaf_uuid alongside the byte offset so a restart resumes
-    # without losing state that otherwise lives only in process memory.
+    # Persist tool_names, leaf_uuid and the current codex turn alongside the byte
+    # offset so a restart resumes without losing state that otherwise lives only in
+    # process memory. Dropping the turn would leave every message written after a
+    # restart unattributed until the next turn_context happens to arrive.
     try:
         raw = json.loads(_OFFSETS_PATH.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
@@ -199,6 +206,7 @@ def _load_states() -> dict[str, _FileState]:
                 offset=val.get("offset", 0),
                 tool_names=dict(val.get("tool_names") or {}),
                 leaf_uuid=val.get("leaf_uuid"),
+                turn={str(k): str(v) for k, v in (val.get("turn") or {}).items() if v is not None},
             )
     return states
 
@@ -211,6 +219,7 @@ def _save_states(states: dict[str, _FileState]) -> None:
             "session_uid": st.session_uid,
             "tool_names": st.tool_names,
             "leaf_uuid": st.leaf_uuid,
+            "turn": st.turn,
         }
         for key, st in states.items()
     }
@@ -264,11 +273,17 @@ def _since_window(spec: str) -> float:
     return secs
 
 
-def _read_new_events(path: Path, state: _FileState) -> tuple[list[dict[str, Any]], int]:
-    """Read complete JSONL lines past the cursor; return (events, new_offset).
+def _read_new_events(path: Path, state: _FileState) -> tuple[list[dict[str, Any]], int, int]:
+    """Read complete JSONL lines past the cursor; return (events, new_offset, unreadable).
 
     The cursor is NOT advanced here — the caller only commits it after the batch
     is durably mirrored, so a write failure re-reads the same lines next pass.
+
+    ``unreadable`` counts lines that were not JSON, or were JSON but not a record
+    object. It is reported rather than folded into the events count because a line
+    that could not be read is not a line deliberately not mirrored, and a consumer
+    comparing what a file held against what landed needs the difference between a
+    damaged corpus and an uninteresting one.
     """
     size = path.stat().st_size
     if state.offset > size:  # file truncated/rotated — re-read from the top.
@@ -277,20 +292,24 @@ def _read_new_events(path: Path, state: _FileState) -> tuple[list[dict[str, Any]
         fh.seek(state.offset)
         chunk = fh.read()
     if b"\n" not in chunk:
-        return [], state.offset
+        return [], state.offset, 0
     body, _, _ = chunk.rpartition(b"\n")
     new_offset = state.offset + len(body) + 1
     events = []
+    unreadable = 0
     for raw in body.split(b"\n"):
         if not raw.strip():
             continue
         try:
             obj = json.loads(raw)
         except json.JSONDecodeError:
+            unreadable += 1
             continue
         if isinstance(obj, dict):
             events.append(obj)
-    return events, new_offset
+        else:
+            unreadable += 1
+    return events, new_offset, unreadable
 
 
 _COMMAND_NOISE = ("<command-", "<local-command-")
@@ -390,7 +409,9 @@ def _first_prompt(events: list[dict[str, Any]]) -> str | None:
 async def _mirror_one(db, path: Path, state: _FileState, lineage: _Lineage) -> int:
     from lionagi.state.claude_mirror import mirror_session
 
-    events, new_offset = _read_new_events(path, state)
+    events, new_offset, unreadable = _read_new_events(path, state)
+    if unreadable:
+        warn(f"{path.name}: {unreadable} unreadable line(s) skipped")
     if not events:
         state.offset = new_offset  # advance past blank/malformed-only lines
         return 0
@@ -517,7 +538,7 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
     """Mirror new records from one rollout file; returns messages written."""
     from lionagi.state.codex_mirror import link_session_lineage, mirror_session
 
-    records, new_offset = _read_new_events(path, state)
+    records, new_offset, unreadable = _read_new_events(path, state)
 
     meta: dict[str, Any] | None = None
     if not state.head_checked:
@@ -543,7 +564,7 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
         if thread:
             node_metadata = {"codex": thread}
 
-    written = await mirror_session(
+    written, tally = await mirror_session(
         db,
         rollout_uid=state.session_uid,
         records=records,
@@ -554,6 +575,9 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
         name=state.name,
         status="running",
         node_metadata=node_metadata,
+        source_path=str(path),
+        turn=state.turn,
+        unparseable=unreadable,
     )
     # Advance only after a durable write, so a failed batch is re-read next pass.
     state.offset = new_offset
@@ -565,6 +589,17 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
     if written and not state.created:
         state.created = True
         progress(f"  mirror: {state.name or state.session_uid[:8]} (+{written} msgs)")
+    elif not written and records and not state.barren_reported:
+        # A file the mirror read in full and produced nothing from is a finding, not
+        # a quiet skip: without this it is indistinguishable from a file not yet
+        # reached, and no session row is written to carry the counts either. Measured
+        # cause on the local corpus: 6 of 29,652 rollouts (all 2025-09-01/02) predate
+        # the enveloped record format and match no record type this mirror reads.
+        state.barren_reported = True
+        warn(
+            f"{path.name}: read {sum(tally.seen.values())} record(s), mirrored none "
+            f"(types: {', '.join(sorted(tally.seen)) or 'none'})"
+        )
     return written
 
 
