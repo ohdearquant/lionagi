@@ -2942,6 +2942,16 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
     live run hiding in a listing somebody has learned to discount is the failure
     this field exists to prevent.
 
+    It is reported as the record carries it, which means null is not one answer.
+    A row whose ``record_state`` is not ``"ok"`` never had a record to read a
+    phase from. A row whose ``record_state`` is ``"ok"`` and whose spawn state is
+    null is a record that parsed and does not name a phase — one written before
+    the field existed, or one carrying something unrecognisable in it. So null
+    reads as "no phase this listing can vouch for", never as "never attempted";
+    the phase that means never-attempted says ``"preparing"`` and says it
+    explicitly. Normalising the value is a change to what ``status`` reports and
+    belongs with it rather than here, where it would make the two disagree.
+
     The directory read itself is different, and is allowed to fail. A listing has
     no field in which to say it could not be read, so answering the empty list
     would say "there are no jobs at all" about a directory nobody could look in.

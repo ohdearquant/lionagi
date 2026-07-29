@@ -3246,3 +3246,39 @@ def test_the_listing_says_which_running_rows_never_started(sandbox, monkeypatch)
     # And the field that separates them is present without a per-run status call.
     assert listed[never_started]["spawn_state"] == "preparing"
     assert listed[working]["spawn_state"] == "started"
+
+
+def test_a_row_that_names_no_spawn_phase_is_not_read_as_never_started(sandbox, monkeypatch):
+    """Null is "no phase this listing can vouch for", not "never attempted".
+
+    A record written before the field existed, and a record carrying something
+    unrecognisable in it, both report null. Neither may be mistaken for the
+    phase that genuinely means never-attempted, which names itself.
+    """
+    _live_process(monkeypatch)
+    legacy = jobs.new_run_id()
+    jobs._write_job(
+        {"run_id": legacy, "pid": None, "kind": "agent", "status": "running", "log": None}
+    )
+    junk = jobs.new_run_id()
+    jobs._write_job(
+        {
+            "run_id": junk,
+            "pid": None,
+            "kind": "agent",
+            "status": "running",
+            "spawn_state": "starting?",
+            "log": None,
+        }
+    )
+
+    listed = {j["run_id"]: j for j in jobs.list_jobs()}
+    # A record with no phase in it says so, and says nothing more.
+    assert listed[legacy]["spawn_state"] is None
+    assert listed[legacy]["record_state"] == "ok"
+    # An unrecognised value is passed through rather than laundered into a known
+    # phase, so a caller can see that the record says something it should not.
+    assert listed[junk]["spawn_state"] == "starting?"
+    # Neither is the value that means never-attempted.
+    assert listed[legacy]["spawn_state"] != "preparing"
+    assert listed[junk]["spawn_state"] != "preparing"
