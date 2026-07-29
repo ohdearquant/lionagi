@@ -308,6 +308,18 @@ class TestFireBuildFailureRecorded:
         assert schedule["id"] not in engine._running
 
 
+class _BlockingStream:
+    """A pipe that never reaches EOF, standing in for a live child's output.
+
+    spawn_and_wait waits by draining both pipes, so this is where a process
+    doubling as "still running" has to block.
+    """
+
+    async def read(self, _n: int) -> bytes:
+        await asyncio.Event().wait()
+        return b""  # pragma: no cover - unreachable
+
+
 class TestSpawnAndWaitCancellation:
     """Cancelling spawn_and_wait must terminate the process GROUP, not just the direct
     child — `uv run li` forks the real worker, so signalling only the child orphans
@@ -322,9 +334,9 @@ class TestSpawnAndWaitCancellation:
                 self.terminated = False
                 self.killed = False
                 self.returncode = -15
-
-            async def communicate(self):
-                await asyncio.Event().wait()  # block until cancelled
+                # spawn_and_wait blocks reading these, not on communicate().
+                self.stdout = _BlockingStream()
+                self.stderr = _BlockingStream()
 
             def terminate(self):
                 self.terminated = True
@@ -374,9 +386,8 @@ class TestSpawnAndWaitCancellation:
             def __init__(self):
                 self.pid = 424243
                 self.terminated = False
-
-            async def communicate(self):
-                await asyncio.Event().wait()
+                self.stdout = _BlockingStream()
+                self.stderr = _BlockingStream()
 
             def terminate(self):
                 self.terminated = True
