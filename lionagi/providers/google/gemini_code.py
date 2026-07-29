@@ -287,6 +287,11 @@ def format_print_timeout(seconds: int | float) -> str:
 
 def derive_print_timeout(timeout: int | float) -> str:
     """Return an agy Go-duration cap that stays behind lionagi's deadline."""
+    if timeout >= _MAX_GO_DURATION_SECONDS or not math.isfinite(timeout):
+        raise ValueError(
+            f"timeout must be less than {_MAX_GO_DURATION_SECONDS}s so agy's "
+            "print timeout can remain after the caller deadline"
+        )
     # One minute lets lionagi's deadline cancel and preserve its clearer error first.
     return format_print_timeout(timeout + 60)
 
