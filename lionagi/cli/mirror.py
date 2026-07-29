@@ -19,6 +19,7 @@ from lionagi.ln._json_dump import raise_if_non_finite
 from ._logging import hint, log_error, progress, warn
 
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
+CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 _OFFSETS_PATH = LIONAGI_HOME / "mirror" / "offsets.json"
 
 # A session whose newest message is within this window counts as live (running);
@@ -66,6 +67,21 @@ def add_mirror_subparser(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         metavar="DIR",
         help=f"Claude projects directory (default {CLAUDE_PROJECTS_DIR}).",
+    )
+    p.add_argument(
+        "--codex-root",
+        default=None,
+        metavar="DIR",
+        help=f"Codex sessions directory (default {CODEX_SESSIONS_DIR}).",
+    )
+    p.add_argument(
+        "--source",
+        choices=("both", "claude", "codex"),
+        default="both",
+        help=(
+            "Which transcripts to mirror (default both). A full codex backfill is "
+            "large; pair 'codex' with --since to bound it."
+        ),
     )
     p.add_argument(
         "--live-window",
@@ -453,27 +469,158 @@ async def _one_pass(db, root: Path, states, offsets, *, since, live_window, line
     return total
 
 
+def _peek_codex_meta(path: Path) -> dict[str, Any] | None:
+    """Read a rollout's session_meta (its first line) without consuming the tail."""
+    from lionagi.state.codex_mirror import session_meta
+
+    try:
+        with path.open("rb") as fh:
+            line = fh.readline()
+    except OSError:
+        return None
+    try:
+        rec = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    return session_meta(rec) if isinstance(rec, dict) else None
+
+
+def _derive_codex_metadata(state: _FileState, records: list[dict[str, Any]]) -> None:
+    """Fill model and session name from the records seen so far."""
+    if state.model is None:
+        for r in records:
+            if r.get("type") != "turn_context":
+                continue
+            model = (r.get("payload") or {}).get("model")
+            if model:
+                state.model = str(model)
+                break
+    if state.name is None:
+        prompt = _first_codex_prompt(records)
+        if prompt:
+            state.name = prompt[:72]
+
+
+def _first_codex_prompt(records: list[dict[str, Any]]) -> str | None:
+    """First real user turn in a rollout, skipping codex's injected context blocks."""
+    from lionagi.state.codex_mirror import messages_for_record
+
+    for r in records:
+        for m in messages_for_record(r, "probe", {}):
+            text = (m.content or {}).get("instruction") if isinstance(m.content, dict) else None
+            if text:
+                return " ".join(str(text).split())
+    return None
+
+
+async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str, str]) -> int:
+    """Mirror new records from one rollout file; returns messages written."""
+    from lionagi.state.codex_mirror import link_session_lineage, mirror_session
+
+    records, new_offset = _read_new_events(path, state)
+
+    meta: dict[str, Any] | None = None
+    if not state.head_checked:
+        state.head_checked = True
+        meta = _peek_codex_meta(path)
+        if meta:
+            state.session_uid = meta["rollout_uid"] or path.stem
+            if meta.get("cwd"):
+                state.project, state.project_source = _resolve_project_for_mirror(meta["cwd"])
+    if not state.session_uid:
+        state.session_uid = path.stem
+    if not records:
+        state.offset = new_offset
+        return 0
+
+    _derive_codex_metadata(state, records)
+    node_metadata = None
+    if meta:
+        thread = {k: v for k, v in meta.items() if k.endswith("_uid") and v}
+        thread.pop("rollout_uid", None)
+        if meta.get("originator"):
+            thread["originator"] = meta["originator"]
+        if thread:
+            node_metadata = {"codex": thread}
+
+    written = await mirror_session(
+        db,
+        rollout_uid=state.session_uid,
+        records=records,
+        tool_names=state.tool_names,
+        project=state.project,
+        project_source=state.project_source,
+        model=state.model,
+        name=state.name,
+        status="running",
+        node_metadata=node_metadata,
+    )
+    # Advance only after a durable write, so a failed batch is re-read next pass.
+    state.offset = new_offset
+
+    if meta and meta.get("thread_uid"):
+        parent = threads.setdefault(meta["thread_uid"], state.session_uid)
+        if parent != state.session_uid:
+            await link_session_lineage(db, child_uid=state.session_uid, parent_uid=parent)
+    if written and not state.created:
+        state.created = True
+        progress(f"  mirror: {state.name or state.session_uid[:8]} (+{written} msgs)")
+    return written
+
+
+async def _codex_pass(db, root: Path, states, offsets, *, since, live_window, threads) -> int:
+    """One sweep over the codex rollout tree; mirrors new records and reconciles status."""
+    from lionagi.state.codex_mirror import reconcile_session_status
+
+    now = time.time()
+    total = 0
+    seen: set[str] = set()
+    for path in sorted(root.rglob("rollout-*.jsonl")):
+        try:
+            if since is not None and (now - path.stat().st_mtime) > since:
+                continue
+            key = str(path)
+            state = states.get(key)
+            if state is None:
+                state = _FileState(session_uid="", offset=offsets.get(key, 0))
+                states[key] = state
+            total += await _mirror_one_codex(db, path, state, threads)
+            offsets[key] = state.offset
+            if state.session_uid:
+                seen.add(state.session_uid)
+        except FileNotFoundError:
+            continue
+        except Exception as exc:  # one bad rollout must not kill the tail
+            log_error(f"mirror failed for {path.name}: {exc}")
+    for uid in seen:
+        await reconcile_session_status(db, uid, now=now, live_window=live_window)
+    return total
+
+
 async def mirror_forever(
     stop: asyncio.Event,
     *,
     root: Path | None = None,
+    codex_root: Path | None = None,
     since: str | None = "24h",
     interval: float = 5.0,
     live_window: float = _DEFAULT_LIVE_WINDOW,
 ) -> None:
-    """Tail recent Claude transcripts into StateDB until ``stop`` is set.
+    """Tail recent Claude and Codex transcripts into StateDB until ``stop`` is set.
 
     Studio's in-process entry point; ``li mirror`` keeps its own loop in ``_run``.
     """
     from lionagi.state.db import StateDB
 
     root = Path(root).expanduser() if root else CLAUDE_PROJECTS_DIR
-    if not root.exists():
+    codex_root = Path(codex_root).expanduser() if codex_root else CODEX_SESSIONS_DIR
+    if not root.exists() and not codex_root.exists():
         return
     since_secs = _parse_window(since) if since else None
     states = _load_states()
     offsets = {key: st.offset for key, st in states.items()}  # _one_pass new-file seed
     lineage = _Lineage()
+    threads: dict[str, str] = {}
     _seed_lineage(lineage, states)
     # The connection lives inside the supervise loop so a failure to open it (e.g. a
     # locked/half-migrated state.db at studio startup) is retried, not fatal.
@@ -482,18 +629,29 @@ async def mirror_forever(
             async with StateDB() as db:
                 while not stop.is_set():
                     try:
-                        await _one_pass(
-                            db,
-                            root,
-                            states,
-                            offsets,
-                            since=since_secs,
-                            live_window=live_window,
-                            lineage=lineage,
-                        )
+                        if root.exists():
+                            await _one_pass(
+                                db,
+                                root,
+                                states,
+                                offsets,
+                                since=since_secs,
+                                live_window=live_window,
+                                lineage=lineage,
+                            )
+                        if codex_root.exists():
+                            await _codex_pass(
+                                db,
+                                codex_root,
+                                states,
+                                offsets,
+                                since=since_secs,
+                                live_window=live_window,
+                                threads=threads,
+                            )
                         _save_states(states)
                     except Exception:  # a single bad pass must never kill the tail
-                        _log.exception("claude mirror pass failed")
+                        _log.exception("transcript mirror pass failed")
                     try:
                         await asyncio.wait_for(stop.wait(), timeout=interval)
                     except (asyncio.TimeoutError, TimeoutError):
