@@ -16,7 +16,7 @@ import sys
 import pytest
 
 from lionagi.mcp._notify_hook import (
-    _FAILURE_CLASSES,
+    _ALLOWED_FAILURE_CLASSES,
     _FAILURE_UNKNOWN,
     _classify_failure,
     _classify_quietly,
@@ -24,7 +24,11 @@ from lionagi.mcp._notify_hook import (
     _unverifiable_reason,
 )
 
-_NAMES = {name for name, _ in _FAILURE_CLASSES} | {_FAILURE_UNKNOWN}
+# Imported, not rebuilt here. A set derived independently in the test drifts from
+# the one the code enforces, and the first thing it misses is whatever name was
+# added last -- "timeout" was exactly that, assigned on the exception path and so
+# absent from any set derived from the classifier table alone.
+_NAMES = _ALLOWED_FAILURE_CLASSES
 
 
 def _py(script: str) -> list[str]:
@@ -207,6 +211,38 @@ def test_the_marker_is_not_applied_to_a_failed_delivery():
     out = _deliver(_py("import sys; sys.exit(1)"), {})
     assert out["ok"] is False
     assert "delivery_verified" not in out
+
+
+def test_a_classifier_that_returns_free_text_cannot_get_it_into_the_record(monkeypatch):
+    """The invariant is pinned where the value is STORED, not where it is produced.
+
+    `_classify_failure` is fail-closed today. This asserts the record does not
+    depend on it staying so: the tempting future edit is to return a fragment of
+    the command's output because it is diagnostic, and that edit must fail a
+    test rather than silently reopen the leak. Monkeypatching the classifier is
+    a stand-in for exactly that edit.
+    """
+
+    monkeypatch.setattr(
+        "lionagi.mcp._notify_hook._classify_failure",
+        lambda text: "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY",
+    )
+    out = _deliver(_py("import sys; sys.stderr.write('anything'); sys.exit(1)"), {})
+
+    assert out["failure_class"] == _FAILURE_UNKNOWN
+    assert out["failure_class"] in _NAMES
+    assert "wJalrXUtn" not in repr(out)
+
+
+def test_the_timeout_name_is_inside_the_allowed_set():
+    """It is assigned on the exception path and never passes through the classifier.
+
+    A pin whose allowed set omits a name the code legitimately stores would
+    rewrite that name to `unknown` and destroy real information, so membership
+    is asserted rather than assumed.
+    """
+    assert "timeout" in _ALLOWED_FAILURE_CLASSES
+    assert _FAILURE_UNKNOWN in _ALLOWED_FAILURE_CLASSES
 
 
 def test_subprocess_is_invoked_without_devnull_so_there_is_something_to_classify():

@@ -71,6 +71,37 @@ _FAILURE_CLASSES: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
+_FAILURE_TIMEOUT = "timeout"
+
+# The one allowed set, and the reason it is defined here rather than derived at
+# each use: this field is persisted, so the guarantee that has to hold is about
+# the value that reaches the record, not about what the classifier happens to
+# return today. Every name that can ever be stored appears here -- the classified
+# ones, ``unknown``, and ``timeout``, which is assigned on the exception path and
+# so never passes through the classifier at all.
+_ALLOWED_FAILURE_CLASSES: frozenset[str] = frozenset(
+    {name for name, _ in _FAILURE_CLASSES} | {_FAILURE_UNKNOWN, _FAILURE_TIMEOUT}
+)
+
+
+def _pin_failure_class(value: str | None) -> str | None:
+    """Force a classification into the closed set, at the boundary that stores it.
+
+    ``_classify_failure`` is fail-closed today, and pinning here does not trust
+    that it stays so. A later edit that returns part of the command's output --
+    the change any diagnostics-minded reader is tempted to make -- would
+    otherwise be persisted verbatim and reopen the leak this module exists to
+    close. Placing the check immediately before the record is built means the
+    invariant is enforced where it is needed rather than where it is produced.
+
+    ``None`` is a real value here and passes through: it means the delivery
+    succeeded and there is no failure to name.
+    """
+    if value is None:
+        return None
+    return value if value in _ALLOWED_FAILURE_CLASSES else _FAILURE_UNKNOWN
+
+
 def _classify_failure(text: str) -> str:
     """Map a delivery command's output to one name from the closed set above.
 
@@ -260,15 +291,19 @@ def _deliver(
             "ok": False,
             "exit_code": None,
             "error": type(exc).__name__,
-            "failure_class": (
-                "timeout" if isinstance(exc, subprocess.TimeoutExpired) else _FAILURE_UNKNOWN
+            "failure_class": _pin_failure_class(
+                _FAILURE_TIMEOUT if isinstance(exc, subprocess.TimeoutExpired) else _FAILURE_UNKNOWN
             ),
             "command": program,
         }
     ok = proc.returncode == 0
     # Classified here and not retained: `proc` goes out of scope with the
-    # function, and only the returned name outlives it.
-    failure_class = None if ok else _classify_quietly(f"{proc.stderr or ''}\n{proc.stdout or ''}")
+    # function, and only the returned name outlives it. Pinned on the way into
+    # the record, so what is persisted is a member of the closed set whatever
+    # the classifier returned.
+    failure_class = _pin_failure_class(
+        None if ok else _classify_quietly(f"{proc.stderr or ''}\n{proc.stdout or ''}")
+    )
     outcome = {
         "attempted": True,
         "ok": ok,
@@ -290,8 +325,8 @@ def _deliver(
     return outcome
 
 
-def _note_failure_in_console_log(run_id: str, outcome: dict[str, Any]) -> None:
-    """Append one line to the run's own log when a configured delivery failed.
+def _note_delivery_in_console_log(run_id: str, outcome: dict[str, Any]) -> None:
+    """Append one line to the run's own log when the notice needs an operator's eye.
 
     The outcome is already on the job record, but that record is only seen by
     someone who thinks to query it. A run whose notice never arrived is
@@ -299,10 +334,18 @@ def _note_failure_in_console_log(run_id: str, outcome: dict[str, Any]) -> None:
     Ending it with a stated failure is what lets the log serve as the fallback
     for a notice that did not.
 
-    The line carries the classified reason when there is one. It is a name from
-    a closed set, never anything the command said, so the log stays as free of
-    the command's own text as the job record is -- a log is if anything the
-    easier of the two to read by accident.
+    Two outcomes qualify, and the second is the reason this is not simply a
+    failure note. A delivery that ran, exited zero, and *could not be verified*
+    is recorded as such on the job record, but an operator reading the log or a
+    job listing would otherwise see an ordinary success. A degraded result that
+    only the record knows about is a degraded result nobody acts on, so it gets
+    a line of its own -- distinct in wording from a failure, because the notice
+    probably did arrive and reporting it as failed would be its own lie.
+
+    Every line carries only names from closed sets: the classified reason, or
+    the fixed ``unverified_reason``. Never anything the command said, so the log
+    stays as free of the command's own text as the job record is -- a log is if
+    anything the easier of the two to read by accident.
 
     Best-effort like everything else in this hook: the run has already
     finished, and a log that cannot be appended to must not turn a delivered
@@ -310,19 +353,30 @@ def _note_failure_in_console_log(run_id: str, outcome: dict[str, Any]) -> None:
     """
     if not outcome.get("attempted") and not outcome.get("error"):
         return  # nothing was configured; silence is the documented default
+
     if outcome.get("ok"):
-        return
-    detail = outcome.get("error") or f"exit code {outcome.get('exit_code')}"
-    failure_class = outcome.get("failure_class")
-    if failure_class:
-        detail = f"{detail} ({failure_class})"
+        if outcome.get("delivery_verified") is not False:
+            return  # delivered, and the exit code is evidence we trust
+        line = (
+            f"\n[notify] WARNING: terminal notice for run {run_id} reported success but "
+            f"could NOT be verified: {outcome.get('unverified_reason')}. "
+            f"The notice may not have been delivered; do not read this run's "
+            f"completion signal as confirmed.\n"
+        )
+    else:
+        detail = outcome.get("error") or f"exit code {outcome.get('exit_code')}"
+        failure_class = outcome.get("failure_class")
+        if failure_class:
+            detail = f"{detail} ({failure_class})"
+        line = (
+            f"\n[notify] terminal notice NOT delivered for run {run_id}: {detail}. "
+            f"This run finished; its completion signal did not.\n"
+        )
+
     try:
         path = config.job_dir(run_id) / "console.log"
         with path.open("a", encoding="utf-8") as fh:
-            fh.write(
-                f"\n[notify] terminal notice NOT delivered for run {run_id}: {detail}. "
-                f"This run finished; its completion signal did not.\n"
-            )
+            fh.write(line)
     except OSError:
         pass
 
@@ -456,7 +510,7 @@ def main(argv: list[str] | None = None) -> int:
         sender=args.sender,
     )
     recorded = jobs.record_notify_delivery(args.run_id, outcome)
-    _note_failure_in_console_log(args.run_id, outcome)
+    _note_delivery_in_console_log(args.run_id, outcome)
     if recorded.refused:
         # The notice was attempted against a durable end; what is missing is the
         # record of how it went. Reported the same way, because a delivery

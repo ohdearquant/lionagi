@@ -420,6 +420,52 @@ def test_successful_delivery_writes_nothing_to_the_log(job, monkeypatch):
     assert _console_log(job) == "work happened\n"
 
 
+def test_an_unverified_delivery_warns_in_the_log_instead_of_passing_silently(job, monkeypatch):
+    """A degraded result only the record knows about is one nobody acts on.
+
+    The command shape here exits zero when its send was refused, so the zero is
+    not evidence. Recording that on the job was half the job: the log is where an
+    operator actually looks, and an ordinary success there means they stop
+    looking. The line has to say the notice is unconfirmed while not claiming a
+    failure that probably did not happen.
+    """
+    config.job_dir(job).mkdir(parents=True, exist_ok=True)
+    (config.job_dir(job) / "console.log").write_text("work happened\n", encoding="utf-8")
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(0))
+
+    command = json.dumps(["kkernel", "exec", "comm.send(to='recipient', content='{status}')"])
+    _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+
+    log = _console_log(job)
+    assert "work happened" in log  # appended, never rewritten
+    assert "WARNING" in log
+    assert "kkernel_exec_without_strict_exits_zero_on_a_refused_op" in log
+    # not reported as a failure: the notice most likely did arrive
+    assert "NOT delivered" not in log
+    # and the record still says the run's delivery did not fail
+    assert jobs._read_job(job)["notify_delivery"]["ok"] is True
+    assert jobs._read_job(job)["notify_delivery"]["delivery_verified"] is False
+
+
+def test_the_same_command_with_strict_is_verified_and_stays_silent(job, monkeypatch):
+    """The control: --strict makes the exit code mean what it says.
+
+    Without this, a test asserting the warning fires proves only that the log can
+    be written to, not that the marker is what decides it.
+    """
+    config.job_dir(job).mkdir(parents=True, exist_ok=True)
+    (config.job_dir(job) / "console.log").write_text("work happened\n", encoding="utf-8")
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(0))
+
+    command = json.dumps(
+        ["kkernel", "exec", "--strict", "comm.send(to='recipient', content='{status}')"]
+    )
+    _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+
+    assert _console_log(job) == "work happened\n"
+    assert "delivery_verified" not in jobs._read_job(job)["notify_delivery"]
+
+
 def test_silence_by_choice_writes_nothing_to_the_log(job, monkeypatch):
     """Nothing configured is the documented default, not a delivery failure."""
     config.job_dir(job).mkdir(parents=True, exist_ok=True)

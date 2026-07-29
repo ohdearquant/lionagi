@@ -2683,6 +2683,15 @@ _REFUSED_BEFORE_RUNNING = {
     "command": None,
 }
 _NOTHING_CONFIGURED = {"attempted": False}
+_DELIVERED_UNVERIFIED = {
+    "attempted": True,
+    "ok": True,
+    "exit_code": 0,
+    "error": None,
+    "command": "kkernel",
+    "delivery_verified": False,
+    "unverified_reason": "kkernel_exec_without_strict_exits_zero_on_a_refused_op",
+}
 
 
 def test_listing_tells_a_failed_notice_apart_from_a_delivered_one(sandbox):
@@ -2705,6 +2714,30 @@ def test_listing_tells_a_failed_notice_apart_from_a_delivered_one(sandbox):
     assert states[exited_nonzero] == "failed"
     assert states[never_started] == "failed"
     assert states[refused] == "failed"
+
+
+def test_listing_does_not_pass_an_unverified_delivery_off_as_delivered(sandbox):
+    """A zero exit that is known not to prove delivery gets its own word.
+
+    This is the whole point of recording the degraded state: an operator scanning
+    the listing sees "delivered" and stops looking. If the one shape we know can
+    exit zero on a refused send is spelled the same as a confirmed delivery, the
+    marker on the record is information nobody ever acts on.
+
+    It is equally not "failed" — the notice probably did arrive, and reporting a
+    failure that did not happen sends someone chasing it.
+    """
+    unverified = _terminal_run(_DELIVERED_UNVERIFIED)
+    delivered = _terminal_run(_DELIVERED)
+    failed = _terminal_run(_EXITED_NONZERO)
+
+    states = {j["run_id"]: j["notify_delivery_state"] for j in jobs.list_jobs()}
+    assert states[unverified] == "delivered_unverified"
+    assert states[unverified] != states[delivered]
+    assert states[unverified] != states[failed]
+    # a caller that treats anything other than "delivered" as needing a look gets
+    # the right behaviour without having to know this state exists
+    assert states[unverified] != "delivered"
 
 
 def test_listing_does_not_read_an_absent_notifier_as_a_failure(sandbox):
