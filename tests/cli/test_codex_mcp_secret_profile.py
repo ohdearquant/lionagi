@@ -107,6 +107,18 @@ def test_a_name_that_resembles_a_generated_one_is_still_the_callers(codex_home, 
     assert not list(codex_home.glob("*.config.toml"))
 
 
+def test_a_generated_shaped_name_with_a_trailing_newline_is_still_the_callers(codex_home):
+    name = "lionagi-mcp-" + "0" * 32 + "\n"
+    kwargs = {"profile": name}
+
+    with pytest.raises(ConfigurationError) as excinfo:
+        _write_codex_mcp_secret_profile(kwargs, SECRET_FIELDS)
+
+    assert repr(name) in str(excinfo.value)
+    assert kwargs["profile"] == name
+    assert not list(codex_home.glob("*.config.toml"))
+
+
 def test_a_failed_write_leaves_the_request_alone(codex_home, monkeypatch):
     """A profile that could not be written must not be named on the request."""
     original = {"profile": "lionagi-mcp-" + "a" * 32}

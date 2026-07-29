@@ -1025,7 +1025,7 @@ _GENERATED_CODEX_PROFILE_RE = re.compile(rf"^{re.escape(_CODEX_MCP_PROFILE_PREFI
 
 def _is_generated_codex_profile(name: object) -> bool:
     """Whether *name* is a profile name `_write_codex_mcp_secret_profile` minted."""
-    return isinstance(name, str) and _GENERATED_CODEX_PROFILE_RE.match(name) is not None
+    return isinstance(name, str) and _GENERATED_CODEX_PROFILE_RE.fullmatch(name) is not None
 
 
 # Profile files older than this are considered abandoned (the process that

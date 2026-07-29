@@ -531,6 +531,7 @@ def _locked_job(run_id: str) -> Iterator[_GuardedJob]:
             os.close(fd)
         yield _GuardedJob(None, LOCK_UNAVAILABLE)
         return
+    section_succeeded = False
     try:
         record, state = _read_job_state(run_id)
         guard = _GuardedJob(record, state)
@@ -538,14 +539,13 @@ def _locked_job(run_id: str) -> Iterator[_GuardedJob]:
         yield guard
         if guard.record is not None and guard.record != before:
             _write_job(guard.record)
+        section_succeeded = True
     finally:
-        # Two releases that both have to be attempted, neither of them entitled
-        # to speak for the body. The body is where the failures a caller acts on
-        # come from — a refused record, a write that would not serialize — and a
-        # release that fails is worth less than any of them. So a refusal to
-        # release is suppressed, and the close is still attempted when the
-        # unlock did not happen, because a lock nobody released is a worse
-        # outcome than either.
+        # Two releases that both have to be attempted. When the section failed,
+        # neither is entitled to answer in place of that failure. When it
+        # succeeded, a release failure is the only failure and remains observable.
+        # The close is still attempted when the unlock did not happen, because a
+        # lock nobody released is a worse outcome than either.
         #
         # Only what a refusal looks like, though. An interrupt or an exit
         # arriving while the release runs is not the release failing, it is
@@ -563,12 +563,18 @@ def _locked_job(run_id: str) -> Iterator[_GuardedJob]:
         # is the whole of the claim. The two locks arrive at it by different
         # routes and neither route is described here, because a description that
         # fits one of them does not fit the other.
-        try:
-            with contextlib.suppress(OSError):
+        if section_succeeded:
+            try:
                 _unlock_fd(fd)
-        finally:
-            with contextlib.suppress(OSError):
+            finally:
                 os.close(fd)
+        else:
+            try:
+                with contextlib.suppress(OSError):
+                    _unlock_fd(fd)
+            finally:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
 
 
 def _short_repr(value: Any, limit: int = 60) -> str:
@@ -3002,6 +3008,10 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
     explicitly. Normalising the value is a change to what ``status`` reports and
     belongs with it rather than here, where it would make the two disagree.
 
+    A directory without a job record is not listed. Submissions reserve their
+    directory before command preparation, and publishing ``job.json`` is the
+    boundary that turns that reservation into a job.
+
     The directory read itself is different, and is allowed to fail. A listing has
     no field in which to say it could not be read, so answering the empty list
     would say "there are no jobs at all" about a directory nobody could look in.
@@ -3017,6 +3027,14 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
     for d in entries:
         if not d.is_dir():
             continue
+        try:
+            (d / "job.json").stat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            # Let status classify an inaccessible record rather than hiding a
+            # directory that may already have crossed the publication boundary.
+            pass
         st = status(d.name)
         if status_filter and st["status"] != status_filter:
             continue
