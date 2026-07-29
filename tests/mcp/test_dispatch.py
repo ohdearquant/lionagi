@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -148,6 +149,33 @@ def test_ops_alone_still_run():
     answer = call(ops=[{"op": "server.info"}])
     assert answer["status"] == "success"
     assert answer["ops"][0]["ok"] is True
+
+
+def test_a_relative_cwd_is_recorded_as_the_directory_it_was_checked_against(
+    tmp_path, monkeypatch, submitted
+):
+    """A caller-relative cwd is stored absolute.
+
+    The directory check already answers about the submitting process's own
+    directory, so a relative path that passes it and is then stored unresolved is
+    validated against one directory and later read against another.
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    answer = call(
+        ops=[
+            spawn_op(
+                "agent.submit",
+                {"prompt": "hi", "agent": "implementer", "cwd": project.name},
+            )
+        ]
+    )
+
+    assert answer["ops"][0]["ok"] is True
+    assert Path(submitted["cwd"]).is_absolute()
+    assert Path(submitted["cwd"]) == project.resolve()
 
 
 def test_help_with_an_empty_ops_list_is_a_plain_help_call():

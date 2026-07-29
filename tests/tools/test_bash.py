@@ -416,10 +416,11 @@ def _truncation_advice(doc: str) -> tuple[list[str], list[str]]:
 
 
 async def test_docstring_recovery_advice_is_executable(tmp_path):
-    """The commands the oversized-output advice names must match what the guard allows.
+    """The oversized-output advice must name remedies that run and reduce output.
 
     Every command listed as a supported remedy is run here and must succeed;
-    every command listed as unavailable is run here and must be refused by the
+    its stdout must be at most a tenth of the unremedied command's output.
+    Every command listed as unavailable is run here and must be refused by the
     guard. Neither list is compared against expected prose — both are read out
     of the docstring — so rewording the advice keeps this green, while moving a
     command between the lists, or changing the guard so a listed remedy stops
@@ -435,7 +436,8 @@ async def test_docstring_recovery_advice_is_executable(tmp_path):
     # run inside tmp_path. A remedy using an unknown placeholder is a failure,
     # not a silent skip.
     payload = tmp_path / "payload.txt"
-    payload.write_text("line\n" * 200)
+    large_payload = "line\n" * 40_000
+    payload.write_text(large_payload)
     writer = tmp_path / "writer.py"
     writer.write_text(
         "import sys\n"
@@ -443,6 +445,10 @@ async def test_docstring_recovery_advice_is_executable(tmp_path):
         "open(out, 'w').write('generated\\n')\n"
     )
     fixtures = {"FILE": str(payload), "PROG": f"{sys.executable} {writer}"}
+    baseline = await tool.handle_request(BashRequest(command=f"cat {payload}"))
+    assert baseline.return_code == 0
+    assert "truncated" in baseline.stdout.lower()
+    baseline_bytes = len(baseline.stdout.encode())
 
     def runnable(template: str) -> str:
         used = set(re.findall(r"\b[A-Z]{2,}\b", template))
@@ -452,10 +458,18 @@ async def test_docstring_recovery_advice_is_executable(tmp_path):
         return template
 
     for template in offered:
+        payload.write_text(large_payload)
         resp = await tool.handle_request(BashRequest(command=runnable(template)))
         assert resp.return_code == 0, f"advised remedy {template!r} does not run: {resp.stderr}"
+        remedy_bytes = len(resp.stdout.encode())
+        max_remedy_bytes = baseline_bytes // 10
+        assert remedy_bytes <= max_remedy_bytes, (
+            f"advised remedy {template!r} did not materially reduce stdout: "
+            f"{remedy_bytes} bytes exceeds {max_remedy_bytes}"
+        )
 
     for template in ruled_out:
+        payload.write_text(large_payload)
         command = runnable(template)
         resp = await tool.handle_request(BashRequest(command=command))
         assert resp.return_code == -1, (

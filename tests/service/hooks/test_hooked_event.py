@@ -4,6 +4,7 @@
 """Tests for lionagi.service.hooks.hooked_event — HookedEvent._invoke() and _stream()."""
 
 import asyncio
+import contextvars
 import gc
 import logging
 from types import SimpleNamespace
@@ -454,6 +455,81 @@ async def test_stream_terminal_state_is_completed_on_exhaustion():
     assert chunks == ["chunk1", "chunk2"]
     assert seen == [StreamTerminalState.Completed]
     assert h.stream_terminal_state is StreamTerminalState.Completed
+
+
+@pytest.mark.asyncio
+async def test_concurrent_stream_hooks_see_their_own_terminal_state():
+    """Each concurrent stream's hook observes how that stream ended."""
+    current_stream = contextvars.ContextVar("current_stream")
+    first_hook_started = asyncio.Event()
+    release_first_hook = asyncio.Event()
+    seen: dict[str, StreamTerminalState | None] = {}
+
+    class ConcurrentStream(HookedEvent):
+        async def _core_stream(self):
+            if current_stream.get() == "first":
+                raise ValueError("first stream failed")
+            yield "second stream completed"
+
+    class RecordingPostHook:
+        execution = SimpleNamespace(status=EventStatus.COMPLETED, error=None)
+        _should_exit = False
+        _exit_cause = None
+
+        async def invoke(self):
+            stream = current_stream.get()
+            if stream == "first":
+                first_hook_started.set()
+                await release_first_hook.wait()
+            seen[stream] = event.stream_terminal_state
+
+    event = ConcurrentStream()
+    event._post_invoke_hook_event = RecordingPostHook()
+
+    async def consume(stream: str):
+        current_stream.set(stream)
+        return [chunk async for chunk in event._stream()]
+
+    first = asyncio.create_task(consume("first"))
+    await first_hook_started.wait()
+    assert await consume("second") == ["second stream completed"]
+    release_first_hook.set()
+    with pytest.raises(ValueError, match="first stream failed"):
+        await first
+
+    assert seen == {
+        "first": StreamTerminalState.Failed,
+        "second": StreamTerminalState.Completed,
+    }
+    assert event.stream_terminal_state is StreamTerminalState.Failed
+
+
+@pytest.mark.asyncio
+async def test_public_stream_retains_terminal_state_for_parent_after_context_reset():
+    """The parent keeps seeing the completed state after child invocation cleanup."""
+    event = SimpleHooked()
+
+    async def consume():
+        return [chunk async for chunk in event.stream()]
+
+    assert await asyncio.create_task(consume()) == ["chunk1", "chunk2"]
+    assert event.stream_terminal_state is StreamTerminalState.Completed
+
+
+@pytest.mark.asyncio
+async def test_public_stream_can_be_advanced_from_different_task_contexts():
+    """A timeout task may advance each chunk without corrupting normal exhaustion."""
+    event = SimpleHooked()
+    stream = event.stream()
+
+    assert await asyncio.wait_for(anext(stream), 1) == "chunk1"
+    assert await asyncio.wait_for(anext(stream), 1) == "chunk2"
+    with pytest.raises(StopAsyncIteration):
+        await asyncio.wait_for(anext(stream), 1)
+
+    assert event.status is EventStatus.COMPLETED
+    assert event.execution.error is None
+    assert event.stream_terminal_state is StreamTerminalState.Completed
 
 
 @pytest.mark.asyncio

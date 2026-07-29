@@ -38,7 +38,7 @@ _BARRIER_TIMEOUT_SECONDS = 15
 
 def _create_legacy_session_status_db(db_path: Path) -> None:
     """Full current schema, except sessions.status still carries the legacy
-    4-value CHECK constraint that ``_drop_legacy_session_status_check``
+    4-value CHECK constraint that ``_rebuild_legacy_sessions_table``
     rebuilds away. Every column already matches the current schema, so
     ``_reconcile_columns`` is a no-op and the session-status rebuild's own
     write is the first (and only) write transaction ``open()`` performs.

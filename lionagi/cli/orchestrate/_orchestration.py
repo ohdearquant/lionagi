@@ -865,21 +865,17 @@ async def build_worker_branch(
         fast=w_fast,
     )
     _hand_mcp_servers(w_imodel, getattr(env, "mcp_servers", None), label=agent_id)
+    is_cli = bool(getattr(w_imodel, "is_cli", False))
     artifact_dir = env.run.agent_artifact_dir(agent_id)
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    w_imodel.endpoint.config.kwargs["repo"] = artifact_dir
-    # The directory named in the worker's system prompt must be the one the
-    # worker can actually write. The file-editing tool refuses absolute paths
-    # outside the working directory, so only the cwd qualifies — read it back
-    # from the kwargs the worker is launched with rather than reusing the
-    # local, so a later change to how the cwd is chosen cannot leave the
-    # prompt naming a path the worker will be refused.
-    worker_cwd = Path(w_imodel.endpoint.config.kwargs["repo"])
-    env.worker_artifact_dirs[agent_id] = worker_cwd
-    project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
-    w_imodel.endpoint.config.kwargs.setdefault("add_dir", [])
-    if project_root not in w_imodel.endpoint.config.kwargs["add_dir"]:
-        w_imodel.endpoint.config.kwargs["add_dir"].append(project_root)
+    if is_cli:
+        w_imodel.endpoint.config.kwargs["repo"] = artifact_dir
+    env.worker_artifact_dirs[agent_id] = artifact_dir
+    if is_cli:
+        project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
+        w_imodel.endpoint.config.kwargs.setdefault("add_dir", [])
+        if project_root not in w_imodel.endpoint.config.kwargs["add_dir"]:
+            w_imodel.endpoint.config.kwargs["add_dir"].append(project_root)
 
     if explicit_name is not None:
         env.register_name(explicit_name)
@@ -892,9 +888,7 @@ async def build_worker_branch(
     # is assembled so the coordination section names the right channel.
     exchange = getattr(env, "exchange", None)
     messenger = getattr(env, "messenger", None)
-    messenger_bound = (
-        exchange is not None and messenger is not None and not getattr(w_imodel, "is_cli", False)
-    )
+    messenger_bound = exchange is not None and messenger is not None and not is_cli
 
     resolved_modes = [] if env.bare else resolve_modes(role, modes, env.pack)
     team_section = team_worker_system(
@@ -909,19 +903,26 @@ async def build_worker_branch(
     # verbatim path only when it authored a body — one that just sets a model
     # or an effort has no body to run, and leaves the role composing as usual.
     #
-    # An authored body is prose the harness did not write, so it carries no
-    # artifact directive of its own — and if it does carry one, the directory it
-    # names is whatever its author typed, not the directory this worker was
-    # launched in. Both cases are handled by retargeting: the section is
-    # appended when absent and rewritten when present, so every verbatim prompt
-    # ends up naming the cwd the worker can actually write.
+    # Retarget authored prompts so they name this worker's artifact destination.
     verbatim_system: str | None = None
     if system_prompt_override is not None:
-        verbatim_system = retarget_artifact_section(system_prompt_override, worker_cwd)
+        verbatim_system = retarget_artifact_section(
+            system_prompt_override,
+            artifact_dir,
+            workspace_assigned=is_cli,
+        )
     elif not env.bare and w_profile and w_profile.raw_body:
-        verbatim_system = retarget_artifact_section(w_profile.system_prompt, worker_cwd)
+        verbatim_system = retarget_artifact_section(
+            w_profile.system_prompt,
+            artifact_dir,
+            workspace_assigned=is_cli,
+        )
     elif env.bare or not _is_casts_role(role):
-        verbatim_system = bare_worker_system(grant_spawn=grant_spawn, artifact_dir=worker_cwd)
+        verbatim_system = bare_worker_system(
+            grant_spawn=grant_spawn,
+            artifact_dir=artifact_dir,
+            workspace_assigned=is_cli,
+        )
 
     log_config = DataLoggerConfig(auto_save_on_exit=False)
     if verbatim_system is None:
@@ -931,7 +932,10 @@ async def build_worker_branch(
         # sees `bare_worker_system`, so the artifact directive is appended here
         # too — otherwise the default (non-`--bare`) worker, which is the
         # common case, would still be told nothing about where output belongs.
-        artifact_section = worker_artifact_section(worker_cwd)
+        artifact_section = worker_artifact_section(
+            artifact_dir,
+            workspace_assigned=is_cli,
+        )
         composed_extra = (
             f"{artifact_section}\n\n{team_section}" if team_section else artifact_section
         )

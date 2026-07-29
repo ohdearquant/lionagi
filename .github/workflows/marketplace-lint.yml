@@ -10,6 +10,12 @@ on:
       - 'scripts/ci.sh'
       - 'tests/marketplace_lint.py'
 
+concurrency:
+  # A new push to a PR supersedes its own earlier run; pushes to a branch and
+  # manual runs are never cancelled, because those results are a record.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint:
     runs-on: ubuntu-latest

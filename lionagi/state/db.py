@@ -414,7 +414,7 @@ TransitionRejectedError = _lifecycle_adapters.TransitionRejectedError
 
 
 _INVOCATION_KINDS = frozenset({"agent", "play", "flow", "fanout", "show-play"})
-_SOURCE_KINDS = frozenset({"live", "imported_fs"})
+_SOURCE_KINDS = frozenset({"live", "imported_fs", "imported_codex"})
 
 _SHOW_STATUSES = frozenset({"active", "completed", "aborted", "imported"})
 _PLAY_STATUSES = frozenset(
@@ -857,7 +857,7 @@ class StateDB:
         await self._refuse_newer_schema()
         await self._reconcile_columns()
         if self.dialect == "sqlite":
-            await self._drop_legacy_session_status_check()
+            await self._rebuild_legacy_sessions_table()
             # existing DBs created before flow_yaml was added carry a
             # 4-value CHECK on schedules.action_kind that omits 'flow_yaml'.
             await self._drop_legacy_action_kind_check()
@@ -1044,9 +1044,26 @@ class StateDB:
                 raise
 
     _LEGACY_SESSION_STATUS_CHECK_MARKER = "'running', 'completed', 'failed', 'aborted'"
+    # Present only in a sessions CREATE SQL written before transcript imports had
+    # their own provenance value; its absence beside a source_kind CHECK is what
+    # marks a DB that would reject 'imported_codex'.
+    _NARROW_SOURCE_KIND_MARKER = "'live', 'imported_fs')"
 
-    async def _drop_legacy_session_status_check(self) -> None:
-        """Rebuild sessions table if it carries the legacy 4-value CHECK constraint."""
+    @classmethod
+    def _sessions_rebuild_needed(cls, create_sql: str) -> bool:
+        """Whether a sessions CREATE SQL still carries either legacy CHECK.
+
+        A DB with no source_kind CHECK at all (the column was added by column
+        reconciliation, which cannot attach one) accepts every value already, so
+        only a CHECK that names the narrow set needs widening.
+        """
+        if cls._LEGACY_SESSION_STATUS_CHECK_MARKER in create_sql:
+            return True
+        return cls._NARROW_SOURCE_KIND_MARKER in create_sql
+
+    async def _rebuild_legacy_sessions_table(self) -> None:
+        """Rebuild sessions if it carries either legacy CHECK: the 4-value status
+        vocabulary, or a source_kind that predates the codex-import provenance value."""
         if self.dialect != "sqlite":
             return
         async with self._engine.connect() as conn:
@@ -1062,7 +1079,7 @@ class StateDB:
         if row is None or row["sql"] is None:
             return
         create_sql: str = row["sql"]
-        if self._LEGACY_SESSION_STATUS_CHECK_MARKER not in create_sql:
+        if not self._sessions_rebuild_needed(create_sql):
             return
 
         async with self._engine.connect() as conn:
@@ -1140,7 +1157,8 @@ class StateDB:
                               artifacts_path  TEXT,
                               source_kind     TEXT    DEFAULT 'live' CHECK(
                                                 source_kind IS NULL
-                                                OR source_kind IN ('live', 'imported_fs')
+                                                OR source_kind IN
+                                                  ('live', 'imported_fs', 'imported_codex')
                                               ),
                               status          TEXT,
                               started_at      REAL,
@@ -1191,7 +1209,7 @@ class StateDB:
 
         await self._rebuild_check_constraint(
             "sessions",
-            lambda sql: sql is None or self._LEGACY_SESSION_STATUS_CHECK_MARKER not in sql,
+            lambda sql: sql is None or not self._sessions_rebuild_needed(sql),
             _rebuild,
         )
 
@@ -1204,7 +1222,7 @@ class StateDB:
 
         The old CHECK omits ``'flow_yaml'``; SQLite cannot drop a constraint via
         ALTER TABLE, so we use the rename → CREATE new → INSERT SELECT → DROP
-        old pattern (same as ``_drop_legacy_session_status_check``).
+        old pattern (same as ``_rebuild_legacy_sessions_table``).
         """
         if self.dialect != "sqlite":
             return
@@ -1525,7 +1543,7 @@ class StateDB:
 
         SQLite cannot drop a constraint via ALTER TABLE, so we use the same
         rename → CREATE new → INSERT SELECT → DROP old pattern as
-        ``_drop_legacy_session_status_check`` / ``_drop_legacy_action_kind_check``.
+        ``_rebuild_legacy_sessions_table`` / ``_drop_legacy_action_kind_check``.
         """
         if self.dialect != "sqlite":
             return
