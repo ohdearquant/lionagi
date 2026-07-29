@@ -314,9 +314,11 @@ Exact history semantics:
   progression in reverse and return `None` on miss.
 - **Raw projection:** `to_chat_msgs(progression=[])` returns an empty list. Otherwise it projects
   the supplied order, or the full manager progression when none/falsy is supplied, through each
-  record's `chat_msg`. An invalid ID is wrapped as `ValueError("One or more messages in the
-  requested progression are invalid.")`. The method does not perform action folding, system
-  folding, transient-field stripping, or empty-content filtering.
+  record's strict internal `_chat_msg`. An invalid ID or projection failure is wrapped as
+  `ValueError("One or more messages in the requested progression are invalid.")`, so manager
+  conversion cannot emit `None` holes even though the public `chat_msg` property is nullable.
+  The method does not perform action folding, system folding, transient-field stripping, or
+  empty-content filtering.
 
 `Branch` remains the operation owner and exposes the records as a facade:
 
