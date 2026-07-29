@@ -3201,3 +3201,48 @@ def test_an_interrupt_arriving_during_release_is_not_swallowed_and_still_closes(
             raise ValueError("the failure the interrupt arrived during")
 
     assert closed == [taken["fd"]]
+
+
+def test_the_listing_says_which_running_rows_never_started(sandbox, monkeypatch):
+    """`running` is two different facts, and the listing has to tell them apart.
+
+    A record whose spawn was never attempted stays `running` on purpose — the
+    classifier refuses to resolve it by a bound that cannot tell a loaded machine
+    from a dead spawn. That refusal is right and it is exactly why the listing
+    must carry the spawn state: this is the surface a caller reads to answer what
+    is in flight, and a run that never began must not be counted there as one
+    doing work.
+    """
+    _live_process(monkeypatch)
+    never_started = jobs.new_run_id()
+    jobs._write_job(
+        {
+            "run_id": never_started,
+            "pid": None,
+            "kind": "agent",
+            "status": "running",
+            "spawn_state": "preparing",
+            "log": None,
+        }
+    )
+    working = jobs.new_run_id()
+    jobs._write_job(
+        {
+            "run_id": working,
+            "pid": 4242,
+            "pid_create_time": _SPAWNED_AT,
+            "kind": "agent",
+            "status": "running",
+            "spawn_state": "started",
+            "log": None,
+        }
+    )
+
+    listed = {j["run_id"]: j for j in jobs.list_jobs()}
+    assert set(listed) == {never_started, working}
+
+    # Both wear the same word, which is what makes the listing alone misleading.
+    assert listed[never_started]["status"] == listed[working]["status"] == "running"
+    # And the field that separates them is present without a per-run status call.
+    assert listed[never_started]["spawn_state"] == "preparing"
+    assert listed[working]["spawn_state"] == "started"

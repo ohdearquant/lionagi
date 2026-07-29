@@ -2929,6 +2929,19 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
     unknown status. That is a per-run failure, and one damaged record must not cost
     the caller the runs beside it.
 
+    ``spawn_state`` rides along for the same reason those three do, and it is the
+    one that decides what ``running`` means. A record whose spawn was never
+    attempted, or whose result was never written, stays ``running`` on purpose:
+    resolving it would take a bound that cannot tell a loaded machine from a dead
+    spawn, so ``status`` deliberately makes no claim about its fate. That refusal
+    is right, and it is also why the distinction has to be visible here. This
+    listing is what a caller reads to answer "what is in flight right now", and
+    without the spawn state a run that never started is indistinguishable in it
+    from one doing work — same word, two facts. A count that can hold a run that
+    never began is one a caller cannot use as evidence in either direction, so the
+    live run hiding in a listing somebody has learned to discount is the failure
+    this field exists to prevent.
+
     The directory read itself is different, and is allowed to fail. A listing has
     no field in which to say it could not be read, so answering the empty list
     would say "there are no jobs at all" about a directory nobody could look in.
@@ -2956,6 +2969,7 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
                 "terminal": st["terminal"],
                 "outcome": st["outcome"],
                 "reason_code": st["reason_code"],
+                "spawn_state": st["spawn_state"],
                 "submitted_at": st["submitted_at"],
                 "finished_at": st["finished_at"],
                 "terminal_source": st["terminal_source"],
