@@ -169,7 +169,7 @@ async def lifespan(app_instance):
     # health request, the snapshot would describe whatever the tree had become by
     # then and report a commit this process never loaded, with a clean drift
     # verdict on top.
-    snapshot_git_position()
+    await asyncio.to_thread(snapshot_git_position)
 
     _emit_startup_warnings()
     # The second of the two settings-driven notify bootstrap points (CLI is the first).

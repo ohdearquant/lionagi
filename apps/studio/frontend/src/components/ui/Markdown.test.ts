@@ -9,6 +9,10 @@
 import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { createElement } from "react";
+import type { ComponentType, ReactNode } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import Markdown, * as MarkdownModule from "./Markdown";
 
 const SRC = fs.readFileSync(path.resolve(__dirname, "Markdown.tsx"), "utf-8");
 
@@ -90,11 +94,53 @@ describe("Markdown.tsx — the file viewer renders markdown as markdown", () => 
   });
 
   it("renders the previewed document WITHOUT a fileContext, so a viewer cannot stack on itself", () => {
-    // <Markdown> with no fileContext prop yields components=undefined, so the
-    // nested render wires no FileRef handlers and mounts no second modal.
-    // A bare <Markdown> tag (no props) is the whole guard — assert it stays bare.
+    // The nested render wires no FileRef handlers and mounts no second modal.
+    // A bare <Markdown> tag (no props) is the file-link guard; an outer
+    // render-policy wrapper does not supply a fileContext.
     expect(SRC).toMatch(/<Markdown>\{state\.content\}<\/Markdown>/);
     expect(SRC).not.toMatch(/<Markdown[^>]+fileContext/);
+  });
+
+  it("does not load a remote image embedded in a previewed artifact", () => {
+    const RemoteImageGuard = (
+      MarkdownModule as typeof MarkdownModule & {
+        RemoteImageGuard?: ComponentType<{ children: ReactNode }>;
+      }
+    ).RemoteImageGuard;
+    expect(RemoteImageGuard).toBeTypeOf("function");
+    if (!RemoteImageGuard) return;
+
+    const Guard = RemoteImageGuard as ComponentType<{ children?: ReactNode }>;
+    const MarkdownRenderer = Markdown as ComponentType<{ children?: string }>;
+    const remoteUrls = [
+      "https://example.invalid/tracker.png",
+      "http://example.invalid/tracker.png",
+      "//example.invalid/tracker.png",
+      "https:/example.invalid/tracker.png",
+      "http:/example.invalid/tracker.png",
+      "https:example.invalid/tracker.png",
+      "http:example.invalid/tracker.png",
+    ];
+    for (const remoteUrl of remoteUrls) {
+      const html = renderToStaticMarkup(
+        createElement(
+          Guard,
+          null,
+          createElement(MarkdownRenderer, null, `![remote tracker](${remoteUrl})`),
+        ),
+      );
+
+      expect(html).not.toContain("<img");
+      expect(html).not.toContain(remoteUrl);
+      expect(html).toContain("Remote image blocked");
+    }
+
+    const remoteUrl = remoteUrls[0];
+    const ordinaryHtml = renderToStaticMarkup(
+      createElement(MarkdownRenderer, null, `![remote tracker](${remoteUrl})`),
+    );
+    expect(ordinaryHtml).toContain("<img");
+    expect(ordinaryHtml).toContain(remoteUrl);
   });
 
   it("gives a rendered document more width than raw source, since tables need it", () => {

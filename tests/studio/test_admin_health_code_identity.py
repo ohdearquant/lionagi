@@ -164,6 +164,42 @@ def test_the_daemon_snapshots_its_position_before_it_starts_serving(monkeypatch)
     assert seen.get("snapshot_while_serving") is not None
 
 
+def test_startup_snapshot_does_not_block_the_event_loop(monkeypatch):
+    import threading
+
+    import lionagi.cli._code_identity as ci
+    import lionagi.studio.app as app_mod
+    from lionagi.studio.scheduler.engine import scheduler
+
+    seen: dict[str, int] = {}
+
+    def _record_snapshot() -> None:
+        seen["snapshot_thread"] = threading.get_ident()
+
+    async def _noop() -> None:
+        return None
+
+    monkeypatch.setattr(ci, "snapshot_git_position", _record_snapshot)
+    monkeypatch.setattr(scheduler, "start", _noop)
+    monkeypatch.setattr(scheduler, "stop", _noop)
+    monkeypatch.setattr(app_mod, "run_startup_reconciliation", _noop, raising=False)
+    monkeypatch.setattr(app_mod, "_start_claude_mirror", lambda: (None, None))
+    monkeypatch.setattr(app_mod, "_stop_claude_mirror", lambda *a: _noop())
+    monkeypatch.setattr(app_mod, "_startup_warmup", _noop)
+    monkeypatch.setattr(app_mod, "_finalize_warmup", lambda *a: _noop())
+
+    async def _drive() -> None:
+        seen["event_loop_thread"] = threading.get_ident()
+        async with app_mod.lifespan(None):
+            pass
+
+    import anyio
+
+    anyio.run(_drive)
+
+    assert seen["snapshot_thread"] != seen["event_loop_thread"]
+
+
 def test_the_reading_does_not_block_the_event_loop(monkeypatch, tmp_path):
     """A health check must not stall the daemon it is reporting on.
 

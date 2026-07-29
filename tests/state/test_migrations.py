@@ -1038,6 +1038,61 @@ async def test_dispatched_at_migration_backfills_preexisting_running_rows(tmp_pa
         await state.close()
 
 
+async def test_dispatched_at_backfill_runs_when_column_already_exists(tmp_path):
+    from lionagi.state.db import _SCHEMA_PATH, StateDB
+
+    db_path = tmp_path / "legacy_with_dispatched_at.db"
+    async with aiosqlite.connect(str(db_path)) as raw:
+        await raw.executescript(_SCHEMA_PATH.read_text())
+        await raw.execute("UPDATE schema_meta SET value = '1' WHERE key = 'version'")
+        await raw.execute(
+            "INSERT INTO schedules "
+            "(id, name, trigger_type, action_kind, created_at, updated_at) "
+            "VALUES ('sched-existing-da', 'sched-existing-da', 'interval', 'agent', 1.0, 1.0)"
+        )
+        await raw.execute(
+            "INSERT INTO schedule_runs "
+            "(id, schedule_id, trigger_context, action_kind, action_args, status, "
+            " chain_depth, fired_at, created_at, dispatched_at) "
+            "VALUES ('run-existing-da', 'sched-existing-da', '{}', 'agent', '{}', "
+            " 'running', 0, 100.0, 100.0, NULL)"
+        )
+        await raw.commit()
+
+    state = StateDB(db_path)
+    await state.open()
+    try:
+        migrated = await state.get_schedule_run("run-existing-da")
+        assert migrated is not None
+        assert migrated["dispatched_at"] == migrated["fired_at"] == 100.0
+
+        await state.create_schedule_run(
+            {
+                "id": "run-after-backfill",
+                "schedule_id": "sched-existing-da",
+                "trigger_context": {},
+                "action_kind": "agent",
+                "action_args": {},
+                "status": "running",
+                "fired_at": 200.0,
+            }
+        )
+    finally:
+        await state.close()
+
+    reopened = StateDB(db_path)
+    await reopened.open()
+    try:
+        new_run = await reopened.get_schedule_run("run-after-backfill")
+        assert new_run is not None
+        assert new_run["dispatched_at"] is None
+        assert [row["id"] for row in await reopened.list_undispatched_schedule_runs()] == [
+            "run-after-backfill"
+        ]
+    finally:
+        await reopened.close()
+
+
 def _create_legacy_session_status_db(db_path: Path) -> None:
     """Create a database whose sessions table still carries the four-value
     status CHECK that ``_rebuild_legacy_sessions_table`` rebuilds away."""

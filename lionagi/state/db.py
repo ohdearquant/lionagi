@@ -122,6 +122,7 @@ DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
 # rebuilt CHECK constraint, a column whose meaning changed. Version "1" is the
 # original shape, before the migrations now applied on open existed.
 SCHEMA_VERSION = "2"
+_DISPATCHED_AT_BACKFILL_KEY = "migration.dispatched_at_backfill"
 
 
 class SchemaTooNewError(RuntimeError):
@@ -878,6 +879,7 @@ class StateDB:
         async with self._engine.begin() as conn:
             await conn.run_sync(metadata.create_all)
             await self._reconcile_indexes(conn)
+            await self._backfill_dispatched_at_once(conn)
             # Seed immutable reference rows; ON CONFLICT DO NOTHING is safe to
             # re-run on every open() because the rows are identity-stable.
             # The version row is the exception: the migrations above rewrite an
@@ -936,8 +938,6 @@ class StateDB:
                     try:
                         async with self._engine.begin() as conn:
                             await conn.execute(text(add_column))
-                            if table == "schedule_runs" and name == "dispatched_at":
-                                await self._backfill_dispatched_at(conn)
                     except OperationalError:
                         # SQLite has no ADD COLUMN IF NOT EXISTS. Another process
                         # may commit the same migration after our inspection but
@@ -960,9 +960,20 @@ class StateDB:
         for statement in self._MIGRATION_INDEXES.get(self.dialect, ()):
             await conn.execute(text(statement))
 
+    async def _backfill_dispatched_at_once(self, conn) -> None:
+        """Backfill legacy rows exactly once, even if the column predates this release."""
+        claimed = await conn.execute(
+            text(
+                "INSERT INTO schema_meta (key, value) VALUES (:key, '1') "
+                "ON CONFLICT (key) DO NOTHING"
+            ),
+            {"key": _DISPATCHED_AT_BACKFILL_KEY},
+        )
+        if claimed.rowcount:
+            await self._backfill_dispatched_at(conn)
+
     async def _backfill_dispatched_at(self, conn) -> None:
-        """One-time migration backfill for the ``dispatched_at`` column just
-        added to ``schedule_runs``.
+        """Set the dispatch marker on running rows that predate its backfill.
 
         ``dispatched_at`` is only stamped going forward, by
         ``SchedulerEngine._mark_dispatched()``. Without a backfill, every row
@@ -983,9 +994,9 @@ class StateDB:
         wall-clock deadline instead of being auto-retried on ambiguous
         evidence. Scoped to ``schedule_id IS NOT NULL`` to match
         ``list_undispatched_schedule_runs()`` and leave the leased ad-hoc
-        task queue (its own dispatch/lease model) untouched. Runs inside the
-        same transaction as the ``ALTER TABLE`` that adds the column, so it
-        only ever executes once, the moment the column is created.
+        task queue (its own dispatch/lease model) untouched. A durable
+        ``schema_meta`` marker makes this a one-time migration even when an
+        earlier release already added the column without running the update.
         """
         await conn.execute(
             text(
