@@ -1383,6 +1383,23 @@ def _derive(
 # --- public API ----------------------------------------------------------------
 
 
+def _submit_cwd() -> str | None:
+    """This process's own directory, or None when it no longer has one.
+
+    Read through a guard because a submission must not be lost to it. A server
+    whose working directory was removed under it cannot answer, and that is a
+    missing field on one record rather than a reason to strand a run: the record
+    is built before the write that publishes it, so anything raising here leaves
+    a reserved directory that reads back as a job with no kind that never
+    finishes. None says the submitter's directory is unknown, which the delivery
+    path treats as the pre-existing case of not knowing it at all.
+    """
+    try:
+        return os.getcwd()
+    except OSError:
+        return None
+
+
 def submit(
     kind: str,
     flags: list[str],
@@ -1617,6 +1634,19 @@ def submit(
         "kind": kind,
         "argv": argv,
         "cwd": cwd,
+        # Both working directories, because they answer different questions and a
+        # notice signed by the wrong one is the failure this pair exists to close.
+        # `cwd` is where the run executes. `submit_cwd` is this process's own
+        # directory, which is the submitting seat's: it is what the server was
+        # started in, and therefore what any directory-anchored identity lookup
+        # resolves the submitter from. A notifier that resolves who it is from its
+        # working directory reports the run's directory owner unless it is run in
+        # the submitter's, so the delivery uses this one — see
+        # _notify_hook.deliver_terminal_notice. Recorded even when the two agree,
+        # so a record read afterwards can always say which identity a notice
+        # carried rather than leaving it to be inferred from a path that has since
+        # been reused.
+        "submit_cwd": _submit_cwd(),
         "label": label,
         "notify_command": notify_command,
         "notify_target": notify_target,

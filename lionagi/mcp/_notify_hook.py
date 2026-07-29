@@ -18,6 +18,11 @@ raise into the CLI's terminal path):
    configured there is no delivery — the out-of-the-box default is silence.
    A notifier that *is* configured but cannot be used is recorded as a delivery
    failure with a named reason, so it never passes for that default silence.
+   The command runs in the directory the run was *submitted* from, which the
+   record carries, because a notifier that resolves its own identity from its
+   working directory would otherwise sign the notice as whoever owns the
+   directory the run happened to execute in. ``LIONAGI_MCP_NOTIFY_CWD``
+   overrides that for a deployment whose notifier wants to be run elsewhere.
 
 The command is run by absolute argv (never through a shell), so a caller wires
 whatever notifier they use (a webhook client, a messaging CLI) without this
@@ -130,12 +135,49 @@ def _delivery_env(sender: str) -> dict[str, str] | None:
     return env
 
 
+def _resolve_delivery_cwd(
+    job: dict[str, Any] | None, override: str | None
+) -> tuple[str | None, str | None]:
+    """The directory to run the delivery command in, paired with why there is none.
+
+    Returns ``(cwd, None)`` when one resolved, ``(None, None)`` when the record
+    does not name one, and ``(None, reason)`` when one was named and cannot be
+    used — the same three-way shape as :func:`_resolve_command`, for the same
+    reason: a delivery that runs somewhere other than where it was meant to is
+    not the same event as one with nowhere named, and reporting both as "no cwd"
+    hides the case an operator has to fix.
+
+    The order is *override*, then the run record's ``submit_cwd``. The override
+    is the escape hatch for a deployment whose notifier wants to be run somewhere
+    other than the submitting seat's directory; ``submit_cwd`` is the default
+    because the notice is *about* a run and *from* the seat that submitted it,
+    and a directory-anchored notifier run anywhere else signs it as somebody
+    else. Nothing falls back to the current directory on purpose: inheriting is
+    what the caller happens to have, and the two callers here do not have the
+    same one.
+
+    A named directory that is not there is a refusal, not a fallback. Running
+    somewhere else instead would deliver the notice under an identity nobody
+    chose, which is the outcome this whole path exists to prevent and the one
+    that is invisible afterwards. A record with no ``submit_cwd`` is different
+    and is not a refusal: it predates the field, and inheriting is what it always
+    did.
+    """
+    named = override or (job or {}).get("submit_cwd")
+    if not named:
+        return None, None
+    if not os.path.isdir(named):
+        return None, "delivery_cwd_is_not_a_directory"
+    return str(named), None
+
+
 def _deliver(
     argv: list[str],
     payload: dict[str, str],
     env: dict[str, str] | None = None,
     *,
     program: str | None = None,
+    cwd: str | None = None,
 ) -> dict[str, Any]:
     """Run the delivery command best-effort; return its outcome for the record.
 
@@ -151,6 +193,13 @@ def _deliver(
     can already read, and not something the command produced at runtime. That is
     the whole difference: it says *what* failed without keeping a byte of what
     the command said, which stays discarded.
+
+    *cwd* is the directory the command runs in, and it is part of the notice's
+    content rather than an incidental of the process that sent it: a notifier
+    that resolves its own identity from its working directory signs with whoever
+    owns that directory. Passed explicitly so both callers of
+    ``deliver_terminal_notice`` send a notice signed the same way, which they
+    cannot do while each inherits its own.
     """
     try:
         proc = subprocess.run(  # noqa: S603 — argv is the operator-configured delivery command, no shell
@@ -162,6 +211,7 @@ def _deliver(
             stderr=subprocess.DEVNULL,
             check=False,
             env=env,
+            cwd=cwd,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         # never fail the run's terminal path; record the failure instead.
@@ -261,6 +311,15 @@ def deliver_terminal_notice(
     "what is configured here", and the run that needs the notice most is the one
     whose own process is not around to be asked.
 
+    The working directory is part of "what is configured here", which is why it
+    is taken from the run's record and not from whatever this process happens to
+    be sitting in. The two callers never share a directory — the hook runs in the
+    run's, the observer in the server's — so a notifier that resolves its own
+    identity from where it is run would sign the same notice with a different
+    seat depending on which caller got there first, silently, and downstream
+    routing acts on that signature. Reading it from the record is what makes the
+    two callers agree by construction rather than by coincidence.
+
     Nothing raises: the caller is either a terminal path that has already
     finished or a read that has already published a durable end, and neither can
     be failed by a notifier. Every way a delivery does not happen comes back as
@@ -277,6 +336,15 @@ def deliver_terminal_notice(
     # refused for want of a sender is one an operator most wants named, and the
     # program token is the only part of it that survives the refusal.
     program = template[0] if template else None
+    delivery_cwd, cwd_unusable = _resolve_delivery_cwd(
+        job, os.environ.get("LIONAGI_MCP_NOTIFY_CWD")
+    )
+    if template and cwd_unusable:
+        # Recorded the same way an unusable command is, and checked before the
+        # delivery rather than after: the directory decides which identity the
+        # notice carries, so a template that would run in the wrong one is not a
+        # template this hook can use.
+        template, unusable = None, cwd_unusable
     if template and not sender and any("{sender}" in tok for tok in template):
         # The command asks who the notice is from and there is no answer. An
         # empty string is not one: it puts a blank where an identity belongs,
@@ -295,7 +363,11 @@ def deliver_terminal_notice(
             "sender": sender,
         }
         return _deliver(
-            _substitute(template, fields), fields, _delivery_env(sender), program=program
+            _substitute(template, fields),
+            fields,
+            _delivery_env(sender),
+            program=program,
+            cwd=delivery_cwd,
         )
     if unusable:
         # Configured but unusable. Recorded as a failure so job_status shows a
