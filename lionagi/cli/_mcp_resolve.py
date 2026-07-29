@@ -59,6 +59,11 @@ class McpResolution:
     reason: str | None
     source: Path | None
     searched_from: Path
+    # True only when the caller named the config file. A set found by walking up
+    # from the launch directory reads identically once resolved, so consumers
+    # that must tell "someone asked for these servers" from "these were lying
+    # around" cannot recover the difference from ``servers`` or ``source``.
+    explicit: bool = False
 
     @property
     def ok(self) -> bool:
@@ -145,7 +150,7 @@ def resolve_spawn_mcp_servers(
             path = (searched_from / path).resolve()
         if not path.is_file():
             raise McpConfigError(f"--mcp-config {str(explicit)!r} is not a readable file ({path})")
-        return McpResolution(_read_servers(path), None, path, searched_from)
+        return McpResolution(_read_servers(path), None, path, searched_from, explicit=True)
 
     found = discover_mcp_config(searched_from)
     if found is None:

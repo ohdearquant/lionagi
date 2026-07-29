@@ -752,6 +752,159 @@ async def test_run_strips_timeout_from_create_event_kwargs():
     assert "timeout" not in captured, f"timeout leaked into create_event kwargs: {captured!r}"
 
 
+async def test_run_derives_gemini_print_timeout_from_caller_timeout():
+    """The shared run seam forwards its deadline to buffered Gemini CLI requests."""
+    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+
+    model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
+    model.endpoint._request_model = GeminiCodeRequest
+    branch = Branch()
+    branch.chat_model = model
+
+    await _collect(run(branch, "hi", RunParam(imodel_kw={"timeout": 1200})))
+
+    derived = captured["print_timeout"]
+    assert int(derived.removesuffix("s")) > 1200
+    assert "timeout" not in captured
+
+
+async def test_run_preserves_explicit_gemini_print_timeout():
+    """An explicit provider cap wins over the timeout-derived default."""
+    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+
+    model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
+    model.endpoint._request_model = GeminiCodeRequest
+    branch = Branch()
+    branch.chat_model = model
+
+    await _collect(
+        run(
+            branch,
+            "hi",
+            RunParam(imodel_kw={"timeout": 1200, "print_timeout": "45m"}),
+        )
+    )
+
+    assert captured["print_timeout"] == "45m"
+
+
+async def test_run_without_timeout_sets_configured_gemini_print_timeout(monkeypatch):
+    """The shared run seam supplies the configured cap without an outer deadline."""
+    import lionagi.config as config_module
+    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+
+    configured_cap = 3600.0
+    monkeypatch.setattr(
+        config_module,
+        "settings",
+        config_module.AppSettings(LIONAGI_ANTIGRAVITY_PRINT_TIMEOUT=configured_cap),
+    )
+    model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
+    model.endpoint._request_model = GeminiCodeRequest
+    branch = Branch()
+    branch.chat_model = model
+
+    await _collect(run(branch, "hi", RunParam()))
+
+    assert captured["print_timeout"] == "3600s"
+
+
+async def test_configured_gemini_print_timeout_stays_a_parseable_go_duration(monkeypatch):
+    """A large configured cap must not reach agy as scientific notation.
+
+    The setting exists to be overridden, and general float formatting turns
+    values at or above a million into "1e+06", which Go's duration parser
+    rejects. That failure would surface as agy's own uninformative timeout
+    error, which is the failure this whole path exists to stop producing.
+    """
+    import lionagi.config as config_module
+    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+
+    monkeypatch.setattr(
+        config_module,
+        "settings",
+        config_module.AppSettings(LIONAGI_ANTIGRAVITY_PRINT_TIMEOUT=1_000_000.0),
+    )
+    model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
+    model.endpoint._request_model = GeminiCodeRequest
+    branch = Branch()
+    branch.chat_model = model
+
+    await _collect(run(branch, "hi", RunParam()))
+
+    emitted = captured["print_timeout"]
+    assert emitted.endswith("s")
+    # int() rejects both "1e+06" and any other non-integer spelling, so this
+    # asserts parseability rather than restating the formatting expression.
+    assert int(emitted.removesuffix("s")) == 1_000_000
+
+
+async def test_run_preserves_explicit_gemini_print_timeout_without_timeout():
+    """An explicit provider cap also wins when no outer deadline is configured."""
+    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+
+    model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
+    model.endpoint._request_model = GeminiCodeRequest
+    branch = Branch()
+    branch.chat_model = model
+
+    await _collect(run(branch, "hi", RunParam(imodel_kw={"print_timeout": "45m"})))
+
+    assert captured["print_timeout"] == "45m"
+
+
+async def test_run_preserves_endpoint_gemini_print_timeout_without_timeout():
+    """Endpoint configuration is explicit and must not receive a request default."""
+    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+
+    model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
+    model.endpoint._request_model = GeminiCodeRequest
+    model.endpoint.config = types.SimpleNamespace(kwargs={"print_timeout": "50m"})
+    branch = Branch()
+    branch.chat_model = model
+
+    await _collect(run(branch, "hi", RunParam()))
+
+    assert "print_timeout" not in captured
+    assert model.endpoint.config.kwargs["print_timeout"] == "50m"
+
+
+async def test_run_preserves_endpoint_gemini_print_timeout_with_caller_timeout():
+    """The fourth precedence case: endpoint cap set AND a caller deadline set.
+
+    The other three combinations of (caller timeout, explicit cap) are covered
+    above. This is the one where a derived value exists and could plausibly
+    overwrite an explicit one, so it is the cell most worth pinning down.
+    """
+    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+
+    model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
+    model.endpoint._request_model = GeminiCodeRequest
+    model.endpoint.config = types.SimpleNamespace(kwargs={"print_timeout": "50m"})
+    branch = Branch()
+    branch.chat_model = model
+
+    await _collect(run(branch, "hi", RunParam(imodel_kw={"timeout": 1200})))
+
+    assert "print_timeout" not in captured
+    assert model.endpoint.config.kwargs["print_timeout"] == "50m"
+
+
+async def test_gemini_timeout_arms_produce_distinct_caps():
+    """A caller deadline receives headroom; the configured default is the cap."""
+    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+
+    async def captured_cap(imodel_kw):
+        model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
+        model.endpoint._request_model = GeminiCodeRequest
+        branch = Branch()
+        branch.chat_model = model
+        await _collect(run(branch, "hi", RunParam(imodel_kw=imodel_kw)))
+        return captured["print_timeout"]
+
+    assert await captured_cap({"timeout": 1200}) != await captured_cap({})
+
+
 # ---------------------------------------------------------------------------
 # Regression: Branch.operate() must flatten **kwargs so timeout reaches run()
 # ---------------------------------------------------------------------------

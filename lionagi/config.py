@@ -82,6 +82,11 @@ class AppSettings(BaseSettings, frozen=True):
     # 0 disables the watchdog (deterministic / test runs).
     LIONAGI_WORKER_LIVENESS_TIMEOUT: float = 120.0
 
+    # Antigravity print-mode cap (seconds). One hour is comfortably above
+    # expected caller deadlines while retaining a finite subprocess bound;
+    # deployments that need another ceiling can override this setting by name.
+    LIONAGI_ANTIGRAVITY_PRINT_TIMEOUT: float = 3600.0
+
     LOG_PERSIST_DIR: str = "./data/logs"
     LOG_SUBFOLDER: str | None = None
     LOG_CAPACITY: int = 50
