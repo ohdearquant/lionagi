@@ -72,9 +72,10 @@ describe("shouldShowMiniMap", () => {
   });
 });
 
-describe("WorkerCanvas.tsx — source contract for the compact MiniMap fix", () => {
+describe("WorkerCanvas.tsx — source contract for the MiniMap", () => {
   const CANVAS_DIR = path.resolve(__dirname);
   const src = fs.readFileSync(path.join(CANVAS_DIR, "WorkerCanvas.tsx"), "utf-8");
+  const miniMapTag = src.match(/<MiniMap[\s\S]*?\/>/)?.[0];
 
   it("declares a compact prop, defaulting to false", () => {
     expect(src).toMatch(/compact\?: boolean/);
@@ -85,9 +86,11 @@ describe("WorkerCanvas.tsx — source contract for the compact MiniMap fix", () 
     expect(src).toMatch(/shouldShowMiniMap\(compact, nodes\.length\)/);
   });
 
-  it("docks the non-compact minimap bottom-right at its explicit size", () => {
+  it("docks the non-compact minimap bottom-right at React Flow's default size", () => {
     expect(shouldShowMiniMap(false, 11)).toBe(true);
-    expect(src).toMatch(/position="bottom-right"/);
-    expect(src).toMatch(/style=\{\{ width: 120, height: 80 \}\}/);
+    expect(miniMapTag).toBeDefined();
+    expect(miniMapTag).toMatch(/position="bottom-right"/);
+    expect(miniMapTag).not.toMatch(/\b(?:width|height)=/);
+    expect(miniMapTag).not.toMatch(/\bstyle=/);
   });
 });
