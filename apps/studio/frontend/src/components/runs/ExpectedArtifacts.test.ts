@@ -1,40 +1,84 @@
-/**
- * ExpectedArtifacts — source-contract tests (this project has no
- * @testing-library/react, so component wiring is verified against the source
- * rather than a live render; see ui/Markdown.test.ts for the same pattern).
- *
- * The behaviour under test: a provisional verification is a reading taken while
- * the run is still going. An artifact that is not on disk yet has not been
- * missed, it has not been written yet, and the panel must not say otherwise.
- */
-import { describe, it, expect } from "vitest";
-import * as fs from "node:fs";
-import * as path from "node:path";
+/** Render tests for live, recorded, and absent artifact-verification states. */
+import { act, createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, describe, expect, it } from "vitest";
 
-const SRC = fs.readFileSync(path.resolve(__dirname, "ExpectedArtifacts.tsx"), "utf-8");
+import ExpectedArtifacts from "./ExpectedArtifacts";
+import type { ArtifactContract, ArtifactVerification } from "@/lib/types";
 
-describe("ExpectedArtifacts.tsx — provisional readings", () => {
-  it("never calls an artifact missing on a provisional reading", () => {
-    expect(SRC).toMatch(/!verification\?\.provisional &&/);
+const CONTRACT: ArtifactContract = {
+  expected: [
+    { id: "report", path: "REPORT.md", required: true },
+    { id: "notes", path: "NOTES.md", required: false },
+  ],
+};
+
+let root: Root | null = null;
+let container: HTMLDivElement | null = null;
+
+function renderExpectedArtifacts(verification: ArtifactVerification | null) {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+  act(() => {
+    root?.render(createElement(ExpectedArtifacts, { contract: CONTRACT, verification }));
+  });
+  return container;
+}
+
+afterEach(() => {
+  if (root) {
+    act(() => root?.unmount());
+  }
+  container?.remove();
+  root = null;
+  container = null;
+});
+
+describe("ExpectedArtifacts", () => {
+  it("shows written progress and keeps unwritten live artifacts pending", () => {
+    const view = renderExpectedArtifacts({
+      status: "failed",
+      checked_at: 10,
+      missing_required: [],
+      missing_optional: [{ id: "notes", path: "NOTES.md", required: false }],
+      produced: [{ id: "report", path: "REPORT.md", size: 5, present: true }],
+      provisional: true,
+    });
+
+    expect(view.textContent).toContain("1 of 2 written");
+    expect(view.textContent).toContain("OK (5 B)");
+    expect(view.textContent).toContain("PENDING");
+    expect(view.textContent).not.toContain("MISSING");
   });
 
-  it("keeps MISSING reachable for a recorded verdict", () => {
-    expect(SRC).toMatch(/missingRequired\.has\(entry\.id\) \|\| missingOptional\.has\(entry\.id\)/);
-    expect(SRC).toMatch(/"MISSING"/);
+  it("shows missing only when a recorded verdict says it is missing", () => {
+    const view = renderExpectedArtifacts({
+      status: "failed",
+      checked_at: 20,
+      missing_required: [{ id: "report", path: "REPORT.md", required: true }],
+      missing_optional: [],
+      produced: [],
+    });
+
+    expect(view.textContent).toContain("Verified: failed");
+    expect(view.textContent).toContain("MISSING");
   });
 
-  it("shows written-so-far progress instead of a contract status while the run is live", () => {
-    expect(SRC).toMatch(/verification\?\.provisional \?/);
-    expect(SRC).toMatch(/\{producedById\.size\} of \{expected\.length\} written/);
+  it("keeps a live null verdict pending", () => {
+    const view = renderExpectedArtifacts(null);
+
+    expect(view.textContent?.match(/PENDING/g)).toHaveLength(2);
+    expect(view.textContent).not.toContain("Verification not recorded");
+    expect(view.textContent).not.toContain("NOT RECORDED");
   });
 
-  it("still shows the recorded verdict when there is one", () => {
-    expect(SRC).toMatch(/Verified: \{verification\.status\}/);
-  });
+  it("renders a terminal null verdict as not recorded instead of pending", () => {
+    const view = renderExpectedArtifacts({ status: "not_recorded" });
 
-  it("counts progress from what was produced, not from the contract status", () => {
-    // status is "failed" for every incomplete run, so keying the badge off it
-    // would put a red verdict on a run that is simply not finished.
-    expect(SRC).toMatch(/producedById\.size === expected\.length \? "ok" : "pending"/);
+    expect(view.textContent).toContain("Verification not recorded");
+    expect(view.textContent?.match(/NOT RECORDED/g)).toHaveLength(2);
+    expect(view.textContent).not.toContain("PENDING");
+    expect(view.textContent).not.toContain("MISSING");
   });
 });

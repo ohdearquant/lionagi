@@ -13,7 +13,7 @@ import pytest
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
 from lionagi.state.claude_mirror import session_db_id  # noqa: E402
-from lionagi.state.db import StateDB  # noqa: E402
+from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Shared test data
@@ -56,6 +56,9 @@ async def seed_session(
     status: str = "running",
     started_at=None,
     ended_at=None,
+    artifacts_path: str | None = None,
+    artifact_contract_json: dict | None = None,
+    artifact_verification_json: dict | None = None,
 ) -> str:
     prog_id = f"{session_id}-prog"
     async with StateDB(db_path) as db:
@@ -70,6 +73,9 @@ async def seed_session(
                 "status": status,
                 "started_at": started_at,
                 "ended_at": ended_at,
+                "artifacts_path": artifacts_path,
+                "artifact_contract_json": artifact_contract_json,
+                "artifact_verification_json": artifact_verification_json,
                 "node_metadata": node_metadata,
                 "invocation_kind": "flow",
                 "source_kind": "live",
@@ -286,6 +292,133 @@ async def test_get_session_returns_none_graph_for_null_node_metadata(patched_ses
     assert result["branches"] == []
     assert result["duration_ms"] is None
     assert result["source_kind"] == "live"
+
+
+# ---------------------------------------------------------------------------
+# Artifact verification display state
+# ---------------------------------------------------------------------------
+
+
+ARTIFACT_CONTRACT = {"expected": [{"id": "report", "path": "REPORT.md", "required": True}]}
+
+
+async def test_get_session_returns_live_provisional_artifact_progress(
+    patched_sessions_db, tmp_path
+):
+    svc, db_path = patched_sessions_db
+    (tmp_path / "REPORT.md").write_text("ready")
+    await seed_session(
+        db_path,
+        session_id="sess-live-artifacts",
+        status="running",
+        artifacts_path=str(tmp_path),
+        artifact_contract_json=ARTIFACT_CONTRACT,
+    )
+
+    result = await svc.get_session("sess-live-artifacts")
+
+    assert result is not None
+    verification = result["artifact_verification_json"]
+    assert verification["provisional"] is True
+    assert [item["id"] for item in verification["produced"]] == ["report"]
+
+
+@pytest.mark.parametrize("status", sorted(SESSION_TERMINAL_STATUSES))
+async def test_get_session_reports_terminal_verdict_was_not_recorded_without_artifact_path(
+    patched_sessions_db, status
+):
+    svc, db_path = patched_sessions_db
+    await seed_session(
+        db_path,
+        session_id=f"sess-{status}",
+        status=status,
+        artifacts_path=None,
+        artifact_contract_json=ARTIFACT_CONTRACT,
+        artifact_verification_json=None,
+    )
+
+    result = await svc.get_session(f"sess-{status}")
+
+    assert result is not None
+    assert result["artifact_verification_json"] == {"status": "not_recorded"}
+
+
+async def test_get_session_does_not_synthesize_a_terminal_verdict_from_disk(
+    patched_sessions_db, tmp_path
+):
+    svc, db_path = patched_sessions_db
+    (tmp_path / "REPORT.md").write_text("ready")
+    await seed_session(
+        db_path,
+        session_id="sess-terminal-artifacts",
+        status="completed",
+        artifacts_path=str(tmp_path),
+        artifact_contract_json=ARTIFACT_CONTRACT,
+        artifact_verification_json=None,
+    )
+
+    result = await svc.get_session("sess-terminal-artifacts")
+
+    assert result is not None
+    assert result["artifact_verification_json"] == {"status": "not_recorded"}
+
+
+async def test_get_session_keeps_live_null_verification_pending_without_artifact_path(
+    patched_sessions_db,
+):
+    svc, db_path = patched_sessions_db
+    await seed_session(
+        db_path,
+        session_id="sess-live-no-root",
+        status="running",
+        artifacts_path=None,
+        artifact_contract_json=ARTIFACT_CONTRACT,
+        artifact_verification_json=None,
+    )
+
+    result = await svc.get_session("sess-live-no-root")
+
+    assert result is not None
+    assert result["artifact_verification_json"] is None
+
+
+async def test_get_session_preserves_a_stored_terminal_verdict(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    verdict = {
+        "status": "passed",
+        "checked_at": 42.0,
+        "missing_required": [],
+        "missing_optional": [],
+        "produced": [{"id": "report", "path": "REPORT.md", "size": 5, "present": True}],
+    }
+    await seed_session(
+        db_path,
+        session_id="sess-recorded-verdict",
+        status="completed",
+        artifact_contract_json=ARTIFACT_CONTRACT,
+        artifact_verification_json=verdict,
+    )
+
+    result = await svc.get_session("sess-recorded-verdict")
+
+    assert result is not None
+    assert result["artifact_verification_json"] == verdict
+
+
+async def test_get_session_keeps_verification_null_when_no_contract_exists(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_session(
+        db_path,
+        session_id="sess-no-contract",
+        status="completed",
+        artifact_contract_json=None,
+        artifact_verification_json=None,
+    )
+
+    result = await svc.get_session("sess-no-contract")
+
+    assert result is not None
+    assert result["artifact_verification_json"] is None
 
 
 # ---------------------------------------------------------------------------

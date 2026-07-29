@@ -23,9 +23,11 @@ export default function ExpectedArtifacts({ contract, verification }: ExpectedAr
   const expected = contract?.expected ?? [];
   if (!contract || expected.length === 0) return null;
 
-  const producedById = new Map((verification?.produced ?? []).map((p) => [p.id, p]));
-  const missingRequired = new Set((verification?.missing_required ?? []).map((p) => p.id));
-  const missingOptional = new Set((verification?.missing_optional ?? []).map((p) => p.id));
+  const notRecorded = verification?.status === "not_recorded";
+  const result = verification && !notRecorded ? verification : null;
+  const producedById = new Map((result?.produced ?? []).map((p) => [p.id, p]));
+  const missingRequired = new Set((result?.missing_required ?? []).map((p) => p.id));
+  const missingOptional = new Set((result?.missing_optional ?? []).map((p) => p.id));
 
   return (
     <div id="expected-artifacts" className="scroll-mt-24">
@@ -34,7 +36,9 @@ export default function ExpectedArtifacts({ contract, verification }: ExpectedAr
         <span className="rounded bg-surface-overlay px-1.5 py-0 font-mono text-[length:var(--t-xs)] text-content-muted">
           {expected.length}
         </span>
-        {verification?.provisional ? (
+        {notRecorded ? (
+          <Badge tone="default">Verification not recorded</Badge>
+        ) : result?.provisional ? (
           // Mid-run, a contract status is always "failed" until the last
           // artifact lands, which says nothing except that the run is not over.
           // Progress is the thing worth showing while it is still going.
@@ -42,10 +46,8 @@ export default function ExpectedArtifacts({ contract, verification }: ExpectedAr
             {producedById.size} of {expected.length} written
           </Badge>
         ) : (
-          verification?.status && (
-            <Badge tone={verificationTone(verification.status)}>
-              Verified: {verification.status}
-            </Badge>
+          result?.status && (
+            <Badge tone={verificationTone(result.status)}>Verified: {result.status}</Badge>
           )
         )}
       </div>
@@ -57,7 +59,7 @@ export default function ExpectedArtifacts({ contract, verification }: ExpectedAr
             // artifact that is not on disk yet has not been missed — it has not
             // been written yet. Only a recorded verdict can call one missing.
             const missing =
-              !verification?.provisional &&
+              !result?.provisional &&
               (missingRequired.has(entry.id) || missingOptional.has(entry.id));
             const required = entry.required !== false;
             const statusTone = produced
@@ -71,7 +73,9 @@ export default function ExpectedArtifacts({ contract, verification }: ExpectedAr
               ? `OK (${formatBytes(produced.size)})`
               : missing
                 ? "MISSING"
-                : "PENDING";
+                : notRecorded
+                  ? "NOT RECORDED"
+                  : "PENDING";
             return (
               <li
                 key={entry.id}
