@@ -1382,22 +1382,22 @@ wheels = [
 
 [[package]]
 name = "datamodel-code-generator"
-version = "0.56.1"
+version = "0.71.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
-    { name = "black" },
+    { name = "black", marker = "sys_platform != 'emscripten'" },
     { name = "genson" },
     { name = "inflect" },
-    { name = "isort" },
+    { name = "isort", marker = "sys_platform != 'emscripten'" },
     { name = "jinja2" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6f/9c/5379be8daf9ff2fbbb9a7efcf68c037b089e5b76f360c4f9ca730916e2ee/datamodel_code_generator-0.56.1.tar.gz", hash = "sha256:697abd90cc4eb2c65f130be79a83a24746c3f2d0e15e6eb9dbf17b96784449be", size = 840372, upload-time = "2026-04-16T17:09:53.537Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/54/f5/f4ce23d99503b147c9ec514dc995a96d3b4d2a3284252ad665f875a3145d/datamodel_code_generator-0.71.0.tar.gz", hash = "sha256:d27cd7a0d10f9b2db74a41db7f3e050c226da9cf0afb4916a7ab56275ebacbf2", size = 1684916, upload-time = "2026-07-24T15:32:04.334Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f7/cd/4a4a13f55069d88d8405aa325874b04c1b1dbc830f0d66c0e56cbd16aa12/datamodel_code_generator-0.56.1-py3-none-any.whl", hash = "sha256:cb2adc18a301f1a2cfcd56672037218eeaff0573669861c2b371eefe86753874", size = 256845, upload-time = "2026-04-16T17:09:51.81Z" },
+    { url = "https://files.pythonhosted.org/packages/c6/4d/556cb290170f41b97ce50fd872e10a266f141d7a38352bb3071e4ae61f41/datamodel_code_generator-0.71.0-py3-none-any.whl", hash = "sha256:680b68338d59e98a0559eeb54d8e5ca33c35b3ec0bef922ec2cc783f2cb28e9a", size = 452379, upload-time = "2026-07-24T15:32:02.467Z" },
 ]
 
 [[package]]
@@ -3258,7 +3258,7 @@ requires-dist = [
     { name = "anyio", specifier = ">=4.10.0" },
     { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.27.0" },
     { name = "croniter", marker = "extra == 'studio'", specifier = ">=1.4" },
-    { name = "datamodel-code-generator", marker = "extra == 'schema'", specifier = ">=0.31.2" },
+    { name = "datamodel-code-generator", marker = "extra == 'schema'", specifier = ">=0.64.0" },
     { name = "daytona", marker = "extra == 'sandbox'", specifier = ">=0.171.0" },
     { name = "docling", marker = "extra == 'reader'", specifier = ">=2.91.0" },
     { name = "fastapi", marker = "extra == 'studio'", specifier = ">=0.115" },
