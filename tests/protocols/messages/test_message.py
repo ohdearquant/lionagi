@@ -500,9 +500,8 @@ def test_generic_content_rendering_is_not_served_stale():
     assert message.chat_msg["content"] == "second"
 
 
-def test_unrenderable_content_raises_rather_than_dropping_the_message():
-    """Content that cannot be rendered fails visibly instead of yielding a
-    message with no content."""
+def test_unrenderable_content_returns_none():
+    """An unrenderable message preserves the nullable public contract."""
 
     class _Unrenderable:
         @property
@@ -511,13 +510,11 @@ def test_unrenderable_content_raises_rather_than_dropping_the_message():
 
     message = RoledMessage(content=_Unrenderable())
 
-    with pytest.raises(RuntimeError, match="cannot render"):
-        _ = message.chat_msg
+    assert message.chat_msg is None
 
 
 def test_unrenderable_content_surfaces_through_the_manager():
-    """A message that cannot be rendered aborts the conversion instead of
-    leaving a hole in the provider payload."""
+    """Manager conversion stays strict despite the nullable public property."""
     from lionagi.protocols.messages.manager import MessageManager
 
     class _Unrenderable:
