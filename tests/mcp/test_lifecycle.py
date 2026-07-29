@@ -16,10 +16,12 @@ and the defect lived in the gap between the writers, not in the classifier.
 from __future__ import annotations
 
 import json
+import signal
 import subprocess
 import sys
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -62,28 +64,102 @@ anyio.run(_main)
 """
 
 
+def _reap_submitted_jobs(run_ids: list[str], timeout: float = 10.0) -> list[str]:
+    """Stop any submitted process group still alive and return the leaked run ids."""
+    leaked: list[str] = []
+    failures: list[str] = []
+
+    for run_id in run_ids:
+        record = jobs._read_job(run_id)
+        if not isinstance(record, dict):
+            failures.append(f"{run_id}: job record is unavailable")
+            continue
+        pid = record.get("pid")
+        leader_alive = isinstance(pid, int) and jobs._pid_alive(pid)
+
+        try:
+            term = jobs.kill(run_id)
+        except Exception as exc:  # noqa: BLE001 — teardown must continue to the next run
+            failures.append(f"{run_id}: SIGTERM cleanup raised {type(exc).__name__}: {exc}")
+            term = {"killed": False}
+
+        if leader_alive or term["killed"]:
+            leaked.append(run_id)
+
+        if isinstance(pid, int):
+            deadline = time.monotonic() + timeout
+            while jobs._pid_alive(pid) and time.monotonic() < deadline:
+                time.sleep(0.05)
+
+        try:
+            # Re-check the process group after its leader exits. A detached
+            # descendant can outlive that leader and still belongs to this run.
+            force = jobs.kill(run_id, sig=signal.SIGKILL)
+        except Exception as exc:  # noqa: BLE001 — report every cleanup failure together
+            failures.append(f"{run_id}: SIGKILL cleanup raised {type(exc).__name__}: {exc}")
+            continue
+
+        if force["killed"] and run_id not in leaked:
+            leaked.append(run_id)
+        if isinstance(pid, int):
+            deadline = time.monotonic() + timeout
+            while jobs._pid_alive(pid) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            if jobs._pid_alive(pid):
+                failures.append(
+                    f"{run_id}: pid {pid} remained alive after SIGTERM and SIGKILL cleanup"
+                )
+
+    if failures:
+        raise AssertionError("MCP job teardown failed:\n" + "\n".join(failures))
+    return leaked
+
+
+@contextmanager
+def _submitted_job_guard():
+    """Track submissions for one test, reap leftovers, and make a leak visible."""
+    submitted_run_ids: list[str] = []
+    submit = jobs.submit
+
+    def tracked_submit(*args, **kwargs):
+        handle = submit(*args, **kwargs)
+        submitted_run_ids.append(handle["run_id"])
+        return handle
+
+    try:
+        yield tracked_submit
+    finally:
+        leaked = _reap_submitted_jobs(submitted_run_ids)
+        if leaked:
+            pytest.fail(
+                "submitted MCP job(s) were still alive at test teardown: " + ", ".join(leaked)
+            )
+
+
 @pytest.fixture
 def home(monkeypatch, tmp_path):
     """A whole lionagi home of our own, for this process and every child."""
-    monkeypatch.setenv("LIONAGI_HOME", str(tmp_path))
-    # Children are launched by absolute script path, so their `sys.path[0]` is
-    # the directory that script sits in, and this checkout is not on it. They
-    # then import whichever `lionagi` the interpreter's environment resolves,
-    # which is the same one only when the installed distribution happens to
-    # point here. Develop in a second checkout — a worktree, say — and it points
-    # at the first, so these end-to-end tests exercise a CLI that is not the one
-    # being changed, and do it silently.
-    #
-    # To see the difference, run any script by absolute path with and without
-    # this variable and print `lionagi.__file__`.
-    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[2]))
-    monkeypatch.delenv("LIONAGI_SESSION_ID", raising=False)
-    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "mcp" / "jobs")
-    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
-    shim = tmp_path / "li"
-    shim.write_text(_LI_SHIM)
-    monkeypatch.setattr(config, "li_command", lambda: [sys.executable, str(shim)])
-    return tmp_path
+    with _submitted_job_guard() as tracked_submit:
+        monkeypatch.setattr(jobs, "submit", tracked_submit)
+        monkeypatch.setenv("LIONAGI_HOME", str(tmp_path))
+        # Children are launched by absolute script path, so their `sys.path[0]` is
+        # the directory that script sits in, and this checkout is not on it. They
+        # then import whichever `lionagi` the interpreter's environment resolves,
+        # which is the same one only when the installed distribution happens to
+        # point here. Develop in a second checkout — a worktree, say — and it points
+        # at the first, so these end-to-end tests exercise a CLI that is not the one
+        # being changed, and do it silently.
+        #
+        # To see the difference, run any script by absolute path with and without
+        # this variable and print `lionagi.__file__`.
+        monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[2]))
+        monkeypatch.delenv("LIONAGI_SESSION_ID", raising=False)
+        monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "mcp" / "jobs")
+        monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+        shim = tmp_path / "li"
+        shim.write_text(_LI_SHIM)
+        monkeypatch.setattr(config, "li_command", lambda: [sys.executable, str(shim)])
+        yield tmp_path
 
 
 def _await_session_id(run_id: str, timeout: float = 90.0) -> str:
@@ -131,6 +207,19 @@ def _li_kill(home_dir: Path, session_id: str, child_pid: int) -> subprocess.Comp
         time.sleep(0.05)
     out, err = proc.communicate()
     return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
+
+
+@pytest.mark.slow
+def test_submitted_job_cleanup_reaps_a_live_stub(home):
+    pid: int | None = None
+    with pytest.raises(pytest.fail.Exception, match="still alive at test teardown"):
+        with _submitted_job_guard() as submit:
+            handle = submit("agent", [], prompt="stay up")
+            pid = jobs._read_job(handle["run_id"])["pid"]
+            assert jobs._pid_alive(pid)
+
+    assert pid is not None
+    assert not jobs._pid_alive(pid)
 
 
 # --- end to end ----------------------------------------------------------------
