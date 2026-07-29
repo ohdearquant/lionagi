@@ -249,6 +249,53 @@ async def test_get_run_passes_artifact_json_fields(patched_runs_svc):
     assert result["artifact_verification_json"] == verification
 
 
+async def test_get_run_synthesizes_provisional_artifacts_for_running_session(
+    patched_runs_svc, tmp_path
+):
+    svc, db_path = patched_runs_svc
+    sid = str(uuid.uuid4())
+    artifact = tmp_path / "report.md"
+    artifact.write_text("ready")
+    contract = {"expected": [{"id": "report", "path": artifact.name, "required": True}]}
+    await seed_session(
+        db_path,
+        session_id=sid,
+        status="running",
+        artifacts_path=str(tmp_path),
+        artifact_contract_json=contract,
+    )
+
+    result = await svc.get_run(sid)
+
+    assert result is not None
+    verification = result["artifact_verification_json"]
+    assert verification["provisional"] is True
+    assert [entry["id"] for entry in verification["produced"]] == ["report"]
+
+
+@pytest.mark.parametrize("status", ["completed", "failed"])
+async def test_get_run_does_not_synthesize_provisional_artifacts_for_terminal_session(
+    patched_runs_svc, tmp_path, status
+):
+    svc, db_path = patched_runs_svc
+    sid = str(uuid.uuid4())
+    artifact = tmp_path / "report.md"
+    artifact.write_text("ready")
+    contract = {"expected": [{"id": "report", "path": artifact.name, "required": True}]}
+    await seed_session(
+        db_path,
+        session_id=sid,
+        status=status,
+        artifacts_path=str(tmp_path),
+        artifact_contract_json=contract,
+    )
+
+    result = await svc.get_run(sid)
+
+    assert result is not None
+    assert result["artifact_verification_json"] is None
+
+
 # ---------------------------------------------------------------------------
 # Test 7 — graph is populated from node_metadata when present
 # ---------------------------------------------------------------------------

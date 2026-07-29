@@ -85,9 +85,12 @@ describe("WorkerCanvas.tsx — source contract for the compact MiniMap fix", () 
     expect(src).toMatch(/shouldShowMiniMap\(compact, nodes\.length\)/);
   });
 
-  it("docks the non-compact minimap bottom-right at its explicit size", () => {
+  it("docks the non-compact minimap without forcing compact dimensions", () => {
     expect(shouldShowMiniMap(false, 11)).toBe(true);
-    expect(src).toMatch(/position="bottom-right"/);
-    expect(src).toMatch(/style=\{\{ width: 120, height: 80 \}\}/);
+    const minimap = src.match(/<MiniMap[\s\S]*?\/>/)?.[0];
+    expect(minimap).toBeDefined();
+    expect(minimap).toMatch(/position="bottom-right"/);
+    expect(minimap).not.toMatch(/\bstyle=/);
+    expect(minimap).not.toMatch(/\b(?:width|height)=/);
   });
 });

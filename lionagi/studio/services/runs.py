@@ -666,7 +666,7 @@ async def get_run(
     alive = _session_liveness(detail_session) if detail_session.get("status") == "running" else None
     row = _run_row(detail_session, time.time(), process_alive=alive)
 
-    if row.get("artifact_verification_json") is None:
+    if row.get("status") == "running" and row.get("artifact_verification_json") is None:
         row["artifact_verification_json"] = _provisional_verification(
             row.get("artifact_contract_json"), artifacts_path
         )
