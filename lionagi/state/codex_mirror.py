@@ -61,9 +61,27 @@ _NS = uuid.UUID("9c4a7b21-6d8e-4f13-a05c-2e7b9d1f83a4")
 # mirrored; mirroring both would double every message.
 _CONVERSATION_RECORD = "response_item"
 
-# Harness-injected context that codex prepends as a user turn. Measured against
-# the local corpus: these two account for every non-prompt user message seen.
-_INJECTED_USER_PREFIXES = ("<recommended_plugins>", "<environment_context>")
+# Harness-injected context that codex delivers through the user role: repo
+# instructions, skill definitions, environment and editor blocks, the interruption
+# notice. None of it is something a person typed, and it is not a rare case — a
+# 1,000-file stride over the whole local corpus found 1,433 of 2,427 user messages
+# (59%) to be injection, so without this filter most of the mirrored "prompts"
+# would be machine text.
+#
+# The list is what that census turned up, and is deliberately NOT treated as
+# closed: codex adds forms over time and two of these were found only after a
+# first pass called an earlier, shorter list exhaustive. An uncovered form leaves
+# a mirrored response_item the count pair cannot account for, which is the backstop
+# for the completeness this list cannot promise on its own.
+_INJECTED_USER_PREFIXES = (
+    "<recommended_plugins>",
+    "<environment_context>",
+    "<skill>",
+    "<turn_aborted>",
+    "# AGENTS.md instructions for ",
+    "# Context from my IDE setup:",
+    "# Files mentioned by the user:",
+)
 
 # Roles that carry conversation. ``developer`` is the system-instruction channel.
 _MIRRORED_ROLES = frozenset({"user", "assistant"})
@@ -259,6 +277,12 @@ def messages_for_record(
     # Attribution travels with the message, not only with the session: a rollout can
     # change model or effort mid-thread, so a session-level value would misattribute
     # every turn before the switch.
+    #
+    # No attribution is written when no turn_context has been seen yet, which happens
+    # for a prompt at the head of a resumed rollout — measured at 2 of 12,889 messages
+    # over a live tree. Absent means the file had nothing to attribute to at that
+    # point, not that attribution was lost; inventing one from the following turn
+    # would state something the rollout does not.
     meta = {"codex_turn": dict(turn)} if turn else {}
     specs: list[tuple[str, Any]] = []
 

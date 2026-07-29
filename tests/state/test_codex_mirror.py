@@ -203,3 +203,38 @@ def test_tally_merge_is_additive_on_both_sides():
     assert merged.seen == {"x": 3, "y": 3}
     assert merged.mirrored == {"x": 1}
     assert merged.unparseable == 3
+
+
+@pytest.mark.parametrize(
+    "opening",
+    [
+        "<recommended_plugins>",
+        "<environment_context>",
+        "<skill>",
+        "<turn_aborted>",
+        "# AGENTS.md instructions for /some/repo",
+        "# Context from my IDE setup:",
+        "# Files mentioned by the user:",
+    ],
+)
+async def test_harness_injected_user_turns_are_not_mirrored_as_prompts(db, opening):
+    """Codex delivers repo instructions, skills and notices through the user role.
+
+    None was typed by a person, so mirroring them puts machine text in the
+    conversation and, at the top of a file, makes it the first thing a reader sees.
+    """
+    records = [
+        _rec("session_meta", {"id": ROLLOUT_UID, "cwd": "/x"}),
+        _turn("gpt-5.6-terra", "high"),
+        _user(f"{opening}\nbody text here", "inj"),
+        _user("the actual question", "real"),
+    ]
+    written, tally = await _mirror(db, records)
+    assert written == 1
+    # The injected record is still counted as seen, so the difference between what
+    # the file held and what was mirrored stays visible rather than being erased.
+    assert tally.seen["response_item"] == 2
+    assert tally.mirrored["response_item"] == 1
+
+    messages = await db.get_branch_messages(_det(ROLLOUT_UID, "branch"))
+    assert [m["content"]["instruction"] for m in messages] == ["the actual question"]
