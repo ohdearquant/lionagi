@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import signal
 import sys
@@ -578,6 +579,18 @@ def _as_number(value: Any) -> int | float:
     return value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
 
 
+def _as_counter(value: Any) -> int:
+    """Return a finite, nonnegative integral counter.
+
+    Invalid numeric telemetry is treated as absent.
+    """
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value if value >= 0 else 0
+    if isinstance(value, float) and math.isfinite(value) and value >= 0 and value.is_integer():
+        return int(value)
+    return 0
+
+
 def _format_khive_injection_line(telemetry: dict[str, Any]) -> str | None:
     """Render persisted aggregate injection counters.
 
@@ -590,7 +603,7 @@ def _format_khive_injection_line(telemetry: dict[str, Any]) -> str | None:
         "writeback_records",
         "writeback_failed",
     )
-    counters = {name: _as_number(telemetry.get(name)) for name in counter_names}
+    counters = {name: _as_counter(telemetry.get(name)) for name in counter_names}
     if not any(counters.values()):
         return None
     return " ".join(f"{name}={value}" for name, value in counters.items())

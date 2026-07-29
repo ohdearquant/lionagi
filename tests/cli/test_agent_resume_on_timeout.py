@@ -467,6 +467,7 @@ def _wire_agent_stubs_real_persist(
     tmp_path: Path,
     *,
     operate_side_effect,
+    injection_stats_by_leg: list[dict[str, int]] | None = None,
 ):
     """Like _wire_agent_stubs_real_chat_model, but setup_agent_persist /
     teardown_agent_persist are left untouched (the real StateDB-backed
@@ -481,6 +482,8 @@ def _wire_agent_stubs_real_persist(
     async def fake_operate(self, instruction=None, **kw):
         idx = call_count["n"]
         call_count["n"] += 1
+        if injection_stats_by_leg is not None:
+            self.providers.stats.update(injection_stats_by_leg[idx])
         snapshot_dir = kw.get("snapshot_dir")
         if snapshot_dir is not None:
             Path(snapshot_dir).mkdir(parents=True, exist_ok=True)
@@ -542,7 +545,25 @@ async def test_auto_resume_real_teardown_no_terminal_guard_rejection(
         return "concluded"
 
     call_count = _wire_agent_stubs_real_persist(
-        monkeypatch, tmp_path, operate_side_effect=side_effect
+        monkeypatch,
+        tmp_path,
+        operate_side_effect=side_effect,
+        injection_stats_by_leg=[
+            {
+                "recall_turns": 2,
+                "blocks_injected": 3,
+                "failed": 1,
+                "writeback_records": 0,
+                "writeback_failed": 0,
+            },
+            {
+                "recall_turns": 4,
+                "blocks_injected": 5,
+                "failed": 0,
+                "writeback_records": 6,
+                "writeback_failed": 1,
+            },
+        ],
     )
 
     from lionagi.cli.agent import _run_agent
@@ -569,6 +590,82 @@ async def test_auto_resume_real_teardown_no_terminal_guard_rejection(
     assert s is not None
     assert s["status"] == "completed"
     assert s["ended_at"] is not None
+    node_metadata = s["node_metadata"]
+    if isinstance(node_metadata, str):
+        node_metadata = json.loads(node_metadata)
+    assert {"lion_class", "pid", "pid_create_time"} <= node_metadata.keys()
+    assert node_metadata["khive_injection"] == {
+        "recall_turns": 6,
+        "blocks_injected": 8,
+        "failed": 1,
+        "writeback_records": 6,
+        "writeback_failed": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_manual_resume_accumulates_persisted_injection_stats(
+    monkeypatch,
+    tmp_path,
+    temp_db_path,
+):
+    """A later top-level resume seeds its totals from the durable session.
+
+    The resumed teardown must add new counters instead of replacing history.
+    """
+
+    def side_effect(i):
+        return f"leg-{i}"
+
+    call_count = _wire_agent_stubs_real_persist(
+        monkeypatch,
+        tmp_path,
+        operate_side_effect=side_effect,
+        injection_stats_by_leg=[
+            {
+                "recall_turns": 2,
+                "blocks_injected": 3,
+                "failed": 1,
+                "writeback_records": 5,
+                "writeback_failed": 0,
+            },
+            {
+                "recall_turns": 7,
+                "blocks_injected": 11,
+                "failed": 0,
+                "writeback_records": 13,
+                "writeback_failed": 1,
+            },
+        ],
+    )
+
+    from lionagi.cli.agent import _run_agent
+    from lionagi.state.db import StateDB
+
+    _result, _provider, branch_id, _status, first_session_id = await _run_agent(
+        "claude_code/sonnet",
+        "first",
+    )
+    _result, _provider, _branch_id, _status, resumed_session_id = await _run_agent(
+        "claude_code/sonnet",
+        "second",
+        resume=branch_id,
+    )
+
+    assert call_count["n"] == 2
+    assert resumed_session_id == first_session_id
+    async with StateDB() as db:
+        session = await db.get_session(resumed_session_id)
+    node_metadata = session["node_metadata"]
+    if isinstance(node_metadata, str):
+        node_metadata = json.loads(node_metadata)
+    assert node_metadata["khive_injection"] == {
+        "recall_turns": 9,
+        "blocks_injected": 14,
+        "failed": 1,
+        "writeback_records": 18,
+        "writeback_failed": 1,
+    }
 
 
 @pytest.mark.asyncio

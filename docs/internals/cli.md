@@ -751,8 +751,9 @@ different shape), and a malformed count must never crash the monitor.
 **`_format_khive_injection_line`** — renders the non-zero aggregate context-injection counters
 stored under `sessions.node_metadata["khive_injection"]`. Orchestration finalize sums the counters
 across its branches; bare `li agent -a <profile>` teardown records the same shape from its branch.
-Only counts are persisted — never the injected source text — and absent, zero, or malformed
-counter sets are omitted from the session drill-in.
+A top-level resume seeds its totals from the durable session; an in-process timeout resume carries
+the first leg's counters into the final teardown. Only counts are persisted — never the injected
+source text — and absent, zero, or malformed counter sets are omitted from the session drill-in.
 
 **`_format_coordination_line`** — coordination telemetry shape contract. Renders an
 invocation's coordination telemetry (`node_metadata["coordination"]`, written by the scheduler

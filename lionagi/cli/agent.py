@@ -74,6 +74,45 @@ _IMAGE_MEDIA_TYPES = {
     ".gif": "image/gif",
 }
 
+_KHIVE_INJECTION_COUNTERS = (
+    "recall_turns",
+    "blocks_injected",
+    "failed",
+    "writeback_records",
+    "writeback_failed",
+)
+
+
+def _fold_injection_stats(totals: dict[str, int], stats: object) -> None:
+    """Add one provider-stat snapshot into session totals.
+
+    Unexpected values are ignored so telemetry cannot break teardown.
+    """
+    if not isinstance(stats, dict):
+        return
+    for counter in _KHIVE_INJECTION_COUNTERS:
+        value = stats.get(counter)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            totals[counter] += value
+
+
+async def _seed_injection_stats(live: dict | None, totals: dict[str, int]) -> None:
+    """Seed a top-level resume from its durable session counters.
+
+    Missing or malformed metadata leaves the new invocation at zero.
+    """
+    if not live or live.get("db") is None:
+        return
+    try:
+        session = await live["db"].get_session(live["session_id"])
+        metadata = session.get("node_metadata") if session else None
+        if isinstance(metadata, str):
+            metadata = json.loads(metadata)
+        if isinstance(metadata, dict):
+            _fold_injection_stats(totals, metadata.get("khive_injection"))
+    except Exception:  # noqa: BLE001
+        return
+
 
 def _load_image_data_uris(paths: list[str]) -> list[str]:
     """Read each --image path and wrap it as a `data:image/...;base64,...` URI —
@@ -364,11 +403,18 @@ async def _run_agent(
     mcp_config: str | None = None,
     no_mcp_config: bool = False,
     _auto_resumed: bool = False,
+    _injection_totals: dict[str, int] | None = None,
 ) -> tuple[str, str, str, str, str | None]:
     """Execute one agent turn; returns (result, provider, branch_id, terminal_status, session_id).
 
     session_id is None whenever live persistence never started.
     """
+    seed_injection_totals = _injection_totals is None
+    _injection_totals = (
+        dict.fromkeys(_KHIVE_INJECTION_COUNTERS, 0)
+        if _injection_totals is None
+        else dict(_injection_totals)
+    )
     effort = normalize_effort(effort)
     # Fail fast before any run is allocated: a nonexistent --cwd must not spawn
     # into a provider-created dir. Forward the tilde-expanded path — providers
@@ -737,6 +783,8 @@ async def _run_agent(
         effort=effort,
         project=project,
     )
+    if seed_injection_totals:
+        await _seed_injection_stats(live, _injection_totals)
 
     # Session-scoped: teardown_agent_persist terminalizes only the session;
     # invocation records are finalized externally and would never fire. Deferred
@@ -860,12 +908,14 @@ async def _run_agent(
             # from a wrapper exception racing a still-live engine session.
             _engine_session_uid = getattr(branch.chat_model.endpoint, "session_id", None)
             registry = getattr(branch, "_context_providers", None)
-            injection_stats = getattr(registry, "stats", None) if registry else None
-            telemetry_kw = (
-                {"extras": {"khive_injection": dict(injection_stats)}}
-                if injection_stats and any(injection_stats.values())
-                else {}
+            injection_stats = getattr(registry, "stats", None) if registry is not None else None
+            _fold_injection_stats(_injection_totals, injection_stats)
+            telemetry_extras = (
+                {"khive_injection": dict(_injection_totals)}
+                if not will_auto_resume and any(_injection_totals.values())
+                else None
             )
+            telemetry_kw = {"extras": telemetry_extras} if telemetry_extras else {}
             effective_status = await teardown_agent_persist(
                 live,
                 status=_terminal_status,
@@ -942,6 +992,7 @@ async def _run_agent(
             mcp_config=mcp_config,
             no_mcp_config=no_mcp_config,
             _auto_resumed=True,
+            _injection_totals=_injection_totals,
         )
 
     return res or "", provider, branch_id, _terminal_status, session_id

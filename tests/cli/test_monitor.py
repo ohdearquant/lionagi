@@ -1170,6 +1170,28 @@ async def test_detail_session_ignores_malformed_khive_injection_stats(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("value", [-1, 0.5, float("nan"), float("inf")])
+async def test_detail_session_ignores_invalid_numeric_injection_stats(
+    temp_db_path: Path,
+    value: float,
+) -> None:
+    async with StateDB() as db:
+        sid = await _make_session(db)
+        sess = await db.get_session(sid)
+        assert sess is not None
+        sess["node_metadata"] = {
+            "khive_injection": {
+                "recall_turns": value,
+                "blocks_injected": 0,
+            }
+        }
+        output = await _detail_session(db, sess)
+
+    assert "SESSION" in output
+    assert "khive injection" not in output
+
+
+@pytest.mark.asyncio
 async def test_run_detail_invocation(temp_db_path: Path) -> None:
     async with StateDB() as db:
         inv_id = await _make_invocation(db, skill="codex-review")
