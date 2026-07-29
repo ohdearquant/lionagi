@@ -748,6 +748,12 @@ Python dict (Postgres JSON auto-decode) or a raw string (SQLite text storage via
 to 0 — persisted telemetry is untrusted (hand-edited state.db rows, a future writer with a
 different shape), and a malformed count must never crash the monitor.
 
+**`_format_khive_injection_line`** — renders the non-zero aggregate context-injection counters
+stored under `sessions.node_metadata["khive_injection"]`. Orchestration finalize sums the counters
+across its branches; bare `li agent -a <profile>` teardown records the same shape from its branch.
+Only counts are persisted — never the injected source text — and absent, zero, or malformed
+counter sets are omitted from the session drill-in.
+
 **`_format_coordination_line`** — coordination telemetry shape contract. Renders an
 invocation's coordination telemetry (`node_metadata["coordination"]`, written by the scheduler
 engine's finalize path — see `lionagi.studio.services.scheduler_state.flush_run_telemetry`).

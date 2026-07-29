@@ -121,7 +121,10 @@ async def test_bare_li_agent_path_registers_injection_from_profile(monkeypatch, 
     )
     monkeypatch.setattr(agent_mod, "setup_agent_persist", AsyncMock(return_value=None))
 
+    seen = {}
+
     async def fake_teardown(ctx, *, status="completed", **kw):
+        seen["teardown_extras"] = kw.get("extras")
         return status
 
     monkeypatch.setattr(agent_mod, "teardown_agent_persist", fake_teardown)
@@ -136,10 +139,17 @@ async def test_bare_li_agent_path_registers_injection_from_profile(monkeypatch, 
     )
     monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
 
-    seen = {}
-
     async def fake_operate(self, instruction=None, **kw):
         seen["providers"] = list(self.providers.names)
+        self.providers.stats.update(
+            {
+                "recall_turns": 2,
+                "blocks_injected": 3,
+                "failed": 1,
+                "writeback_records": 5,
+                "writeback_failed": 2,
+            }
+        )
         return "ok"
 
     monkeypatch.setattr(Branch, "operate", fake_operate)
@@ -147,6 +157,15 @@ async def test_bare_li_agent_path_registers_injection_from_profile(monkeypatch, 
     await agent_mod._run_agent("codex/model", "do the thing", agent_name="reviewer")
 
     assert seen["providers"] == ["khive_injection:reviewer-recall-v1"]
+    assert seen["teardown_extras"] == {
+        "khive_injection": {
+            "recall_turns": 2,
+            "blocks_injected": 3,
+            "failed": 1,
+            "writeback_records": 5,
+            "writeback_failed": 2,
+        }
+    }
 
 
 @pytest.mark.asyncio
@@ -191,7 +210,10 @@ async def test_bare_li_agent_path_no_injection_when_profile_lacks_optin(monkeypa
     )
     monkeypatch.setattr(agent_mod, "setup_agent_persist", AsyncMock(return_value=None))
 
+    seen = {}
+
     async def fake_teardown(ctx, *, status="completed", **kw):
+        seen["teardown_kwargs"] = kw
         return status
 
     monkeypatch.setattr(agent_mod, "teardown_agent_persist", fake_teardown)
@@ -206,8 +228,6 @@ async def test_bare_li_agent_path_no_injection_when_profile_lacks_optin(monkeypa
     )
     monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
 
-    seen = {}
-
     async def fake_operate(self, instruction=None, **kw):
         seen["providers"] = list(self.providers.names)
         return "ok"
@@ -217,3 +237,4 @@ async def test_bare_li_agent_path_no_injection_when_profile_lacks_optin(monkeypa
     await agent_mod._run_agent("codex/model", "do the thing", agent_name="myprofile")
 
     assert seen["providers"] == []
+    assert "extras" not in seen["teardown_kwargs"]

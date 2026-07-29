@@ -859,6 +859,13 @@ async def _run_agent(
             # Engine session id, used by teardown to tell a genuine failure
             # from a wrapper exception racing a still-live engine session.
             _engine_session_uid = getattr(branch.chat_model.endpoint, "session_id", None)
+            registry = getattr(branch, "_context_providers", None)
+            injection_stats = getattr(registry, "stats", None) if registry else None
+            telemetry_kw = (
+                {"extras": {"khive_injection": dict(injection_stats)}}
+                if injection_stats and any(injection_stats.values())
+                else {}
+            )
             effective_status = await teardown_agent_persist(
                 live,
                 status=_terminal_status,
@@ -866,6 +873,7 @@ async def _run_agent(
                 cwd=cwd,
                 engine_session_uid=_engine_session_uid,
                 defer_terminal=will_auto_resume,
+                **telemetry_kw,
             )
             if effective_status != _terminal_status:
                 _terminal_status = effective_status
