@@ -109,10 +109,20 @@ def retarget_artifact_section(
     return f"{system_text}\n\n{section}" if system_text else section
 
 
-def bare_worker_system(*, grant_spawn: bool = False, artifact_dir: str | Path | None = None) -> str:
+def bare_worker_system(
+    *,
+    grant_spawn: bool = False,
+    artifact_dir: str | Path | None = None,
+    workspace_assigned: bool = True,
+) -> str:
     from lionagi.session.prompts import LION_SYSTEM_MESSAGE
 
-    body = _BARE_WORKER_BODY.format(artifact_section=worker_artifact_section(artifact_dir))
+    body = _BARE_WORKER_BODY.format(
+        artifact_section=worker_artifact_section(
+            artifact_dir,
+            workspace_assigned=workspace_assigned,
+        )
+    )
     if grant_spawn:
         body = body.replace(_LEAF_EXECUTOR_LINE, _SPAWN_AFFORDANCE)
     return LION_SYSTEM_MESSAGE.strip() + "\n\n" + body

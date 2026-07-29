@@ -107,10 +107,19 @@ Remain concise."""
     assert "Remain concise." in retargeted
 
 
-# ── build_worker_branch names exactly the directory it launches the worker in ──
+# ── build_worker_branch names and records each worker's artifact destination ──
 
 
-def _build_worker(tmp_path, *, agent_id, role, bare=True, profile=None):
+def _build_worker(
+    tmp_path,
+    *,
+    agent_id,
+    role,
+    bare=True,
+    profile=None,
+    is_cli=True,
+    system_prompt_override=None,
+):
     """Run `build_worker_branch` with no model, no MCP, and no I/O.
 
     Returns ``(env, imodel, built)`` where ``built`` holds the kwargs the
@@ -131,9 +140,8 @@ def _build_worker(tmp_path, *, agent_id, role, bare=True, profile=None):
             self.config = SimpleNamespace(kwargs={}, provider="claude_code")
 
     class _IModel:
-        is_cli = True
-
         def __init__(self):
+            self.is_cli = is_cli
             self.endpoint = _Endpoint()
 
     imodel = _IModel()
@@ -179,7 +187,14 @@ def _build_worker(tmp_path, *, agent_id, role, bare=True, profile=None):
             lambda env, role, override: ("claude_code/sonnet", profile, None),
         )
         mp.setattr(orch, "team_worker_system", lambda *a, **k: "")
-        asyncio.run(orch.build_worker_branch(env, agent_id=agent_id, role=role))
+        asyncio.run(
+            orch.build_worker_branch(
+                env,
+                agent_id=agent_id,
+                role=role,
+                system_prompt_override=system_prompt_override,
+            )
+        )
     finally:
         mp.undo()
 
@@ -258,6 +273,60 @@ def test_a_profile_body_naming_another_directory_is_retargeted(tmp_path):
     repo = imodel.endpoint.config.kwargs["repo"]
     assert f"ARTIFACT DIRECTORY: {repo}" in built["system"]
     assert "/somewhere/the/author/chose" not in built["system"]
+
+
+@pytest.mark.parametrize(
+    ("bare", "profile", "system_prompt_override", "prompt_key"),
+    [
+        (True, None, None, "system"),
+        (False, None, None, "spec"),
+        (
+            False,
+            SimpleNamespace(
+                raw_body=True,
+                system_prompt="A profile-authored API worker.",
+                effort=None,
+                yolo=False,
+                fast_mode=False,
+                khive_injection=None,
+            ),
+            None,
+            "system",
+        ),
+        (False, None, "An explicitly configured API worker.", "system"),
+    ],
+)
+def test_initial_api_worker_paths_use_output_only_artifact_guidance(
+    tmp_path,
+    bare,
+    profile,
+    system_prompt_override,
+    prompt_key,
+):
+    """Ensure every initial API prompt treats its artifact path as output-only.
+
+    CLI-only endpoint settings must remain absent.
+    """
+    env, imodel, built = _build_worker(
+        tmp_path,
+        agent_id="api-worker",
+        role="researcher",
+        bare=bare,
+        profile=profile,
+        is_cli=False,
+        system_prompt_override=system_prompt_override,
+    )
+
+    prompt = built[prompt_key]
+    if prompt_key == "spec":
+        prompt = prompt.extra_prompt
+    artifact_dir = tmp_path / "artifacts" / "api-worker"
+    assert f"ARTIFACT DIRECTORY: {artifact_dir}" in prompt
+    assert "not an assigned working directory" in prompt
+    assert "It is your working directory" not in prompt
+    assert "repo" not in imodel.endpoint.config.kwargs
+    assert "add_dir" not in imodel.endpoint.config.kwargs
+    assert env.worker_artifact_dirs["api-worker"] == artifact_dir
 
 
 def test_a_reactively_spawned_branch_stops_naming_the_emitters_directory(tmp_path):
