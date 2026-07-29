@@ -768,6 +768,27 @@ async def test_run_derives_gemini_print_timeout_from_caller_timeout():
     assert "timeout" not in captured
 
 
+async def test_run_rejects_gemini_timeout_at_provider_ceiling():
+    """Reject a caller deadline that cannot have a later agy backstop."""
+    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+
+    model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
+    model.endpoint._request_model = GeminiCodeRequest
+    branch = Branch()
+    branch.chat_model = model
+
+    with pytest.raises(ValueError, match="caller deadline"):
+        await _collect(
+            run(
+                branch,
+                "hi",
+                RunParam(imodel_kw={"timeout": (2**63 - 1) // 10**9}),
+            )
+        )
+
+    assert captured == {}
+
+
 async def test_run_preserves_explicit_gemini_print_timeout():
     """An explicit provider cap wins over the timeout-derived default."""
     from lionagi.providers.google.gemini_code import GeminiCodeRequest
