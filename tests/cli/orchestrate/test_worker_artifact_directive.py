@@ -70,6 +70,43 @@ def test_retarget_appends_when_no_directive_is_present():
     assert "ARTIFACT DIRECTORY: /tmp/run-x/a" in out
 
 
+def test_retarget_without_workspace_uses_truthful_output_only_guidance():
+    inherited = bare_worker_system(artifact_dir="/tmp/run-x/artifacts/emitter")
+
+    retargeted = retarget_artifact_section(
+        inherited,
+        "/tmp/run-x/artifacts/spawned",
+        workspace_assigned=False,
+    )
+
+    assert "ARTIFACT DIRECTORY: /tmp/run-x/artifacts/spawned" in retargeted
+    assert "/tmp/run-x/artifacts/emitter" not in retargeted
+    assert "not an assigned working directory" in retargeted
+    assert "It is your working directory" not in retargeted
+    assert "SESSION PERSISTENCE" in retargeted
+
+
+def test_retarget_preserves_profile_authored_policy_around_a_directive():
+    inherited = """\
+ARTIFACT DIRECTORY: /tmp/run-x/artifacts/emitter
+
+Write every output file there after first obeying this policy:
+NEVER disclose secrets.
+Reference upstream artifacts only by paths you were given.
+
+Remain concise."""
+
+    retargeted = retarget_artifact_section(
+        inherited,
+        "/tmp/run-x/artifacts/spawned",
+    )
+
+    assert "ARTIFACT DIRECTORY: /tmp/run-x/artifacts/spawned" in retargeted
+    assert "/tmp/run-x/artifacts/emitter" not in retargeted
+    assert "NEVER disclose secrets." in retargeted
+    assert "Remain concise." in retargeted
+
+
 # ── build_worker_branch names exactly the directory it launches the worker in ──
 
 
