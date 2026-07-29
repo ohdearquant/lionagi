@@ -3251,9 +3251,11 @@ def test_the_listing_says_which_running_rows_never_started(sandbox, monkeypatch)
 def test_a_row_that_names_no_spawn_phase_is_not_read_as_never_started(sandbox, monkeypatch):
     """Null is "no phase this listing can vouch for", not "never attempted".
 
-    A record written before the field existed, and a record carrying something
-    unrecognisable in it, both report null. Neither may be mistaken for the
-    phase that genuinely means never-attempted, which names itself.
+    A record written before the field existed reports null. A record carrying a
+    phase this code does not recognise reports that value verbatim, because the
+    listing repeats what the record says rather than judging it. Neither may be
+    mistaken for the phase that genuinely means never-attempted, which names
+    itself.
     """
     _live_process(monkeypatch)
     legacy = jobs.new_run_id()

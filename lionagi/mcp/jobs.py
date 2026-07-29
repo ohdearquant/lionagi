@@ -2946,8 +2946,10 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
     A row whose ``record_state`` is not ``"ok"`` never had a record to read a
     phase from. A row whose ``record_state`` is ``"ok"`` and whose spawn state is
     null is a record that parsed and does not name a phase — one written before
-    the field existed, or one carrying something unrecognisable in it. So null
-    reads as "no phase this listing can vouch for", never as "never attempted";
+    the field existed. A record that names a phase this code does not recognise
+    is listed with that phase verbatim, not as null: the value is reported as the
+    record carries it. So null reads as "no phase this listing can vouch for",
+    never as "never attempted";
     the phase that means never-attempted says ``"preparing"`` and says it
     explicitly. Normalising the value is a change to what ``status`` reports and
     belongs with it rather than here, where it would make the two disagree.
