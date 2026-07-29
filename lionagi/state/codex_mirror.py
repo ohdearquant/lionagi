@@ -6,16 +6,19 @@ one lionagi message per conversation record, under deterministic ids.
 Reads the enveloped rollout format, where each line is ``{type, timestamp, payload}``.
 Rollouts written before 2025-09-20 use a flat format with no envelope, and mirror
 nothing; that was measured over the whole local corpus rather than sampled, at 6 files
-out of 29,652, and the caller reports a file it read records from and mirrored none of
-rather than passing over it in silence.
+out of 29,652. Such a file still gets a session row carrying its counts, because a
+rollout that mirrors nothing is the case the per-type count pair exists to expose and
+a row is what there is to subtract against.
 """
 
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from lionagi.protocols.messages.action_request import ActionRequest
@@ -192,6 +195,18 @@ def _ts(iso: str | None) -> float | None:
         return datetime.fromisoformat(str(iso).replace("Z", "+00:00")).timestamp()
     except (ValueError, TypeError):
         return None
+
+
+def _source_mtime(source_path: str | None) -> float:
+    """Last-resort time for a rollout carrying no readable record timestamp.
+
+    Only reached when a file is unparseable enough that not one record yielded a
+    time, which is itself a rollout worth having a row for.
+    """
+    try:
+        return Path(source_path).stat().st_mtime  # type: ignore[arg-type]
+    except (OSError, TypeError):
+        return time.time()
 
 
 def _text_blocks(content: Any) -> str:
@@ -412,11 +427,23 @@ async def mirror_session(
     tally = RecordTally(seen, mirrored, unparseable)
 
     existing = await db.get_session(sid)
-    if existing is None and not messages:
+    # A rollout none of whose records mirror still gets a row. That is the case
+    # the count pair exists for: an injection form nobody enumerated, or a legacy
+    # flat file this reader cannot parse, both look like "seen, never mirrored"
+    # from the outside — but only if a row is there to subtract against. Writing
+    # nothing would leave the one shape the accounting was built to expose as the
+    # one shape it cannot see. Only a batch that read nothing at all is skipped.
+    if existing is None and not records and not unparseable:
         return 0, tally
 
-    first_ts = min((m.created_at for m in messages), default=None)
-    last_ts = max((m.created_at for m in messages), default=None)
+    msg_first = min((m.created_at for m in messages), default=None)
+    msg_last = max((m.created_at for m in messages), default=None)
+    # Both time columns are NOT NULL, and a fully filtered rollout has no message
+    # times to take them from, so the records' own timestamps carry the row.
+    rec_ts = [t for t in (_ts(rec.get("timestamp")) for rec in records) if t is not None]
+    floor = min(rec_ts) if rec_ts else _source_mtime(source_path)
+    first_ts = msg_first or floor
+    last_ts = msg_last or (max(rec_ts) if rec_ts else floor)
     created_at = (existing.get("created_at") if existing is not None else None) or first_ts
 
     await db.create_progression(sprog)

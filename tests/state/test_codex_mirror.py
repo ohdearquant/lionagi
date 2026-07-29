@@ -187,6 +187,91 @@ async def test_re_mirroring_the_same_records_writes_no_duplicates(db):
     assert [m["id"] for m in before] == [m["id"] for m in after]
 
 
+async def test_legacy_flat_rollout_is_recorded_even_though_it_mirrors_nothing(db):
+    """A file this reader cannot parse gets a row, or it leaves no trace at all.
+
+    Pre-2025-09-20 rollouts carry no ``{type, timestamp, payload}`` envelope, so
+    every record falls through as untyped. Skipping the write would make the one
+    outcome the count pair exists to expose the one outcome it cannot see.
+    """
+    flat = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"}]
+    written, tally = await _mirror(db, flat)
+    assert written == 0
+
+    row = await db.get_session(session_db_id(ROLLOUT_UID))
+    assert row is not None, "a rollout that mirrors nothing must still be accounted for"
+    assert row["source_kind"] == SOURCE_KIND
+    block = row["node_metadata"]["codex_import"]
+    assert block["records_seen"] == {"<untyped>": 2}
+    assert block["messages_mirrored"] == {}
+    assert block["source_path"] == "/tmp/rollout-x.jsonl"
+    # NOT NULL columns, and there is no message to take a time from.
+    assert row["created_at"] is not None
+
+
+async def test_fully_injected_rollout_is_recorded_with_its_counts(db):
+    """Every user turn filtered is exactly the shape an unenumerated form takes.
+
+    The filter list cannot be closed against a format another program owns, so a
+    future injection prefix will read as a rollout that mirrors nothing. That has
+    to arrive as a row whose seen count exceeds its mirrored count.
+    """
+    records = [
+        _rec("session_meta", {"id": ROLLOUT_UID, "cwd": "/x"}),
+        _turn("gpt-5.6-terra", "high"),
+        _user("<environment_context>\ncwd is /x", "i1"),
+        _user("# AGENTS.md instructions for /x\nbe good", "i2"),
+    ]
+    written, tally = await _mirror(db, records)
+    assert written == 0
+
+    row = await db.get_session(session_db_id(ROLLOUT_UID))
+    assert row is not None
+    block = row["node_metadata"]["codex_import"]
+    # Two response_items read, none mirrored: the subtraction a consumer does
+    # returns 2, and that is the signal.
+    assert block["records_seen"]["response_item"] == 2
+    assert "response_item" not in block["messages_mirrored"]
+    assert row["created_at"] is not None
+    assert await db.get_branch_messages(_det(ROLLOUT_UID, "branch")) == []
+
+
+async def test_a_later_batch_fills_in_a_rollout_that_began_barren(db):
+    """The row written for a barren batch is the same row its real turns land in."""
+    await _mirror(db, [_rec("session_meta", {"id": ROLLOUT_UID, "cwd": "/x"})])
+    sid = session_db_id(ROLLOUT_UID)
+    created_first = (await db.get_session(sid))["created_at"]
+
+    await _mirror(db, [_turn("gpt-5.6-sol", "xhigh"), _user("a real question", "m1")])
+    row = await db.get_session(sid)
+    # Accumulated across both batches rather than replaced by the second.
+    assert row["node_metadata"]["codex_import"]["records_seen"] == {
+        "session_meta": 1,
+        "turn_context": 1,
+        "response_item": 1,
+    }
+    assert row["created_at"] == created_first
+    assert len(await db.get_branch_messages(_det(ROLLOUT_UID, "branch"))) == 1
+
+
+async def test_a_batch_that_read_nothing_writes_no_row(db):
+    """An empty poll on a file is not a rollout; it must not mint a session."""
+    written, tally = await _mirror(db, [])
+    assert written == 0
+    assert tally.seen == {}
+    assert await db.get_session(session_db_id(ROLLOUT_UID)) is None
+
+
+async def test_a_batch_of_only_unreadable_lines_is_recorded(db):
+    """Lines that failed to parse are a finding; the row is where the count lives."""
+    written, _ = await _mirror(db, [], unparseable=4)
+    assert written == 0
+    row = await db.get_session(session_db_id(ROLLOUT_UID))
+    assert row is not None
+    assert row["node_metadata"]["codex_import"]["records_unparseable"] == 4
+    assert row["created_at"] is not None
+
+
 def test_turn_context_reads_only_turn_context_records():
     assert turn_context(_turn("m", "e")) == {"model": "m", "effort": "e"}
     assert turn_context(_user("hi", "m1")) is None

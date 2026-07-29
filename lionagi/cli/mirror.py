@@ -592,9 +592,10 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
     elif not written and records and not state.barren_reported:
         # A file the mirror read in full and produced nothing from is a finding, not
         # a quiet skip: without this it is indistinguishable from a file not yet
-        # reached, and no session row is written to carry the counts either. Measured
-        # cause on the local corpus: 6 of 29,652 rollouts (all 2025-09-01/02) predate
-        # the enveloped record format and match no record type this mirror reads.
+        # reached. The durable half is the session row the writer keeps for such a
+        # file; this only surfaces it in the run that saw it. Measured cause on the
+        # local corpus: 6 of 29,652 rollouts (all 2025-09-01/02) predate the
+        # enveloped record format and match no record type this mirror reads.
         state.barren_reported = True
         warn(
             f"{path.name}: read {sum(tally.seen.values())} record(s), mirrored none "
