@@ -81,6 +81,34 @@ class TestCmdArgs:
         i = args.index("--print-timeout")
         assert args[i + 1] == explicit
 
+    @pytest.mark.parametrize(
+        "explicit",
+        [
+            "not-a-duration",
+            "0s",
+            "-1s",
+            "999ms",
+            "9223372036854775808ns",
+            # Digits outside ASCII: a duration grammar of ASCII decimal digits
+            # does not accept these, so letting them through would send agy a
+            # value it cannot parse.
+            "١h",
+            "１h",
+        ],
+    )
+    def test_explicit_print_timeout_rejects_unusable_go_durations(self, explicit):
+        request = GeminiCodeRequest(prompt="hi", print_timeout=explicit)
+
+        with pytest.raises(ValueError, match="print_timeout"):
+            request.as_cmd_args()
+
+    def test_endpoint_config_print_timeout_is_checked_at_argv_boundary(self):
+        endpoint_kwargs = {"print_timeout": "0s"}
+        request = GeminiCodeRequest(prompt="hi", **endpoint_kwargs)
+
+        with pytest.raises(ValueError, match="print_timeout"):
+            request.as_cmd_args()
+
     def test_no_caller_timeout_omits_print_timeout(self):
         args = GeminiCodeRequest(prompt="hi").as_cmd_args()
 
@@ -92,22 +120,35 @@ class TestCmdArgs:
         ids=["infinite", "astronomically-large", "just-over-go-max"],
     )
     def test_unbounded_caps_stay_parseable_instead_of_raising(self, unbounded):
-        """A cap longer than Go can express clamps rather than breaking.
+        """Clamp configured caps to Go's int64 duration limit."""
+        emitted = format_print_timeout(unbounded)
+        assert emitted.endswith("s")
+        # int() rejects "inf", "1e+300" and every other non-integer
+        # spelling, so this asserts parseability rather than restating the
+        # clamping expression.
+        seconds = int(emitted.removesuffix("s"))
+        assert 0 < seconds <= (2**63 - 1) // 10**9
 
-        A Go duration is int64 nanoseconds, so anything past ~9.2e9 seconds
-        overflows, and a non-finite value cannot be made an integer at all.
-        Both would reach agy as something it cannot parse, which surfaces as
-        agy's own uninformative timeout error -- the failure this path exists
-        to stop producing. Asking for longer than Go can express is asking for
-        as long as possible, so clamping is the honest answer.
-        """
-        for emitted in (format_print_timeout(unbounded), derive_print_timeout(unbounded)):
-            assert emitted.endswith("s")
-            # int() rejects "inf", "1e+300" and every other non-integer
-            # spelling, so this asserts parseability rather than restating the
-            # clamping expression.
-            seconds = int(emitted.removesuffix("s"))
-            assert 0 < seconds <= (2**63 - 1) // 10**9
+    @pytest.mark.parametrize(
+        "caller_timeout",
+        [(2**63 - 1) // 10**9, 1e10, float("inf"), 10**1000],
+        ids=["at-go-max", "over-go-max", "infinite", "huge-integer"],
+    )
+    def test_unrepresentable_caller_timeout_is_rejected(self, caller_timeout):
+        with pytest.raises(ValueError, match="caller deadline"):
+            derive_print_timeout(caller_timeout)
+
+    @pytest.mark.parametrize("seconds", [float("-inf"), -1e300, -1, 0, 0.001])
+    def test_numeric_caps_have_a_useful_minimum(self, seconds):
+        emitted = format_print_timeout(seconds)
+
+        # Whatever the numeric paths emit has to survive the same guard an
+        # explicitly supplied value passes through. Asserting the number alone
+        # would not notice a dropped unit suffix, because int("1") is also 1.
+        args = GeminiCodeRequest(prompt="hi", print_timeout=emitted).as_cmd_args()
+        assert args[args.index("--print-timeout") + 1] == emitted
+        assert emitted.endswith("s")
+        assert int(emitted.removesuffix("s")) >= 1
 
 
 # ---------------------------------------------------------------------------

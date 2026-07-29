@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from lionagi._errors import ConfigurationError
 from lionagi.agent.factory import apply_forwarded_mcp_servers
 
 CODEX_SPEC = "codex/gpt-5.3-codex"
@@ -304,23 +305,18 @@ async def test_resumed_leg_keeps_codex_secret_fields_off_the_command_line(
 
 
 @pytest.mark.asyncio
-async def test_resumed_leg_on_a_provider_without_a_transport_is_told_so(
-    monkeypatch, tmp_path, caplog
-):
+async def test_resumed_antigravity_leg_rejects_an_explicit_server_set(monkeypatch, tmp_path):
     from lionagi.cli.agent import _run_agent
 
     branch_id = _wire_resume_stubs(monkeypatch, tmp_path, "gemini_code", "gemini-3.5-flash")
 
-    with caplog.at_level(logging.WARNING, logger=WARN_LOGGER):
+    with pytest.raises(ConfigurationError, match="Antigravity.*does not support MCP"):
         await _run_agent(
             None,
             "follow up",
             resume=branch_id,
             mcp_config=_mcp_config_file(tmp_path, SERVERS),
         )
-
-    assert "not carried" in caplog.text
-    assert "gemini_code" in caplog.text
 
 
 # ---------------------------------------------------------------------------

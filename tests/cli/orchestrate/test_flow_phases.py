@@ -13,6 +13,7 @@ from uuid import uuid4
 import pytest
 
 from lionagi.casts.emission import TaskAssignment
+from lionagi.cli.orchestrate._common import bare_worker_system
 from lionagi.cli.orchestrate.flow import (
     _build_dag,
     _DagState,
@@ -584,7 +585,7 @@ async def test_execute_dag_reactive_wires_spawn_branch_setup_for_cli_workspace(t
             is_cli=False,
             endpoint=SimpleNamespace(config=SimpleNamespace(kwargs={})),
         ),
-        msgs=_FakeMsgs("ARTIFACT DIRECTORY: /somewhere/else/emitter"),
+        msgs=_FakeMsgs(bare_worker_system(artifact_dir="/somewhere/else/emitter")),
     )
     spawn_branch_setup(non_cli_op, non_cli_branch)
 
@@ -593,7 +594,10 @@ async def test_execute_dag_reactive_wires_spawn_branch_setup_for_cli_workspace(t
     assert "repo" not in non_cli_branch.chat_model.endpoint.config.kwargs
     # … but it is on the roster and its prompt names its own directory.
     assert env.worker_artifact_dirs["spawn-2"] == non_cli_dir
-    assert non_cli_branch.msgs.system_text == f"ARTIFACT DIRECTORY: {non_cli_dir}"
+    assert f"ARTIFACT DIRECTORY: {non_cli_dir}" in non_cli_branch.msgs.system_text
+    assert "/somewhere/else/emitter" not in non_cli_branch.msgs.system_text
+    assert "not an assigned working directory" in non_cli_branch.msgs.system_text
+    assert "It is your working directory" not in non_cli_branch.msgs.system_text
 
 
 @pytest.mark.asyncio

@@ -60,6 +60,22 @@ pip install 'lionagi[studio]'
 | `den.autoStart` | `true` | Spawn the backend when the extension activates. |
 | `den.authToken` | `""` | Bearer token (`LIONAGI_STUDIO_AUTH_TOKEN`). |
 
+## Privacy
+
+Den talks to one place: the backend at `den.url`, or the one it spawns for you at
+`den.host`:`den.port` (`127.0.0.1:8765` by default). Your runs, transcripts, prompts,
+and output are read from disk through that backend and rendered locally.
+
+- **No telemetry, no analytics, no crash reporting.** Den does not phone home, and
+  there is no setting to turn off because there is nothing to turn off.
+- **Nothing is uploaded.** Den never sends your code, prompts, or run output anywhere.
+- The only outbound request Den makes is **Den: Star on GitHub**, which opens
+  github.com in your browser, and only when you run that command yourself.
+
+One caveat worth stating plainly: if you set `den.url` to a backend on another
+machine, Den will talk to that machine. That is the point of the setting, and it is
+the only way traffic leaves your computer.
+
 ## License
 
 Apache 2.0, part of [lionagi](https://github.com/ohdearquant/lionagi). If Den is useful to you, a ⭐ on the repo helps.

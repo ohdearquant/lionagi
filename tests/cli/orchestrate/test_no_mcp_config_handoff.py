@@ -17,6 +17,7 @@ import json
 import pytest
 
 import lionagi.cli.orchestrate._orchestration as orch_mod
+from lionagi.cli._providers import AgentProfile
 from lionagi.cli._runs import RunDir
 from lionagi.cli.orchestrate._orchestration import build_worker_branch, setup_orchestration
 from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
@@ -24,11 +25,21 @@ from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
 @pytest.fixture
 def tmp_run(monkeypatch, tmp_path):
-    """Keep run state under tmp_path, and start from a directory with no
-    .mcp.json above it so discovery is what the flag decides, not the tree."""
+    """Isolate state while simulating host routing for implementers."""
     launch_dir = tmp_path / "launch"
     launch_dir.mkdir()
     monkeypatch.chdir(launch_dir)
+
+    def _load_profile(name):
+        if name == "implementer":
+            body = "Use the configured provider."
+            return AgentProfile(
+                name=name,
+                model="codex/gpt-5",
+                system_prompt=body,
+                raw_body=body,
+            )
+        raise FileNotFoundError(name)
 
     def _allocate(save_dir=None, run_id=None):
         run = RunDir(
@@ -40,6 +51,7 @@ def tmp_run(monkeypatch, tmp_path):
         run.ensure_artifact_root()
         return run
 
+    monkeypatch.setattr(orch_mod, "load_agent_profile", _load_profile)
     monkeypatch.setattr(orch_mod, "allocate_run", _allocate)
     return launch_dir
 
@@ -74,7 +86,12 @@ async def test_no_mcp_config_reaches_the_worker_as_an_empty_server_set(tmp_run):
     # The empty set is a decision and survives to the workers as one.
     assert env.mcp_servers == {}
 
-    branch, _, _, _ = await build_worker_branch(env, agent_id="w1", role="implementer")
+    branch, _, _, _ = await build_worker_branch(
+        env,
+        agent_id="w1",
+        role="implementer",
+        model_override="claude_code/sonnet",
+    )
     args = await _cli_args(branch.chat_model)
 
     assert "--mcp-config" in args
@@ -101,7 +118,12 @@ async def test_no_config_found_hands_over_nothing_and_says_nothing(tmp_run):
 
     assert env.mcp_servers is None
 
-    branch, _, _, _ = await build_worker_branch(env, agent_id="w1", role="implementer")
+    branch, _, _, _ = await build_worker_branch(
+        env,
+        agent_id="w1",
+        role="implementer",
+        model_override="claude_code/sonnet",
+    )
     args = await _cli_args(branch.chat_model)
 
     assert "--mcp-config" not in args

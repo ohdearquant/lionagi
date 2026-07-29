@@ -166,7 +166,7 @@ def test_no_verb_accepts_opaque_argv():
 def test_a_spawn_verb_cannot_be_argued_into_a_different_command(monkeypatch):
     # Every spawn verb's command boundary comes from its job kind, not from any
     # caller-supplied value, so a value that looks like a subcommand lands as a
-    # positional argument of the command that was already chosen.
+    # positional pair of the command that was already chosen.
     seen: dict = {}
 
     def fake_submit(kind, flags, **kwargs):
@@ -174,10 +174,10 @@ def test_a_spawn_verb_cannot_be_argued_into_a_different_command(monkeypatch):
         return {"run_id": "rid"}
 
     monkeypatch.setattr(jobs, "submit", fake_submit)
-    call(ops=[spawn_op("agent.submit", {"query": ["plugin", "trust", "evil"]})])
+    call(ops=[spawn_op("agent.submit", {"query": ["plugin", "trust"]})])
     assert seen["kind"] == "agent"
     assert jobs._KIND_ARGV["agent"] == ["agent"]
-    assert seen["flags"] == ["--", "plugin", "trust", "evil"]
+    assert seen["flags"] == ["--", "plugin", "trust"]
 
 
 @pytest.mark.parametrize(

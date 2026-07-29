@@ -314,17 +314,19 @@ class Message(Node, Sendable):
 
     @property
     def chat_msg(self) -> dict[str, Any] | None:
-        """A dictionary representation typically used in chat-based contexts."""
-        return self._chat_msg()
+        """Project this message into a chat payload.
 
-    def _chat_msg(self, *, use_render_cache: bool = True) -> dict[str, Any] | None:
-        """Build a provider chat message, reusing the stable content rendering
-        when safe.
+        Projection failures are contained as ``None`` for compatibility.
+        """
+        try:
+            return self._chat_msg()
+        except Exception:
+            return None
 
-        A rendering failure propagates rather than degrading to ``None``: a
-        message that reaches a provider with its content missing is
-        indistinguishable from one that never had any, so content that cannot
-        be carried has to fail where it can be seen.
+    def _chat_msg(self, *, use_render_cache: bool = True) -> dict[str, Any]:
+        """Build a provider chat message.
+
+        Rendering failures propagate so manager conversion cannot emit holes.
         """
         role_str = self.role.value if isinstance(self.role, MessageRole) else str(self.role)
         return {

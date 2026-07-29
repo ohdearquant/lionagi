@@ -1389,6 +1389,31 @@ def _derive(
 # --- public API ----------------------------------------------------------------
 
 
+def _submit_cwd() -> str | None:
+    """This process's own directory, or None when it no longer has one.
+
+    This is the submitter's directory because of how the server is reached, and
+    only because of that: it is served over stdio, so the client spawns it and
+    the process inherits that client's environment. One client, one server, one
+    working directory. A transport where several callers share one long-lived
+    server would break the equivalence silently — every notice would sign as the
+    server's owner rather than the caller's — so a transport added later needs
+    the anchor carried on the request instead of read from here.
+
+    Read through a guard because a submission must not be lost to it. A server
+    whose working directory was removed under it cannot answer, and that is a
+    missing field on one record rather than a reason to strand a run: the record
+    is built before the write that publishes it, so anything raising here leaves
+    a reserved directory that reads back as a job with no kind that never
+    finishes. None says the submitter's directory is unknown, which the delivery
+    path treats as the pre-existing case of not knowing it at all.
+    """
+    try:
+        return os.getcwd()
+    except OSError:
+        return None
+
+
 def submit(
     kind: str,
     flags: list[str],
@@ -1623,6 +1648,19 @@ def submit(
         "kind": kind,
         "argv": argv,
         "cwd": cwd,
+        # Both working directories, because they answer different questions and a
+        # notice signed by the wrong one is the failure this pair exists to close.
+        # `cwd` is where the run executes. `submit_cwd` is this process's own
+        # directory, which is the submitting seat's: it is what the server was
+        # started in, and therefore what any directory-anchored identity lookup
+        # resolves the submitter from. A notifier that resolves who it is from its
+        # working directory reports the run's directory owner unless it is run in
+        # the submitter's, so the delivery uses this one — see
+        # _notify_hook.deliver_terminal_notice. Recorded even when the two agree,
+        # so a record read afterwards can always say which identity a notice
+        # carried rather than leaving it to be inferred from a path that has since
+        # been reused.
+        "submit_cwd": _submit_cwd(),
         "label": label,
         "notify_command": notify_command,
         "notify_target": notify_target,
@@ -2900,12 +2938,22 @@ def _notify_delivery_state(outcome: Any) -> str:
     nothing — refused before it ran, unable to start, timed out, or exited
     non-zero — because to a caller waiting on the notice those are one fact.
 
+    ``"delivered_unverified"`` is its own state and not a flavour of either. The
+    delivery ran and exited zero, but for that command shape a zero exit is known
+    not to mean the message was sent. Collapsing it into ``"delivered"`` reports a
+    claim we cannot support, and collapsing it into ``"failed"`` reports a failure
+    that probably did not happen. A caller that treats any non-``"delivered"``
+    state as needing attention gets the right behaviour without knowing this
+    distinction; one that wants the distinction has it.
+
     The record is JSON on disk, so an ``outcome`` that is not an object is read as
     no delivery rather than allowed to raise through the listing.
     """
     if not isinstance(outcome, dict):
         return "none"
     if outcome.get("ok"):
+        if outcome.get("delivery_verified") is False:
+            return "delivered_unverified"
         return "delivered"
     if not outcome.get("attempted") and not outcome.get("error"):
         return "none"
@@ -2934,6 +2982,31 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
     visible here as a damaged record rather than as a job with no kind and an
     unknown status. That is a per-run failure, and one damaged record must not cost
     the caller the runs beside it.
+
+    ``spawn_state`` rides along for the same reason those three do, and it is the
+    one that decides what ``running`` means. A record whose spawn was never
+    attempted, or whose result was never written, stays ``running`` on purpose:
+    resolving it would take a bound that cannot tell a loaded machine from a dead
+    spawn, so ``status`` deliberately makes no claim about its fate. That refusal
+    is right, and it is also why the distinction has to be visible here. This
+    listing is what a caller reads to answer "what is in flight right now", and
+    without the spawn state a run that never started is indistinguishable in it
+    from one doing work — same word, two facts. A count that can hold a run that
+    never began is one a caller cannot use as evidence in either direction, so the
+    live run hiding in a listing somebody has learned to discount is the failure
+    this field exists to prevent.
+
+    It is reported as the record carries it, which means null is not one answer.
+    A row whose ``record_state`` is not ``"ok"`` never had a record to read a
+    phase from. A row whose ``record_state`` is ``"ok"`` and whose spawn state is
+    null is a record that parsed and does not name a phase — one written before
+    the field existed. A record that names a phase this code does not recognise
+    is listed with that phase verbatim, not as null: the value is reported as the
+    record carries it. So null reads as "no phase this listing can vouch for",
+    never as "never attempted";
+    the phase that means never-attempted says ``"preparing"`` and says it
+    explicitly. Normalising the value is a change to what ``status`` reports and
+    belongs with it rather than here, where it would make the two disagree.
 
     A directory without a job record is not listed. Submissions reserve their
     directory before command preparation, and publishing ``job.json`` is the
@@ -2974,6 +3047,7 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
                 "terminal": st["terminal"],
                 "outcome": st["outcome"],
                 "reason_code": st["reason_code"],
+                "spawn_state": st["spawn_state"],
                 "submitted_at": st["submitted_at"],
                 "finished_at": st["finished_at"],
                 "terminal_source": st["terminal_source"],

@@ -236,6 +236,10 @@ def test_mirror_offsets_refuse_non_finite(tmp_path, monkeypatch):
         "session_uid": "s",
         "tool_names": {"t1": "Read"},
         "leaf_uuid": None,
+        # Carried so a message mirrored after a restart keeps the attribution of
+        # the turn that produced it; it reaches this file out of a codex rollout,
+        # so it is on the same foreign-data footing as tool_names above.
+        "turn": {},
     }
 
 

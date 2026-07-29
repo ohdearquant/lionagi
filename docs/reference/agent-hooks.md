@@ -4,6 +4,10 @@ Reference for `lionagi.hooks.HookPoint` — the closed vocabulary of session
 lifecycle hook points — and the built-in handlers registered via
 `lionagi.hooks.loader.DEFAULT_HOOKS`.
 
+These Session-level `HookBus` hooks are separate from the per-`iModel`
+service lifecycle. See [HookRegistry service hooks](advanced.md#hookregistry)
+for model invocation callbacks.
+
 ## HookPoint catalog
 
 ### Dispatched (active emit callsites)

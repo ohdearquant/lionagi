@@ -46,9 +46,9 @@ exists, which is the reason this problem was recorded rather than the reason it 
 **P6 — lazy ownership and compatibility surfaces expose real maintenance traps.** Creating
 `Session.hooks` after branches were included does not backfill the bus onto those branches.
 `build_session_bus()` accepts declarative overrides, but the shipped `Session.hooks` property calls
-it with defaults only. Service stream-handler typing and `iModel.create_event()` return annotation
-also differ from their runtime calls. These facts must be visible instead of hidden behind a claim
-of a completed universal hook system.
+it with defaults only. Service stream-handler typing and the `iModel.create_event()` return
+annotation historically differed from their runtime calls; delta 5 repaired both contracts. These
+facts must be visible instead of hidden behind a claim of a completed universal hook system.
 
 The shipped ownership and invocation relationships are:
 
@@ -423,7 +423,7 @@ class HookDict(TypedDict):
     pre_invocation: Callable | None
     post_invocation: Callable | None
 
-StreamHandlers = dict[str, Callable[[SC], Awaitable[None]]]
+StreamHandlers = dict[str, Callable[[Any, str | type, SC], Awaitable[None]]]
 
 class AssociatedEventInfo(TypedDict, total=False):
     lion_class: str
@@ -465,9 +465,9 @@ At runtime, a stream handler is called as:
 await handler(None, chunk_type, chunk, **hook_params)
 ```
 
-The shipped `StreamHandlers` alias documents a one-chunk callable even though dispatch passes three
-positional arguments plus keywords. Tests and runtime use the three-argument form; the annotation is
-not a faithful callable contract today.
+The shipped `StreamHandlers` alias describes the three positional values supplied by dispatch:
+the event-like value (`None` for streaming), chunk type, and chunk. Hook parameters are also
+forwarded as keyword arguments.
 
 **The event wrapper contract** (`lionagi/service/hooks/hook_event.py`):
 
@@ -533,7 +533,7 @@ class iModel:
         post_invoke_event_hook_timeout: float = 30.0,
         post_invoke_event_hook_params: dict = None,
         **kwargs,
-    ) -> tuple[HookEvent | None, APICalling]: ...
+    ) -> APICalling: ...
 
 class HookedEvent(Event):
     async def _core_invoke(self): ...
@@ -556,9 +556,8 @@ class HookedEvent(Event):
     ): ...
 ```
 
-Despite its annotation, `iModel.create_event()` returns the created `APICalling` object, not a
-`(HookEvent, APICalling)` tuple. The pre-create HookEvent remains available only as internal local
-state and through logging.
+`iModel.create_event()` returns the created `APICalling` object. The pre-create HookEvent remains
+available only as internal local state and through logging.
 
 **Creation and invocation semantics.**
 
@@ -759,8 +758,8 @@ unlike callables.
   HookBus even while its Session later has a bus.
 - Declarative Session hook override utilities exist, but the default Session construction path does
   not consume agent/profile declarations.
-- Service hook authors must know the actual three-positional-argument stream call and the actual
-  `APICalling` return from `create_event()` until the annotations are repaired.
+- Service hook authors can rely on the three-positional-argument `StreamHandlers` alias and the
+  `APICalling` return from `create_event()`; static and runtime tests pin both contracts.
 - Service post-invocation failure can replace a successful non-stream result only when exit or
   cancellation semantics require propagation; an `ABORTED` post hook with `exit=False` leaves the
   core result intact. No post hook can retract delivered stream chunks, and a core error remains
@@ -783,7 +782,7 @@ unlike callables.
 | 2 | Give the three dormant API `HookPoint` values production semantics through a typed, optional service-to-session observation adapter; accept when a session-bound iModel records API observations without changing service pre-invocation control or standalone iModel behavior. | M | delivered |
 | 3 | `ARTIFACT_CREATED` is deprecated compatibility vocabulary with no production emit site; contract coverage pins both the no-emitter scan and the public warning until an artifact owner supplies a typed payload. | S | — |
 | 4 | Blocked `TOOL_PRE` attempts record a denial signal before the original exception propagates; tests pin both the audit record and the blocked invocation. | S | — |
-| 5 | Align service hook annotations with runtime behavior; accept when `StreamHandlers` describes the actual stream callback arguments and `iModel.create_event()` has one truthful return type covered by static and runtime tests. | S | (filled at issue-open time) |
+| 5 | Service hook annotations align with runtime behavior: `StreamHandlers` describes the actual stream callback arguments and `iModel.create_event()` has one truthful return type covered by static and runtime tests. | S | delivered |
 | 6 | Declarative Session hook overrides remain a caller-owned, documentation-only construction contract through `build_session_bus(agent_hooks=...)`; Session and AgentSpec/profile construction do not consume them automatically. | M | — |
 | 7 | `persist_message` remains name-addressable but is absent from `DEFAULT_HOOKS`; direct Session/Branch use cannot invoke it without the explicit routing context it requires. | S | — |
 

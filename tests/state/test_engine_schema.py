@@ -336,6 +336,42 @@ async def test_metadata_check_constraint_parity_vs_schema_sql(tmp_path, sqlite_m
     assert not drift, f"CHECK enum drift:\n{drift}"
 
 
+async def test_python_enum_sets_match_schema_sql_checks(tmp_path):
+    """The Python vocabularies the writers validate against carry the same values
+    as the CHECK constraints in schema.sql.
+
+    The metadata-parity guard above covers the SQLAlchemy mirror only, so a value
+    added to schema.sql and the mirror alone would be legal in the database and
+    still refused by ``create_session`` — accepted by the store, rejected by the
+    only code that writes to it.
+    """
+    import re
+    import sqlite3
+
+    from lionagi.state.db import _INVOCATION_KINDS, _SCHEMA_PATH, _SOURCE_KINDS
+
+    raw_db = tmp_path / "python_enum_parity.db"
+    schema_text = _SCHEMA_PATH.read_text()
+    lines = [ln for ln in schema_text.splitlines() if not ln.strip().upper().startswith("PRAGMA")]
+    conn = sqlite3.connect(str(raw_db))
+    conn.executescript("\n".join(lines))
+    sessions_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='sessions'"
+    ).fetchone()[0]
+    conn.close()
+
+    in_re = re.compile(r"(\w+)\s+IN\s*\(([^)]+)\)", re.IGNORECASE)
+    found = {
+        col: frozenset(p.strip().strip("'").strip() for p in vals.split(",") if p.strip())
+        for col, vals in in_re.findall(sessions_sql)
+    }
+
+    expected = {"source_kind": _SOURCE_KINDS, "invocation_kind": _INVOCATION_KINDS}
+    # Fail closed: a column whose CHECK the regex missed must not read as parity.
+    assert set(expected) <= set(found), f"no CHECK parsed for {set(expected) - set(found)}"
+    assert {col: found[col] for col in expected} == expected
+
+
 async def test_metadata_unique_enforcement_present(sqlite_meta_engine):
     """The three natural-key uniqueness rules are enforced (constraint or index)."""
     expected = {

@@ -382,12 +382,19 @@ DISPATCH_RETENTION_DEAD_LETTER_DAYS: int = int(
     os.environ.get("LIONAGI_STUDIO_DISPATCH_RETENTION_DEAD_LETTER_DAYS", "30")
 )
 
-# ── Ambient Claude Code mirror ────────────────────────────────────────────────
-# When on, studio tails ~/.claude/projects in-process so Claude Code sessions show
-# up (and stream live) without a separate `li mirror`. Bounded by the window below,
-# so startup catches up the recent window only and never backfills full history.
+# ── Ambient transcript mirror ─────────────────────────────────────────────────
+# When on, studio tails the local agent transcript trees in-process so those
+# sessions show up (and stream live) without a separate `li mirror`. Bounded by
+# the window below, so startup catches up the recent window only and never
+# backfills full history — which matters most for codex, whose rollout corpus
+# runs to tens of thousands of files.
 MIRROR_CLAUDE_ENABLED: bool = os.environ.get(
     "LIONAGI_STUDIO_MIRROR_CLAUDE", "1"
 ).strip().lower() not in ("0", "false", "no", "off", "")
 MIRROR_CLAUDE_SINCE: str = os.environ.get("LIONAGI_STUDIO_MIRROR_CLAUDE_SINCE", "24h")
 MIRROR_CLAUDE_INTERVAL: float = float(os.environ.get("LIONAGI_STUDIO_MIRROR_CLAUDE_INTERVAL", "5"))
+# Which transcript trees the ambient mirror reads: "both", "claude", or "codex".
+_MIRROR_SOURCE_RAW: str = os.environ.get("LIONAGI_STUDIO_MIRROR_SOURCE", "both").strip().lower()
+MIRROR_SOURCE: str = (
+    _MIRROR_SOURCE_RAW if _MIRROR_SOURCE_RAW in ("both", "claude", "codex") else "both"
+)

@@ -475,6 +475,19 @@ def test_identity_accepts_shebang_launched_li(monkeypatch: pytest.MonkeyPatch):
     assert _check_pid_identity(42, "lionagi") == "ours"
 
 
+def test_identity_accepts_macos_framework_python_launcher(monkeypatch: pytest.MonkeyPatch):
+    _mock_psutil(
+        monkeypatch,
+        cmdline=[
+            "/opt/homebrew/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/"
+            "Contents/MacOS/Python",
+            "/opt/.venv/bin/li",
+            "agent",
+        ],
+    )
+    assert _check_pid_identity(42, "lionagi") == "ours"
+
+
 def test_identity_rejects_foreign_script_with_li_in_path(monkeypatch: pytest.MonkeyPatch):
     """A non-lionagi script whose path contains 'li' must not be accepted."""
     _mock_psutil(

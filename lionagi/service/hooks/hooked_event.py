@@ -3,6 +3,7 @@
 
 import asyncio
 import logging
+from contextvars import ContextVar
 
 import anyio
 import sniffio
@@ -15,6 +16,8 @@ from lionagi.service.hooks import HookEvent, HookEventTypes
 from ._types import StreamTerminalState
 
 _logger = logging.getLogger(__name__)
+
+_NO_STREAM_CONTEXT = object()
 
 POST_STREAM_TEARDOWN_GRACE = 5.0
 """Seconds a post-stream hook may take when the stream is being closed or cancelled.
@@ -54,7 +57,10 @@ class HookedEvent(Event):
 
     _pre_invoke_hook_event: HookEvent = PrivateAttr(None)
     _post_invoke_hook_event: HookEvent = PrivateAttr(None)
-    _stream_terminal_state: StreamTerminalState | None = PrivateAttr(None)
+    _stream_terminal_state: ContextVar = PrivateAttr(
+        default_factory=lambda: ContextVar("stream_terminal_state", default=_NO_STREAM_CONTEXT)
+    )
+    _last_stream_terminal_state: StreamTerminalState | None = PrivateAttr(None)
 
     @property
     def stream_terminal_state(self) -> StreamTerminalState | None:
@@ -63,7 +69,10 @@ class HookedEvent(Event):
         Set before the post-invocation hook is invoked, so a hook can tell a stream that
         completed from one that failed, was closed by its consumer, or was cancelled.
         """
-        return self._stream_terminal_state
+        state = self._stream_terminal_state.get()
+        if state is _NO_STREAM_CONTEXT:
+            return self._last_stream_terminal_state
+        return state
 
     async def _core_invoke(self):
         """Override in subclasses; return value is stored in ``self.execution.response``."""
@@ -164,7 +173,7 @@ class HookedEvent(Event):
                 )
             await global_hook_logger.alog(h_ev)
 
-        self._stream_terminal_state = None
+        self._last_stream_terminal_state = None
         state = StreamTerminalState.Completed
         try:
             async for chunk in self._core_stream():
@@ -181,31 +190,35 @@ class HookedEvent(Event):
             state = StreamTerminalState.Failed
             raise
         finally:
-            self._stream_terminal_state = state
+            stream_state_token = self._stream_terminal_state.set(state)
             try:
-                await self._run_post_stream_hook(state)
-            except (KeyboardInterrupt, SystemExit):
-                raise
-            except get_cancelled_exc_class():
-                # A cancellation the hook raised at itself was already absorbed where it
-                # could still be attributed. One reaching here was delivered to the
-                # consuming task, so it is honoured -- except on a stream that ended in
-                # cancellation, where re-raising the source leaves the consumer cancelled
-                # anyway and keeps the exception it was handed.
-                if state is not StreamTerminalState.Cancelled:
+                try:
+                    await self._run_post_stream_hook(state)
+                except (KeyboardInterrupt, SystemExit):
                     raise
-                _logger.warning(
-                    "Post-stream teardown was cancelled while the stream was ending "
-                    "(%s); the stream's own ending is preserved",
-                    state.value,
-                )
-            except BaseException as _teardown_exc:
-                _logger.warning(
-                    "Post-stream teardown failed while the stream was ending (%s): %s",
-                    state.value,
-                    _teardown_exc,
-                    exc_info=True,
-                )
+                except get_cancelled_exc_class():
+                    # A cancellation the hook raised at itself was already absorbed where it
+                    # could still be attributed. One reaching here was delivered to the
+                    # consuming task, so it is honoured -- except on a stream that ended in
+                    # cancellation, where re-raising the source leaves the consumer cancelled
+                    # anyway and keeps the exception it was handed.
+                    if state is not StreamTerminalState.Cancelled:
+                        raise
+                    _logger.warning(
+                        "Post-stream teardown was cancelled while the stream was ending "
+                        "(%s); the stream's own ending is preserved",
+                        state.value,
+                    )
+                except BaseException as _teardown_exc:
+                    _logger.warning(
+                        "Post-stream teardown failed while the stream was ending (%s): %s",
+                        state.value,
+                        _teardown_exc,
+                        exc_info=True,
+                    )
+            finally:
+                self._last_stream_terminal_state = state
+                self._stream_terminal_state.reset(stream_state_token)
 
     async def _run_post_stream_hook(self, state: StreamTerminalState) -> None:
         """Invoke and log the post-invocation hook for a stream that ended in ``state``.
