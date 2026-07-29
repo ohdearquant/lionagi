@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
 from pathlib import Path
@@ -610,6 +611,46 @@ async def test_teardown_updates_session_bookmarks_and_status(
     assert s["first_msg_id"] == str(msg_a.id)
     assert s["last_msg_id"] == str(msg_b.id)
     assert s["ended_at"] is not None
+
+
+async def test_teardown_extras_preserve_existing_node_metadata(
+    temp_db_path: Path,
+):
+    """Teardown extras extend the session metadata object.
+
+    Process identity from setup must survive telemetry writes.
+    """
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch)
+
+    async with StateDB() as db:
+        before = await db.get_session(ctx["session_id"])
+    initial_metadata = before["node_metadata"]
+    if isinstance(initial_metadata, str):
+        initial_metadata = json.loads(initial_metadata)
+
+    counters = {
+        "recall_turns": 2,
+        "blocks_injected": 3,
+        "failed": 1,
+        "writeback_records": 5,
+        "writeback_failed": 2,
+    }
+    await _teardown_live_persist(
+        ctx,
+        status="failed",
+        exception=RuntimeError("boom"),
+        extras={"khive_injection": counters},
+    )
+
+    async with StateDB() as db:
+        after = await db.get_session(ctx["session_id"])
+    final_metadata = after["node_metadata"]
+    if isinstance(final_metadata, str):
+        final_metadata = json.loads(final_metadata)
+
+    assert all(final_metadata[key] == value for key, value in initial_metadata.items())
+    assert final_metadata["khive_injection"] == counters
 
 
 async def test_teardown_finalizes_branch_status_and_ended_at(

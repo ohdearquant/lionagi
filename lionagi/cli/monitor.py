@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import signal
 import sys
@@ -501,6 +502,15 @@ async def _detail_session(db: Any, sess: dict[str, Any]) -> str:
     if last_msg:
         lines.append(f"  last_msg:  {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_msg))}")
 
+    node_metadata = _parse_json_field(sess.get("node_metadata"))
+    injection = (node_metadata or {}).get("khive_injection")
+    if isinstance(injection, dict):
+        injection_line = _format_khive_injection_line(injection)
+        if injection_line:
+            lines.append("")
+            lines.append(_dim("  -- khive injection --"))
+            lines.append(f"    {injection_line}")
+
     # Completion-trust evidence: surface why the status landed, so trusting
     # it doesn't require a manual git read.
     if sess.get("status") in ("completed", "completed_empty"):
@@ -567,6 +577,36 @@ def _as_number(value: Any) -> int | float:
     """Coerce *value* to a count, treating anything non-numeric as 0 —
     persisted telemetry is untrusted and must never crash the monitor."""
     return value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+
+def _as_counter(value: Any) -> int:
+    """Return a finite, nonnegative integral counter.
+
+    Invalid numeric telemetry is treated as absent.
+    """
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value if value >= 0 else 0
+    if isinstance(value, float) and math.isfinite(value) and value >= 0 and value.is_integer():
+        return int(value)
+    return 0
+
+
+def _format_khive_injection_line(telemetry: dict[str, Any]) -> str | None:
+    """Render persisted aggregate injection counters.
+
+    Empty or malformed counter sets are omitted from the session detail.
+    """
+    counter_names = (
+        "recall_turns",
+        "blocks_injected",
+        "failed",
+        "writeback_records",
+        "writeback_failed",
+    )
+    counters = {name: _as_counter(telemetry.get(name)) for name in counter_names}
+    if not any(counters.values()):
+        return None
+    return " ".join(f"{name}={value}" for name, value in counters.items())
 
 
 def _format_coordination_line(telemetry: dict[str, Any]) -> str | None:

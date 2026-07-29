@@ -496,8 +496,17 @@ async def _teardown_common(
         update_kwargs["last_msg_id"] = all_msgs[-1]
 
     if extras:
+        session = await db.get_session(session_id) or {}
+        existing_metadata = session.get("node_metadata") or {}
+        if isinstance(existing_metadata, str):
+            try:
+                existing_metadata = json.loads(existing_metadata)
+            except (TypeError, ValueError):
+                existing_metadata = {}
+        if not isinstance(existing_metadata, dict):
+            existing_metadata = {}
         markers = identity_markers or {}
-        update_kwargs["node_metadata"] = json.dumps({**extras, **markers})
+        update_kwargs["node_metadata"] = json.dumps({**existing_metadata, **extras, **markers})
 
     await db.update_session(session_id, **update_kwargs)
 
