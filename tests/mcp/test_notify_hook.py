@@ -773,3 +773,63 @@ def test_a_server_with_no_working_directory_does_not_strand_the_submission(monke
     """The record is built before the write that publishes it, so this cannot raise."""
     monkeypatch.setattr(jobs.os, "getcwd", lambda: (_ for _ in ()).throw(OSError("gone")))
     assert jobs._submit_cwd() is None
+
+
+def test_an_anchor_the_submission_could_not_read_refuses_rather_than_inheriting(
+    monkeypatch, tmp_path
+):
+    """Present-and-null is an unavailable anchor, not an unasked-for one.
+
+    A record whose own submission tried to note where it came from and could not
+    must not quietly deliver from wherever the caller happens to be. Left to
+    inherit, every job submitted after the server lost its directory would go
+    back to the old caller-dependent signing and say nothing about it.
+    """
+    rid = _job_with(monkeypatch, tmp_path, submit_cwd=None)
+
+    calls: list = []
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: calls.append((a, k)))
+
+    command = json.dumps(["notify", "{run_id}"])
+    assert _notify_hook.main(["--run-id", rid, "--status", "completed", "--command", command]) == 0
+    assert calls == []
+    assert jobs._read_job(rid)["notify_delivery"]["error"] == "delivery_cwd_unavailable_at_submit"
+
+
+def test_a_record_missing_the_key_entirely_still_inherits(monkeypatch, tmp_path):
+    """The control for the test above.
+
+    These two differ by whether the key is there at all, and nothing else. A
+    reader that refused both would satisfy the previous test and fail this one.
+    """
+    rid = _job_with(monkeypatch, tmp_path)
+    assert "submit_cwd" not in jobs._read_job(rid)
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        _notify_hook.subprocess,
+        "run",
+        lambda *_a, **kw: captured.update(kw) or _FakeCompleted(0),
+    )
+
+    command = json.dumps(["notify", "{run_id}"])
+    assert _notify_hook.main(["--run-id", rid, "--status", "completed", "--command", command]) == 0
+    assert captured["cwd"] is None
+    assert jobs._read_job(rid)["notify_delivery"]["ok"] is True
+
+
+def test_two_identity_problems_are_both_reported(monkeypatch, tmp_path):
+    """One record says everything wrong with the delivery, not the first thing.
+
+    Stopping at the first reason costs an operator a second failed run to learn
+    the second one.
+    """
+    rid = _job_with(monkeypatch, tmp_path, submit_cwd=str(tmp_path / "removed"))
+
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(0))
+
+    command = json.dumps(["notify", "{sender}"])  # asks for a sender; none is given
+    assert _notify_hook.main(["--run-id", rid, "--status", "completed", "--command", command]) == 0
+    error = jobs._read_job(rid)["notify_delivery"]["error"]
+    assert "delivery_cwd_is_not_a_directory" in error
+    assert "delivery_command_needs_a_sender_and_none_was_given" in error

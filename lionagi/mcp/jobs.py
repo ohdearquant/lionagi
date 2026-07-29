@@ -1386,6 +1386,14 @@ def _derive(
 def _submit_cwd() -> str | None:
     """This process's own directory, or None when it no longer has one.
 
+    This is the submitter's directory because of how the server is reached, and
+    only because of that: it is served over stdio, so the client spawns it and
+    the process inherits that client's environment. One client, one server, one
+    working directory. A transport where several callers share one long-lived
+    server would break the equivalence silently — every notice would sign as the
+    server's owner rather than the caller's — so a transport added later needs
+    the anchor carried on the request instead of read from here.
+
     Read through a guard because a submission must not be lost to it. A server
     whose working directory was removed under it cannot answer, and that is a
     missing field on one record rather than a reason to strand a run: the record

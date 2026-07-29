@@ -3201,3 +3201,50 @@ def test_an_interrupt_arriving_during_release_is_not_swallowed_and_still_closes(
             raise ValueError("the failure the interrupt arrived during")
 
     assert closed == [taken["fd"]]
+
+
+def test_submit_records_the_directory_the_submission_came_from(sandbox, monkeypatch, tmp_path):
+    """The anchor on the record is this process's own directory, not the run's.
+
+    Every other test of the delivery path writes `submit_cwd` by hand, so this is
+    the one that asks whether the writer puts the right value there. The two are
+    deliberately different here: a run pinned to one directory, submitted from
+    another.
+    """
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **k: _FakeProc(4242))
+    submitted_from = tmp_path / "seat"
+    submitted_from.mkdir()
+    ran_in = tmp_path / "worktree"
+    ran_in.mkdir()
+    monkeypatch.chdir(submitted_from)
+
+    rid = jobs.submit("agent", [], prompt="x", cwd=str(ran_in))["run_id"]
+
+    rec = jobs._read_job(rid)
+    assert rec["cwd"] == str(ran_in)
+    assert rec["submit_cwd"] == str(submitted_from)
+
+
+def test_a_submission_that_could_not_read_its_directory_records_that_it_could_not(
+    sandbox, monkeypatch
+):
+    """The anchor is absent as a value, not as a key.
+
+    The key being there with nothing in it is what lets the delivery path tell
+    "this run tried to record an anchor and could not" from "this record predates
+    the field". They are different facts and only the second may inherit.
+
+    Submitted with no MCP config on purpose. Resolving one reads the working
+    directory too, earlier and unguarded, so on that path a submission never
+    reaches the anchor — it fails at the resolve, inside a block that gives the
+    reserved directory back. This is the path where the anchor is the first
+    reader, which is the only one where the null it records can be observed.
+    """
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **k: _FakeProc(4242))
+    monkeypatch.setattr(jobs.os, "getcwd", lambda: (_ for _ in ()).throw(OSError("gone")))
+
+    rid = jobs.submit("agent", [], prompt="x", no_mcp_config=True)["run_id"]
+
+    rec = jobs._read_job(rid)
+    assert "submit_cwd" in rec
+    assert rec["submit_cwd"] is None

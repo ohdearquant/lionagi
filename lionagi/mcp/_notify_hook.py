@@ -159,11 +159,25 @@ def _resolve_delivery_cwd(
     A named directory that is not there is a refusal, not a fallback. Running
     somewhere else instead would deliver the notice under an identity nobody
     chose, which is the outcome this whole path exists to prevent and the one
-    that is invisible afterwards. A record with no ``submit_cwd`` is different
-    and is not a refusal: it predates the field, and inheriting is what it always
-    did.
+    that is invisible afterwards.
+
+    An *absent* ``submit_cwd`` key and a ``submit_cwd`` of ``None`` are different
+    facts and only one of them is allowed to inherit. Absent means the record
+    predates the field, and inheriting is what it always did. Present-and-null
+    means this run's own submission tried to record the anchor and could not —
+    the server's working directory was gone by the time it asked — so the anchor
+    is *unavailable*, not *unasked-for*. Inheriting there would put every job
+    submitted after that moment back on the old caller-dependent behaviour and
+    say nothing, which is the same silence this function exists to refuse.
     """
-    named = override or (job or {}).get("submit_cwd")
+    if override:
+        named: Any = override
+    elif job is not None and "submit_cwd" in job:
+        named = job["submit_cwd"]
+        if not named:
+            return None, "delivery_cwd_unavailable_at_submit"
+    else:
+        named = None
     if not named:
         return None, None
     if not os.path.isdir(named):
@@ -339,20 +353,28 @@ def deliver_terminal_notice(
     delivery_cwd, cwd_unusable = _resolve_delivery_cwd(
         job, os.environ.get("LIONAGI_MCP_NOTIFY_CWD")
     )
-    if template and cwd_unusable:
-        # Recorded the same way an unusable command is, and checked before the
-        # delivery rather than after: the directory decides which identity the
-        # notice carries, so a template that would run in the wrong one is not a
-        # template this hook can use.
-        template, unusable = None, cwd_unusable
-    if template and not sender and any("{sender}" in tok for tok in template):
-        # The command asks who the notice is from and there is no answer. An
-        # empty string is not one: it puts a blank where an identity belongs,
-        # and a delivery tool that accepts it — or falls back to resolving a
-        # sender from its own working directory — signs the notice with a seat
-        # that did not send it, silently. Unusable in the same sense as a
-        # template that cannot be parsed, and recorded the same way.
-        template, unusable = None, "delivery_command_needs_a_sender_and_none_was_given"
+    # Both identity checks run against the template, and every reason they raise
+    # is reported. Stopping at the first would hand an operator one thing to fix
+    # and then a second failure on the next run for the other, which is two
+    # round-trips to learn what one record could have said. A single reason still
+    # reads exactly as it did: one reason joins to itself.
+    blocking: list[str] = []
+    if template:
+        if cwd_unusable:
+            # The directory decides which identity the notice carries, so a
+            # template that would run in the wrong one is not one this hook can
+            # use. Checked before the delivery rather than after it.
+            blocking.append(cwd_unusable)
+        if not sender and any("{sender}" in tok for tok in template):
+            # The command asks who the notice is from and there is no answer. An
+            # empty string is not one: it puts a blank where an identity belongs,
+            # and a delivery tool that accepts it — or falls back to resolving a
+            # sender from its own working directory — signs the notice with a seat
+            # that did not send it, silently. Unusable in the same sense as a
+            # template that cannot be parsed, and recorded the same way.
+            blocking.append("delivery_command_needs_a_sender_and_none_was_given")
+    if blocking:
+        template, unusable = None, ", ".join(blocking)
 
     if template:
         fields = {
