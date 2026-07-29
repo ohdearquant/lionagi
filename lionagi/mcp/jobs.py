@@ -2894,12 +2894,22 @@ def _notify_delivery_state(outcome: Any) -> str:
     nothing — refused before it ran, unable to start, timed out, or exited
     non-zero — because to a caller waiting on the notice those are one fact.
 
+    ``"delivered_unverified"`` is its own state and not a flavour of either. The
+    delivery ran and exited zero, but for that command shape a zero exit is known
+    not to mean the message was sent. Collapsing it into ``"delivered"`` reports a
+    claim we cannot support, and collapsing it into ``"failed"`` reports a failure
+    that probably did not happen. A caller that treats any non-``"delivered"``
+    state as needing attention gets the right behaviour without knowing this
+    distinction; one that wants the distinction has it.
+
     The record is JSON on disk, so an ``outcome`` that is not an object is read as
     no delivery rather than allowed to raise through the listing.
     """
     if not isinstance(outcome, dict):
         return "none"
     if outcome.get("ok"):
+        if outcome.get("delivery_verified") is False:
+            return "delivered_unverified"
         return "delivered"
     if not outcome.get("attempted") and not outcome.get("error"):
         return "none"

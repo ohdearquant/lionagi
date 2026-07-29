@@ -185,3 +185,4 @@ DESIGN_REVIEW*.txt
 ADR_REVIEW*.txt
 ALL_ADRS_COMPILED.txt
 codex_review_*.md
+.lane-*.md
