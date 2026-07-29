@@ -28,6 +28,22 @@ pytest.importorskip("fastapi", reason="studio extra not installed")
 # ---------------------------------------------------------------------------
 
 
+def _exited_proc(returncode: int = 0) -> MagicMock:
+    """A process double whose pipes are already at EOF.
+
+    spawn_and_wait reads both streams to EOF rather than calling communicate(),
+    so a double has to present readable pipes to stand in for a real process.
+    """
+    proc = MagicMock()
+    for pipe in ("stdout", "stderr"):
+        stream = MagicMock()
+        stream.read = AsyncMock(return_value=b"")
+        setattr(proc, pipe, stream)
+    proc.wait = AsyncMock(return_value=returncode)
+    proc.returncode = returncode
+    return proc
+
+
 @pytest.mark.asyncio
 async def test_spawn_and_wait_passes_cwd_through(tmp_path):
     """cwd kwarg reaches asyncio.create_subprocess_exec unchanged."""
@@ -37,9 +53,7 @@ async def test_spawn_and_wait_passes_cwd_through(tmp_path):
     captured: dict = {}
 
     with patch("lionagi.studio.scheduler.subprocess.asyncio.create_subprocess_exec") as mock_exec:
-        mock_proc = MagicMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
-        mock_proc.returncode = 0
+        mock_proc = _exited_proc()
 
         async def _fake_exec(*args, **kwargs):
             captured.update(kwargs)
@@ -63,9 +77,7 @@ async def test_spawn_and_wait_default_cwd_is_none():
     captured: dict = {}
 
     with patch("lionagi.studio.scheduler.subprocess.asyncio.create_subprocess_exec") as mock_exec:
-        mock_proc = MagicMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
-        mock_proc.returncode = 0
+        mock_proc = _exited_proc()
 
         async def _fake_exec(*args, **kwargs):
             captured.update(kwargs)
