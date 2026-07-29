@@ -1095,7 +1095,7 @@ async def test_dispatched_at_backfill_runs_when_column_already_exists(tmp_path):
 
 def _create_legacy_session_status_db(db_path: Path) -> None:
     """Create a database whose sessions table still carries the four-value
-    status CHECK that ``_drop_legacy_session_status_check`` rebuilds away."""
+    status CHECK that ``_rebuild_legacy_sessions_table`` rebuilds away."""
     from lionagi.state.db import _SCHEMA_PATH
 
     schema = _SCHEMA_PATH.read_text()
@@ -1148,6 +1148,101 @@ async def test_migrated_db_reports_current_schema_version(tmp_path):
     # ... so the stamp moved with it.
     assert version == SCHEMA_VERSION
     assert _schema_meta_version(db_path) == SCHEMA_VERSION
+
+
+def _create_narrow_source_kind_db(db_path: Path) -> None:
+    """Create a database whose sessions.source_kind CHECK predates transcript
+    imports having their own provenance value."""
+    from lionagi.state.db import _SCHEMA_PATH
+
+    schema = _SCHEMA_PATH.read_text()
+    current = "OR source_kind IN ('live', 'imported_fs', 'imported_codex')"
+    assert current in schema, "widened source_kind CHECK not found in schema.sql"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(schema.replace(current, "OR source_kind IN ('live', 'imported_fs')", 1))
+
+
+def _insert_session(db_path: Path, sid: str, source_kind: str) -> None:
+    """Insert one session, satisfying every constraint except the one under test,
+    so a rejection can only have come from the source_kind CHECK."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("INSERT OR IGNORE INTO progressions (id, created_at) VALUES ('p', 1.0)")
+        conn.execute(
+            "INSERT INTO sessions (id, created_at, updated_at, progression_id, source_kind) "
+            "VALUES (?, ?, ?, 'p', ?)",
+            (sid, 1.0, 1.0, source_kind),
+        )
+
+
+async def test_narrow_source_kind_check_is_widened_for_codex_imports(tmp_path):
+    """A database created before codex transcripts had their own provenance value
+    rejects 'imported_codex' until the sessions rebuild widens its CHECK."""
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "narrow.db"
+    _create_narrow_source_kind_db(db_path)
+
+    # Pre-state: the value the codex mirror writes is refused outright.
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+        _insert_session(db_path, "pre", "imported_codex")
+    # ... and the DB is otherwise usable, so the rebuild has real rows to carry.
+    _insert_session(db_path, "kept", "imported_fs")
+
+    state = StateDB(f"sqlite+aiosqlite:///{db_path}")
+    async with state:
+        pass
+
+    assert "'imported_codex'" in _sessions_create_sql(db_path)
+    _insert_session(db_path, "post", "imported_codex")
+    with sqlite3.connect(db_path) as conn:
+        rows = dict(conn.execute("SELECT id, source_kind FROM sessions").fetchall())
+    assert rows == {"kept": "imported_fs", "post": "imported_codex"}
+
+    # A value outside the vocabulary is still refused, so the rebuild widened the
+    # CHECK rather than dropping it.
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+        _insert_session(db_path, "bogus", "imported_elsewhere")
+
+
+async def test_current_schema_db_is_not_rebuilt(tmp_path):
+    """A database created by this release carries neither legacy CHECK, so opening
+    it leaves the sessions table byte-identical."""
+    from lionagi.state.db import _SCHEMA_PATH, StateDB
+
+    db_path = tmp_path / "current.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(_SCHEMA_PATH.read_text())
+    before = _sessions_create_sql(db_path)
+    assert not StateDB._sessions_rebuild_needed(before)
+
+    state = StateDB(f"sqlite+aiosqlite:///{db_path}")
+    async with state:
+        pass
+
+    assert _sessions_create_sql(db_path) == before
+
+
+def test_sessions_rebuild_needed_reads_both_triggers():
+    """Each legacy marker fires on its own, and the widened form fires on neither."""
+    from lionagi.state.db import StateDB
+
+    legacy_status = (
+        "CREATE TABLE sessions (status TEXT CHECK(status IN "
+        "('running', 'completed', 'failed', 'aborted')), "
+        "source_kind TEXT CHECK(source_kind IN "
+        "('live', 'imported_fs', 'imported_codex')))"
+    )
+    narrow_source = (
+        "CREATE TABLE sessions (status TEXT, source_kind TEXT CHECK(source_kind IN "
+        "('live', 'imported_fs')))"
+    )
+    current = (
+        "CREATE TABLE sessions (status TEXT, source_kind TEXT CHECK(source_kind IN "
+        "('live', 'imported_fs', 'imported_codex')))"
+    )
+    assert StateDB._sessions_rebuild_needed(legacy_status)
+    assert StateDB._sessions_rebuild_needed(narrow_source)
+    assert not StateDB._sessions_rebuild_needed(current)
 
 
 def test_schema_sql_seed_version_matches_constant():

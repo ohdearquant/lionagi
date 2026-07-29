@@ -64,7 +64,7 @@ def _cmdline_is_lionagi(cmdline: list[str], expected_cmd: str) -> bool:
         return True
     # Shebang-launched console scripts: argv[0] is the Python interpreter and
     # argv[1] is the script path (e.g. .venv/bin/li).
-    if exe.startswith("python") and len(cmdline) >= 2:
+    if exe.lower().startswith("python") and len(cmdline) >= 2:
         if os.path.basename(cmdline[1]) == "li":
             return True
     for flag, mod in zip(cmdline, cmdline[1:], strict=False):

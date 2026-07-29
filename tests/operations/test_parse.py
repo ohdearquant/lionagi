@@ -239,6 +239,34 @@ class TestAdvancedFeatures:
     """P1: Advanced features and parameters."""
 
     @pytest.mark.asyncio
+    async def test_parse_repair_uses_supplied_falsy_model(self, make_mocked_branch_for_parse):
+        """A false-valued model override still handles the repair turn."""
+        branch = make_mocked_branch_for_parse()
+
+        class FalsyModel:
+            def __init__(self, inner):
+                self.inner = inner
+                self.invoked = False
+
+            def __bool__(self):
+                return False
+
+            async def invoke(self, **kwargs):
+                self.invoked = True
+                return await self.inner.invoke(**kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self.inner, name)
+
+        supplied = FalsyModel(branch.chat_model)
+        parse_param = ParseParam(response_format=OutputModel, imodel=supplied)
+
+        result = await _parse(branch, "invalid json needing repair", parse_param)
+
+        assert isinstance(result, OutputModel)
+        assert supplied.invoked
+
+    @pytest.mark.asyncio
     async def test_parse_return_res_message_success(self, make_mocked_branch_for_parse):
         """Test return_res_message returns tuple on direct validation."""
         branch = make_mocked_branch_for_parse()

@@ -99,12 +99,15 @@ def _leg_artifact_entries(node_id: str, role_defaults: dict | None) -> list[dict
     return entries
 
 
-def _retarget_spawn_prompt(branch, artifact_dir) -> None:
-    """Rewrite a spawned clone's artifact directive to name its own directory.
+def _retarget_spawn_prompt(
+    branch,
+    artifact_dir,
+    *,
+    workspace_assigned: bool = True,
+) -> None:
+    """Rewrite a spawned clone's artifact directive.
 
-    Best-effort: a prompt that cannot be rewritten is warned about rather than
-    raised, since a stale directive is a worse outcome for the spawned node
-    alone, while an exception here would abort the whole run.
+    Provider-aware wording avoids claiming an unassigned working directory.
     """
     msgs = getattr(branch, "msgs", None)
     if msgs is None:
@@ -117,7 +120,11 @@ def _retarget_spawn_prompt(branch, artifact_dir) -> None:
     if not isinstance(current, str):
         _warn(f"spawned worker prompt not retargeted to {artifact_dir}: prompt is not text")
         return
-    updated = retarget_artifact_section(current, artifact_dir)
+    updated = retarget_artifact_section(
+        current,
+        artifact_dir,
+        workspace_assigned=workspace_assigned,
+    )
     if updated != current:
         msgs.set_system(msgs.create_system(system=updated))
 
@@ -882,6 +889,10 @@ async def _execute_dag(
     spawn doesn't overwrite `spawned` with `[]` and lose reconstructed work."""
     assignments = plan_result.assignments
     agent_ids = plan_result.agent_ids
+    role_by_worker = {
+        agent_id: assignment.assignee
+        for agent_id, assignment in zip(agent_ids, assignments, strict=True)
+    }
 
     reactive = dag_state.reactive
     spawn_roles = dag_state.spawn_roles
@@ -1157,6 +1168,25 @@ async def _execute_dag(
         env.messenger.on("done", _team_coordinator.on_done)
         env.messenger.on("finished", _team_coordinator.on_finished)
 
+    def _artifact_defaults_for_assignee(assignee: str | None) -> dict | None:
+        role = role_by_worker.get(assignee, assignee)
+        return dag_state.role_artifact_defaults.get(role) if role else None
+
+    def _decorate_team_round_artifacts(operation: Any) -> None:
+        """Tell a stamped team round about the contract its result will register."""
+        assignee = operation.metadata.get("assignee")
+        spawn_id = operation.metadata.get("spawn_id")
+        if not spawn_id:
+            return
+        leg_expected = _leg_artifact_entries(spawn_id, _artifact_defaults_for_assignee(assignee))
+        artifact_note = _artifact_directive(env.run, spawn_id, leg_expected)
+        params = operation.parameters
+        if not isinstance(params, dict):
+            raise TypeError("team round operation parameters must be a dictionary")
+        context = params.setdefault("context", [])
+        context.append({"artifact_instructions": artifact_note})
+        env.expect_worker(spawn_id)
+
     def _on_team_op_complete(node: Any) -> None:
         """ReactiveExecutor.on_op_complete callback: race-free inject() for
         team wakeup rounds. Called for every completed node."""
@@ -1190,6 +1220,7 @@ async def _execute_dag(
             return
         injected = []
         for op in new_ops:
+            _decorate_team_round_artifacts(op)
             if executor.inject(op, independent=True):
                 injected.append(op)
             else:
@@ -1252,15 +1283,9 @@ async def _execute_dag(
         return f"{req.instruction}\n\n{note}"
 
     def _spawn_branch_setup(operation: Any, branch: Any) -> None:
-        """Give a spawned node its own artifact directory.
+        """Assign a spawned node its artifact destination.
 
-        Every spawned node gets the directory recorded on the run roster and its
-        inherited prompt retargeted at it. Only the workspace move is specific
-        to a CLI provider: `Branch.clone` carries the emitter's `repo` kwarg
-        over, and a non-CLI model has no such kwarg to move. The prompt it
-        inherited names the emitter's directory either way, and being absent
-        from the roster is not a provider-specific outcome — so neither of those
-        may be skipped for a non-CLI worker.
+        CLI branches receive it as a workspace; other providers get output-only wording.
         """
         spawn_id = operation.metadata.get("spawn_id") if operation is not None else None
         if not spawn_id:
@@ -1268,13 +1293,17 @@ async def _execute_dag(
         artifact_dir = env.run.agent_artifact_dir(spawn_id)
         artifact_dir.mkdir(parents=True, exist_ok=True)
         env.worker_artifact_dirs[spawn_id] = artifact_dir
-        # The clone inherits the emitter's prompt, which names the emitter's
-        # directory. Retarget it, or the spawned worker is pointed at a
-        # directory that is no longer its own.
-        _retarget_spawn_prompt(branch, artifact_dir)
-
         chat_model = getattr(branch, "chat_model", None)
-        if chat_model is None or not getattr(chat_model, "is_cli", False):
+        is_cli = bool(chat_model and getattr(chat_model, "is_cli", False))
+        # The clone inherits the emitter's prompt. Retarget its destination and
+        # only describe that destination as a workspace when one is assigned.
+        _retarget_spawn_prompt(
+            branch,
+            artifact_dir,
+            workspace_assigned=is_cli,
+        )
+
+        if not is_cli:
             return
         kwargs = chat_model.endpoint.config.kwargs
         kwargs["repo"] = artifact_dir
@@ -1474,10 +1503,10 @@ async def _execute_dag(
 
         # Record the spawned node's role-declared artifacts in the session
         # contract, namespaced under its own subdir — required entries stay
-        # enforceable, not just observability, since decorate_instruction
-        # already told the spawned node its dir + REQUIRED files before it ran.
+        # enforceable, not just observability, since the node received its
+        # artifact directive before it was injected.
         if assignee:
-            role_defaults = dag_state.role_artifact_defaults.get(assignee)
+            role_defaults = _artifact_defaults_for_assignee(assignee)
             spawned_contract_entries.extend(_leg_artifact_entries(sid, role_defaults))
 
     ctx_lp = getattr(env, "_live_persist", None)

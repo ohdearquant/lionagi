@@ -873,7 +873,7 @@ class Branch(Element, Relational):
                 image_detail=image_detail or "auto",
                 plain_content=plain_content or "",
                 include_token_usage_to_model=include_token_usage_to_model,
-                imodel=imodel or self.chat_model,
+                imodel=self.chat_model if ChatParam._is_sentinel(imodel) else imodel,
                 imodel_kw=kwargs,
                 turn_origin=_turn_origin,
             ),

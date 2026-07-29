@@ -294,48 +294,15 @@ async def reconcile_session_status(
 ) -> None:
     """Align a mirrored session's status with its live/idle state, both directions.
     Liveness keys off ``last_message_at``, never ``updated_at`` — see docs/internals/runtime.md."""
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES
-    from lionagi.state.reasons import RunReasons
+    from ._mirror_common import reconcile_status
 
-    existing = await db.get_session(session_db_id(session_uid))
-    if not existing:
-        return
-    live = (now - float(existing.get("last_message_at") or 0.0)) <= live_window
-    desired = "running" if live else "completed"
-    previous = existing.get("status")
-    if previous == desired:
-        return
-
-    previous_terminal = previous in SESSION_TERMINAL_STATUSES
-    if previous_terminal and desired != "running":
-        return
-
-    reactivating = previous_terminal and desired == "running"
-    written = await db.update_status(
-        "session",
+    await reconcile_status(
+        db,
         session_db_id(session_uid),
-        new_status=desired,
-        reason_code=RunReasons.STARTED_OK if desired == "running" else RunReasons.COMPLETED_OK,
-        reason_summary=(
-            "mirror session reactivated because transcript resumed within live_window"
-            if reactivating
-            else "mirror session became idle"
-        ),
-        evidence_refs=[{"kind": "session", "id": session_db_id(session_uid)}],
-        source="system",
+        now=now,
+        live_window=live_window,
         actor="claude-mirror-reconcile",
-        expected_statuses={previous},
-        expected_updated_at=existing.get("updated_at"),
-        override=reactivating,
-        override_actor="claude-mirror-reconcile" if reactivating else None,
-        override_justification=(
-            "mirror session terminal reactivation: transcript resumed within live_window"
-            if reactivating
-            else None
-        ),
     )
-    if not written:
-        return
 
 
 async def link_session_lineage(
@@ -347,14 +314,12 @@ async def link_session_lineage(
 ) -> None:
     """Record that one Claude session continues another (conversation lineage) via
     a ``lineage`` entry on the child's node_metadata. Idempotent; see docs/internals/runtime.md."""
-    child_sid = session_db_id(child_uid)
-    existing = await db.get_session(child_sid)
-    if existing is None:
-        return
-    meta = dict(existing.get("node_metadata") or {})
-    meta["lineage"] = {
-        "parent_session_id": session_db_id(parent_uid),
-        "parent_session_uid": parent_uid,
-        "parent_event_uuid": parent_event_uuid,
-    }
-    await db.set_session_provenance(child_sid, node_metadata=meta)
+    from ._mirror_common import link_lineage
+
+    await link_lineage(
+        db,
+        child_sid=session_db_id(child_uid),
+        parent_sid=session_db_id(parent_uid),
+        parent_uid=parent_uid,
+        parent_event_uuid=parent_event_uuid,
+    )

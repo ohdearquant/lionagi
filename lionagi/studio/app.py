@@ -77,7 +77,12 @@ def _emit_startup_warnings() -> None:
 
 def _start_claude_mirror() -> tuple[asyncio.Event, asyncio.Task] | tuple[None, None]:
     """Start the in-process Claude Code mirror tail if enabled; return (stop, task)."""
-    from .config import MIRROR_CLAUDE_ENABLED, MIRROR_CLAUDE_INTERVAL, MIRROR_CLAUDE_SINCE
+    from .config import (
+        MIRROR_CLAUDE_ENABLED,
+        MIRROR_CLAUDE_INTERVAL,
+        MIRROR_CLAUDE_SINCE,
+        MIRROR_SOURCE,
+    )
 
     if not MIRROR_CLAUDE_ENABLED:
         return None, None
@@ -85,7 +90,12 @@ def _start_claude_mirror() -> tuple[asyncio.Event, asyncio.Task] | tuple[None, N
 
     stop = asyncio.Event()
     task = asyncio.create_task(
-        mirror_forever(stop, since=MIRROR_CLAUDE_SINCE, interval=MIRROR_CLAUDE_INTERVAL),
+        mirror_forever(
+            stop,
+            source=MIRROR_SOURCE,
+            since=MIRROR_CLAUDE_SINCE,
+            interval=MIRROR_CLAUDE_INTERVAL,
+        ),
         name="claude-mirror-tail",
     )
 
