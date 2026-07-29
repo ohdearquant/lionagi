@@ -692,3 +692,212 @@ def _wait_for_run_to_finish(run_id: str, timeout: float = 60.0) -> None:
             return
         time.sleep(0.05)
     raise AssertionError(f"the run never finished writing. log:\n{_console_log(run_id)}")
+
+
+# --- the delivery's working directory decides which seat signs the notice ------
+
+
+def _job_with(monkeypatch, tmp_path, **extra):
+    """A job record carrying *extra*, on an isolated jobs root."""
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
+    monkeypatch.delenv("LIONAGI_MCP_NOTIFY_COMMAND", raising=False)
+    monkeypatch.delenv("LIONAGI_MCP_NOTIFY_TARGET", raising=False)
+    monkeypatch.delenv("LIONAGI_MCP_NOTIFY_CWD", raising=False)
+    rid = jobs.new_run_id()
+    jobs._write_job({"run_id": rid, "kind": "agent", "label": "t1", "status": "running", **extra})
+    return rid
+
+
+def test_delivery_runs_where_the_run_was_submitted_not_where_it_ran(monkeypatch, tmp_path):
+    """The notifier's identity comes from the submitting seat, not the run's directory.
+
+    A notifier that resolves who it is from its working directory signs with
+    whoever owns that directory. Inheriting would sign every notice with the
+    owner of wherever the run happened to execute — a worktree, another seat's
+    repo — silently, and downstream routing acts on that signature.
+    """
+    submit_dir = tmp_path / "seat"
+    submit_dir.mkdir()
+    run_dir = tmp_path / "worktree"
+    run_dir.mkdir()
+    rid = _job_with(monkeypatch, tmp_path, cwd=str(run_dir), submit_cwd=str(submit_dir))
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        _notify_hook.subprocess,
+        "run",
+        lambda *_a, **kw: captured.update(kw) or _FakeCompleted(0),
+    )
+
+    command = json.dumps(["notify", "{run_id}"])
+    assert _notify_hook.main(["--run-id", rid, "--status", "completed", "--command", command]) == 0
+    assert captured["cwd"] == str(submit_dir)
+    assert captured["cwd"] != str(run_dir)
+
+
+def test_both_callers_deliver_from_the_same_directory(monkeypatch, tmp_path):
+    """The hook and the reap path sign the same notice the same way.
+
+    They never share a working directory — the hook runs in the run's dying
+    process, the reap path inside the server — so a delivery that inherits gives
+    one run two possible senders depending on which caller got there first. The
+    record is what makes them agree.
+    """
+    submit_dir = tmp_path / "seat"
+    submit_dir.mkdir()
+    run_dir = tmp_path / "worktree"
+    run_dir.mkdir()
+    command = json.dumps(["notify", "{run_id}"])
+    rid = _job_with(
+        monkeypatch,
+        tmp_path,
+        cwd=str(run_dir),
+        submit_cwd=str(submit_dir),
+        notify_command=command,
+        status="exited",
+    )
+
+    seen: list = []
+    monkeypatch.setattr(
+        _notify_hook.subprocess,
+        "run",
+        lambda *_a, **kw: seen.append(kw.get("cwd")) or _FakeCompleted(0),
+    )
+
+    # caller 1: the run's own terminal hook
+    assert _notify_hook.main(["--run-id", rid, "--status", "completed", "--command", command]) == 0
+    # caller 2: the observer publishing an end for a run whose process never got there
+    jobs._deliver_reap_notice(rid, jobs._read_job(rid))
+
+    assert len(seen) == 2
+    assert seen[0] == seen[1] == str(submit_dir)
+
+
+def test_an_operator_can_override_the_delivery_directory(monkeypatch, tmp_path):
+    """The escape hatch for a deployment whose notifier wants to run elsewhere."""
+    submit_dir = tmp_path / "seat"
+    submit_dir.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    rid = _job_with(monkeypatch, tmp_path, submit_cwd=str(submit_dir))
+    monkeypatch.setenv("LIONAGI_MCP_NOTIFY_CWD", str(elsewhere))
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        _notify_hook.subprocess,
+        "run",
+        lambda *_a, **kw: captured.update(kw) or _FakeCompleted(0),
+    )
+
+    command = json.dumps(["notify", "{run_id}"])
+    assert _notify_hook.main(["--run-id", rid, "--status", "completed", "--command", command]) == 0
+    assert captured["cwd"] == str(elsewhere)
+
+
+def test_a_named_directory_that_is_gone_refuses_rather_than_signing_elsewhere(
+    monkeypatch, tmp_path
+):
+    """A missing delivery directory is a recorded refusal, never a quiet fallback.
+
+    Falling back to the inherited directory would deliver the notice under an
+    identity nobody chose, and that is invisible afterwards: the notice arrives,
+    it is just signed by the wrong seat.
+    """
+    rid = _job_with(monkeypatch, tmp_path, submit_cwd=str(tmp_path / "removed"))
+
+    calls: list = []
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: calls.append((a, k)))
+
+    command = json.dumps(["notify", "{run_id}"])
+    assert _notify_hook.main(["--run-id", rid, "--status", "completed", "--command", command]) == 0
+    assert calls == []  # nothing was spawned
+    assert jobs._read_job(rid)["notify_delivery"] == {
+        "attempted": False,
+        "ok": False,
+        "exit_code": None,
+        "error": "delivery_cwd_is_not_a_directory",
+        "command": "notify",
+    }
+
+
+def test_a_record_without_a_submit_directory_still_delivers(monkeypatch, tmp_path):
+    """Records written before the field are not refusals — they inherit, as they always did."""
+    rid = _job_with(monkeypatch, tmp_path, cwd=None)
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        _notify_hook.subprocess,
+        "run",
+        lambda *_a, **kw: captured.update(kw) or _FakeCompleted(0),
+    )
+
+    command = json.dumps(["notify", "{run_id}"])
+    assert _notify_hook.main(["--run-id", rid, "--status", "completed", "--command", command]) == 0
+    assert captured["cwd"] is None
+    assert jobs._read_job(rid)["notify_delivery"]["ok"] is True
+
+
+def test_a_server_with_no_working_directory_does_not_strand_the_submission(monkeypatch):
+    """The record is built before the write that publishes it, so this cannot raise."""
+    monkeypatch.setattr(jobs.os, "getcwd", lambda: (_ for _ in ()).throw(OSError("gone")))
+    assert jobs._submit_cwd() is None
+
+
+def test_an_anchor_the_submission_could_not_read_refuses_rather_than_inheriting(
+    monkeypatch, tmp_path
+):
+    """Present-and-null is an unavailable anchor, not an unasked-for one.
+
+    A record whose own submission tried to note where it came from and could not
+    must not quietly deliver from wherever the caller happens to be. Left to
+    inherit, every job submitted after the server lost its directory would go
+    back to the old caller-dependent signing and say nothing about it.
+    """
+    rid = _job_with(monkeypatch, tmp_path, submit_cwd=None)
+
+    calls: list = []
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: calls.append((a, k)))
+
+    command = json.dumps(["notify", "{run_id}"])
+    assert _notify_hook.main(["--run-id", rid, "--status", "completed", "--command", command]) == 0
+    assert calls == []
+    assert jobs._read_job(rid)["notify_delivery"]["error"] == "delivery_cwd_unavailable_at_submit"
+
+
+def test_a_record_missing_the_key_entirely_still_inherits(monkeypatch, tmp_path):
+    """The control for the test above.
+
+    These two differ by whether the key is there at all, and nothing else. A
+    reader that refused both would satisfy the previous test and fail this one.
+    """
+    rid = _job_with(monkeypatch, tmp_path)
+    assert "submit_cwd" not in jobs._read_job(rid)
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        _notify_hook.subprocess,
+        "run",
+        lambda *_a, **kw: captured.update(kw) or _FakeCompleted(0),
+    )
+
+    command = json.dumps(["notify", "{run_id}"])
+    assert _notify_hook.main(["--run-id", rid, "--status", "completed", "--command", command]) == 0
+    assert captured["cwd"] is None
+    assert jobs._read_job(rid)["notify_delivery"]["ok"] is True
+
+
+def test_two_identity_problems_are_both_reported(monkeypatch, tmp_path):
+    """One record says everything wrong with the delivery, not the first thing.
+
+    Stopping at the first reason costs an operator a second failed run to learn
+    the second one.
+    """
+    rid = _job_with(monkeypatch, tmp_path, submit_cwd=str(tmp_path / "removed"))
+
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(0))
+
+    command = json.dumps(["notify", "{sender}"])  # asks for a sender; none is given
+    assert _notify_hook.main(["--run-id", rid, "--status", "completed", "--command", command]) == 0
+    error = jobs._read_job(rid)["notify_delivery"]["error"]
+    assert "delivery_cwd_is_not_a_directory" in error
+    assert "delivery_command_needs_a_sender_and_none_was_given" in error

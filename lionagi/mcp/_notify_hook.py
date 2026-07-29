@@ -18,6 +18,11 @@ raise into the CLI's terminal path):
    configured there is no delivery — the out-of-the-box default is silence.
    A notifier that *is* configured but cannot be used is recorded as a delivery
    failure with a named reason, so it never passes for that default silence.
+   The command runs in the directory the run was *submitted* from, which the
+   record carries, because a notifier that resolves its own identity from its
+   working directory would otherwise sign the notice as whoever owns the
+   directory the run happened to execute in. ``LIONAGI_MCP_NOTIFY_CWD``
+   overrides that for a deployment whose notifier wants to be run elsewhere.
 
 The command is run by absolute argv (never through a shell), so a caller wires
 whatever notifier they use (a webhook client, a messaging CLI) without this
@@ -219,6 +224,56 @@ def _delivery_env(sender: str) -> dict[str, str] | None:
     return env
 
 
+def _resolve_delivery_cwd(
+    job: dict[str, Any] | None, override: str | None
+) -> tuple[str | None, str | None]:
+    """The directory to run the delivery command in, paired with why there is none.
+
+    Returns ``(cwd, None)`` when one resolved, ``(None, None)`` when the record
+    does not name one, and ``(None, reason)`` when one was named and cannot be
+    used — the same three-way shape as :func:`_resolve_command`, for the same
+    reason: a delivery that runs somewhere other than where it was meant to is
+    not the same event as one with nowhere named, and reporting both as "no cwd"
+    hides the case an operator has to fix.
+
+    The order is *override*, then the run record's ``submit_cwd``. The override
+    is the escape hatch for a deployment whose notifier wants to be run somewhere
+    other than the submitting seat's directory; ``submit_cwd`` is the default
+    because the notice is *about* a run and *from* the seat that submitted it,
+    and a directory-anchored notifier run anywhere else signs it as somebody
+    else. Nothing falls back to the current directory on purpose: inheriting is
+    what the caller happens to have, and the two callers here do not have the
+    same one.
+
+    A named directory that is not there is a refusal, not a fallback. Running
+    somewhere else instead would deliver the notice under an identity nobody
+    chose, which is the outcome this whole path exists to prevent and the one
+    that is invisible afterwards.
+
+    An *absent* ``submit_cwd`` key and a ``submit_cwd`` of ``None`` are different
+    facts and only one of them is allowed to inherit. Absent means the record
+    predates the field, and inheriting is what it always did. Present-and-null
+    means this run's own submission tried to record the anchor and could not —
+    the server's working directory was gone by the time it asked — so the anchor
+    is *unavailable*, not *unasked-for*. Inheriting there would put every job
+    submitted after that moment back on the old caller-dependent behaviour and
+    say nothing, which is the same silence this function exists to refuse.
+    """
+    if override:
+        named: Any = override
+    elif job is not None and "submit_cwd" in job:
+        named = job["submit_cwd"]
+        if not named:
+            return None, "delivery_cwd_unavailable_at_submit"
+    else:
+        named = None
+    if not named:
+        return None, None
+    if not os.path.isdir(named):
+        return None, "delivery_cwd_is_not_a_directory"
+    return str(named), None
+
+
 def _unverifiable_reason(argv: list[str]) -> str | None:
     """Why a zero exit from *argv* would not actually mean delivered.
 
@@ -248,6 +303,7 @@ def _deliver(
     env: dict[str, str] | None = None,
     *,
     program: str | None = None,
+    cwd: str | None = None,
 ) -> dict[str, Any]:
     """Run the delivery command best-effort; return its outcome for the record.
 
@@ -265,6 +321,13 @@ def _deliver(
     was. It is the program token of the configured argv template, before any run
     field is substituted into it — operator configuration, which whoever wrote it
     can already read, and not something the command produced at runtime.
+
+    *cwd* is the directory the command runs in, and it is part of the notice's
+    content rather than an incidental of the process that sent it: a notifier
+    that resolves its own identity from its working directory signs with whoever
+    owns that directory. Passed explicitly so both callers of
+    ``deliver_terminal_notice`` send a notice signed the same way, which they
+    cannot do while each inherits its own.
     """
     try:
         proc = subprocess.run(  # noqa: S603 — argv is the operator-configured delivery command, no shell
@@ -275,6 +338,7 @@ def _deliver(
             capture_output=True,
             check=False,
             env=env,
+            cwd=cwd,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         # Never fail the run's terminal path; record the failure instead.
@@ -425,6 +489,15 @@ def deliver_terminal_notice(
     "what is configured here", and the run that needs the notice most is the one
     whose own process is not around to be asked.
 
+    The working directory is part of "what is configured here", which is why it
+    is taken from the run's record and not from whatever this process happens to
+    be sitting in. The two callers never share a directory — the hook runs in the
+    run's, the observer in the server's — so a notifier that resolves its own
+    identity from where it is run would sign the same notice with a different
+    seat depending on which caller got there first, silently, and downstream
+    routing acts on that signature. Reading it from the record is what makes the
+    two callers agree by construction rather than by coincidence.
+
     Nothing raises: the caller is either a terminal path that has already
     finished or a read that has already published a durable end, and neither can
     be failed by a notifier. Every way a delivery does not happen comes back as
@@ -441,14 +514,31 @@ def deliver_terminal_notice(
     # refused for want of a sender is one an operator most wants named, and the
     # program token is the only part of it that survives the refusal.
     program = template[0] if template else None
-    if template and not sender and any("{sender}" in tok for tok in template):
-        # The command asks who the notice is from and there is no answer. An
-        # empty string is not one: it puts a blank where an identity belongs,
-        # and a delivery tool that accepts it — or falls back to resolving a
-        # sender from its own working directory — signs the notice with a seat
-        # that did not send it, silently. Unusable in the same sense as a
-        # template that cannot be parsed, and recorded the same way.
-        template, unusable = None, "delivery_command_needs_a_sender_and_none_was_given"
+    delivery_cwd, cwd_unusable = _resolve_delivery_cwd(
+        job, os.environ.get("LIONAGI_MCP_NOTIFY_CWD")
+    )
+    # Both identity checks run against the template, and every reason they raise
+    # is reported. Stopping at the first would hand an operator one thing to fix
+    # and then a second failure on the next run for the other, which is two
+    # round-trips to learn what one record could have said. A single reason still
+    # reads exactly as it did: one reason joins to itself.
+    blocking: list[str] = []
+    if template:
+        if cwd_unusable:
+            # The directory decides which identity the notice carries, so a
+            # template that would run in the wrong one is not one this hook can
+            # use. Checked before the delivery rather than after it.
+            blocking.append(cwd_unusable)
+        if not sender and any("{sender}" in tok for tok in template):
+            # The command asks who the notice is from and there is no answer. An
+            # empty string is not one: it puts a blank where an identity belongs,
+            # and a delivery tool that accepts it — or falls back to resolving a
+            # sender from its own working directory — signs the notice with a seat
+            # that did not send it, silently. Unusable in the same sense as a
+            # template that cannot be parsed, and recorded the same way.
+            blocking.append("delivery_command_needs_a_sender_and_none_was_given")
+    if blocking:
+        template, unusable = None, ", ".join(blocking)
 
     if template:
         fields = {
@@ -459,7 +549,11 @@ def deliver_terminal_notice(
             "sender": sender,
         }
         return _deliver(
-            _substitute(template, fields), fields, _delivery_env(sender), program=program
+            _substitute(template, fields),
+            fields,
+            _delivery_env(sender),
+            program=program,
+            cwd=delivery_cwd,
         )
     if unusable:
         # Configured but unusable. Recorded as a failure so job_status shows a
