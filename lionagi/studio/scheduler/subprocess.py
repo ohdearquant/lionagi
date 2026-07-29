@@ -546,6 +546,44 @@ def build_argv(
     return argv, tmp_path
 
 
+_TAIL_BYTES = 2048
+
+
+async def _drain_tail(stream: asyncio.StreamReader | None, limit: int) -> bytes:
+    """Read a pipe to EOF, keeping only its last *limit* bytes.
+
+    Reading has to continue to EOF even though nearly all of it is thrown away.
+    A child writing to a pipe nobody drains blocks once the OS buffer fills, so
+    "read what I want and stop" is a deadlock for any process that outproduces
+    the buffer — which is every streaming agent leg.
+    """
+    if stream is None:
+        return b""
+    tail = b""
+    while True:
+        chunk = await stream.read(8192)
+        if not chunk:
+            return tail
+        tail = (tail + chunk)[-limit:]
+
+
+def _diagnostic_tail(stdout: bytes, stderr: bytes) -> str:
+    """Compose what an operator needs from the two streams.
+
+    A stderr-only failure returns exactly what it always did, byte for byte, so
+    the runs that already record useful tracebacks cannot regress. stdout is
+    added only where it carries something, and is labelled when it appears,
+    because which stream said it changes where a reader goes looking next.
+    """
+    err = stderr.decode(errors="replace")
+    out = stdout.decode(errors="replace")
+    if not out.strip():
+        return err
+    if not err.strip():
+        return f"[stdout]\n{out}"
+    return f"{err}\n[stdout]\n{out}"
+
+
 async def spawn_and_wait(
     argv: list[str],
     invocation_id: str,
@@ -555,7 +593,15 @@ async def spawn_and_wait(
     action_kind: str | None = None,
     on_launched: Callable[[], Awaitable[None]] | None = None,
 ) -> tuple[int, str]:
-    """Spawn subprocess and wait for completion. Returns (exit_code, stderr_tail).
+    """Spawn subprocess and wait for completion. Returns (exit_code, output_tail).
+
+    Both streams are captured. A scheduled command that reports its failure on
+    stdout and exits non-zero used to leave a bare exit code on the record,
+    because stdout went to ``DEVNULL`` and only stderr reached ``error_detail``:
+    a failure the dashboard showed with nothing to act on. They are drained
+    concurrently and bounded rather than buffered whole, since a single
+    ``communicate()`` on both pipes holds an entire streaming leg's output in
+    memory, and draining one at a time deadlocks the moment the other fills.
 
     If *tmp_path* is given it is deleted after the subprocess exits — used by
     the ``flow_yaml`` action kind which writes a temp spec file before spawning.
@@ -596,7 +642,7 @@ async def spawn_and_wait(
     _log.info("Spawning: %s", " ".join(argv))
     proc = await asyncio.create_subprocess_exec(
         *argv,
-        stdout=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=env,
         cwd=cwd,
@@ -617,12 +663,22 @@ async def spawn_and_wait(
                 invocation_id,
             )
 
+    drain = asyncio.gather(
+        _drain_tail(proc.stdout, _TAIL_BYTES),
+        _drain_tail(proc.stderr, _TAIL_BYTES),
+    )
     try:
-        _, stderr = await proc.communicate()
+        stdout, stderr = await drain
+        await proc.wait()
     except asyncio.CancelledError:
         # SIGTERM then SIGKILL the whole group before re-raising, so a
-        # cancelled poll doesn't leave the spawned tree detached.
+        # cancelled poll doesn't leave the spawned tree detached. The readers
+        # are cancelled first: they are blocked on pipes belonging to the
+        # process being killed, and an un-cancelled reader outlives it.
         _log.warning("spawn_and_wait cancelled; terminating child for %s", invocation_id)
+        drain.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await drain
         await aterminate_process_group(proc, grace=5.0)
         raise
     finally:
@@ -631,7 +687,7 @@ async def spawn_and_wait(
                 os.unlink(tmp_path)
 
     exit_code = proc.returncode or 0
-    stderr_tail = (stderr[-2048:] if stderr else b"").decode(errors="replace")
+    output_tail = _diagnostic_tail(stdout, stderr)
 
     _log.info("Process exited with code %d", exit_code)
-    return exit_code, stderr_tail
+    return exit_code, output_tail

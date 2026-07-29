@@ -739,13 +739,13 @@ def test_read_new_events_buffers_partial_line(tmp_path: Path) -> None:
     path = tmp_path / "t.jsonl"
     path.write_text('{"a":1}\n{"a":2}\n{"a":3')  # last line incomplete
     state = _FileState(session_uid="x")
-    first, new_offset = _read_new_events(path, state)
+    first, new_offset, _ = _read_new_events(path, state)
     assert [e["a"] for e in first] == [1, 2]
     state.offset = new_offset  # caller commits the cursor only after a durable mirror
     # Complete the dangling line; the next read picks up only the new event.
     with path.open("a") as fh:
         fh.write("}\n")
-    second, _ = _read_new_events(path, state)
+    second, _, _ = _read_new_events(path, state)
     assert [e["a"] for e in second] == [3]
 
 
@@ -753,7 +753,7 @@ def test_read_new_events_resets_on_truncation(tmp_path: Path) -> None:
     path = tmp_path / "t.jsonl"
     path.write_text('{"a":1}\n')
     state = _FileState(session_uid="x", offset=9999)  # offset past EOF
-    out, _ = _read_new_events(path, state)
+    out, _, _ = _read_new_events(path, state)
     assert [e["a"] for e in out] == [1]
 
 
@@ -761,8 +761,11 @@ def test_read_new_events_skips_corrupt_lines(tmp_path: Path) -> None:
     path = tmp_path / "t.jsonl"
     path.write_text('{"a":1}\nnot json\n{"a":2}\n')
     state = _FileState(session_uid="x")
-    out, _ = _read_new_events(path, state)
+    out, _, unreadable = _read_new_events(path, state)
     assert [e["a"] for e in out] == [1, 2]
+    # The dropped line is reported, not silently absorbed: a damaged transcript
+    # and an uninteresting one must not read the same downstream.
+    assert unreadable == 1
 
 
 def test_read_new_events_skips_non_dict_json_without_losing_followers(tmp_path: Path) -> None:
@@ -772,8 +775,9 @@ def test_read_new_events_skips_non_dict_json_without_losing_followers(tmp_path: 
     path = tmp_path / "t.jsonl"
     path.write_text('[]\n{"a":1}\n42\n{"a":2}\n')
     state = _FileState(session_uid="x")
-    out, _ = _read_new_events(path, state)
+    out, _, unreadable = _read_new_events(path, state)
     assert [e["a"] for e in out] == [1, 2]
+    assert unreadable == 2  # both the bare list and the bare scalar
 
 
 def test_first_prompt_skips_meta_and_command_noise() -> None:
@@ -1120,3 +1124,40 @@ async def test_lineage_resolves_after_restart(
     lineage = child["node_metadata"]["lineage"]
     assert lineage["parent_session_uid"] == a
     assert lineage["parent_event_uuid"] == "a-leaf"
+
+
+async def test_codex_file_that_mirrors_nothing_is_reported_not_skipped(tmp_path, caplog):
+    """A rollout read in full that produces no messages is surfaced, not passed over.
+
+    Without this it is indistinguishable from a file the mirror has not reached:
+    mirror_session writes no session row when a batch yields nothing, so there is
+    no row carrying the counts either. The measured cause on a real corpus is the
+    pre-2025-09-20 flat rollout format, which matches no record type read here.
+    """
+    import logging
+
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / "rollout-legacy.jsonl"
+    # Flat legacy records: a type at the top level and no payload envelope.
+    path.write_text(
+        '{"id":"x","instructions":"y","timestamp":"2025-09-01T09:34:37Z"}\n'
+        '{"type":"message","role":"user","content":[{"text":"hi"}]}\n'
+        '{"type":"function_call","name":"shell","arguments":"{}"}\n'
+    )
+    state = _FileState(session_uid="")
+
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        with caplog.at_level(logging.WARNING):
+            written = await _mirror_one_codex(db, path, state, {})
+
+    assert written == 0
+    text = " ".join(r.message for r in caplog.records)
+    assert "rollout-legacy.jsonl" in text
+    assert "mirrored none" in text
+    # The record types it did see are named, so the reason is diagnosable from the
+    # log alone without re-reading the file.
+    assert "function_call" in text and "message" in text
+    # Reported once per file, not on every poll pass.
+    assert state.barren_reported

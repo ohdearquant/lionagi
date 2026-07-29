@@ -496,6 +496,14 @@ async def _run_agent(
             "or use --resume / --continue-last to reopen an existing one."
         )
 
+    from lionagi.agent.factory import _reject_unforwardable_explicit_mcp
+
+    _reject_unforwardable_explicit_mcp(
+        provider,
+        named_explicitly=mcp_resolution.explicit,
+        asked_for_servers=bool(mcp_resolution.servers),
+    )
+
     if branch is None:
         # Codex blocks tool calls until file access is enabled. Surface this
         # even without verbose output; CLI or profile approval flags suppress it.

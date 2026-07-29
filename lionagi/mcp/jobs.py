@@ -2932,12 +2932,22 @@ def _notify_delivery_state(outcome: Any) -> str:
     nothing — refused before it ran, unable to start, timed out, or exited
     non-zero — because to a caller waiting on the notice those are one fact.
 
+    ``"delivered_unverified"`` is its own state and not a flavour of either. The
+    delivery ran and exited zero, but for that command shape a zero exit is known
+    not to mean the message was sent. Collapsing it into ``"delivered"`` reports a
+    claim we cannot support, and collapsing it into ``"failed"`` reports a failure
+    that probably did not happen. A caller that treats any non-``"delivered"``
+    state as needing attention gets the right behaviour without knowing this
+    distinction; one that wants the distinction has it.
+
     The record is JSON on disk, so an ``outcome`` that is not an object is read as
     no delivery rather than allowed to raise through the listing.
     """
     if not isinstance(outcome, dict):
         return "none"
     if outcome.get("ok"):
+        if outcome.get("delivery_verified") is False:
+            return "delivered_unverified"
         return "delivered"
     if not outcome.get("attempted") and not outcome.get("error"):
         return "none"
@@ -2967,6 +2977,31 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
     unknown status. That is a per-run failure, and one damaged record must not cost
     the caller the runs beside it.
 
+    ``spawn_state`` rides along for the same reason those three do, and it is the
+    one that decides what ``running`` means. A record whose spawn was never
+    attempted, or whose result was never written, stays ``running`` on purpose:
+    resolving it would take a bound that cannot tell a loaded machine from a dead
+    spawn, so ``status`` deliberately makes no claim about its fate. That refusal
+    is right, and it is also why the distinction has to be visible here. This
+    listing is what a caller reads to answer "what is in flight right now", and
+    without the spawn state a run that never started is indistinguishable in it
+    from one doing work — same word, two facts. A count that can hold a run that
+    never began is one a caller cannot use as evidence in either direction, so the
+    live run hiding in a listing somebody has learned to discount is the failure
+    this field exists to prevent.
+
+    It is reported as the record carries it, which means null is not one answer.
+    A row whose ``record_state`` is not ``"ok"`` never had a record to read a
+    phase from. A row whose ``record_state`` is ``"ok"`` and whose spawn state is
+    null is a record that parsed and does not name a phase — one written before
+    the field existed. A record that names a phase this code does not recognise
+    is listed with that phase verbatim, not as null: the value is reported as the
+    record carries it. So null reads as "no phase this listing can vouch for",
+    never as "never attempted";
+    the phase that means never-attempted says ``"preparing"`` and says it
+    explicitly. Normalising the value is a change to what ``status`` reports and
+    belongs with it rather than here, where it would make the two disagree.
+
     The directory read itself is different, and is allowed to fail. A listing has
     no field in which to say it could not be read, so answering the empty list
     would say "there are no jobs at all" about a directory nobody could look in.
@@ -2994,6 +3029,7 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
                 "terminal": st["terminal"],
                 "outcome": st["outcome"],
                 "reason_code": st["reason_code"],
+                "spawn_state": st["spawn_state"],
                 "submitted_at": st["submitted_at"],
                 "finished_at": st["finished_at"],
                 "terminal_source": st["terminal_source"],

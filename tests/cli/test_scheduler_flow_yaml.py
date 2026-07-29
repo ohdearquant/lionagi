@@ -92,8 +92,14 @@ def test_build_argv_flow_yaml_cleanup_on_spawn():
         with patch(
             "lionagi.studio.scheduler.subprocess.asyncio.create_subprocess_exec"
         ) as mock_exec:
+            # spawn_and_wait drains both pipes to EOF instead of calling
+            # communicate(), so the double presents readable pipes.
             mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            for _pipe in ("stdout", "stderr"):
+                _stream = MagicMock()
+                _stream.read = AsyncMock(return_value=b"")
+                setattr(mock_proc, _pipe, _stream)
+            mock_proc.wait = AsyncMock(return_value=0)
             mock_proc.returncode = 0
             mock_exec.return_value = mock_proc
             return await spawn_and_wait(
@@ -418,9 +424,13 @@ def test_spawn_and_wait_cancellation_cleans_tmp_file():
         with patch(
             "lionagi.studio.scheduler.subprocess.asyncio.create_subprocess_exec"
         ) as mock_exec:
+            # The cancel arrives while draining the pipes, which is where
+            # spawn_and_wait waits (simulates scheduler shutdown).
             mock_proc = MagicMock()
-            # communicate() raises CancelledError (simulates scheduler shutdown)
-            mock_proc.communicate = AsyncMock(side_effect=asyncio.CancelledError())
+            for _pipe in ("stdout", "stderr"):
+                _stream = MagicMock()
+                _stream.read = AsyncMock(side_effect=asyncio.CancelledError())
+                setattr(mock_proc, _pipe, _stream)
             mock_proc.pid = 9999999  # very large — os.getpgid won't find it
             mock_proc.terminate = MagicMock()
             mock_proc.kill = MagicMock()

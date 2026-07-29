@@ -46,8 +46,12 @@ def job(monkeypatch, tmp_path):
 
 
 class _FakeCompleted:
-    def __init__(self, returncode: int = 0) -> None:
+    def __init__(self, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
         self.returncode = returncode
+        # The hook reads both streams to classify a failure, so a stand-in for a
+        # finished process has to carry them.
+        self.stdout = stdout
+        self.stderr = stderr
 
 
 def _no_settings_notifier(monkeypatch):
@@ -105,6 +109,8 @@ def test_command_override_substitutes_and_delivers(job, monkeypatch):
         "ok": True,
         "exit_code": 0,
         "error": None,
+        # a delivery that succeeded has no failure to classify
+        "failure_class": None,
         # named from the configured template, so the record says which notifier
         # this was without keeping anything the command itself printed
         "command": "notify",
@@ -122,7 +128,10 @@ def test_delivery_failure_is_recorded_not_silent(job, monkeypatch):
         "attempted": True,
         "ok": False,
         "exit_code": 7,
+        # The command said nothing this hook's closed vocabulary recognises, so
+        # the classification is `unknown` rather than a quote of what it said.
         "error": None,
+        "failure_class": "unknown",
         "command": "notify",
     }
 
@@ -411,6 +420,52 @@ def test_successful_delivery_writes_nothing_to_the_log(job, monkeypatch):
     assert _console_log(job) == "work happened\n"
 
 
+def test_an_unverified_delivery_warns_in_the_log_instead_of_passing_silently(job, monkeypatch):
+    """A degraded result only the record knows about is one nobody acts on.
+
+    The command shape here exits zero when its send was refused, so the zero is
+    not evidence. Recording that on the job was half the job: the log is where an
+    operator actually looks, and an ordinary success there means they stop
+    looking. The line has to say the notice is unconfirmed while not claiming a
+    failure that probably did not happen.
+    """
+    config.job_dir(job).mkdir(parents=True, exist_ok=True)
+    (config.job_dir(job) / "console.log").write_text("work happened\n", encoding="utf-8")
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(0))
+
+    command = json.dumps(["kkernel", "exec", "comm.send(to='recipient', content='{status}')"])
+    _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+
+    log = _console_log(job)
+    assert "work happened" in log  # appended, never rewritten
+    assert "WARNING" in log
+    assert "kkernel_exec_without_strict_exits_zero_on_a_refused_op" in log
+    # not reported as a failure: the notice most likely did arrive
+    assert "NOT delivered" not in log
+    # and the record still says the run's delivery did not fail
+    assert jobs._read_job(job)["notify_delivery"]["ok"] is True
+    assert jobs._read_job(job)["notify_delivery"]["delivery_verified"] is False
+
+
+def test_the_same_command_with_strict_is_verified_and_stays_silent(job, monkeypatch):
+    """The control: --strict makes the exit code mean what it says.
+
+    Without this, a test asserting the warning fires proves only that the log can
+    be written to, not that the marker is what decides it.
+    """
+    config.job_dir(job).mkdir(parents=True, exist_ok=True)
+    (config.job_dir(job) / "console.log").write_text("work happened\n", encoding="utf-8")
+    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(0))
+
+    command = json.dumps(
+        ["kkernel", "exec", "--strict", "comm.send(to='recipient', content='{status}')"]
+    )
+    _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+
+    assert _console_log(job) == "work happened\n"
+    assert "delivery_verified" not in jobs._read_job(job)["notify_delivery"]
+
+
 def test_silence_by_choice_writes_nothing_to_the_log(job, monkeypatch):
     """Nothing configured is the documented default, not a delivery failure."""
     config.job_dir(job).mkdir(parents=True, exist_ok=True)
@@ -519,25 +574,37 @@ def test_the_delivery_commands_own_output_is_still_never_kept(job, monkeypatch):
     """Naming the program changes nothing about what the command may say.
 
     Its stdout and stderr are free text that can carry a credential the command
-    obtained anywhere, so the child inherits DEVNULL and the record holds only
-    fields this hook chose. Asserted here because the name is the boundary: it
-    is configuration, and everything on the far side of it stays discarded.
+    obtained anywhere, so the record holds only fields this hook chose. That
+    invariant is unchanged; what changed is how it is kept. The output used to
+    be discarded at the pipe, which also discarded any way to tell one failure
+    from another, so every failed delivery recorded a bare exit code. It is now
+    read, matched against a closed vocabulary, and dropped — only the matched
+    name is stored.
+
+    So this pins the boundary rather than the mechanism: the stored key set is
+    fixed, and the value in the one new field comes from the closed set. A
+    future change that lets an unmatched failure contribute its own words fails
+    here instead of passing review.
     """
     seen: dict = {}
 
     def _run(argv, **kwargs):
         seen.update(kwargs)
-        return _FakeCompleted(4)
+        return _FakeCompleted(4, stdout="token=sk-live-AAAA", stderr="permission denied for /etc/x")
 
     monkeypatch.setattr(_notify_hook.subprocess, "run", _run)
 
     command = json.dumps(["notify-webhook"])
     _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
 
-    assert seen["stdout"] is _notify_hook.subprocess.DEVNULL
-    assert seen["stderr"] is _notify_hook.subprocess.DEVNULL
     outcome = jobs._read_job(job)["notify_delivery"]
-    assert set(outcome) == {"attempted", "ok", "exit_code", "error", "command"}
+    assert set(outcome) == {"attempted", "ok", "exit_code", "error", "failure_class", "command"}
+    assert outcome["failure_class"] in {n for n, _ in _notify_hook._FAILURE_CLASSES} | {
+        _notify_hook._FAILURE_UNKNOWN
+    }
+    # Nothing the command said survives into the persisted record.
+    for token in ("sk-live", "AAAA", "/etc/x"):
+        assert token not in json.dumps(outcome)
 
 
 # The run whose log this is, standing in for the CLI: it writes ordinary output,
@@ -603,6 +670,7 @@ def test_the_failure_notice_survives_the_runs_own_remaining_output(monkeypatch, 
         "ok": False,
         "exit_code": 1,
         "error": None,
+        "failure_class": "unknown",
         "command": "/bin/sh",
     }
     assert "[notify]" in log
