@@ -593,6 +593,16 @@ propertyNames) deny by default for executor-signaling tools instead of admitting
   `mcp_config` would raise `ValidationError` on the very next turn. An explicit
   `spec.mcp_servers=[]` with no resolvable config file still forwards `{}` (forcing zero MCP
   servers) rather than leaving the CLI to fall back to its own discovery.
+- `apply_forwarded_mcp_servers()` — the transport application itself, on a plain kwargs dict:
+  `_forward_mcp_to_cli_request` resolves a config file and filters it, then delegates here, and
+  so do the three CLI spawn paths that resolve a set of their own (`build_chat_model` for a
+  plain `li agent` leg, the resume path in `cli/agent.py`, and `_hand_mcp_servers` for every
+  flow/fanout worker). One function so that "can this provider be given a set?" has one answer
+  — `provider_accepts_forwarded_mcp` — instead of each site re-deriving it from a provider
+  name. Codex takes the set as `-c mcp_servers.<name>.<field>` overrides, with `env` and
+  `http_headers` (possible secrets) routed to a 0600 profile file instead of argv. `exclusive`
+  says the set is the whole set: the Claude lane adds `strict_mcp_config`, codex disables every
+  server it would otherwise load by name, since `-c mcp_servers={}` merges rather than replaces.
 - Mutating `chat_model.endpoint.config.kwargs` in place would corrupt any other Branch sharing
   the same iModel instance (Branch keeps a caller-supplied chat_model by reference, not copy).
   The fix copies chat_model before mutating, sharing `share_session`/`share_executor` with the

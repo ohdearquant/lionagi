@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+from lionagi._errors import ConfigurationError
 from lionagi.agent.factory import create_agent
 from lionagi.agent.spec import AgentSpec
 from lionagi.session.branch import Branch
@@ -1247,26 +1248,18 @@ async def test_forward_mcp_codex_none_allowlist_is_still_a_noop(tmp_path, monkey
     assert "config_overrides" not in branch.chat_model.endpoint.config.kwargs
 
 
-async def test_forward_mcp_gemini_provider_warns_and_noops(tmp_path, caplog):
-    import logging
-
+@pytest.mark.parametrize(
+    "provider",
+    ["gemini-cli", "gemini_cli", "gemini-code", "gemini_code"],
+)
+async def test_forward_mcp_gemini_provider_rejects_explicit_config(tmp_path, provider):
     mcp_path = _write_mcp_config(tmp_path, {"khive": {"command": "kkernel"}})
 
-    config = AgentSpec.compose("reviewer", model="gemini_code/gemini-3.5-flash")
+    config = AgentSpec.compose("reviewer", model=f"{provider}/gemini-3.5-flash")
     config.mcp_config_path = mcp_path
 
-    with caplog.at_level(logging.WARNING, logger="lionagi.agent.factory"):
-        branch = await create_agent(config, load_settings=False)
-
-    assert "mcp_servers" not in branch.chat_model.endpoint.config.kwargs
-    messages = [rec.getMessage() for rec in caplog.records if "no MCP passthrough" in rec.message]
-    assert len(messages) == 1
-    # This function sees one branch's provider. Sibling branches in the same
-    # run resolve their own, so the text must not claim the run.
-    assert "gemini_code" in messages[0]
-    assert "this branch" in messages[0]
-    assert "this run" not in messages[0]
-    assert str(branch.id) in messages[0]
+    with pytest.raises(ConfigurationError, match="Antigravity.*does not support MCP"):
+        await create_agent(config, load_settings=False)
 
 
 async def test_forward_mcp_gated_by_trust_project_settings_for_project_scope(tmp_path, monkeypatch):

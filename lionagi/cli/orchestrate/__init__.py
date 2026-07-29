@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from lionagi._errors import TimeoutError as LionTimeoutError
+from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.libs.path_safety import validate_path_component as validate_path_component
 from lionagi.ln.concurrency import is_cancelled, run_async
 
@@ -431,8 +432,10 @@ def _validate_spec_fields(spec: dict) -> str | None:
         prompt = spec["prompt"]
         if not isinstance(prompt, str):
             return f"spec field 'prompt' must be a string, got {type(prompt).__name__}"
-        if len(prompt) > 8192:
-            return "spec field 'prompt' exceeds maximum length of 8192 characters"
+        if len(prompt) > MAX_SPEC_PROMPT_CHARS:
+            return (
+                f"spec field 'prompt' exceeds maximum length of {MAX_SPEC_PROMPT_CHARS} characters"
+            )
 
     if "save" in spec:
         save = spec["save"]
@@ -492,6 +495,30 @@ def _interpolate_prompt(template: str, positional: str | None, playbook_args: di
         return match.group(0)
 
     return re.sub(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", _sub, template)
+
+
+def _check_assembled_prompt(prompt: str) -> str | None:
+    """Measure the prompt that will run, not the one it was written from.
+
+    A spec's prompt field is checked when the file is read, but that is a
+    template: the caller's positional and the playbook's arguments are
+    substituted into it afterwards, and either can make the result far longer
+    than the text that passed. A caller that names no spec at all skips the
+    file check outright. Both forms arrive here holding the finished text,
+    which is the only version that reaches a run.
+
+    Same bound as the spec field, deliberately: the number exists to refuse a
+    file that is not a prompt, and it sits far enough out that template plus
+    arguments together stay well under it. A second, larger bound here would
+    mean the assembled prompt could pass while the template it came from could
+    not, which is the asymmetry this check is closing.
+    """
+    if len(prompt) > MAX_SPEC_PROMPT_CHARS:
+        return (
+            f"assembled prompt exceeds maximum length of {MAX_SPEC_PROMPT_CHARS} "
+            f"characters (got {len(prompt)})"
+        )
+    return None
 
 
 def _add_mcp_config_args(parser: argparse.ArgumentParser) -> None:
@@ -1008,12 +1035,17 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             return 1
         args.model, args.prompt = resolved
 
-        has_model = args.model is not None or args.agent is not None
-        if not has_model:
-            log_error("model or --agent is required")
-            return 1
+        # Naming neither a model nor an agent is not an incomplete command here:
+        # setup_orchestration reads it as a request to orchestrate and resolves
+        # the default orchestrator profile. A prompt is still required, because
+        # nothing downstream can supply one.
         if not args.prompt:
             log_error("prompt is required")
+            return 1
+
+        prompt_err = _check_assembled_prompt(args.prompt)
+        if prompt_err is not None:
+            log_error(prompt_err)
             return 1
 
         synth = args.with_synthesis
@@ -1175,13 +1207,17 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             args.prompt = args.model
             args.model = None
 
-        has_model = args.model is not None or args.agent is not None
-        if not has_model:
-            log_error("model or --agent is required")
-            return 1
-
+        # Naming neither a model nor an agent is not an incomplete command here:
+        # setup_orchestration reads it as a request to orchestrate and resolves
+        # the default orchestrator profile. A prompt is still required, because
+        # nothing downstream can supply one.
         if not args.prompt:
             log_error("prompt is required (positional or via -f spec file)")
+            return 1
+
+        prompt_err = _check_assembled_prompt(args.prompt)
+        if prompt_err is not None:
+            log_error(prompt_err)
             return 1
 
         if args.team_mode is not None and getattr(args, "team_attach", None) is not None:

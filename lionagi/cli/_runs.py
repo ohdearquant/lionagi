@@ -20,6 +20,7 @@ from uuid import uuid4
 from lionagi._paths import RUNS_ROOT, ensure_lionagi_dir
 from lionagi.cli._util import AmbiguousIdError, mark_run_allocated
 from lionagi.libs.path_safety import validate_path_component
+from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.ln._utils import now_utc
 from lionagi.providers._provider_errors import ProviderError
 from lionagi.utils import LIONAGI_HOME
@@ -83,7 +84,12 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
     The temp file is uniquely named and lives in the destination directory
     (os.replace is only atomic within a filesystem), so concurrent writers
     of the same target cannot corrupt each other's in-progress write.
+
+    A non-finite float is refused before anything is written: json.dumps would
+    emit the tokens ``NaN``/``Infinity``, which this process reads back happily
+    and every strict reader rejects.
     """
+    raise_if_non_finite(payload)
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as fh:

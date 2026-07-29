@@ -17,7 +17,9 @@ CREATE TABLE IF NOT EXISTS schema_meta (
   value   TEXT NOT NULL
 );
 
-INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '1');
+-- Must match SCHEMA_VERSION in db.py, which re-stamps this row on every open
+-- so a migrated database reports the shape it now has.
+INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '2');
 INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('created_at', strftime('%s', 'now'));
 
 -- ── Message types (int enum for lion_class) ───────────────────────────────
@@ -131,7 +133,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   artifacts_path  TEXT,
   source_kind     TEXT    DEFAULT 'live' CHECK(
                     source_kind IS NULL
-                    OR source_kind IN ('live', 'imported_fs')
+                    OR source_kind IN ('live', 'imported_fs', 'imported_codex')
                   ),
   -- ── Lifecycle (ADR-0057) ─────────────────────
   -- No CHECK constraint: ADR-0057 makes Python the source of truth for

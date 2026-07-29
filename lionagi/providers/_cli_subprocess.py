@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import contextlib
 import json
 import logging
 import shutil
@@ -30,9 +31,20 @@ async def ndjson_from_cli(
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
     stdin: Any = asyncio.subprocess.DEVNULL,
+    stdin_data: str | bytes | None = None,
     tail_repair: Callable[[str], dict | None] | None = None,
 ) -> AsyncIterator[dict]:
-    """Yield dicts from an NDJSON-emitting CLI subprocess; tail_repair handles malformed final chunks."""
+    """Yield dicts from an NDJSON-emitting CLI subprocess; tail_repair handles malformed final chunks.
+
+    ``stdin_data`` feeds text to the child over a pipe instead of the command
+    line, which is how an arbitrarily large prompt is delivered without
+    hitting the OS argument-length limit. It overrides ``stdin``: the child
+    always gets a pipe, the data is written by a task that runs concurrently
+    with the stdout/stderr readers below (a sequential write would deadlock as
+    soon as the data exceeds the pipe buffer and the child is blocked writing
+    output nobody is draining), and the pipe is closed afterwards so the child
+    sees EOF rather than waiting forever for more input.
+    """
     kwargs: dict[str, Any] = dict(
         cwd=str(cwd) if cwd else None,
         env=env,
@@ -40,7 +52,9 @@ async def ndjson_from_cli(
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
     )
-    if stdin is not _INHERIT_STDIN:
+    if stdin_data is not None:
+        kwargs["stdin"] = asyncio.subprocess.PIPE
+    elif stdin is not _INHERIT_STDIN:
         kwargs["stdin"] = stdin
     proc = await asyncio.create_subprocess_exec(*cmd, **kwargs)
     # Capture PGID immediately — waiting until teardown risks ProcessLookupError
@@ -77,6 +91,28 @@ async def ndjson_from_cli(
             log.debug("stderr drain ended: %s", exc)
 
     stderr_task = asyncio.create_task(_drain_stderr())
+
+    async def _write_stdin(payload: bytes) -> None:
+        if proc.stdin is None:
+            return
+        try:
+            proc.stdin.write(payload)
+            await proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            # The child exited or closed its end before consuming everything;
+            # its exit status is the real signal, so don't mask it here.
+            log.debug("stdin write ended early: %s", exc)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("stdin write failed: %s", exc)
+        finally:
+            # Without this close the child waits for an EOF that never comes.
+            with contextlib.suppress(Exception):
+                proc.stdin.close()
+
+    stdin_task: asyncio.Task | None = None
+    if stdin_data is not None:
+        payload = stdin_data.encode() if isinstance(stdin_data, str) else stdin_data
+        stdin_task = asyncio.create_task(_write_stdin(payload))
 
     try:
         while True:
@@ -134,13 +170,16 @@ async def ndjson_from_cli(
     finally:
         await aterminate_process_group(proc, grace=5.0)
 
-        # Reap the stderr drain task — contextlib.suppress(Exception) does NOT
+        # Reap the helper tasks — contextlib.suppress(Exception) does NOT
         # catch CancelledError (BaseException), so we suppress it explicitly.
-        stderr_task.cancel()
-        try:
-            await stderr_task
-        except (asyncio.CancelledError, Exception):  # noqa: S110, BLE001
-            pass
+        for task in (stderr_task, stdin_task):
+            if task is None:
+                continue
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: S110, BLE001
+                pass
 
 
 def resolve_cli_workspace(repo: Path | None, workspace: str | None) -> Path:

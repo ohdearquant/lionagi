@@ -52,6 +52,7 @@ __all__ = (
     "resolve_model_spec",
     "resolve_persisted_effort",
     "AgentProfile",
+    "AgentProfileNotFoundError",
     "AmbiguousProfileNameError",
     "build_agent_profile_catalog",
     "build_deadline_preamble",
@@ -135,11 +136,17 @@ def build_chat_model(
     effort = normalize_effort(effort)
     extra: dict = {}
     if mcp_servers is not None:
-        # Only the Claude CLI lane carries a server set on the request; the
-        # other CLI providers read a user-level config no caller directory
-        # affects, so handing them this here would drop it without a word.
-        if provider in _CLAUDE_PROVIDER_NAMES:
-            extra["mcp_servers"] = mcp_servers
+        from lionagi.agent.factory import apply_forwarded_mcp_servers
+
+        # Whether this provider can be given a set at all is one question with
+        # one answer, and applying it is that answer's implementation — a lane
+        # that carries a set over a different transport (codex, via config
+        # overrides) is a lane this caller must not decide about itself.
+        # An empty set is the caller stating the whole set; a non-empty one is
+        # added to whatever the provider finds for itself.
+        apply_forwarded_mcp_servers(
+            extra, mcp_servers, provider=provider, exclusive=not mcp_servers
+        )
     if bypass:
         extra.update(PROVIDER_BYPASS_KWARGS.get(provider, {}))
     elif yolo:
@@ -383,6 +390,16 @@ class AmbiguousProfileNameError(ValueError):
     """One agents dir declares a name under both '-' and '_' spellings."""
 
 
+class AgentProfileNotFoundError(FileNotFoundError):
+    """No profile of that name exists on the search path.
+
+    A subclass rather than a bare FileNotFoundError so a caller can tell "there
+    is no such profile" from "a profile was found and then could not be read".
+    The two are the same exception type otherwise, and a caller acting on the
+    first would silently swallow the second.
+    """
+
+
 def _name_spellings(name: str) -> tuple[str, ...]:
     """NAME plus its separator spellings, requested spelling first.
 
@@ -592,7 +609,7 @@ def load_agent_profile(name: str) -> AgentProfile:
         return _parse_profile(name, plugin_path.read_text())
 
     if not dirs and not plugin_token:
-        raise FileNotFoundError(
+        raise AgentProfileNotFoundError(
             "No .lionagi/ directory found. Create .lionagi/agents/ in your repo "
             "or ~/.lionagi/agents/ globally."
         )
@@ -603,7 +620,7 @@ def load_agent_profile(name: str) -> AgentProfile:
         msg += f"\n{path} exists but its symlink target is unreadable: {target}"
     if available:
         msg += f"\nAvailable: {', '.join(available)}"
-    raise FileNotFoundError(msg)
+    raise AgentProfileNotFoundError(msg)
 
 
 def _parse_profile_timeout(name: str, raw: Any) -> int | None:

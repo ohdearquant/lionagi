@@ -165,6 +165,7 @@ def worker_env(tmp_path, monkeypatch):
     )
     return SimpleNamespace(
         run=SimpleNamespace(agent_artifact_dir=lambda name: tmp_path / name),
+        worker_artifact_dirs={},
         session=_Session(),
         default_model_spec="openai/gpt-4o-mini",
         bare=False,

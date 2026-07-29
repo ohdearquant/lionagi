@@ -14,6 +14,7 @@ from lionagi._errors import EmptyOutgoingContentError
 from lionagi.casts.emission import TaskAssignment
 from lionagi.cli._providers import AgentProfile
 from lionagi.cli.orchestrate import _orchestration as orch
+from lionagi.cli.orchestrate import flow as flow_module
 from lionagi.cli.orchestrate.flow import FlowPlanError, _parse_reactive, _run_flow_inner
 
 
@@ -207,6 +208,39 @@ async def test_dry_run_lists_assignments_with_deps(tmp_path):
     assert "researcher" in out and "architect" in out
     assert "depends_on: 1" in out
     assert len(orc.operate_calls) == 1  # no retry needed
+
+
+@pytest.mark.asyncio
+async def test_plan_output_says_the_dependencies_are_only_declared(tmp_path, monkeypatch):
+    """Both plan-time surfaces have to say they describe the plan, not the run.
+
+    Neither can do better: the progress line is printed while the assignments
+    are still only assignments, and a dry run never builds a graph at all. This
+    assertion pins wording rather than behaviour — it is weak on purpose, and
+    its only job is to stop the qualifier being dropped without anyone noticing.
+    """
+    messages: list[str] = []
+    monkeypatch.setattr(flow_module, "progress", messages.append)
+
+    orc = _FakeOrcBranch(
+        [
+            SimpleNamespace(
+                assignments=[
+                    TaskAssignment(task="survey prior art", assignee="researcher"),
+                    TaskAssignment(task="design on 1", assignee="architect", depends_on=["1"]),
+                ]
+            )
+        ]
+    )
+    out = await _run_flow_inner("codex/gpt-5.5", "task", env=_env(tmp_path, orc), dry_run=True)
+
+    plan_done = [m for m in messages if m.startswith("Plan done")]
+    assert len(plan_done) == 1
+    assert "as declared by the planner" in plan_done[0]
+    assert "not built yet" in plan_done[0]
+
+    assert "the planner declared" in out
+    assert "builds no run" in out
 
 
 @pytest.mark.asyncio

@@ -115,6 +115,26 @@ def _default_reason_code_for_entity_status(entity_type: str, status: str) -> str
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
 
+# Shape of the schema this code applies. ``_apply_schema`` stamps it into
+# ``schema_meta.version`` on every open, so the recorded version describes the
+# database as it stands after migrations rather than as it was created. Bump it
+# whenever a migration changes the shape a reader would see -- a new table, a
+# rebuilt CHECK constraint, a column whose meaning changed. Version "1" is the
+# original shape, before the migrations now applied on open existed.
+SCHEMA_VERSION = "2"
+
+
+class SchemaTooNewError(RuntimeError):
+    """The database records a schema version this code does not understand.
+
+    Raised by a writable open when ``schema_meta.version`` is higher than
+    ``SCHEMA_VERSION``. A writable open rewrites the database into the shape
+    this code applies and then stamps that shape into the version row; neither
+    step has established anything about a shape written by a later release, so
+    both are refused rather than performed blind. Read-only opens apply no
+    schema and are unaffected.
+    """
+
 
 def state_db_file() -> Path | None:
     """The local file a default ``StateDB()`` would open, if it opens one at all.
@@ -394,7 +414,7 @@ TransitionRejectedError = _lifecycle_adapters.TransitionRejectedError
 
 
 _INVOCATION_KINDS = frozenset({"agent", "play", "flow", "fanout", "show-play"})
-_SOURCE_KINDS = frozenset({"live", "imported_fs"})
+_SOURCE_KINDS = frozenset({"live", "imported_fs", "imported_codex"})
 
 _SHOW_STATUSES = frozenset({"active", "completed", "aborted", "imported"})
 _PLAY_STATUSES = frozenset(
@@ -423,10 +443,17 @@ def _validate_columns(fields: dict[str, Any], allowed: frozenset[str]) -> None:
 
 
 def _to_json_column(value: Any) -> Any:
-    """Serialize value to JSON string for round-trippable storage."""
+    """Serialize value to a JSON string for a TEXT column holding JSON.
+
+    Columns bound as ``type_=JSON`` are serialized by the engine instead; this
+    is for the writes that hand the driver a finished string. Both reject inf,
+    -inf and nan rather than storing them, because neither the `null` orjson
+    writes nor the bare `NaN` the stdlib writes can be read back as the value
+    that was handed in.
+    """
     if value is None or isinstance(value, bytes | bytearray | memoryview):
         return value
-    return _json_dumps(value)
+    return _json_dumps(value, check_non_finite=True)
 
 
 def _validate_session_status(status: Any) -> None:
@@ -774,10 +801,63 @@ class StateDB:
 
     # ── Schema management ──────────────────────────────────────────────
 
+    async def _recorded_schema_version(self) -> str | None:
+        """The version stamped in the database, or None when there is none yet.
+
+        Read before any migration runs, so it describes the database as this
+        process found it. A database with no ``schema_meta`` table is one this
+        open is about to create.
+        """
+        async with self._engine.connect() as conn:
+            # AUTOCOMMIT, because on SQLite an implicit transaction here would
+            # be a BEGIN IMMEDIATE: this read runs before every migration, and
+            # taking the write lock to perform it would make concurrent opens
+            # of the same database contend on a lock none of them needs yet.
+            conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+            if not await conn.run_sync(lambda c: inspect(c).has_table("schema_meta")):
+                return None
+            row = (
+                (await conn.execute(text("SELECT value FROM schema_meta WHERE key = 'version'")))
+                .mappings()
+                .first()
+            )
+        return row["value"] if row else None
+
+    async def _refuse_newer_schema(self) -> None:
+        """Refuse to open a database stamped with a version above SCHEMA_VERSION.
+
+        Everything ``_apply_schema`` does afterwards -- adding columns,
+        rebuilding tables to widen CHECK constraints, then recording
+        SCHEMA_VERSION as the shape that resulted -- is written against the
+        schema this release knows. Against a newer one it would rewrite tables
+        on assumptions it cannot check and replace a truthful version stamp
+        with a lower one, leaving a database that reads as understood.
+        """
+        recorded = await self._recorded_schema_version()
+        if recorded is None:
+            return
+        try:
+            recorded_n = int(recorded)
+        except (TypeError, ValueError):
+            # Not a version this code can order against its own, so there is no
+            # downgrade to detect. Leave it to the stamp below.
+            return
+        if recorded_n <= int(SCHEMA_VERSION):
+            return
+        where = self.path if self.dialect == "sqlite" and self.path is not None else self.url
+        raise SchemaTooNewError(
+            f"{where} records schema version {recorded} but this version of lionagi "
+            f"applies schema version {SCHEMA_VERSION}. It was written by a later "
+            "release whose shape this code cannot verify, and opening it for writing "
+            "would migrate it against that shape and record the lower version. "
+            "Upgrade lionagi to open it, or open it read-only to inspect it."
+        )
+
     async def _apply_schema(self) -> None:
+        await self._refuse_newer_schema()
         await self._reconcile_columns()
         if self.dialect == "sqlite":
-            await self._drop_legacy_session_status_check()
+            await self._rebuild_legacy_sessions_table()
             # existing DBs created before flow_yaml was added carry a
             # 4-value CHECK on schedules.action_kind that omits 'flow_yaml'.
             await self._drop_legacy_action_kind_check()
@@ -800,11 +880,18 @@ class StateDB:
             await self._reconcile_indexes(conn)
             # Seed immutable reference rows; ON CONFLICT DO NOTHING is safe to
             # re-run on every open() because the rows are identity-stable.
+            # The version row is the exception: the migrations above rewrite an
+            # older database into the current shape, so the stamp has to move
+            # with them. DO UPDATE, not DO NOTHING, or a migrated database keeps
+            # reporting the version it was created at. The update only ever
+            # raises the recorded version: a database stamped higher than
+            # SCHEMA_VERSION never reaches here, it is refused at open.
             await conn.execute(
                 text(
-                    "INSERT INTO schema_meta (key, value) VALUES ('version', '1') "
-                    "ON CONFLICT (key) DO NOTHING"
-                )
+                    "INSERT INTO schema_meta (key, value) VALUES ('version', :version) "
+                    "ON CONFLICT (key) DO UPDATE SET value = excluded.value"
+                ),
+                {"version": SCHEMA_VERSION},
             )
             await conn.execute(
                 text(
@@ -957,9 +1044,26 @@ class StateDB:
                 raise
 
     _LEGACY_SESSION_STATUS_CHECK_MARKER = "'running', 'completed', 'failed', 'aborted'"
+    # Present only in a sessions CREATE SQL written before transcript imports had
+    # their own provenance value; its absence beside a source_kind CHECK is what
+    # marks a DB that would reject 'imported_codex'.
+    _NARROW_SOURCE_KIND_MARKER = "'live', 'imported_fs')"
 
-    async def _drop_legacy_session_status_check(self) -> None:
-        """Rebuild sessions table if it carries the legacy 4-value CHECK constraint."""
+    @classmethod
+    def _sessions_rebuild_needed(cls, create_sql: str) -> bool:
+        """Whether a sessions CREATE SQL still carries either legacy CHECK.
+
+        A DB with no source_kind CHECK at all (the column was added by column
+        reconciliation, which cannot attach one) accepts every value already, so
+        only a CHECK that names the narrow set needs widening.
+        """
+        if cls._LEGACY_SESSION_STATUS_CHECK_MARKER in create_sql:
+            return True
+        return cls._NARROW_SOURCE_KIND_MARKER in create_sql
+
+    async def _rebuild_legacy_sessions_table(self) -> None:
+        """Rebuild sessions if it carries either legacy CHECK: the 4-value status
+        vocabulary, or a source_kind that predates the codex-import provenance value."""
         if self.dialect != "sqlite":
             return
         async with self._engine.connect() as conn:
@@ -975,7 +1079,7 @@ class StateDB:
         if row is None or row["sql"] is None:
             return
         create_sql: str = row["sql"]
-        if self._LEGACY_SESSION_STATUS_CHECK_MARKER not in create_sql:
+        if not self._sessions_rebuild_needed(create_sql):
             return
 
         async with self._engine.connect() as conn:
@@ -1053,7 +1157,8 @@ class StateDB:
                               artifacts_path  TEXT,
                               source_kind     TEXT    DEFAULT 'live' CHECK(
                                                 source_kind IS NULL
-                                                OR source_kind IN ('live', 'imported_fs')
+                                                OR source_kind IN
+                                                  ('live', 'imported_fs', 'imported_codex')
                                               ),
                               status          TEXT,
                               started_at      REAL,
@@ -1104,7 +1209,7 @@ class StateDB:
 
         await self._rebuild_check_constraint(
             "sessions",
-            lambda sql: sql is None or self._LEGACY_SESSION_STATUS_CHECK_MARKER not in sql,
+            lambda sql: sql is None or not self._sessions_rebuild_needed(sql),
             _rebuild,
         )
 
@@ -1117,7 +1222,7 @@ class StateDB:
 
         The old CHECK omits ``'flow_yaml'``; SQLite cannot drop a constraint via
         ALTER TABLE, so we use the rename → CREATE new → INSERT SELECT → DROP
-        old pattern (same as ``_drop_legacy_session_status_check``).
+        old pattern (same as ``_rebuild_legacy_sessions_table``).
         """
         if self.dialect != "sqlite":
             return
@@ -1438,7 +1543,7 @@ class StateDB:
 
         SQLite cannot drop a constraint via ALTER TABLE, so we use the same
         rename → CREATE new → INSERT SELECT → DROP old pattern as
-        ``_drop_legacy_session_status_check`` / ``_drop_legacy_action_kind_check``.
+        ``_rebuild_legacy_sessions_table`` / ``_drop_legacy_action_kind_check``.
         """
         if self.dialect != "sqlite":
             return
@@ -1882,7 +1987,25 @@ class StateDB:
                     "INSERT INTO progressions (id, created_at, collection) VALUES (:id, :ca, :col) "
                     "ON CONFLICT (id) DO NOTHING"
                 ),
-                {"id": progression_id, "ca": time.time(), "col": json.dumps(collection or [])},
+                {
+                    "id": progression_id,
+                    "ca": time.time(),
+                    "col": _to_json_column(collection or []),
+                },
+            )
+
+    async def set_progression(self, progression_id: str, collection: list[str]) -> None:
+        """Replace a progression's collection wholesale.
+
+        Exists so callers outside this module never have to hand the driver a
+        finished JSON string of their own: ``collection`` is a TEXT column, so a
+        pre-serialized value would bypass both the engine's JSON serializer and
+        the checked helper used here.
+        """
+        async with self._tx() as conn:
+            await conn.execute(
+                text("UPDATE progressions SET collection = :col WHERE id = :id"),
+                {"col": _to_json_column(collection or []), "id": progression_id},
             )
 
     async def get_progression(self, progression_id: str) -> list[str]:

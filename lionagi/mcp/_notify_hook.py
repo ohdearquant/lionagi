@@ -131,7 +131,11 @@ def _delivery_env(sender: str) -> dict[str, str] | None:
 
 
 def _deliver(
-    argv: list[str], payload: dict[str, str], env: dict[str, str] | None = None
+    argv: list[str],
+    payload: dict[str, str],
+    env: dict[str, str] | None = None,
+    *,
+    program: str | None = None,
 ) -> dict[str, Any]:
     """Run the delivery command best-effort; return its outcome for the record.
 
@@ -140,6 +144,13 @@ def _deliver(
     fail silently would cost the detached-spawn pattern its reliability. Only
     the exit code is kept: the command's stdout/stderr is free text that can
     carry a credential, so it goes to DEVNULL and is never captured.
+
+    *program* is recorded alongside it so the record names which notifier this
+    was. It is the program token of the configured argv template, before any run
+    field is substituted into it — operator configuration, which whoever wrote it
+    can already read, and not something the command produced at runtime. That is
+    the whole difference: it says *what* failed without keeping a byte of what
+    the command said, which stays discarded.
     """
     try:
         proc = subprocess.run(  # noqa: S603 — argv is the operator-configured delivery command, no shell
@@ -153,13 +164,23 @@ def _deliver(
             env=env,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        # never fail the run's terminal path; record the failure instead
-        return {"attempted": True, "ok": False, "exit_code": None, "error": type(exc).__name__}
+        # never fail the run's terminal path; record the failure instead.
+        # The exception *type* names how the delivery came apart — never started,
+        # or ran past the timeout — and the exception's message is left out: it
+        # is the one string here whose content this hook does not choose.
+        return {
+            "attempted": True,
+            "ok": False,
+            "exit_code": None,
+            "error": type(exc).__name__,
+            "command": program,
+        }
     return {
         "attempted": True,
         "ok": proc.returncode == 0,
         "exit_code": proc.returncode,
         "error": None,
+        "command": program,
     }
 
 
@@ -196,6 +217,102 @@ def _note_failure_in_console_log(run_id: str, outcome: dict[str, Any]) -> None:
         pass
 
 
+def _note_persistence_failure(run_id: str, what: str) -> None:
+    """Append one line to the run's own log when a record could not be written.
+
+    The same fallback as a failed delivery, for the same reason: the record is
+    where a failure would ordinarily be reported, and this is the case where the
+    record is exactly what could not be written. The log is the one place left,
+    and it is the place someone reading a run that stops mid-sentence looks.
+
+    Best-effort in the same way. This runs in the dying process of a run that is
+    already over, and a log that cannot be appended to must not turn a refusal
+    that was handled into a crash.
+    """
+    try:
+        path = config.job_dir(run_id) / "console.log"
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(
+                f"\n[notify] could not record the {what} for run {run_id}: the job "
+                f"record could not be locked. The record was left unchanged.\n"
+            )
+    except OSError:
+        pass
+
+
+def deliver_terminal_notice(
+    run_id: str,
+    job: dict[str, Any] | None,
+    status: str,
+    *,
+    target: str | None = None,
+    command: str | None = None,
+    sender: str | None = None,
+) -> dict[str, Any]:
+    """Attempt this run's configured terminal notice and report what came of it.
+
+    The whole of the delivery decision lives here: which command is configured,
+    what the run's fields substitute into it, whether a missing sender makes it
+    unusable, and how each of those is recorded. It is written as one function
+    because it has two callers — this hook, running in the run's own dying
+    process, and the job observer that publishes an end for a run whose process
+    never got this far — and a notice sent by the second must be the one the
+    first would have sent. Two resolution paths would mean two answers to
+    "what is configured here", and the run that needs the notice most is the one
+    whose own process is not around to be asked.
+
+    Nothing raises: the caller is either a terminal path that has already
+    finished or a read that has already published a durable end, and neither can
+    be failed by a notifier. Every way a delivery does not happen comes back as
+    an outcome describing it.
+    """
+    target = target or os.environ.get("LIONAGI_MCP_NOTIFY_TARGET") or ""
+    sender = sender or os.environ.get("LIONAGI_MCP_NOTIFY_SENDER") or ""
+    label = (job or {}).get("label") or (job or {}).get("kind") or "run"
+    template, unusable = _resolve_command(
+        command or os.environ.get("LIONAGI_MCP_NOTIFY_COMMAND"),
+        cwd=(job or {}).get("cwd"),
+    )
+    # Taken before the sender check below can drop the template: a notifier
+    # refused for want of a sender is one an operator most wants named, and the
+    # program token is the only part of it that survives the refusal.
+    program = template[0] if template else None
+    if template and not sender and any("{sender}" in tok for tok in template):
+        # The command asks who the notice is from and there is no answer. An
+        # empty string is not one: it puts a blank where an identity belongs,
+        # and a delivery tool that accepts it — or falls back to resolving a
+        # sender from its own working directory — signs the notice with a seat
+        # that did not send it, silently. Unusable in the same sense as a
+        # template that cannot be parsed, and recorded the same way.
+        template, unusable = None, "delivery_command_needs_a_sender_and_none_was_given"
+
+    if template:
+        fields = {
+            "run_id": run_id,
+            "status": status,
+            "label": label,
+            "target": target,
+            "sender": sender,
+        }
+        return _deliver(
+            _substitute(template, fields), fields, _delivery_env(sender), program=program
+        )
+    if unusable:
+        # Configured but unusable. Recorded as a failure so job_status shows a
+        # notifier that cannot deliver, rather than the silence of one that was
+        # never asked to. ``command`` is None when the configuration never
+        # yielded a program to name — an unparseable override has no program in
+        # it, and saying so beats inventing one.
+        return {
+            "attempted": False,
+            "ok": False,
+            "exit_code": None,
+            "error": unusable,
+            "command": program,
+        }
+    return {"attempted": False}  # nothing configured — not a failure
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="lionagi.mcp._notify_hook")
     ap.add_argument("--run-id", required=True)
@@ -209,42 +326,33 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
 
-    job = jobs.mark_terminal(args.run_id, args.status)
+    terminal = jobs.mark_terminal(args.run_id, args.status)
+    if terminal.refused:
+        # The end is not on disk. A notice sent now would assert a completion
+        # that every reader of the record contradicts, so it is not sent: the
+        # record stays non-terminal and the next observation of this run ends it
+        # the way a run whose hook never ran is ended. The refusal is reported
+        # where the run's own log and this process's exit status are the two
+        # places anything is left to look.
+        _note_persistence_failure(args.run_id, "terminal status")
+        return 1
 
-    target = args.target or os.environ.get("LIONAGI_MCP_NOTIFY_TARGET") or ""
-    sender = args.sender or os.environ.get("LIONAGI_MCP_NOTIFY_SENDER") or ""
-    label = (job or {}).get("label") or (job or {}).get("kind") or "run"
-    template, unusable = _resolve_command(
-        args.command or os.environ.get("LIONAGI_MCP_NOTIFY_COMMAND"),
-        cwd=(job or {}).get("cwd"),
+    outcome = deliver_terminal_notice(
+        args.run_id,
+        terminal.record,
+        args.status,
+        target=args.target,
+        command=args.command,
+        sender=args.sender,
     )
-    if template and not sender and any("{sender}" in tok for tok in template):
-        # The command asks who the notice is from and there is no answer. An
-        # empty string is not one: it puts a blank where an identity belongs,
-        # and a delivery tool that accepts it — or falls back to resolving a
-        # sender from its own working directory — signs the notice with a seat
-        # that did not send it, silently. Unusable in the same sense as a
-        # template that cannot be parsed, and recorded the same way.
-        template, unusable = None, "delivery_command_needs_a_sender_and_none_was_given"
-
-    if template:
-        fields = {
-            "run_id": args.run_id,
-            "status": args.status,
-            "label": label,
-            "target": target,
-            "sender": sender,
-        }
-        outcome = _deliver(_substitute(template, fields), fields, _delivery_env(sender))
-    elif unusable:
-        # Configured but unusable. Recorded as a failure so job_status shows a
-        # notifier that cannot deliver, rather than the silence of one that was
-        # never asked to.
-        outcome = {"attempted": False, "ok": False, "exit_code": None, "error": unusable}
-    else:
-        outcome = {"attempted": False}  # nothing configured — not a failure
-    jobs.record_notify_delivery(args.run_id, outcome)
+    recorded = jobs.record_notify_delivery(args.run_id, outcome)
     _note_failure_in_console_log(args.run_id, outcome)
+    if recorded.refused:
+        # The notice was attempted against a durable end; what is missing is the
+        # record of how it went. Reported the same way, because a delivery
+        # nobody can read back is one an operator has to be told about.
+        _note_persistence_failure(args.run_id, "delivery result")
+        return 1
     return 0
 
 

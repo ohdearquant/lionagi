@@ -128,6 +128,7 @@ async def test_selected_pack_reaches_worker_prompt(tmp_path, monkeypatch):
     )
     env = SimpleNamespace(
         run=SimpleNamespace(agent_artifact_dir=lambda name: tmp_path / name),
+        worker_artifact_dirs={},
         session=_Session(),
         default_model_spec="openai/gpt-4o-mini",
         bare=False,

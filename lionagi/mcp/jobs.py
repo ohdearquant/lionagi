@@ -19,7 +19,7 @@ keep — a copy of lionagi's status names to tell a finished run from a running 
 or a success from a failure. All of these resolve through one path, ``status()``,
 so no two calls can disagree about the same run at the same moment.
 
-A run's end reaches that path from two writers. The terminal hook the CLI runs
+A run's end reaches that path from three writers. The terminal hook the CLI runs
 on ``--notify`` writes it into this package's own job record. A run stopped by
 ``li kill`` never reaches that hook — the kill transitions the lifecycle row and
 signals the process, and writes nothing here — so when the process is gone and
@@ -27,10 +27,24 @@ the job record shows no end, the state is read from the CLI itself, via
 ``li lifecycle <run_id> --machine``, and cached back onto the job record. A read
 that cannot be made concludes nothing: the run is classified exactly as it would
 have been without it.
+
+The third writer is this module's own orphan observer. A run whose process died
+before the terminal hook ran has no surviving producer at all: nothing will ever
+write its end, and a caller waiting for one waits forever. So when — and only
+when — an observation positively establishes that this run's process is gone,
+``status()`` publishes that end itself, as ``outcome="indeterminate"``, before
+returning it. Every mutation of a job record goes through one per-run lock, and
+the first recorded end wins: a later writer may add what is missing beside it but
+never replaces it, so no two readers of one record can disagree about whether the
+run ended. A mutation that cannot take that lock records nothing and says so —
+the record stays non-terminal and the next observation retries it, rather than a
+terminal fact being announced that no reader can find.
 """
 
 from __future__ import annotations
 
+import contextlib
+import copy
 import json
 import math
 import os
@@ -39,13 +53,29 @@ import signal
 import stat
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
+from lionagi.ln._json_dump import raise_if_non_finite
+
 from . import config
+
+# The per-run mutation lock is taken with the platform's own advisory file lock,
+# the way every other read-modify-write in this repository takes one.
+if sys.platform == "win32":  # pragma: no cover - POSIX is what CI runs
+    _fcntl = None
+    try:
+        import msvcrt as _msvcrt
+    except ImportError:
+        _msvcrt = None
+else:
+    import fcntl as _fcntl
+
+    _msvcrt = None
 
 # li subcommand for each job kind. "orchestrate" is the canonical parser name
 # (the `o` alias also works); flow and fanout live under it.
@@ -83,6 +113,63 @@ _REASON_BY_STATUS = {
     "completed_empty": "no_artifacts",
 }
 _SPAWN_FAILED_REASON = "spawn_failed"
+
+# How a run came out when its process is conclusively gone and nothing
+# authoritative ever said what the work did. It is not a failure: the work may
+# well have had its intended effect before the process died, and no producer
+# survived to say either way. That is exactly why a caller may retry a `failed`
+# run under its own policy and must not automatically retry this one — an
+# external side effect may already have committed.
+#
+# The value is the one the closed outcome vocabulary already reserves for a run
+# that ended and whose result cannot be established, rather than a new word for
+# this producer. Widening a closed vocabulary without moving the contract
+# version would be a silent contract change; what makes this transition
+# recognisable is the reason code and the terminal source beside it, which is
+# where the mechanism was always meant to live.
+OUTCOME_INDETERMINATE = "indeterminate"
+LOST_REASON = "process_gone_without_outcome"
+
+# The outcomes this module publishes. Consulted only to decide whether an
+# `outcome` already recorded on a job record may be reported back, so a damaged
+# record cannot invent a value a caller would branch on.
+_OUTCOMES = frozenset({"succeeded", "failed", "cancelled", OUTCOME_INDETERMINATE})
+
+# What made a recorded end. Additive: it answers who wrote the end, which
+# neither `status` (open, and the producer's) nor `reason_code` (why the run
+# came out that way) can answer without becoming two fields at once.
+TERMINAL_SOURCE_HOOK = "cli_terminal_hook"
+TERMINAL_SOURCE_LIFECYCLE = "lifecycle_cache"
+TERMINAL_SOURCE_SPAWN_FAILURE = "spawn_failure"
+TERMINAL_SOURCE_ORPHAN_REAPER = "mcp_orphan_reaper"
+# The kill path is the fifth writer of an end. Like the four above, the value
+# names the mechanism that made the transition rather than the run's fate.
+TERMINAL_SOURCE_KILL = "mcp_kill"
+
+# Why a guarded mutation has no record to work on. Only the first means the run
+# is unknown; the last means the write was refused rather than attempted, so the
+# record is untouched and the operation is the caller's to retry or report.
+RECORD_ABSENT = "absent"
+LOCK_UNAVAILABLE = "lock_unavailable"
+
+# What the orphan observer records as its evidence. Deliberately bounded to the
+# kind and the named finding: nothing about argv, environment, logs, delivery
+# payloads or secrets belongs on a record any caller may read back.
+EVIDENCE_PROCESS_GONE = "process_identity_conclusively_gone"
+
+# The three observations that positively establish that this run's process is
+# gone, and the only findings that admit a terminal transition. A closed
+# positive set, never a test against an inconclusive one: a finding added to the
+# liveness classifier later is not conclusive until it is named here.
+FINDING_PID_ABSENT = "pid_absent"
+FINDING_DISAPPEARED_DURING_PROBE = "disappeared_during_probe"
+FINDING_PID_RECYCLED = "pid_recycled"
+CONCLUSIVE_FINDINGS = frozenset(
+    {FINDING_PID_ABSENT, FINDING_DISAPPEARED_DURING_PROBE, FINDING_PID_RECYCLED}
+)
+
+# The name of the per-run mutation lock, kept beside the record it guards.
+_LOCK_NAME = "job.lock"
 
 # The lifecycle read is a control-plane query against a local store; anything
 # slower than this is treated as unavailable rather than waited on, because it
@@ -124,6 +211,11 @@ KILL_RECORD_WRONG_SHAPE = "job_record_wrong_shape"
 KILL_RECORD_FOREIGN_RUN = "job_record_names_another_run"
 KILL_NO_PID = "no_pid_on_record"
 KILL_SIGNALLED = "signalled"
+# The signal went out and the record of it could not be written, because the
+# record could not be serialized. Its own code, and not one of the refusals
+# above: those say nothing was signalled, while this says something was and the
+# durable trace of it is missing, which the caller may want to retry for.
+KILL_NOT_RECORDED = "kill_not_recorded"
 KILL_PROCESS_GONE = "process_gone"
 KILL_PERMISSION_DENIED = "permission_denied"
 # The record carries neither identity field, so the pid on it cannot be told
@@ -174,6 +266,82 @@ def new_run_id() -> str:
     return f"{ts}-{uuid4().hex[:6]}"
 
 
+# How many ids a submission will mint before giving up. An id is a timestamp to
+# the second plus six random hex digits, so a taken one is already unlikely and
+# a run of them is the shape of something else being wrong — a clock pinned to
+# one second, a directory that reports every name as taken. Retrying without a
+# bound would hang the submission there instead of saying so.
+_RUN_ID_ATTEMPTS = 8
+
+# What a submission writes into its own reserved directory before that directory
+# becomes a job. Named here so the writes and the removal that gives them back
+# cannot drift apart, and so the removal is a fixed list rather than whatever
+# happens to be lying in the directory.
+_PROMPT_FILENAME = "prompt.txt"
+_MCP_SNAPSHOT_FILENAME = "mcp-servers.json"
+_RESERVATION_CONTENTS = (_PROMPT_FILENAME, _MCP_SNAPSHOT_FILENAME)
+
+
+def _reserve_run_dir() -> tuple[str, Path]:
+    """Mint a run_id nobody else holds, and return it with its directory.
+
+    Minting an id and creating its directory are one step, and the creation is
+    the thing that decides: ``mkdir`` without ``exist_ok`` either creates the
+    directory or says the name is taken, in one operation the filesystem makes
+    indivisible. Checking first and creating second would leave a window for
+    another submission between the two answers, and the id is not random enough
+    to leave that to chance — two submissions in the same second can mint the
+    same six hex digits.
+
+    What a taken name would otherwise cost is a whole run, not a retry: the
+    second submission would write its record over the first's and hand its child
+    a log the first is still writing into, and both runs would answer to one id
+    for the rest of their lives.
+    """
+    for _ in range(_RUN_ID_ATTEMPTS):
+        run_id = new_run_id()
+        d = config.job_dir(run_id)
+        try:
+            d.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            continue
+        return run_id, d
+    raise RuntimeError(
+        f"could not reserve a run directory under {config.JOBS_DIR}: "
+        f"{_RUN_ID_ATTEMPTS} freshly minted ids were all already taken"
+    )
+
+
+def _discard_reservation(d: Path) -> None:
+    """Give a reserved directory back, along with what a submission put in it.
+
+    A submission that fails partway through writing has already left files
+    behind, so removing only an empty directory would give the reservation back
+    for some failures and not others. The files a submission writes into its own
+    reservation are named here, and only those: they are addressed as fixed
+    names under *d*, never through a path a caller handed in. A caller may name
+    an MCP config that lives anywhere at all, and that file is theirs — it is not
+    part of this reservation whatever it points at, and nothing here can be
+    talked into deleting it.
+
+    ``rmdir`` refuses a directory with anything in it, and that refusal stays the
+    safety here rather than becoming a check taken beforehand: whatever this is
+    asked to remove, a directory holding a run's state survives it — anything not
+    on the short list above stops the removal. A removal that fails for any other
+    reason leaves a directory nobody claimed, which is worth less than the error
+    that sent us here.
+    """
+    for name in _RESERVATION_CONTENTS:
+        try:
+            (d / name).unlink()
+        except OSError:
+            pass
+    try:
+        d.rmdir()
+    except OSError:
+        pass
+
+
 # --- record I/O ----------------------------------------------------------------
 
 
@@ -186,18 +354,221 @@ def _write_job(record: dict[str, Any]) -> None:
     # write in submit() and the terminal hook) never collide on the temp itself.
     # This makes each publish all-or-nothing; it does not serialize two writers,
     # so a read-modify-write pair can still lose an update (last replace wins).
+    # Checked before the temp file is opened, so a refused record leaves neither a
+    # staging file nor a published one. json.dumps would write a non-finite float
+    # as the bare token NaN or Infinity, which only Python reads back: every
+    # reader of this record that is not Python — and every strict parser — would
+    # fail on it long after the run that wrote it. The start time already has a
+    # representation for "unreadable" and it is null, so nothing here encodes a
+    # sentinel that this refuses.
+    raise_if_non_finite(record)
     d = config.job_dir(record["run_id"])
     d.mkdir(parents=True, exist_ok=True)
     tmp = d / f".job.json.{os.getpid()}.{uuid4().hex[:8]}.tmp"
     try:
         tmp.write_text(json.dumps(record, indent=2))
         os.replace(tmp, d / "job.json")
-    except OSError:
+    except BaseException:
         # Do not leave the staging file behind: a run whose writes keep failing
         # would otherwise accumulate orphans in its job dir. The original error
         # still propagates.
-        tmp.unlink(missing_ok=True)
+        #
+        # Every exception, not the errno family alone, because the caller that
+        # gives a reservation back on a failed publication catches every one and
+        # then removes the directory with rmdir — which refuses a directory
+        # holding anything at all. A staging file left by an interrupt would
+        # therefore survive as the one thing standing between that cleanup and
+        # an empty directory, and the run would be stranded by the file written
+        # to make its record atomic. The two have to answer for the same set of
+        # failures or the narrower one decides the outcome.
+        #
+        # A removal that fails does not get to answer in place of what sent us
+        # here. Widening the catch is what makes that reachable: an interrupt
+        # used to pass straight through, and now it arrives inside a handler
+        # whose own failure would replace it, so a caller waiting on a
+        # KeyboardInterrupt would be handed a PermissionError from the tidying
+        # instead. The rule is _discard_reservation's, not a new one — a removal
+        # that fails leaves a file nobody claimed, which is worth less than the
+        # error that sent us here — and the domain it suppresses is the same one:
+        # OSError, what a filesystem refusal actually looks like.
+        #
+        # Deliberately not everything. An interrupt or an exit arriving WHILE the
+        # removal runs is not this removal failing, it is someone asking for the
+        # process to stop, and swallowing it would answer a cancellation with
+        # whatever the run happened to be failing at already. A refusal to delete
+        # is worth less than the original error; a request to stop is not.
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
         raise
+
+
+def _write_mcp_server_snapshot(path: Path, servers: dict[str, Any]) -> None:
+    """Write the ``{"mcpServers": ...}`` file the spawned child is pointed at.
+
+    A server entry is arbitrary nested JSON — whatever the resolved config held —
+    so this is an open-shaped payload despite the closed-looking name. Config
+    resolution already refuses the non-standard constants on the way in, which is
+    where a failure names the config an operator actually wrote. Refusing again
+    here binds the guarantee to the file rather than to today's single source of
+    the map, so it holds for any later path that fills *servers* without going
+    through a config read.
+    """
+    raise_if_non_finite({"mcpServers": servers})
+    path.write_text(json.dumps({"mcpServers": servers}, indent=2))
+
+
+def _lock_fd(fd: int) -> None:
+    if _fcntl is not None:
+        _fcntl.flock(fd, _fcntl.LOCK_EX)
+        return
+    if _msvcrt is not None:  # pragma: no cover - POSIX is what CI runs
+        os.lseek(fd, 0, os.SEEK_SET)
+        _msvcrt.locking(fd, _msvcrt.LK_LOCK, 1)
+
+
+def _unlock_fd(fd: int) -> None:
+    if _fcntl is not None:
+        _fcntl.flock(fd, _fcntl.LOCK_UN)
+        return
+    if _msvcrt is not None:  # pragma: no cover - POSIX is what CI runs
+        os.lseek(fd, 0, os.SEEK_SET)
+        _msvcrt.locking(fd, _msvcrt.LK_UNLCK, 1)
+
+
+@dataclass
+class _GuardedJob:
+    """The record a mutation holds while it is inside the per-run lock.
+
+    *record* is the record as it stands right now — reread inside the lock, never
+    a snapshot the caller brought in with it — and is the object to mutate.
+    *state* says what the reread found when it found no record, so a caller can
+    tell a run nobody submitted from a file that is on disk and damaged.
+    """
+
+    record: dict[str, Any] | None
+    state: str
+
+
+@dataclass(frozen=True)
+class WriteResult:
+    """What one guarded mutation came to, said in a way a caller can act on.
+
+    *record* is the record as it stands after the attempt, or None when there
+    was no usable one to work on. *state* says which of those it is, so the two
+    reasons a mutation comes back empty stay apart: a run nothing recorded, and
+    a write that was refused because its critical section could not be entered.
+
+    The distinction is the point. A caller told only "no record" has to guess,
+    and the guess that costs something is treating a refused write as a
+    completed one — announcing an end that is not on disk. ``refused`` names
+    that single case so nobody has to compare strings to find it.
+    """
+
+    record: dict[str, Any] | None
+    state: str
+
+    @property
+    def refused(self) -> bool:
+        """The mutation was not attempted: the record could not be serialized."""
+        return self.state == LOCK_UNAVAILABLE
+
+
+@contextlib.contextmanager
+def _locked_job(run_id: str) -> Iterator[_GuardedJob]:
+    """Read-modify-write one run's record inside one per-run critical section.
+
+    ``os.replace`` publishes a record without ever tearing it, but two writers
+    that read, merge and publish in turn still lose one of the two updates: the
+    second one's merge started from bytes the first one has already replaced.
+    The terminal hook, the pid attachment, the lifecycle cache, the delivery
+    result and the orphan observer all do exactly that, and they run in
+    different processes, so the section that has to be exclusive is the whole
+    reread-merge-publish cycle rather than the publish alone.
+
+    The lock is an advisory file lock on a file of its own beside the record —
+    not on the record, which is replaced rather than written in place, so a lock
+    held on it would be a lock on bytes that are already unlinked. It is taken
+    for the whole ``with`` body and the write that follows it, and the record is
+    reread under it, so what a caller merges into is what is on disk now.
+
+    The record is published on exit only if the body changed it, so a mutation
+    that decides to keep what it found — which is what first-writer-wins looks
+    like from inside — touches nothing.
+
+    A run with no directory is a run nothing has recorded, and no lock is
+    created for it: making one would leave an empty job directory that reads
+    back as a damaged record for a run nobody submitted. A lock that cannot be
+    taken for any other reason yields no record either, and every mutation below
+    is written to do nothing without one — an unserialized write is exactly what
+    this exists to prevent.
+
+    Those two are reported as different states, and the difference is the whole
+    point of reporting them. An absent record is a settled answer about the run;
+    an unavailable lock is no answer at all, and a caller that treats it as one
+    publishes a fact it never wrote. Failing to create the lock file and failing
+    to acquire the lock are the same fact — this section was not entered — so
+    they yield the same state rather than one of them escaping as an exception
+    from a context manager whose contract is that it yields.
+    """
+    try:
+        fd = os.open(config.job_dir(run_id) / _LOCK_NAME, os.O_RDWR | os.O_CREAT, 0o600)
+    except FileNotFoundError:
+        yield _GuardedJob(None, RECORD_ABSENT)
+        return
+    except OSError:
+        yield _GuardedJob(None, LOCK_UNAVAILABLE)
+        return
+    try:
+        _lock_fd(fd)
+    except OSError:
+        # Giving the descriptor back is tidying up after a lock that was not
+        # taken, and tidying up does not get to answer for it. A close that
+        # fails here would leave this function raising out of a context manager
+        # whose whole contract, stated above, is that it yields a state instead
+        # — and it would report the wrong fact besides: the caller needs to know
+        # the section was not entered, not which descriptor could not be closed.
+        with contextlib.suppress(OSError):
+            os.close(fd)
+        yield _GuardedJob(None, LOCK_UNAVAILABLE)
+        return
+    try:
+        record, state = _read_job_state(run_id)
+        guard = _GuardedJob(record, state)
+        before = copy.deepcopy(record)
+        yield guard
+        if guard.record is not None and guard.record != before:
+            _write_job(guard.record)
+    finally:
+        # Two releases that both have to be attempted, neither of them entitled
+        # to speak for the body. The body is where the failures a caller acts on
+        # come from — a refused record, a write that would not serialize — and a
+        # release that fails is worth less than any of them. So a refusal to
+        # release is suppressed, and the close is still attempted when the
+        # unlock did not happen, because a lock nobody released is a worse
+        # outcome than either.
+        #
+        # Only what a refusal looks like, though. An interrupt or an exit
+        # arriving while the release runs is not the release failing, it is
+        # someone asking for the process to stop, and it goes on through — the
+        # nested block is what keeps the close attempt on its way out.
+        #
+        # Attempted is the honest word for the close, and the reason it is not
+        # stronger is that nothing here can make it stronger. Whether a close
+        # that fails released the descriptor anyway is unspecified, and the
+        # obvious repair is worse than the problem: by the time a retry ran the
+        # runtime may have handed that number to something else, so it would
+        # close a file belonging to whatever got it next. What bounds the damage
+        # is not this block but the lock itself: if either platform lock is
+        # still held once cleanup has failed, process exit ends it. That ceiling
+        # is the whole of the claim. The two locks arrive at it by different
+        # routes and neither route is described here, because a description that
+        # fits one of them does not fit the other.
+        try:
+            with contextlib.suppress(OSError):
+                _unlock_fd(fd)
+        finally:
+            with contextlib.suppress(OSError):
+                os.close(fd)
 
 
 def _short_repr(value: Any, limit: int = 60) -> str:
@@ -865,6 +1236,18 @@ def _outcome_for(status: Any) -> str:
     return "failed"
 
 
+def _recorded_outcome(job: dict[str, Any]) -> str | None:
+    """The outcome a writer recorded on this record, if it published one.
+
+    Checked against the vocabulary this module publishes rather than passed
+    through: the record is JSON from disk, and `outcome` is the field callers
+    branch on, so a damaged or hand-edited record must not be able to put a
+    value there that no producer would ever write.
+    """
+    value = job.get("outcome")
+    return value if isinstance(value, str) and value in _OUTCOMES else None
+
+
 def _derive(
     job: dict[str, Any] | None,
     alive: bool,
@@ -877,8 +1260,12 @@ def _derive(
 
     ``terminal`` answers "stop waiting" and comes only from a recorded end — a
     ``finished_at`` written by the terminal hook or by ``kill``, a spawn failure
-    the producer caught and wrote down, or an end recorded in the lifecycle
-    store, which is where a run stopped by ``li kill`` leaves its only trace. It
+    the producer caught and wrote down, an end recorded in the lifecycle store,
+    which is where a run stopped by ``li kill`` leaves its only trace, or the
+    orphan transition this module publishes for a process it found conclusively
+    gone. Every one of those is a durable record read back from disk: this
+    function never turns a live observation into a latch, which is what keeps
+    two readers of one unchanged record from disagreeing. It
     is never inferred from the status string and never from a missing pid:
     between the pre-spawn write and the write that attaches the pid, a perfectly
     healthy child has no pid yet.
@@ -889,8 +1276,9 @@ def _derive(
     existed.
 
     ``outcome`` answers "did the work come out right" and is null whenever
-    ``terminal`` is false — including for a run whose process is gone with no end
-    recorded, which has stopped and is still not terminal.
+    ``terminal`` is false — including for a run whose process is gone and whose
+    loss could not be established conclusively, which has stopped looking alive
+    and is still not terminal.
     """
     if job is None:
         return {
@@ -919,7 +1307,12 @@ def _derive(
         return {
             "status": recorded,
             "terminal": True,
-            "outcome": _outcome_for(recorded),
+            # An outcome the writer of the end recorded wins over one derived
+            # from the status string. A run whose process was found gone with
+            # nothing reported has no status to classify — it never said how it
+            # came out — so its outcome is written down at the transition and
+            # read back here rather than guessed at from `"exited"`.
+            "outcome": _recorded_outcome(job) or _outcome_for(recorded),
             # A reason carried on the record wins: it came from the lifecycle
             # store, which knows why the run ended, while the status-derived one
             # is only what the status alone can say.
@@ -971,6 +1364,12 @@ def _derive(
     # Advisory only. Nothing here terminalises it — liveness is an observation
     # about a pid, which can be reused or denied, and two readers of one
     # unchanged record may see it differently. It stays non-terminal.
+    #
+    # A conclusively gone process does not reach this branch: its end is
+    # published before the record is classified, so it arrives here carrying a
+    # `finished_at` and is answered above. What is left is the observation that
+    # established nothing — an unaskable pid — which is precisely the case that
+    # must stay advisory.
     return {
         "status": "exited",
         "terminal": False,
@@ -1019,130 +1418,185 @@ def submit(
     if kind not in _KIND_ARGV:
         raise ValueError(f"unknown job kind {kind!r}; expected one of {sorted(_KIND_ARGV)}")
 
-    run_id = new_run_id()
-    d = config.job_dir(run_id)
+    run_id, d = _reserve_run_dir()
     log_path = d / "console.log"
 
-    # The whole command line is assembled before anything is created on disk, so a
-    # run that cannot be spawned leaves no trace. Creating the directory first
-    # would leave an empty one behind on a rejection, and that reads back as a job
-    # with no kind that never finishes.
-    # `flags` may already carry a `--` sentinel, after which every token is a
-    # positional. Options this function adds have to go in front of it, or they
-    # arrive as text: appending `--prompt-file` past the sentinel would hand the
-    # agent two words of prompt instead of a file to read.
-    options, positionals = _split_at_sentinel(flags)
-    prompt_path = None
-    if prompt is not None:
-        if kind == "agent":
-            prompt_path = d / "prompt.txt"
-            options += ["--prompt-file", str(prompt_path)]
+    # Nothing is written into the reserved directory until the whole command line
+    # is assembled, and a submission that does not become a job gives the
+    # reservation back on its way out. A directory here is not nothing: every
+    # directory under the jobs root is listed as a job, so one left behind reads
+    # back as a job with no kind that never finishes. What that give-back does
+    # and does not promise is _discard_reservation's to say rather than this
+    # block's, exception included — a removal the filesystem refuses leaves the
+    # directory standing, and insisting past a refusal is worse than accepting
+    # it. What this block decides is the reach: it runs to the last write this
+    # function makes before the record exists rather than stopping where the
+    # assembly does, so a failure at the second of two writes gives the
+    # reservation back the same way a failure at the first does.
+    #
+    # It ends at the record. Once _write_job has run the directory is a real job
+    # with real state, and correcting it is the business of the marking that
+    # follows, not of a removal.
+    try:
+        # `flags` may already carry a `--` sentinel, after which every token is a
+        # positional. Options this function adds have to go in front of it, or they
+        # arrive as text: appending `--prompt-file` past the sentinel would hand the
+        # agent two words of prompt instead of a file to read.
+        options, positionals = _split_at_sentinel(flags)
+        prompt_path = None
+        if prompt is not None:
+            if kind == "agent":
+                prompt_path = d / _PROMPT_FILENAME
+                options += ["--prompt-file", str(prompt_path)]
+            else:
+                # flow/fanout take the prompt as a positional, and a prompt may well
+                # begin with a dash, so it goes behind a sentinel whether or not the
+                # rendered flags already opened one.
+                if not positionals:
+                    positionals = ["--"]
+                positionals.append(prompt)
+
+        # A run discovers MCP servers from the directory it is told to work in,
+        # which for a detached run is a checkout and not the directory holding this
+        # server's config. Resolve it here, where the submitting directory is still
+        # the one in effect, and hand the resolved set to the child.
+        # Both outcomes are reported on the handle: a run that starts without the
+        # tools its brief assumes should be visible at submit, not deduced later
+        # from its own confused output. An orchestration builds many workers from
+        # the one set its process holds, so leaving the choice to whatever each
+        # provider CLI finds for itself scatters the same question across every
+        # worker and answers it where nobody is looking.
+        #
+        # The servers are read here and written into this run's own directory, and
+        # that copy is what the child is pointed at. Naming the discovered file
+        # instead would leave the run's tool surface tied to a file anyone may edit
+        # between submission and execution — and a run that resumes hours later
+        # would re-read it again, so the same submission could start with a
+        # different set of tools every time. A file only this run writes cannot
+        # change under it, and staying a path keeps the child's existing flag
+        # working. A config that exists but cannot be used fails the submission,
+        # because a child that discovers the problem reports it minutes later and
+        # only in its own log, while the submitter was told the run started.
+        #
+        # A snapshot is taken only when the caller left the choice open. Whether
+        # they did is answered from the values they passed, never by looking through
+        # the tokens for a flag: those tokens are built by the same surface, in a
+        # form (`--flag=value`) chosen so that nothing downstream can take them
+        # apart, so a scan of them reports on spelling rather than on intent.
+        mcp_config_path: str | None = None
+        mcp_config_source: str | None = None
+        mcp_config_reason: str | None = None
+        mcp_servers: dict[str, Any] | None = None
+        # Which servers the run gave its workers, by name. Empty list and null are
+        # different answers and neither stands in for the other: `[]` says this run
+        # settled the question and the answer was none, `null` says this run never
+        # resolved a set and cannot speak for one. Collapsing them would make the
+        # case a reader most needs -- a run whose workers got no servers -- read
+        # the same as a run where the question was never asked.
+        #
+        # Two different things settle it as none: a caller disabling MCP, and a
+        # config that was found and declares no servers. Both report `[]`.
+        #
+        # This reports what was RESOLVED. It is not a claim about what the child's
+        # provider then managed to start: a server can be in this list and still
+        # fail to come up in the child's own session. Distinguishing those needs
+        # the child's startup record, which this does not stand in for. What it
+        # does settle, in one read rather than a dig through the snapshot on disk,
+        # is whether a server a run was supposed to have was ever in its set.
+        mcp_config_servers: list[str] | None = None
+        if no_mcp_config:
+            # The caller asked for no servers. That is an answer, not an absence, so
+            # nothing is resolved and the handle says whose decision it was.
+            mcp_config_reason = "mcp_disabled_by_caller"
+            mcp_config_servers = []
+        elif mcp_config is not None:
+            # The caller named the file, and their flag is already on the line. No
+            # snapshot is taken and none is prepended: a second --mcp-config would
+            # let the parser pick between them, and the handle would go on naming
+            # the one the child did not read. What the child reads is what the
+            # handle reports, and its source is the caller's own path, which this
+            # run does not own and cannot promise will hold still.
+            mcp_config_path = mcp_config
+            mcp_config_source = mcp_config
+            mcp_config_reason = "mcp_config_named_by_caller"
         else:
-            # flow/fanout take the prompt as a positional, and a prompt may well
-            # begin with a dash, so it goes behind a sentinel whether or not the
-            # rendered flags already opened one.
-            if not positionals:
-                positionals = ["--"]
-            positionals.append(prompt)
+            from lionagi.cli._mcp_resolve import McpConfigError, resolve_spawn_mcp_servers
 
-    # A run discovers MCP servers from the directory it is told to work in,
-    # which for a detached run is a checkout and not the directory holding this
-    # server's config. Resolve it here, where the submitting directory is still
-    # the one in effect, and hand the resolved set to the child.
-    # Both outcomes are reported on the handle: a run that starts without the
-    # tools its brief assumes should be visible at submit, not deduced later
-    # from its own confused output. An orchestration builds many workers from
-    # the one set its process holds, so leaving the choice to whatever each
-    # provider CLI finds for itself scatters the same question across every
-    # worker and answers it where nobody is looking.
-    #
-    # The servers are read here and written into this run's own directory, and
-    # that copy is what the child is pointed at. Naming the discovered file
-    # instead would leave the run's tool surface tied to a file anyone may edit
-    # between submission and execution — and a run that resumes hours later
-    # would re-read it again, so the same submission could start with a
-    # different set of tools every time. A file only this run writes cannot
-    # change under it, and staying a path keeps the child's existing flag
-    # working. A config that exists but cannot be used fails the submission,
-    # because a child that discovers the problem reports it minutes later and
-    # only in its own log, while the submitter was told the run started.
-    #
-    # A snapshot is taken only when the caller left the choice open. Whether
-    # they did is answered from the values they passed, never by looking through
-    # the tokens for a flag: those tokens are built by the same surface, in a
-    # form (`--flag=value`) chosen so that nothing downstream can take them
-    # apart, so a scan of them reports on spelling rather than on intent.
-    mcp_config_path: str | None = None
-    mcp_config_source: str | None = None
-    mcp_config_reason: str | None = None
-    mcp_servers: dict[str, Any] | None = None
-    if no_mcp_config:
-        # The caller asked for no servers. That is an answer, not an absence, so
-        # nothing is resolved and the handle says whose decision it was.
-        mcp_config_reason = "mcp_disabled_by_caller"
-    elif mcp_config is not None:
-        # The caller named the file, and their flag is already on the line. No
-        # snapshot is taken and none is prepended: a second --mcp-config would
-        # let the parser pick between them, and the handle would go on naming
-        # the one the child did not read. What the child reads is what the
-        # handle reports, and its source is the caller's own path, which this
-        # run does not own and cannot promise will hold still.
-        mcp_config_path = mcp_config
-        mcp_config_source = mcp_config
-        mcp_config_reason = "mcp_config_named_by_caller"
-    else:
-        from lionagi.cli._mcp_resolve import McpConfigError, resolve_spawn_mcp_servers
-
-        launch_dir = os.getcwd()
-        resolution = resolve_spawn_mcp_servers(launch_dir=launch_dir)
-        if resolution.servers is None:
-            if resolution.reason and resolution.reason.startswith("mcp_config_unusable:"):
-                raise McpConfigError(
-                    f"cannot submit this agent run: the MCP config found at "
-                    f"{resolution.source} cannot be used "
-                    f"({resolution.reason.split(':', 1)[1].strip()})"
+            launch_dir = os.getcwd()
+            resolution = resolve_spawn_mcp_servers(launch_dir=launch_dir)
+            if resolution.servers is None:
+                if resolution.reason and resolution.reason.startswith("mcp_config_unusable:"):
+                    raise McpConfigError(
+                        f"cannot submit this agent run: the MCP config found at "
+                        f"{resolution.source} cannot be used "
+                        f"({resolution.reason.split(':', 1)[1].strip()})"
+                    )
+                mcp_config_reason = (
+                    f"{resolution.reason}_at_or_above:{launch_dir}"
+                    if resolution.reason == "no_mcp_config_found"
+                    else resolution.reason
                 )
-            mcp_config_reason = (
-                f"{resolution.reason}_at_or_above:{launch_dir}"
-                if resolution.reason == "no_mcp_config_found"
-                else resolution.reason
-            )
-        else:
-            mcp_servers = resolution.servers
-            mcp_config_source = str(resolution.source) if resolution.source else None
-            mcp_config_path = str(d / "mcp-servers.json")
-            options = ["--mcp-config", mcp_config_path, *options]
+                if resolution.reason == "mcp_config_declares_no_servers":
+                    # A config that was found and declares no servers is a
+                    # settled question whose answer is none, so it reports `[]`.
+                    # The resolver returns a null server map for this and for
+                    # finding no config at all, and only its reason tells the two
+                    # apart -- reading the map alone would report "cannot say"
+                    # about a file that said so explicitly. The source is kept for
+                    # the same reason: a reader is owed the name of the file that
+                    # answered, and an empty set beside a null source would send
+                    # them looking for one that was never consulted.
+                    mcp_config_servers = []
+                    mcp_config_source = str(resolution.source) if resolution.source else None
+            else:
+                mcp_servers = resolution.servers
+                mcp_config_source = str(resolution.source) if resolution.source else None
+                mcp_config_path = str(d / _MCP_SNAPSHOT_FILENAME)
+                # Sorted so two runs over the same set report the same string and a
+                # reader can compare handles directly; the child reads the snapshot,
+                # never this list, so the order is free to be the readable one.
+                mcp_config_servers = sorted(mcp_servers)
+                options = ["--mcp-config", mcp_config_path, *options]
 
-    # Wire the CLI's terminal hook back to the MCP server so we record a reliable
-    # finished_at/status (and fire the configured delivery) even across a restart.
-    options = [
-        "--notify",
-        _notify_template(run_id, notify_target, notify_command, notify_sender),
-        *options,
-    ]
+        # Wire the CLI's terminal hook back to the MCP server so we record a reliable
+        # finished_at/status (and fire the configured delivery) even across a restart.
+        options = [
+            "--notify",
+            _notify_template(run_id, notify_target, notify_command, notify_sender),
+            *options,
+        ]
 
-    argv = [*config.li_command(), *_KIND_ARGV[kind], *options, *positionals]
+        argv = [*config.li_command(), *_KIND_ARGV[kind], *options, *positionals]
 
-    # Drop the parent harness marker so the detached child does not inherit an
-    # environment that claims it is running under an interactive harness.
-    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-    env[config.RUN_ID_ENV_VAR] = run_id
-    # The child carries the run that started it. Every process it goes on to
-    # spawn inherits this, so a live member of the group can later be asked
-    # what it belongs to instead of being guessed at from when it started.
-    env[config.JOB_MARKER_ENV_VAR] = run_id
+        # Drop the parent harness marker so the detached child does not inherit an
+        # environment that claims it is running under an interactive harness.
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        env[config.RUN_ID_ENV_VAR] = run_id
+        # The child carries the run that started it. Every process it goes on to
+        # spawn inherits this, so a live member of the group can later be asked
+        # what it belongs to instead of being guessed at from when it started.
+        env[config.JOB_MARKER_ENV_VAR] = run_id
 
-    # Only "agent" hands the instruction over in a file; flow and fanout take it
-    # as a positional, so a long one has to fit in the process argument vector.
-    # Checked before anything is written, because Popen raising this late would
-    # leave a job recorded as "running" for a run that never started.
-    _reject_oversized_argv(argv, env, kind=kind)
+        # Only "agent" hands the instruction over in a file; flow and fanout take it
+        # as a positional, so a long one has to fit in the process argument vector.
+        # Checked before anything is written, because Popen raising this late would
+        # leave a job recorded as "running" for a run that never started.
+        _reject_oversized_argv(argv, env, kind=kind)
 
-    d.mkdir(parents=True, exist_ok=True)
-    if prompt_path is not None:
-        prompt_path.write_text(prompt)
-    if mcp_servers is not None and mcp_config_path is not None:
-        Path(mcp_config_path).write_text(json.dumps({"mcpServers": mcp_servers}, indent=2))
+        # The durable writes sit inside this same block rather than under a
+        # handler of their own. One block, because one question is being asked:
+        # did this submission become a job? Everything from here back to the
+        # reservation answers "no" the same way — a full disk on the second write
+        # strands a run exactly as an argv the platform will not carry does — and
+        # a second handler would only invite the two to be given back
+        # differently, which is the state this block exists to prevent.
+        if prompt_path is not None:
+            prompt_path.write_text(prompt)
+        if mcp_servers is not None and mcp_config_path is not None:
+            _write_mcp_server_snapshot(Path(mcp_config_path), mcp_servers)
+    except BaseException:
+        _discard_reservation(d)
+        raise
 
     # Persist the record BEFORE spawning, so the child's terminal --notify hook
     # always finds a record to mark. mark_terminal no-ops on a missing record, so
@@ -1170,16 +1624,40 @@ def submit(
         "mcp_config": mcp_config_path,
         "mcp_config_source": mcp_config_source,
         "mcp_config_reason": mcp_config_reason,
+        "mcp_config_servers": mcp_config_servers,
         "submitted_at": _now_iso(),
         "finished_at": None,
         "status": "running",
         "spawn_state": "preparing",
         "log": str(log_path),
     }
-    _write_job(record)
+    try:
+        _write_job(record)
+    except BaseException:
+        # The record is what makes a reservation a job, so a publication that
+        # never landed leaves the prepared files behind with nothing claiming
+        # them — the same stranded directory every earlier failure here gives
+        # back, reached one step later. This is the last point where giving it
+        # back is the right answer: past this line the run exists, and a failure
+        # is marked on the record rather than erased along with it.
+        _discard_reservation(d)
+        raise
 
     try:
-        log_f = open(log_path, "wb")
+        # Append mode, not truncate: every write from the child has to land at
+        # end-of-file rather than at an offset the child carries with it. The
+        # terminal hook appends to this same log while the child is still alive
+        # and still holding this descriptor, so with an offset-carrying
+        # descriptor the child's next write — its final output, or just the
+        # flush the interpreter does on its way out — starts back where the
+        # child left off and overwrites whatever was appended behind its back.
+        # What it overwrites is the one line written only when something went
+        # wrong: the notice that a terminal notice could not be delivered.
+        #
+        # There is nothing here to append after: the directory this log sits in
+        # was created for this run and no other, by a creation that fails rather
+        # than accepts a name already taken.
+        log_f = open(log_path, "ab")
         try:
             proc = subprocess.Popen(  # noqa: S603 — argv is the resolved li_command + CLI flags, no shell
                 argv,
@@ -1216,13 +1694,24 @@ def submit(
     # the child is certainly the one just spawned; a read that fails leaves it
     # null, which kill() reads as "no identity was captured" rather than as any
     # claim about the process.
-    latest = _read_job(run_id) or record
-    latest["pid"] = proc.pid
+    #
+    # The probes are made before the lock is taken, so a process table that is
+    # slow to answer never holds up another observer's mutation of this record.
+    # The merge itself only ever adds the identity fields and the spawn phase:
+    # a terminal the hook recorded, and any delivery result beside it, are on
+    # the record this reads back and are left exactly as they are.
     _state, created = _process_create_time(proc.pid)
-    latest["pid_create_time"] = created
-    latest["pgid"] = _spawned_pgid(proc.pid)
-    latest["spawn_state"] = "started"
-    _write_job(latest)
+    pgid = _spawned_pgid(proc.pid)
+    latest = record
+    with _locked_job(run_id) as guard:
+        if guard.record is None:
+            guard.record = latest = {**record}
+        else:
+            latest = guard.record
+        latest["pid"] = proc.pid
+        latest["pid_create_time"] = created
+        latest["pgid"] = pgid
+        latest["spawn_state"] = "started"
 
     # The handle carries the same three lifecycle fields every other
     # status-bearing response does, so a caller never has to classify the status
@@ -1243,6 +1732,7 @@ def submit(
         "mcp_config": mcp_config_path,
         "mcp_config_source": mcp_config_source,
         "mcp_config_reason": mcp_config_reason,
+        "mcp_config_servers": mcp_config_servers,
         "notify_sender": notify_sender,
     }
 
@@ -1256,17 +1746,30 @@ def _record_spawn_failure(run_id: str, exc: Exception) -> SpawnError:
     run was going, which is two answers to one question.
     """
     reason = f"spawn failed: {exc}"
-    record = _read_job(run_id) or {"run_id": run_id}
-    record.update(
-        {
-            "spawn_state": "failed",
-            "status": "failed",
-            "finished_at": _now_iso(),
-            "reason": reason,
-        }
-    )
+    record: dict[str, Any] = {
+        "run_id": run_id,
+        "spawn_state": "failed",
+        "status": "failed",
+        "finished_at": _now_iso(),
+        "reason": reason,
+        "terminal_source": TERMINAL_SOURCE_SPAWN_FAILURE,
+    }
     try:
-        _write_job(record)
+        with _locked_job(run_id) as guard:
+            current = guard.record
+            if current is None:
+                current = {"run_id": run_id}
+                guard.record = current
+            current["spawn_state"] = "failed"
+            current["reason"] = reason
+            # The end itself only if nothing recorded one. There is no child to
+            # have written one here, so this is the same first-writer rule every
+            # other mutation keeps rather than a case anyone expects to hit.
+            if current.get("finished_at") is None:
+                current["status"] = "failed"
+                current["finished_at"] = _now_iso()
+                current["terminal_source"] = TERMINAL_SOURCE_SPAWN_FAILURE
+            record = current
     except OSError:
         # The corrective write can fail on exactly the disk that refused the
         # spawn. The caller still gets the failure and the run_id; what is lost
@@ -1317,22 +1820,36 @@ def _cache_lifecycle_end(
     A failed write is not an error here — the record is a cache, so the next
     observation simply asks again — and the in-memory record is returned either
     way so this call is what the caller classifies.
+
+    The copy is made under the per-run lock and onto the record as it stands
+    there. A record that already carries an end keeps it: the store and the hook
+    are both reporting the same run, and the one that got there first is the one
+    the run's readers have already been given.
     """
     if job is None or lifecycle is None or not lifecycle.get("terminal"):
         return job
     ended = lifecycle.get("ended_at")
-    updated = {
-        **job,
+    fields = {
         "status": lifecycle.get("status", job.get("status")),
         "finished_at": _iso_from_epoch(ended) or _now_iso(),
         "reason_code": lifecycle.get("reason_code"),
-        "terminal_source": "lifecycle",
+        "terminal_source": TERMINAL_SOURCE_LIFECYCLE,
     }
+    updated = {**job, **fields}
+    run_id = job.get("run_id")
+    if not isinstance(run_id, str):
+        return updated
     try:
-        _write_job(updated)
+        with _locked_job(run_id) as guard:
+            current = guard.record
+            if current is None:
+                return updated
+            if current.get("finished_at") is not None:
+                return current
+            current.update(fields)
+            return current
     except OSError:
-        pass
-    return updated
+        return updated
 
 
 def _iso_from_epoch(value: Any) -> str | None:
@@ -1366,7 +1883,51 @@ def _server_identity() -> dict[str, str]:
     return {"version": version, "module": str(Path(__file__).resolve().parent)}
 
 
-def _run_process_liveness(job: dict[str, Any] | None, pid: int | None) -> tuple[bool, str | None]:
+LivenessConclusion = Literal["alive", "process_gone", "unknown"]
+
+
+@dataclass(frozen=True)
+class ProcessLiveness:
+    """What one observation of a run's recorded process established.
+
+    ``alive`` is the answer callers have always had: whether this run's process
+    is running, used to decide whether waiting can still help.
+
+    ``conclusion`` is the decision surface. ``"process_gone"`` is a *positive*
+    finding that this run's process no longer exists, and it is the only value
+    that may end a run. ``"unknown"`` is a probe that established nothing — an
+    unaskable pid, a denied read — and can never end one. The three values are
+    the whole vocabulary, so a case added later is inconclusive until it is
+    written down as conclusive, which is the opposite of the property a rule
+    phrased as "not one of these inconclusive names" has.
+
+    ``finding`` names which observation produced the conclusion, so the record
+    of a transition says what was seen rather than only what was decided.
+    """
+
+    alive: bool
+    conclusion: LivenessConclusion
+    finding: str
+
+
+# The findings this classifier can reach, and the public ``pid_identity`` each
+# one has always been reported as. The public field keeps its meanings exactly:
+# this table is where the internal finding is translated into it, so neither
+# vocabulary has to be read through the other.
+_PID_IDENTITY_BY_FINDING: dict[str, str | None] = {
+    "unusable_pid": "unusable_pid",
+    FINDING_PID_ABSENT: None,
+    FINDING_DISAPPEARED_DURING_PROBE: "gone",
+    FINDING_PID_RECYCLED: "recycled",
+    "identity_confirmed": "confirmed",
+    "identity_not_recorded": "not_recorded",
+    "identity_unusable": "unusable",
+    "identity_unreadable": "unreadable",
+    "no_record": None,
+}
+
+
+def _run_process_liveness(job: dict[str, Any] | None, pid: int | None) -> ProcessLiveness:
     """Whether the process *this run* spawned is alive, and what settled it.
 
     A pid number is not an identity. Once the run's process exits and the OS
@@ -1379,15 +1940,24 @@ def _run_process_liveness(job: dict[str, Any] | None, pid: int | None) -> tuple[
     ``possibly_orphaned``, the field that exists for a process gone with no end
     recorded.
 
-    The second element names what was established, so a caller can tell the
-    readings apart rather than infer them: ``"confirmed"``, ``"recycled"``,
-    ``"gone"`` (the pid held no live process when it was read), ``"unreadable"``
-    (the identity probe errored, so nothing was established and the liveness
-    probe stands), ``"not_recorded"`` (the record captured no start time),
-    ``"unusable"`` (it captured one that no start time can be compared against)
-    and ``"unusable_pid"`` (the record's pid is not a number the OS can be asked
-    about, so no probe was made and the answer is not a finding of death). None
-    when there was no live pid to identify.
+    The finding names what was established, so a caller can tell the readings
+    apart rather than infer them, and the conclusion says which of them may end
+    a run. Three are conclusive, and each is a positive observation of this
+    run's process being gone: ``"pid_absent"`` (the pid was askable and held no
+    live process), ``"disappeared_during_probe"`` (it held one at the liveness
+    probe and none at the creation-time probe) and ``"pid_recycled"`` (a live
+    process holds the number and started at a different time than the one this
+    run recorded, so it is a different process). The rest conclude nothing about
+    death: ``"identity_confirmed"``, ``"identity_not_recorded"`` (the record
+    captured no start time), ``"identity_unusable"`` (it captured one that no
+    start time can be compared against), ``"identity_unreadable"`` (the identity
+    probe errored, so nothing was established and the liveness probe stands),
+    ``"unusable_pid"`` (the record's pid is not a number the OS can be asked
+    about, so no probe was made at all) and ``"no_record"`` (a live pid with no
+    record to identify it against).
+
+    The public ``pid_identity`` values are unchanged and are read off
+    :data:`_PID_IDENTITY_BY_FINDING`; nothing here redefines one.
 
     Two separate questions are settled here in the order their evidence allows.
     Whether the pid holds a live process at all needs only the pid, so it is
@@ -1408,9 +1978,13 @@ def _run_process_liveness(job: dict[str, Any] | None, pid: int | None) -> tuple[
     """
     asked = _askable_pid(pid)
     if asked is None:
-        return False, "unusable_pid"
+        # No probe was made, so nothing at all was established about the
+        # process. Reported not alive, as it always has been, and inconclusive:
+        # a record this module cannot ask about is the one case that must never
+        # be ended from here.
+        return ProcessLiveness(False, "unknown", "unusable_pid")
     if not _pid_alive(asked):
-        return False, None
+        return ProcessLiveness(False, "process_gone", FINDING_PID_ABSENT)
 
     # Whether that pid still holds a live process is settled here, before the
     # record is consulted, because settling it does not need the record. The
@@ -1421,13 +1995,13 @@ def _run_process_liveness(job: dict[str, Any] | None, pid: int | None) -> tuple[
     # only where a start time was recorded to compare against.
     state, live_created = _process_create_time(asked)
     if state == "gone":
-        return False, "gone"
+        return ProcessLiveness(False, "process_gone", FINDING_DISAPPEARED_DURING_PROBE)
 
     if job is None:
-        return True, None
+        return ProcessLiveness(True, "alive", "no_record")
     recorded = job.get("pid_create_time")
     if recorded is None:
-        return True, "not_recorded"
+        return ProcessLiveness(True, "alive", "identity_not_recorded")
     # The same three values kill() refuses: a bool is an int to isinstance and
     # arrives as a moment in 1970, a NaN loses every comparison silently, and an
     # unbounded JSON integer fails the conversion that any comparison needs.
@@ -1437,13 +2011,177 @@ def _run_process_liveness(job: dict[str, Any] | None, pid: int | None) -> tuple[
     except (TypeError, ValueError, OverflowError):
         usable = False
     if not usable:
-        return True, "unusable"
+        return ProcessLiveness(True, "alive", "identity_unusable")
 
     if state != "found" or live_created is None:
-        return True, "unreadable"
+        # The identity probe was denied or unreadable. The pid holds a live
+        # process, so the run is treated as running; which process it is stayed
+        # unestablished, so this observation concludes nothing either way.
+        return ProcessLiveness(True, "unknown", "identity_unreadable")
     if _start_time_matches(live_created, spawned_at):
-        return True, "confirmed"
-    return False, "recycled"
+        return ProcessLiveness(True, "alive", "identity_confirmed")
+    return ProcessLiveness(False, "process_gone", FINDING_PID_RECYCLED)
+
+
+@dataclass(frozen=True)
+class ReapResult:
+    """What one attempt to end a conclusively gone run came to.
+
+    ``won_transition`` is true for exactly one caller per run: the one whose
+    guarded write published the end. It is what decides who owns the terminal
+    notice, since the notice must be attempted once and the durable record is
+    the only thing that can say who got there first.
+
+    ``record`` is the record as it stands after the attempt — the transition
+    this call wrote, or the end somebody else had already written — so a loser
+    reports the durable fact rather than its own observation. ``reason`` names
+    why a call did not win, which is diagnostic and never something a caller
+    branches on.
+    """
+
+    won_transition: bool
+    record: dict[str, Any] | None
+    reason: str
+
+
+def reap_orphan(run_id: str, *, finding: str, observed_at: str) -> ReapResult:
+    """Publish the end of a run whose process is conclusively gone.
+
+    Idempotent, and safe to call from every observer at once. The whole check is
+    made inside the per-run lock and against a record reread there, because the
+    caller's observation was taken before the lock was held: between the two, the
+    child's terminal hook, a kill, or another observer can have written the end
+    already, and a merge starting from the caller's copy would erase it.
+
+    Everything below has to hold under the lock. The record exists and is this
+    run's; the spawn got as far as starting a process, so there is a process
+    identity to have lost — a spawn still preparing acquired none, and a spawn
+    that failed already ended; nothing has recorded an end; and *finding* is one
+    of the three observations that positively establish that this run's process
+    is gone. Membership in that closed set is the whole admission rule: nothing
+    here reads a liveness field, an elapsed time, or the absence of a
+    disqualifying value.
+
+    The winner writes the end, the outcome, the reason, and the attribution in
+    one publication, so no reader ever sees a half-made transition.
+    ``finished_at`` is *observed_at*: the moment the loss was established and
+    recorded, not the unknown moment the process actually exited, which nothing
+    surviving can report.
+
+    Notification is not attempted here. It runs after this returns, outside the
+    lock, so a delivery command can never hold the record of every other run's
+    observer — and it is the winner's to attempt, which is what the returned
+    ``won_transition`` says.
+    """
+    if finding not in CONCLUSIVE_FINDINGS:
+        # Refused before the lock is taken: a finding that establishes nothing
+        # has no transition to serialize.
+        return ReapResult(False, None, "finding_is_not_conclusive")
+
+    with _locked_job(run_id) as guard:
+        job = guard.record
+        if job is None:
+            return ReapResult(False, None, f"no_usable_record:{guard.state}")
+        if job.get("run_id") != run_id:
+            return ReapResult(False, job, "record_names_another_run")
+        if job.get("spawn_state") != "started":
+            return ReapResult(False, job, "spawn_state_is_not_started")
+        if job.get("finished_at") is not None:
+            return ReapResult(False, job, "already_ended")
+        job.update(
+            {
+                "status": "exited",
+                "outcome": OUTCOME_INDETERMINATE,
+                "reason_code": LOST_REASON,
+                "finished_at": observed_at,
+                "terminal_source": TERMINAL_SOURCE_ORPHAN_REAPER,
+                "terminal_evidence": {"kind": EVIDENCE_PROCESS_GONE, "finding": finding},
+            }
+        )
+        return ReapResult(True, job, "reaped")
+
+
+def _admits_orphan_reap(job: dict[str, Any] | None, liveness: ProcessLiveness) -> bool:
+    """Whether this observation is one that may end the run.
+
+    Only a positive ``process_gone`` conclusion, and only for a run that started
+    a process and has no end recorded. The record checks are made again inside
+    the lock, where they are the ones that count; this is the cheap gate that
+    keeps an ordinary poll of a healthy or already-ended run from opening a lock
+    file at all.
+    """
+    if job is None or liveness.conclusion != "process_gone":
+        return False
+    return job.get("spawn_state") == "started" and not _record_is_terminal(job)
+
+
+def _deliver_reap_notice(run_id: str, record: dict[str, Any]) -> dict[str, Any] | None:
+    """Attempt the terminal notice the run's own process never got to send.
+
+    The dead child was the owner of both the end and its delivery, so an
+    observer that publishes the end and stops there leaves a notice-only caller
+    asleep forever — the terminality would be repaired and the wake-up would
+    not. The winner of the transition therefore attempts the same configured
+    delivery the hook would have, through the hook's own resolution, so a
+    per-run override and the project/global settings mean here exactly what they
+    mean there and there is only one place a notifier is configured.
+
+    Best-effort and after the fact. The end is already durable when this runs,
+    so nothing here can change how the run came out: a refusal, a non-zero exit
+    or a timeout is recorded as a delivery failure, and a delivery that never
+    gets to record anything leaves ``notify_delivery`` absent, which is what a
+    crash between the two writes looks like from outside.
+
+    The guard is total for the same reason: this is called from a read path, and
+    a notifier that comes apart in a way the hook does not classify must not
+    turn a status read of an already-ended run into a failed call. What is lost
+    is the delivery result, which is the same thing the crash gap loses.
+    """
+    from ._notify_hook import deliver_terminal_notice
+
+    try:
+        outcome = deliver_terminal_notice(
+            run_id,
+            record,
+            record.get("status") or "exited",
+            target=record.get("notify_target"),
+            command=record.get("notify_command"),
+            sender=record.get("notify_sender"),
+        )
+    except Exception:  # noqa: BLE001 — the end is published; delivery may not undo it
+        return None
+    # A result that could not be recorded reads back the same way a crash
+    # between the two writes does: the end is durable and the delivery outcome
+    # is absent. Nothing here can be failed by that — this is a read path, and
+    # the end it reports is already published.
+    return record_notify_delivery(run_id, outcome).record
+
+
+def _reap_if_conclusively_gone(
+    run_id: str, job: dict[str, Any] | None, liveness: ProcessLiveness
+) -> dict[str, Any] | None:
+    """Turn a conclusive observation into a durable end, then report the record.
+
+    This is the one place a read is allowed to write. What it returns is always
+    a record read back from the transition rather than the observation that
+    caused it, so the terminal answer a caller receives is one an unchanged
+    record already contains — the next reader of those same bytes reaches it
+    without observing anything at all.
+    """
+    if not _admits_orphan_reap(job, liveness):
+        return job
+    try:
+        result = reap_orphan(run_id, finding=liveness.finding, observed_at=_now_iso())
+    except OSError:
+        # The transition could not be published. The run is classified exactly
+        # as it was before this call, which is the advisory state it has always
+        # had, and the next observation tries again.
+        return job
+    if result.record is None:
+        return job
+    if not result.won_transition:
+        return result.record
+    return _deliver_reap_notice(run_id, result.record) or result.record
 
 
 def status(run_id: str) -> dict[str, Any]:
@@ -1472,11 +2210,37 @@ def status(run_id: str) -> dict[str, Any]:
     different things to do next. A record written without a start time still
     reports a process that has exited as not alive; what it cannot report is
     whether a live process at that pid is this run's.
-    ``possibly_orphaned`` flags a run whose process is gone with no end recorded;
-    it is advisory and never makes the run terminal.
+    ``liveness_conclusion`` is what that observation established:
+    ``"process_gone"`` positively identifies this run's process as gone,
+    ``"alive"`` that it is running, and ``"unknown"`` that the probe settled
+    neither. Only ``"process_gone"`` can end a run, and it does so by writing the
+    end down before this call returns it — so a caller reading ``terminal`` here
+    is reading a durable fact rather than this observation.
+    ``terminal_source`` says what wrote that end (``"cli_terminal_hook"``,
+    ``"lifecycle_cache"``, ``"spawn_failure"``, ``"mcp_orphan_reaper"``, or null
+    on a record written before the field existed), and ``terminal_evidence``
+    carries the bounded evidence behind an end nobody reported.
+    ``possibly_orphaned`` flags a run whose process is gone with no end recorded
+    and whose loss was not established conclusively — an unaskable pid, or a
+    transition that could not be published; it is advisory and never makes the
+    run terminal.
     ``notify_delivery`` reports whether the terminal notice was delivered.
     ``server`` identifies the implementation that answered, so a caller can tell
     which build it is talking to rather than inferring it from behaviour.
+
+    The ``mcp_config*`` fields say what tool surface the run was given, and are the
+    same values the submit handle returned, carried here so a caller investigating
+    a finished run reads them rather than opening the record on disk.
+    ``mcp_config_servers`` names the servers by name. ``[]`` and null are different
+    answers: ``[]`` says the question was settled and the answer was none, null says
+    no set was resolved. Three things read as null — the caller named their own
+    config file, which this run does not read; no config was found at or above the
+    launch directory; or the record predates the field. ``mcp_config_reason`` names
+    which of the first two, and a record older than the field carries no reason
+    either. It reports what was RESOLVED, which is not a claim that the child's
+    provider then started each one; a server can be listed here and still fail to
+    come up in the child's own session. What it settles is the prior question,
+    whether a server the run was supposed to have was in its set at all.
 
     ``known`` says whether a usable record was obtained, and ``record_state`` says
     what was read to answer that: ``"ok"``, or ``"absent"``, ``"unreadable"`` or
@@ -1488,12 +2252,18 @@ def status(run_id: str) -> dict[str, Any]:
     job, record_state = _read_job_state(run_id)
     manifest = _read_run_manifest(run_id)
     pid = job.get("pid") if job else None
-    alive, pid_identity = _run_process_liveness(job, pid)
+    liveness = _run_process_liveness(job, pid)
+    alive = liveness.alive
 
     lifecycle = None
     if _needs_lifecycle_read(job, alive):
         lifecycle = _read_lifecycle(run_id)
         job = _cache_lifecycle_end(job, lifecycle)
+
+    # The lifecycle store gets asked first, because an end it recorded is an end
+    # somebody reported and is the better answer: reaping is for a run that no
+    # writer survived to speak for.
+    job = _reap_if_conclusively_gone(run_id, job, liveness)
 
     derived = _derive(job, alive, lifecycle)
 
@@ -1507,12 +2277,19 @@ def status(run_id: str) -> dict[str, Any]:
         "reason_code": derived["reason_code"],
         "spawn_state": derived["spawn_state"],
         "possibly_orphaned": derived["possibly_orphaned"],
+        "terminal_source": (job or {}).get("terminal_source"),
+        "terminal_evidence": (job or {}).get("terminal_evidence"),
         "alive": alive,
-        "pid_identity": pid_identity,
+        "pid_identity": _PID_IDENTITY_BY_FINDING.get(liveness.finding),
+        "liveness_conclusion": liveness.conclusion,
         "pid": pid,
         "submitted_at": (job or {}).get("submitted_at"),
         "finished_at": (job or {}).get("finished_at"),
         "notify_delivery": (job or {}).get("notify_delivery"),
+        "mcp_config": (job or {}).get("mcp_config"),
+        "mcp_config_source": (job or {}).get("mcp_config_source"),
+        "mcp_config_reason": (job or {}).get("mcp_config_reason"),
+        "mcp_config_servers": (job or {}).get("mcp_config_servers"),
         "run": manifest,
         "log_tail": _tail((job or {}).get("log")),
         "known": job is not None,
@@ -1585,20 +2362,36 @@ def _kill_result(
     }
 
 
-def _mark_killed(job: dict[str, Any]) -> None:
+def _mark_killed(job: dict[str, Any]) -> WriteResult:
     """Record the kill on the job record.
 
     A record that already carries an end keeps it. The run really did finish
     the way it says, and what was signalled here is work that outlived that end
     — overwriting ``completed`` with ``killed`` would replace how the run came
     out with how its stragglers were cleaned up.
+
+    Which end that is, is decided under the per-run lock against the record as
+    it stands there rather than against the copy the kill decision was made
+    from: the signal takes time, and an end can be recorded while it is being
+    sent. The kill still happened either way — this write is the record of it,
+    not the act. What the caller is told is whether the record was made: a kill
+    nothing recorded leaves a run that reads as running to everyone who asks,
+    and that is a different thing to report than a kill that was recorded.
     """
-    if _record_is_terminal(job):
-        job["group_reaped_at"] = _now_iso()
-    else:
-        job["status"] = "killed"
-        job["finished_at"] = _now_iso()
-    _write_job(job)
+    run_id = job.get("run_id")
+    if not isinstance(run_id, str):
+        return WriteResult(None, "no_run_id_on_record")
+    with _locked_job(run_id) as guard:
+        current = guard.record
+        if current is None:
+            return WriteResult(None, guard.state)
+        if _record_is_terminal(current):
+            current["group_reaped_at"] = _now_iso()
+        else:
+            current["status"] = "killed"
+            current["finished_at"] = _now_iso()
+            current["terminal_source"] = TERMINAL_SOURCE_KILL
+        return WriteResult(current, guard.state)
 
 
 def _signal_group(
@@ -1630,7 +2423,20 @@ def _signal_group(
             pid=pid,
             pgid=pgid,
         )
-    _mark_killed(job)
+    written = _mark_killed(job)
+    if written.refused:
+        # The signal went out and nothing durable says so. Reported as its own
+        # code rather than as a plain success: a caller that reads `killed=True`
+        # and then finds the run still recorded as running has been told two
+        # things, and only one of them is on disk.
+        return _kill_result(
+            run_id,
+            killed=True,
+            reason="signalled, but the kill could not be recorded: the run record could not be locked",
+            reason_code=KILL_NOT_RECORDED,
+            pid=pid,
+            pgid=pgid,
+        )
     return _kill_result(
         run_id, killed=True, reason=None, reason_code=reason_code, pid=pid, pgid=pgid
     )
@@ -2070,14 +2876,83 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
     )
 
 
+def _notify_delivery_state(outcome: Any) -> str:
+    """One word for what became of a run's terminal notice: the listing's shape.
+
+    ``status`` reports the whole ``notify_delivery`` object, which is what someone
+    diagnosing one run needs. The listing is scanned, not read: a caller polling
+    several runs wants to spot the one whose notice failed without decoding a
+    four-field object per row, and a listing that carried the object would make
+    every caller write that decoding itself — including the rule for which
+    combinations count as a failure, which is the part worth having in one place.
+    So the listing carries this collapsed state and leaves the detail to ``status``.
+
+    ``"none"`` covers a run that has not reached a terminal yet and a terminal run
+    with no notifier configured. In both, nobody was waiting on a notice: silence
+    is the documented default and is never a failure. ``"delivered"`` is a notice
+    that went out. ``"failed"`` is every way a *configured* notifier came to
+    nothing — refused before it ran, unable to start, timed out, or exited
+    non-zero — because to a caller waiting on the notice those are one fact.
+
+    The record is JSON on disk, so an ``outcome`` that is not an object is read as
+    no delivery rather than allowed to raise through the listing.
+    """
+    if not isinstance(outcome, dict):
+        return "none"
+    if outcome.get("ok"):
+        return "delivered"
+    if not outcome.get("attempted") and not outcome.get("error"):
+        return "none"
+    return "failed"
+
+
 def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[str, Any]]:
     """Recent jobs, newest first (run_id sorts by timestamp).
+
+    ``notify_delivery_state`` says whether each run's terminal notice was
+    delivered, so a run whose notice failed is distinguishable here from one that
+    is still working. Without it this listing — the surface a caller polls while
+    waiting on several runs — reports a failed notice as no notice, and a caller
+    reads that as a run still going. A notice that could not be delivered has to
+    be visible where the waiting is done, not only on the record.
+
+    ``terminal_source`` travels with the end for the same reason: a run this
+    server ended on its own behalf, because its process was found gone with
+    nothing reported, is a different fact from one whose own process reported an
+    end, and a listing that showed only the outcome would hide which of the two
+    a row is. Every entry resolves through ``status``, so a conclusively gone
+    run is ended here exactly as it would be by a direct status read.
 
     An entry whose record could not be used is listed with the state of that read
     in ``record_state``, the same field ``status`` reports, so a damaged record is
     visible here as a damaged record rather than as a job with no kind and an
     unknown status. That is a per-run failure, and one damaged record must not cost
     the caller the runs beside it.
+
+    ``spawn_state`` rides along for the same reason those three do, and it is the
+    one that decides what ``running`` means. A record whose spawn was never
+    attempted, or whose result was never written, stays ``running`` on purpose:
+    resolving it would take a bound that cannot tell a loaded machine from a dead
+    spawn, so ``status`` deliberately makes no claim about its fate. That refusal
+    is right, and it is also why the distinction has to be visible here. This
+    listing is what a caller reads to answer "what is in flight right now", and
+    without the spawn state a run that never started is indistinguishable in it
+    from one doing work — same word, two facts. A count that can hold a run that
+    never began is one a caller cannot use as evidence in either direction, so the
+    live run hiding in a listing somebody has learned to discount is the failure
+    this field exists to prevent.
+
+    It is reported as the record carries it, which means null is not one answer.
+    A row whose ``record_state`` is not ``"ok"`` never had a record to read a
+    phase from. A row whose ``record_state`` is ``"ok"`` and whose spawn state is
+    null is a record that parsed and does not name a phase — one written before
+    the field existed. A record that names a phase this code does not recognise
+    is listed with that phase verbatim, not as null: the value is reported as the
+    record carries it. So null reads as "no phase this listing can vouch for",
+    never as "never attempted";
+    the phase that means never-attempted says ``"preparing"`` and says it
+    explicitly. Normalising the value is a change to what ``status`` reports and
+    belongs with it rather than here, where it would make the two disagree.
 
     The directory read itself is different, and is allowed to fail. A listing has
     no field in which to say it could not be read, so answering the empty list
@@ -2106,9 +2981,12 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
                 "terminal": st["terminal"],
                 "outcome": st["outcome"],
                 "reason_code": st["reason_code"],
+                "spawn_state": st["spawn_state"],
                 "submitted_at": st["submitted_at"],
                 "finished_at": st["finished_at"],
+                "terminal_source": st["terminal_source"],
                 "record_state": st["record_state"],
+                "notify_delivery_state": _notify_delivery_state(st["notify_delivery"]),
             }
         )
         if len(out) >= limit:
@@ -2207,13 +3085,22 @@ async def wait(
 
     A run whose process is gone with no end recorded meets that same criterion:
     it has stopped, and both writers of an end are past it, so the window is not
-    held open for it either. Such ids are named in ``stopped_without_end`` — not
-    in ``pending``, which is what is still worth waiting for, and not as a per-id
-    ``error``, because observing them succeeded. Nothing about the record itself
-    changes: the entry stays non-terminal with a null outcome, and a run that
-    does get an end written afterwards is classified terminal by the next
-    observation as it always was. ``all_terminal`` therefore stays false while any
-    id is here, because a run that stopped without recording an end is not a
+    held open for it either. Where that loss is established conclusively, the
+    observation ends the run — durably, with ``outcome="indeterminate"`` — so the
+    entry comes back terminal like any other and is neither pending nor named below.
+    ``all_terminal`` covers it: the field means every requested run has a
+    recorded end, not that every run succeeded, and a caller reads each entry's
+    ``outcome`` to tell those apart.
+
+    What is left in ``stopped_without_end`` is the id whose loss could not be
+    established — a record whose pid the OS cannot even be asked about — which
+    has stopped looking alive and may still be running for all this can tell.
+    Such ids are not in ``pending``, which is what is still worth waiting for,
+    and not a per-id ``error``, because observing them succeeded. Nothing about
+    the record itself changes: the entry stays non-terminal with a null outcome,
+    and a run that does get an end written afterwards is classified terminal by
+    the next observation as it always was. ``all_terminal`` therefore stays false
+    while any id is here, because a run this cannot account for is not a
     completed one.
 
     Because such an id resolves nothing by waiting, a caller looping until
@@ -2278,7 +3165,7 @@ async def wait(
     }
 
 
-def mark_terminal(run_id: str, cli_status: str) -> dict[str, Any] | None:
+def mark_terminal(run_id: str, cli_status: str) -> WriteResult:
     """Record a terminal status for *run_id* (called by the CLI notify hook).
 
     The CLI's terminal status string is authoritative and recorded verbatim. An
@@ -2288,25 +3175,56 @@ def mark_terminal(run_id: str, cli_status: str) -> dict[str, Any] | None:
     ``aborted``, ``completed_empty`` — into a false success. The hook fires only
     on a genuine terminal, so the incoming status is trusted as-is and
     ``finished_at`` marks the record terminal.
+
+    The first recorded end wins. A record that already carries one — a kill, an
+    end cached from the lifecycle store, or an observer's orphan transition
+    published while this hook was starting up — keeps it, and this call reports
+    what is there instead of replacing it. The hook's own delivery attempt still
+    goes ahead on the record it read back, so a run whose end was inferred can
+    still have its notice filled in by the child that turned out to be alive
+    enough to send one.
+
+    A record this could not serialize is reported as refused rather than as no
+    record. The end is not on disk in that case, and the caller's next act is to
+    announce one — so the two have to be told apart here or the announcement
+    goes out for a record that still reads as running.
     """
-    job = _read_job(run_id)
-    if job is None:
-        return None
-    job["status"] = cli_status
-    job["cli_status"] = cli_status
-    job["finished_at"] = _now_iso()
-    _write_job(job)
-    return job
+    with _locked_job(run_id) as guard:
+        job = guard.record
+        if job is None or job.get("finished_at") is not None:
+            return WriteResult(job, guard.state)
+        job["status"] = cli_status
+        job["cli_status"] = cli_status
+        job["finished_at"] = _now_iso()
+        job["terminal_source"] = TERMINAL_SOURCE_HOOK
+        return WriteResult(job, guard.state)
 
 
-def record_notify_delivery(run_id: str, outcome: dict[str, Any]) -> None:
+def record_notify_delivery(run_id: str, outcome: dict[str, Any]) -> WriteResult:
     """Record whether the terminal notice was delivered (called by the notify hook).
 
     Surfaced by ``status`` so a completion notice that failed to send is visible
     rather than silently lost — the detached-spawn pattern relies on that signal.
+
+    Merges the delivery result and nothing else: it is written under the same
+    per-run lock as every other mutation, so it cannot carry a stale copy of the
+    lifecycle fields back over an end recorded while the notice was being sent.
+    A delivery outcome never changes how the run came out — a notice that failed
+    to send is a fact about the notice.
+
+    The last delivery result recorded is the one kept. Only one caller attempts
+    a given run's notice, and where a second one exists — a child hook filling in
+    the notice for an end an observer inferred — the later attempt is the more
+    recent fact about the notice, which is the whole of what this field says.
+
+    Returns the record as it stands afterwards, so a caller that has to report
+    the delivery alongside the run does not have to read it again, and reports a
+    refused write as refused: a delivery whose result was never recorded is not
+    a delivery anyone can read back.
     """
-    job = _read_job(run_id)
-    if job is None:
-        return
-    job["notify_delivery"] = outcome
-    _write_job(job)
+    with _locked_job(run_id) as guard:
+        job = guard.record
+        if job is None:
+            return WriteResult(None, guard.state)
+        job["notify_delivery"] = outcome
+        return WriteResult(job, guard.state)

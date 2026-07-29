@@ -2,11 +2,11 @@
   "path": "kill",
   "schema": {
     "additionalProperties": false,
-    "description": "Kill a running lionagi entity by id, or sweep all stale running entities whose underlying OS process is dead.\n\nThe entity's status is set to 'cancelled' (sessions/invocations), 'blocked' (plays), or 'aborted' (shows) with reason tracking per ADR-0028.\n\nRecursion boundary: --recursive walks play -> session -> invocation and always reaches the PID-bearing workers. A SHOW kill ('active' -> 'aborted') only marks the show row terminal: --recursive has no effect on shows, since reaping a show's plays/workers is deferred per ADR-0104. To stop a show's work, kill its play ids or session ids directly; --all-stale cancels play and show rows once their workers are gone.\n\nExamples:\n  li kill abc123                        # kill by id prefix\n  li kill <play-id>                     # also reap linked workers\n  li kill abc123 --reason 'stuck'\n  li kill abc123 --recursive            # kill + direct children\n  li kill --all-stale                   # sweep dead-PID rows\n  li kill --all-stale --threshold 3600  # only rows older than 1h\n  li kill --all-stale --dry-run",
+    "description": "Kill a running lionagi entity by id, or sweep all stale running entities whose underlying OS process is dead.\n\nThe entity's status is set to 'cancelled' (sessions/invocations), 'blocked' (plays), or 'aborted' (shows) with reason tracking per ADR-0028.\n\nRecursion boundary: --recursive kills a session's or invocation's direct children, which are the PID-bearing workers. A PLAY kill reaches the play's worker chain only when the row records the session it started; a play created by a live run does not, so that kill marks the row terminal and exits non-zero to say no worker was stopped. A SHOW kill only marks the show row terminal. To stop work either one cannot reach, kill the session ids directly; --all-stale marks a play 'blocked' only when the row records a worker session that has gone terminal, and leaves an unlinked play running.\n\nExamples:\n  li kill abc123                        # kill by id prefix\n  li kill <session-id>                  # stop a worker process\n  li kill abc123 --reason 'stuck'\n  li kill abc123 --recursive            # kill + direct children\n  li kill --all-stale                   # sweep dead-PID rows\n  li kill --all-stale --threshold 3600  # only rows older than 1h\n  li kill --all-stale --dry-run",
     "properties": {
       "all_stale": {
         "default": false,
-        "description": "Sweep stale sessions and invocations with dead PIDs older than --threshold. A play whose swept session was its worker is cancelled with it; a show is cancelled only once it is older than --threshold and ALL of its plays are terminal.",
+        "description": "Sweep stale sessions and invocations with dead PIDs older than --threshold. A play older than --threshold whose recorded worker session has gone terminal is marked 'blocked'; a play that records no worker session is left running, because age alone cannot tell it apart from one still working. A show is marked 'aborted' only once it is older than --threshold and ALL of its plays are terminal.",
         "type": "boolean",
         "x-flag": "--all-stale"
       },
@@ -35,7 +35,7 @@
       },
       "recursive": {
         "default": false,
-        "description": "Also kill direct child entities (e.g. invocations spawned by a session). Play kills always reap their linked workers regardless. Has no effect on show kills, which never reap their plays -- kill the play or session id directly to stop a show's workers.",
+        "description": "Also kill direct child entities (e.g. invocations spawned by a session). Has no effect on a play kill, which already reaps whatever worker chain the row records, or on a show kill, which cannot reach one -- kill the session ids directly to stop a show's workers.",
         "type": "boolean",
         "x-flag": "--recursive"
       },

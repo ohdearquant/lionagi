@@ -1,15 +1,9 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""A coding-preset leg must be handed the MCP servers resolved at submission.
+"""Test submission-time MCP handoff and refusal across single-agent CLI paths.
 
-The whole point of resolving the server set from the submitting directory is
-that a leg pointed at a checkout without a config of its own still gets the
-servers its instructions assume. The coding preset builds its agent through
-the factory, which resolves an MCP config of its own unless it is handed one,
-so these spawn with a config that exists only where the command was submitted
-and assert the leg's request carries exactly that set — for both CLI
-transports, since they carry it in different places.
+Caller-named sets must fail when the chosen provider cannot forward them.
 """
 
 from __future__ import annotations
@@ -23,17 +17,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from lionagi._errors import ConfigurationError
 from lionagi.cli._logging import _HINT_LOGGER_NAME, _WARN_LOGGER_NAME
 
 
 @contextlib.contextmanager
 def _capture_cli_messages():
-    """Collect what the spawn tells its caller.
-
-    Handlers go on the CLI's own channels rather than through caplog: those
-    loggers stop propagating once CLI logging is configured, and whether that
-    has happened depends on what else ran in the session.
-    """
+    """Collect CLI hints and warnings without relying on log propagation."""
     messages: list[str] = []
 
     class _Collect(logging.Handler):
@@ -56,6 +46,7 @@ def _capture_cli_messages():
 
 SUBMITTED = {"khive": {"command": "kkernel", "args": ["serve"]}}
 NEARBY = {"decoy": {"command": "not-the-submitted-server"}}
+ANTIGRAVITY_PROVIDERS = ("gemini-cli", "gemini_cli", "gemini-code", "gemini_code")
 
 
 def _write_mcp_config(directory: Path, servers: dict) -> Path:
@@ -160,6 +151,122 @@ def _forwarded_servers(branch) -> dict:
             servers.setdefault(name, {})[field] = value
         return servers
     return kwargs.get("mcp_servers") or {}
+
+
+def _write_cli_branch(directory: Path, provider: str) -> tuple[str, Path]:
+    """Persist a CLI-backed branch for a resume-path test."""
+    from lionagi import Branch, iModel
+
+    branch = Branch(
+        chat_model=iModel(
+            provider=provider,
+            endpoint="query_cli",
+            model="gemini-3.5-flash",
+            api_key="dummy",
+        )
+    )
+    branch_id = str(branch.id)
+    path = directory / f"{branch_id}.json"
+    path.write_text(json.dumps(branch.to_dict()))
+    return branch_id, path
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ANTIGRAVITY_PROVIDERS)
+async def test_direct_antigravity_leg_rejects_a_named_nonempty_mcp_set(spawn, tmp_path, provider):
+    from lionagi.cli.agent import _run_agent
+
+    named = _write_mcp_config(tmp_path / "named", {"named": {"command": "server"}})
+
+    with pytest.raises(ConfigurationError, match="Antigravity.*does not support MCP"):
+        await _run_agent(
+            f"{provider}/gemini-3.5-flash",
+            "go",
+            mcp_config=str(named),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["GEMINI-CLI", "Gemini_Code", "gemini-Cli", " gemini-cli "])
+async def test_a_provider_spelling_that_resolves_is_a_spelling_the_guard_recognises(
+    spawn, tmp_path, provider
+):
+    """Endpoint resolution case-folds the provider, so the guard must too.
+
+    A spelling that differs only in case still resolves to the Antigravity CLI and
+    still runs, so matching the exact lowercase spellings would let the very
+    omission this rejection exists to prevent through under a capitalised name.
+    """
+    from lionagi.cli.agent import _run_agent
+
+    named = _write_mcp_config(tmp_path / "named", {"named": {"command": "server"}})
+
+    with pytest.raises(ConfigurationError, match="Antigravity.*does not support MCP"):
+        await _run_agent(
+            f"{provider}/gemini-3.5-flash",
+            "go",
+            mcp_config=str(named),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ANTIGRAVITY_PROVIDERS)
+async def test_resumed_antigravity_leg_rejects_a_named_nonempty_mcp_set(
+    spawn, tmp_path, monkeypatch, provider
+):
+    import lionagi.cli.agent as agent_mod
+
+    branch_id, branch_path = _write_cli_branch(tmp_path, provider)
+    monkeypatch.setattr(agent_mod, "find_branch", lambda _bid: ("run-x", branch_path))
+    named = _write_mcp_config(tmp_path / "named", {"named": {"command": "server"}})
+
+    with pytest.raises(ConfigurationError, match="Antigravity.*does not support MCP"):
+        await agent_mod._run_agent(
+            None,
+            "go",
+            resume=branch_id,
+            mcp_config=str(named),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ANTIGRAVITY_PROVIDERS)
+@pytest.mark.parametrize("resumed", [False, True], ids=["direct", "resumed"])
+@pytest.mark.parametrize(
+    "config_case",
+    ["discovered", "explicit-empty", "disabled"],
+)
+async def test_antigravity_leg_keeps_non_requested_mcp_sets_non_failing(
+    spawn,
+    tmp_path,
+    monkeypatch,
+    provider,
+    resumed,
+    config_case,
+):
+    import lionagi.cli.agent as agent_mod
+
+    model = f"{provider}/gemini-3.5-flash"
+    kwargs = {}
+    if resumed:
+        branch_id, branch_path = _write_cli_branch(tmp_path, provider)
+        monkeypatch.setattr(agent_mod, "find_branch", lambda _bid: ("run-x", branch_path))
+        model = None
+        kwargs["resume"] = branch_id
+
+    if config_case == "explicit-empty":
+        kwargs["mcp_config"] = str(_write_mcp_config(tmp_path / "empty", {}))
+    elif config_case == "disabled":
+        kwargs["no_mcp_config"] = True
+
+    result, _provider, _branch_id, status, _session_id = await agent_mod._run_agent(
+        model,
+        "go",
+        **kwargs,
+    )
+
+    assert result == "done"
+    assert status == "completed"
 
 
 @pytest.mark.asyncio

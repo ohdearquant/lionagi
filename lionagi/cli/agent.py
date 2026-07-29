@@ -496,6 +496,14 @@ async def _run_agent(
             "or use --resume / --continue-last to reopen an existing one."
         )
 
+    from lionagi.agent.factory import _reject_unforwardable_explicit_mcp
+
+    _reject_unforwardable_explicit_mcp(
+        provider,
+        named_explicitly=mcp_resolution.explicit,
+        asked_for_servers=bool(mcp_resolution.servers),
+    )
+
     if branch is None:
         # Codex blocks tool calls until file access is enabled. Surface this
         # even without verbose output; CLI or profile approval flags suppress it.
@@ -527,8 +535,13 @@ async def _run_agent(
         # message waits for the request that call produces (below).
         takes_create_agent_path = preset == "coding" or has_role_key
         if not takes_create_agent_path:
+            from lionagi.agent.factory import request_kwargs_carry_forwarded_mcp
+
+            # Read the request build_chat_model produced: the two transports
+            # put the set in different places, and a provider name is what got
+            # this wrong before.
             built_config = getattr(getattr(chat_model, "endpoint", None), "config", None)
-            forwarded = bool(built_config and "mcp_servers" in built_config.kwargs)
+            forwarded = request_kwargs_carry_forwarded_mcp(getattr(built_config, "kwargs", None))
             _report_mcp_resolution(mcp_resolution, provider=provider, cwd=cwd, forwarded=forwarded)
 
         # Opt-in profile `role:` key switches a plain `-a <profile>` leg onto
@@ -567,6 +580,7 @@ async def _run_agent(
                 log_config=DataLoggerConfig(auto_save_on_exit=False),
                 load_settings=False,
                 resolved_mcp_servers=mcp_resolution.servers,
+                resolved_mcp_explicit=mcp_resolution.explicit,
             )
             # The hand-over happened inside create_agent, so the request it
             # produced is the only honest source for what this leg is getting.
@@ -645,13 +659,26 @@ async def _run_agent(
             cfg.update(PROVIDER_FAST_KWARGS.get(provider, {}))
         # A resumed leg re-spawns a CLI child, so it needs the server set handed
         # to it just as a new one does; the persisted branch carries the model,
-        # not the caller's directory.
-        if mcp_resolution.servers is not None and provider in _CLAUDE_PROVIDER_NAMES:
-            cfg["mcp_servers"] = mcp_resolution.servers
+        # not the caller's directory. Which providers can be given a set, and
+        # over which transport, is not this call site's question to answer.
+        from lionagi.agent.factory import (
+            apply_forwarded_mcp_servers,
+            request_kwargs_carry_forwarded_mcp,
+        )
+
+        apply_forwarded_mcp_servers(
+            cfg,
+            mcp_resolution.servers,
+            provider=provider,
+            exclusive=not mcp_resolution.servers,
+        )
         # A resumed leg re-spawns from the persisted request, which is the only
         # thing that decides what it carries — read the answer off it.
         _report_mcp_resolution(
-            mcp_resolution, provider=provider, cwd=cwd, forwarded="mcp_servers" in cfg
+            mcp_resolution,
+            provider=provider,
+            cwd=cwd,
+            forwarded=request_kwargs_carry_forwarded_mcp(cfg),
         )
 
     # Add the profile system prompt for every leg EXCEPT one whose branch carries

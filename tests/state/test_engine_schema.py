@@ -336,6 +336,42 @@ async def test_metadata_check_constraint_parity_vs_schema_sql(tmp_path, sqlite_m
     assert not drift, f"CHECK enum drift:\n{drift}"
 
 
+async def test_python_enum_sets_match_schema_sql_checks(tmp_path):
+    """The Python vocabularies the writers validate against carry the same values
+    as the CHECK constraints in schema.sql.
+
+    The metadata-parity guard above covers the SQLAlchemy mirror only, so a value
+    added to schema.sql and the mirror alone would be legal in the database and
+    still refused by ``create_session`` — accepted by the store, rejected by the
+    only code that writes to it.
+    """
+    import re
+    import sqlite3
+
+    from lionagi.state.db import _INVOCATION_KINDS, _SCHEMA_PATH, _SOURCE_KINDS
+
+    raw_db = tmp_path / "python_enum_parity.db"
+    schema_text = _SCHEMA_PATH.read_text()
+    lines = [ln for ln in schema_text.splitlines() if not ln.strip().upper().startswith("PRAGMA")]
+    conn = sqlite3.connect(str(raw_db))
+    conn.executescript("\n".join(lines))
+    sessions_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='sessions'"
+    ).fetchone()[0]
+    conn.close()
+
+    in_re = re.compile(r"(\w+)\s+IN\s*\(([^)]+)\)", re.IGNORECASE)
+    found = {
+        col: frozenset(p.strip().strip("'").strip() for p in vals.split(",") if p.strip())
+        for col, vals in in_re.findall(sessions_sql)
+    }
+
+    expected = {"source_kind": _SOURCE_KINDS, "invocation_kind": _INVOCATION_KINDS}
+    # Fail closed: a column whose CHECK the regex missed must not read as parity.
+    assert set(expected) <= set(found), f"no CHECK parsed for {set(expected) - set(found)}"
+    assert {col: found[col] for col in expected} == expected
+
+
 async def test_metadata_unique_enforcement_present(sqlite_meta_engine):
     """The three natural-key uniqueness rules are enforced (constraint or index)."""
     expected = {
@@ -402,3 +438,81 @@ def _create_in_schema(sync_conn, schema_name: str) -> None:
     for table in _meta.sorted_tables:
         table.tometadata(scoped)
     scoped.create_all(sync_conn, checkfirst=True)
+
+
+# ── WAL-reset precondition ────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("version_info", "fixed"),
+    [
+        ((3, 6, 23), True),  # predates WAL; journal_mode=WAL is not honoured
+        ((3, 7, 0), False),  # first WAL release, first affected release
+        ((3, 44, 5), False),
+        ((3, 44, 6), True),  # backport branch
+        ((3, 45, 0), False),  # later than the 3.44 backport, still unfixed
+        ((3, 46, 0), False),
+        ((3, 50, 6), False),
+        ((3, 50, 7), True),  # backport branch
+        ((3, 51, 0), False),
+        ((3, 51, 2), False),  # last affected release
+        ((3, 51, 3), True),  # fix
+        ((3, 53, 0), True),
+    ],
+)
+def test_has_wal_reset_fix(version_info, fixed):
+    from lionagi.state.engine import has_wal_reset_fix
+
+    assert has_wal_reset_fix(version_info) is fixed
+
+
+class _RecordingLog:
+    def __init__(self):
+        self.warnings = []
+
+    def warning(self, msg, *args):
+        self.warnings.append(msg % args if args else msg)
+
+
+def _engine_with_recorded_log(monkeypatch, tmp_path, version_info, version_str):
+    import lionagi.state.engine as engine_mod
+
+    recorder = _RecordingLog()
+    monkeypatch.setattr(engine_mod, "_log", recorder)
+    monkeypatch.setattr(engine_mod, "_wal_reset_warning_emitted", False)
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", version_info)
+    monkeypatch.setattr(sqlite3, "sqlite_version", version_str)
+    engine = engine_mod.make_engine(f"sqlite+aiosqlite:///{tmp_path / 'v.db'}")
+    return recorder, engine
+
+
+async def test_make_engine_warns_on_unfixed_sqlite(monkeypatch, tmp_path):
+    """Enabling WAL on a library that still carries the WAL-reset race is
+    reported, not assumed away."""
+    recorder, engine = _engine_with_recorded_log(monkeypatch, tmp_path, (3, 46, 0), "3.46.0")
+    try:
+        assert len(recorder.warnings) == 1
+        assert "3.46.0" in recorder.warnings[0]
+        assert "3.51.3" in recorder.warnings[0]
+    finally:
+        await engine.dispose()
+
+
+async def test_make_engine_warns_once_per_process(monkeypatch, tmp_path):
+    import lionagi.state.engine as engine_mod
+
+    recorder, engine = _engine_with_recorded_log(monkeypatch, tmp_path, (3, 46, 0), "3.46.0")
+    second = engine_mod.make_engine(f"sqlite+aiosqlite:///{tmp_path / 'v2.db'}")
+    try:
+        assert len(recorder.warnings) == 1
+    finally:
+        await engine.dispose()
+        await second.dispose()
+
+
+async def test_make_engine_silent_on_fixed_sqlite(monkeypatch, tmp_path):
+    recorder, engine = _engine_with_recorded_log(monkeypatch, tmp_path, (3, 51, 3), "3.51.3")
+    try:
+        assert recorder.warnings == []
+    finally:
+        await engine.dispose()

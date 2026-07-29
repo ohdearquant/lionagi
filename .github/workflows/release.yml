@@ -74,11 +74,21 @@ jobs:
     - name: Set up QEMU
       uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8  # v4
 
+    # Setting up buildx pulls the BuildKit image from Docker Hub, so this step
+    # depends on a registry outside this project. A transient 502 there is what
+    # cost the 0.31.0 release its image. One retry covers the transient case; a
+    # sustained outage still fails the job, which is the right outcome.
     - name: Set up Docker Buildx
+      id: buildx
+      continue-on-error: true
+      uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4
+
+    - name: Set up Docker Buildx (second attempt)
+      if: steps.buildx.outcome == 'failure'
       uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4
 
     - name: Log in to GitHub Container Registry
-      uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
+      uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c  # v4
       with:
         registry: ghcr.io
         username: ${{ github.actor }}
@@ -100,3 +110,69 @@ jobs:
           ghcr.io/ohdearquant/lion-studio:${{ steps.version.outputs.version }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+
+  # Reads the tag back from the registry rather than trusting the push step's
+  # exit, because those are different claims and the second is the one a user
+  # depends on. Its own job so it still runs when the docker job failed or was
+  # cancelled, which is how both missing images happened, and so an absent image
+  # fails something whose name says what is missing.
+  verify-image:
+    needs: docker
+    if: ${{ always() && needs.docker.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    steps:
+    - name: Extract version from tag
+      id: version
+      run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+    - name: Verify the image is in the registry
+      env:
+        VERSION: ${{ steps.version.outputs.version }}
+      run: |
+        set -euo pipefail
+        repo=ohdearquant/lion-studio
+
+        list_tags() {
+          local token
+          token="$(curl -sSf "https://ghcr.io/token?scope=repository:${repo}:pull" | jq -r '.token')" || return 1
+          curl -sSf -H "Authorization: Bearer ${token}" \
+            "https://ghcr.io/v2/${repo}/tags/list" | jq -r '.tags[]?'
+        }
+
+        query_ok=0
+        count=0
+
+        # A newly pushed tag can take a moment to appear, so give it a few tries
+        # before calling it absent.
+        for attempt in 1 2 3 4 5; do
+          if tags="$(list_tags)"; then
+            query_ok=1
+          else
+            query_ok=0
+            tags=""
+          fi
+          count="$(printf '%s\n' "${tags}" | grep -c . || true)"
+
+          # Positive control. An absence only means something if the query that
+          # reported it finished and returned some other tag. Both halves are
+          # needed: an empty listing and a missing tag read identically, and a
+          # read that dies partway leaves output behind, so output alone would
+          # let a broken read be reported as a missing image. Status and content
+          # are separate claims and this asks for both.
+          if [ "${query_ok}" -eq 0 ] || [ "${count}" -eq 0 ]; then
+            echo "Attempt ${attempt}: could not list tags for ${repo}."
+          elif printf '%s\n' "${tags}" | grep -qxF "${VERSION}"; then
+            echo "ghcr.io/${repo}:${VERSION} is present; ${count} tags listed."
+            exit 0
+          else
+            echo "Attempt ${attempt}: ${count} tags listed, ${VERSION} not among them."
+          fi
+          sleep 15
+        done
+
+        if [ "${query_ok}" -eq 0 ] || [ "${count}" -eq 0 ]; then
+          echo "::error::Could not list tags for ${repo}. This check cannot tell a missing image from a broken read, so it is failing rather than passing."
+        else
+          echo "::error::ghcr.io/${repo}:${VERSION} is not in the registry. The registry answered with ${count} other tags, so this is the image missing rather than the check failing. Check the docker job for why the push did not land."
+        fi
+        exit 1

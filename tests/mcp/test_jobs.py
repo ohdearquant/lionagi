@@ -9,12 +9,16 @@ on the argv/env the engine builds and on the on-disk job records it reads back.
 from __future__ import annotations
 
 import builtins
+import errno
+import json
+import math
 import os
 import signal
 from pathlib import Path
 
 import pytest
 
+from lionagi.cli import _mcp_resolve
 from lionagi.mcp import config, jobs
 
 
@@ -158,13 +162,19 @@ def test_status_running_then_terminal(sandbox, monkeypatch):
     _live_process(monkeypatch)
     assert jobs.status(rid)["status"] == "running"
 
-    # pid gone, no terminal record captured -> exited
-    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
-    assert jobs.status(rid)["status"] == "exited"
-
-    # authoritative terminal recorded by the notify hook
+    # authoritative terminal recorded by the notify hook, which runs while the
+    # run's own process is still there to run it
     jobs.mark_terminal(rid, "completed")
-    assert jobs.status(rid)["status"] == "completed"
+    st = jobs.status(rid)
+    assert st["status"] == "completed"
+    assert st["terminal"] is True and st["outcome"] == "succeeded"
+
+    # the process going away afterwards adds nothing and takes nothing away:
+    # the end is on the record, and that is what every reader answers from
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    st = jobs.status(rid)
+    assert st["status"] == "completed"
+    assert st["terminal"] is True and st["outcome"] == "succeeded"
 
 
 def test_pid_alive_reaps_zombie_child():
@@ -267,7 +277,17 @@ def _live_process(monkeypatch, created: float = _SPAWNED_AT):
 
 
 def _identity_record(pid: int = 4242, pgid: int = 7777, created: float = _SPAWNED_AT, **extra):
-    """A job record carrying the process identity submit() now writes."""
+    """A job record carrying the process identity submit() now writes.
+
+    Some of these deliberately carry a start time that cannot act as one, to ask
+    what a *reader* does with it — and among those are the non-finite floats the
+    writer now refuses, because json.dumps would put the bare token NaN or
+    Infinity on disk. A reader still has to survive one: records written before
+    that refusal existed are on disk already, and the job store is shared with
+    whatever else writes into it. So a record the writer will not produce is
+    published directly here, and every record the writer *can* produce still goes
+    through it, which is what keeps this fixture's shape the production shape.
+    """
     rec = {
         "run_id": jobs.new_run_id(),
         "pid": pid,
@@ -278,7 +298,12 @@ def _identity_record(pid: int = 4242, pgid: int = 7777, created: float = _SPAWNE
         "log": None,
     }
     rec.update(extra)
-    jobs._write_job(rec)
+    if isinstance(created, float) and not math.isfinite(created):
+        d = config.job_dir(rec["run_id"])
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "job.json").write_text(json.dumps(rec, indent=2))
+    else:
+        jobs._write_job(rec)
     return rec["run_id"]
 
 
@@ -2215,7 +2240,7 @@ def test_mark_terminal_and_list(sandbox, monkeypatch):
     monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **k: _FakeProc(4242))
     rid = jobs.submit("agent", [], prompt="x")["run_id"]
 
-    job = jobs.mark_terminal(rid, "failed")
+    job = jobs.mark_terminal(rid, "failed").record
     assert job["status"] == "failed" and job["finished_at"]
     assert job["cli_status"] == "failed"
 
@@ -2615,3 +2640,647 @@ def test_an_artifact_whose_metadata_is_refused_does_make_the_listing_unreadable(
 
     assert found == ["kept.txt"]
     assert state == "unreadable"
+
+
+def _terminal_run(outcome, status="completed"):
+    """A finished run carrying *outcome* as its recorded delivery result."""
+    rid = jobs.new_run_id()
+    jobs._write_job(
+        {
+            "run_id": rid,
+            "status": status,
+            "kind": "agent",
+            "pid": None,
+            "log": None,
+            "finished_at": "2026-01-01T00:00:00Z" if status == "completed" else None,
+        }
+    )
+    if outcome is not None:
+        jobs.record_notify_delivery(rid, outcome)
+    return rid
+
+
+_DELIVERED = {"attempted": True, "ok": True, "exit_code": 0, "error": None, "command": "notify"}
+_EXITED_NONZERO = {
+    "attempted": True,
+    "ok": False,
+    "exit_code": 1,
+    "error": None,
+    "command": "notify",
+}
+_NEVER_STARTED = {
+    "attempted": True,
+    "ok": False,
+    "exit_code": None,
+    "error": "OSError",
+    "command": "notify",
+}
+_REFUSED_BEFORE_RUNNING = {
+    "attempted": False,
+    "ok": False,
+    "exit_code": None,
+    "error": "delivery_command_is_empty",
+    "command": None,
+}
+_NOTHING_CONFIGURED = {"attempted": False}
+
+
+def test_listing_tells_a_failed_notice_apart_from_a_delivered_one(sandbox):
+    """The listing distinguishes a run whose notice failed from one that is fine.
+
+    This is the surface a caller polls while waiting on several runs. Reporting
+    only the run status there leaves a finished run whose notice never went out
+    looking exactly like a run still working — the failure resolving in the
+    reassuring direction, which is the worst way for it to resolve.
+    """
+    delivered = _terminal_run(_DELIVERED)
+    exited_nonzero = _terminal_run(_EXITED_NONZERO)
+    never_started = _terminal_run(_NEVER_STARTED)
+    refused = _terminal_run(_REFUSED_BEFORE_RUNNING)
+
+    states = {j["run_id"]: j["notify_delivery_state"] for j in jobs.list_jobs()}
+    assert states[delivered] == "delivered"
+    # every way a configured notifier came to nothing reads the same here: to a
+    # caller waiting on the notice they are one fact, and status carries the rest
+    assert states[exited_nonzero] == "failed"
+    assert states[never_started] == "failed"
+    assert states[refused] == "failed"
+
+
+def test_listing_does_not_read_an_absent_notifier_as_a_failure(sandbox):
+    """Silence that was chosen, and a run not yet finished, are not failures.
+
+    Nothing configured is the documented default, so a run that asked for no
+    notice must never appear alongside the ones whose notice was lost.
+    """
+    nothing_configured = _terminal_run(_NOTHING_CONFIGURED)
+    still_running = _terminal_run(None, status="running")
+    delivered = _terminal_run(_DELIVERED)
+    failed = _terminal_run(_EXITED_NONZERO)
+
+    states = {j["run_id"]: j["notify_delivery_state"] for j in jobs.list_jobs()}
+    assert states[nothing_configured] == "none"
+    assert states[still_running] == "none"
+    # the three outcomes a caller branches on are three different words
+    assert len({states[nothing_configured], states[delivered], states[failed]}) == 3
+
+
+def test_listing_reads_a_damaged_delivery_record_as_no_delivery(sandbox):
+    """A record whose delivery field is not an object must not break the listing.
+
+    One damaged record cannot be allowed to cost the caller the runs beside it,
+    and an unreadable field is not evidence that a notice failed.
+    """
+    rid = jobs.new_run_id()
+    jobs._write_job(
+        {
+            "run_id": rid,
+            "status": "completed",
+            "kind": "agent",
+            "pid": None,
+            "log": None,
+            "notify_delivery": "delivered!",
+        }
+    )
+
+    assert jobs.list_jobs()[0]["notify_delivery_state"] == "none"
+
+
+def test_status_still_reports_the_whole_delivery_outcome(sandbox):
+    """status is the diagnosis surface and is unchanged: it carries the object.
+
+    The listing's collapsed state is an addition to the listing, not a
+    replacement for what status has always reported.
+    """
+    rid = _terminal_run(_EXITED_NONZERO)
+
+    st = jobs.status(rid)
+    assert st["notify_delivery"] == _EXITED_NONZERO
+    # and the collapsed form stays out of status: one field, one meaning
+    assert "notify_delivery_state" not in st
+
+
+def _popen_that_writes_the_runs_own_line(runs_written: list):
+    """A stand-in child that writes one line down the descriptor it was handed.
+
+    The descriptor is what a collision is felt through — two runs holding a
+    writable handle to one file — so the double has to use it rather than only
+    record it.
+    """
+
+    def fake_popen(argv, **kw):
+        line = kw["env"][config.RUN_ID_ENV_VAR]
+        kw["stdout"].write(f"{line} wrote this\n".encode())
+        runs_written.append(line)
+        return _FakeProc()
+
+    return fake_popen
+
+
+def test_a_second_submission_never_lands_on_a_running_runs_directory(sandbox, monkeypatch):
+    """An id already taken costs a retry, not the run that holds it.
+
+    A run id is a timestamp to the second plus six random hex digits, so two
+    submissions in one second can mint the same one. What that used to mean was
+    not a collision of names but a collision of runs: the second wrote its record
+    over the first's and its child wrote into the first's log, and afterwards
+    nothing could tell the two apart or say what the first one had been.
+
+    Asserted on what an operator can see — two ids, two directories, each log
+    holding only its own run's output and each record naming only its own run.
+    How the retry gets there is this function's business and is not asserted.
+    """
+    written: list[str] = []
+    monkeypatch.setattr(jobs.subprocess, "Popen", _popen_that_writes_the_runs_own_line(written))
+
+    # Positive control first: ordinary submissions, ids that differ on their own.
+    # Without it, a change that refused every second submission — or handed every
+    # one of them a fresh id it never used — would read as this test passing.
+    minted = iter(["20260101T000000-aaaaaa", "20260101T000000-bbbbbb"])
+    monkeypatch.setattr(jobs, "new_run_id", lambda: next(minted))
+    first = jobs.submit("agent", [], label="first")["run_id"]
+    second = jobs.submit("agent", [], label="second")["run_id"]
+
+    assert first != second
+    for rid, label in ((first, "first"), (second, "second")):
+        assert (config.JOBS_DIR / rid).is_dir()
+        assert (config.JOBS_DIR / rid / "console.log").read_text() == f"{rid} wrote this\n"
+        assert jobs._read_job(rid)["label"] == label
+
+    # Now the collision: the next submission mints an id that is already taken
+    # before it mints one that is not.
+    minted = iter(["20260101T000000-bbbbbb", "20260101T000000-cccccc"])
+    monkeypatch.setattr(jobs, "new_run_id", lambda: next(minted))
+    third = jobs.submit("agent", [], label="third")["run_id"]
+
+    assert third not in (first, second)
+    assert (config.JOBS_DIR / third / "console.log").read_text() == f"{third} wrote this\n"
+    assert jobs._read_job(third)["label"] == "third"
+    # The run whose id was taken is untouched: its log holds its own line alone
+    # and its record still says whose it is.
+    assert (config.JOBS_DIR / second / "console.log").read_text() == f"{second} wrote this\n"
+    assert jobs._read_job(second)["label"] == "second"
+    assert written == [first, second, third]
+
+
+def test_a_submission_that_is_refused_leaves_no_directory_behind(sandbox, monkeypatch):
+    """The reservation is taken back when the submission does not happen.
+
+    Every directory under the jobs root is a job to the listing, so one left
+    behind by a rejected submission is a job with no kind that never finishes.
+    """
+
+    def refuse(argv, env, *, kind):
+        raise ValueError("argv is too long for this platform")
+
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-dddddd")
+    monkeypatch.setattr(jobs, "_reject_oversized_argv", refuse)
+
+    with pytest.raises(ValueError):
+        jobs.submit("agent", [], prompt="x")
+
+    assert not (config.JOBS_DIR / "20260101T000000-dddddd").exists()
+    assert jobs.list_jobs() == []
+
+
+def test_a_submission_that_fails_between_its_writes_leaves_no_job_behind(sandbox, monkeypatch):
+    """A submission that gets partway through writing is still not a job.
+
+    The refusal above happens before anything is written, so an empty directory
+    is all it leaves. A submission that writes its prompt and then fails to write
+    its MCP snapshot leaves a directory with a file in it, and giving that back
+    takes more than a removal that only works on an empty one. Both leave the
+    same thing behind for an operator: a listed job with no kind that never
+    finishes, which is why the listing is what this asserts on.
+    """
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda argv, **kw: _FakeProc(4242))
+    monkeypatch.setattr(
+        _mcp_resolve,
+        "resolve_spawn_mcp_servers",
+        lambda launch_dir: _mcp_resolve.McpResolution(
+            servers={"a-server": {"command": "true"}},
+            reason=None,
+            source=Path("/somewhere/.mcp.json"),
+            searched_from=Path("/somewhere"),
+        ),
+    )
+
+    # Positive control: the same call, unobstructed. Without it a change that
+    # refused every submission of this shape would read as this test passing.
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-eeeeee")
+    control = jobs.submit("agent", [], prompt="x", label="control")["run_id"]
+    assert [(j["run_id"], j["kind"]) for j in jobs.list_jobs()] == [(control, "agent")]
+
+    # Now fail the second of the two writes. The first has already landed, so
+    # what is left behind is a directory that is not empty.
+    prompt_was_already_written: list[bool] = []
+    real_write_text = Path.write_text
+
+    def refuse_the_snapshot(self, *args, **kwargs):
+        if self.name == "mcp-servers.json":
+            prompt_was_already_written.append((self.parent / "prompt.txt").exists())
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", refuse_the_snapshot)
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-ffffff")
+
+    with pytest.raises(OSError):
+        jobs.submit("agent", [], prompt="x", label="interrupted")
+
+    # The failure landed after the first write, not before it — otherwise this
+    # would be the empty-directory case the test above already covers.
+    assert prompt_was_already_written == [True]
+    assert [(j["run_id"], j["kind"]) for j in jobs.list_jobs()] == [(control, "agent")]
+
+
+def test_a_submission_whose_record_never_publishes_leaves_no_job_behind(sandbox, monkeypatch):
+    """The record is the last thing that can strand a reservation.
+
+    The two writes above it are covered; the write that publishes the record is
+    the one that decides whether any of it was a job at all. When it fails there
+    is no record to mark and no child to mark it, so what is left is the same
+    directory with no kind that never finishes — reached one step later than the
+    other failures, and given back the same way.
+    """
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda argv, **kw: _FakeProc(4242))
+
+    # Positive control: the same call, unobstructed. Without it a change that
+    # refused every submission of this shape would read as this test passing.
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-aaabbb")
+    control = jobs.submit("agent", [], prompt="x", label="control")["run_id"]
+    assert [(j["run_id"], j["kind"]) for j in jobs.list_jobs()] == [(control, "agent")]
+
+    # The prompt has already been written by the time the record is published,
+    # so this is the non-empty directory case, not the empty one.
+    prompt_was_already_written: list[bool] = []
+    real_replace = os.replace
+
+    def refuse_to_publish(src, dst, *args, **kwargs):
+        if str(dst).endswith("job.json"):
+            prompt_was_already_written.append((Path(dst).parent / "prompt.txt").exists())
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", refuse_to_publish)
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-cccddd")
+
+    with pytest.raises(OSError):
+        jobs.submit("agent", [], prompt="x", label="unpublished")
+
+    assert prompt_was_already_written == [True]
+    assert not (config.JOBS_DIR / "20260101T000000-cccddd").exists()
+    assert [(j["run_id"], j["kind"]) for j in jobs.list_jobs()] == [(control, "agent")]
+
+
+def test_an_interrupted_publication_leaves_nothing_that_blocks_the_cleanup(sandbox, monkeypatch):
+    """An interrupt is one of the failures the reservation is given back for.
+
+    Giving it back ends in an rmdir, which refuses a directory holding anything
+    at all — so the staging file the record write uses to be atomic is the one
+    thing able to defeat the cleanup that runs because that write failed. The
+    two have to answer for the same set of failures, which is why this asserts
+    on an exception outside the errno family.
+    """
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda argv, **kw: _FakeProc(4242))
+
+    # Positive control: the same call, unobstructed.
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-eee111")
+    control = jobs.submit("agent", [], prompt="x", label="control")["run_id"]
+    assert [(j["run_id"], j["kind"]) for j in jobs.list_jobs()] == [(control, "agent")]
+
+    real_replace = os.replace
+
+    def interrupt_the_publication(src, dst, *args, **kwargs):
+        if str(dst).endswith("job.json"):
+            raise KeyboardInterrupt
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", interrupt_the_publication)
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-fff222")
+
+    with pytest.raises(KeyboardInterrupt):
+        jobs.submit("agent", [], prompt="x", label="interrupted")
+
+    assert not (config.JOBS_DIR / "20260101T000000-fff222").exists()
+    assert [(j["run_id"], j["kind"]) for j in jobs.list_jobs()] == [(control, "agent")]
+
+
+def test_a_failed_cleanup_does_not_answer_in_place_of_the_failure_that_caused_it(
+    sandbox, monkeypatch
+):
+    """Tidying up after a failure never becomes the failure a caller is told about.
+
+    The staging removal runs inside a handler that catches everything, so its own
+    error would otherwise take the place of the one that sent us there: a caller
+    waiting on an interrupt would be handed whatever the tidying refused with. The
+    file may then survive, which is the same trade the reservation give-back
+    already makes — a removal that fails leaves something nobody claimed, and that
+    is worth less than the error underneath it.
+    """
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda argv, **kw: _FakeProc(4242))
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-777aaa")
+
+    real_replace = os.replace
+    real_unlink = Path.unlink
+
+    def interrupt_the_publication(src, dst, *args, **kwargs):
+        if str(dst).endswith("job.json"):
+            raise KeyboardInterrupt
+        return real_replace(src, dst, *args, **kwargs)
+
+    def refuse_to_remove(self, *args, **kwargs):
+        if self.name.startswith(".job.json.") and self.name.endswith(".tmp"):
+            raise PermissionError(errno.EACCES, "cleanup denied")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", interrupt_the_publication)
+    monkeypatch.setattr(Path, "unlink", refuse_to_remove)
+
+    # The interrupt, not the PermissionError the tidying raised.
+    with pytest.raises(KeyboardInterrupt):
+        jobs.submit("agent", [], prompt="x", label="interrupted")
+
+
+def test_an_interrupt_arriving_during_cleanup_is_not_swallowed_by_it(sandbox, monkeypatch):
+    """Being asked to stop is not the same as a removal being refused.
+
+    The removal is allowed to fail without answering in place of the failure
+    underneath it, but only for the failures a filesystem actually produces. An
+    interrupt arriving while it runs is nobody's removal failing — it is a
+    request for the process to stop, and answering that with whatever the run
+    was already failing at loses the request entirely.
+    """
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda argv, **kw: _FakeProc(4242))
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-888bbb")
+
+    real_replace = os.replace
+    real_unlink = Path.unlink
+
+    def fail_the_publication(src, dst, *args, **kwargs):
+        if str(dst).endswith("job.json"):
+            raise ValueError("publication failed")
+        return real_replace(src, dst, *args, **kwargs)
+
+    def interrupt_during_removal(self, *args, **kwargs):
+        if self.name.startswith(".job.json.") and self.name.endswith(".tmp"):
+            raise KeyboardInterrupt
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", fail_the_publication)
+    monkeypatch.setattr(Path, "unlink", interrupt_during_removal)
+
+    # The interrupt, not the ValueError it arrived on top of.
+    with pytest.raises(KeyboardInterrupt):
+        jobs.submit("agent", [], prompt="x", label="interrupted-while-tidying")
+
+
+def test_discarding_a_reservation_removes_what_the_submission_wrote(sandbox):
+    """Both of the names a submission writes come back with the directory."""
+    d = config.JOBS_DIR / "20260101T000000-111111"
+    d.mkdir(parents=True)
+    (d / "prompt.txt").write_text("x")
+    (d / "mcp-servers.json").write_text("{}")
+
+    jobs._discard_reservation(d)
+
+    assert not d.exists()
+
+
+def test_a_failed_submission_does_not_delete_the_config_its_caller_named(
+    sandbox, tmp_path, monkeypatch
+):
+    """A caller's own MCP config is theirs, wherever they keep it.
+
+    Being named by a submission that failed does not make a file part of the
+    directory being given back, and the file a caller names is not under it.
+    """
+    callers_own_config = tmp_path / "elsewhere" / ".mcp.json"
+    callers_own_config.parent.mkdir()
+    callers_own_config.write_text('{"mcpServers": {}}')
+
+    def refuse(self, *args, **kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-333333")
+    monkeypatch.setattr(Path, "write_text", refuse)
+
+    with pytest.raises(OSError):
+        jobs.submit("agent", [], prompt="x", mcp_config=str(callers_own_config))
+
+    assert callers_own_config.read_text() == '{"mcpServers": {}}'
+    assert jobs.list_jobs() == []
+
+
+def test_discarding_a_reservation_refuses_a_directory_holding_anything_else(sandbox):
+    """The refusal is the safeguard, and nothing is checked ahead of it.
+
+    A directory with a run's own state in it survives being handed to this, so
+    the removal cannot cost a real job whatever sends us there.
+    """
+    d = config.JOBS_DIR / "20260101T000000-222222"
+    d.mkdir(parents=True)
+    (d / "prompt.txt").write_text("x")
+    (d / "console.log").write_bytes(b"a run wrote this\n")
+
+    jobs._discard_reservation(d)
+
+    assert (d / "console.log").read_bytes() == b"a run wrote this\n"
+
+
+def test_a_lock_that_cannot_be_taken_says_so_even_when_the_descriptor_will_not_close(
+    sandbox, monkeypatch
+):
+    """Failing to acquire the lock is a state, and tidying up cannot turn it into a raise.
+
+    Failing to create the lock file and failing to acquire it are the same fact —
+    this section was not entered — and both are reported as a state rather than
+    escaping a context manager whose contract is that it yields. Handing the
+    descriptor back is tidying up after that fact, so a close that refuses must
+    not become the answer: it is worth less than the fact underneath it, and it
+    would leave every caller of this receiving an exception where the contract
+    promises a state.
+    """
+    run_id = "20260101T000000-aaa111"
+    (config.JOBS_DIR / run_id).mkdir(parents=True)
+
+    taken = {}
+    real_close = os.close
+
+    def refuse_the_lock(fd):
+        taken["fd"] = fd
+        raise OSError(errno.EAGAIN, "Resource temporarily unavailable")
+
+    def refuse_to_close(fd):
+        if fd == taken.get("fd"):
+            real_close(fd)
+            raise OSError(errno.EBADF, "Bad file descriptor")
+        return real_close(fd)
+
+    monkeypatch.setattr(jobs, "_lock_fd", refuse_the_lock)
+    monkeypatch.setattr(os, "close", refuse_to_close)
+
+    with jobs._locked_job(run_id) as guard:
+        assert guard.record is None
+        assert guard.state == jobs.LOCK_UNAVAILABLE
+
+
+def test_releasing_the_lock_does_not_answer_in_place_of_what_the_body_raised(sandbox, monkeypatch):
+    """The body is where the failures a caller acts on come from.
+
+    A record that will not serialize, a write the filesystem refuses — those
+    reach a caller through this section, and a release that fails on the way out
+    is worth less than any of them. The release also runs on every exit, so an
+    unguarded one puts itself in front of every failure the section can produce
+    rather than in front of some rare one.
+    """
+    run_id = "20260101T000000-bbb222"
+    (config.JOBS_DIR / run_id).mkdir(parents=True)
+    jobs._write_job({"run_id": run_id, "kind": "agent", "status": "running"})
+
+    def refuse_to_release(fd):
+        raise OSError(errno.EBADF, "Bad file descriptor")
+
+    monkeypatch.setattr(jobs, "_unlock_fd", refuse_to_release)
+
+    # The body's ValueError, not the release's OSError.
+    with pytest.raises(ValueError, match="what the caller needs to see"):
+        with jobs._locked_job(run_id) as guard:
+            assert guard.record is not None
+            raise ValueError("what the caller needs to see")
+
+
+def test_an_interrupt_arriving_during_release_is_not_swallowed_and_still_closes(
+    sandbox, monkeypatch
+):
+    """Being asked to stop is not a release refusing, and the close is tried anyway.
+
+    The release is allowed to fail without answering for the body, but only for
+    what a filesystem refusal looks like. An interrupt delivered while it runs is
+    a request for the process to stop, and cleanup that absorbs it loses the
+    request entirely.
+
+    The close is still attempted on that way out, which is what this asserts: a
+    lock nobody released is worse than either failure, and process exit is the
+    only thing that puts a ceiling on how long it stays held. A ceiling is not a
+    schedule — the close attempted right here takes the lock down earlier every
+    time it succeeds, which is the whole reason for attempting it. Attempted is
+    all that can be asserted, here or anywhere: a close that raises may or may
+    not have released the descriptor, and there is no second call that could
+    settle it safely.
+    """
+    run_id = "20260101T000000-ccc333"
+    (config.JOBS_DIR / run_id).mkdir(parents=True)
+    jobs._write_job({"run_id": run_id, "kind": "agent", "status": "running"})
+
+    taken = {}
+    closed = []
+    real_lock = jobs._lock_fd
+    real_close = os.close
+
+    def remember_the_fd(fd):
+        taken["fd"] = fd
+        return real_lock(fd)
+
+    def stop_during_release(fd):
+        raise KeyboardInterrupt
+
+    def record_close(fd):
+        if fd == taken.get("fd"):
+            closed.append(fd)
+        return real_close(fd)
+
+    monkeypatch.setattr(jobs, "_lock_fd", remember_the_fd)
+    monkeypatch.setattr(jobs, "_unlock_fd", stop_during_release)
+    monkeypatch.setattr(os, "close", record_close)
+
+    # The interrupt, not the ValueError it arrived on top of.
+    with pytest.raises(KeyboardInterrupt):
+        with jobs._locked_job(run_id) as guard:
+            assert guard.record is not None
+            raise ValueError("the failure the interrupt arrived during")
+
+    assert closed == [taken["fd"]]
+
+
+def test_the_listing_says_which_running_rows_never_started(sandbox, monkeypatch):
+    """`running` is two different facts, and the listing has to tell them apart.
+
+    A record whose spawn was never attempted stays `running` on purpose — the
+    classifier refuses to resolve it by a bound that cannot tell a loaded machine
+    from a dead spawn. That refusal is right and it is exactly why the listing
+    must carry the spawn state: this is the surface a caller reads to answer what
+    is in flight, and a run that never began must not be counted there as one
+    doing work.
+    """
+    _live_process(monkeypatch)
+    never_started = jobs.new_run_id()
+    jobs._write_job(
+        {
+            "run_id": never_started,
+            "pid": None,
+            "kind": "agent",
+            "status": "running",
+            "spawn_state": "preparing",
+            "log": None,
+        }
+    )
+    working = jobs.new_run_id()
+    jobs._write_job(
+        {
+            "run_id": working,
+            "pid": 4242,
+            "pid_create_time": _SPAWNED_AT,
+            "kind": "agent",
+            "status": "running",
+            "spawn_state": "started",
+            "log": None,
+        }
+    )
+
+    listed = {j["run_id"]: j for j in jobs.list_jobs()}
+    assert set(listed) == {never_started, working}
+
+    # Both wear the same word, which is what makes the listing alone misleading.
+    assert listed[never_started]["status"] == listed[working]["status"] == "running"
+    # And the field that separates them is present without a per-run status call.
+    assert listed[never_started]["spawn_state"] == "preparing"
+    assert listed[working]["spawn_state"] == "started"
+
+
+def test_a_row_that_names_no_spawn_phase_is_not_read_as_never_started(sandbox, monkeypatch):
+    """Null is "no phase this listing can vouch for", not "never attempted".
+
+    A record written before the field existed reports null. A record carrying a
+    phase this code does not recognise reports that value verbatim, because the
+    listing repeats what the record says rather than judging it. Neither may be
+    mistaken for the phase that genuinely means never-attempted, which names
+    itself.
+    """
+    _live_process(monkeypatch)
+    legacy = jobs.new_run_id()
+    jobs._write_job(
+        {"run_id": legacy, "pid": None, "kind": "agent", "status": "running", "log": None}
+    )
+    junk = jobs.new_run_id()
+    jobs._write_job(
+        {
+            "run_id": junk,
+            "pid": None,
+            "kind": "agent",
+            "status": "running",
+            "spawn_state": "starting?",
+            "log": None,
+        }
+    )
+
+    listed = {j["run_id"]: j for j in jobs.list_jobs()}
+    # A record with no phase in it says so, and says nothing more.
+    assert listed[legacy]["spawn_state"] is None
+    assert listed[legacy]["record_state"] == "ok"
+    # An unrecognised value is passed through rather than laundered into a known
+    # phase, so a caller can see that the record says something it should not.
+    assert listed[junk]["spawn_state"] == "starting?"
+    # Neither is the value that means never-attempted.
+    assert listed[legacy]["spawn_state"] != "preparing"
+    assert listed[junk]["spawn_state"] != "preparing"

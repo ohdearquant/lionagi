@@ -25,7 +25,7 @@ worker.
 | `li monitor run ID...` | Wait for scheduled runs and their chains; optionally keep watching |
 | `li agent status [ID]` | Read stable session/invocation status, optionally as JSON |
 | `li o ctl {status,pause,resume,msg}` | Inspect or steer a live flow by ID |
-| `li kill ID` | Terminate one running entity or sweep stale processes; play kills also reap the linked worker chain; show ids are not directly killable ([details](#li-kill)) |
+| `li kill ID` | Terminate one running entity or sweep stale processes; play kills cannot reach their workers and exit non-zero saying so; show ids are not directly killable ([details](#li-kill)) |
 
 ### Reuse, coordination, and operation
 
@@ -550,7 +550,7 @@ already dead. Source: `cli/kill.py` (`add_kill_subparser`).
 
 ```bash
 li kill abc123                        # kill by id prefix
-li kill <play-id>                     # also reaps the play's linked worker session
+li kill <session-id>                  # stop a worker process
 li kill abc123 --reason 'stuck'
 li kill abc123 --recursive            # kill + direct children (session -> invocation)
 li kill --all-stale                   # sweep dead-PID sessions/invocations
@@ -569,10 +569,18 @@ li kill --all-stale --dry-run
 | `--grace SECS` | 5.0 | Wait after SIGTERM before escalating to SIGKILL |
 
 **`--recursive` scope boundary.** Recursion only reaches PID-bearing workers,
-and it stops at the play level:
+and an orchestrator row reaches them only through a link it recorded:
 
-- Killing a **play** always reaps its linked worker session (and that
-  session's invocation), with or without `--recursive`.
+- Killing a **play** reaches its worker chain only if the play row records the
+  session it started, in `plays.session_id`. One path binds that column: the
+  Studio show importer, which resolves the session by name when it mirrors a
+  show directory. A play created by a live run leaves it unset, and a worker
+  session stores no play reference either, so there is no key to resolve those
+  workers by. In that case the kill marks the play row `blocked`, prints an
+  error saying no worker was stopped, and **exits 1** — a play kill never
+  reports success it did not achieve. Kill the worker session ids directly
+  (`li monitor` lists them). `--recursive` is not needed for either case: a
+  play row carries no PID of its own, so resolving its workers is the kill.
 - Killing a **session** with `--recursive` also cancels its linked invocation.
 - A **show** id cannot be killed directly today: only `running` rows are
   killable, and show rows persist as `active` (never `running`), so
@@ -581,9 +589,13 @@ and it stops at the play level:
 
 To stop everything under a show, kill the play id or session id directly
 (`li monitor <show-id>` lists its plays). `--all-stale` covers the abandoned
-case: a play whose stale worker session is swept is cancelled with it, and a
-show row is cancelled only once it is older than `--threshold` **and** all of
-its plays are terminal.
+case only as far as the recorded links allow: a play older than `--threshold`
+whose recorded worker session has gone terminal is marked `blocked`; a play
+that records no worker session is left alone, because age by itself cannot
+tell an abandoned play from one still doing hours of work. The sweep prints
+one line naming how many rows it skipped for that reason, and reports them as
+`skipped_unlinked_plays` in its closing counts. A show row is marked `aborted`
+only once it is older than `--threshold` **and** all of its plays are terminal.
 
 ---
 
@@ -669,6 +681,56 @@ its own `status` may lag.
 The verb catalog, the `request` result contract, and a worked submit-and-poll
 example are in the [MCP server reference](reference/mcp-server.md).
 
+### When a run's process is gone and nothing recorded how it came out
+
+A background run normally records its own end: the CLI's terminal hook writes it,
+and a run stopped by `li kill` leaves it in the lifecycle store, which the server
+caches onto the job record. A run whose process dies before either of those
+happens leaves nothing behind at all — no surviving producer can ever write its
+end.
+
+Where an observation *positively establishes* that the run's process is gone —
+the recorded pid holds no process, it disappears between two probes, or a live
+process holds the number and started at a different time, so it is a different
+process — `job.status`, `job.list` and `job.wait` record that end themselves and
+then report it:
+
+| Field | Value |
+|-------|-------|
+| `terminal` | `true` |
+| `outcome` | `indeterminate` |
+| `reason_code` | `process_gone_without_outcome` |
+| `terminal_source` | `mcp_orphan_reaper` |
+
+`outcome: "indeterminate"` means the process is conclusively gone and **no authoritative
+outcome was reported**. It does not mean the work failed: the run may well have
+finished what it was doing before it died, and nothing survived to say either
+way. `failed` stays reserved for a reported terminal status classified as a
+failure, and a caller may retry a `failed` run under its own policy. **Do not
+automatically retry such a run** — an external side effect it never got to
+report may already have committed.
+
+`terminal_source` says what wrote the end: `cli_terminal_hook` (the run's own
+terminal hook), `lifecycle_cache` (an end read back from the lifecycle store),
+`spawn_failure` (the spawn was caught failing), `mcp_kill` (the run was killed
+through this server), or `mcp_orphan_reaper` (this server, from the conclusive
+observation above). It is null on records written before the field existed.
+
+For a run ended this way, **`finished_at` is when the loss was established and recorded,
+not when the process exited** — nothing surviving can report that instant. Any
+duration derived from it is therefore an **upper bound** on how long the run
+actually ran.
+
+`liveness_conclusion` on `job.status` says what the observation established:
+`process_gone`, `alive`, or `unknown`. Only `process_gone` can end a run.
+`unknown` — a pid the OS cannot be asked about, a denied or unreadable identity
+probe — never does, and such a run stays non-terminal and advisory
+(`possibly_orphaned`), reported by `job.wait` under `stopped_without_end`.
+
+`job.wait`'s **`all_terminal` means every valid requested run has a recorded
+end**, including runs whose outcome is `indeterminate`. It does not mean every run
+succeeded or reported an outcome; read each entry's `outcome` for that.
+
 ### Terminal notices
 
 When a background run finishes, the server records its terminal status and, if a
@@ -694,7 +756,10 @@ list), and `notify_seat` fills the `{target}` placeholder. The environment
 variables `LIONAGI_MCP_NOTIFY_COMMAND` and `LIONAGI_MCP_NOTIFY_TARGET` set a
 process-wide default. Delivery outcome is recorded on the job and surfaced in
 `job.status` (`notify_delivery`), so a notice that failed to send is visible
-rather than silently lost.
+rather than silently lost. `job.list` carries the same outcome collapsed to one
+word in `notify_delivery_state` — `delivered`, `failed`, or `none` when no
+notifier was configured — so a run whose notice never went out is spotted while
+scanning runs, not only when one is looked up.
 
 ---
 

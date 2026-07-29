@@ -1,6 +1,6 @@
 [project]
 name = "lionagi"
-version = "0.31.0"
+version = "0.31.1"
 description = "An Intelligence Operating System."
 authors = [
     { name = "HaiyangLi", email = "quantocean.li@gmail.com" },
@@ -112,7 +112,9 @@ rich = [
 ]
 
 schema = [
-    "datamodel-code-generator>=0.31.2",
+    # Advisories through 0.63.0 affect the generator's own parsing path, which is
+    # exactly what the schema fallback invokes, so floor the patched release.
+    "datamodel-code-generator>=0.64.0",
 ]
 
 pandas = [

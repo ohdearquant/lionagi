@@ -124,7 +124,10 @@ async def _run_fanout(
         env,
         invocation_kind="fanout",
         playbook_name=playbook_name,
-        agent_name=agent_name,
+        # The profile the run resolved, not the one this call named: a call that
+        # named neither an agent nor a model named none, and recording that
+        # `agent_name` would leave the record unable to say what it ran under.
+        agent_name=env.orc_profile_name,
         artifacts_path=str(env.run.artifact_root),
         invocation_id=invocation_id,
         model=_orc_model,
@@ -301,6 +304,11 @@ async def _run_fanout_inner(
     fanned_nodes: list[str] = []
     fanned_labels: list[str] = []
 
+    # The worker names are settled before any branch is built; recording them
+    # here is what lets finalization notice one that never got a directory.
+    for wname in worker_names:
+        env.expect_worker(wname)
+
     for i, ta in enumerate(assignments):
         model_override = pool[i % len(pool)] if pool else None
         wname = worker_names[i]
@@ -321,6 +329,9 @@ async def _run_fanout_inner(
         node = _build_worker_operate_node(
             env.builder,
             branch=w_branch,
+            # Explicitly no dependencies: fanout workers are independent, and
+            # the builder chains onto its current heads when this is None.
+            depends_on=[],
             instruction=ta.task,
             context=ctx,
             messenger_bound=messenger_bound,

@@ -179,22 +179,55 @@ del _overlap
 # ── Per-provider yolo kwargs ──────────────────────────────────────────────
 
 PROVIDER_YOLO_KWARGS: dict[str, dict] = {
+    "claude-code": {"permission_mode": "bypassPermissions"},
     "claude_code": {"permission_mode": "bypassPermissions"},
     "claude": {"permission_mode": "bypassPermissions"},
     "codex": {"full_auto": True, "skip_git_repo_check": True},
+    "gemini-cli": {"yolo": True},
+    "gemini_cli": {"yolo": True},
     "gemini_code": {"yolo": True},
     "gemini-code": {"yolo": True},
     "pi": {"no_tools": False},
 }
 
 PROVIDER_BYPASS_KWARGS: dict[str, dict] = {
+    "claude-code": {"permission_mode": "bypassPermissions"},
     "claude_code": {"permission_mode": "bypassPermissions"},
     "claude": {"permission_mode": "bypassPermissions"},
     "codex": {"bypass_approvals": True, "skip_git_repo_check": True},
+    "gemini-cli": {"yolo": True},
+    "gemini_cli": {"yolo": True},
     "gemini_code": {"yolo": True},
     "gemini-code": {"yolo": True},
     "pi": {"no_tools": False},
 }
+
+
+def _validate_provider_permission_tables(
+    cli_providers: set[str] | frozenset[str],
+    yolo_kwargs: dict[str, dict],
+    bypass_kwargs: dict[str, dict],
+) -> None:
+    """Raise when a CLI provider is absent from a permission capability table."""
+    missing = {
+        "PROVIDER_YOLO_KWARGS": sorted(cli_providers - yolo_kwargs.keys()),
+        "PROVIDER_BYPASS_KWARGS": sorted(cli_providers - bypass_kwargs.keys()),
+    }
+    missing = {table: providers for table, providers in missing.items() if providers}
+    if missing:
+        details = "; ".join(
+            f"{table} missing {providers!r}" for table, providers in missing.items()
+        )
+        raise RuntimeError(f"Provider permission table incomplete: {details}")
+
+
+# Missing entries silently downgrade execution permissions, so capability table
+# drift must fail at import rather than at the first tool call.
+_validate_provider_permission_tables(
+    CLI_PROVIDERS,
+    PROVIDER_YOLO_KWARGS,
+    PROVIDER_BYPASS_KWARGS,
+)
 
 # fast_mode: route codex via OpenAI priority tier (lower latency, same effort)
 # No-op for providers that don't support service_tier.
