@@ -181,7 +181,7 @@ sessions = Table(
         "source_kind",
         Text,
         CheckConstraint(
-            "source_kind IS NULL OR source_kind IN ('live','imported_fs')",
+            "source_kind IS NULL OR source_kind IN ('live','imported_fs','imported_codex')",
             name="ck_sessions_source_kind",
         ),
         server_default="live",
