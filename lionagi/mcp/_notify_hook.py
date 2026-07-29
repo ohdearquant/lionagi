@@ -136,7 +136,6 @@ def _deliver(
     env: dict[str, str] | None = None,
     *,
     program: str | None = None,
-    cwd: str | None = None,
 ) -> dict[str, Any]:
     """Run the delivery command best-effort; return its outcome for the record.
 
@@ -163,7 +162,6 @@ def _deliver(
             stderr=subprocess.DEVNULL,
             check=False,
             env=env,
-            cwd=cwd,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         # never fail the run's terminal path; record the failure instead.
@@ -297,11 +295,7 @@ def deliver_terminal_notice(
             "sender": sender,
         }
         return _deliver(
-            _substitute(template, fields),
-            fields,
-            _delivery_env(sender),
-            program=program,
-            cwd=(job or {}).get("cwd"),
+            _substitute(template, fields), fields, _delivery_env(sender), program=program
         )
     if unusable:
         # Configured but unusable. Recorded as a failure so job_status shows a
