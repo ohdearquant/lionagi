@@ -187,6 +187,29 @@ async def test_direct_antigravity_leg_rejects_a_named_nonempty_mcp_set(spawn, tm
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["GEMINI-CLI", "Gemini_Code", "gemini-Cli", " gemini-cli "])
+async def test_a_provider_spelling_that_resolves_is_a_spelling_the_guard_recognises(
+    spawn, tmp_path, provider
+):
+    """Endpoint resolution case-folds the provider, so the guard must too.
+
+    A spelling that differs only in case still resolves to the Antigravity CLI and
+    still runs, so matching the exact lowercase spellings would let the very
+    omission this rejection exists to prevent through under a capitalised name.
+    """
+    from lionagi.cli.agent import _run_agent
+
+    named = _write_mcp_config(tmp_path / "named", {"named": {"command": "server"}})
+
+    with pytest.raises(ConfigurationError, match="Antigravity.*does not support MCP"):
+        await _run_agent(
+            f"{provider}/gemini-3.5-flash",
+            "go",
+            mcp_config=str(named),
+        )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("provider", ANTIGRAVITY_PROVIDERS)
 async def test_resumed_antigravity_leg_rejects_a_named_nonempty_mcp_set(
     spawn, tmp_path, monkeypatch, provider

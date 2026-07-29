@@ -614,6 +614,12 @@ _MCP_FORWARDING_PROVIDERS = frozenset({*_CLAUDE_PROVIDER_NAMES, "codex"})
 _ANTIGRAVITY_PROVIDER_NAMES = frozenset({"gemini-cli", "gemini_cli", "gemini-code", "gemini_code"})
 
 
+def _canonical_provider(provider: str | None) -> str:
+    """Fold a provider string the way endpoint resolution does, so a spelling that
+    resolves to an endpoint is never one these predicates fail to recognise."""
+    return provider.strip().lower() if isinstance(provider, str) else ""
+
+
 def provider_accepts_forwarded_mcp(provider: str | None) -> bool:
     """Whether a provider's request can carry an MCP server set resolved by the caller.
 
@@ -628,7 +634,7 @@ def provider_accepts_forwarded_mcp(provider: str | None) -> bool:
     handed anything over — for that, read ``request_carries_forwarded_mcp`` off
     the request the spawn produced.
     """
-    return provider in _MCP_FORWARDING_PROVIDERS
+    return _canonical_provider(provider) in _MCP_FORWARDING_PROVIDERS
 
 
 def _reject_unforwardable_explicit_mcp(
@@ -638,7 +644,11 @@ def _reject_unforwardable_explicit_mcp(
     asked_for_servers: bool,
 ) -> None:
     """Reject an explicit MCP server set that Antigravity cannot receive."""
-    if named_explicitly and asked_for_servers and provider in _ANTIGRAVITY_PROVIDER_NAMES:
+    if (
+        named_explicitly
+        and asked_for_servers
+        and _canonical_provider(provider) in _ANTIGRAVITY_PROVIDER_NAMES
+    ):
         raise ConfigurationError(
             f"The {provider!r} provider runs the Antigravity CLI (`agy`), "
             "which does not support MCP servers; the explicitly supplied "
