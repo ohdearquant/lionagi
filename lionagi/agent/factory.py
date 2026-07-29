@@ -631,6 +631,21 @@ def provider_accepts_forwarded_mcp(provider: str | None) -> bool:
     return provider in _MCP_FORWARDING_PROVIDERS
 
 
+def _reject_unforwardable_explicit_mcp(
+    provider: str | None,
+    *,
+    named_explicitly: bool,
+    asked_for_servers: bool,
+) -> None:
+    """Reject an explicit MCP server set that Antigravity cannot receive."""
+    if named_explicitly and asked_for_servers and provider in _ANTIGRAVITY_PROVIDER_NAMES:
+        raise ConfigurationError(
+            f"The {provider!r} provider runs the Antigravity CLI (`agy`), "
+            "which does not support MCP servers; the explicitly supplied "
+            "MCP configuration cannot be forwarded."
+        )
+
+
 def request_kwargs_carry_forwarded_mcp(kwargs: dict[str, Any] | None) -> bool:
     """Whether CLI request kwargs actually carry a forwarded MCP server set.
 
@@ -801,12 +816,11 @@ def _forward_mcp_to_cli_request(
         # working spawn into a hard failure.
         named_explicitly = bool(spec.mcp_config_path) or resolved_servers_explicit
         asked_for_servers = bool(resolved_servers) if caller_resolved else has_config
-        if named_explicitly and asked_for_servers and provider in _ANTIGRAVITY_PROVIDER_NAMES:
-            raise ConfigurationError(
-                f"The {provider!r} provider runs the Antigravity CLI (`agy`), "
-                "which does not support MCP servers; the explicitly supplied "
-                "MCP configuration cannot be forwarded."
-            )
+        _reject_unforwardable_explicit_mcp(
+            provider,
+            named_explicitly=named_explicitly,
+            asked_for_servers=asked_for_servers,
+        )
         if has_config:
             import logging
 
