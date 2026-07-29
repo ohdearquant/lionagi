@@ -36,10 +36,68 @@ from typing import Any
 # the path because that interpreter is the one lionagi is installed in.
 from . import config, jobs
 
-# A configured notifier's stdout/stderr is free text that can carry a
-# credential the command obtained anywhere, so it is never captured or logged:
-# the child inherits DEVNULL and this hook keeps nothing.
 _DELIVERY_TIMEOUT_S = 30
+
+# A configured notifier's stdout/stderr is free text that can carry a credential
+# the command obtained anywhere, so none of it is ever stored. It used to be
+# discarded at the pipe (DEVNULL), which kept that promise and cost the record
+# any way to tell a failure apart: every failed delivery recorded a bare exit
+# code and a null error, so "the notifier binary is missing" and "the notifier
+# refused the message" were the same row.
+#
+# The output is now read into memory, matched against the closed vocabulary
+# below, and dropped. Only the matched name is stored. That keeps the stored
+# field a bounded enum rather than free text, so the invariant holds by
+# construction instead of by a promise to sanitise.
+_FAILURE_UNKNOWN = "unknown"
+# First match wins, so the more specific phrase must precede any broader one it
+# contains. "connection refused" sits above the policy class for exactly that
+# reason, and the policy class deliberately does NOT match a bare "refused":
+# that word appears in network errors far more often than in policy ones, and a
+# needle that broad silently reclassifies them. A refusal phrased in a way none
+# of these anticipate falls to `unknown`, which is the correct direction to be
+# wrong in.
+_FAILURE_CLASSES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("command_not_found", ("command not found", "no such file or directory", "not found")),
+    ("permission_denied", ("permission denied", "operation not permitted", "eacces")),
+    (
+        "connection_failed",
+        ("connection refused", "no route to host", "unreachable", "network is", "dns"),
+    ),
+    ("authentication_failed", ("unauthorized", "authentication failed", "invalid token", "401")),
+    ("refused_by_policy", ("refused by", "blocked by", "denied by policy", "forbidden", "403")),
+    ("target_unknown", ("unknown recipient", "no such actor", "unknown actor", "no such user")),
+    ("invalid_usage", ("usage:", "unrecognized argument", "invalid argument", "unknown option")),
+)
+
+
+def _classify_failure(text: str) -> str:
+    """Map a delivery command's output to one name from the closed set above.
+
+    Fail-closed: anything that does not match is ``unknown``. A fragment of the
+    text is never returned, however diagnostic it looks — the moment an
+    unmatched case is allowed to contribute its own words, the stored field is
+    free text again and the invariant is gone.
+    """
+    lowered = text.lower()
+    for name, needles in _FAILURE_CLASSES:
+        if any(needle in lowered for needle in needles):
+            return name
+    return _FAILURE_UNKNOWN
+
+
+def _classify_quietly(text: str) -> str:
+    """``_classify_failure`` with every escape route closed.
+
+    An exception raised while classifying must not carry the text out with it.
+    Python exceptions routinely embed the value that caused them, so this
+    swallows the exception object entirely rather than logging it or putting
+    its message anywhere near the record.
+    """
+    try:
+        return _classify_failure(text)
+    except Exception:  # noqa: BLE001 — deliberately not logged: the message could embed the text
+        return _FAILURE_UNKNOWN
 
 
 def _resolve_command(
@@ -130,6 +188,29 @@ def _delivery_env(sender: str) -> dict[str, str] | None:
     return env
 
 
+def _unverifiable_reason(argv: list[str]) -> str | None:
+    """Why a zero exit from *argv* would not actually mean delivered.
+
+    Exit code is this hook's only delivery evidence, and for one adapter shape
+    we know that evidence is weak: ``kkernel exec`` returns 0 when *any* op in
+    the request succeeded, so a multi-op notify whose send was refused still
+    exits 0 and records as delivered. ``--strict`` makes a refused op exit 1.
+
+    Scoped to a known adapter shape on purpose. Reading someone else's argv is
+    only defensible where the alternative is recording a lie, and it stops at
+    marking the outcome — the command still runs exactly as configured, because
+    refusing to run what an operator wrote is not this hook's call.
+    """
+    if not argv:
+        return None
+    program = os.path.basename(argv[0])
+    if program != "kkernel" or "exec" not in argv:
+        return None
+    if any(tok == "--strict" for tok in argv):
+        return None
+    return "kkernel_exec_without_strict_exits_zero_on_a_refused_op"
+
+
 def _deliver(
     argv: list[str],
     payload: dict[str, str],
@@ -141,16 +222,18 @@ def _deliver(
 
     The outcome is recorded on the job so a dead completion notice surfaces in
     ``job_status`` instead of vanishing silently — a completion signal that can
-    fail silently would cost the detached-spawn pattern its reliability. Only
-    the exit code is kept: the command's stdout/stderr is free text that can
-    carry a credential, so it goes to DEVNULL and is never captured.
+    fail silently would cost the detached-spawn pattern its reliability.
+
+    The command's stdout/stderr is free text that can carry a credential, so
+    none of it is stored. It is read, matched against the closed vocabulary in
+    ``_FAILURE_CLASSES``, and dropped; only the matched name reaches the record,
+    in ``failure_class``. That is what turns a bare exit code into something
+    actionable while keeping the stored field a bounded enum by construction.
 
     *program* is recorded alongside it so the record names which notifier this
     was. It is the program token of the configured argv template, before any run
     field is substituted into it — operator configuration, which whoever wrote it
-    can already read, and not something the command produced at runtime. That is
-    the whole difference: it says *what* failed without keeping a byte of what
-    the command said, which stays discarded.
+    can already read, and not something the command produced at runtime.
     """
     try:
         proc = subprocess.run(  # noqa: S603 — argv is the operator-configured delivery command, no shell
@@ -158,30 +241,53 @@ def _deliver(
             input=json.dumps(payload),
             text=True,
             timeout=_DELIVERY_TIMEOUT_S,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
             check=False,
             env=env,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        # never fail the run's terminal path; record the failure instead.
-        # The exception *type* names how the delivery came apart — never started,
-        # or ran past the timeout — and the exception's message is left out: it
-        # is the one string here whose content this hook does not choose.
+        # Never fail the run's terminal path; record the failure instead.
+        #
+        # The exception *type* names how the delivery came apart — never
+        # started, or ran past the timeout — and nothing else from the
+        # exception is kept. This matters more than it looks:
+        # subprocess.TimeoutExpired carries the child's captured output on its
+        # own .stdout/.stderr attributes, so logging the exception, or storing
+        # its str(), would put back exactly the free text this function exists
+        # to keep out.
         return {
             "attempted": True,
             "ok": False,
             "exit_code": None,
             "error": type(exc).__name__,
+            "failure_class": (
+                "timeout" if isinstance(exc, subprocess.TimeoutExpired) else _FAILURE_UNKNOWN
+            ),
             "command": program,
         }
-    return {
+    ok = proc.returncode == 0
+    # Classified here and not retained: `proc` goes out of scope with the
+    # function, and only the returned name outlives it.
+    failure_class = None if ok else _classify_quietly(f"{proc.stderr or ''}\n{proc.stdout or ''}")
+    outcome = {
         "attempted": True,
-        "ok": proc.returncode == 0,
+        "ok": ok,
         "exit_code": proc.returncode,
         "error": None,
+        "failure_class": failure_class,
         "command": program,
     }
+    unverifiable = _unverifiable_reason(argv) if ok else None
+    if unverifiable:
+        # Delivered on the only evidence available, and that evidence is known
+        # to be weak for this shape. Recorded as its own state rather than
+        # folded into either "delivered" or "failed": calling it delivered
+        # records a claim this hook cannot support, and calling it failed
+        # reports a failure that probably did not happen.
+        outcome["ok"] = True
+        outcome["delivery_verified"] = False
+        outcome["unverified_reason"] = unverifiable
+    return outcome
 
 
 def _note_failure_in_console_log(run_id: str, outcome: dict[str, Any]) -> None:
@@ -193,9 +299,10 @@ def _note_failure_in_console_log(run_id: str, outcome: dict[str, Any]) -> None:
     Ending it with a stated failure is what lets the log serve as the fallback
     for a notice that did not.
 
-    Nothing about *why* it failed is available here by design -- the command's
-    output goes to DEVNULL because it is free text that can carry a credential
-    -- so the line reports the exit code and no more.
+    The line carries the classified reason when there is one. It is a name from
+    a closed set, never anything the command said, so the log stays as free of
+    the command's own text as the job record is -- a log is if anything the
+    easier of the two to read by accident.
 
     Best-effort like everything else in this hook: the run has already
     finished, and a log that cannot be appended to must not turn a delivered
@@ -206,6 +313,9 @@ def _note_failure_in_console_log(run_id: str, outcome: dict[str, Any]) -> None:
     if outcome.get("ok"):
         return
     detail = outcome.get("error") or f"exit code {outcome.get('exit_code')}"
+    failure_class = outcome.get("failure_class")
+    if failure_class:
+        detail = f"{detail} ({failure_class})"
     try:
         path = config.job_dir(run_id) / "console.log"
         with path.open("a", encoding="utf-8") as fh:
