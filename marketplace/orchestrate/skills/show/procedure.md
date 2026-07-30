@@ -261,8 +261,9 @@ blockers or escalate the whole show.
 // 1. Ask what play.submit takes for this playbook (schema_fingerprint depends on it)
 {"help": {"verb": "play.submit", "playbook": "<name>"}}
 
-// 2. Fire a play
-{"ops": [{"op": "play.submit", "args": {"playbook": "<name>", "prompt": "<from _prompt.md>"}, "schema_fingerprint": "<from help>"}]}
+// 2. Fire a play — the fingerprint comes from the playbook-qualified help call above,
+//    not from an unqualified help='play.submit', which returns a different schema's
+{"ops": [{"op": "play.submit", "args": {"playbook": "<name>", "prompt": "<from _prompt.md>", "cwd": "/absolute/path/to/worktree"}, "schema_fingerprint": "<from the help call above>"}]}
 // -> record the returned run_id in _meta.json
 
 // 3. Wait for it, then read its output

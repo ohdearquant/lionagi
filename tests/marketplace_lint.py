@@ -464,6 +464,109 @@ def test_documented_submit_ops_carry_a_schema_fingerprint() -> None:
     )
 
 
+def test_a_playbook_qualified_schema_has_its_own_fingerprint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pin the premise the check below rests on, rather than assuming it.
+
+    A playbook-aware verb's schema resolves that playbook's own declared
+    arguments, so naming one changes the schema and therefore the fingerprint.
+    If that stopped being true the next check would still pass while guarding
+    nothing, so the difference is asserted against a fixture written here.
+
+    The fixture goes in a project-local `.lionagi/playbooks/` under a temporary
+    cwd, which is the first place playbook resolution looks. Writing it into the
+    real global directory instead would leave a stray playbook behind on any run
+    that died between the write and the cleanup, and would collide with a
+    genuine playbook of the same name.
+    """
+    import yaml
+
+    from lionagi.mcp.dispatch import schema_fingerprint, verb_schema
+    from lionagi.mcp.verbs import VERBS
+
+    verb = VERBS["play.submit"]
+    base = schema_fingerprint(verb_schema(verb))
+
+    books = tmp_path / ".lionagi" / "playbooks"
+    books.mkdir(parents=True)
+    (books / "lint-fixture.playbook.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "name": "lint-fixture",
+                "description": "fixture for the fingerprint check",
+                "prompt": "do the thing with {depth} and {target}",
+                "args": {
+                    "target": {"type": "str", "default": ".", "help": "what to act on"},
+                    "depth": {"type": "int", "default": 1, "help": "how many passes"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    qualified = schema_fingerprint(verb_schema(verb, playbook="lint-fixture"))
+
+    assert qualified != base, (
+        "a playbook-qualified play.submit schema no longer differs from the base "
+        "schema, so the qualified-source check below guards nothing. Either the "
+        "playbook arguments stopped being resolved into the schema, or the "
+        "fingerprint stopped covering them."
+    )
+
+
+def test_a_playbook_bearing_example_names_a_playbook_qualified_help_source() -> None:
+    """A fingerprint from the wrong schema is refused as surely as a missing one.
+
+    `play.submit` and `flow.submit` resolve the named playbook's own arguments
+    into their schema, so the fingerprint differs per playbook. An example that
+    names a playbook in `args` while pointing the reader at an unqualified
+    `help='play.submit'` yields `stale_schema`: a real fingerprint, from a real
+    help call, for a different schema. That is worse than a missing one, because
+    the reader has no reason to suspect the value they copied.
+
+    The check above cannot see this — a fingerprint is present and correctly
+    positioned in exactly these cases. Both rules are needed, and this one is
+    the reason the first one is not sufficient.
+
+    Scope: the enclosing section, not the op window, because a placeholder that
+    says "from the help call above" is correct precisely when the call above it
+    is qualified. So the search runs backwards from the op to the nearest heading
+    and passes if a playbook-qualified help call appears anywhere in between.
+    """
+    from lionagi.mcp.verbs import VERBS
+
+    aware = frozenset(name for name, verb in VERBS.items() if verb.playbook_aware)
+    assert aware, "no playbook-aware verbs in the registry — the check would pass vacuously"
+
+    # A help call that names a playbook, in either the JSON or the tool-call
+    # spelling the bundle uses, tolerating backslash-escaped quotes inside a
+    # JSON string literal.
+    qualified_help = re.compile(r"help\s*=?\s*[:{]?[^\n]{0,80}?playbook", re.IGNORECASE)
+
+    offenders: list[str] = []
+    checked = 0
+    for path in _SKILL_FILES:
+        text = _read(path)
+        for verb, window in _op_objects_in(text):
+            if verb not in aware or '"playbook"' not in window:
+                continue
+            checked += 1
+            start = text.find(window)
+            section = text.rfind("\n#", 0, start)
+            scope = text[section if section != -1 else 0 : start + len(window)]
+            if not qualified_help.search(scope):
+                lineno = text[:start].count("\n") + 1
+                offenders.append(f"{_rel(path)}:{lineno} {verb}")
+
+    assert checked, "no playbook-bearing spawn examples found under marketplace/ at all"
+    assert not offenders, (
+        "these examples name a playbook in `args` but no playbook-qualified help "
+        "call appears in their section, so a reader takes the fingerprint from the "
+        "base schema and the op is refused with stale_schema: " + repr(sorted(offenders))
+    )
+
+
 @pytest.mark.parametrize("path", _SKILL_FILES, ids=[_rel(p) for p in _SKILL_FILES])
 def test_lambda_names_are_canonical(path: Path) -> None:
     """Warn (xfail) if a lambda: namespace not in the canonical roster is referenced.

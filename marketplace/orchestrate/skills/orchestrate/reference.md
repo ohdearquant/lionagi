@@ -81,13 +81,26 @@ there is no blocking "wait for the final answer" call. Follow up with `job.statu
 {"op": "flow.submit", "args": {"prompt": "...", "agent": "orchestrator"}, "schema_fingerprint": "<from help>"}
 ```
 
-Get the fingerprint from `help=true` (the catalog entry for that verb carries it directly for
-`agent.submit` and `fanout.submit`) or from `help="<verb>"`. `flow.submit` and `play.submit`
-are the two exceptions: their schema depends on which `playbook` you name, so their catalog
-entry names `playbook` as the parameter that varies the fingerprint, and the fingerprint to
-send for a specific playbook comes from `help={"verb": "flow.submit", "playbook": "<name>"}`.
-Omitting the fingerprint, or sending a stale one, is refused with the current fingerprint and
-the exact shape to resend — the failure carries its own remedy.
+For `agent.submit` and `fanout.submit`, take it from `help=true` (their catalog entry carries
+it directly) or from `help="<verb>"`.
+
+`flow.submit` and `play.submit` are different, and getting this wrong is the one mistake here
+that costs a round-trip for a reason that is not obvious. Their schema depends on which
+`playbook` the call names, because the playbook's own declared arguments are resolved into it.
+So the fingerprint depends on it too, and there are **two different fingerprints per verb**:
+
+- **No `playbook` in `args`** — `help="flow.submit"` is the right source. Only `flow.submit`
+  can be called this way; `play.submit` requires a playbook.
+- **A `playbook` in `args`** — the fingerprint must come from
+  `help={"verb": "<verb>", "playbook": "<the same name>"}`. The unqualified
+  `help="play.submit"` returns the base schema's fingerprint, and sending *that* with a named
+  playbook is refused with `stale_schema`: a correct-looking value from a real help call,
+  fetched from the wrong schema. Since `play.submit` always names a playbook, its unqualified
+  fingerprint is never the one to send.
+
+Omitting the fingerprint, or sending one from the wrong schema, is refused with the current
+fingerprint and the exact shape to resend, so the failure carries its own remedy. Every
+`play.submit` example in this bundle names its playbook in the help call for that reason.
 
 ## Calling each verb
 

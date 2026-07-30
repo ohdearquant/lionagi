@@ -71,18 +71,24 @@ parameter schema before filling in `args`.
 `ops` is always an array of `{"op": "<verb>", "args": {...}}` objects, even for one operation.
 The four spawn verbs (`agent.submit`, `flow.submit`, `fanout.submit`, `play.submit`) each also
 need a `schema_fingerprint` — a sibling of `args`, not a member of it — copied from that verb's
-`help='<verb>'` reply; an op missing it or carrying a stale one is refused with the current
-fingerprint:
+`help` reply; an op missing it or carrying one from a different schema is refused with the
+current fingerprint.
+
+One wrinkle, worth knowing before it costs you a round-trip: when a call names a `playbook`,
+the schema includes that playbook's own declared arguments, so the fingerprint depends on it.
+For those calls the fingerprint has to come from `help={"verb": "<verb>", "playbook": "<the
+same name>"}`. The unqualified `help='play.submit'` returns a real fingerprint for a different
+schema, and sending it with a named playbook is refused. `play.submit` always names one:
 
 ```json
-// Run a playbook
-{"ops": [{"op": "play.submit", "args": {"playbook": "feature", "prompt": "add user authentication"}, "schema_fingerprint": "<from help>"}]}
+// Run a playbook — fingerprint from help={"verb": "play.submit", "playbook": "feature"}
+{"ops": [{"op": "play.submit", "args": {"playbook": "feature", "prompt": "add user authentication"}, "schema_fingerprint": "<from that playbook-qualified help call>"}]}
 
-// Fan out parallel workers
-{"ops": [{"op": "fanout.submit", "args": {"prompt": "audit this module for dead code", "num_workers": 4}, "schema_fingerprint": "<from help>"}]}
+// Fan out parallel workers — no playbook, so help='fanout.submit' is the source
+{"ops": [{"op": "fanout.submit", "args": {"prompt": "audit this module for dead code", "num_workers": 4}, "schema_fingerprint": "<from help='fanout.submit'>"}]}
 
-// Plan and run a DAG flow
-{"ops": [{"op": "flow.submit", "args": {"prompt": "refactor the auth module", "agent": "orchestrator"}, "schema_fingerprint": "<from help>"}]}
+// Plan and run a DAG flow — no playbook named, so help='flow.submit' is the source
+{"ops": [{"op": "flow.submit", "args": {"prompt": "refactor the auth module", "agent": "orchestrator"}, "schema_fingerprint": "<from help='flow.submit'>"}]}
 ```
 
 Each of these returns a `run_id`. Poll or block on it, and read what it wrote:
@@ -140,11 +146,16 @@ regardless of which interface you run the playbook through next:
 cp examples/playbooks/feature.playbook.yaml ~/.lionagi/playbooks/
 ```
 
-Then run it through the plugin's MCP server (ask `help='play.submit'` first for the current
-`schema_fingerprint`):
+Then run it through the plugin's MCP server. Ask for the fingerprint first, naming the
+playbook — that is what resolves its declared arguments into the schema the call is judged
+against:
 
 ```json
-{"ops": [{"op": "play.submit", "args": {"playbook": "feature", "prompt": "add OAuth login"}, "schema_fingerprint": "<from help>"}]}
+{"help": {"verb": "play.submit", "playbook": "feature"}}
+```
+
+```json
+{"ops": [{"op": "play.submit", "args": {"playbook": "feature", "prompt": "add OAuth login"}, "schema_fingerprint": "<from the help call above>"}]}
 ```
 
 **Checkout-local alternative.** Inside a lionagi checkout, `li play feature "add OAuth login"`
