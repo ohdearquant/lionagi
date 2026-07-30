@@ -16,6 +16,7 @@ from lionagi.state.db import DEFAULT_DB_PATH, SESSION_TERMINAL_STATUSES
 from ..registry import studio_route
 from ._db import open_db as _open_db
 from ._io import parse_json_col as _parse_json_col
+from .artifact_verification import resolve_artifact_verification
 
 _DB = str(DEFAULT_DB_PATH)
 
@@ -271,7 +272,25 @@ async def list_sessions(
             "artifacts_path": row["artifacts_path"],
             "source_kind": row["source_kind"] or "live",
             "artifact_contract_json": _parse_json_col(row["artifact_contract_json"]),
-            "artifact_verification_json": _parse_json_col(row["artifact_verification_json"]),
+            # Resolved, not passed through: a terminal session that was contracted
+            # and holds no verdict reports that absence here exactly as the detail
+            # route does. Returning the raw column instead would give the two
+            # routes different answers for the same session, which is the
+            # conflation this state exists to remove.
+            #
+            # artifacts_path is withheld deliberately, and the row does carry one.
+            # Supplying it would enable the live-progress arm, which reads the
+            # artifacts directory per row -- a filesystem walk for every running
+            # session on a paginated list that Studio polls. Withholding it leaves
+            # the two cheap arms intact (a stored verdict still wins, terminal
+            # absence is still named) and declines only the live read, which
+            # belongs to a single-session view.
+            "artifact_verification_json": resolve_artifact_verification(
+                _parse_json_col(row["artifact_verification_json"]),
+                status=row["status"] or "completed",
+                contract=_parse_json_col(row["artifact_contract_json"]),
+                artifacts_path=None,
+            ),
             # ADR-0063: project detection.
             "project": row["project"],
             "project_source": row["project_source"],
@@ -729,6 +748,16 @@ async def get_session(
     duration_ms = (
         (ended_at - started_at) * 1000 if started_at is not None and ended_at is not None else None
     )
+    status = session_row["status"] or "completed"
+    artifact_contract = _parse_json_col(session_row["artifact_contract_json"])
+    stored_verification = _parse_json_col(session_row["artifact_verification_json"])
+
+    artifact_verification = resolve_artifact_verification(
+        stored_verification,
+        status=status,
+        contract=artifact_contract,
+        artifacts_path=session_row["artifacts_path"],
+    )
 
     return {
         "id": session_row["id"],
@@ -741,10 +770,10 @@ async def get_session(
         "show_topic": session_row["show_topic"],
         "show_play_name": session_row["show_play_name"],
         "artifacts_path": session_row["artifacts_path"],
-        "artifact_contract_json": _parse_json_col(session_row["artifact_contract_json"]),
-        "artifact_verification_json": _parse_json_col(session_row["artifact_verification_json"]),
+        "artifact_contract_json": artifact_contract,
+        "artifact_verification_json": artifact_verification,
         "source_kind": session_row["source_kind"] or "live",
-        "status": session_row["status"] or "completed",
+        "status": status,
         "started_at": started_at,
         "ended_at": ended_at,
         "duration_ms": duration_ms,

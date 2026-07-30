@@ -40,7 +40,7 @@ export interface ArtifactContract {
   expected: ExpectedArtifact[];
 }
 
-export interface ArtifactVerification {
+export interface ArtifactVerificationResult {
   status: "passed" | "failed" | "warning" | "skipped";
   checked_at: number;
   missing_required: ExpectedArtifact[];
@@ -50,6 +50,13 @@ export interface ArtifactVerification {
    *  verdict it was judged on. Artifacts may still appear. */
   provisional?: boolean;
 }
+
+export interface ArtifactVerificationNotRecorded {
+  /** The run is terminal, but no verifier verdict was persisted. */
+  status: "not_recorded";
+}
+
+export type ArtifactVerification = ArtifactVerificationResult | ArtifactVerificationNotRecorded;
 
 // ─── Run types ───────────────────────────────────────────────────────────────
 

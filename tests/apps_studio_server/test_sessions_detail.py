@@ -13,7 +13,7 @@ import pytest
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
 from lionagi.state.claude_mirror import session_db_id  # noqa: E402
-from lionagi.state.db import StateDB  # noqa: E402
+from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Shared test data
@@ -56,6 +56,9 @@ async def seed_session(
     status: str = "running",
     started_at=None,
     ended_at=None,
+    artifacts_path: str | None = None,
+    artifact_contract_json: dict | None = None,
+    artifact_verification_json: dict | None = None,
 ) -> str:
     prog_id = f"{session_id}-prog"
     async with StateDB(db_path) as db:
@@ -70,6 +73,9 @@ async def seed_session(
                 "status": status,
                 "started_at": started_at,
                 "ended_at": ended_at,
+                "artifacts_path": artifacts_path,
+                "artifact_contract_json": artifact_contract_json,
+                "artifact_verification_json": artifact_verification_json,
                 "node_metadata": node_metadata,
                 "invocation_kind": "flow",
                 "source_kind": "live",
@@ -289,6 +295,133 @@ async def test_get_session_returns_none_graph_for_null_node_metadata(patched_ses
 
 
 # ---------------------------------------------------------------------------
+# Artifact verification display state
+# ---------------------------------------------------------------------------
+
+
+ARTIFACT_CONTRACT = {"expected": [{"id": "report", "path": "REPORT.md", "required": True}]}
+
+
+async def test_get_session_returns_live_provisional_artifact_progress(
+    patched_sessions_db, tmp_path
+):
+    svc, db_path = patched_sessions_db
+    (tmp_path / "REPORT.md").write_text("ready")
+    await seed_session(
+        db_path,
+        session_id="sess-live-artifacts",
+        status="running",
+        artifacts_path=str(tmp_path),
+        artifact_contract_json=ARTIFACT_CONTRACT,
+    )
+
+    result = await svc.get_session("sess-live-artifacts")
+
+    assert result is not None
+    verification = result["artifact_verification_json"]
+    assert verification["provisional"] is True
+    assert [item["id"] for item in verification["produced"]] == ["report"]
+
+
+@pytest.mark.parametrize("status", sorted(SESSION_TERMINAL_STATUSES))
+async def test_get_session_reports_terminal_verdict_was_not_recorded_without_artifact_path(
+    patched_sessions_db, status
+):
+    svc, db_path = patched_sessions_db
+    await seed_session(
+        db_path,
+        session_id=f"sess-{status}",
+        status=status,
+        artifacts_path=None,
+        artifact_contract_json=ARTIFACT_CONTRACT,
+        artifact_verification_json=None,
+    )
+
+    result = await svc.get_session(f"sess-{status}")
+
+    assert result is not None
+    assert result["artifact_verification_json"] == {"status": "not_recorded"}
+
+
+async def test_get_session_does_not_synthesize_a_terminal_verdict_from_disk(
+    patched_sessions_db, tmp_path
+):
+    svc, db_path = patched_sessions_db
+    (tmp_path / "REPORT.md").write_text("ready")
+    await seed_session(
+        db_path,
+        session_id="sess-terminal-artifacts",
+        status="completed",
+        artifacts_path=str(tmp_path),
+        artifact_contract_json=ARTIFACT_CONTRACT,
+        artifact_verification_json=None,
+    )
+
+    result = await svc.get_session("sess-terminal-artifacts")
+
+    assert result is not None
+    assert result["artifact_verification_json"] == {"status": "not_recorded"}
+
+
+async def test_get_session_keeps_live_null_verification_pending_without_artifact_path(
+    patched_sessions_db,
+):
+    svc, db_path = patched_sessions_db
+    await seed_session(
+        db_path,
+        session_id="sess-live-no-root",
+        status="running",
+        artifacts_path=None,
+        artifact_contract_json=ARTIFACT_CONTRACT,
+        artifact_verification_json=None,
+    )
+
+    result = await svc.get_session("sess-live-no-root")
+
+    assert result is not None
+    assert result["artifact_verification_json"] is None
+
+
+async def test_get_session_preserves_a_stored_terminal_verdict(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    verdict = {
+        "status": "passed",
+        "checked_at": 42.0,
+        "missing_required": [],
+        "missing_optional": [],
+        "produced": [{"id": "report", "path": "REPORT.md", "size": 5, "present": True}],
+    }
+    await seed_session(
+        db_path,
+        session_id="sess-recorded-verdict",
+        status="completed",
+        artifact_contract_json=ARTIFACT_CONTRACT,
+        artifact_verification_json=verdict,
+    )
+
+    result = await svc.get_session("sess-recorded-verdict")
+
+    assert result is not None
+    assert result["artifact_verification_json"] == verdict
+
+
+async def test_get_session_keeps_verification_null_when_no_contract_exists(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_session(
+        db_path,
+        session_id="sess-no-contract",
+        status="completed",
+        artifact_contract_json=None,
+        artifact_verification_json=None,
+    )
+
+    result = await svc.get_session("sess-no-contract")
+
+    assert result is not None
+    assert result["artifact_verification_json"] is None
+
+
+# ---------------------------------------------------------------------------
 # Test 1.8a — get_session_by_cc_id: legacy rows fall back to deterministic id
 # ---------------------------------------------------------------------------
 
@@ -501,6 +634,85 @@ async def test_list_sessions_surfaces_status_reason(patched_sessions_db):
     assert row["status"] == "failed"
     assert row["status_reason_code"] == RunReasons.FAILED_EXIT_NONZERO
     assert row["status_reason_summary"] == "worker exited with code 1"
+
+
+async def test_list_sessions_agrees_with_the_detail_route_on_terminal_absence(
+    patched_sessions_db,
+):
+    """The same session must not report absence one way and null the other."""
+    svc, db_path = patched_sessions_db
+    await seed_session(
+        db_path,
+        session_id="sess-terminal-absent",
+        status="completed",
+        artifacts_path=None,
+        artifact_contract_json=ARTIFACT_CONTRACT,
+        artifact_verification_json=None,
+    )
+
+    rows = await svc.list_sessions()
+    detail = await svc.get_session("sess-terminal-absent")
+
+    assert len(rows) == 1
+    assert rows[0]["artifact_verification_json"] == {"status": "not_recorded"}
+    # Asserted as equality between the two routes rather than against the literal
+    # twice: the defect being closed is a disagreement, so the test fails if
+    # either side moves, not only if the list side does.
+    assert detail is not None
+    assert rows[0]["artifact_verification_json"] == detail["artifact_verification_json"]
+
+
+async def test_list_sessions_preserves_a_stored_verdict(patched_sessions_db):
+    """A recorded verdict is returned as recorded, never re-derived."""
+    svc, db_path = patched_sessions_db
+    stored = {"status": "verified", "produced": [{"id": "report"}]}
+    await seed_session(
+        db_path,
+        session_id="sess-stored",
+        status="completed",
+        artifacts_path=None,
+        artifact_contract_json=ARTIFACT_CONTRACT,
+        artifact_verification_json=stored,
+    )
+
+    rows = await svc.list_sessions()
+
+    assert rows[0]["artifact_verification_json"] == stored
+
+
+async def test_list_sessions_does_not_read_the_artifacts_directory(patched_sessions_db, tmp_path):
+    """The list route declines the live-progress read, and that is deliberate.
+
+    The session is running, holds a contract, names a real artifacts directory,
+    and that directory contains the file the contract requires -- everything the
+    provisional arm needs to report progress. The list route still returns None,
+    because computing it means a filesystem walk per row on a paginated read.
+    Progress belongs to the single-session view, which this same fixture shape is
+    covered for elsewhere.
+
+    This is the test that fails if someone closes the remaining difference by
+    handing the list route its artifacts_path, so the decision has to be made
+    again rather than drifted into.
+    """
+    svc, db_path = patched_sessions_db
+    (tmp_path / "REPORT.md").write_text("ready")
+    await seed_session(
+        db_path,
+        session_id="sess-running-on-disk",
+        status="running",
+        artifacts_path=str(tmp_path),
+        artifact_contract_json=ARTIFACT_CONTRACT,
+        artifact_verification_json=None,
+    )
+
+    rows = await svc.list_sessions()
+
+    assert rows[0]["artifact_verification_json"] is None
+    # The detail route, given the same row, does report the progress -- which is
+    # what makes the None above a scoping decision rather than a lost capability.
+    detail = await svc.get_session("sess-running-on-disk")
+    assert detail is not None
+    assert detail["artifact_verification_json"]["provisional"] is True
 
 
 async def test_list_sessions_orders_by_updated_at_desc(patched_sessions_db):

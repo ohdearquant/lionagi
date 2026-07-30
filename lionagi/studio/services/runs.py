@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 import os
 import stat
@@ -456,45 +455,6 @@ def _session_liveness(s: dict[str, Any], ps_snapshot: str | None = None) -> bool
     return process_liveness(s, Path(ap) if ap else None, ps_snapshot)
 
 
-def _provisional_verification(contract: Any, artifacts_path: str | None) -> dict[str, Any] | None:
-    """Check a contract against what is on disk right now, for a run whose
-    verification has not been recorded yet.
-
-    Verification is recorded once, when a run finalises. Until then the panel has
-    nothing to read, so every declared artifact shows as pending even after its
-    worker has written it and the viewer is watching the file exist. Answering
-    from the disk costs one stat per declared artifact and makes the panel track
-    the run instead of trailing it.
-
-    The result is marked provisional, because it is a reading taken now rather
-    than the verdict the run was judged on: artifacts may still appear, and this
-    answer is never what decides the run's status.
-    """
-    if not contract or not artifacts_path:
-        return None
-    if isinstance(contract, str):
-        try:
-            contract = json.loads(contract)
-        except ValueError:
-            return None
-    if not isinstance(contract, dict):
-        return None
-
-    from lionagi.state.artifact_verifier import ArtifactPathError, verify_artifact_contract
-
-    try:
-        result = verify_artifact_contract(contract, artifacts_root=artifacts_path)
-    except (ArtifactPathError, OSError):
-        # A contract the run itself will reject, or a root that cannot be read.
-        # Neither is this endpoint's to report: the run's own finalisation says
-        # so, and inventing a status here would put a verdict on the panel that
-        # nothing else agrees with.
-        return None
-    if result is None:
-        return None
-    return {**result, "provisional": True}
-
-
 def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None) -> dict[str, Any]:
     """Canonical Run row shape shared by list and detail routes."""
     from lionagi.state.health import classify_session_health
@@ -665,11 +625,6 @@ async def get_run(
     }
     alive = _session_liveness(detail_session) if detail_session.get("status") == "running" else None
     row = _run_row(detail_session, time.time(), process_alive=alive)
-
-    if row.get("artifact_verification_json") is None:
-        row["artifact_verification_json"] = _provisional_verification(
-            row.get("artifact_contract_json"), artifacts_path
-        )
 
     from . import run_tags
 
