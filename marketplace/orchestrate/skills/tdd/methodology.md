@@ -135,8 +135,9 @@ The reply carries a `run_id` for the fan-out. Wait for it and read the results:
 {"ops": [{"op": "job.output", "args": {"run_id": "<run_id>"}}]}
 ```
 
-**Checkout-local alternative.** Inside a lionagi checkout, `li o fanout --prompt "..."
---workers 2` runs the same fan-out as a foreground call.
+**Checkout-local alternative.** Inside a lionagi checkout, `li o fanout -n 2 "..."` runs the
+same fan-out as a foreground call. The prompt is positional and `-n` is the worker count;
+`--workers` takes a comma-separated list of model specs instead.
 
 Then synthesize the test files and implement against the combined suite.
 

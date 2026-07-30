@@ -121,10 +121,12 @@ If you're working inside a lionagi checkout, the CLI equivalents are `li o fanou
 `li agent`:
 
 ```bash
-li o fanout \
-  --prompt "Diagnose: [error]. Codebase: [path]. Find root cause and propose fix." \
-  --workers 2
+li o fanout -n 2 \
+  "Diagnose: [error]. Codebase: [path]. Find root cause and propose fix."
 ```
+
+The prompt is positional and `-n` sets the worker count. `--workers` is a different flag: it
+takes a comma-separated list of model specs, so `--workers 2` would ask for a model named `2`.
 
 ```bash
 li agent --prompt "

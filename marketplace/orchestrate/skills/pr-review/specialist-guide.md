@@ -74,14 +74,18 @@ an op without it is refused with `stale_schema` and starts nothing):
 }
 ```
 
-Inside a lionagi checkout, the CLI equivalent is `li o fanout`:
+Inside a lionagi checkout, the CLI equivalent is one `li o fanout` per dimension. The command
+takes `[MODEL] PROMPT`, so three prompts on one invocation is not a shorter way of writing
+this — it fails argument parsing before any review starts:
 
 ```bash
-li o fanout \
-  "Review PR #<pr_ref> for correctness only. Diff is at _context/diff.txt. Write findings to correctness_review/findings.md." \
-  "Review PR #<pr_ref> for security only. Diff is at _context/diff.txt. Write findings to security_review/findings.md." \
-  "Review PR #<pr_ref> for test coverage only. Diff is at _context/diff.txt. Write findings to tests_review/findings.md."
+li o fanout -n 1 "Review PR #<pr_ref> for correctness only. Diff is at _context/diff.txt. Write findings to correctness_review/findings.md."
+li o fanout -n 1 "Review PR #<pr_ref> for security only. Diff is at _context/diff.txt. Write findings to security_review/findings.md."
+li o fanout -n 1 "Review PR #<pr_ref> for test coverage only. Diff is at _context/diff.txt. Write findings to tests_review/findings.md."
 ```
+
+These run one after another. The MCP form above submits all three at once and returns
+immediately, which is the reason to prefer it when the dimensions are independent.
 
 ### Running with `flow.submit` (DAG with synthesis)
 
