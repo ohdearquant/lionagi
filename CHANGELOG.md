@@ -10,12 +10,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Upgrading from 0.31.1
 
-**The browser-credential system is gone.** Studio is a single-user tool bound to
-loopback, and it carried no authentication at all before the Operator workspace
-landed. The credential system introduced alongside that workspace is removed
-again, so there is no login step, no stored browser credential, and nothing to
-rotate. Anything that worked before the Operator arrived is unaffected. If you
-stored a credential during that window, discard it.
+**The browser-credential system is gone.** Studio is a single-user tool that
+binds to loopback by default, and before the Operator workspace landed its only
+access control was the optional bearer token set through
+`LIONAGI_STUDIO_AUTH_TOKEN`. The credential system introduced alongside that
+workspace is removed again, so there is no login step, no stored browser
+credential, and nothing to rotate. The bearer token is unchanged and is still
+the way to protect a Studio you bind to a non-loopback host with `--host` or
+`LIONAGI_STUDIO_HOST`. Anything that worked before the Operator arrived is
+unaffected. If you stored a credential during that window, discard it.
 
 **The Studio marketplace bundle now leads with its MCP server** and no longer
 ships a `.mcp.json`. The manifest declares the server inline, so there is no
