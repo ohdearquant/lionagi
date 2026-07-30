@@ -101,11 +101,14 @@ every playbook it can be given. Two cases to write for:
 
 Omitting the fingerprint, or sending one from the wrong schema, is refused with the current
 fingerprint **for the schema your call actually resolved** and with the whole op spelled out.
-Take the value from the refusal rather than fetching it again: it already accounts for the
-playbook you named. If you do re-fetch, check that the `help` pointer in that message names
-your playbook and not just the verb — an unqualified pointer hands back the base fingerprint
-and you get the same refusal. Every `play.submit` example in this bundle names its playbook in
-the help call for that reason.
+Take the value from the refusal rather than fetching it again. It already accounts for the
+playbook you named, because the call resolves that playbook's schema before it checks the
+fingerprint, so the value handed back is the qualified one.
+
+If you re-fetch anyway, re-qualify the help call yourself. The pointer in the refusal names the
+verb only and never repeats the playbook, so following it verbatim asks for the base schema,
+hands back the base fingerprint, and earns the same refusal a second time. Every `play.submit`
+example in this bundle names its playbook in the help call for that reason.
 
 ## Calling each verb
 
