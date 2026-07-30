@@ -78,28 +78,51 @@ class TestReasonNamespace:
         assert ShowReasons.BLOCKED_NO_READY_PLAYS in VALID_REASON_CODES
         assert ScheduleReasons.FIRED_DUE in VALID_REASON_CODES
 
-    def test_schedule_skipped_set_is_closed_at_three(self):
-        """Keep the enumeration in the class docstring honest.
+    def test_schedule_skipped_prefix_holds_exactly_three_codes(self):
+        """Pin the ``schedule.skipped.`` namespace, and only that.
 
-        A reader deciding what a skipped schedule_run can mean is told there are
-        exactly three answers. That claim is prose, so it goes stale silently the
-        moment a fourth code is added, and the reader who trusted it treats an
-        unseen value as impossible. Deriving the set by prefix here means the
-        addition reds this test instead, and whoever adds the code updates the
-        enumeration a consumer is actually reading.
+        This guards a claim about the PREFIX. It is deliberately not a claim
+        about which reasons a skipped ``schedule_run`` can carry -- see the
+        companion test below for why that set cannot be closed here.
         """
-        skipped = {
+        prefixed = {
             value
             for name, value in vars(ScheduleReasons).items()
             if not name.startswith("_")
             and isinstance(value, str)
             and value.startswith("schedule.skipped.")
         }
-        assert skipped == {
+        assert prefixed == {
             ScheduleReasons.SKIPPED_PRECONDITION,
             ScheduleReasons.SKIPPED_OVERLAP,
             ScheduleReasons.SKIPPED_MISSED_FIRE,
         }
+
+    def test_skipped_schedule_runs_carry_codes_outside_the_skipped_prefix(self):
+        """Guard the trap, because the prefix reads like the whole answer.
+
+        Filtering skipped ``schedule_run`` rows by the ``schedule.skipped.``
+        prefix loses rows, and loses them quietly: capacity deferrals and budget
+        exhaustion are stamped from this class without the prefix, and the
+        task-admission path stamps a schedule_run from ``RunReasons`` entirely.
+        The class docstring warns about exactly this, and prose goes stale in
+        silence.
+
+        Asserting the negative is the point. If someone renames these into the
+        prefix, or drops the cross-class writer, this test reds and whoever did
+        it has to correct the warning a consumer is relying on.
+        """
+        for code in (ScheduleReasons.DEFERRED_CAPACITY, ScheduleReasons.BUDGET_EXHAUSTED):
+            assert not code.startswith("schedule.skipped."), (
+                f"{code!r} moved into the skipped prefix -- the class docstring's warning "
+                "about prefix filtering is now wrong and must be updated"
+            )
+            assert code in VALID_REASON_CODES
+
+        # A reason from another class reaches a skipped schedule_run, so no
+        # enumeration drawn from ScheduleReasons alone can be complete.
+        assert RunReasons.SKIPPED_WAITER_CAP_EXCEEDED.startswith("run.")
+        assert RunReasons.SKIPPED_WAITER_CAP_EXCEEDED in VALID_REASON_CODES
 
 
 class TestValidators:

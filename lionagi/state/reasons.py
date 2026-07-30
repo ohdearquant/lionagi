@@ -173,12 +173,26 @@ class ShowReasons:
 class ScheduleReasons:
     """ADR-0070 schedule-fire outcomes.
 
-    Three of these describe a fire that did not happen, and they are the whole
-    set -- a reader deciding what a skipped schedule_run can mean does not have
-    to go looking for a fourth. They are written down here because the
-    alternative is inferring the range from whatever a store happens to hold,
-    and a store is silent about a branch nothing has taken yet while that
-    silence reads as impossibility.
+    Three names here begin with ``schedule.skipped.``, and those three are
+    exactly that prefix -- but **the prefix is not the set of reasons a skipped
+    ``schedule_run`` can carry, and reading it as one is the mistake this
+    docstring exists to prevent.** Two other codes in this same class land on
+    rows whose status is ``skipped``: ``DEFERRED_CAPACITY`` and
+    ``BUDGET_EXHAUSTED``, neither of which carries the prefix. A third comes
+    from a different class entirely -- the task-admission path stamps a
+    ``schedule_run`` to ``skipped`` with the admission decision's own code,
+    falling back to ``RunReasons.SKIPPED_WAITER_CAP_EXCEEDED``.
+
+    So no enumeration here can be closed: that admission writer takes its code
+    from a decision object rather than from a literal, and the only bound
+    anywhere in the system is ``VALID_REASON_CODES``, which is the union across
+    every reason class in this module. A consumer filtering skipped rows by the
+    ``schedule.skipped.`` prefix will silently drop capacity deferrals, budget
+    exhaustion and admission rejections -- and silently is the operative word,
+    because the filter returns rows and looks like it worked.
+
+    What follows describes the three prefixed codes and is not a claim about
+    what else a skipped row may hold.
 
     ``SKIPPED_OVERLAP`` is stamped when a fire arrives while the previous run of
     the same schedule is still going.
@@ -206,6 +220,14 @@ class ScheduleReasons:
     code, so in practice it means "skipped, and the writer gave no reason". A
     consumer that treats it as evidence a precondition was checked and failed is
     reading a fallback as a finding.
+
+    One property of ``DEFERRED_CAPACITY`` belongs with these, since it is the
+    same kind of trap: those rows are **sampled, not one-per-event**. The
+    scheduler counts every deferral but writes a row only for the first and
+    every tenth after it, so that sustained saturation does not flood
+    ``schedule_runs``. Counting deferred-capacity rows therefore undercounts
+    deferrals, by up to that factor, and the row's own timestamp is the sampled
+    deferral's rather than the first one's.
     """
 
     QUEUED_CREATED = "schedule.queued.created"
