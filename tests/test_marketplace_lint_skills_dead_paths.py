@@ -148,6 +148,36 @@ def _kinds(findings: list[str]) -> set[str]:
             "A `nowhere/anything.md` reference.\n",
             set(),
         ),
+        # str.splitlines() breaks on characters Markdown does not treat as line
+        # endings, and it breaks by removing them, so a fragment that should have
+        # been rejected for its leading character arrives at column zero and opens
+        # a fence the document does not have.
+        (
+            "a form feed does not end a line, so it opens no fence",
+            "\f```\n`lionagi/missing.py`\n\f```\n",
+            {"DEAD_PATH"},
+        ),
+        (
+            "nor does a vertical tab",
+            "\v```\n`lionagi/missing.py`\n\v```\n",
+            {"DEAD_PATH"},
+        ),
+        (
+            "nor does a Unicode line separator",
+            " ```\n`lionagi/missing.py`\n ```\n",
+            {"DEAD_PATH"},
+        ),
+        # The other half of the same decision: splitting on newlines alone is only
+        # correct because the file is read in universal-newlines mode. A bare CR
+        # is the case that proves it, since a read that stopped normalizing would
+        # collapse this to one line whose info string holds a backtick, and the
+        # path would be reported instead of skipped. CRLF is covered by the same
+        # normalization but cannot fail on its own, so it is not pinned separately.
+        (
+            "a CR-delimited file still reads as three lines and opens a fence",
+            "```\r`lionagi/missing.py`\r```\r",
+            set(),
+        ),
         (
             "templates, globs and absolute or home-relative forms are not paths",
             "Use `runs/$RUN_ID/out.json` and `stream/{id}.jsonl` and `/api/shows` "

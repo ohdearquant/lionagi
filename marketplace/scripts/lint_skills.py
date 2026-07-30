@@ -287,9 +287,21 @@ def scan_dead_paths(
     except OSError as exc:
         return [f"[ERROR] {path} — cannot read: {exc}"]
 
+    # Split on newlines only. The read above is in universal-newlines mode, so CR
+    # and CRLF have already become LF and nothing else here is a line ending.
+    #
+    # str.splitlines() would additionally break on \v \f \x1c \x1d \x1e \x85
+    #  , none of which end a line in Markdown, and it breaks by REMOVING the
+    # character. A fragment the indent rule would have rejected for its leading
+    # character therefore arrives at column zero instead. That is a silent bypass
+    # rather than a cosmetic difference: the fragment becomes a delimiter, a real
+    # reference after it is skipped as fence content, and a second such fragment
+    # closes the block, so nothing is reported at all.
+    lines = text.split("\n")
+
     opener = ""  # the delimiter run that opened the current fence; "" when outside one
     fence_opened_at = 0
-    for lineno, line in enumerate(text.splitlines(), start=1):
+    for lineno, line in enumerate(lines, start=1):
         parts = _fence_parts(line)
         if parts:
             delim, trailing = parts
