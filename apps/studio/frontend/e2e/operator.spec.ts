@@ -162,7 +162,9 @@ test("Operator Deny and Allow decisions traverse the real permission route", asy
     exact: true,
   });
   await expect(deniedProposal).toBeVisible({ timeout: 15_000 });
-  await deniedProposal.getByText("Review exact command", { exact: true }).click();
+  // No click to reveal: the command must be on screen before Allow/Deny are reachable,
+  // so asserting it directly is the contract. Re-adding a click here would collapse the
+  // disclosure and assert the opposite of what this test is for.
   await expect(deniedProposal.getByText('"operation": "record_permission_decision"')).toBeVisible();
 
   const deniedResponsePromise = page.waitForResponse(
