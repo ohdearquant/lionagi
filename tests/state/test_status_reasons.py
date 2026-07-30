@@ -78,6 +78,29 @@ class TestReasonNamespace:
         assert ShowReasons.BLOCKED_NO_READY_PLAYS in VALID_REASON_CODES
         assert ScheduleReasons.FIRED_DUE in VALID_REASON_CODES
 
+    def test_schedule_skipped_set_is_closed_at_three(self):
+        """Keep the enumeration in the class docstring honest.
+
+        A reader deciding what a skipped schedule_run can mean is told there are
+        exactly three answers. That claim is prose, so it goes stale silently the
+        moment a fourth code is added, and the reader who trusted it treats an
+        unseen value as impossible. Deriving the set by prefix here means the
+        addition reds this test instead, and whoever adds the code updates the
+        enumeration a consumer is actually reading.
+        """
+        skipped = {
+            value
+            for name, value in vars(ScheduleReasons).items()
+            if not name.startswith("_")
+            and isinstance(value, str)
+            and value.startswith("schedule.skipped.")
+        }
+        assert skipped == {
+            ScheduleReasons.SKIPPED_PRECONDITION,
+            ScheduleReasons.SKIPPED_OVERLAP,
+            ScheduleReasons.SKIPPED_MISSED_FIRE,
+        }
+
 
 class TestValidators:
     def test_validate_reason_code_accepts_legal(self):
