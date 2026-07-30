@@ -17,7 +17,7 @@ from lionagi.state.db import StateDB
 
 from .. import config
 from ..registry import studio_route
-from ..scheduler.subprocess import build_argv
+from ..scheduler.subprocess import build_argv, resolve_li_executable
 from ..services.schedules import (
     _svc_validate_action_model,
     _svc_validate_extra_args,
@@ -39,6 +39,10 @@ _launch_semaphore: asyncio.Semaphore | None = None
 
 class TooManyLaunchesError(Exception):
     """Raised when the in-flight launch count reaches the configured cap."""
+
+
+class LiExecutableUnavailableError(RuntimeError):
+    """The daemon cannot resolve the installed ``li`` console script."""
 
 
 def _get_semaphore() -> asyncio.Semaphore:
@@ -124,7 +128,55 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
             if defn.get(k) is not None:
                 opts[k] = defn[k]
         schedule_dict["action_engine_options"] = opts
-    argv, tmp_path = build_argv(schedule_dict, {})
+    if data["action_kind"] == "command":
+        # Allow-listed command actions execute their own binary directly.
+        argv, tmp_path = build_argv(schedule_dict, {})
+    else:
+        executable_prefix, resolve_error = resolve_li_executable()
+        if executable_prefix is None:
+            raise LiExecutableUnavailableError(
+                "The Studio daemon could not resolve the installed `li` executable"
+                + (f": {resolve_error}" if resolve_error else "")
+            )
+        argv, tmp_path = build_argv(
+            schedule_dict,
+            {},
+            executable_prefix=executable_prefix,
+        )
+
+    inv_id = await launch_detached_argv(
+        argv,
+        skill=f"launch:{data['action_kind']}",
+        plugin="studio_launch",
+        prompt=data.get("action_prompt") or data.get("action_playbook"),
+        tmp_path=tmp_path,
+        action_kind=data["action_kind"],
+    )
+
+    return {
+        "invocation_id": inv_id,
+        "action_kind": data["action_kind"],
+    }
+
+
+async def launch_detached_argv(
+    argv: list[str],
+    *,
+    skill: str,
+    plugin: str,
+    prompt: str | None,
+    tmp_path: str | None = None,
+    action_kind: str | None = None,
+    node_metadata: dict[str, Any] | None = None,
+) -> str:
+    """Record and supervise one already-validated argv launch.
+
+    Callers own argv construction and validation. This helper owns the shared
+    launch admission cap, canonical invocation row, detached task retention,
+    cancellation lookup, and terminal status update.
+    """
+    if not argv or any(not isinstance(token, str) or "\x00" in token for token in argv):
+        raise ValueError("argv must be a non-empty list of NUL-free string tokens")
 
     sem = _get_semaphore()
     if sem.locked():
@@ -142,16 +194,17 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
             await db.create_invocation(
                 {
                     "id": inv_id,
-                    "skill": f"launch:{data['action_kind']}",
-                    "plugin": "studio_launch",
-                    "prompt": data.get("action_prompt") or data.get("action_playbook"),
+                    "skill": skill,
+                    "plugin": plugin,
+                    "prompt": prompt,
                     "started_at": now,
                     "status": "running",
+                    "node_metadata": node_metadata,
                 }
             )
 
         task = asyncio.create_task(
-            _spawn_detached(argv, inv_id, tmp_path=tmp_path, action_kind=data["action_kind"]),
+            _spawn_detached(argv, inv_id, tmp_path=tmp_path, action_kind=action_kind),
             name=f"launch-{inv_id}",
         )
     except BaseException:
@@ -161,11 +214,7 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
     task.add_done_callback(lambda _t: sem.release())
     _detached_tasks.add(task)
     task.add_done_callback(_detached_tasks.discard)
-
-    return {
-        "invocation_id": inv_id,
-        "action_kind": data["action_kind"],
-    }
+    return inv_id
 
 
 async def _resolve_engine_def(ref: str) -> dict[str, Any]:
@@ -279,6 +328,8 @@ async def launch_run(body: LaunchRequest) -> dict[str, Any]:
         return await launch(body.model_dump(exclude_none=True))
     except TooManyLaunchesError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except LiExecutableUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

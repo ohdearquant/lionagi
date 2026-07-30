@@ -8,6 +8,7 @@ import codecs
 import contextlib
 import json
 import logging
+import os
 import shutil
 from collections.abc import AsyncIterator, Callable
 from functools import partial
@@ -23,6 +24,10 @@ log = logging.getLogger(__name__)
 # Sentinel that means "do not pass stdin to create_subprocess_exec at all"
 # (inherits the parent process stdin, matching the old Gemini/Pi behaviour).
 _INHERIT_STDIN = object()
+_STUDIO_CREDENTIAL_ENV_KEYS = (
+    "LIONAGI_STUDIO_AUTH_TOKEN",
+    "LIONAGI_STUDIO_HUMAN_TOKEN",
+)
 
 
 async def ndjson_from_cli(
@@ -45,9 +50,12 @@ async def ndjson_from_cli(
     output nobody is draining), and the pipe is closed afterwards so the child
     sees EOF rather than waiting forever for more input.
     """
+    child_env = dict(os.environ if env is None else env)
+    for key in _STUDIO_CREDENTIAL_ENV_KEYS:
+        child_env.pop(key, None)
     kwargs: dict[str, Any] = dict(
         cwd=str(cwd) if cwd else None,
-        env=env,
+        env=child_env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,

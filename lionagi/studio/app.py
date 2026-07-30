@@ -49,9 +49,13 @@ def _collect_cors_methods(application: FastAPI) -> list[str]:
     return sorted(methods)
 
 
-def _emit_startup_warnings() -> None:
+def _emit_startup_warnings(application: FastAPI | None = None) -> None:
     """Emit security warnings once at startup — no-op if conditions are safe."""
-    token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
+    from .security import studio_auth_token
+
+    token = (
+        getattr(application.state, "studio_auth_token", None) if application is not None else None
+    ) or studio_auth_token()
     if not token:
         bind_host = os.getenv("LIONAGI_STUDIO_HOST", HOST)
         if bind_host == "0.0.0.0":  # noqa: S104
@@ -160,6 +164,7 @@ async def lifespan(app_instance):
 
     from .scheduler.engine import scheduler
     from .services.lifecycle import run_startup_reconciliation
+    from .services.operator import operator_shutdown, operator_startup
 
     # First, before anything else can run and long before the first request:
     # read where this process's code came from. The modules in memory were fixed
@@ -171,7 +176,7 @@ async def lifespan(app_instance):
     # verdict on top.
     await asyncio.to_thread(snapshot_git_position)
 
-    _emit_startup_warnings()
+    _emit_startup_warnings(app_instance)
     # The second of the two settings-driven notify bootstrap points (CLI is the first).
     from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
 
@@ -179,6 +184,9 @@ async def lifespan(app_instance):
     await scheduler.start()
     # Corrects phantom/stale-status rows /api routes read directly; must precede serving.
     await run_startup_reconciliation()
+    # Recover any accepted Operator turn that was interrupted by a prior daemon
+    # exit before accepting new submissions.
+    await operator_startup()
     mirror_stop, mirror_task = _start_claude_mirror()
     # Pure maintenance; deferred so readiness isn't gated on it.
     warmup_task = asyncio.create_task(_startup_warmup(), name="studio-startup-warmup")
@@ -187,6 +195,7 @@ async def lifespan(app_instance):
 
     await _finalize_warmup(warmup_task)
     await _stop_claude_mirror(mirror_stop, mirror_task)
+    await operator_shutdown()
     await shutdown_launches()
     await scheduler.stop()
 
@@ -303,7 +312,30 @@ def _mount_spa(application: FastAPI, dist: Path) -> None:
 def create_app() -> FastAPI:
     """Build and return a fresh Studio FastAPI app instance, so callers
     (notably tests) can get a clean one without `importlib.reload`."""
+    # Capture direct-uvicorn credentials into app memory. Environment removal
+    # keeps them out of children we launch, but their environment origin is
+    # retained because process inspection can still reveal an initial value.
+    configured_auth = os.environ.pop("LIONAGI_STUDIO_AUTH_TOKEN", None)
+    configured_human = os.environ.pop("LIONAGI_STUDIO_HUMAN_TOKEN", None)
+    from .security import (
+        studio_auth_token,
+        studio_human_token,
+        studio_operator_credential_origin,
+    )
+
     application = FastAPI(title="Lion Studio Server", lifespan=lifespan)
+    application.state.studio_auth_token = configured_auth or studio_auth_token()
+    application.state.studio_human_token = (
+        configured_auth
+        or configured_human
+        or application.state.studio_auth_token
+        or studio_human_token()
+    )
+    application.state.studio_operator_credential_origin = (
+        "environment"
+        if configured_auth is not None or configured_human is not None
+        else studio_operator_credential_origin()
+    )
 
     @application.exception_handler(LionError)
     async def _lion_error_handler(request: Request, exc: LionError) -> JSONResponse:
@@ -318,7 +350,7 @@ def create_app() -> FastAPI:
         # CORS preflight has no Authorization header by design; let it through.
         if request.method == "OPTIONS":
             return await call_next(request)
-        token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
+        token = request.app.state.studio_auth_token or studio_auth_token()
         path = request.url.path
         if token and request.headers.get("authorization") != f"Bearer {token}":
             # /api/* and schema/docs are gated; non-API GET/HEAD (SPA shell,

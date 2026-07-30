@@ -1,0 +1,705 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+"""Coordinator for durable Operator turns, cancellation, and permissions."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import time
+import uuid
+from contextlib import suppress
+from typing import Any
+
+from .engine import (
+    BranchOperatorEngine,
+    OperatorProviderUnavailableError,
+    build_operator_branch,
+    compile_operator_history,
+    write_resumable_operator_snapshot,
+)
+from .store import (
+    OperatorAuditUnavailableError,
+    OperatorConflictError,
+    OperatorStore,
+)
+from .types import (
+    CommandExecutor,
+    OperatorEngineEvent,
+    OperatorEngineFactory,
+    OperatorEngineTurn,
+    PermissionDecision,
+)
+
+_log = logging.getLogger(__name__)
+
+
+class ApplicationTargetConflictError(RuntimeError):
+    """The exact target approved by a human is no longer current."""
+
+
+async def _verify_application_target(proposal: dict[str, Any]) -> None:
+    target_version = proposal.get("targetVersion")
+    if target_version is None:
+        return
+    command = proposal["command"]
+    if (
+        proposal["commandType"] != "launch"
+        or command.get("action_kind") != "play"
+        or not isinstance(command.get("action_playbook"), str)
+    ):
+        raise ApplicationTargetConflictError("Unsupported versioned application target")
+    from .application_mcp import resolve_playbook_version
+
+    try:
+        current_version = await resolve_playbook_version(command["action_playbook"])
+    except Exception as exc:  # noqa: BLE001
+        raise ApplicationTargetConflictError(
+            "The approved playbook target is no longer available"
+        ) from exc
+    if current_version != target_version:
+        raise ApplicationTargetConflictError("The approved playbook changed before execution")
+
+
+async def _execute_application_command(
+    command_type: str, command: dict[str, Any]
+) -> dict[str, Any]:
+    if command_type != "launch":
+        raise ValueError(f"Unsupported Operator application command: {command_type!r}")
+    from lionagi.studio.services.launches import launch
+
+    result = await launch(command)
+    invocation_id = result.get("invocation_id")
+    if not invocation_id:
+        return result
+
+    # A launch's canonical Run row is created by the child process. Give it a
+    # short opportunity to appear so the confirmation can carry a direct run
+    # link; retain the invocation link if startup takes longer.
+    from lionagi.studio.services.invocations import get_invocation
+
+    run_id = None
+    for _ in range(20):
+        detail = await get_invocation(str(invocation_id))
+        sessions = detail.get("sessions", []) if detail else []
+        if sessions:
+            run_id = sessions[0].get("id")
+            break
+        await asyncio.sleep(0.1)
+    return {
+        **result,
+        "run_id": run_id,
+        "href": f"/runs/{run_id}" if run_id else f"/invocations/{invocation_id}",
+    }
+
+
+class OperatorCoordinator:
+    def __init__(
+        self,
+        *,
+        store: OperatorStore | None = None,
+        engine_factory: OperatorEngineFactory | None = None,
+        command_executor: CommandExecutor | None = None,
+    ) -> None:
+        self.store = store or OperatorStore()
+        self.engine_factory = engine_factory or BranchOperatorEngine
+        self.command_executor = command_executor or _execute_application_command
+        self._tasks: dict[str, asyncio.Task] = {}
+        self._started = False
+
+    async def startup(self) -> list[str]:
+        await self.store.ensure_schema()
+        recovered = await self.store.recover_interrupted_turns()
+        self._started = True
+        return recovered
+
+    async def ensure_started(self) -> None:
+        if not self._started:
+            # Route-level fallback for direct ASGI/service tests. Normal daemon
+            # startup calls startup() before accepting requests.
+            await self.startup()
+
+    async def shutdown(self) -> None:
+        tasks = list(self._tasks.items())
+        for request_id, task in tasks:
+            if task.done():
+                continue
+            try:
+                turn = await self.store.get_turn(request_id)
+            except Exception:  # noqa: BLE001
+                turn = None
+            # A done frame makes the turn terminal before canonical Run
+            # teardown closes its StateDB handle and writes its final
+            # snapshot. Let that bounded cleanup finish; cancelling it here
+            # can strand the aiosqlite worker/connection.
+            if turn is None or turn["status"] not in {
+                "completed",
+                "failed",
+                "cancelled",
+            }:
+                task.cancel()
+        if tasks:
+            await asyncio.gather(
+                *(task for _request_id, task in tasks),
+                return_exceptions=True,
+            )
+        self._tasks.clear()
+        self._started = False
+
+    async def create_conversation(
+        self, *, project: str | None = None, title: str | None = None
+    ) -> dict[str, Any]:
+        await self.ensure_started()
+        conversation = await self.store.create_conversation(project=project, title=title)
+        return {"conversation": conversation, "frames": []}
+
+    async def snapshot(
+        self,
+        conversation_id: str,
+        *,
+        after_sequence: int = 0,
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        await self.ensure_started()
+        frames = await self.store.list_frames(
+            conversation_id, after_sequence=after_sequence, limit=limit
+        )
+        # Read the tail after the page so metadata cannot predate a frame the
+        # page itself already contains.
+        conversation = await self.store.get_conversation(conversation_id)
+        page_tail = frames[-1]["sequence"] if frames else after_sequence
+        latest = int(conversation["nextSequence"]) - 1
+        return {
+            "conversation": conversation,
+            "frames": frames,
+            "hasMore": page_tail < latest,
+            "nextAfterSequence": page_tail,
+            "latestSequence": latest,
+        }
+
+    async def submit(
+        self,
+        conversation_id: str,
+        *,
+        instruction: str,
+        context: dict[str, Any],
+        expected_last_sequence: int,
+    ) -> dict[str, Any]:
+        await self.ensure_started()
+        accepted = await self.store.submit_turn(
+            conversation_id,
+            instruction=instruction,
+            context=context,
+            expected_last_sequence=expected_last_sequence,
+        )
+        request_id = accepted["requestId"]
+        ready = asyncio.Event()
+        task = asyncio.create_task(
+            self._run_turn(request_id, ready), name=f"operator-turn-{request_id}"
+        )
+        self._tasks[request_id] = task
+
+        def discard(done: asyncio.Task) -> None:
+            ready.set()
+            self._tasks.pop(request_id, None)
+            if done.cancelled():
+                return
+            exc = done.exception()
+            if exc is not None:
+                _log.error("Operator turn task escaped", exc_info=exc)
+
+        task.add_done_callback(discard)
+        # A successful 202 identifies a canonical Run, not merely a future
+        # intention to create one. The event is set after the durable run-link
+        # frames land (or when setup terminally fails).
+        await ready.wait()
+        return accepted
+
+    async def _run_turn(self, request_id: str, ready: asyncio.Event) -> None:
+        turn_row = await self.store.get_turn(request_id)
+        if not await self.store.mark_running(request_id):
+            return
+        conversation_id = turn_row["conversationId"]
+        live = None
+        run_branch = None
+        run_dir = None
+        started_at: float | None = None
+        terminal_status = "completed"
+        terminal_exc: BaseException | None = None
+        try:
+            complete_turns = await self.store.list_complete_turn_frame_groups(
+                conversation_id,
+                exclude_request_id=request_id,
+                limit=64,
+            )
+            compiled = compile_operator_history(complete_turns)
+            compiled_context = await self.store.record_context_compilation(
+                request_id, compiled.metadata
+            )
+
+            async def request_permission(
+                command_type: str,
+                command: dict[str, Any],
+                risk: str,
+                summary: str,
+            ) -> PermissionDecision:
+                proposal = await self.store.create_proposal(
+                    conversation_id,
+                    request_id,
+                    command_type=command_type,
+                    command=command,
+                    risk=risk,
+                    summary=summary,
+                )
+                while True:
+                    current = await self.store.get_proposal(proposal["id"])
+                    if current["status"] == "pending" and current["expiresAt"] <= time.time():
+                        current = await self.store.expire_proposal(current["id"])
+                    if current["status"] in {"confirmed", "succeeded"}:
+                        return PermissionDecision(True, current["id"], result=current.get("result"))
+                    if current["status"] in {
+                        "cancelled",
+                        "expired",
+                        "failed",
+                        "conflict",
+                    }:
+                        return PermissionDecision(False, current["id"])
+                    await asyncio.sleep(0.05)
+
+            engine_turn = OperatorEngineTurn(
+                conversation_id=conversation_id,
+                request_id=request_id,
+                instruction=turn_row["instruction"],
+                context=compiled_context,
+                history=compiled.frames,
+                request_permission=request_permission,
+                store_path=str(self.store.path()),
+            )
+            run_branch = build_operator_branch(engine_turn)
+            engine_turn = OperatorEngineTurn(
+                conversation_id=engine_turn.conversation_id,
+                request_id=engine_turn.request_id,
+                instruction=engine_turn.instruction,
+                context=engine_turn.context,
+                history=engine_turn.history,
+                request_permission=engine_turn.request_permission,
+                runtime_branch=run_branch,
+                store_path=engine_turn.store_path,
+            )
+            from lionagi.cli import _runs as cli_runs
+
+            file_run_id = f"operator-{uuid.uuid4().hex[:12]}"
+            run_dir = cli_runs.RunDir(
+                run_id=file_run_id,
+                state_root=cli_runs.RUNS_ROOT / file_run_id,
+                artifact_root=cli_runs.RUNS_ROOT / file_run_id / "artifacts",
+            )
+            run_dir.ensure_state_dirs()
+            run_dir.ensure_artifact_root()
+            started_at = time.time()
+            run_dir.write_manifest(
+                {
+                    "kind": "agent",
+                    "agent_name": "Operator",
+                    "branch_id": str(run_branch.id),
+                    "provider": os.environ.get("LIONAGI_STUDIO_OPERATOR_PROVIDER", "claude_code"),
+                    "model": os.environ.get("LIONAGI_STUDIO_OPERATOR_MODEL", "sonnet"),
+                    "status": "running",
+                    "started_at": started_at,
+                    "ended_at": None,
+                }
+            )
+            # Scripted/test engines may not call Branch.run themselves; the
+            # canonical snapshot still exists before the run link is emitted.
+            await write_resumable_operator_snapshot(run_branch, run_dir.branches_dir)
+
+            provider = os.environ.get("LIONAGI_STUDIO_OPERATOR_PROVIDER", "claude_code")
+            model_name = os.environ.get("LIONAGI_STUDIO_OPERATOR_MODEL", "sonnet")
+            live = await cli_runs.setup_agent_persist(
+                run_branch,
+                agent_name="Operator",
+                artifacts_path=str(run_dir.artifact_root),
+                model=model_name,
+                provider=provider,
+                project=turn_row["context"].get("project"),
+                run_id=run_dir.run_id,
+                share_db=False,
+            )
+            if live is None:
+                raise RuntimeError("Could not create the canonical Operator run")
+            run_id = live["session_id"]
+            await self.store.append_frame(
+                conversation_id,
+                request_id,
+                "tool_result",
+                {
+                    "callId": f"run:{request_id}",
+                    "ok": True,
+                    "result": {
+                        "runId": run_id,
+                        "branchId": str(run_branch.id),
+                        "href": f"/runs/{run_id}",
+                    },
+                },
+            )
+            await self.store.append_frame(
+                conversation_id,
+                request_id,
+                "text",
+                {
+                    "content": f"[Open this Operator run](/runs/{run_id})",
+                    "format": "markdown",
+                    "role": "assistant",
+                },
+            )
+            ready.set()
+            engine = self.engine_factory()
+            engine_turn = OperatorEngineTurn(
+                conversation_id=engine_turn.conversation_id,
+                request_id=engine_turn.request_id,
+                instruction=engine_turn.instruction,
+                context=engine_turn.context,
+                history=engine_turn.history,
+                request_permission=engine_turn.request_permission,
+                runtime_branch=engine_turn.runtime_branch,
+                store_path=engine_turn.store_path,
+                run_dir=run_dir,
+            )
+            async for event in engine.stream(engine_turn):
+                if not isinstance(event, OperatorEngineEvent):
+                    raise TypeError("Operator engine yielded an invalid event")
+                if event.type == "done":
+                    continue
+                if event.type == "ui_command":
+                    effect = event.payload.get("effect")
+                    if not isinstance(effect, dict):
+                        raise TypeError("Operator engine yielded an invalid UI effect")
+                    await self.store.append_effect(conversation_id, request_id, effect)
+                else:
+                    if event.type == "tool_result":
+                        call_id = event.payload.get("callId")
+                        if isinstance(call_id, str):
+                            completed = await self.store.complete_provider_permission(
+                                request_id,
+                                call_id,
+                                ok=bool(event.payload.get("ok")),
+                            )
+                            if completed is not None:
+                                await self.store.append_frame(
+                                    conversation_id,
+                                    request_id,
+                                    "confirmation",
+                                    {
+                                        "proposalId": completed["id"],
+                                        "state": "executed",
+                                    },
+                                )
+                    await self.store.append_frame(
+                        conversation_id, request_id, event.type, event.payload
+                    )
+            await self.store.finish_turn(request_id, outcome="completed")
+        except asyncio.CancelledError:
+            terminal_status = "cancelled"
+            await self.store.finish_turn(
+                request_id,
+                outcome="cancelled",
+                error={
+                    "code": "cancelled",
+                    "message": "The operator cancelled this turn",
+                    "retryable": False,
+                },
+            )
+            raise
+        except OperatorProviderUnavailableError as exc:
+            terminal_status = "failed"
+            terminal_exc = exc
+            await self.store.finish_turn(
+                request_id,
+                outcome="failed",
+                error={
+                    "code": "provider_unavailable",
+                    "message": str(exc),
+                    "retryable": False,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            terminal_status = "failed"
+            terminal_exc = exc
+            _log.exception("Operator turn failed: %s", request_id)
+            await self.store.finish_turn(
+                request_id,
+                outcome="failed",
+                error={
+                    "code": "model_failure",
+                    "message": (
+                        f"The Operator engine failed ({type(exc).__name__}); "
+                        "see daemon logs for diagnostics"
+                    ),
+                    "retryable": True,
+                },
+            )
+        finally:
+            # Publish the final checkpoint before marking the canonical
+            # session terminal. Queued resume workers use that transition as
+            # the hand-off boundary.
+            if run_branch is not None and run_dir is not None:
+                with suppress(Exception):
+                    await write_resumable_operator_snapshot(run_branch, run_dir.branches_dir)
+            if live is not None:
+                from lionagi.cli._runs import teardown_agent_persist
+
+                with suppress(Exception):
+                    await teardown_agent_persist(
+                        live,
+                        status=terminal_status,
+                        exception=terminal_exc,
+                    )
+            if run_branch is not None and run_dir is not None:
+                with suppress(Exception):
+                    run_dir.write_manifest(
+                        {
+                            "kind": "agent",
+                            "agent_name": "Operator",
+                            "branch_id": str(run_branch.id),
+                            "session_id": live["session_id"] if live is not None else None,
+                            "provider": os.environ.get(
+                                "LIONAGI_STUDIO_OPERATOR_PROVIDER", "claude_code"
+                            ),
+                            "model": os.environ.get("LIONAGI_STUDIO_OPERATOR_MODEL", "sonnet"),
+                            "status": terminal_status,
+                            "started_at": started_at or time.time(),
+                            "ended_at": time.time(),
+                        }
+                    )
+            ready.set()
+
+    async def cancel(self, conversation_id: str, request_id: str) -> dict[str, Any]:
+        await self.ensure_started()
+        result = await self.store.request_cancel(conversation_id, request_id)
+        task = self._tasks.get(request_id)
+        if task is not None and not task.done():
+            task.cancel()
+        if result["cancelRequested"]:
+            # Do not rely on the task's coroutine body having started: a task
+            # cancelled immediately after create_task() never enters its
+            # try/except. finish_turn is idempotent with the running task's
+            # cancellation cleanup.
+            await self.store.finish_turn(
+                request_id,
+                outcome="cancelled",
+                error={
+                    "code": "cancelled",
+                    "message": "The operator cancelled this turn",
+                    "retryable": False,
+                },
+            )
+        return result
+
+    async def decide(
+        self,
+        conversation_id: str,
+        proposal_id: str,
+        *,
+        allow: bool,
+        expected_command_hash: str | None,
+        expected_target_version: str | None,
+    ) -> dict[str, Any]:
+        await self.ensure_started()
+        before = await self.store.get_proposal(proposal_id)
+        if before["conversationId"] != conversation_id:
+            raise OperatorConflictError("Proposal does not belong to this conversation")
+
+        try:
+            # Validation, audit insertion, and the pending -> executing claim
+            # share one SQLite transaction. A concurrent allow therefore sees
+            # executing and cannot invoke the application command again.
+            proposal = await self.store.decide_proposal(
+                conversation_id,
+                proposal_id,
+                allow=allow,
+                expected_command_hash=expected_command_hash,
+                expected_target_version=expected_target_version,
+                audit=True,
+                claim_execution=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, OperatorConflictError):
+                raise
+            raise OperatorAuditUnavailableError("Mutation audit is unavailable") from exc
+
+        if not allow:
+            return self._proposal_result(proposal)
+
+        if proposal["commandType"] == "provider_permission":
+            return self._proposal_result(proposal)
+        if not proposal.get("_claimedExecution"):
+            return self._proposal_result(proposal)
+
+        try:
+            # Re-fingerprint after the durable execution claim and immediately
+            # before invoking the application service. A changed or removed
+            # playbook fails closed without executing the approved command.
+            await _verify_application_target(proposal)
+        except ApplicationTargetConflictError as exc:
+            _log.warning("Operator application target conflict: %s", proposal_id)
+            try:
+                proposal = await self.store.complete_proposal(
+                    proposal_id,
+                    status="conflict",
+                    error_code="stale_context",
+                    result={"message": str(exc)},
+                    audit=True,
+                )
+            except Exception as persist_exc:  # noqa: BLE001
+                raise OperatorAuditUnavailableError(
+                    "Target conflict outcome is indeterminate; reconciliation is required"
+                ) from persist_exc
+            await self.store.append_frame(
+                conversation_id,
+                proposal["requestId"],
+                "tool_result",
+                {
+                    "callId": proposal_id,
+                    "ok": False,
+                    "error": {
+                        "code": "stale_context",
+                        "message": str(exc),
+                        "retryable": False,
+                    },
+                },
+            )
+            return self._proposal_result(proposal)
+
+        try:
+            result = await self.command_executor(proposal["commandType"], proposal["command"])
+        except Exception as exc:  # noqa: BLE001
+            public_message = (
+                f"Application command failed ({type(exc).__name__}); "
+                "see daemon logs for diagnostics"
+            )
+            _log.exception("Operator application command failed: %s", proposal_id)
+            try:
+                proposal = await self.store.complete_proposal(
+                    proposal_id,
+                    status="failed",
+                    error_code="service_failure",
+                    result={"message": public_message},
+                    audit=True,
+                )
+            except Exception as persist_exc:  # noqa: BLE001
+                # The application was attempted but its terminal audit could
+                # not be committed. Leave the durable claim executing so an
+                # automatic retry cannot duplicate an indeterminate command.
+                _log.exception(
+                    "Operator command failure outcome could not be audited: %s",
+                    proposal_id,
+                )
+                raise OperatorAuditUnavailableError(
+                    "Command outcome is indeterminate; reconciliation is required"
+                ) from persist_exc
+            await self.store.append_frame(
+                conversation_id,
+                proposal["requestId"],
+                "tool_result",
+                {
+                    "callId": proposal_id,
+                    "ok": False,
+                    "error": {
+                        "code": "service_failure",
+                        "message": public_message,
+                        "retryable": False,
+                    },
+                },
+            )
+            return self._proposal_result(proposal)
+
+        try:
+            proposal = await self.store.complete_proposal(
+                proposal_id, status="succeeded", result=result, audit=True
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Execution happened. Never rewrite this as a safe failure or run
+            # it again: the executing claim and idempotency key intentionally
+            # remain for manual reconciliation.
+            _log.exception("Operator command result audit failed: %s", proposal_id)
+            raise OperatorAuditUnavailableError(
+                "Command outcome is indeterminate; reconciliation is required"
+            ) from exc
+        await self.store.append_frame(
+            conversation_id,
+            proposal["requestId"],
+            "confirmation",
+            {"proposalId": proposal_id, "state": "executed"},
+        )
+        await self.store.append_frame(
+            conversation_id,
+            proposal["requestId"],
+            "tool_result",
+            {
+                "callId": proposal_id,
+                "ok": True,
+                "result": result,
+            },
+        )
+        href = result.get("href")
+        if isinstance(href, str):
+            label = "Open run" if result.get("run_id") else "Open launch invocation"
+            await self.store.append_frame(
+                conversation_id,
+                proposal["requestId"],
+                "text",
+                {
+                    "content": f"[{label}]({href})",
+                    "format": "markdown",
+                    "role": "assistant",
+                },
+            )
+        return self._proposal_result(proposal)
+
+    @staticmethod
+    def _proposal_result(proposal: dict[str, Any]) -> dict[str, Any]:
+        status = proposal["status"]
+        wire_status = {
+            "confirmed": "executing",
+            "cancelled": "failed",
+        }.get(status, status)
+        return {
+            "proposalId": proposal["id"],
+            "status": wire_status,
+            "result": proposal.get("result"),
+            "error": (
+                {
+                    "code": proposal.get("errorCode") or "denied",
+                    "message": (
+                        "The approved target changed before execution"
+                        if proposal.get("errorCode") == "stale_context"
+                        else "Permission was not granted"
+                    ),
+                    "retryable": False,
+                }
+                if status in {"cancelled", "failed", "expired", "conflict"}
+                else None
+            ),
+        }
+
+
+_COORDINATOR: OperatorCoordinator | None = None
+
+
+def get_operator_coordinator() -> OperatorCoordinator:
+    global _COORDINATOR
+    if _COORDINATOR is None:
+        _COORDINATOR = OperatorCoordinator()
+    return _COORDINATOR
+
+
+async def reset_operator_coordinator_for_testing(
+    coordinator: OperatorCoordinator | None = None,
+) -> OperatorCoordinator:
+    global _COORDINATOR
+    if _COORDINATOR is not None:
+        with suppress(Exception):
+            await _COORDINATOR.shutdown()
+    _COORDINATOR = coordinator or OperatorCoordinator()
+    return _COORDINATOR

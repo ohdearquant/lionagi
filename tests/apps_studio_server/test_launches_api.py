@@ -330,15 +330,27 @@ class TestLaunchArgvPath:
         """launch() delegates argv construction to build_argv."""
         captured = {}
 
-        def _fake_build_argv(schedule, ctx):
+        def _consume(coro, **kw):
+            coro.close()
+            return MagicMock()
+
+        def _fake_build_argv(schedule, ctx, *, executable_prefix=None):
             captured["schedule"] = schedule
             captured["ctx"] = ctx
-            return (["uv", "run", "li", "agent", "--", "sonnet", "hi"], None)
+            captured["executable_prefix"] = executable_prefix
+            return ([*executable_prefix, "agent", "--", "sonnet", "hi"], None)
 
         with (
             patch("lionagi.studio.services.launches.build_argv", side_effect=_fake_build_argv),
+            patch(
+                "lionagi.studio.services.launches.resolve_li_executable",
+                return_value=(["/opt/lionagi/bin/li"], None),
+            ),
             patch("lionagi.studio.services.launches.StateDB") as MockDB,
-            patch("lionagi.studio.services.launches.asyncio.create_task"),
+            patch(
+                "lionagi.studio.services.launches.asyncio.create_task",
+                side_effect=_consume,
+            ),
         ):
             mock_db = AsyncMock()
             mock_db.create_invocation = AsyncMock()
@@ -356,6 +368,7 @@ class TestLaunchArgvPath:
         assert captured["schedule"]["action_model"] == "sonnet"
         assert captured["schedule"]["action_prompt"] == "hi"
         assert captured["ctx"] == {}
+        assert captured["executable_prefix"] == ["/opt/lionagi/bin/li"]
 
     def test_launch_returns_invocation_id_on_agent(self):
         """launch() must return a 12-char hex invocation_id for agent kind."""
@@ -381,6 +394,24 @@ class TestLaunchArgvPath:
 
         assert "invocation_id" in result
         assert len(result["invocation_id"]) == 12
+
+    def test_unresolved_installed_li_returns_503_before_recording(self, tmp_path, monkeypatch):
+        """A pip-installed daemon with no resolvable console script fails clearly."""
+        monkeypatch.setattr(
+            "lionagi.studio.services.launches.resolve_li_executable",
+            lambda: (None, "no 'li' console_scripts entry point registered"),
+        )
+        mock_db = _stub_db_and_spawn(monkeypatch)
+        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+
+        response = client.post(
+            "/api/launches",
+            json={"action_kind": "agent", "action_model": "sonnet", "action_prompt": "hello"},
+        )
+
+        assert response.status_code == 503, response.text
+        assert "console_scripts entry point" in response.json()["detail"]
+        mock_db.create_invocation.assert_not_awaited()
 
     def test_validate_request_rejects_flag_model(self):
         """_validate_request must reject action_model starting with '-'."""
@@ -825,7 +856,7 @@ class TestEngineScheduleAssembly:
         _stub_engine_def(monkeypatch, defn)
         captured = {}
 
-        def _fake_build_argv(schedule, ctx):
+        def _fake_build_argv(schedule, ctx, *, executable_prefix=None):
             captured["schedule"] = schedule
             return (["uv", "run", "li", "engine", "run", "--", "research", "spec"], None)
 
@@ -1303,7 +1334,7 @@ class TestLaunchFlowYamlKind:
 
         captured = {}
 
-        def _fake_build_argv(schedule, ctx):
+        def _fake_build_argv(schedule, ctx, *, executable_prefix=None):
             captured["schedule"] = schedule
             return (
                 ["uv", "run", "li", "o", "flow", "-f", "/tmp/x.yaml", "--", "sonnet"],
@@ -1486,7 +1517,7 @@ class TestLaunchCommandKind:
         monkeypatch.setenv(_COMMAND_ALLOWLIST_ENV, "echo")
         captured = {}
 
-        def _fake_build_argv(schedule, ctx):
+        def _fake_build_argv(schedule, ctx, *, executable_prefix=None):
             captured["schedule"] = schedule
             return (["echo", "hi"], None)
 
