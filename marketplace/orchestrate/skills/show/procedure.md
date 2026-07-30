@@ -231,6 +231,7 @@ submit the final gate as an agent run. `agent.submit` is a spawn verb, so ask fo
       "op": "agent.submit",
       "args": {
         "agent": "reviewer",
+        "cwd": "/absolute/path/to/<show_dir>",
         "prompt": "You are the final gate agent for show '<topic>'. Read _show.md for the original goal. For each play, read its _verdict.json and _meta.json. Determine: does the integration branch now satisfy the show goal? Output ONLY valid JSON: {\"show_passed\": true, \"summary\": \"...\", \"blockers\": []} or {\"show_passed\": false, \"summary\": \"...\", \"blockers\": [\"play_name: reason\"]}"
       },
       "schema_fingerprint": "<from the help call above>"

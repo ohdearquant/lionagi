@@ -92,7 +92,8 @@ and let the planner build the DAG:
       "op": "flow.submit",
       "args": {
         "prompt": "Phase 0: fetch diff with gh pr diff <pr_ref> and save to _context/diff.txt. Phase 1: run correctness, security, and tests specialists in parallel. Phase 2: critic synthesises all findings into critic_final/final_synthesis.md.",
-        "agent": "orchestrator"
+        "agent": "orchestrator",
+        "cwd": "/absolute/path/to/your/checkout"
       },
       "schema_fingerprint": "<from help={\"verb\": \"flow.submit\"}>"
     }

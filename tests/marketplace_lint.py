@@ -822,6 +822,66 @@ def test_a_playbook_bearing_example_names_a_playbook_qualified_help_source() -> 
     )
 
 
+# A prompt that names a relative path, a workspace file, or a worktree is asking
+# the spawned run to read or write in a specific directory. The server resolves an
+# omitted `cwd` to its own directory, not the caller's, so such an example starts
+# the run where the files are not.
+_PROMPT_NEEDS_CWD = re.compile(
+    r"""(?:
+          _[a-z_]+\.(?:md|json|txt|ya?ml)   # a workspace file: _intent.md, _verdict.json
+        | \bartifacts\b
+        | \bworktree\b
+        | <(?:play|show)_dir>
+        )""",
+    re.VERBOSE | re.IGNORECASE,
+)
+
+
+def test_a_spawn_example_whose_prompt_names_a_path_passes_cwd() -> None:
+    """A run that must read the caller's files has to be told where they are.
+
+    An omitted `cwd` resolves to the server's own directory. An example whose
+    prompt says to read `_intent.md` therefore starts the run somewhere that file
+    does not exist, and the run reports on evidence it never saw — the failure is a
+    verdict formed from absence, not an error.
+
+    This is the third and fourth site of one defect class: review found the play
+    submit, then two gate submits the first fix did not cover, and a sweep for the
+    class found one more in a different skill. Fixing instances one at a time is
+    what produced that sequence, so the class is pinned here instead.
+    """
+    from lionagi.mcp.verbs import VERBS
+
+    spawns = frozenset(name for name, verb in VERBS.items() if verb.executor == "spawn")
+    assert spawns, "no spawn verbs in the registry — the check would pass vacuously"
+
+    offenders: list[str] = []
+    checked = 0
+    for path in _SKILL_FILES:
+        text = _read(path)
+        for verb, window in _op_objects_in(text):
+            if verb not in spawns or '"prompt"' not in window:
+                continue
+            if not _PROMPT_NEEDS_CWD.search(window):
+                continue
+            checked += 1
+            if '"cwd"' in window:
+                continue
+            start = text.find(window)
+            lineno = text[:start].count("\n") + 1
+            offenders.append(f"{_rel(path)}:{lineno} {verb}")
+
+    assert checked, (
+        "no spawn example with a path-bearing prompt found under marketplace/ at all — "
+        "the pattern no longer matches the bundle and this check is vacuous"
+    )
+    assert not offenders, (
+        "these examples tell the spawned run to read or write specific files but pass "
+        "no `cwd`, so the run starts in the server's directory and reports on evidence "
+        "it never saw: " + repr(sorted(offenders))
+    )
+
+
 def test_the_qualified_source_check_rejects_a_source_for_a_different_playbook() -> None:
     """A qualified call for one playbook, an op naming another.
 

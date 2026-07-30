@@ -19,6 +19,7 @@ agent to evaluate its output. `agent.submit` is a spawn verb — its op needs th
       "op": "agent.submit",
       "args": {
         "agent": "reviewer",
+        "cwd": "/absolute/path/to/<play_dir>",
         "prompt": "You are the gate agent for play '<play>' of show '<topic>'. Read the play output (job.output for run_id <run_id>) and any artifacts saved to <play_dir>. Acceptance criteria from _intent.md: <contents of _intent.md>. Evaluate: did the play meet every acceptance criterion? Output ONLY valid JSON to stdout: {\"gate_passed\": true, \"feedback\": null, \"notes\": \"All criteria met.\"} or {\"gate_passed\": false, \"feedback\": \"Missing error handling for X.\", \"notes\": null}"
       },
       "schema_fingerprint": "<from the help call above>"
