@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 import os
 import re
@@ -35,6 +36,17 @@ _GUARDED_NON_API_PATHS = frozenset(
         "/docs/oauth2-redirect",
     }
 )
+
+
+def _bearer_matches(presented: str, token: str) -> bool:
+    """Constant-time comparison of a presented Authorization header against the
+    expected bearer. `compare_digest` only accepts ASCII-only str, so a header
+    carrying non-ASCII bytes is a mismatch — same as before, not a 500.
+    """
+    try:
+        return hmac.compare_digest(presented, f"Bearer {token}")
+    except TypeError:
+        return False
 
 
 def _collect_cors_methods(application: FastAPI) -> list[str]:
@@ -352,7 +364,8 @@ def create_app() -> FastAPI:
             return await call_next(request)
         token = request.app.state.studio_auth_token or studio_auth_token()
         path = request.url.path
-        if token and request.headers.get("authorization") != f"Bearer {token}":
+        presented = request.headers.get("authorization") or ""
+        if token and not _bearer_matches(presented, token):
             # /api/* and schema/docs are gated; non-API GET/HEAD (SPA shell,
             # hashed assets) stay public or the UI becomes unloadable.
             is_api = path == "/api" or path.startswith("/api/")

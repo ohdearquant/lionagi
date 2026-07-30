@@ -27,6 +27,10 @@ from ..operator.types import (
 from ..registry import studio_route
 from ._sse import sse_response
 
+_CREDENTIAL_REQUIRED_DETAIL = (
+    "Operator conversations require a generated browser credential; restart with `li studio`"
+)
+
 
 def _http_error(exc: OperatorStoreError) -> HTTPException:
     if isinstance(exc, OperatorNotFoundError):
@@ -58,8 +62,10 @@ async def operator_shutdown() -> None:
 
 @studio_route("/operator/conversations", method="GET", area="operator")
 async def list_operator_conversations(
+    request: Request,
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict[str, Any]:
+    _require_operator_credential(request)
     coordinator = get_operator_coordinator()
     try:
         await coordinator.ensure_started()
@@ -71,8 +77,10 @@ async def list_operator_conversations(
 
 @studio_route("/operator/conversations", method="POST", area="operator")
 async def create_operator_conversation(
+    request: Request,
     body: CreateConversationRequest | None = None,
 ) -> dict[str, Any]:
+    _require_operator_credential(request)
     body = body or CreateConversationRequest()
     try:
         return await get_operator_coordinator().create_conversation(
@@ -85,9 +93,11 @@ async def create_operator_conversation(
 @studio_route("/operator/conversations/{conversation_id}", method="GET", area="operator")
 async def get_operator_conversation(
     conversation_id: str,
+    request: Request,
     after_sequence: int = Query(default=0, ge=0),
     limit: int = Query(default=1000, ge=1, le=1000),
 ) -> dict[str, Any]:
+    _require_operator_credential(request)
     try:
         return await get_operator_coordinator().snapshot(
             conversation_id, after_sequence=after_sequence, limit=limit
@@ -97,7 +107,8 @@ async def get_operator_conversation(
 
 
 @studio_route("/operator/conversations/{conversation_id}", method="DELETE", area="operator")
-async def delete_operator_conversation(conversation_id: str) -> dict[str, Any]:
+async def delete_operator_conversation(conversation_id: str, request: Request) -> dict[str, Any]:
+    _require_operator_credential(request)
     coordinator = get_operator_coordinator()
     try:
         await coordinator.ensure_started()
@@ -116,7 +127,7 @@ async def delete_operator_conversation(conversation_id: str) -> dict[str, Any]:
 async def submit_operator_turn(
     conversation_id: str, body: OperatorTurnRequest, request: Request
 ) -> dict[str, Any]:
-    _require_safe_operator_credential_origin(request)
+    _require_operator_credential(request)
     try:
         return await get_operator_coordinator().submit(
             conversation_id,
@@ -134,7 +145,10 @@ async def submit_operator_turn(
     area="operator",
     status_code=202,
 )
-async def cancel_operator_turn(conversation_id: str, request_id: str) -> dict[str, Any]:
+async def cancel_operator_turn(
+    conversation_id: str, request_id: str, request: Request
+) -> dict[str, Any]:
+    _require_operator_credential(request)
     try:
         return await get_operator_coordinator().cancel(conversation_id, request_id)
     except OperatorStoreError as exc:
@@ -152,6 +166,7 @@ async def stream_operator_conversation(
     request: Request,
     after_sequence: int = Query(default=0, ge=0),
 ):
+    _require_operator_credential(request)
     coordinator = get_operator_coordinator()
     try:
         await coordinator.ensure_started()
@@ -219,6 +234,46 @@ def _require_safe_operator_credential_origin(request: Request) -> None:
         )
 
 
+def _require_operator_credential(request: Request) -> None:
+    """The single authorization boundary for Operator conversation state.
+
+    Every route that reads or mutates a conversation goes through here, so the
+    app-wide Studio bearer — which is optional, and lets everything through when
+    unset — is never the only guard. Fails closed: an absent, empty or
+    unreadable credential is a refusal, never an allow.
+    """
+    _require_safe_operator_credential_origin(request)
+    # AUTH is also enforced by the app-wide middleware, so it is the effective
+    # browser credential when both variables are configured.
+    from ..security import studio_human_token
+
+    try:
+        application = request.scope.get("app")
+        token = (
+            getattr(getattr(application, "state", None), "studio_human_token", None)
+            or studio_human_token()
+        )
+    except Exception as exc:  # noqa: BLE001 — an unreadable credential is a refusal
+        raise HTTPException(
+            status_code=403,
+            detail=_CREDENTIAL_REQUIRED_DETAIL,
+        ) from exc
+    if not isinstance(token, str) or not token:
+        raise HTTPException(status_code=403, detail=_CREDENTIAL_REQUIRED_DETAIL)
+    presented = request.headers.get("authorization") or ""
+    try:
+        matched = hmac.compare_digest(presented, f"Bearer {token}")
+    except TypeError:
+        # compare_digest only accepts ASCII-only str; a non-ASCII header is a
+        # mismatch, not a server error.
+        matched = False
+    if not matched:
+        raise HTTPException(
+            status_code=403,
+            detail="Operator conversations require the browser credential",
+        )
+
+
 async def _require_human(request: Request) -> None:
     """Require the browser-held human bearer; network locality is not identity."""
     _require_safe_operator_credential_origin(request)
@@ -227,29 +282,7 @@ async def _require_human(request: Request) -> None:
             status_code=403,
             detail="Operator decisions require the human principal",
         )
-    # AUTH is also enforced by the app-wide middleware, so it is the effective
-    # browser credential when both variables are configured.
-    from ..security import studio_human_token
-
-    application = request.scope.get("app")
-    token = (
-        getattr(getattr(application, "state", None), "studio_human_token", None)
-        or studio_human_token()
-    )
-    if not token:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "Operator decisions require a generated browser credential; "
-                "restart with `li studio`"
-            ),
-        )
-    presented = request.headers.get("authorization") or ""
-    if not hmac.compare_digest(presented, f"Bearer {token}"):
-        raise HTTPException(
-            status_code=403,
-            detail="Operator decisions require the human principal",
-        )
+    _require_operator_credential(request)
 
 
 @studio_route(
@@ -309,7 +342,9 @@ async def acknowledge_operator_effect(
     conversation_id: str,
     effect_id: str,
     body: AcknowledgeEffectRequest,
+    request: Request,
 ) -> dict[str, Any]:
+    _require_operator_credential(request)
     coordinator = get_operator_coordinator()
     try:
         await coordinator.ensure_started()

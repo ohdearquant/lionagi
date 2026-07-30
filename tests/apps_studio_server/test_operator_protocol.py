@@ -1602,7 +1602,9 @@ async def test_direct_app_without_browser_credential_rejects_operator_submit(tmp
         base_url="http://127.0.0.1:8765",
     ) as client:
         assert (await client.get("/openapi.json")).status_code == 200
-        assert (await client.get(f"/api/operator/conversations/{cid}")).status_code == 200
+        # No configured credential means no Operator access at all — the
+        # conversation snapshot is state, and state is gated.
+        assert (await client.get(f"/api/operator/conversations/{cid}")).status_code == 403
         blocked = await client.post(
             f"/api/operator/conversations/{cid}/turns",
             json={
@@ -1726,10 +1728,18 @@ async def test_generated_browser_bearer_guards_operator_get_sse_and_submit(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_sse_replays_committed_frames_in_sequence(tmp_path):
+async def test_sse_replays_committed_frames_in_sequence(tmp_path, monkeypatch):
     from lionagi.studio.operator.coordinator import reset_operator_coordinator_for_testing
+    from lionagi.studio.security import (
+        capture_studio_credentials,
+        clear_captured_studio_credentials,
+    )
     from lionagi.studio.services.operator import stream_operator_conversation
 
+    clear_captured_studio_credentials()
+    monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("LIONAGI_STUDIO_HUMAN_TOKEN", raising=False)
+    token = capture_studio_credentials(generate_human=True)
     store = OperatorStore(tmp_path / "state.db")
     coordinator = OperatorCoordinator(store=store, engine_factory=BlockingEngine)
     await reset_operator_coordinator_for_testing(coordinator)
@@ -1743,6 +1753,11 @@ async def test_sse_replays_committed_frames_in_sequence(tmp_path):
     )
 
     class Connected:
+        # The stream route authorizes before it replays, so the stand-in has to
+        # carry a credential like a real request does.
+        scope: dict = {}
+        headers = {"authorization": f"Bearer {token}"}
+
         async def is_disconnected(self):
             return False
 
@@ -1755,6 +1770,7 @@ async def test_sse_replays_committed_frames_in_sequence(tmp_path):
     assert payload["payload"]["role"] == "user"
     await iterator.aclose()
     await coordinator.shutdown()
+    clear_captured_studio_credentials()
 
 
 @pytest.mark.asyncio
