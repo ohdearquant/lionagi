@@ -156,12 +156,8 @@ class SeededDaemon:
         env["LIONAGI_STUDIO_OPERATOR_PROVIDER"] = "scripted"
         env["LIONAGI_STUDIO_OPERATOR_MODEL"] = "scripted-test"
         env["LIONAGI_TEST_SCRIPT"] = str(operator_script)
-        # Ambient Studio credentials are never inherited. The test-only ASGI
-        # module mints its deterministic human bearer in process, matching the
-        # safe production launch mode rather than treating an environment
-        # variable as a trusted human principal.
+        # Deterministic no-auth, API-only daemon regardless of ambient shell env.
         env.pop("LIONAGI_STUDIO_AUTH_TOKEN", None)
-        env.pop("LIONAGI_STUDIO_HUMAN_TOKEN", None)
         env.pop("LIONAGI_STUDIO_FRONTEND_DIST", None)
         env.pop("LIONAGI_STUDIO_URL", None)
 

@@ -3,19 +3,6 @@ import { test, expect } from "@playwright/test";
 // Must match tests/e2e_studio/fixtures.py -- the seeded schedule name asserted
 // on below is only ever produced by the seeded daemon's fixtures.
 const SMOKE_SCHEDULE_NAME = "e2e-smoke-nightly-report";
-const E2E_HUMAN_TOKEN = "lionagi-studio-e2e-human-principal";
-
-function authenticatedStudioPath(path: string): string {
-  const baseURL = process.env.E2E_BASE_URL;
-  if (!baseURL) throw new Error("E2E_BASE_URL was not provided by global setup");
-  const url = new URL(path, baseURL);
-  url.hash = new URLSearchParams({
-    "studio-api": baseURL,
-    "studio-token": E2E_HUMAN_TOKEN,
-  }).toString();
-  return url.toString();
-}
-
 // index.html loads the analytics script from an external host. A deferred
 // script participates in the window load event, so a slow or unreachable
 // external fetch stalls page.goto past the test timeout on CI runners.
@@ -35,13 +22,13 @@ test("app boots, root renders, and the page logs no console errors", async ({ pa
   });
   page.on("pageerror", (err) => errors.push(err.message));
 
-  await page.goto(authenticatedStudioPath("/"));
+  await page.goto("/");
   await expect(page.locator("#root")).not.toBeEmpty();
   expect(errors, `console errors:\n${errors.join("\n")}`).toEqual([]);
 });
 
 test("schedules page renders data that only the seeded db could supply", async ({ page }) => {
-  await page.goto(authenticatedStudioPath("/schedules"));
+  await page.goto("/schedules");
   await expect(page.getByText(SMOKE_SCHEDULE_NAME)).toBeVisible();
 });
 
@@ -58,7 +45,7 @@ test("retired workspace URLs resolve into their live consolidated spaces", async
   ] as const;
 
   for (const [route, destination, landmark] of aliases) {
-    await page.goto(authenticatedStudioPath(route));
+    await page.goto(route);
     await expect(page).toHaveURL(destination);
     if (landmark === "Mission Control") {
       await expect(page.getByRole("heading", { name: landmark, exact: true })).toBeVisible();
@@ -77,7 +64,7 @@ test("primary Studio surfaces render without console failures", async ({ page })
   page.on("pageerror", (err) => errors.push(err.message));
 
   for (const route of ["/", "/fleet", "/designer", "/library", "/schedules", "/system"]) {
-    await page.goto(authenticatedStudioPath(route));
+    await page.goto(route);
     await expect(page.locator("#root")).not.toBeEmpty();
     await expect(page.getByText("Not Found", { exact: true })).toHaveCount(0);
   }
@@ -89,7 +76,7 @@ test.describe("narrow Studio shell", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
   test("keeps primary actions and Operator inside the viewport", async ({ page }) => {
-    await page.goto(authenticatedStudioPath("/schedules"));
+    await page.goto("/schedules");
     const operatorToggle = page.getByRole("button", { name: "Operator (⌘J)", exact: true });
     if ((await operatorToggle.getAttribute("aria-pressed")) === "true") {
       await page
@@ -106,7 +93,7 @@ test.describe("narrow Studio shell", () => {
     expect(scheduleBox!.x).toBeGreaterThanOrEqual(0);
     expect(scheduleBox!.x + scheduleBox!.width).toBeLessThanOrEqual(390);
 
-    await page.goto(authenticatedStudioPath("/library"));
+    await page.goto("/library");
     await expect(
       page
         .getByRole("region", { name: "Item detail", exact: true })

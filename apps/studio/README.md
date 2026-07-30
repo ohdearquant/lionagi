@@ -128,35 +128,14 @@ npm run dev        # http://localhost:5173 — proxies /api → :8765
 
 ## Authentication
 
-Bare `li studio` and `li studio --dev` mint a launch-scoped bearer, open the UI
-with it in the URL fragment, and require that bearer on `/api/*`. The bootstrap
-script stores the daemon URL and token in that browser tab's `sessionStorage`,
-then immediately removes both values from the address bar. It does not put the
-token in persistent browser storage.
+When `LIONAGI_STUDIO_AUTH_TOKEN` is unset, all local API routes are open.
 
-`--no-open` intentionally does not print the generated bearer. Restart without
-`--no-open` when you need Operator. API-only `--no-frontend` does not create a
-browser approval credential; it is suitable for integrations, while the
-desktop shell supplies its own credential over a private pipe.
-
-Directly starting uvicorn with no token leaves ordinary local API routes open,
-but Operator turns and approvals fail closed because there is no trusted
-browser-held human credential.
-
-`LIONAGI_STUDIO_AUTH_TOKEN` still protects ordinary API integrations. When it
-is set, all `/api/*` requests must include:
+When set, all `/api/*` requests must include:
 
 ```text
 Authorization: Bearer <token>
 ```
 
-Environment-derived `LIONAGI_STUDIO_AUTH_TOKEN` and
-`LIONAGI_STUDIO_HUMAN_TOKEN` values are not accepted as Operator's human
-approval boundary because process environments can be inspected. If either is
-set, Operator submission and decisions return a fail-closed remediation error.
-`LIONAGI_STUDIO_AUTH_TOKEN` continues to protect ordinary API requests;
-`LIONAGI_STUDIO_HUMAN_TOKEN` alone does not replace API authentication. Unset
-both and restart with `li studio`; setting both does not bypass this rule.
 `/health` remains open regardless.
 
 ## Database
@@ -200,7 +179,6 @@ cargo build --release     # binary only, no signing
 ```
 
 The shell finds the `li` CLI automatically (searches PATH,
-`~/.local/bin/li`, `~/.cargo/bin/li`, `/opt/homebrew/bin/li`), spawns the
-backend on a free loopback port, passes its launch-scoped bearer over a
-one-shot stdin pipe, and loads the SPA with `window.__STUDIO_API_BASE__` and
-`window.__STUDIO_AUTH_TOKEN__` pre-set via Tauri's initialization script API.
+`~/.local/bin/li`, `~/.cargo/bin/li`, `/opt/homebrew/bin/li`), spawns
+`li studio --no-frontend --port <free-port>`, and loads the SPA with
+`window.__STUDIO_API_BASE__` pre-set via Tauri's initialization script API.

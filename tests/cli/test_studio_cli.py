@@ -6,24 +6,14 @@
 from __future__ import annotations
 
 import contextlib
-import io
 import os
 from unittest.mock import patch
-from urllib.parse import parse_qs, urlsplit
 
 
 @contextlib.contextmanager
 def _stubbed_serve():
     """Stub uvicorn.run and _ensure_frontend_built; restores env vars that the real CLI mutates (xdist isolation)."""
-    saved = {
-        k: os.environ.get(k)
-        for k in (
-            "LIONAGI_STUDIO_FRONTEND_DIST",
-            "LIONAGI_STUDIO_HOST",
-            "LIONAGI_STUDIO_AUTH_TOKEN",
-            "LIONAGI_STUDIO_HUMAN_TOKEN",
-        )
-    }
+    saved = {k: os.environ.get(k) for k in ("LIONAGI_STUDIO_FRONTEND_DIST", "LIONAGI_STUDIO_HOST")}
     try:
         with (
             patch("uvicorn.run") as mock_run,
@@ -130,180 +120,19 @@ def test_studio_web_does_not_build_local_frontend():
     mock_build.assert_not_called()
 
 
-def test_studio_web_opens_browser_with_ephemeral_human_fragment(monkeypatch, capsys):
+def test_studio_web_opens_browser_when_interactive(monkeypatch):
     """A TTY session opens the hosted URL unless --no-open is set."""
     import lionagi.studio.cli as studio_cli
 
-    monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
-    monkeypatch.delenv("LIONAGI_STUDIO_HUMAN_TOKEN", raising=False)
     monkeypatch.setattr(studio_cli.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(studio_cli.sys.stdout, "isatty", lambda: True)
-    with _stubbed_serve(), patch("webbrowser.open") as mock_open:
+    with patch("webbrowser.open") as mock_open, patch("uvicorn.run"):
         from lionagi.cli.main import main
 
         result = main(["studio", "--web"])
 
     assert result == 0
-    opened_url = mock_open.call_args.args[0]
-    parsed = urlsplit(opened_url)
-    fragment = parse_qs(parsed.fragment)
-    assert f"{parsed.scheme}://{parsed.netloc}{parsed.path}" == "https://lion-studio.khive.ai"
-    assert fragment["studio-api"] == ["http://127.0.0.1:8765"]
-    assert len(fragment["studio-token"]) == 1
-    assert len(fragment["studio-token"][0]) >= 32
-    assert fragment["studio-token"][0] not in capsys.readouterr().out
-
-
-def test_studio_web_reuses_configured_auth_token_but_disables_operator(monkeypatch, capsys):
-    import lionagi.studio.cli as studio_cli
-
-    monkeypatch.delenv("LIONAGI_STUDIO_HUMAN_TOKEN", raising=False)
-    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "configured-browser-token")
-    monkeypatch.setattr(studio_cli.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(studio_cli.sys.stdout, "isatty", lambda: True)
-    with _stubbed_serve(), patch("webbrowser.open") as mock_open:
-        from lionagi.cli.main import main
-
-        assert main(["studio", "--web"]) == 0
-
-    fragment = parse_qs(urlsplit(mock_open.call_args.args[0]).fragment)
-    assert fragment["studio-token"] == ["configured-browser-token"]
-    assert "environment-derived credential" in capsys.readouterr().err
-
-
-def test_studio_web_dual_token_uses_middleware_auth_token(monkeypatch):
-    import lionagi.studio.cli as studio_cli
-
-    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "middleware-token")
-    monkeypatch.setenv("LIONAGI_STUDIO_HUMAN_TOKEN", "lower-priority-human-token")
-    monkeypatch.setattr(studio_cli.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(studio_cli.sys.stdout, "isatty", lambda: True)
-    with _stubbed_serve(), patch("webbrowser.open") as mock_open:
-        from lionagi.cli.main import main
-
-        assert main(["studio", "--web"]) == 0
-
-    fragment = parse_qs(urlsplit(mock_open.call_args.args[0]).fragment)
-    assert fragment["studio-token"] == ["middleware-token"]
-
-
-def test_studio_generated_token_is_process_local_not_environment(monkeypatch):
-    import lionagi.studio.cli as studio_cli
-
-    monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
-    monkeypatch.delenv("LIONAGI_STUDIO_HUMAN_TOKEN", raising=False)
-    monkeypatch.setattr(studio_cli.sys.stdin, "isatty", lambda: False)
-    monkeypatch.setattr(studio_cli.sys.stdout, "isatty", lambda: False)
-    observed: dict[str, str | None] = {}
-
-    def _serve(*_args, **_kwargs):
-        from lionagi.studio.security import (
-            studio_human_token,
-            studio_operator_credential_origin,
-        )
-
-        observed["auth_env"] = os.environ.get("LIONAGI_STUDIO_AUTH_TOKEN")
-        observed["human_env"] = os.environ.get("LIONAGI_STUDIO_HUMAN_TOKEN")
-        observed["captured"] = studio_human_token()
-        observed["origin"] = studio_operator_credential_origin()
-
-    with patch("uvicorn.run", side_effect=_serve):
-        from lionagi.cli.main import main
-
-        assert main(["studio", "--web"]) == 0
-
-    assert observed["auth_env"] is None
-    assert observed["human_env"] is None
-    assert observed["captured"]
-    assert observed["origin"] == "generated"
-
-
-def test_studio_desktop_token_stdin_is_trusted_and_never_enters_environment(
-    monkeypatch,
-):
-    import lionagi.studio.cli as studio_cli
-
-    token = "desktop-generated-token-" + ("x" * 32)
-    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "stale-parent-auth")
-    monkeypatch.setenv("LIONAGI_STUDIO_HUMAN_TOKEN", "stale-parent-human")
-    monkeypatch.setattr(studio_cli.sys, "stdin", io.StringIO(token + "\n"))
-    observed = {}
-
-    def _serve(*_args, **_kwargs):
-        from lionagi.studio.security import (
-            studio_auth_token,
-            studio_human_token,
-            studio_operator_credential_origin,
-        )
-
-        observed["auth"] = studio_auth_token()
-        observed["human"] = studio_human_token()
-        observed["origin"] = studio_operator_credential_origin()
-        observed["auth_env"] = os.environ.get("LIONAGI_STUDIO_AUTH_TOKEN")
-        observed["human_env"] = os.environ.get("LIONAGI_STUDIO_HUMAN_TOKEN")
-
-    with patch("uvicorn.run", side_effect=_serve):
-        from lionagi.cli.main import main
-
-        assert (
-            main(
-                [
-                    "studio",
-                    "--no-frontend",
-                    "--operator-token-stdin",
-                ]
-            )
-            == 0
-        )
-
-    assert observed == {
-        "auth": token,
-        "human": token,
-        "origin": "generated",
-        "auth_env": None,
-        "human_env": None,
-    }
-
-
-def test_studio_dev_uses_frontend_proxy_origin_and_custom_api_port(monkeypatch, tmp_path):
-    import lionagi.studio.cli as studio_cli
-
-    monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
-    monkeypatch.delenv("LIONAGI_STUDIO_HUMAN_TOKEN", raising=False)
-    monkeypatch.setattr(studio_cli.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(studio_cli.sys.stdout, "isatty", lambda: True)
-    with (
-        patch("lionagi.studio.cli._find_frontend_dir", return_value=tmp_path),
-        patch("lionagi.studio.cli.shutil.which", return_value="/usr/bin/node"),
-        patch("lionagi.studio.cli._ensure_apps_importable", return_value=True),
-        patch("lionagi.studio.cli._launch_vite_dev") as launch_vite,
-        patch("webbrowser.open") as open_browser,
-        patch("uvicorn.run"),
-    ):
-        from lionagi.cli.main import main
-
-        assert (
-            main(
-                [
-                    "studio",
-                    "--dev",
-                    "--port",
-                    "9123",
-                    "--frontend-port",
-                    "3456",
-                ]
-            )
-            == 0
-        )
-
-    launch_vite.assert_called_once_with(
-        tmp_path,
-        3456,
-        api_url="http://127.0.0.1:9123",
-    )
-    fragment = parse_qs(urlsplit(open_browser.call_args.args[0]).fragment)
-    assert fragment["studio-api"] == ["http://127.0.0.1:3456"]
-    assert fragment["studio-token"]
+    mock_open.assert_called_once_with("https://lion-studio.khive.ai")
 
 
 def test_studio_web_no_open_flag_suppresses_browser(monkeypatch):

@@ -1,31 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 
-const E2E_HUMAN_TOKEN = "lionagi-studio-e2e-human-principal";
-
-function authenticatedStudioUrl(): string {
-  const baseURL = process.env.E2E_BASE_URL;
-  if (!baseURL) throw new Error("E2E_BASE_URL was not provided by global setup");
-  const fragment = new URLSearchParams({
-    "studio-api": baseURL,
-    "studio-token": E2E_HUMAN_TOKEN,
-  });
-  return `/#${fragment.toString()}`;
-}
-
 async function selectFreshConversation(page: Page): Promise<void> {
   const conversationId = await page.evaluate(async () => {
-    const apiBase = sessionStorage.getItem("studio-api");
-    const token = sessionStorage.getItem("studio-token");
-    if (!apiBase || !token) {
-      throw new Error("Studio fragment credentials were not bootstrapped");
-    }
-
-    const response = await fetch(`${apiBase}/api/operator/conversations`, {
+    const response = await fetch("/api/operator/conversations", {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: "{}",
     });
     if (!response.ok) {
@@ -61,7 +40,7 @@ test("Operator streams, persists, stops, records a run, and resumes it", async (
       response.request().method() === "GET" &&
       response.url().endsWith("/api/operator/conversations"),
   );
-  await page.goto(authenticatedStudioUrl());
+  await page.goto("/");
   expect((await discovery).status()).toBe(200);
 
   // The daemon survives individual browser contexts and Playwright retries.
@@ -148,7 +127,7 @@ test("Operator Deny and Allow decisions traverse the real permission route", asy
       response.request().method() === "GET" &&
       response.url().endsWith("/api/operator/conversations"),
   );
-  await page.goto(authenticatedStudioUrl());
+  await page.goto("/");
   expect((await discovery).status()).toBe(200);
 
   await selectFreshConversation(page);

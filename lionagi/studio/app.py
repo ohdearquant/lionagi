@@ -61,13 +61,9 @@ def _collect_cors_methods(application: FastAPI) -> list[str]:
     return sorted(methods)
 
 
-def _emit_startup_warnings(application: FastAPI | None = None) -> None:
+def _emit_startup_warnings() -> None:
     """Emit security warnings once at startup — no-op if conditions are safe."""
-    from .security import studio_auth_token
-
-    token = (
-        getattr(application.state, "studio_auth_token", None) if application is not None else None
-    ) or studio_auth_token()
+    token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
     if not token:
         bind_host = os.getenv("LIONAGI_STUDIO_HOST", HOST)
         if bind_host == "0.0.0.0":  # noqa: S104
@@ -188,7 +184,7 @@ async def lifespan(app_instance):
     # verdict on top.
     await asyncio.to_thread(snapshot_git_position)
 
-    _emit_startup_warnings(app_instance)
+    _emit_startup_warnings()
     # The second of the two settings-driven notify bootstrap points (CLI is the first).
     from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
 
@@ -324,30 +320,7 @@ def _mount_spa(application: FastAPI, dist: Path) -> None:
 def create_app() -> FastAPI:
     """Build and return a fresh Studio FastAPI app instance, so callers
     (notably tests) can get a clean one without `importlib.reload`."""
-    # Capture direct-uvicorn credentials into app memory. Environment removal
-    # keeps them out of children we launch, but their environment origin is
-    # retained because process inspection can still reveal an initial value.
-    configured_auth = os.environ.pop("LIONAGI_STUDIO_AUTH_TOKEN", None)
-    configured_human = os.environ.pop("LIONAGI_STUDIO_HUMAN_TOKEN", None)
-    from .security import (
-        studio_auth_token,
-        studio_human_token,
-        studio_operator_credential_origin,
-    )
-
     application = FastAPI(title="Lion Studio Server", lifespan=lifespan)
-    application.state.studio_auth_token = configured_auth or studio_auth_token()
-    application.state.studio_human_token = (
-        configured_auth
-        or configured_human
-        or application.state.studio_auth_token
-        or studio_human_token()
-    )
-    application.state.studio_operator_credential_origin = (
-        "environment"
-        if configured_auth is not None or configured_human is not None
-        else studio_operator_credential_origin()
-    )
 
     @application.exception_handler(LionError)
     async def _lion_error_handler(request: Request, exc: LionError) -> JSONResponse:
@@ -362,7 +335,7 @@ def create_app() -> FastAPI:
         # CORS preflight has no Authorization header by design; let it through.
         if request.method == "OPTIONS":
             return await call_next(request)
-        token = request.app.state.studio_auth_token or studio_auth_token()
+        token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
         path = request.url.path
         presented = request.headers.get("authorization") or ""
         if token and not _bearer_matches(presented, token):

@@ -104,12 +104,11 @@ Navigation sequence:
 
 ### Process management
 
-`li studio --no-frontend --operator-token-stdin --port N` is spawned with
-`.process_group(0)` (unix), making the child the leader of a new process group.
-The shell writes the per-launch token once to the child's piped stdin and closes
-the pipe. On app exit (or window close), `BackendHandle::terminate()` sends
-`SIGTERM` to the group (`kill(-pgid, SIGTERM)`), waits 5 s, then `SIGKILL`s the
-group. This kills `uvicorn` workers and any other grandchild processes.
+`li studio --no-frontend --port N` is spawned with `.process_group(0)` (unix),
+making the child the leader of a new process group. On app exit (or window close),
+`BackendHandle::terminate()` sends `SIGTERM` to the group (`kill(-pgid, SIGTERM)`),
+waits 5 s, then `SIGKILL`s the group. This kills `uvicorn` workers and any other
+grandchild processes.
 
 Backend stdout/stderr are appended to rotating log files in the Tauri log
 directory (`~/Library/Logs/ai.lionagi.studio/studio-backend-{stdout,stderr}.log`).
@@ -146,9 +145,8 @@ Same-Origin Policy — provided CORS is not misconfigured on the backend.
 At startup the shell generates a 32-hex-char token from `/dev/urandom` (16 bytes
 of OS-level CSPRNG entropy).  The token is:
 
-- Written once to the child process over a private stdin pipe. The child captures
-  it in process memory before starting FastAPI; it is never placed in argv or the
-  inherited environment.
+- Passed to the child process as `LIONAGI_STUDIO_AUTH_TOKEN`.  The FastAPI server
+  enforces bearer auth on all API routes when this env var is present.
 - Injected into the SPA via the Tauri initialization script as
   `window.__STUDIO_AUTH_TOKEN__` before any page scripts run.
 - Attached by `lib/api.ts::fetchJson` as `Authorization: Bearer <token>` on every
@@ -162,12 +160,12 @@ A new token is generated for each app launch.  Restarting the app rotates the to
 attempt to connect to `http://127.0.0.1:N/api/...`.  Without the bearer token every
 such request will be rejected with HTTP 401.
 
-**Cannot**: obtain the bearer token from disk, argv, or the child process
-environment. It is never persisted; after the one-shot pipe closes, it remains in
-the daemon's process memory and the Tauri webview JS heap. Note the limit of this
-model: a malicious process running *as the same user* can ultimately inspect another
-process's memory, so the token blocks unauthenticated local/network access but does
-not defend against an attacker already running with your full user privileges.
+**Cannot**: obtain the bearer token from disk — it is never persisted; it lives in
+the child process environment and the Tauri webview JS heap.  Note the limit of this
+model: a malicious process running *as the same user* can ultimately inspect process
+state (e.g. `ps -E` on its own user's processes), so the token raises the bar and
+blocks other-user/local-network access — it does not defend against an attacker
+already running with your privileges.
 
 ### CORS and live streams
 

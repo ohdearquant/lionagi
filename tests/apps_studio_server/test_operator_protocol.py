@@ -138,9 +138,6 @@ def test_real_operator_branch_exposes_only_strict_request_scoped_mcp_tools(tmp_p
         "mcp__studio_operator__prefill_schedule",
         "mcp__studio_operator__launch_playbook",
     }
-    for server in kwargs["mcp_servers"].values():
-        assert "LIONAGI_STUDIO_AUTH_TOKEN" not in server["env"]
-        assert "LIONAGI_STUDIO_HUMAN_TOKEN" not in server["env"]
 
 
 @pytest.mark.asyncio
@@ -901,9 +898,7 @@ async def test_confirm_route_threads_the_rendered_target_version(monkeypatch):
 
     coordinator = MagicMock()
     coordinator.decide = AsyncMock(return_value={"status": "succeeded"})
-    require_human = AsyncMock()
     monkeypatch.setattr(operator_svc, "get_operator_coordinator", lambda: coordinator)
-    monkeypatch.setattr(operator_svc, "_require_human", require_human)
     command_hash = "a" * 64
     target_version = "sha256:rendered-playbook"
     body = ConfirmProposalRequest.model_validate(
@@ -917,11 +912,9 @@ async def test_confirm_route_threads_the_rendered_target_version(monkeypatch):
         "conversation",
         "proposal",
         body,
-        MagicMock(),
     )
 
     assert result == {"status": "succeeded"}
-    require_human.assert_awaited_once()
     coordinator.decide.assert_awaited_once_with(
         "conversation",
         "proposal",
@@ -1126,35 +1119,6 @@ async def test_context_compilation_groups_complete_turns_merges_deltas_and_persi
     assert "tool result [paired-1] (ok)" in prompt
     assert prompt.endswith("use both prior turns")
     await store.finish_turn(current["requestId"], outcome="cancelled")
-
-
-@pytest.mark.asyncio
-async def test_agent_and_scheduler_children_do_not_inherit_studio_credentials(
-    monkeypatch,
-):
-    from lionagi.providers._cli_subprocess import ndjson_from_cli
-    from lionagi.studio.scheduler.subprocess import spawn_and_wait
-
-    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "must-not-reach-child")
-    monkeypatch.setenv("LIONAGI_STUDIO_HUMAN_TOKEN", "human-must-not-reach-child")
-    probe = (
-        "import json,os;"
-        "print(json.dumps({'auth':os.getenv('LIONAGI_STUDIO_AUTH_TOKEN'),"
-        "'human':os.getenv('LIONAGI_STUDIO_HUMAN_TOKEN')}))"
-    )
-    rows = [row async for row in ndjson_from_cli([sys.executable, "-c", probe])]
-    assert rows == [{"auth": None, "human": None}]
-
-    scheduler_probe = (
-        "import os,sys;"
-        "sys.stderr.write(repr((os.getenv('LIONAGI_STUDIO_AUTH_TOKEN'),"
-        "os.getenv('LIONAGI_STUDIO_HUMAN_TOKEN'))))"
-    )
-    exit_code, stderr = await spawn_and_wait(
-        [sys.executable, "-c", scheduler_probe], "operator-env-probe"
-    )
-    assert exit_code == 0
-    assert stderr == "(None, None)"
 
 
 @pytest.mark.asyncio
@@ -1496,250 +1460,11 @@ def _request(
 
 
 @pytest.mark.asyncio
-async def test_operator_human_gate_requires_exact_browser_credential(monkeypatch):
-    from fastapi import HTTPException
-
-    from lionagi.studio.security import (
-        capture_studio_credentials,
-        clear_captured_studio_credentials,
-    )
-    from lionagi.studio.services.operator import (
-        _require_human,
-        _require_safe_operator_credential_origin,
-    )
-
-    clear_captured_studio_credentials()
-    monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
-    monkeypatch.delenv("LIONAGI_STUDIO_HUMAN_TOKEN", raising=False)
-    with pytest.raises(HTTPException) as missing:
-        _require_safe_operator_credential_origin(_request())
-    assert missing.value.status_code == 403
-    assert "generated browser credential" in missing.value.detail
-    with pytest.raises(HTTPException):
-        await _require_human(_request())
-
-    monkeypatch.setenv("LIONAGI_STUDIO_HUMAN_TOKEN", "human-secret")
-    with pytest.raises(HTTPException) as unsafe:
-        await _require_human(_request(headers={"authorization": "Bearer human-secret"}))
-    assert unsafe.value.status_code == 403
-    assert "environment-derived" in unsafe.value.detail
-
-    monkeypatch.delenv("LIONAGI_STUDIO_HUMAN_TOKEN", raising=False)
-    generated = capture_studio_credentials(generate_human=True)
-    assert generated
-    with pytest.raises(HTTPException):
-        await _require_human(_request(headers={"authorization": "Bearer wrong"}))
-    with pytest.raises(HTTPException):
-        await _require_human(
-            _request(
-                headers={
-                    "authorization": f"Bearer {generated}",
-                    "x-lionagi-operator-principal": "service",
-                }
-            )
-        )
-    await _require_human(_request(headers={"authorization": f"Bearer {generated}"}))
-    clear_captured_studio_credentials()
-
-
-@pytest.mark.asyncio
-async def test_direct_app_factory_captures_and_erases_environment_credential(
-    monkeypatch,
-):
-    from fastapi import HTTPException
-
-    from lionagi.studio.app import create_app
-    from lionagi.studio.security import clear_captured_studio_credentials
-    from lionagi.studio.services.operator import (
-        _require_human,
-        _require_safe_operator_credential_origin,
-    )
-
-    clear_captured_studio_credentials()
-    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "direct-uvicorn-secret")
-    monkeypatch.setenv("LIONAGI_STUDIO_HUMAN_TOKEN", "lower-priority-secret")
-    app = create_app()
-    assert "LIONAGI_STUDIO_AUTH_TOKEN" not in os.environ
-    assert "LIONAGI_STUDIO_HUMAN_TOKEN" not in os.environ
-    assert app.state.studio_auth_token == "direct-uvicorn-secret"
-    assert app.state.studio_human_token == "direct-uvicorn-secret"
-    assert app.state.studio_operator_credential_origin == "environment"
-
-    request = _request(headers={"authorization": "Bearer direct-uvicorn-secret"})
-    request.scope["app"] = app
-    with pytest.raises(HTTPException) as origin_error:
-        _require_safe_operator_credential_origin(request)
-    assert origin_error.value.status_code == 403
-    assert "environment-derived" in origin_error.value.detail
-    with pytest.raises(HTTPException):
-        await _require_human(request)
-    clear_captured_studio_credentials()
-
-
-@pytest.mark.asyncio
-async def test_direct_app_without_browser_credential_rejects_operator_submit(tmp_path, monkeypatch):
-    httpx = pytest.importorskip("httpx")
-    from lionagi.studio.app import create_app
-    from lionagi.studio.operator.coordinator import reset_operator_coordinator_for_testing
-    from lionagi.studio.security import clear_captured_studio_credentials
-
-    path = tmp_path / "state.db"
-    _patch_state_db(monkeypatch, path)
-    clear_captured_studio_credentials()
-    monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
-    monkeypatch.delenv("LIONAGI_STUDIO_HUMAN_TOKEN", raising=False)
-    app = create_app()
-    coordinator = OperatorCoordinator(
-        store=OperatorStore(path),
-        engine_factory=ScriptedEngine,
-    )
-    await reset_operator_coordinator_for_testing(coordinator)
-    await coordinator.startup()
-    cid = (await coordinator.create_conversation())["conversation"]["id"]
-    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 54321))
-    async with httpx.AsyncClient(
-        transport=transport,
-        base_url="http://127.0.0.1:8765",
-    ) as client:
-        assert (await client.get("/openapi.json")).status_code == 200
-        # No configured credential means no Operator access at all — the
-        # conversation snapshot is state, and state is gated.
-        assert (await client.get(f"/api/operator/conversations/{cid}")).status_code == 403
-        blocked = await client.post(
-            f"/api/operator/conversations/{cid}/turns",
-            json={
-                "instruction": "This must not start.",
-                "context": {"space": "mission", "route": "/", "filters": {}},
-                "expectedLastSequence": 0,
-            },
-        )
-    assert blocked.status_code == 403
-    assert "generated browser credential" in blocked.json()["detail"]
-    assert await coordinator.store.list_frames(cid) == []
-    await coordinator.shutdown()
-    clear_captured_studio_credentials()
-
-
-@pytest.mark.asyncio
-async def test_generated_browser_bearer_guards_operator_get_sse_and_submit(tmp_path, monkeypatch):
-    httpx = pytest.importorskip("httpx")
-    from lionagi.studio.app import create_app
-    from lionagi.studio.operator.coordinator import reset_operator_coordinator_for_testing
-    from lionagi.studio.security import (
-        capture_studio_credentials,
-        clear_captured_studio_credentials,
-    )
-
-    path = tmp_path / "state.db"
-    _patch_state_db(monkeypatch, path)
-    clear_captured_studio_credentials()
-    monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
-    monkeypatch.delenv("LIONAGI_STUDIO_HUMAN_TOKEN", raising=False)
-    token = capture_studio_credentials(generate_human=True)
-    assert token
-    app = create_app()
-    assert app.state.studio_auth_token == token
-    assert app.state.studio_human_token == token
-    assert app.state.studio_operator_credential_origin == "generated"
-
-    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=ScriptedEngine)
-    await reset_operator_coordinator_for_testing(coordinator)
-    await coordinator.startup()
-    cid = (await coordinator.create_conversation())["conversation"]["id"]
-    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 54321))
-    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8765") as client:
-        assert (await client.get("/openapi.json")).status_code == 401
-        assert (await client.get(f"/api/operator/conversations/{cid}")).status_code == 401
-        assert (await client.get(f"/api/operator/conversations/{cid}/stream")).status_code == 401
-        unauthenticated_submit = await client.post(
-            f"/api/operator/conversations/{cid}/turns",
-            json={
-                "instruction": "must be rejected",
-                "context": {"space": "mission", "route": "/", "filters": {}},
-                "expectedLastSequence": 0,
-            },
-        )
-        assert unauthenticated_submit.status_code == 401
-
-        headers = {"Authorization": f"Bearer {token}"}
-        assert (
-            await client.get(f"/api/operator/conversations/{cid}", headers=headers)
-        ).status_code == 200
-        submitted = await client.post(
-            f"/api/operator/conversations/{cid}/turns",
-            headers=headers,
-            json={
-                "instruction": "authenticated turn",
-                "context": {"space": "mission", "route": "/", "filters": {}},
-                "expectedLastSequence": 0,
-            },
-        )
-        assert submitted.status_code == 202
-    await _wait_done(coordinator.store, cid)
-
-    messages: list[dict] = []
-    request_sent = False
-    body_sent = asyncio.Event()
-
-    async def receive():
-        nonlocal request_sent
-        if not request_sent:
-            request_sent = True
-            return {"type": "http.request", "body": b"", "more_body": False}
-        await body_sent.wait()
-        return {"type": "http.disconnect"}
-
-    async def send(message):
-        messages.append(message)
-        if message["type"] == "http.response.body" and message.get("body"):
-            body_sent.set()
-
-    await asyncio.wait_for(
-        app(
-            {
-                "type": "http",
-                "asgi": {"version": "3.0"},
-                "http_version": "1.1",
-                "method": "GET",
-                "scheme": "http",
-                "path": f"/api/operator/conversations/{cid}/stream",
-                "raw_path": f"/api/operator/conversations/{cid}/stream".encode(),
-                "query_string": b"after_sequence=0",
-                "headers": [
-                    (b"host", b"127.0.0.1:8765"),
-                    (b"authorization", f"Bearer {token}".encode()),
-                ],
-                "client": ("127.0.0.1", 54321),
-                "server": ("127.0.0.1", 8765),
-            },
-            receive,
-            send,
-        ),
-        timeout=2,
-    )
-    start = next(message for message in messages if message["type"] == "http.response.start")
-    streamed = b"".join(
-        message.get("body", b"") for message in messages if message["type"] == "http.response.body"
-    )
-    assert start["status"] == 200
-    assert b"data:" in streamed
-    await coordinator.shutdown()
-    clear_captured_studio_credentials()
-
-
-@pytest.mark.asyncio
 async def test_sse_replays_committed_frames_in_sequence(tmp_path, monkeypatch):
     from lionagi.studio.operator.coordinator import reset_operator_coordinator_for_testing
-    from lionagi.studio.security import (
-        capture_studio_credentials,
-        clear_captured_studio_credentials,
-    )
     from lionagi.studio.services.operator import stream_operator_conversation
 
-    clear_captured_studio_credentials()
     monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
-    monkeypatch.delenv("LIONAGI_STUDIO_HUMAN_TOKEN", raising=False)
-    token = capture_studio_credentials(generate_human=True)
     store = OperatorStore(tmp_path / "state.db")
     coordinator = OperatorCoordinator(store=store, engine_factory=BlockingEngine)
     await reset_operator_coordinator_for_testing(coordinator)
@@ -1753,10 +1478,8 @@ async def test_sse_replays_committed_frames_in_sequence(tmp_path, monkeypatch):
     )
 
     class Connected:
-        # The stream route authorizes before it replays, so the stand-in has to
-        # carry a credential like a real request does.
         scope: dict = {}
-        headers = {"authorization": f"Bearer {token}"}
+        headers: dict = {}
 
         async def is_disconnected(self):
             return False
@@ -1770,7 +1493,6 @@ async def test_sse_replays_committed_frames_in_sequence(tmp_path, monkeypatch):
     assert payload["payload"]["role"] == "user"
     await iterator.aclose()
     await coordinator.shutdown()
-    clear_captured_studio_credentials()
 
 
 @pytest.mark.asyncio
@@ -1778,18 +1500,10 @@ async def test_http_create_submit_and_paged_replay_contract(tmp_path, monkeypatc
     httpx = pytest.importorskip("httpx")
     from lionagi.studio.app import create_app
     from lionagi.studio.operator.coordinator import reset_operator_coordinator_for_testing
-    from lionagi.studio.security import (
-        capture_studio_credentials,
-        clear_captured_studio_credentials,
-    )
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
-    clear_captured_studio_credentials()
     monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
-    monkeypatch.delenv("LIONAGI_STUDIO_HUMAN_TOKEN", raising=False)
-    token = capture_studio_credentials(generate_human=True)
-    assert token
     app = create_app()
     coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=ScriptedEngine)
     await reset_operator_coordinator_for_testing(coordinator)
@@ -1797,7 +1511,6 @@ async def test_http_create_submit_and_paged_replay_contract(tmp_path, monkeypatc
     async with httpx.AsyncClient(
         transport=transport,
         base_url="http://127.0.0.1:8765",
-        headers={"authorization": f"Bearer {token}"},
     ) as client:
         created = await client.post(
             "/api/operator/conversations",
@@ -1829,4 +1542,3 @@ async def test_http_create_submit_and_paged_replay_contract(tmp_path, monkeypatc
         assert body["latestSequence"] >= 5
         assert body["frames"][0]["requestId"] == accepted["requestId"]
     await coordinator.shutdown()
-    clear_captured_studio_credentials()

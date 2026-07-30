@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslations } from "use-intl";
 import Button from "@/components/ui/Button";
-import { IconPort, IconShield, IconTerminal } from "@/components/ui/icons";
-import { resolveApiBase, resolveAuthToken } from "@/lib/api";
+import { IconPort, IconTerminal } from "@/components/ui/icons";
+import { resolveApiBase } from "@/lib/api";
 import { onConnectivityFailure } from "@/lib/connectivity";
 
 const POLL_INTERVAL_MS = 5000;
@@ -11,18 +11,17 @@ const POLL_INTERVAL_MS = 5000;
 // one /health check instead of one per request.
 const FAILURE_REPROBE_THROTTLE_MS = 2000;
 
-type ConnectivityStatus = "checking" | "connected" | "unreachable" | "wrongApp" | "needsPairing";
+type ConnectivityStatus = "checking" | "connected" | "unreachable" | "wrongApp";
 
 /**
- * Probe both the daemon's public liveness response and its authenticated
- * OpenAPI identity. `/health` alone cannot establish a usable connection:
- * a `li studio --no-open` process answers there while every application API
- * correctly rejects an unpaired browser. Keeping that tab behind a designed
- * pairing state prevents the shell from opening into a wall of 401s.
+ * Probe the configured API base's /health endpoint and classify what answered.
+ * The lionagi daemon serves an unauthenticated `{ status: "ok" }` at /health
+ * (lionagi/studio/app.py) with no auth gate — any other shape, a non-2xx, or
+ * a body that isn't JSON at all means something other than the daemon is on
+ * that port. A network-level failure (nothing listening, CORS) is a separate
+ * bucket: there's no program to point at, just nothing running yet.
  */
-async function probeDaemon(
-  apiBase: string,
-): Promise<"connected" | "unreachable" | "wrongApp" | "needsPairing"> {
+async function probeDaemon(apiBase: string): Promise<"connected" | "unreachable" | "wrongApp"> {
   let response: Response;
   try {
     response = await fetch(`${apiBase}/health`);
@@ -36,28 +35,7 @@ async function probeDaemon(
     return "wrongApp";
   }
   const status = (body as { status?: unknown } | null)?.status;
-  if (!response.ok || status !== "ok") return "wrongApp";
-
-  const token = resolveAuthToken();
-  const headers: Record<string, string> = {};
-  if (token) headers.Authorization = `Bearer ${token}`;
-  try {
-    response = await fetch(`${apiBase}/openapi.json`, { headers });
-  } catch {
-    return "unreachable";
-  }
-  if (response.status === 401 || response.status === 403) return "needsPairing";
-  try {
-    body = await response.json();
-  } catch {
-    return "wrongApp";
-  }
-  const title = (
-    body as {
-      info?: { title?: unknown };
-    } | null
-  )?.info?.title;
-  return response.ok && title === "Lion Studio Server" ? "connected" : "wrongApp";
+  return response.ok && status === "ok" ? "connected" : "wrongApp";
 }
 
 /**
@@ -117,7 +95,6 @@ export default function NoDaemonGate({ children }: { children: ReactNode }) {
 
   const isChecking = status === "checking";
   const isWrongApp = status === "wrongApp";
-  const needsPairing = status === "needsPairing";
 
   return (
     <div className="flex h-dvh min-h-[32rem] overflow-hidden bg-surface-base text-content-primary">
@@ -146,13 +123,7 @@ export default function NoDaemonGate({ children }: { children: ReactNode }) {
           </span>
           <span className="ml-auto inline-flex items-center gap-1.5 text-meta text-content-muted">
             <span className="size-1.5 rounded-full bg-status-pending" />
-            {isChecking
-              ? null
-              : isWrongApp
-                ? t("wrongApp.title")
-                : needsPairing
-                  ? t("pairing.title")
-                  : t("unreachable.title")}
+            {isChecking ? null : isWrongApp ? t("wrongApp.title") : t("unreachable.title")}
           </span>
         </header>
 
@@ -185,33 +156,21 @@ export default function NoDaemonGate({ children }: { children: ReactNode }) {
               <div className="flex items-start gap-4">
                 <span
                   className={`grid size-11 shrink-0 place-items-center rounded-lg ${
-                    isWrongApp || needsPairing
+                    isWrongApp
                       ? "bg-status-warning-bg text-status-warning"
                       : "bg-surface-overlay text-content-secondary"
                   }`}
                 >
-                  {isWrongApp ? (
-                    <IconPort size={22} />
-                  ) : needsPairing ? (
-                    <IconShield size={22} />
-                  ) : (
-                    <IconTerminal size={22} />
-                  )}
+                  {isWrongApp ? <IconPort size={22} /> : <IconTerminal size={22} />}
                 </span>
                 <div className="min-w-0">
                   <h1 className="text-xl font-semibold tracking-tight text-content-primary">
-                    {isWrongApp
-                      ? t("wrongApp.title")
-                      : needsPairing
-                        ? t("pairing.title")
-                        : t("unreachable.title")}
+                    {isWrongApp ? t("wrongApp.title") : t("unreachable.title")}
                   </h1>
                   <p className="mt-2 text-body leading-relaxed text-content-secondary">
                     {isWrongApp
                       ? t("wrongApp.body", { base: displayBase })
-                      : needsPairing
-                        ? t("pairing.body", { base: displayBase })
-                        : t("unreachable.body", { base: displayBase })}
+                      : t("unreachable.body", { base: displayBase })}
                   </p>
                 </div>
               </div>
@@ -222,13 +181,6 @@ export default function NoDaemonGate({ children }: { children: ReactNode }) {
                     <p className="text-body text-content-secondary">{t("wrongApp.fix")}</p>
                     <code className="mt-2 block overflow-x-auto rounded-md border border-edge bg-surface-base px-3 py-2.5 font-data text-xs text-content-primary">
                       {t("wrongApp.command")}
-                    </code>
-                  </>
-                ) : needsPairing ? (
-                  <>
-                    <p className="text-body text-content-secondary">{t("pairing.fix")}</p>
-                    <code className="mt-2 block overflow-x-auto rounded-md border border-edge bg-surface-base px-3 py-2.5 font-data text-xs text-content-primary">
-                      {t("pairing.command")}
                     </code>
                   </>
                 ) : (

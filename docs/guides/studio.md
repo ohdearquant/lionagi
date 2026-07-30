@@ -174,38 +174,6 @@ shipping a release, exercise the real path in a disposable project:
 This check uses the actual Claude Code executable, account, stream, permission
 gate, cancellation path, and durable run store.
 
-## Understand the browser approval credential
-
-Bare `li studio` and `li studio --dev` generate a launch-scoped bearer for both
-the local API boundary and human Operator decisions. The launcher places the
-daemon URL and bearer in the opened page's URL fragment. Before the app starts,
-the bootstrap script copies that pair into the current tab's `sessionStorage`
-and scrubs it from the address bar. Closing the tab ends that browser session;
-the credential is not written to persistent browser storage or printed by the
-CLI.
-
-`li studio --no-open` still protects the daemon but intentionally does not
-print the bearer. Restart without `--no-open` to open a credentialed Operator
-tab. `li studio --no-frontend` is API-only and cannot originate human
-approvals; the desktop app is the exception because it passes a generated
-credential to its child daemon through a private stdin pipe.
-
-Direct uvicorn startup with no configured token keeps ordinary local API
-routes open, but Operator submission and decisions fail closed because there
-is no trusted human credential.
-
-Environment tokens remain supported for ordinary API clients:
-
-```text
-Authorization: Bearer <LIONAGI_STUDIO_AUTH_TOKEN>
-```
-
-They are deliberately not accepted for Operator approvals. Process
-environments can remain observable after startup, so setting
-`LIONAGI_STUDIO_AUTH_TOKEN`, `LIONAGI_STUDIO_HUMAN_TOKEN`, or both disables
-Operator submission and decisions with a remediation message. Unset both and
-restart with bare `li studio` to use the generated browser credential.
-
 ## Understand the CI stub boundary
 
 The automated Operator suite uses a deterministic provider stub. It verifies

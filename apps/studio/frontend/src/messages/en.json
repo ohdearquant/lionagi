@@ -941,12 +941,6 @@
       "install": "pip install \"lionagi[studio]\"",
       "run": "li studio"
     },
-    "pairing": {
-      "title": "Open Studio from the daemon",
-      "body": "A lionagi daemon answered at {base}, but this tab is not paired with it.",
-      "fix": "Run this command. Studio opens a new, authenticated tab:",
-      "command": "li studio"
-    },
     "wrongApp": {
       "title": "Another program is using this port",
       "body": "Something answered at {base}, but it isn't a lionagi daemon.",

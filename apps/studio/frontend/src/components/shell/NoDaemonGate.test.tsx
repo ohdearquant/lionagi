@@ -7,11 +7,10 @@
  *
  * Covers:
  * - a composed shell skeleton renders while the first probe is pending
- * - data-dependent children render only after a real, authenticated daemon answers
+ * - data-dependent children render only after a real daemon answers
  * - unreachable (fetch throws — no daemon, CORS, or nothing listening)
  * - wrongApp (fetch resolves but the body isn't the lionagi `{ status: "ok" }` shape)
- * - pairing required (public health succeeds but the protected identity returns 401)
- * - connected (health and authenticated OpenAPI identity both match)
+ * - connected (fetch resolves with the exact lionagi health shape)
  * - retry re-probes and restores the app on success
  * - a connectivity failure reported from elsewhere in the app (any other
  *   fetchJson call hitting a network-level error) triggers an immediate
@@ -28,7 +27,6 @@ import { reportConnectivityFailure } from "@/lib/connectivity";
 
 vi.mock("@/lib/api", () => ({
   resolveApiBase: () => "http://127.0.0.1:8765",
-  resolveAuthToken: () => "paired-browser-token",
 }));
 
 function jsonResponse(body: unknown, ok = true, status = ok ? 200 : 404): Response {
@@ -38,8 +36,6 @@ function jsonResponse(body: unknown, ok = true, status = ok ? 200 : 404): Respon
     json: () => Promise.resolve(body),
   } as Response;
 }
-
-const studioIdentity = { info: { title: "Lion Studio Server" } };
 
 describe("NoDaemonGate", () => {
   let container: HTMLDivElement;
@@ -91,15 +87,10 @@ describe("NoDaemonGate", () => {
   });
 
   it("renders children once a real daemon answers", async () => {
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ status: "ok" }))
-      .mockResolvedValueOnce(jsonResponse(studioIdentity));
+    fetchMock.mockResolvedValue(jsonResponse({ status: "ok" }));
     await mount();
     expect(container.querySelector('[data-testid="child"]')).not.toBeNull();
     expect(container.querySelector('[role="alert"]')).toBeNull();
-    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
-      headers: { Authorization: "Bearer paired-browser-token" },
-    });
   });
 
   it("shows the unreachable recovery state on a network failure", async () => {
@@ -142,37 +133,12 @@ describe("NoDaemonGate", () => {
     );
   });
 
-  it("keeps an unpaired tab in a designed recovery state", async () => {
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ status: "ok" }))
-      .mockResolvedValueOnce(jsonResponse({ detail: "unauthorized" }, false, 401));
-    await mount();
-
-    const recovery = container.querySelector('[role="alert"]');
-    expect(recovery?.textContent).toContain("Open Studio from the daemon");
-    expect(recovery?.textContent).toContain("li studio");
-    expect(recovery?.textContent).not.toContain("--no-open");
-    expect(container.querySelector('[data-testid="child"]')).toBeNull();
-  });
-
-  it("rejects a health lookalike without the Studio API identity", async () => {
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ status: "ok" }))
-      .mockResolvedValueOnce(jsonResponse({ info: { title: "Other API" } }));
-    await mount();
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "Another program is using this port",
-    );
-  });
-
   it("retry re-probes and restores the app once the daemon comes up", async () => {
     fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
     await mount();
     expect(container.querySelector('[role="alert"]')).not.toBeNull();
 
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ status: "ok" }))
-      .mockResolvedValueOnce(jsonResponse(studioIdentity));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ status: "ok" }));
     const retryButton = Array.from(container.querySelectorAll("button")).find((b) =>
       b.textContent?.includes("Retry"),
     );
@@ -187,12 +153,10 @@ describe("NoDaemonGate", () => {
   });
 
   it("re-probes on a connectivity failure reported elsewhere in the app, even while already connected", async () => {
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ status: "ok" }))
-      .mockResolvedValueOnce(jsonResponse(studioIdentity));
+    fetchMock.mockResolvedValue(jsonResponse({ status: "ok" }));
     await mount();
     expect(container.querySelector('[role="alert"]')).toBeNull();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
 
     fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
     await act(async () => {
@@ -200,7 +164,7 @@ describe("NoDaemonGate", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(container.querySelector('[role="alert"]')).not.toBeNull();
   });
 

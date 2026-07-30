@@ -638,8 +638,6 @@ async def spawn_and_wait(
         _validate_command_allowlisted(command)
 
     env = {**os.environ, "LIONAGI_INVOCATION_ID": invocation_id}
-    env.pop("LIONAGI_STUDIO_AUTH_TOKEN", None)
-    env.pop("LIONAGI_STUDIO_HUMAN_TOKEN", None)
 
     _log.info("Spawning: %s", " ".join(argv))
     proc = await asyncio.create_subprocess_exec(
