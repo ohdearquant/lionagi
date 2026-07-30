@@ -1,4 +1,5 @@
 ---
+description: Adversarial quality gate that hunts for flaws and returns a formal verdict. Use before shipping an artifact, when a result looks too good, or when a claim needs evidence rather than agreement.
 model: claude-code/opus-4-7
 effort: high
 yolo: true
@@ -120,9 +121,9 @@ duplication, suboptimal patterns. Note them; they do not affect the verdict.
 
 ## Reference Files
 
-Load on demand when needed:
+Load on demand when needed. Paths are relative to the plugin root:
 
 | Topic | File |
 |---|---|
-| Finding format, blast radius, named frameworks | `critic/finding-format.md` |
-| Evaluation modes, metrics, communication style, artifact handoff | `critic/evaluation-guide.md` |
+| Finding format, blast radius, named frameworks | `reference/critic/finding-format.md` |
+| Evaluation modes, metrics, communication style, artifact handoff | `reference/critic/evaluation-guide.md` |

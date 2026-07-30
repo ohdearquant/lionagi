@@ -1,10 +1,76 @@
 # ADR-0065: Marketplace catalog and directory discovery
 
-- **Status**: Accepted
+- **Status**: Accepted (2026-07-09), amended 2026-07-30 — see Amendment history
 - **Kind**: Retrospective
 - **Area**: cli-surface
-- **Date**: 2026-07-09
+- **Date**: 2026-07-09 (amended 2026-07-30 — D2 and D4, see Amendment history)
 - **Relations**: supersedes v0-0003, v0-0007
+
+## Amendment history
+
+**2026-07-30 — Amendment 1: D2's support-file claim was false when written; D4's
+agent-description sentence and D2's tree are re-recorded after the bundle changed.** This
+document's Kind is Retrospective, so most of its prose describes the tree as shipped and goes
+stale by construction whenever the tree changes. Two of the three corrections below are that
+ordinary staleness. The first is not. It was a claim about a foreign product's behavior that
+the foreign product already contradicted on the day the claim was written, and no change of
+ours made it wrong.
+
+1. **The "invisible to discovery" claim was wrong about the world, not made wrong by this
+   change.** D2's tree preamble stated that per-role `agents/<name>/*.md` reference docs
+   "exist on disk but are invisible to discovery, which globs only direct `agents/*.md`".
+   That is true of *Studio's* discovery, which is the only discovery this document defines,
+   and false of the plugin host's own validator. Measured with `claude plugin validate`
+   (Claude Code v2.1.220): it walks `agents/<subdir>/*.md` and reported each of the six
+   support docs as an agent with "no frontmatter block found" — eight `Validating agent:`
+   lines for a bundle holding two agents. The unqualified word "discovery" is what let a
+   statement about our own scanner read as a statement about the world.
+
+   Fixed at the source rather than by rewording: the six files moved to `reference/<role>/`,
+   outside `agents/` entirely. Measurement after the move, taken on the real bundle rather
+   than a probe — `claude plugin validate marketplace/orchestrate --strict` returns a bare
+   `✔ Validation passed` at rc 0 with no warnings line at all. Before the move the same
+   command returned `✔ Validation passed with warnings`, and `✘ Validation failed` under
+   `--strict`, on eight warnings.
+
+   **Open question, recorded rather than resolved**: whether the plugin host's *runtime* also
+   loaded those six as agents, which would mean every installing user got six phantom agents.
+   The validator's behavior is measured; the runtime's is not. The relocation makes the
+   question moot going forward and does not answer it for anything already published.
+
+2. **Both agents now declare a `description`, so D4's closing sentence no longer holds.** It
+   read: "The current `critic.md` and `orchestrator.md` have no description field, so Studio
+   reports empty descriptions for both even though their bodies describe their roles." Both
+   files now declare one. Studio's behavior is unchanged; its input changed.
+
+3. **D2's tree is re-drawn** to show `reference/` and an `agents/` holding exactly two direct
+   files. D2's rule that files outside the direct `skills/<directory>` and `agents/*.md`
+   patterns are support material is unchanged, and is now enforced rather than only
+   documented.
+
+**Enforcement added with this amendment, because a corrected sentence is not a mechanism.**
+`marketplace/scripts/validate_manifests.py` now fails when any markdown under `agents/` is
+not a direct child of it, and when a direct agent file carries no frontmatter `description`.
+Both rules were verified by breaking the subject on purpose: a clean run cannot distinguish a
+rule that passed from a rule that never looked. That is partial movement on delta 1 below,
+which stays open because it also asks for source-path and catalog-name validation.
+
+The first-party validator is deliberately **not** wired into CI. It is not installed on the
+runners, and pinning it by a floating version would put a moving external reference on our own
+gate. The equivalent checks are implemented locally instead, where they are deterministic and
+version-stable.
+
+**What this amendment does not change.** P2 and the "Explicit `skills` and `agents` arrays"
+alternative stand exactly as written. The plugin schema permits such arrays and this record
+refuses them; where a permissive foreign schema meets a restrictive local decision, the local
+one governs. Adding them would be its own amendment with its own argument, not a rider on
+this one.
+
+**Context this amendment does not decide, recorded because it bears on the next one.** The
+bundle's declared version has been `1.0.0` since it was introduced on 2026-05-19, while 12
+commits changed its contents afterward, the last on 2026-06-15. A capability change that does
+not move the version is not installable as a change, so the version bump belongs to whichever
+change next alters what the bundle does.
 
 ## Context
 
@@ -116,9 +182,11 @@ The single manifest also gives external installers one stable inventory source.
 
 ### D2 — Plugin metadata and capability files have separate authorities
 
-The current official bundle tree relevant to discovery is (support files omitted — per-role
-`agents/<name>/*.md` reference docs and per-skill supporting files exist on disk but are invisible
-to discovery, which globs only direct `agents/*.md` and each skill's `SKILL.md`):
+The current official bundle tree relevant to discovery is (per-skill supporting files omitted —
+they exist on disk and Studio's discovery does not enumerate them, because it globs only direct
+`agents/*.md` and each skill's `SKILL.md`). "Discovery" throughout this document means Studio's;
+the plugin host's own validator walks a wider set, which is why per-role reference docs live
+outside `agents/` — see Amendment 1:
 
 ```text
 marketplace/orchestrate/
@@ -128,6 +196,15 @@ marketplace/orchestrate/
 ├── agents/
 │   ├── critic.md
 │   └── orchestrator.md
+├── reference/
+│   ├── critic/
+│   │   ├── evaluation-guide.md
+│   │   └── finding-format.md
+│   └── orchestrator/
+│       ├── dag-decomposition.md
+│       ├── instruction-templates.md
+│       ├── role-routing.md
+│       └── synthesis-and-teams.md
 └── skills/
     ├── debug/SKILL.md
     ├── orchestrate/SKILL.md
@@ -272,8 +349,9 @@ Agent summary has the same shape.
 - An unreadable file is omitted.
 - Name is always the file stem. Agent frontmatter `name` is not consulted.
 - Description is frontmatter `description` or `""`, converted to string and stripped.
-- The current `critic.md` and `orchestrator.md` have no description field, so Studio
-  reports empty descriptions for both even though their bodies describe their roles.
+- `critic.md` and `orchestrator.md` each declare a frontmatter `description`, so Studio
+  reports both rather than empty strings. The earlier state, in which neither declared one,
+  is recorded in Amendment 1.
 
 Full content lookup has additional shapes:
 
@@ -463,6 +541,7 @@ the async server loop.
 |---|---|---|---|
 | 1 | Add a marketplace consistency check that validates every official source path, matches each catalog name to its plugin metadata, and confirms directory-discovered skills and agents are readable; acceptance: catalog or layout drift fails the focused test. | S | (filled at issue-open time) |
 | 2 | Generate or validate the marketplace README inventory from the root manifest and directory scan; acceptance: the documented official plugins and capability lists cannot disagree with repository discovery. | S | (filled at issue-open time) |
+| 3 | Re-record the MCP state in D2 at the commit where the bundle first declares a server: `has_mcp` and the "neither hooks nor MCP configuration" sentence both stop being true at that commit, and neither is amended before it. The bundle is to declare `mcpServers` in `plugin.json` and ship no `.mcp.json`, so D6's `.mcp.json`-over-`plugin.json.mcpServers` precedence never engages and exactly one carrier defines the server; acceptance: this document names the single carrier and the flag sentence agrees with the tree. | S | (filled at issue-open time) |
 
 ## Alternatives considered
 
