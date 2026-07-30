@@ -187,11 +187,19 @@ WAIT_MAX_POLL_SECONDS = 60.0
 
 # How long a spawn may sit unresolved before wait() stops holding its window open.
 # This is a polling decision, not a verdict: nothing here terminalises a run, and
-# the classifier's refusal to resolve such a record stands untouched. It is not a
-# parameter because a caller who wants a different number no longer needs one —
-# every wait entry now carries the spawn phase and the submission time, so the
-# caller can draw its own line from the same two facts this constant is drawn from.
-UNRESOLVED_SPAWN_AFTER_SECONDS = 600.0
+# the classifier's refusal to resolve such a record stands untouched.
+#
+# The number is WAIT_MAX_SECONDS, and that is the whole derivation rather than a
+# coincidence: a spawn that has not resolved in the time one maximum-length wait
+# could span is not going to resolve inside any single caller's window, so holding
+# a window open for it cannot pay off however long the caller waits. Anything
+# shorter would start reporting spawns that a caller could still have waited out.
+#
+# Not a parameter, because a caller wanting a different line no longer needs one —
+# every entry now carries the spawn phase and the submission time, which are the
+# two facts this constant is drawn from, so a caller can draw its own from the same
+# inputs without this function having to guess whose line to hold.
+UNRESOLVED_SPAWN_AFTER_SECONDS = WAIT_MAX_SECONDS
 
 # The terminal hook module, invoked by the CLI's --notify by absolute
 # interpreter path so it runs regardless of PATH in the CLI's environment.
@@ -3241,6 +3249,24 @@ async def wait(
     exactly as it always was. ``all_terminal`` stays false while any id is here,
     for the same reason it does for ``stopped_without_end``: a run this cannot
     account for is not a completed one.
+
+    That bucket changes what ``timed_out`` means for the ids in it, and the change
+    is not conservative, so it is stated rather than left to be discovered. These
+    ids leave ``pending``, and ``timed_out`` is ``pending`` being non-empty, so it
+    goes false for them — including for a spawn that is genuinely slow rather than
+    dead, which is exactly the case no bound on the record can tell apart from a
+    dead one. A caller reading ``timed_out`` alone would take such a run for one
+    that is no longer outstanding.
+
+    ``all_terminal`` is the field that does not move: it stays false, because the
+    run has no recorded end. So the reading is the triple, not any one field —
+    ``unresolved_spawn`` non-empty with ``timed_out`` false and ``all_terminal``
+    false says *this is not worth waiting on and it is not finished either, go and
+    look at it*. That is a different instruction from ``timed_out`` true, which
+    says keep waiting, and from ``all_terminal`` true, which says stop. Looking
+    means the two facts each entry now carries, ``spawn_state`` and
+    ``submitted_at``, plus whatever the machine says about the process; this
+    function deliberately does not decide it.
 
     Observing does not touch the run. This function only reads: a wait that
     expires, or whose caller cancels or disconnects, leaves the durable record
