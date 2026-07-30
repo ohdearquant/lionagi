@@ -471,13 +471,28 @@ def _playbook_in_args(window: str) -> str | None:
     return m.group(1) if m else None
 
 
-# `help` immediately followed by its own object: `help={...}` in the tool-call
-# form, `"help": {...}` in JSON. Two things make this a call rather than a
-# mention. The brace: a `help` *string* field, which every playbook declares per
-# argument, is followed by a quote instead. And the left boundary: without it any
-# identifier merely ending in the letters (`nothelp`, `somehelp`) would match,
-# which is a fabricated source wearing a real one's shape.
-_HELP_OBJECT = re.compile(r"(?<![A-Za-z0-9_])help[\"']?\s*[:=]\s*\{")
+# The two spellings the bundle actually uses for a help call whose argument is an
+# object: `help={...}` as a parameter, and `"help": {...}` as a JSON key. Written
+# as an enumeration of the supported forms rather than as "the letters `help`
+# minus whatever I remembered to exclude". A subtractive pattern is unbounded —
+# `nothelp` and `not-help` are two instances of a class with no last member, and
+# each is a fabricated source wearing a real one's shape. Requiring the brace is
+# part of the enumeration too: a `help` *string* field, which every playbook
+# declares per argument, is followed by a quote and matches neither form.
+#
+# The parameter form's left boundary is "not a character a name is made of",
+# which is a closed set, rather than a list of separators to reject, which is not.
+# Enumerating the *allowed* separators would have to cover every character the
+# bundle's prose and code fences put in front of a call (a space, a backtick, a
+# paren), and missing one rejects a real source.
+_NAME_CHAR = r"A-Za-z0-9_.\-"
+_HELP_OBJECT = re.compile(
+    rf"""(?:
+          [\"']help[\"']\s*:\s*\{{           # JSON key: "help": {{...}}
+        | (?<![{_NAME_CHAR}])help\s*=\s*\{{  # parameter: help={{...}}
+        )""",
+    re.VERBOSE,
+)
 
 
 def _qualified_help_sources(source: str) -> set[tuple[str, str]]:
@@ -570,8 +585,11 @@ def test_qualified_help_extractor_ignores_a_help_field_that_is_not_a_call() -> N
         'help={"verb": "play.submit", "playbook": "a"} or help={"verb": "flow.submit", '
         '"playbook": "b"}'
     ) == {("play.submit", "a"), ("flow.submit", "b")}
-    # An identifier that merely ends in the letters is not the `help` parameter.
-    for name in ("nothelp", "xhelp", "somehelp", "self_help"):
+    # A name that merely ends in the letters is not the `help` parameter. The
+    # separator cases matter as much as the run-together ones: a subtractive
+    # pattern closes whichever of these it was shown and leaves the rest, so both
+    # kinds are pinned here.
+    for name in ("nothelp", "xhelp", "somehelp", "self_help", "not-help", "auto.help"):
         assert (
             _qualified_help_sources(
                 f'{{"{name}": {{"verb": "play.submit", "playbook": "target"}}}}'
@@ -582,6 +600,12 @@ def test_qualified_help_extractor_ignores_a_help_field_that_is_not_a_call() -> N
             _qualified_help_sources(f'{name}={{"verb": "play.submit", "playbook": "target"}}')
             == set()
         ), name
+    # And the separators the bundle really puts in front of a call still read. A
+    # boundary tight enough to reject the names above must not reject these.
+    for lead in ("", " ", "`", "(", "from ", "- "):
+        assert _qualified_help_sources(
+            f'{lead}help={{"verb": "play.submit", "playbook": "target"}}'
+        ) == {("play.submit", "target")}, repr(lead)
 
 
 def test_the_object_reader_is_quote_aware_in_both_directions() -> None:
