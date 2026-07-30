@@ -187,9 +187,11 @@ def scan_dead_paths(
         return [f"[ERROR] {path} — cannot read: {exc}"]
 
     in_fence = False
+    fence_opened_at = 0
     for lineno, line in enumerate(text.splitlines(), start=1):
         if _FENCE.match(line):
             in_fence = not in_fence
+            fence_opened_at = lineno if in_fence else 0
             continue
         if in_fence:
             continue
@@ -198,6 +200,15 @@ def scan_dead_paths(
                 findings.append(
                     f"[DEAD_PATH] {path}:{lineno} — `{token}` does not exist in the repo"
                 )
+
+    # Ending inside a fence means every line after it was skipped. That is lost
+    # coverage, and staying quiet about it would reproduce, one level down, the
+    # silent-match-nothing failure this check exists to prevent.
+    if in_fence:
+        findings.append(
+            f"[UNTERMINATED_FENCE] {path}:{fence_opened_at} — fence opened here is never "
+            "closed, so path checks were skipped for the rest of the file"
+        )
     return findings
 
 
