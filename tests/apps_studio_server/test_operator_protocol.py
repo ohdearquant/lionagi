@@ -1764,15 +1764,17 @@ async def test_live_view_columns_are_added_to_a_preexisting_conversation_store(t
 
     store = OperatorStore(db_path)
     cid = (await store.create_conversation())["id"]
-    assert await store.get_view(cid) == (None, None, None)
+    assert await store.get_view(cid, "page-a") == (None, None)
 
     assert await store.record_view(
         cid, {"space": "system", "route": "/system", "filters": {}}, 7, "page-a"
     )
-    view, seq, observer = await store.get_view(cid)
+    view, seq = await store.get_view(cid, "page-a")
     assert view["space"] == "system"
     assert seq == 7
-    assert observer == "page-a"
+    assert await store.get_view(cid, "page-b") == (None, None), (
+        "one page's report says nothing about where another page is"
+    )
 
 
 @pytest.mark.asyncio
@@ -2012,6 +2014,60 @@ async def test_another_pages_later_count_cannot_answer_for_the_page_that_asked(
 
 
 @pytest.mark.asyncio
+async def test_another_pages_report_does_not_readmit_a_stale_one_from_the_asking_page(
+    tmp_path, monkeypatch
+):
+    """A second tab must not erase what the asking tab has already reported.
+
+    Keeping one view per conversation makes every page's report overwrite the
+    page before it, which throws away the asking page's high-water mark. A
+    delayed older report from that page then has nothing to lose to and is
+    stored as its latest, so the read returns a page the human left two
+    navigations ago and calls it live. The other tab is not even the one being
+    answered about: it is only the eraser.
+    """
+    from lionagi.studio.operator.application_mcp import get_current_view
+
+    path = tmp_path / "state.db"
+    store = OperatorStore(path)
+    cid = (await store.create_conversation())["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="where am I?",
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "observationSeq": 1,
+            "observerId": "page-a",
+        },
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    # The asking page moves twice, and its reports leave in order.
+    assert await store.record_view(
+        cid, {"space": "schedules", "route": "/schedules", "filters": {}}, 3, "page-a"
+    )
+    # The other tab reports in between.
+    assert await store.record_view(
+        cid, {"space": "designer", "route": "/designer", "filters": {}}, 9, "page-b"
+    )
+    # And now the asking page's EARLIER report finally arrives.
+    assert not await store.record_view(
+        cid, {"space": "library", "route": "/library", "filters": {}}, 2, "page-a"
+    ), "a page's own older report stays older, whoever reported in between"
+
+    view = await get_current_view({})
+    assert view["space"] == "schedules", "the asking page is where its newest report put it"
+    assert view["source"] == "live"
+    assert view["observationSeq"] == 3
+
+
+@pytest.mark.asyncio
 async def test_a_repeated_observation_timestamp_is_not_applied_twice(tmp_path):
     """Equal observation times are the same observation, not a newer one.
 
@@ -2032,5 +2088,5 @@ async def test_a_repeated_observation_timestamp_is_not_applied_twice(tmp_path):
     assert first is True
     assert replay is False
 
-    view, _, _ = await store.get_view(cid)
+    view, _ = await store.get_view(cid, "page-a")
     assert view["space"] == "library"

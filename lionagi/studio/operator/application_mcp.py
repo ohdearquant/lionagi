@@ -261,19 +261,13 @@ async def get_current_view(arguments: dict[str, Any]) -> dict[str, Any]:
     # When the turn names no observer or no count there is nothing to compare
     # against, so the honest answer is the turn's own snapshot rather than a
     # freshness claim that cannot be supported.
-    reported, reported_seq, reported_observer = await store.get_view(conversation_id)
     turn_seq = (context or {}).get("observationSeq")
     turn_observer = (context or {}).get("observerId")
     at = turn_seq if isinstance(turn_seq, int) else None
-    if (
-        reported is not None
-        and isinstance(turn_seq, int)
-        and isinstance(reported_seq, int)
-        and reported_seq > turn_seq
-        and turn_observer is not None
-        and reported_observer == turn_observer
-    ):
-        context, at, source = reported, reported_seq, "live"
+    if isinstance(turn_seq, int) and isinstance(turn_observer, str):
+        reported, reported_seq = await store.get_view(conversation_id, turn_observer)
+        if reported is not None and isinstance(reported_seq, int) and reported_seq > turn_seq:
+            context, at, source = reported, reported_seq, "live"
 
     if context is None:
         return {"known": False}

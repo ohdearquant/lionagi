@@ -44,25 +44,29 @@ CREATE TABLE IF NOT EXISTS studio_operator_conversations (
   -- continues the first instead of starting a stranger.
   provider_session_id TEXT,
   provider_model      TEXT,
-  -- The view the human was last seen on, updated whenever the browser reports
-  -- one rather than only at turn submission. A turn's own context is frozen at
-  -- submit, so without this the Operator answers "where am I" with wherever the
-  -- human was when they hit send, which is wrong exactly when they have moved.
-  last_view_json      TEXT,
-  -- Who reported that view, and how many views they had seen when they did.
-  -- Ordering is by the count and never by a clock: server arrival order cannot
-  -- substitute, because a view seen before an instruction can arrive after it,
-  -- and a wall clock cannot either, because it can step backwards and leave a
-  -- stale view holding the higher number. The count is only meaningful within
-  -- one observer, so the observer is stored beside it -- two tabs on one
-  -- conversation see two different pages, and only the one the instruction came
-  -- from can say where the human is.
-  last_view_seq       INTEGER,
-  last_view_observer  TEXT,
   created_at         REAL NOT NULL,
   updated_at         REAL NOT NULL,
   archived_at        REAL,
   deleted_at         REAL
+);
+
+-- Where each page reporting into a conversation was last seen. A turn's own
+-- context is frozen at submit, so without this the Operator answers "where am
+-- I" with wherever the human was when they hit send, which is wrong exactly
+-- when they have moved.
+--
+-- Keyed by the OBSERVER as well as the conversation, because ``observation_seq``
+-- counts the views one page has seen and means nothing outside it. Two tabs on
+-- one conversation count independently; keeping a single row per conversation
+-- would make each tab's report erase the other's high-water mark, and a delayed
+-- older report from the asking tab could then be re-admitted as its latest.
+CREATE TABLE IF NOT EXISTS studio_operator_views (
+  conversation_id   TEXT NOT NULL REFERENCES studio_operator_conversations(id),
+  observer_id       TEXT NOT NULL,
+  view_json         TEXT NOT NULL,
+  observation_seq   INTEGER NOT NULL,
+  updated_at        REAL NOT NULL,
+  PRIMARY KEY(conversation_id, observer_id)
 );
 
 CREATE TABLE IF NOT EXISTS studio_operator_turns (
@@ -136,6 +140,9 @@ CREATE TABLE IF NOT EXISTS studio_operator_effects (
 MAX_FRAME_PAYLOAD_BYTES = 64 * 1024
 MAX_FRAMES_PER_TURN = 2000
 MAX_TURN_PAYLOAD_BYTES = 8 * 1024 * 1024
+# Reporting pages retained per conversation. Each page load is its own reporter,
+# so this bounds what a long-lived conversation accumulates.
+MAX_REPORTING_VIEWS_PER_CONVERSATION = 8
 TRUNCATION_FRAME_TYPE = "truncation"
 
 
@@ -205,9 +212,6 @@ class OperatorStore:
                     {
                         "provider_session_id": "TEXT",
                         "provider_model": "TEXT",
-                        "last_view_json": "TEXT",
-                        "last_view_seq": "INTEGER",
-                        "last_view_observer": "TEXT",
                     },
                 )
                 await db.commit()
@@ -444,66 +448,89 @@ class OperatorStore:
     async def record_view(
         self, conversation_id: str, view: dict[str, Any], seq: int, observer: str
     ) -> bool:
-        """Record where the human is now, independently of any turn.
+        """Record where the page *observer* is now, independently of any turn.
 
-        *seq* is how many views *observer* had seen when it saw this one. Each
+        *seq* is how many views that page had seen when it saw this one. Each
         report is its own request, so two navigations by one page can arrive
-        reversed; a report that does not count higher than the stored one is
-        DISCARDED rather than written, because otherwise the stale view wins and
-        is still labelled current, which is the exact failure this whole
-        mechanism exists to fix.
+        reversed; a report that does not count higher than that page's own
+        stored count is DISCARDED, because otherwise the stale view wins and is
+        still labelled current, which is the exact failure this whole mechanism
+        exists to fix.
 
-        A report from a DIFFERENT observer is always written. Two pages count
-        independently, so their counts cannot be compared -- refusing the lower
-        number would silence whichever page happened to start later. Storing it
-        is safe because the read only trusts a view reported by the page the
-        instruction came from; a report from any other page can cost freshness
-        and never correctness.
+        Each page gets its own row. A shared row would make every report erase
+        the previous page's high-water mark, and a delayed older report from the
+        page that asked could then be re-admitted as its latest -- the same stale
+        view, arriving by a longer road.
 
         Returns whether the report was applied.
         """
         await self.ensure_schema()
+        now = time.time()
         async with open_db(str(self.path())) as db:
             await db.execute("BEGIN IMMEDIATE")
-            row = await (
+            conversation = await (
                 await db.execute(
-                    "SELECT last_view_seq, last_view_observer "
-                    "FROM studio_operator_conversations WHERE id = ?",
+                    "SELECT id FROM studio_operator_conversations WHERE id = ?",
                     (conversation_id,),
                 )
             ).fetchone()
-            if row is None:
+            if conversation is None:
                 await db.rollback()
                 raise OperatorNotFoundError(f"Operator conversation '{conversation_id}' not found")
-            same_observer = row["last_view_observer"] == observer
-            previous = row["last_view_seq"]
-            if same_observer and previous is not None and seq <= previous:
+            row = await (
+                await db.execute(
+                    "SELECT observation_seq FROM studio_operator_views "
+                    "WHERE conversation_id = ? AND observer_id = ?",
+                    (conversation_id, observer),
+                )
+            ).fetchone()
+            if row is not None and seq <= row["observation_seq"]:
                 await db.rollback()
                 return False
             await db.execute(
-                "UPDATE studio_operator_conversations "
-                "SET last_view_json = ?, last_view_seq = ?, last_view_observer = ? WHERE id = ?",
-                (self._json(view), seq, observer, conversation_id),
+                "INSERT INTO studio_operator_views "
+                "(conversation_id, observer_id, view_json, observation_seq, updated_at) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(conversation_id, observer_id) DO UPDATE SET "
+                "view_json = excluded.view_json, observation_seq = excluded.observation_seq, "
+                "updated_at = excluded.updated_at",
+                (conversation_id, observer, self._json(view), seq, now),
+            )
+            # Every reload is a new page, so these rows would otherwise
+            # accumulate for the life of the conversation. Evicting the quietest
+            # costs that page its freshness and nothing else: a turn from an
+            # evicted page falls back to its own frozen snapshot, which is the
+            # honest answer rather than a wrong one.
+            await db.execute(
+                "DELETE FROM studio_operator_views WHERE conversation_id = ? AND observer_id NOT IN "
+                "(SELECT observer_id FROM studio_operator_views WHERE conversation_id = ? "
+                "ORDER BY updated_at DESC LIMIT ?)",
+                (conversation_id, conversation_id, MAX_REPORTING_VIEWS_PER_CONVERSATION),
             )
             await db.commit()
         return True
 
     async def get_view(
-        self, conversation_id: str
-    ) -> tuple[dict[str, Any] | None, int | None, str | None]:
-        """Return the last reported view, its count, and who observed it."""
+        self, conversation_id: str, observer: str
+    ) -> tuple[dict[str, Any] | None, int | None]:
+        """Return where *observer* was last seen, and its count when it saw it.
+
+        Scoped to one page on purpose. The count means nothing outside the page
+        that made it, so answering with another page's view would be answering
+        for a window the human may not even be looking at.
+        """
         await self.ensure_schema()
         async with open_db(str(self.path())) as db:
             row = await (
                 await db.execute(
-                    "SELECT last_view_json, last_view_seq, last_view_observer "
-                    "FROM studio_operator_conversations WHERE id = ?",
-                    (conversation_id,),
+                    "SELECT view_json, observation_seq FROM studio_operator_views "
+                    "WHERE conversation_id = ? AND observer_id = ?",
+                    (conversation_id, observer),
                 )
             ).fetchone()
-        if row is None or row["last_view_json"] is None:
-            return None, None, None
-        return json.loads(row["last_view_json"]), row["last_view_seq"], row["last_view_observer"]
+        if row is None:
+            return None, None
+        return json.loads(row["view_json"]), row["observation_seq"]
 
     async def select_provider_model(self, conversation_id: str, model: str) -> None:
         """Record the model for this conversation, dropping a stale session.
