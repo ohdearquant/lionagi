@@ -14,28 +14,44 @@ PER_PLUGIN_OPTIONAL_STRINGS = ["repository", "license", "homepage"]
 
 
 def _has_frontmatter_description(path: Path) -> bool:
-    """True when the file opens with a frontmatter block carrying a non-empty description.
+    """True when the file opens with frontmatter carrying a non-empty description.
 
-    The accepted grammar is deliberately narrow and no YAML parser is involved: the
-    opening and closing fences must each be a line that is exactly ``---``, the key must
-    be top-level, and its value must be a non-empty scalar on the same line. Block and
-    folded scalars (``|``, ``>``) are rejected rather than guessed at, so a form this
-    cannot evaluate fails visibly instead of passing because a marker character happens
-    to be non-whitespace.
+    No YAML parser is used, and that is forced rather than preferred: ci.sh runs this
+    file on the bare system interpreter, never through uv, so nothing outside the
+    standard library is available and an import would turn a lint into a crash. The
+    grammar below is therefore hand-rolled, and it was compared case by case against a
+    real parser so that where it disagrees it errs toward rejection:
+
+    - A fence is ``---`` alone on its line, optionally followed by spaces. Trailing
+      spaces are legal and accepted; a trailing tab is not legal and is rejected. Do
+      not tighten this to ``line == "---"`` — that rejects a fence a parser accepts.
+    - The colon after ``description`` must be followed by a space or end the line.
+      ``description:value`` is a plain scalar, not a mapping, and must not count.
+    - The value must be a non-empty scalar on the same line. Block and folded scalars
+      (``|``, ``>``) are rejected even when they carry content, as are the
+      space-before-colon and quoted-key spellings, because evaluating those needs the
+      parser this cannot import. The failure message names the accepted form.
     """
+
+    def is_fence(line: str) -> bool:
+        return line.rstrip(" ") == "---"
+
     try:
         lines = path.read_text().splitlines()
     except OSError:
         return False
-    if not lines or lines[0].rstrip() != "---":
+    if not lines or not is_fence(lines[0]):
         return False
-    close = next((i for i, line in enumerate(lines[1:], 1) if line.rstrip() == "---"), None)
+    close = next((i for i, line in enumerate(lines[1:], 1) if is_fence(line)), None)
     if close is None:
         return False
     for line in lines[1:close]:
-        if line[:1].isspace() or not line.startswith("description:"):
+        if not line.startswith("description:"):
             continue
-        value = line[len("description:") :].strip()
+        rest = line[len("description:") :]
+        if rest[:1] not in ("", " "):
+            continue
+        value = rest.strip()
         return bool(value) and value[0] not in "|>"
     return False
 
@@ -137,9 +153,9 @@ def main() -> int:
                             failures += 1
                         elif not _has_frontmatter_description(md):
                             print(
-                                f"FAIL [{name}]: agent needs a one-line frontmatter "
-                                f"'description' (single-line scalar between exact '---' "
-                                f"fences; block and folded forms are not accepted): {rel_md}"
+                                f"FAIL [{name}]: agent needs a top-level frontmatter "
+                                f"'description' whose value is a non-empty single-line "
+                                f"scalar (block and folded forms are not accepted): {rel_md}"
                             )
                             plugin_ok = False
                             failures += 1

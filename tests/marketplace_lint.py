@@ -245,3 +245,125 @@ def test_lambda_names_are_canonical(path: Path) -> None:
             f"{_rel(path)} references non-canonical lambda namespace(s):\n"
             + "\n".join(f"  {u}" for u in unknown)
         )
+
+
+# ---------------------------------------------------------------------------
+# Agent frontmatter grammar
+#
+# validate_manifests.py hand-rolls its frontmatter grammar because ci.sh runs it
+# on the bare system interpreter, where no YAML parser is available. This suite
+# does run under uv, so it is where that grammar gets pinned against a real
+# parser. Each case records both answers; where they differ, the reason is part
+# of the case. A change that makes one of them agree has to edit this table, so
+# the divergence set stays closed and stays explained.
+# ---------------------------------------------------------------------------
+
+_SCRIPTS_DIR = str(_MARKETPLACE_ROOT / "scripts")
+
+# (label, document, our answer, a real parser's answer, why they differ)
+_FRONTMATTER_CASES: list[tuple[str, str, bool, bool, str]] = [
+    ("exact fence", "---\nname: x\ndescription: d\n---\nb\n", True, True, ""),
+    ("trailing space on fences", "--- \nname: x\ndescription: d\n--- \nb\n", True, True, ""),
+    ("trailing tab on fence", "---\t\nname: x\ndescription: d\n---\nb\n", False, False, ""),
+    ("leading space on fence", "  ---\nname: x\ndescription: d\n---\nb\n", False, False, ""),
+    ("no space after colon", "---\ndescription:valid\n---\nb\n", False, False, ""),
+    ("tab after colon", "---\ndescription:\tvalid\n---\nb\n", False, False, ""),
+    ("nested under another key", "---\nmeta:\n  description: n\n---\nb\n", False, False, ""),
+    ("empty block scalar", "---\ndescription: |\n---\nb\n", False, False, ""),
+    ("value is empty", "---\ndescription:\n---\nb\n", False, False, ""),
+    ("no closing fence", "---\ndescription: d\nb\n", False, False, ""),
+    ("description-prefixed key", "---\ndescription_of: d\n---\nb\n", False, False, ""),
+    (
+        "space before colon",
+        "---\ndescription : valid\n---\nb\n",
+        False,
+        True,
+        "legal YAML, but resolving a key spelled with padding needs a parser",
+    ),
+    (
+        "quoted key",
+        '---\n"description": valid\n---\nb\n',
+        False,
+        True,
+        "legal YAML, but unquoting a key needs a parser",
+    ),
+    (
+        "block scalar with content",
+        "---\ndescription: |\n  real text\n---\nb\n",
+        False,
+        True,
+        "legal YAML, but folding a block scalar needs a parser",
+    ),
+]
+
+
+def _description_check():
+    """Import the validator's grammar helper, which lives outside any package."""
+    if _SCRIPTS_DIR not in sys.path:
+        sys.path.insert(0, _SCRIPTS_DIR)
+    from validate_manifests import _has_frontmatter_description
+
+    return _has_frontmatter_description
+
+
+def _parser_says(document: str) -> bool:
+    """Whether a real parser finds a top-level non-empty string description."""
+    import yaml
+
+    try:
+        docs = list(yaml.safe_load_all(document))
+    except yaml.YAMLError:
+        return False
+    if not docs or not isinstance(docs[0], dict):
+        return False
+    value = docs[0].get("description")
+    return isinstance(value, str) and bool(value.strip())
+
+
+@pytest.mark.parametrize(
+    ("document", "expected"),
+    [(c[1], c[2]) for c in _FRONTMATTER_CASES],
+    ids=[c[0] for c in _FRONTMATTER_CASES],
+)
+def test_frontmatter_grammar(tmp_path: Path, document: str, expected: bool) -> None:
+    """The hand-rolled grammar answers each recorded case the recorded way."""
+    subject = tmp_path / "agent.md"
+    subject.write_text(document)
+    assert _description_check()(subject) is expected
+
+
+@pytest.mark.parametrize(
+    ("document", "parser_answer"),
+    [(c[1], c[3]) for c in _FRONTMATTER_CASES],
+    ids=[c[0] for c in _FRONTMATTER_CASES],
+)
+def test_frontmatter_grammar_never_accepts_what_a_parser_rejects(
+    tmp_path: Path, document: str, parser_answer: bool
+) -> None:
+    """The dangerous direction stays closed: no malformed document may pass.
+
+    Erring toward rejection is tolerable and recorded per case. Erring toward
+    acceptance ships an agent the host cannot read, so it is an invariant.
+    """
+    assert _parser_says(document) is parser_answer, "the recorded parser answer went stale"
+    if not parser_answer:
+        subject = tmp_path / "agent.md"
+        subject.write_text(document)
+        assert _description_check()(subject) is False
+
+
+def test_frontmatter_divergences_are_all_explained() -> None:
+    """Every case where the two disagree carries its reason, and no other case does."""
+    for label, _document, ours, parser_answer, reason in _FRONTMATTER_CASES:
+        if ours != parser_answer:
+            assert reason, f"{label}: diverges from a parser with no reason recorded"
+        else:
+            assert not reason, f"{label}: agrees with a parser but records a divergence reason"
+
+
+def test_shipped_agents_satisfy_the_grammar() -> None:
+    """The agents this bundle actually ships pass, so the grammar is not vacuous."""
+    agents = sorted((_MARKETPLACE_ROOT / "orchestrate" / "agents").glob("*.md"))
+    assert agents, "no direct agent files found — the check below would be vacuous"
+    check = _description_check()
+    assert [a.name for a in agents if not check(a)] == []
