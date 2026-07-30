@@ -136,14 +136,36 @@ _LINE_SUFFIX = re.compile(r":\d+$")
 # desynchronises from the document: the scanner leaves a block the document is
 # still inside, skips real prose, and ends in the un-fenced state so the
 # unterminated-fence diagnostic does not fire either.
-#
-# The leading `\s*` is deliberately looser than CommonMark, which allows a
-# top-level fence at most three spaces of indent. A fence nested in a list item
-# is indented further, and the three-space rule is measured against the
-# container, which a line-at-a-time scanner cannot see. Being permissive skips a
-# little more than Markdown would; being strict would read a list-nested code
-# block as prose and report every path in it.
-_FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+_FENCE = re.compile(r"^([ \t]*)(`{3,}|~{3,})(.*)$")
+
+
+def _indent_columns(whitespace: str) -> int:
+    """Leading whitespace measured in columns, with tabs to four-column stops."""
+    n = 0
+    for ch in whitespace:
+        n = n + (4 - n % 4) if ch == "\t" else n + 1
+    return n
+
+
+def _fence_parts(line: str) -> tuple[str, str] | None:
+    """The delimiter run and its trailing text, or None if this is not a fence line.
+
+    Four columns of indent begin an indented code block, so a line that deep can
+    neither open a fence nor close one. Accepting it as a delimiter is a silent
+    bypass rather than a cosmetic error: the indented line becomes the opener, the
+    unindented prose after it is skipped as though it were fence content, and the
+    next delimiter closes a block the document was never in. Nothing is reported,
+    including the unterminated fence.
+
+    Measured across this bundle before tightening: all 302 fence delimiters sit at
+    column zero, and no line indented four or more columns carries a backticked
+    source path. So the strict reading costs nothing here, and where it is wrong it
+    reads real content as prose and reports too much rather than too little.
+    """
+    m = _FENCE.match(line)
+    if m is None or _indent_columns(m.group(1)) > 3:
+        return None
+    return m.group(2), m.group(3)
 
 
 def _opens_fence(delim: str, trailing: str) -> bool:
@@ -268,9 +290,9 @@ def scan_dead_paths(
     opener = ""  # the delimiter run that opened the current fence; "" when outside one
     fence_opened_at = 0
     for lineno, line in enumerate(text.splitlines(), start=1):
-        fence = _FENCE.match(line)
-        if fence:
-            delim, trailing = fence.group(1), fence.group(2)
+        parts = _fence_parts(line)
+        if parts:
+            delim, trailing = parts
             if not opener:
                 if _opens_fence(delim, trailing):
                     opener = delim

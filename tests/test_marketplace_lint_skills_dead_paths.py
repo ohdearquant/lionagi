@@ -105,9 +105,28 @@ def _kinds(findings: list[str]) -> set[str]:
             set(),
         ),
         (
-            "an indented delimiter is treated as a fence so list-nested code is not read as prose",
+            "four columns of indent begin code, so such a line opens no fence",
             "    ```\n    `lionagi/missing.py`\n    ```\n",
+            {"DEAD_PATH"},
+        ),
+        (
+            "a tab is four columns and opens no fence either",
+            "\t```\n`lionagi/missing.py`\n\t```\n",
+            {"DEAD_PATH"},
+        ),
+        (
+            "up to three columns still opens one",
+            "   ```\n   `lionagi/missing.py`\n   ```\n",
             set(),
+        ),
+        # The shape the permissive version let through in silence: the indented
+        # line became the opener, the unindented prose after it was skipped as
+        # though it were fence content, and the last line closed a block the
+        # document was never in, so nothing at all was reported.
+        (
+            "an indented pseudo-fence does not swallow the prose that follows it",
+            "    ```\n`lionagi/missing.py`\n   ```\n",
+            {"DEAD_PATH", "UNTERMINATED_FENCE"},
         ),
         (
             "parentheses belong to the pathname, not to a prose annotation",
