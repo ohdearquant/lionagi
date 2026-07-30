@@ -87,7 +87,8 @@ it directly) or from `help="<verb>"`.
 `flow.submit` and `play.submit` are different, and getting this wrong is the one mistake here
 that costs a round-trip for a reason that is not obvious. Their schema depends on which
 `playbook` the call names, because the playbook's own declared arguments are resolved into it.
-So the fingerprint depends on it too, and there are **two different fingerprints per verb**:
+So the fingerprint depends on it too: each verb has a base fingerprint plus a distinct one for
+every playbook it can be given. Two cases to write for:
 
 - **No `playbook` in `args`** — `help="flow.submit"` is the right source. Only `flow.submit`
   can be called this way; `play.submit` requires a playbook.

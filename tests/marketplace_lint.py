@@ -414,6 +414,99 @@ def test_op_object_extractor_separates_siblings_from_the_next_op() -> None:
     assert "schema_fingerprint" not in _op_objects_in(leaked)[0][1]
 
 
+# A quoted value in either spelling the bundle uses: `"x"` in JSON, `'x'` in the
+# tool-call form. Backslashes are stripped before matching, so `\"x\"` inside a
+# JSON string literal reads the same as `"x"`.
+_QUOTED = r"[\"']([^\"']+)[\"']"
+_KEYED = r"[\"']?{key}[\"']?\s*[:=]\s*" + _QUOTED
+
+
+def _playbook_in_args(window: str) -> str | None:
+    """The playbook an op names in its own `args`, or None.
+
+    Read from the `args` object alone, by brace matching. Taking the first
+    `"playbook"` anywhere in the window would instead read the one inside a
+    `schema_fingerprint` placeholder whenever that key is written first, which
+    turns a mismatch into a self-satisfying match.
+    """
+    args_at = window.find('"args"')
+    if args_at == -1:
+        return None
+    open_at = window.find("{", args_at)
+    if open_at == -1:
+        return None
+    depth = 0
+    end = len(window)
+    for i in range(open_at, len(window)):
+        if window[i] == "{":
+            depth += 1
+        elif window[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    m = re.search(_KEYED.format(key="playbook"), window[open_at:end])
+    return m.group(1) if m else None
+
+
+def _qualified_help_sources(source: str) -> set[tuple[str, str]]:
+    """Every (verb, playbook) pair named together by one `help` call in `source`.
+
+    A call has to name both to be a usable source, so the pair is the unit. The
+    search window is bounded to the rest of the line: a call spanning lines is
+    read as naming nothing, which fails the check loudly rather than binding a
+    playbook from the next line's example. That direction is deliberate — the
+    bundle writes these on one line, and a false negative is a visible failure
+    while a false positive ships a fingerprint that does not resolve.
+    """
+    plain = source.replace("\\", "")
+    pairs: set[tuple[str, str]] = set()
+    for m in re.finditer(r"help", plain, re.IGNORECASE):
+        line = plain[m.start() :].split("\n", 1)[0]
+        verb = re.search(_KEYED.format(key="verb"), line)
+        playbook = re.search(_KEYED.format(key="playbook"), line)
+        if verb and playbook:
+            pairs.add((verb.group(1), playbook.group(1)))
+    return pairs
+
+
+def test_args_playbook_extractor_ignores_a_playbook_named_elsewhere_in_the_op() -> None:
+    """The op's own playbook must come from `args`, not from a placeholder.
+
+    The failure this avoids: reading the playbook out of the fingerprint's own
+    `<from help=...>` text, which would make every example agree with itself.
+    """
+    window = (
+        '{"op": "play.submit", "schema_fingerprint": "<from help={\\"verb\\": '
+        '\\"play.submit\\", \\"playbook\\": \\"other\\"}>", "args": {"playbook": "mine"}}'
+    )
+    assert _playbook_in_args(window) == "mine"
+    assert _playbook_in_args('{"op": "play.submit", "args": {"prompt": "x"}}') is None
+
+
+def test_qualified_help_extractor_reads_both_quote_spellings() -> None:
+    """Both spellings appear in the shipped bundle, so both must be read.
+
+    Reading only JSON double quotes misses the tool-call spelling, which the
+    bundle uses for exactly this call — and a source it cannot see reads as a
+    source that is not there.
+    """
+    assert _qualified_help_sources("help={'verb': 'play.submit', 'playbook': 'a'}") == {
+        ("play.submit", "a")
+    }
+    assert _qualified_help_sources('help={"verb": "flow.submit", "playbook": "b"}') == {
+        ("flow.submit", "b")
+    }
+    # Escaped, inside a JSON string literal.
+    assert _qualified_help_sources(
+        '"<from help={\\"verb\\": \\"play.submit\\", \\"playbook\\": \\"c\\"}>"'
+    ) == {("play.submit", "c")}
+    # A call naming only the verb is not a qualified source.
+    assert _qualified_help_sources('help="play.submit"') == set()
+    # A playbook named on the next line does not bind.
+    assert _qualified_help_sources('help={"verb": "play.submit",\n "playbook": "d"}') == set()
+
+
 def test_documented_submit_ops_carry_a_schema_fingerprint() -> None:
     """Every documented `*.submit` op must show the fingerprint it has to carry.
 
@@ -529,42 +622,83 @@ def test_a_playbook_bearing_example_names_a_playbook_qualified_help_source() -> 
     positioned in exactly these cases. Both rules are needed, and this one is
     the reason the first one is not sufficient.
 
-    Scope: the enclosing section, not the op window, because a placeholder that
-    says "from the help call above" is correct precisely when the call above it
-    is qualified. So the search runs backwards from the op to the nearest heading
-    and passes if a playbook-qualified help call appears anywhere in between.
+    The source has to be bound to the op by **both** names. Requiring only that
+    some playbook-qualified call appear nearby passes an example whose source
+    names a *different* playbook, which is the very failure being guarded: the
+    reader follows a real qualified call, gets a real fingerprint, and the op is
+    refused. So the pair (verb, playbook) from the help call must equal the pair
+    the op itself names.
+
+    Two arms, preferred in order:
+
+    1. The op's own `schema_fingerprint` value names the call. Self-binding: no
+       other example can satisfy it.
+    2. Otherwise the enclosing section, because a placeholder reading "from the
+       help call above" is correct exactly when the call above it is the right
+       one. Residual limit, stated rather than closed: within one section this
+       cannot tell which of two correct-for-something calls a prose placeholder
+       points at. Closing that needs a structured per-example annotation, not a
+       tighter regex.
     """
     from lionagi.mcp.verbs import VERBS
 
     aware = frozenset(name for name, verb in VERBS.items() if verb.playbook_aware)
     assert aware, "no playbook-aware verbs in the registry — the check would pass vacuously"
 
-    # A help call that names a playbook, in either the JSON or the tool-call
-    # spelling the bundle uses, tolerating backslash-escaped quotes inside a
-    # JSON string literal.
-    qualified_help = re.compile(r"help\s*=?\s*[:{]?[^\n]{0,80}?playbook", re.IGNORECASE)
-
     offenders: list[str] = []
     checked = 0
     for path in _SKILL_FILES:
         text = _read(path)
         for verb, window in _op_objects_in(text):
-            if verb not in aware or '"playbook"' not in window:
+            playbook = _playbook_in_args(window)
+            if verb not in aware or playbook is None:
                 continue
             checked += 1
             start = text.find(window)
             section = text.rfind("\n#", 0, start)
             scope = text[section if section != -1 else 0 : start + len(window)]
-            if not qualified_help.search(scope):
-                lineno = text[:start].count("\n") + 1
-                offenders.append(f"{_rel(path)}:{lineno} {verb}")
+            if (verb, playbook) in _qualified_help_sources(window) or (
+                verb,
+                playbook,
+            ) in _qualified_help_sources(scope):
+                continue
+            lineno = text[:start].count("\n") + 1
+            offenders.append(f"{_rel(path)}:{lineno} {verb} playbook={playbook!r}")
 
     assert checked, "no playbook-bearing spawn examples found under marketplace/ at all"
     assert not offenders, (
-        "these examples name a playbook in `args` but no playbook-qualified help "
-        "call appears in their section, so a reader takes the fingerprint from the "
-        "base schema and the op is refused with stale_schema: " + repr(sorted(offenders))
+        "these examples name a playbook in `args` but no help call naming that same "
+        "verb and playbook appears in their section, so a reader takes the "
+        "fingerprint from a schema that is not the one the op resolves, and the op "
+        "is refused with stale_schema: " + repr(sorted(offenders))
     )
+
+
+def test_the_qualified_source_check_rejects_a_source_for_a_different_playbook() -> None:
+    """A qualified call for one playbook, an op naming another.
+
+    Both names are present in the section, a fingerprint is present and
+    correctly positioned, and the documented source resolves a different schema
+    — so the reader gets `stale_schema` from a value that looked verified. A
+    proximity check passes this; only name equality catches it.
+    """
+    subject = (
+        "## A\n"
+        '{"help": {"verb": "play.submit", "playbook": "other"}}\n'
+        '{"ops": [{"op": "play.submit", "args": {"playbook": "target"}, '
+        '"schema_fingerprint": "<from help=play.submit>"}]}\n'
+    )
+    verb, window = _op_objects_in(subject)[0]
+    playbook = _playbook_in_args(window)
+    assert (verb, playbook) == ("play.submit", "target")
+    assert (verb, playbook) not in _qualified_help_sources(window)
+    assert (verb, playbook) not in _qualified_help_sources(subject), (
+        "a help call for a different playbook still satisfies the check, so the "
+        "rule admits the failure it exists to catch"
+    )
+    # The same subject with the source corrected passes.
+    fixed = subject.replace('"playbook": "other"', '"playbook": "target"')
+    assert (verb, playbook) in _qualified_help_sources(fixed)
 
 
 @pytest.mark.parametrize("path", _SKILL_FILES, ids=[_rel(p) for p in _SKILL_FILES])
