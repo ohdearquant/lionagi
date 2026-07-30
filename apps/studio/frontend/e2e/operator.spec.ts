@@ -120,8 +120,8 @@ test("Operator streams, persists, stops, records a run, and resumes it", async (
 
 test("Operator Deny and Allow decisions traverse the real permission route", async ({ page }) => {
   test.setTimeout(45_000);
-  // Exercise the same fragment bootstrap used by `li studio`: the token is
-  // browser-held and the API client must attach it to human-only decisions.
+  // Decisions go over the real permission route with no credential of any kind:
+  // Studio is a loopback-local tool and carries no browser-held token.
   const discovery = page.waitForResponse(
     (response) =>
       response.request().method() === "GET" &&
