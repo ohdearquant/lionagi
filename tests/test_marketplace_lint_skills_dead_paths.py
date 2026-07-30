@@ -80,6 +80,35 @@ def _kinds(findings: list[str]) -> set[str]:
             "```\nopened and never closed\n`lionagi/missing.py`\n",
             {"UNTERMINATED_FENCE"},
         ),
+        # Both findings are correct here, and the second is the tell that the
+        # first line really was read as prose. Once it no longer opens a fence,
+        # the closing-looking line at the end is itself an opener with nothing
+        # after it, so the document does end inside a block.
+        (
+            "a backtick line whose info string holds a backtick does not open a fence",
+            "``` python ```\n`lionagi/missing.py`\n```\n",
+            {"DEAD_PATH", "UNTERMINATED_FENCE"},
+        ),
+        (
+            "the same invalid opener inside a balanced document reports only the path",
+            "``` python ```\n`lionagi/missing.py`\n\n```\ncode\n```\n",
+            {"DEAD_PATH"},
+        ),
+        (
+            "a plain info string does open one, so its contents stay skipped",
+            "```python\n`lionagi/missing.py`\n```\n",
+            set(),
+        ),
+        (
+            "a tilde info string may hold a backtick and still opens a fence",
+            "~~~ python `x`\n`lionagi/missing.py`\n~~~\n",
+            set(),
+        ),
+        (
+            "an indented delimiter is treated as a fence so list-nested code is not read as prose",
+            "    ```\n    `lionagi/missing.py`\n    ```\n",
+            set(),
+        ),
         (
             "parentheses belong to the pathname, not to a prose annotation",
             "Broken `lionagi/(missing).py` reference.\n",

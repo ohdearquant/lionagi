@@ -136,7 +136,28 @@ _LINE_SUFFIX = re.compile(r":\d+$")
 # desynchronises from the document: the scanner leaves a block the document is
 # still inside, skips real prose, and ends in the un-fenced state so the
 # unterminated-fence diagnostic does not fire either.
+#
+# The leading `\s*` is deliberately looser than CommonMark, which allows a
+# top-level fence at most three spaces of indent. A fence nested in a list item
+# is indented further, and the three-space rule is measured against the
+# container, which a line-at-a-time scanner cannot see. Being permissive skips a
+# little more than Markdown would; being strict would read a list-nested code
+# block as prose and report every path in it.
 _FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+
+
+def _opens_fence(delim: str, trailing: str) -> bool:
+    """Whether a delimiter line actually opens a fence.
+
+    A backtick fence's info string may not itself contain a backtick, so
+    ``` python ``` is a paragraph rather than an opener. Accepting it as one puts
+    the scanner inside a block the document is not in: the prose that follows is
+    skipped, the next delimiter reads as its closer, and the file ends balanced,
+    so neither a dead path nor an unterminated fence is reported. Tildes carry no
+    such restriction.
+    """
+    return not (delim[0] == "`" and "`" in trailing)
+
 
 # The source roots this bundle's documentation refers to.
 #
@@ -191,9 +212,11 @@ def _undeclared_root(token: str, repo_root: Path, prefixes: tuple[str, ...]) -> 
     no true ones. A token pointing into a directory that IS in the tree is the
     opposite: something the docs reference and nothing checks.
 
-    Limit worth stating: a reference to a root that never existed stays
-    unchecked. That is a typo rather than rot, and it is the price of not
-    guessing which path-shaped strings in prose are meant to be repo paths.
+    Limit worth stating, and it is wider than a typo: any reference whose root is
+    not in the tree stays unchecked, which covers a reference left behind by a
+    root that was deleted or renamed as well as one that was never right. That is
+    the price of not guessing which path-shaped strings in prose are meant to be
+    repo paths, and it is the case a reader should not assume is covered.
     """
     if "/" not in token or "://" in token:
         return None
@@ -249,13 +272,15 @@ def scan_dead_paths(
         if fence:
             delim, trailing = fence.group(1), fence.group(2)
             if not opener:
-                opener = delim
-                fence_opened_at = lineno
-                continue
+                if _opens_fence(delim, trailing):
+                    opener = delim
+                    fence_opened_at = lineno
+                    continue
+                # Not an opener after all, so fall through and read it as prose.
             # A closer must use the opener's own character, run at least as long,
             # and carry nothing but whitespace after it. Anything shorter or
             # different is content inside the block, not the end of it.
-            if delim[0] == opener[0] and len(delim) >= len(opener) and not trailing.strip():
+            elif delim[0] == opener[0] and len(delim) >= len(opener) and not trailing.strip():
                 opener = ""
                 fence_opened_at = 0
                 continue
