@@ -57,6 +57,7 @@ export interface RecentRow {
   id: string;
   name: string;
   status: string;
+  invocation_id: string | null;
   status_reason_code?: string | null;
   status_reason_summary?: string | null;
   endedAtSec: number | null;
@@ -225,6 +226,7 @@ export function terminalRecentRows(runs: RunSummary[]): RecentRow[] {
       id: r.run_id,
       name: r.playbook_name ?? r.agent_name ?? r.run_id.slice(-12),
       status: r.status,
+      invocation_id: r.invocation_id ?? null,
       status_reason_code: r.status_reason_code,
       status_reason_summary: r.status_reason_summary,
       endedAtSec: r.ended_at ?? r.started_at ?? null,

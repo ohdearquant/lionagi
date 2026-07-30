@@ -1,9 +1,10 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Leo: the Studio operator agent — session registry, tool definitions, and routes.
+"""Retired Leo compatibility helpers.
 
-Security boundary: mutating tools never execute; they return a proposed_action for
-the frontend to confirm and call the real endpoint directly.
+The HTTP surface was superseded by the durable Operator protocol and is
+deliberately not registered. Mutating helpers still return inert
+``proposed_action`` values for callers that import this legacy module directly.
 """
 
 # NOTE: no `from __future__ import annotations` — Leo tool callables are
@@ -22,7 +23,6 @@ from pydantic import BaseModel
 
 from lionagi._errors import NotFoundError
 
-from ..registry import studio_route
 from ._sse import sse_response
 
 # ---------------------------------------------------------------------------
@@ -130,7 +130,7 @@ def build_branch() -> Any:
             endpoint="query_cli",
             model=model,
             api_key="dummy",
-            permission_mode="bypassPermissions",
+            permission_mode="default",
         )
     else:
         chat_model = iModel(provider=provider, model=model)
@@ -320,7 +320,8 @@ async def tool_run_maintenance(action: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Route handlers — leo area
+# Unregistered compatibility handlers. Importing this module must never add
+# the retired endpoints back to a fresh Studio app.
 # ---------------------------------------------------------------------------
 
 
@@ -376,19 +377,11 @@ async def _run_turn_locked(sess: LeoSession, user_content: str):
         sess.lock.release()
 
 
-@studio_route("/leo/sessions", method="POST", area="leo", name="create_leo_session")
 async def create_leo_session_route() -> dict[str, str]:
     sess = create_session()
     return {"id": sess.id}
 
 
-@studio_route(
-    "/leo/sessions/{session_id}/messages",
-    method="POST",
-    area="leo",
-    name="send_leo_message",
-    response_class=None,
-)
 async def send_leo_message_route(session_id: str, body: _MessageBody):
     sess = get_session(session_id)
     if sess is None:

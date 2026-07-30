@@ -434,9 +434,18 @@ export default function FleetView() {
   const search = Route.useSearch();
   const navigate = Route.useNavigate();
   const urlRunId = (search as { s?: string }).s ?? null;
+  const rawInvocationId = (search as { invocation?: unknown }).invocation;
+  const urlInvocationId =
+    typeof rawInvocationId === "string"
+      ? rawInvocationId
+      : Array.isArray(rawInvocationId) && typeof rawInvocationId[0] === "string"
+        ? rawInvocationId[0]
+        : null;
 
-  // Whether the user has explicitly selected a row on narrow screens
-  const [narrowExplicit, setNarrowExplicit] = useState(false);
+  // A deep link is already an explicit selection. This matters when the
+  // Operator dock narrows Fleet below the split-pane breakpoint: opening a run
+  // must reveal its detail instead of landing back on the master list.
+  const [narrowExplicit, setNarrowExplicit] = useState(() => Boolean(urlRunId));
   const [histFilter, setHistFilter] = useState<HistFilter>("all");
 
   // History pagination. The 3s poll covers page 1 (200 runs); older pages are
@@ -495,24 +504,39 @@ export default function FleetView() {
   // Derive effective selection: URL param first, else auto-select first row.
   // We track whether we've done the auto-select with a ref to avoid loops.
   const autoSelectedRef = useRef<string | null>(null);
-  const allAgentIds = state.orgUnits.flatMap((u) => u.agents.map((a) => a.id));
+  const allAgents = state.orgUnits.flatMap((u) => u.agents);
+  const allAgentIds = allAgents.map((agent) => agent.id);
+  const invocationRunId = urlInvocationId
+    ? (allAgents.find((agent) => agent.invocation_id === urlInvocationId)?.id ??
+      historyRows.find((row) => row.invocation_id === urlInvocationId)?.id ??
+      null)
+    : null;
+  const requestedRunId = urlRunId ?? invocationRunId;
   const urlIdValid =
-    urlRunId != null &&
-    (allAgentIds.includes(urlRunId) || historyRows.some((r) => r.id === urlRunId));
+    requestedRunId != null &&
+    (allAgentIds.includes(requestedRunId) || historyRows.some((r) => r.id === requestedRunId));
+
+  useEffect(() => {
+    if (!urlRunId && invocationRunId) {
+      void navigate({
+        search: { ...search, s: invocationRunId },
+        replace: true,
+      });
+    }
+  }, [invocationRunId, navigate, search, urlRunId]);
 
   // Auto-select first row when data arrives and nothing is selected
   useEffect(() => {
-    if (state.orgUnits.length === 0) return;
-    const first = firstAgentId(state.orgUnits);
+    const first = firstAgentId(state.orgUnits) ?? historyRows[0]?.id ?? null;
     if (!first) return;
     if (urlRunId) return; // URL already has a selection
     if (autoSelectedRef.current === first) return;
     autoSelectedRef.current = first;
     void navigate({ search: { s: first }, replace: true });
-  }, [state.orgUnits, urlRunId, navigate]);
+  }, [state.orgUnits, historyRows, urlRunId, navigate]);
 
   // Resolved selected id: validated URL param, fallback to first (pre-auto-select)
-  const selectedRunId: string | null = urlIdValid ? urlRunId : null;
+  const selectedRunId: string | null = urlIdValid ? requestedRunId : null;
 
   const handleSelectAgent = useCallback(
     (id: string) => {
@@ -529,20 +553,18 @@ export default function FleetView() {
   const master = (
     <div className="flex h-full flex-col overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-edge px-4 py-3">
-        <div className="flex items-center gap-3">
-          <h1 className="text-[length:var(--t-md)] font-semibold text-content-primary">
-            {t("page.title")}
-          </h1>
+      <div className="flex items-start justify-between gap-3 border-b border-edge px-4 py-3">
+        <div className="min-w-0">
+          <h1 className="text-page-title font-semibold text-content-primary">{t("page.title")}</h1>
+          <p className="mt-0.5 truncate text-body text-content-muted">{t("page.subtitle")}</p>
+        </div>
+        <div className="shrink-0 pt-0.5">
           <FleetStaleBadge
             dataState={state.dataState}
             lastUpdatedMs={state.lastUpdatedMs}
             errorMessage={state.errorMessage}
           />
         </div>
-        <span className="font-data text-[length:var(--t-xs)] text-content-muted">
-          {t("page.subtitle")}
-        </span>
       </div>
 
       {/* Counts strip */}
@@ -610,7 +632,7 @@ export default function FleetView() {
       master={master}
       detail={detail}
       defaultMasterWidth={400}
-      detailActive={narrowExplicit}
+      detailActive={narrowExplicit || Boolean(invocationRunId)}
       ariaLabelMaster={t("split.master")}
       ariaLabelDetail={t("split.detail")}
     />

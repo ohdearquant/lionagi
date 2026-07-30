@@ -1,0 +1,236 @@
+import { expect, test, type Page } from "@playwright/test";
+
+const E2E_HUMAN_TOKEN = "lionagi-studio-e2e-human-principal";
+
+function authenticatedStudioUrl(): string {
+  const baseURL = process.env.E2E_BASE_URL;
+  if (!baseURL) throw new Error("E2E_BASE_URL was not provided by global setup");
+  const fragment = new URLSearchParams({
+    "studio-api": baseURL,
+    "studio-token": E2E_HUMAN_TOKEN,
+  });
+  return `/#${fragment.toString()}`;
+}
+
+async function selectFreshConversation(page: Page): Promise<void> {
+  const conversationId = await page.evaluate(async () => {
+    const apiBase = sessionStorage.getItem("studio-api");
+    const token = sessionStorage.getItem("studio-token");
+    if (!apiBase || !token) {
+      throw new Error("Studio fragment credentials were not bootstrapped");
+    }
+
+    const response = await fetch(`${apiBase}/api/operator/conversations`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to create an isolated conversation: ${response.status}`);
+    }
+    const payload = (await response.json()) as { conversation?: { id?: unknown } };
+    if (typeof payload.conversation?.id !== "string") {
+      throw new Error("Conversation response did not include an id");
+    }
+    return payload.conversation.id;
+  });
+
+  await page.reload();
+  const switcher = page.getByRole("combobox", {
+    name: "Operator conversation",
+    exact: true,
+  });
+  await expect(switcher.locator(`option[value="${conversationId}"]`)).toHaveCount(1);
+  await switcher.selectOption(conversationId);
+  await expect(page.getByLabel("Instruction")).toBeEnabled();
+}
+
+test.beforeEach(async ({ page }) => {
+  await page.route("https://analytics.khive.ai/**", (route) =>
+    route.fulfill({ status: 200, contentType: "application/javascript", body: "" }),
+  );
+});
+
+test("Operator streams, persists, stops, records a run, and resumes it", async ({ page }) => {
+  test.setTimeout(45_000);
+  const discovery = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      response.url().endsWith("/api/operator/conversations"),
+  );
+  await page.goto(authenticatedStudioUrl());
+  expect((await discovery).status()).toBe(200);
+
+  // The daemon survives individual browser contexts and Playwright retries.
+  // Start from an explicit new conversation so the deterministic engine script
+  // is never coupled to history left by a previous attempt.
+  await selectFreshConversation(page);
+  const instruction = page.getByLabel("Instruction");
+  await expect(instruction).toBeVisible();
+  await instruction.fill("Show me the fleet readiness.");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+
+  await expect(page.getByText("Show me the fleet readiness.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Fleet ready.", { exact: true })).toBeVisible({
+    timeout: 20_000,
+  });
+  await expect(page.getByText("Turn completed", { exact: true })).toBeVisible();
+
+  const openRun = page.locator('a[href*="/fleet?s="]').filter({ hasText: "Open run" });
+  await expect(openRun).toHaveCount(1);
+  const runHref = await openRun.getAttribute("href");
+  expect(runHref).toMatch(/^\/fleet\?s=.+/);
+
+  await page.reload();
+  await expect(page.getByText("Show me the fleet readiness.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Fleet ready.", { exact: true })).toBeVisible();
+
+  await instruction.fill("wait until I stop you");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const stop = page.getByRole("button", { name: "Stop", exact: true });
+  await expect(stop).toBeVisible();
+  await stop.click();
+  await expect(page.getByText("Turn stopped", { exact: true })).toBeVisible({
+    timeout: 10_000,
+  });
+
+  await page.goto(runHref!);
+  await expect(page).toHaveURL(/\/fleet\?s=.+/);
+  await expect(page.getByRole("region", { name: "Continue this run" })).toBeVisible();
+
+  const followUp = page.getByLabel("Follow-up instruction");
+  await followUp.fill("Continue with the next check.");
+  const activityPoll = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" && /\/api\/invocations\/[^/?]+$/.test(response.url()),
+  );
+  await page.getByRole("button", { name: "Resume", exact: true }).click();
+  await expect(page.getByText("Follow-up accepted", { exact: true })).toBeVisible({
+    timeout: 15_000,
+  });
+  expect((await activityPoll).status()).toBe(200);
+
+  const activityLink = page.locator('a[href*="invocation="]').filter({ hasText: "View activity" });
+  await expect(activityLink).toHaveCount(1);
+  expect(await activityLink.getAttribute("href")).toMatch(/^\/fleet\?s=.+&invocation=.+/);
+  await activityLink.click();
+  await expect(page).toHaveURL(/\/fleet\?s=.+&invocation=.+/);
+
+  // Acceptance is not enough: the detached CLI leg must reopen the exact
+  // branch, execute, and flow its new durable message back into the run pane.
+  const main = page.getByRole("main", { name: "Main content" });
+  await expect(main.getByText("Continuation complete.", { exact: true })).toBeVisible({
+    timeout: 30_000,
+  });
+  await main.getByRole("tab", { name: "Conversation tab 5 of 5", exact: true }).click();
+  await expect(main.getByText("Continue with the next check.", { exact: true })).toBeVisible({
+    timeout: 10_000,
+  });
+  await page.reload();
+  await expect(main.getByText("Continuation complete.", { exact: true })).toBeVisible({
+    timeout: 20_000,
+  });
+  await main.getByRole("tab", { name: "Conversation tab 5 of 5", exact: true }).click();
+  await expect(main.getByText("Continue with the next check.", { exact: true })).toBeVisible({
+    timeout: 20_000,
+  });
+});
+
+test("Operator Deny and Allow decisions traverse the real permission route", async ({ page }) => {
+  test.setTimeout(45_000);
+  // Exercise the same fragment bootstrap used by `li studio`: the token is
+  // browser-held and the API client must attach it to human-only decisions.
+  const discovery = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      response.url().endsWith("/api/operator/conversations"),
+  );
+  await page.goto(authenticatedStudioUrl());
+  expect((await discovery).status()).toBe(200);
+
+  await selectFreshConversation(page);
+  const instruction = page.getByLabel("Instruction");
+
+  await instruction.fill("Request a gated demo action and wait for me to deny it.");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+
+  const deniedProposal = page.getByRole("region", {
+    name: "Action requiring permission",
+    exact: true,
+  });
+  await expect(deniedProposal).toBeVisible({ timeout: 15_000 });
+  // No click to reveal: the command must be on screen before Allow/Deny are reachable,
+  // so asserting it directly is the contract. Re-adding a click here would collapse the
+  // disclosure and assert the opposite of what this test is for.
+  await expect(deniedProposal.getByText('"operation": "record_permission_decision"')).toBeVisible();
+
+  const deniedResponsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      /\/api\/operator\/conversations\/[^/]+\/proposals\/[^/]+\/decision$/.test(response.url()),
+  );
+  await deniedProposal.getByRole("button", { name: "Deny", exact: true }).click();
+  const deniedResponse = await deniedResponsePromise;
+  expect(deniedResponse.status()).toBe(200);
+  expect(deniedResponse.request().postDataJSON()).toMatchObject({ decision: "deny" });
+  await expect(deniedResponse.json()).resolves.toMatchObject({ status: "failed" });
+  await expect(page.getByText("Action cancelled", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Demo action denied. Nothing was changed.", { exact: true }),
+  ).toBeVisible();
+  const completedTurns = page.getByText("Turn completed", { exact: true });
+  await expect(completedTurns).toBeVisible();
+  const completedBeforeAllow = await completedTurns.count();
+
+  await instruction.fill("Request a gated demo action and wait for me to allow it.");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+
+  const proposals = page.getByRole("region", {
+    name: "Action requiring permission",
+    exact: true,
+  });
+  await expect(proposals).toHaveCount(2, { timeout: 15_000 });
+  const allowedProposal = proposals.filter({
+    has: page.getByRole("button", { name: "Allow", exact: true }),
+  });
+  await expect(allowedProposal).toHaveCount(1);
+
+  const allowedResponsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      /\/api\/operator\/conversations\/[^/]+\/proposals\/[^/]+\/decision$/.test(response.url()),
+  );
+  await allowedProposal.getByRole("button", { name: "Allow", exact: true }).click();
+  const allowedResponse = await allowedResponsePromise;
+  expect(allowedResponse.status()).toBe(200);
+  expect(allowedResponse.request().postDataJSON()).toMatchObject({
+    decision: "allow",
+    expectedCommandHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+  });
+  await expect(allowedResponse.json()).resolves.toMatchObject({
+    status: "succeeded",
+    result: { executed: true },
+  });
+  await expect(page.getByText("Approved action completed", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Demo action allowed and completed safely.", { exact: true }),
+  ).toBeVisible();
+  await expect(completedTurns).toHaveCount(completedBeforeAllow + 1);
+
+  // Both decisions and outcomes are durable daemon history, not client-only UI.
+  await page.reload();
+  await expect(
+    page.getByText("Demo action denied. Nothing was changed.", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Demo action allowed and completed safely.", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Action requiring permission", exact: true }),
+  ).toHaveCount(2);
+  await expect(page.getByRole("button", { name: "Allow", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Deny", exact: true })).toHaveCount(0);
+});

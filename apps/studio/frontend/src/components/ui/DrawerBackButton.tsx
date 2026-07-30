@@ -15,7 +15,7 @@ export default function DrawerBackButton({ children, ...rest }: DrawerBackButton
     <button
       type="button"
       {...rest}
-      className="flex shrink-0 items-center gap-1.5 border-b border-edge px-4 py-2 text-[length:var(--t-xs)] text-content-muted"
+      className="flex shrink-0 items-center gap-1.5 border-b border-edge px-4 py-2 text-[length:var(--t-xs)] text-content-muted lg:hidden"
     >
       <IconArrowLeft size={11} strokeWidth={2} /> {children}
     </button>

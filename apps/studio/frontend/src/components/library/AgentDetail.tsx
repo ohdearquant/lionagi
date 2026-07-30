@@ -206,15 +206,15 @@ export function AgentDetail({ agent, onBack }: Props) {
         <button
           type="button"
           onClick={onBack}
-          className="flex shrink-0 items-center gap-1.5 border-b border-edge px-4 py-2 text-[length:var(--t-xs)] text-content-muted"
+          className="flex shrink-0 items-center gap-1.5 border-b border-edge px-4 py-2 text-[length:var(--t-xs)] text-content-muted lg:hidden"
         >
           <IconArrowLeft size={11} strokeWidth={2} /> {t("back")}
         </button>
       )}
 
       {/* Header */}
-      <div className="flex shrink-0 items-center gap-3 border-b border-edge px-4 py-3">
-        <span className="truncate font-data font-medium text-[length:var(--t-lg)] text-content-primary">
+      <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-edge px-4 py-3 sm:flex-nowrap">
+        <span className="min-w-0 basis-full break-words font-data font-medium text-[length:var(--t-lg)] leading-snug text-content-primary sm:basis-auto sm:flex-1 sm:truncate">
           {agent.name}
         </span>
         {agent.provider && (
@@ -228,7 +228,7 @@ export function AgentDetail({ agent, onBack }: Props) {
           </span>
         )}
 
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
           {previewVer ? (
             <>
               <span className="text-[length:var(--t-xs)] text-content-muted">

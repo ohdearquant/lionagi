@@ -55,7 +55,7 @@ function ViewToggle({ view, onChange }: { view: View; onChange: (v: View) => voi
       onClick={() => onChange(v)}
       aria-pressed={view === v}
       className={[
-        "h-7 rounded px-3 text-[length:var(--t-xs)] font-medium transition-colors duration-100",
+        "h-7 shrink-0 rounded px-2 text-[length:var(--t-xs)] font-medium transition-colors duration-100 sm:px-3",
         view === v
           ? "bg-surface-overlay text-content-primary"
           : "text-content-muted hover:text-content-primary",
@@ -65,7 +65,7 @@ function ViewToggle({ view, onChange }: { view: View; onChange: (v: View) => voi
     </button>
   );
   return (
-    <div className="flex items-center gap-0.5 rounded-md border border-edge p-0.5">
+    <div className="flex max-w-full items-center gap-0.5 overflow-x-auto rounded-md border border-edge p-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       {seg("cards", t("viewCards"))}
       {seg("table", t("viewTable"))}
       {seg("calendar", t("calendar"))}
@@ -93,7 +93,7 @@ function EmptyState({ onNew }: { onNew: () => void }) {
 
 function TableSkeleton() {
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2 px-6 pb-6">
+    <div className="flex min-h-0 flex-1 flex-col gap-2 px-4 pb-6 sm:px-6">
       {Array.from({ length: 6 }, (_, i) => (
         <div key={i} className="skeleton h-10 rounded-md" />
       ))}
@@ -103,6 +103,7 @@ function TableSkeleton() {
 
 function SchedulesSpace() {
   const t = useTranslations("schedules");
+  const tDaemon = useTranslations("daemon");
   const { schedules, runs, nowMs, loading, error, refresh } = useSchedulesData();
   const [view, setView] = useState<View>("cards");
   const [showModal, setShowModal] = useState(false);
@@ -151,22 +152,33 @@ function SchedulesSpace() {
 
   return (
     <main className="flex h-full w-full flex-col animate-page-enter">
-      <header className="flex shrink-0 items-end justify-between gap-4 px-6 pb-4 pt-5">
+      <header className="flex shrink-0 flex-col items-stretch gap-3 px-4 pb-4 pt-5 sm:flex-row sm:items-end sm:justify-between sm:gap-4 sm:px-6">
         <div className="flex flex-col gap-0.5">
-          <h1 className="text-heading font-semibold text-content-primary">{t("title")}</h1>
+          <h1 className="text-page-title font-semibold text-content-primary">{t("title")}</h1>
           <p className="text-body text-content-muted">{t("subtitle")}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex max-w-full flex-wrap items-center gap-2 sm:justify-end">
           <ViewToggle view={view} onChange={setView} />
-          <Button variant="primary" size="sm" onClick={() => setShowModal(true)}>
+          <Button
+            variant="primary"
+            size="sm"
+            className="shrink-0"
+            onClick={() => setShowModal(true)}
+          >
             + {t("newSchedule")}
           </Button>
         </div>
       </header>
 
       {error && (
-        <div className="mx-6 mb-3 rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
-          {t("loadError")}
+        <div
+          role="alert"
+          className="mx-4 mb-3 flex flex-wrap items-center justify-between gap-3 rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-content-secondary sm:mx-6"
+        >
+          <span>{t("loadError")}</span>
+          <Button variant="secondary" size="sm" onClick={refresh}>
+            {tDaemon("retry")}
+          </Button>
         </div>
       )}
 

@@ -48,9 +48,9 @@ export default function StatusFooter() {
   const version = import.meta.env.VITE_APP_VERSION as string | undefined;
 
   return (
-    <footer className="flex h-6 shrink-0 items-center gap-3 border-t border-edge px-3 font-data text-[length:var(--t-xs)] text-content-muted">
+    <footer className="flex h-6 min-w-0 shrink-0 items-center gap-3 border-t border-edge px-3 font-data text-[length:var(--t-xs)] text-content-muted">
       {/* Health dot + backend base */}
-      <span className="flex items-center gap-1.5">
+      <span className="flex min-w-0 items-center gap-1.5">
         <span
           aria-label={healthy === false ? t("footer.unhealthy") : t("footer.healthy")}
           className="inline-block h-[5px] w-[5px] rounded-full"
@@ -63,7 +63,9 @@ export default function StatusFooter() {
                   : "var(--status-failure)",
           }}
         />
-        <span className="tabular-nums text-[length:var(--t-xs)]">{apiBase || "localhost"}</span>
+        <span className="truncate tabular-nums text-[length:var(--t-xs)]">
+          {apiBase || "localhost"}
+        </span>
       </span>
 
       {/* DB size */}
@@ -87,7 +89,7 @@ export default function StatusFooter() {
       ) : null}
 
       {/* Ecosystem note */}
-      <span className="ml-auto truncate">
+      <span className="ml-auto hidden truncate sm:inline">
         {t("footer.ecosystemPrefix")}{" "}
         <bdi>
           <a

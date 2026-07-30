@@ -536,9 +536,12 @@ incrementing it; the set is empty by default and no profile name is hardcoded in
 `stamp_agent_depth(agent_name)` (called from `_run_agent`) and `stamp_worker_depth()` (called
 from `_run_fanout` and `_run_flow`, which also covers `li play`) both set
 `os.environ["LIONAGI_AGENT_DEPTH"]` before any engine spawn. `_cli_subprocess.py`'s
-`ndjson_from_cli` passes `env=None` to `create_subprocess_exec` for all three CLI-backed engines
-(`claude_code`, `codex`, `gemini_code`), so the child inherits this process's `os.environ`
-verbatim — the stamp propagates with zero endpoint changes. `inherited_depth()` is captured once
+`ndjson_from_cli` hands `create_subprocess_exec` a copy of this process's `os.environ` for all
+three CLI-backed engines (`claude_code`, `codex`, `gemini_code`), so the child receives the
+stamp — it propagates with zero endpoint changes. The copy is not verbatim in one respect:
+the keys in `_STUDIO_CREDENTIAL_ENV_KEYS` are dropped, so an engine subprocess cannot call
+back into Studio holding the credentials of whoever launched it. Everything else passes
+through, which is what the stamp relies on. `inherited_depth()` is captured once
 at import as a module constant rather than read live, so `_run_agent`'s in-process auto-resume
 recursion re-stamps to the same depth instead of double-incrementing.
 

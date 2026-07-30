@@ -571,6 +571,14 @@ async def stream_claude_code_cli(  # noqa: C901
         session = CLISession()
     theme = request.cli_display_theme or "light"
     seen_system_ids: set[str] = set()
+    # ``--include-partial-messages`` emits ``stream_event`` envelopes before
+    # the ordinary, complete ``assistant`` message.  Track the message ids for
+    # which text/thinking deltas were forwarded so the complete envelope can
+    # still populate ``session.messages`` without duplicating its content in
+    # the provider-neutral StreamChunk stream.
+    partial_message_ids: set[str] = set()
+    current_partial_message_id: str | None = None
+    partial_without_message_id = False
 
     stream = stream_cc_cli_events(request)
     try:
@@ -599,16 +607,75 @@ async def stream_claude_code_cli(  # noqa: C901
                 session.chunks.append(sc)
                 yield sc
 
+            # ------------------------ PARTIAL ASSISTANT ------------------------
+            elif typ == "stream_event":
+                event = obj.get("event") or {}
+                event_type = event.get("type")
+
+                if event_type == "message_start":
+                    message = event.get("message") or {}
+                    current_partial_message_id = message.get("id")
+                    continue
+
+                if event_type == "message_stop":
+                    current_partial_message_id = None
+                    continue
+
+                if event_type != "content_block_delta":
+                    continue
+
+                delta = event.get("delta") or {}
+                delta_type = delta.get("type")
+                content: str | None = None
+                chunk_type: str | None = None
+                callback = None
+
+                if delta_type == "text_delta":
+                    content = delta.get("text")
+                    chunk_type = "text"
+                    callback = on_text
+                elif delta_type == "thinking_delta":
+                    content = delta.get("thinking")
+                    chunk_type = "thinking"
+                    callback = on_thinking
+
+                if not content or chunk_type is None:
+                    continue
+
+                message_id = current_partial_message_id
+                if message_id:
+                    partial_message_ids.add(message_id)
+                else:
+                    partial_without_message_id = True
+
+                if callback:
+                    await maybe_await(callback(content))
+                sc = StreamChunk(
+                    type=chunk_type,
+                    content=content,
+                    is_delta=True,
+                    metadata=obj,
+                )
+                session.chunks.append(sc)
+                yield sc
+
             # ------------------------ ASSISTANT --------------------------------
             elif typ == "assistant":
                 msg = obj["message"]
                 session.messages.append(msg)
+                msg_id = msg.get("id")
+                has_forwarded_partials = bool(
+                    (msg_id and msg_id in partial_message_ids)
+                    or (not msg_id and partial_without_message_id)
+                )
 
                 for blk in msg.get("content", []):
                     btype = blk.get("type")
                     if btype == "thinking":
                         thought = blk.get("thinking", "").strip()
                         session.thinking_log.append(thought)
+                        if has_forwarded_partials:
+                            continue
                         if on_thinking:
                             await maybe_await(on_thinking(thought))
                         if request.verbose_output:
@@ -619,6 +686,8 @@ async def stream_claude_code_cli(  # noqa: C901
 
                     elif btype == "text":
                         text = blk.get("text", "")
+                        if has_forwarded_partials:
+                            continue
                         if on_text:
                             await maybe_await(on_text(text))
                         if request.verbose_output:

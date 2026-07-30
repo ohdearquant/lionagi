@@ -13,6 +13,8 @@ export type CommandRegistry = Command[];
 export function buildRegistry(
   _navigate: (href: string) => void,
   toggleTheme: () => void,
+  toggleOperator?: () => void,
+  operatorLabel = "Operator",
 ): CommandRegistry {
   return [
     /* ── Primary spaces ── */
@@ -98,6 +100,13 @@ export function buildRegistry(
       section: "Library",
     },
     /* ── Actions ── */
+    {
+      id: "action:toggle-operator",
+      label: operatorLabel,
+      keywords: ["operator", "assistant", "command", "chat"],
+      action: toggleOperator,
+      section: "Actions",
+    },
     {
       id: "action:toggle-theme",
       label: "Toggle theme",

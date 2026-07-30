@@ -11,7 +11,7 @@
 import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { groupAgendaByHour, truncateMiddle } from "./SchedulesCalendar";
+import { formatCalendarDayLabel, groupAgendaByHour, truncateMiddle } from "./SchedulesCalendar";
 import type { ScheduleSummary } from "@/lib/types";
 import type { RunRow } from "./data";
 
@@ -158,6 +158,23 @@ describe("truncateMiddle", () => {
     expect(out).toContain("…");
     expect(long.startsWith(out.split("…")[0])).toBe(true);
     expect(long.endsWith(out.split("…")[1])).toBe(true);
+  });
+});
+
+describe("calendar day accessible names", () => {
+  it("uses the full localized date so adjacent-month numerals are unambiguous", () => {
+    const june30 = formatCalendarDayLabel(new Date(2026, 5, 30), "en-US", "Today");
+    const july30 = formatCalendarDayLabel(new Date(2026, 6, 30), "en-US", "Today");
+    expect(june30).toContain("June 30, 2026");
+    expect(july30).toContain("July 30, 2026");
+    expect(june30).not.toBe(july30);
+  });
+
+  it("adds today context while selection is exposed separately with aria-pressed", () => {
+    expect(formatCalendarDayLabel(new Date(2026, 6, 30), "en-US", "Today", true)).toContain(
+      "Today",
+    );
+    expect(SRC).toContain("aria-pressed={isSelected}");
   });
 });
 

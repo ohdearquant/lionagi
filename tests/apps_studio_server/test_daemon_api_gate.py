@@ -54,13 +54,14 @@ from ._helpers import run_async  # noqa: E402
 _DOCS_PATHS = frozenset({"/openapi.json", "/docs", "/redoc", "/docs/oauth2-redirect"})
 
 # Sorted (method, path) pairs for every non-docs route mounted on the live
-# app, pinned 2026-07-12 against the actual route table (see
+# app, pinned 2026-07-30 against the actual route table (see
 # lionagi/studio/registry.py::_STUDIO_ROUTE_MODULES for the area modules that
 # populate it, and app.py::_mount_studio_routes for the "/api" + route.path
 # mounting rule).
 _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("DELETE", "/api/agents/{name}"),
     ("DELETE", "/api/engine-defs/{def_id}"),
+    ("DELETE", "/api/operator/conversations/{conversation_id}"),
     ("DELETE", "/api/playbooks/{name}"),
     ("DELETE", "/api/projects/{name}"),
     ("DELETE", "/api/schedules/{schedule_id}"),
@@ -86,6 +87,9 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/engine-runs/{run_id}"),
     ("GET", "/api/invocations/"),
     ("GET", "/api/invocations/{invocation_id}"),
+    ("GET", "/api/operator/conversations"),
+    ("GET", "/api/operator/conversations/{conversation_id}"),
+    ("GET", "/api/operator/conversations/{conversation_id}/stream"),
     ("GET", "/api/playbook-templates/"),
     ("GET", "/api/playbook-templates/{name}"),
     ("GET", "/api/playbooks/"),
@@ -138,14 +142,28 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/api/engine-defs/"),
     ("POST", "/api/invocations/{invocation_id}/cancel"),
     ("POST", "/api/launches/"),
-    ("POST", "/api/leo/sessions"),
-    ("POST", "/api/leo/sessions/{session_id}/messages"),
+    ("POST", "/api/operator/conversations"),
+    ("POST", "/api/operator/conversations/{conversation_id}/effects/{effect_id}/ack"),
+    (
+        "POST",
+        "/api/operator/conversations/{conversation_id}/proposals/{proposal_id}/confirm",
+    ),
+    (
+        "POST",
+        "/api/operator/conversations/{conversation_id}/proposals/{proposal_id}/decision",
+    ),
+    (
+        "POST",
+        "/api/operator/conversations/{conversation_id}/requests/{request_id}/cancel",
+    ),
+    ("POST", "/api/operator/conversations/{conversation_id}/turns"),
     ("POST", "/api/playbook-templates/{name}/install"),
     ("POST", "/api/playbooks/{name}"),
     ("POST", "/api/playbooks/{name}/run"),
     ("POST", "/api/playbooks/{name}/validate"),
     ("POST", "/api/projects/"),
     ("POST", "/api/projects/{name}/assign"),
+    ("POST", "/api/runs/{run_id}/resume"),
     ("POST", "/api/schedules/"),
     ("POST", "/api/schedules/{schedule_id}/disable"),
     ("POST", "/api/schedules/{schedule_id}/enable"),
@@ -237,7 +255,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 100
+    assert len(_GOLDEN_ROUTES) == 109
 
 
 def _compiled_match_shape(path_template: str) -> str:
