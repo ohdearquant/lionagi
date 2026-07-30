@@ -166,7 +166,8 @@ runs the same playbook in the foreground.
 - Issues: https://github.com/ohdearquant/lionagi/issues
 - Discussions: https://github.com/ohdearquant/lionagi/discussions
 - Source: `lionagi/mcp/` for the MCP server, `lionagi/cli/` for the CLI it wraps,
-  `apps/studio/` for Studio, `lionagi/state/` for the data model
+  `lionagi/studio/` for the Studio backend and `apps/studio/frontend/` for its UI,
+  `lionagi/state/` for the data model
 
 ## Source code reference
 
@@ -175,5 +176,5 @@ runs the same playbook in the foreground.
 - Agent system: `lionagi/cli/agent.py`, `lionagi/agent/`
 - Playbooks: `~/.lionagi/playbooks/*.playbook.yaml`
 - State DB schema: `lionagi/state/schema.sql`
-- Studio: `apps/studio/server/`, `apps/studio/frontend/`
-- Scheduler: `apps/studio/server/scheduler/`
+- Studio: `lionagi/studio/` (backend), `apps/studio/frontend/` (UI)
+- Scheduler: `lionagi/studio/scheduler/`

@@ -39,7 +39,7 @@ Findings table per finding:
 
 | Severity | Location | Issue | Suggested fix | Confidence |
 |---|---|---|---|---|
-| MEDIUM | `lionagi/operations/act.py:87` | Off-by-one in `range(len(xs))` | Use `enumerate(xs)` | High |
+| MEDIUM | `src/module.py:87` | Off-by-one in `range(len(xs))` | Use `enumerate(xs)` | High |
 
 Verdict line at top: `APPROVE` | `APPROVE-WITH-FIXES` | `REQUEST CHANGES`.
 

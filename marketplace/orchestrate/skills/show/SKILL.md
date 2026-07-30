@@ -4,8 +4,8 @@ description: >
   Orchestrate multi-play shows: decompose a complex goal into sequential plays
   (each a play.submit run through the plugin's MCP server), gate each output
   for quality, adapt the plan based on results, and merge work into an
-  integration branch. Shows are first-class entities in Lion Studio with
-  dedicated UI at /shows.
+  integration branch. Shows are rows in Studio's state database, readable over
+  its /api/shows endpoints; there is no Studio page for them.
 allowed-tools: [Bash, Read, Write, Glob, Grep]
 ---
 
@@ -34,7 +34,7 @@ it. Treat the CLI as a local convenience, not the primary path.
 | Branching | Single DAG | Each play gets its own worktree + branch |
 | Human gate | Optional critic node | Between every play |
 | Replanning | Control-node triggered | After every play based on verdict |
-| Studio UI | `/runs` | `/shows` (dedicated PlayDag view) |
+| Studio surface | `/runs` page | `/api/shows` endpoints only; no page |
 
 Use a show when: the goal requires multiple independent bodies of work, each needing
 its own branch and quality gate, with a plan that adapts based on intermediate results.
@@ -65,12 +65,12 @@ For the complete procedure with the exact MCP calls, see [procedure.md](procedur
 ❌ Firing plays before integration branch exists — plays have nowhere to merge
 ❌ Touching _ABORT after all plays have launched — it only blocks new launches; use job.kill for running ones
 ❌ Keeping play worktrees after merge — they accumulate; remove after merge
-❌ Not updating _show.md decisions after each play — Studio shows stale plan
+❌ Not updating _show.md decisions after each play — that file is the readable record, so a stale one misleads everyone after you
 ```
 
 ## Companion files
 
-- [data-model.md](data-model.md) — `shows`/`plays` table schema, status enums, Studio pages
+- [data-model.md](data-model.md) — `shows`/`plays` table schema, status enums, reading a show from Studio
 - [procedure.md](procedure.md) — full 8-step procedure with the MCP calls, workspace layout, `_show.md` format
 - [gate-protocol.md](gate-protocol.md) — gate agents, verdict JSON, decision logic, abort/resume
 
@@ -82,5 +82,5 @@ For the complete procedure with the exact MCP calls, see [procedure.md](procedur
 | `lionagi/studio/services/shows.py` | List, detail, import, SSE watcher, and the `/api/shows` routes |
 | `lionagi/studio/registry.py` | Registers that service with the app |
 | `lionagi/studio/config.py` | `LIONAGI_SHOWS_ROOT` and the root it falls back to |
-| `apps/studio/frontend/src/components/shows/PlayDag.tsx` | DAG visualization |
+| `apps/studio/frontend/src/components/shows/PlayDag.tsx` | DAG visualization component; present in the tree, imported by nothing |
 | `lionagi/mcp/server.py`, `lionagi/mcp/verbs.py` | MCP verb registry — `play.submit`, `job.*` |

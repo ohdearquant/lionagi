@@ -99,8 +99,10 @@ git checkout -b "show/$TOPIC/integration" origin/main
 git push -u origin "show/$TOPIC/integration"
 ```
 
-Write `_show.md` with goal, repo, branches, and the initial play list. Dependencies
-between plays go in the `deps: [...]` line — the PlayDag renders them as edges.
+Write `_show.md` with goal, repo, branches, and the initial play list. Record the ordering
+you intend in the `deps: [...]` line so readers of the plan can see it. Nothing parses that
+line, so enforce the ordering yourself: fire plays in the order you want and apply the gate
+between them.
 
 ## Step 2 — Pick
 
