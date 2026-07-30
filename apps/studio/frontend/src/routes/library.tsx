@@ -31,6 +31,12 @@ import type { EngineDef } from "@/lib/api";
 const LIBRARY_TABS = ["all", "agent", "workflow", "playbook", "skill", "plugin", "engine"] as const;
 type LibraryTab = (typeof LIBRARY_TABS)[number];
 
+// Kinds whose surfaces are not finished yet. They stay in LIBRARY_TABS so an
+// existing deep link still parses, but they get no tab and their items are
+// withheld from every list, including "all". Drop a kind from this set to
+// bring its surface back.
+const UNFINISHED_KINDS = new Set<string>(["workflow", "engine"]);
+
 export const Route = createFileRoute("/library")({
   validateSearch: (search: Record<string, unknown>): { tab?: LibraryTab; sel?: string } => {
     const tab = search.tab;
@@ -281,7 +287,7 @@ function LibraryPage() {
   // Collapsed split-pane: show detail when a selection exists or create is open.
   const [detailActive, setDetailActive] = useState(false);
 
-  const KIND_TABS: Array<{ value: LibraryTab; label: string }> = [
+  const ALL_KIND_TABS: Array<{ value: LibraryTab; label: string }> = [
     { value: "all", label: t("filterAll") },
     { value: "agent", label: t("filterAgent") },
     { value: "workflow", label: t("filterWorkflow") },
@@ -290,8 +296,10 @@ function LibraryPage() {
     { value: "plugin", label: t("filterPlugin") },
     { value: "engine", label: t("filterEngine") },
   ];
+  const KIND_TABS = ALL_KIND_TABS.filter((tab) => !UNFINISHED_KINDS.has(tab.value));
 
   const filtered = items.filter((item) => {
+    if (UNFINISHED_KINDS.has(item.kind)) return false;
     if (kindFilter !== "all" && item.kind !== kindFilter) return false;
     if (search.trim()) {
       const q = search.toLowerCase();
