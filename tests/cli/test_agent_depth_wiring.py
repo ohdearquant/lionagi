@@ -5,9 +5,14 @@
 `_run_flow`, and the engine subprocess spawn (`ndjson_from_cli`).
 
 The stamp must land in os.environ BEFORE any provider/engine spawn — the
-mechanism (see docs/internals/cli.md) relies on `ndjson_from_cli` passing
-env=None to create_subprocess_exec so the spawned engine inherits this
-process's os.environ verbatim.
+mechanism (see docs/internals/cli.md) relies on the environment
+`ndjson_from_cli` hands create_subprocess_exec still carrying this process's
+stamp at the moment of the spawn.
+
+It used to achieve that by passing env=None and letting the child inherit
+os.environ wholesale. The spawn now builds an explicit copy instead, so that it
+can drop Studio's own credentials on the way out, and these tests assert what
+reaches the child rather than how it was assembled.
 """
 
 from __future__ import annotations
@@ -85,10 +90,17 @@ async def test_run_flow_stamps_depth_before_setup(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_ndjson_from_cli_inherits_stamped_depth(monkeypatch):
-    """The CLI engine spawn (shared by claude_code/codex/gemini_code) must
-    pass env=None to create_subprocess_exec while LIONAGI_AGENT_DEPTH is
-    already set in this process's os.environ — that combination is what
-    makes the child inherit the stamp with zero endpoint changes."""
+    """The CLI engine spawn (shared by claude_code/codex/gemini_code) must hand
+    create_subprocess_exec an environment that carries LIONAGI_AGENT_DEPTH,
+    with the stamp already set in this process's os.environ at spawn time —
+    that combination is what makes the child inherit the stamp with zero
+    endpoint changes.
+
+    Asserted against the environment the child receives, not against
+    ``env is None``. Passing None was the old way of arranging it; the spawn now
+    assembles the environment explicitly so it can drop Studio credentials, and
+    pinning the old mechanism would fail that change while the contract it
+    stands for is intact."""
     import asyncio
 
     from lionagi.providers._cli_subprocess import ndjson_from_cli
@@ -112,5 +124,53 @@ async def test_ndjson_from_cli_inherits_stamped_depth(monkeypatch):
     async for obj in ndjson_from_cli(["true"]):
         chunks.append(obj)
 
-    assert captured_kwargs["env"] is None
+    assert captured_kwargs["env"][DEPTH_ENV] == "1"
     assert captured_kwargs["_depth_at_spawn"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_ndjson_from_cli_withholds_studio_credentials_from_the_child(monkeypatch):
+    """A spawned CLI engine must not inherit Studio's own credentials.
+
+    Studio puts them in its process environment so its routes can authenticate
+    the caller. An engine subprocess that inherited them could call back into
+    Studio holding the credentials of whoever launched it, which is a different
+    and larger authority than running an agent. So the spawn drops them while
+    passing the rest of the environment through — the same pass-through the
+    depth stamp above relies on.
+    """
+    import asyncio
+
+    from lionagi.providers._cli_subprocess import (
+        _STUDIO_CREDENTIAL_ENV_KEYS,
+        ndjson_from_cli,
+    )
+
+    # If this tuple were ever emptied, the withholding loop below would assert
+    # over nothing and pass. Fail here instead of passing vacuously.
+    assert _STUDIO_CREDENTIAL_ENV_KEYS
+
+    for key in _STUDIO_CREDENTIAL_ENV_KEYS:
+        monkeypatch.setenv(key, "must-not-reach-the-child")
+    monkeypatch.setenv("LIONAGI_UNRELATED_PASSTHROUGH", "keep-me")
+
+    captured_kwargs: dict = {}
+    real_create_subprocess_exec = asyncio.create_subprocess_exec
+
+    async def _spy_create_subprocess_exec(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return await real_create_subprocess_exec(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _spy_create_subprocess_exec)
+
+    async for _ in ndjson_from_cli(["true"]):
+        pass
+
+    child_env = captured_kwargs["env"]
+    for key in _STUDIO_CREDENTIAL_ENV_KEYS:
+        # Absent, not blanked: an empty string is still a value a reader picks up.
+        assert key not in child_env
+
+    # The drop has to be surgical. Without this, handing the child an empty
+    # environment would satisfy every assertion above.
+    assert child_env["LIONAGI_UNRELATED_PASSTHROUGH"] == "keep-me"
