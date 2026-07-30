@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslations } from "use-intl";
 import { IconArrowLeft } from "@/components/ui/icons";
 import { getDefinition, saveDefinition, rollbackDefinition, getDefinitionVersion } from "@/lib/api";
@@ -6,6 +6,9 @@ import type { DefinitionDetail, DefinitionVersion } from "@/lib/api";
 import type { AgentProfileSummary } from "@/lib/types";
 import SectionLabel from "@/components/ui/SectionLabel";
 import Button from "@/components/ui/Button";
+
+// Definitions are authored as markdown; the editor keeps the raw source.
+const Markdown = lazy(() => import("@/components/ui/Markdown"));
 
 interface ParsedFm {
   model?: string;
@@ -396,9 +399,23 @@ export function AgentDetail({ agent, onBack }: Props) {
             placeholder={t("systemPromptPlaceholder")}
           />
         ) : (
-          <pre className="flex-1 overflow-auto whitespace-pre-wrap break-words bg-surface-base p-4 font-data text-[length:var(--t-sm)] leading-relaxed text-content-secondary">
-            {dispBody.trim() || <span className="italic text-content-muted">{t("noContent")}</span>}
-          </pre>
+          <div className="flex-1 overflow-auto bg-surface-base px-5 py-4">
+            {dispBody.trim() ? (
+              <Suspense
+                fallback={
+                  <pre className="whitespace-pre-wrap break-words font-data text-[length:var(--t-sm)] leading-relaxed text-content-secondary">
+                    {dispBody.trim()}
+                  </pre>
+                }
+              >
+                <Markdown className="max-w-4xl text-[length:var(--t-sm)]">
+                  {dispBody.trim()}
+                </Markdown>
+              </Suspense>
+            ) : (
+              <span className="italic text-content-muted">{t("noContent")}</span>
+            )}
+          </div>
         )}
       </div>
 
