@@ -10,7 +10,16 @@ on:
   # No paths-ignore on pull_request either: ci-gate is a required status check,
   # so the workflow must report on every PR — a filtered-out PR would block on
   # a check that never runs.
+  #
+  # types is spelled out for the same reason, one event class further out. The
+  # default is [opened, synchronize, reopened], which does not include
+  # ready_for_review, so marking a draft PR ready raises no event and starts no
+  # run. Whatever ci-gate last reported then stands as the required check on a
+  # PR that has since changed state, and if a job is ever made conditional on
+  # draft it will not have run at all. Listing the defaults back is mandatory:
+  # naming types replaces them rather than adding to them.
   pull_request:
+    types: [ opened, synchronize, reopened, ready_for_review ]
     branches: [ main, develop ]
   workflow_dispatch:
     inputs:
