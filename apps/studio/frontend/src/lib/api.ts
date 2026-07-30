@@ -366,6 +366,7 @@ export async function submitOperatorTurn(
         instruction: request.instruction,
         context: request.context,
         expected_last_sequence: request.expectedLastSequence,
+        ...(request.model ? { model: request.model } : {}),
       }),
     },
   );

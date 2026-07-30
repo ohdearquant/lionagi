@@ -34,6 +34,7 @@ import type {
   OperatorToolResultPayload,
   OperatorUiCommandPayload,
 } from "@/lib/types";
+import { OPERATOR_MODELS, type OperatorModel } from "@/lib/types";
 import Button from "@/components/ui/Button";
 import Markdown from "@/components/ui/Markdown";
 import {
@@ -41,6 +42,7 @@ import {
   IconBan,
   IconCheck,
   IconClose,
+  IconCopy,
   IconError,
   IconLaunch,
   IconPause,
@@ -299,19 +301,51 @@ function RunLink({ runId }: { runId: string }) {
   );
 }
 
+function CopyButton({ value }: { value: string }) {
+  const t = useTranslations("operator");
+  const [copied, setCopied] = useState(false);
+
+  const copy = useCallback(() => {
+    // Older/insecure contexts have no clipboard API; stay silent rather than
+    // flashing a success the copy never performed.
+    const clipboard = navigator.clipboard;
+    if (!clipboard?.writeText) return;
+    void clipboard.writeText(value).then(
+      () => {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1500);
+      },
+      () => setCopied(false),
+    );
+  }, [value]);
+
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      aria-label={t("message.copy")}
+      title={copied ? t("message.copied") : t("message.copy")}
+      className="focus-ring flex h-6 w-6 shrink-0 items-center justify-center rounded text-content-muted opacity-0 transition-opacity hover:bg-surface-overlay hover:text-content-primary focus-visible:opacity-100 group-hover:opacity-100"
+    >
+      {copied ? <IconCheck size={12} className="text-status-success" /> : <IconCopy size={12} />}
+    </button>
+  );
+}
+
 function TextMessage({ item }: { item: Extract<DisplayItem, { kind: "text" }> }) {
   const t = useTranslations("operator");
   const user = item.role === "user";
   return (
     <article
       aria-label={user ? t("message.you") : t("message.operator")}
-      className={user ? "flex justify-end" : "flex justify-start"}
+      className={`group flex items-start gap-1 ${user ? "justify-end" : "justify-start"}`}
     >
+      {user && <CopyButton value={item.content} />}
       <div
         className={
           user
             ? "max-w-[88%] rounded-lg border border-edge bg-surface-overlay px-3 py-2 text-body text-content-primary"
-            : "max-w-full min-w-0 text-body leading-relaxed text-content-secondary"
+            : "min-w-0 max-w-full text-body leading-relaxed text-content-secondary"
         }
       >
         {item.format === "markdown" && !user ? (
@@ -320,22 +354,51 @@ function TextMessage({ item }: { item: Extract<DisplayItem, { kind: "text" }> })
           <p className="whitespace-pre-wrap break-words">{item.content}</p>
         )}
       </div>
+      {!user && <CopyButton value={item.content} />}
     </article>
   );
 }
 
+/** `mcp__studio_operator__run_stats` reads as `run_stats`; the namespace is
+ * constant across every row and spends the width that the name needs. */
+function shortToolName(tool: string): string {
+  const parts = tool.split("__").filter(Boolean);
+  return parts.length > 1 ? parts[parts.length - 1] : tool;
+}
+
+/** One line of what the call actually asked for, so a collapsed row is not
+ * just a name. Values only: the keys repeat and the width is scarce. */
+function argumentSummary(args: unknown): string {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return "";
+  const parts: string[] = [];
+  for (const value of Object.values(args as Record<string, unknown>)) {
+    if (value === null || value === undefined || value === "") continue;
+    if (typeof value === "object") continue;
+    parts.push(String(value));
+    if (parts.length === 3) break;
+  }
+  return parts.join(" · ").slice(0, 80);
+}
+
 function ToolCallCard({ payload }: { payload: OperatorToolCallPayload }) {
   const t = useTranslations("operator");
+  const summary = argumentSummary(payload.arguments);
+  const hasArgs = Boolean(payload.arguments && Object.keys(payload.arguments).length > 0);
   return (
-    <details className="rounded border border-edge bg-surface-raised">
-      <summary className="focus-ring flex cursor-pointer list-none items-center gap-2 rounded px-2.5 py-2 text-body text-content-secondary">
-        <IconTool size={13} />
-        <span className="min-w-0 flex-1 truncate font-medium">{payload.tool}</span>
-        <span className="font-data text-meta text-content-muted">{t(`tool.${payload.mode}`)}</span>
+    <details className="group rounded border border-edge/60 bg-surface-raised/50">
+      <summary className="focus-ring flex cursor-pointer list-none items-center gap-2 rounded px-2 py-1 text-meta text-content-muted">
+        <IconTool size={11} className="shrink-0" />
+        <span className="shrink-0 font-data font-medium text-content-secondary">
+          {shortToolName(payload.tool)}
+        </span>
+        {summary && <span className="min-w-0 flex-1 truncate font-data">{summary}</span>}
+        <span className="ml-auto shrink-0 font-data opacity-60">{t(`tool.${payload.mode}`)}</span>
       </summary>
-      <pre className="max-h-48 overflow-auto border-t border-edge px-2.5 py-2 font-data text-meta leading-relaxed text-content-muted">
-        {JSON.stringify(payload.arguments, null, 2)}
-      </pre>
+      {hasArgs && (
+        <pre className="max-h-48 overflow-auto border-t border-edge/60 px-2 py-1.5 font-data text-meta leading-relaxed text-content-muted">
+          {JSON.stringify(payload.arguments, null, 2)}
+        </pre>
+      )}
     </details>
   );
 }
@@ -343,6 +406,19 @@ function ToolCallCard({ payload }: { payload: OperatorToolCallPayload }) {
 function ToolResultCard({ payload }: { payload: OperatorToolResultPayload }) {
   const t = useTranslations("operator");
   const runId = payload.ok ? findRunId(payload.result) : null;
+
+  // A bare success carries no information a reader needs, and one full-width
+  // box per call is what buries the conversation. Keep the box for the two
+  // cases that do say something: a failure, and a run worth opening.
+  if (payload.ok && !runId) {
+    return (
+      <div className="flex items-center gap-1.5 px-2 text-meta text-content-muted">
+        <IconCheck size={11} className="shrink-0 text-status-success" />
+        {t("tool.done")}
+      </div>
+    );
+  }
+
   return (
     <div
       className={`rounded border px-2.5 py-2 text-body ${
@@ -548,6 +624,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const navigate = useNavigate();
   const [state, dispatch] = useReducer(operatorReducer, initialOperatorState);
   const [instruction, setInstruction] = useState("");
+  const [model, setModel] = useState<OperatorModel>(OPERATOR_MODELS[0]);
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -834,6 +911,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         instruction: trimmed,
         context,
         expectedLastSequence: state.lastSequence,
+        model,
       });
       dispatch({ type: "TURN_ACCEPTED", requestId: accepted.requestId });
       setInstruction("");
@@ -1018,19 +1096,21 @@ export default function OperatorPanel({ open, onClose }: Props) {
                   </option>
                 ))}
               </select>
+              <select
+                aria-label={t("model.label")}
+                title={t("model.label")}
+                value={model}
+                onChange={(event) => setModel(event.target.value as OperatorModel)}
+                className="shrink-0 border-0 bg-transparent py-0 font-data text-meta text-content-muted outline-none focus:text-content-primary"
+              >
+                {OPERATOR_MODELS.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
-          {state.activeRequestId && (
-            <Button
-              variant="danger"
-              size="sm"
-              leading={<IconPause size={12} />}
-              disabled={stopping}
-              onClick={() => void handleStop()}
-            >
-              {stopping ? t("stopping") : t("stop")}
-            </Button>
-          )}
           <button
             type="button"
             className="focus-ring flex h-8 w-8 items-center justify-center rounded text-content-muted transition-colors hover:bg-surface-overlay hover:text-content-primary"
@@ -1178,17 +1258,31 @@ export default function OperatorPanel({ open, onClose }: Props) {
             />
             <div className="flex items-center justify-between px-2 pb-2">
               <span className="font-data text-meta text-content-muted">{t("composer.hint")}</span>
-              <Button
-                variant="primary"
-                size="sm"
-                trailing={<IconArrowRight size={12} />}
-                disabled={
-                  !instruction.trim() || sending || Boolean(state.activeRequestId) || fatalError
-                }
-                onClick={() => void handleSend()}
-              >
-                {sending ? t("composer.sending") : t("composer.send")}
-              </Button>
+              {state.activeRequestId ? (
+                // Send is disabled while a turn runs, so the same slot becomes
+                // Stop. Keeping it here rather than in the header puts the
+                // control where the eye already is, and leaves exactly one
+                // way to stop a turn.
+                <Button
+                  variant="danger"
+                  size="sm"
+                  leading={<IconPause size={12} />}
+                  disabled={stopping}
+                  onClick={() => void handleStop()}
+                >
+                  {stopping ? t("stopping") : t("stop")}
+                </Button>
+              ) : (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  trailing={<IconArrowRight size={12} />}
+                  disabled={!instruction.trim() || sending || fatalError}
+                  onClick={() => void handleSend()}
+                >
+                  {sending ? t("composer.sending") : t("composer.send")}
+                </Button>
+              )}
             </div>
           </div>
         </footer>

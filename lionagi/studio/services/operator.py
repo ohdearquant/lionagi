@@ -119,6 +119,7 @@ async def submit_operator_turn(conversation_id: str, body: OperatorTurnRequest) 
             instruction=body.instruction,
             context=body.context.model_dump(by_alias=True),
             expected_last_sequence=body.expected_last_sequence,
+            model=body.model,
         )
     except OperatorStoreError as exc:
         raise _http_error(exc) from exc

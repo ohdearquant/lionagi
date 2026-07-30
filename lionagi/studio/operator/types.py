@@ -65,10 +65,16 @@ class OperatorContextSnapshot(WireModel):
     filters: dict[str, Any] = Field(default_factory=dict)
 
 
+# Closed set: the model reaches a CLI argument, so an open string would let the
+# browser choose what the daemon executes.
+OperatorModel = Literal["sonnet", "opus", "haiku"]
+
+
 class OperatorTurnRequest(WireModel):
     instruction: str = Field(min_length=1, max_length=32_768)
     context: OperatorContextSnapshot
     expected_last_sequence: int = Field(ge=0)
+    model: OperatorModel | None = None
 
 
 class ConfirmProposalRequest(WireModel):
@@ -138,6 +144,7 @@ class OperatorEngineTurn:
     store_path: str | None = None
     run_dir: Any | None = None
     provider_session_id: str | None = None
+    model: str | None = None
 
 
 class OperatorEngine(Protocol):

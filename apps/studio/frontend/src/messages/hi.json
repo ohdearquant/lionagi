@@ -89,7 +89,9 @@
       "body": "Ask Operator to investigate, explain, launch work, or prepare a change. Work it starts remains visible across Studio.",
       "example": "Try: “Show me what needs attention.”"
     },
-    "error": { "title": "Conversation unavailable" },
+    "error": {
+      "title": "Conversation unavailable"
+    },
     "errors": {
       "load": "Could not load this conversation.",
       "send": "Could not send this instruction.",
@@ -105,8 +107,18 @@
       "send": "Send",
       "sending": "Sending…"
     },
-    "message": { "you": "You", "operator": "Operator" },
-    "tool": { "read": "read", "draft": "draft", "done": "Tool completed", "failed": "Tool failed" },
+    "message": {
+      "you": "You",
+      "operator": "Operator",
+      "copy": "Copy",
+      "copied": "Copied"
+    },
+    "tool": {
+      "read": "read",
+      "draft": "draft",
+      "done": "Tool completed",
+      "failed": "Tool failed"
+    },
     "proposal": {
       "ariaLabel": "Action requiring permission",
       "title": "Permission required",
@@ -114,7 +126,11 @@
       "review": "Review exact command",
       "elided": "Part of this command is hidden. Allow approves all of it.",
       "elidedCharacters": "{count} characters are hidden. Allow approves all of it.",
-      "risk": { "mutate": "change", "execute": "execute", "admin": "admin" },
+      "risk": {
+        "mutate": "change",
+        "execute": "execute",
+        "admin": "admin"
+      },
       "allow": "Allow",
       "deny": "Deny",
       "deciding": "Saving…",
@@ -128,13 +144,20 @@
       "expired": "Permission expired",
       "executed": "Approved action completed"
     },
-    "effect": { "requested": "Requested interface action: {kind}" },
+    "effect": {
+      "requested": "Requested interface action: {kind}"
+    },
     "outcome": {
       "completed": "Turn completed",
       "failed": "Turn failed",
       "cancelled": "Turn stopped"
     },
-    "run": { "open": "Open run" }
+    "run": {
+      "open": "Open run"
+    },
+    "model": {
+      "label": "Model"
+    }
   },
   "playfield": {
     "title": "प्लेफ़ील्ड",

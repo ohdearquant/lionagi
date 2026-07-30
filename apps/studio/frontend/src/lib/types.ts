@@ -412,6 +412,7 @@ export interface OperatorConversation {
   status: OperatorConversationStatus;
   nextSequence?: number;
   activeRequestId?: string | null;
+  providerModel?: string | null;
   createdAt?: number;
   updatedAt?: number;
 }
@@ -579,10 +580,15 @@ export interface OperatorConversationSnapshot {
   frames: OperatorFrame[];
 }
 
+/** Closed set: the value reaches a CLI argument on the daemon. */
+export const OPERATOR_MODELS = ["sonnet", "opus", "haiku"] as const;
+export type OperatorModel = (typeof OPERATOR_MODELS)[number];
+
 export interface OperatorTurnRequest {
   instruction: string;
   context: OperatorContextSnapshot;
   expectedLastSequence: number;
+  model?: OperatorModel;
 }
 
 export interface OperatorTurnAccepted {

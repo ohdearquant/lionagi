@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS studio_operator_conversations (
   -- The provider-side session this conversation resumes, so a second turn
   -- continues the first instead of starting a stranger.
   provider_session_id TEXT,
+  provider_model      TEXT,
   created_at         REAL NOT NULL,
   updated_at         REAL NOT NULL,
   archived_at        REAL,
@@ -186,7 +187,7 @@ class OperatorStore:
                 await self._add_missing_columns(
                     db,
                     "studio_operator_conversations",
-                    {"provider_session_id": "TEXT"},
+                    {"provider_session_id": "TEXT", "provider_model": "TEXT"},
                 )
                 await db.commit()
             stat = path.stat()
@@ -265,6 +266,7 @@ class OperatorStore:
             "nextSequence": row["next_sequence"],
             "activeRequestId": row["active_request_id"],
             "providerSessionId": row["provider_session_id"],
+            "providerModel": row["provider_model"],
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
         }
@@ -416,6 +418,41 @@ class OperatorStore:
                 "SET provider_session_id = ?, updated_at = ? WHERE id = ?",
                 (session_id, time.time(), conversation_id),
             )
+            await db.commit()
+
+    async def select_provider_model(self, conversation_id: str, model: str) -> None:
+        """Record the model for this conversation, dropping a stale session.
+
+        A provider session belongs to the model that created it, so resuming
+        one under a different model is undefined. Switching models therefore
+        starts a fresh session on purpose rather than resuming into a mismatch.
+        """
+        await self.ensure_schema()
+        async with open_db(str(self.path())) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute(
+                    "SELECT provider_model FROM studio_operator_conversations WHERE id = ?",
+                    (conversation_id,),
+                )
+            ).fetchone()
+            if row is None:
+                await db.rollback()
+                raise OperatorNotFoundError(f"Operator conversation '{conversation_id}' not found")
+            changed = row["provider_model"] is not None and row["provider_model"] != model
+            if changed:
+                await db.execute(
+                    "UPDATE studio_operator_conversations "
+                    "SET provider_model = ?, provider_session_id = NULL, updated_at = ? "
+                    "WHERE id = ?",
+                    (model, time.time(), conversation_id),
+                )
+            else:
+                await db.execute(
+                    "UPDATE studio_operator_conversations "
+                    "SET provider_model = ?, updated_at = ? WHERE id = ?",
+                    (model, time.time(), conversation_id),
+                )
             await db.commit()
 
     async def archive_or_delete(self, conversation_id: str) -> None:
