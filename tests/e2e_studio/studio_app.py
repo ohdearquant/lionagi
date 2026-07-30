@@ -10,22 +10,10 @@ command.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import patch
 
 from lionagi.studio.operator import coordinator as coordinator_module
 from lionagi.studio.operator.coordinator import OperatorCoordinator
 from lionagi.studio.operator.types import OperatorEngineEvent, OperatorEngineTurn
-from lionagi.studio.security import capture_studio_credentials
-
-# Mint the same deterministic, test-only bearer the browser spec knows. The
-# production credential path still sees this as process-generated (not an
-# environment-derived secret), which is the real mode in which Operator turns
-# and human approvals are enabled.
-with patch(
-    "lionagi.studio.security.secrets.token_urlsafe",
-    return_value="lionagi-studio-e2e-human-principal",
-):
-    capture_studio_credentials(generate_human=True)
 
 _EXECUTED_MARKERS: set[str] = set()
 

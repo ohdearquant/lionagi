@@ -4,111 +4,19 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Lion Studio</title>
-    <script id="studio-connection-bootstrap">
-      (function () {
-        var apiKey = "studio-api";
-        var tokenKey = "studio-token";
-        var alternateTokenKey = "studio-human-token";
-        var params = new URLSearchParams(window.location.hash.slice(1));
-        var hasBootstrap =
-          params.has(apiKey) ||
-          params.has(tokenKey) ||
-          params.has(alternateTokenKey) ||
-          params.has("apiBase") ||
-          params.has("humanToken");
-        var fragmentApi = (params.get(apiKey) || params.get("apiBase") || "").trim();
-        var fragmentToken = (
-          params.get(tokenKey) ||
-          params.get(alternateTokenKey) ||
-          params.get("humanToken") ||
-          ""
-        ).trim();
-        var storedApi = "";
-        var storedToken = "";
-        var fragmentPairValid = false;
-        var storedPairValid = false;
-
-        function isLoopbackHttp(value) {
-          if (!value) return false;
-          try {
-            var parsed = new URL(value);
-            var host = parsed.hostname.toLowerCase();
-            return (
-              parsed.protocol === "http:" &&
-              !parsed.username &&
-              !parsed.password &&
-              (host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]")
-            );
-          } catch (_) {
-            return false;
-          }
-        }
-
-        fragmentPairValid =
-          Boolean(fragmentApi) && Boolean(fragmentToken) && isLoopbackHttp(fragmentApi);
-
-        try {
-          storedApi = (sessionStorage.getItem(apiKey) || "").trim();
-          storedToken = (
-            sessionStorage.getItem(tokenKey) ||
-            sessionStorage.getItem(alternateTokenKey) ||
-            ""
-          ).trim();
-          storedPairValid = Boolean(storedApi) && Boolean(storedToken) && isLoopbackHttp(storedApi);
-          if (fragmentPairValid) {
-            sessionStorage.setItem(apiKey, fragmentApi);
-            sessionStorage.setItem(tokenKey, fragmentToken);
-          }
-        } catch (_) {
-          // Privacy-restricted browsers may block sessionStorage. The
-          // fragment values still initialize this tab for the current load.
-        }
-
-        // Treat endpoint + credential as one indivisible capability. Never
-        // combine one value from a fragment with the other from storage.
-        if (fragmentPairValid) {
-          window.__STUDIO_API_BASE__ = fragmentApi;
-          window.__STUDIO_AUTH_TOKEN__ = fragmentToken;
-        } else if (storedPairValid) {
-          window.__STUDIO_API_BASE__ = storedApi;
-          window.__STUDIO_AUTH_TOKEN__ = storedToken;
-        }
-
-        if (hasBootstrap) {
-          params.delete(apiKey);
-          params.delete(tokenKey);
-          params.delete(alternateTokenKey);
-          params.delete("apiBase");
-          params.delete("humanToken");
-          var remainingHash = params.toString();
-          var cleanUrl =
-            window.location.pathname +
-            window.location.search +
-            (remainingHash ? "#" + remainingHash : "");
-          window.history.replaceState(window.history.state, document.title, cleanUrl);
-        }
-      })();
-    </script>
     <script>
       (function () {
-        var t = localStorage.getItem("theme") || "dark";
-        document.documentElement.setAttribute("data-theme", t);
-        if (t === "dark") document.documentElement.classList.add("dark");
-        else document.documentElement.classList.remove("dark");
+        var t = localStorage.getItem('theme') || 'dark';
+        document.documentElement.setAttribute('data-theme', t);
+        if (t === 'dark') document.documentElement.classList.add('dark');
+        else document.documentElement.classList.remove('dark');
       })();
     </script>
-    <script id="studio-analytics-bootstrap">
-      (function () {
-        // Authenticated Studio tabs are a local control plane. Do not load a
-        // third-party origin into the page that holds its bearer capability.
-        if (window.__STUDIO_AUTH_TOKEN__) return;
-        var analytics = document.createElement("script");
-        analytics.defer = true;
-        analytics.src = "https://analytics.khive.ai/script.js";
-        analytics.setAttribute("data-website-id", "2899c39b-7da3-40b5-bce5-83961982ecc6");
-        document.head.appendChild(analytics);
-      })();
-    </script>
+    <script
+      defer
+      src="https://analytics.khive.ai/script.js"
+      data-website-id="2899c39b-7da3-40b5-bce5-83961982ecc6"
+    ></script>
   </head>
   <body>
     <div id="root"></div>

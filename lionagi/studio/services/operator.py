@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import asyncio
-import hmac
 import json
 from typing import Any
 
@@ -26,10 +25,6 @@ from ..operator.types import (
 )
 from ..registry import studio_route
 from ._sse import sse_response
-
-_CREDENTIAL_REQUIRED_DETAIL = (
-    "Operator conversations require a generated browser credential; restart with `li studio`"
-)
 
 
 def _http_error(exc: OperatorStoreError) -> HTTPException:
@@ -62,10 +57,8 @@ async def operator_shutdown() -> None:
 
 @studio_route("/operator/conversations", method="GET", area="operator")
 async def list_operator_conversations(
-    request: Request,
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict[str, Any]:
-    _require_operator_credential(request)
     coordinator = get_operator_coordinator()
     try:
         await coordinator.ensure_started()
@@ -77,10 +70,8 @@ async def list_operator_conversations(
 
 @studio_route("/operator/conversations", method="POST", area="operator")
 async def create_operator_conversation(
-    request: Request,
     body: CreateConversationRequest | None = None,
 ) -> dict[str, Any]:
-    _require_operator_credential(request)
     body = body or CreateConversationRequest()
     try:
         return await get_operator_coordinator().create_conversation(
@@ -93,11 +84,9 @@ async def create_operator_conversation(
 @studio_route("/operator/conversations/{conversation_id}", method="GET", area="operator")
 async def get_operator_conversation(
     conversation_id: str,
-    request: Request,
     after_sequence: int = Query(default=0, ge=0),
     limit: int = Query(default=1000, ge=1, le=1000),
 ) -> dict[str, Any]:
-    _require_operator_credential(request)
     try:
         return await get_operator_coordinator().snapshot(
             conversation_id, after_sequence=after_sequence, limit=limit
@@ -107,8 +96,7 @@ async def get_operator_conversation(
 
 
 @studio_route("/operator/conversations/{conversation_id}", method="DELETE", area="operator")
-async def delete_operator_conversation(conversation_id: str, request: Request) -> dict[str, Any]:
-    _require_operator_credential(request)
+async def delete_operator_conversation(conversation_id: str) -> dict[str, Any]:
     coordinator = get_operator_coordinator()
     try:
         await coordinator.ensure_started()
@@ -124,10 +112,7 @@ async def delete_operator_conversation(conversation_id: str, request: Request) -
     area="operator",
     status_code=202,
 )
-async def submit_operator_turn(
-    conversation_id: str, body: OperatorTurnRequest, request: Request
-) -> dict[str, Any]:
-    _require_operator_credential(request)
+async def submit_operator_turn(conversation_id: str, body: OperatorTurnRequest) -> dict[str, Any]:
     try:
         return await get_operator_coordinator().submit(
             conversation_id,
@@ -145,10 +130,7 @@ async def submit_operator_turn(
     area="operator",
     status_code=202,
 )
-async def cancel_operator_turn(
-    conversation_id: str, request_id: str, request: Request
-) -> dict[str, Any]:
-    _require_operator_credential(request)
+async def cancel_operator_turn(conversation_id: str, request_id: str) -> dict[str, Any]:
     try:
         return await get_operator_coordinator().cancel(conversation_id, request_id)
     except OperatorStoreError as exc:
@@ -166,7 +148,6 @@ async def stream_operator_conversation(
     request: Request,
     after_sequence: int = Query(default=0, ge=0),
 ):
-    _require_operator_credential(request)
     coordinator = get_operator_coordinator()
     try:
         await coordinator.ensure_started()
@@ -201,90 +182,6 @@ async def stream_operator_conversation(
     return sse_response(events())
 
 
-def _require_safe_operator_credential_origin(request: Request) -> None:
-    """Fail closed when process inspection can recover the browser credential."""
-    from ..security import studio_operator_credential_origin
-
-    application = request.scope.get("app")
-    origin = (
-        getattr(
-            getattr(application, "state", None),
-            "studio_operator_credential_origin",
-            None,
-        )
-        or studio_operator_credential_origin()
-    )
-    if origin == "environment":
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "Operator turns and approvals are disabled for environment-derived "
-                "credentials. Unset LIONAGI_STUDIO_AUTH_TOKEN and "
-                "LIONAGI_STUDIO_HUMAN_TOKEN, then start with `li studio` to use "
-                "a generated browser credential."
-            ),
-        )
-    if origin != "generated":
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "Operator turns and approvals require a generated browser credential. "
-                "Start Studio with `li studio` and use the tab it opens."
-            ),
-        )
-
-
-def _require_operator_credential(request: Request) -> None:
-    """The single authorization boundary for Operator conversation state.
-
-    Every route that reads or mutates a conversation goes through here, so the
-    app-wide Studio bearer — which is optional, and lets everything through when
-    unset — is never the only guard. Fails closed: an absent, empty or
-    unreadable credential is a refusal, never an allow.
-    """
-    _require_safe_operator_credential_origin(request)
-    # AUTH is also enforced by the app-wide middleware, so it is the effective
-    # browser credential when both variables are configured.
-    from ..security import studio_human_token
-
-    try:
-        application = request.scope.get("app")
-        token = (
-            getattr(getattr(application, "state", None), "studio_human_token", None)
-            or studio_human_token()
-        )
-    except Exception as exc:  # noqa: BLE001 — an unreadable credential is a refusal
-        raise HTTPException(
-            status_code=403,
-            detail=_CREDENTIAL_REQUIRED_DETAIL,
-        ) from exc
-    if not isinstance(token, str) or not token:
-        raise HTTPException(status_code=403, detail=_CREDENTIAL_REQUIRED_DETAIL)
-    presented = request.headers.get("authorization") or ""
-    try:
-        matched = hmac.compare_digest(presented, f"Bearer {token}")
-    except TypeError:
-        # compare_digest only accepts ASCII-only str; a non-ASCII header is a
-        # mismatch, not a server error.
-        matched = False
-    if not matched:
-        raise HTTPException(
-            status_code=403,
-            detail="Operator conversations require the browser credential",
-        )
-
-
-async def _require_human(request: Request) -> None:
-    """Require the browser-held human bearer; network locality is not identity."""
-    _require_safe_operator_credential_origin(request)
-    if request.headers.get("x-lionagi-operator-principal"):
-        raise HTTPException(
-            status_code=403,
-            detail="Operator decisions require the human principal",
-        )
-    _require_operator_credential(request)
-
-
 @studio_route(
     "/operator/conversations/{conversation_id}/proposals/{proposal_id}/confirm",
     method="POST",
@@ -294,9 +191,7 @@ async def confirm_operator_proposal(
     conversation_id: str,
     proposal_id: str,
     body: ConfirmProposalRequest,
-    request: Request,
 ) -> dict[str, Any]:
-    await _require_human(request)
     try:
         return await get_operator_coordinator().decide(
             conversation_id,
@@ -318,9 +213,7 @@ async def decide_operator_proposal(
     conversation_id: str,
     proposal_id: str,
     body: DecideProposalRequest,
-    request: Request,
 ) -> dict[str, Any]:
-    await _require_human(request)
     try:
         return await get_operator_coordinator().decide(
             conversation_id,
@@ -342,9 +235,7 @@ async def acknowledge_operator_effect(
     conversation_id: str,
     effect_id: str,
     body: AcknowledgeEffectRequest,
-    request: Request,
 ) -> dict[str, Any]:
-    _require_operator_credential(request)
     coordinator = get_operator_coordinator()
     try:
         await coordinator.ensure_started()

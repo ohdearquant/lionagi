@@ -16,7 +16,6 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
 
 from lionagi._paths import ensure_lionagi_dir
 from lionagi.cli._argtypes import JsonArgument
@@ -90,13 +89,6 @@ def _add_studio_flags(parser: argparse.ArgumentParser, *, suppress_defaults: boo
         action="store_true",
         default=_default(False),
         dest="no_docker",
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
-        "--operator-token-stdin",
-        action="store_true",
-        default=_default(False),
-        dest="operator_token_stdin",
         help=argparse.SUPPRESS,
     )
     mode = parser.add_mutually_exclusive_group()
@@ -198,38 +190,6 @@ def _has_docker() -> bool:
     return shutil.which("docker") is not None
 
 
-def _effective_browser_token(*, generate: bool) -> str | None:
-    from .security import capture_studio_credentials
-
-    return capture_studio_credentials(generate_human=generate)
-
-
-def _browser_url(ui_url: str, api_url: str, token: str) -> str:
-    return ui_url + "#" + urlencode({"studio-api": api_url, "studio-token": token})
-
-
-def _warn_if_environment_operator_disabled() -> None:
-    from .security import studio_operator_credential_origin
-
-    if studio_operator_credential_origin() == "environment":
-        print(
-            "Operator turns and approvals are disabled because an environment-derived "
-            "credential can remain visible in process metadata. Unset "
-            "LIONAGI_STUDIO_AUTH_TOKEN and LIONAGI_STUDIO_HUMAN_TOKEN, then restart "
-            "with `li studio` to use a generated browser credential.",
-            file=sys.stderr,
-        )
-
-
-def _open_browser(url: str, *, no_open: bool) -> None:
-    if no_open or not sys.stdin.isatty() or not sys.stdout.isatty():
-        return
-    import webbrowser
-
-    with contextlib.suppress(Exception):
-        webbrowser.open(url)
-
-
 def _studio_start(args: argparse.Namespace) -> int:
     try:
         import uvicorn  # noqa: F401
@@ -239,22 +199,6 @@ def _studio_start(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-
-    if getattr(args, "operator_token_stdin", False):
-        from .security import install_generated_studio_token
-
-        stream = sys.stdin
-        try:
-            token = stream.readline(4098).rstrip("\r\n")
-            stream.close()
-            # The pipe is authoritative. A stale parent environment must not
-            # overwrite this launch-scoped token during later CLI setup.
-            os.environ.pop("LIONAGI_STUDIO_AUTH_TOKEN", None)
-            os.environ.pop("LIONAGI_STUDIO_HUMAN_TOKEN", None)
-            install_generated_studio_token(token)
-        except (OSError, ValueError) as exc:
-            print(f"Invalid Studio token bootstrap: {exc}", file=sys.stderr)
-            return 1
 
     port_from_env = os.environ.get("LIONAGI_STUDIO_PORT")
     port: int = (
@@ -275,25 +219,11 @@ def _studio_start(args: argparse.Namespace) -> int:
         )
 
     if no_frontend:
-        if _effective_browser_token(generate=False) is None:
-            print(
-                "Operator approvals are unavailable in API-only mode without a "
-                "browser-held credential; use `li studio` to open a credentialed UI.",
-                file=sys.stderr,
-            )
-        _warn_if_environment_operator_disabled()
         return _start_backend_only(host, port)
 
     if dev_mode:
         frontend_dir = _find_frontend_dir()
-        return _start_local(
-            host,
-            port,
-            frontend_port,
-            frontend_dir,
-            dev_mode=True,
-            no_open=no_open,
-        )
+        return _start_local(host, port, frontend_port, frontend_dir, dev_mode=True)
 
     if use_docker:
         if not _has_docker():
@@ -307,26 +237,19 @@ def _studio_start(args: argparse.Namespace) -> int:
 
 def _start_hosted(host: str, port: int, no_open: bool) -> int:
     daemon_url = f"http://127.0.0.1:{port}"
-    browser_token = _effective_browser_token(generate=True)
-    assert browser_token is not None
-    _warn_if_environment_operator_disabled()
-    launch_url = _browser_url(_HOSTED_URL, daemon_url, browser_token)
     print(f"Lion Studio: {_HOSTED_URL}")
     print(f"  connects to your local daemon at {daemon_url}")
-    if no_open:
-        print(
-            "  Operator approvals require reopening without --no-open; the generated "
-            "browser credential is intentionally not printed"
-        )
     print()
-    _open_browser(launch_url, no_open=no_open)
+    if not no_open and sys.stdin.isatty() and sys.stdout.isatty():
+        import webbrowser
+
+        with contextlib.suppress(Exception):
+            webbrowser.open(_HOSTED_URL)
     return _start_backend_only(host, port)
 
 
 def _start_backend_only(host: str, port: int) -> int:
     import uvicorn
-
-    from .security import clear_captured_studio_credentials
 
     if not _ensure_apps_importable():
         print(
@@ -339,10 +262,7 @@ def _start_backend_only(host: str, port: int) -> int:
     print(f"Lion Studio API: http://{host}:{port}")
     # Set before uvicorn.run: the app is loaded via import string and reads this from env.
     os.environ["LIONAGI_STUDIO_HOST"] = host
-    try:
-        uvicorn.run("lionagi.studio.app:app", host=host, port=port)
-    finally:
-        clear_captured_studio_credentials()
+    uvicorn.run("lionagi.studio.app:app", host=host, port=port)
     return 0
 
 
@@ -428,11 +348,8 @@ def _start_local(
     frontend_port: int,
     frontend_dir: Path | None,
     dev_mode: bool,
-    no_open: bool = False,
 ) -> int:
     import uvicorn
-
-    from .security import clear_captured_studio_credentials
 
     if frontend_dir is None:
         print("Error: --dev requires the lionagi repo. Clone it first.", file=sys.stderr)
@@ -458,24 +375,10 @@ def _start_local(
     if dev_mode:
         # Dev mode: hot-reload Vite dev server + uvicorn side-by-side.
         # Vite proxies /api → uvicorn (configured in vite.config.mts).
-        api_url = f"http://127.0.0.1:{port}"
-        ui_url = f"http://127.0.0.1:{frontend_port}"
-        browser_token = _effective_browser_token(generate=True)
-        assert browser_token is not None
-        _warn_if_environment_operator_disabled()
-        frontend_proc = _launch_vite_dev(frontend_dir, frontend_port, api_url=api_url)
+        frontend_proc = _launch_vite_dev(frontend_dir, frontend_port)
         if frontend_proc:
             print(f"Lion Studio UI (dev):  http://{host}:{frontend_port}")
         print(f"Lion Studio API:       http://{host}:{port}")
-        if no_open:
-            print(
-                "Operator approvals require reopening without --no-open; the generated "
-                "browser credential is intentionally not printed"
-            )
-        _open_browser(
-            _browser_url(ui_url, ui_url, browser_token),
-            no_open=no_open,
-        )
     else:
         # Production mode: build dist/ once, then uvicorn serves both UI and API
         # from the same origin — no second process needed.
@@ -505,7 +408,6 @@ def _start_local(
             except subprocess.TimeoutExpired:
                 frontend_proc.kill()
                 frontend_proc.wait()
-        clear_captured_studio_credentials()
     return 0
 
 
@@ -621,15 +523,9 @@ def _ensure_frontend_built(frontend_dir: Path) -> bool:
 def _launch_vite_dev(
     frontend_dir: Path,
     frontend_port: int,
-    *,
-    api_url: str | None = None,
 ) -> subprocess.Popen | None:
     """Spawn `npx vite --port <N>` for hot-reload dev mode."""
     env = {**os.environ, "PORT": str(frontend_port)}
-    env.pop("LIONAGI_STUDIO_AUTH_TOKEN", None)
-    env.pop("LIONAGI_STUDIO_HUMAN_TOKEN", None)
-    if api_url is not None:
-        env["STUDIO_API_URL"] = api_url
     try:
         return subprocess.Popen(  # noqa: S603
             ["npx", "vite", "--port", str(frontend_port)],  # noqa: S607
