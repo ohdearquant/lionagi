@@ -136,6 +136,25 @@ function IconCalendar() {
   );
 }
 
+function IconOperator() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M21 12a8 8 0 0 1-8 8H6l-4 2 1.5-4.5A8.5 8.5 0 1 1 21 12Z" />
+      <path d="M8 12h.01M12 12h.01M16 12h.01" />
+    </svg>
+  );
+}
+
 const SPACES: Space[] = [
   { id: "home", href: "/", labelKey: "rail.home", icon: <IconTarget />, key: 1 },
   { id: "library", href: "/library", labelKey: "rail.library", icon: <IconGrid />, key: 2 },
@@ -259,6 +278,8 @@ function LangListbox({ id, locale, labelText, onSelect, onClose, triggerRef }: L
 
 interface Props {
   dark: boolean;
+  operatorOpen: boolean;
+  onToggleOperator: () => void;
   onToggleTheme: () => void;
   onLocaleChange: (locale: string) => void;
 }
@@ -268,7 +289,13 @@ function isActive(href: string, pathname: string): boolean {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-export default function IconRail({ dark, onToggleTheme, onLocaleChange }: Props) {
+export default function IconRail({
+  dark,
+  operatorOpen,
+  onToggleOperator,
+  onToggleTheme,
+  onLocaleChange,
+}: Props) {
   const t = useTranslations("shell");
   const locale = useLocale();
   const pathname = useLocation().pathname;
@@ -318,6 +345,34 @@ export default function IconRail({ dark, onToggleTheme, onLocaleChange }: Props)
     >
       {/* Spaces */}
       <ul className="flex flex-1 flex-col items-center gap-1">
+        <li className="mb-2 border-b border-edge pb-2">
+          <button
+            type="button"
+            onClick={onToggleOperator}
+            aria-label={`${t("rail.operator")} (⌘J)`}
+            aria-keyshortcuts="Meta+J Control+J"
+            aria-pressed={operatorOpen}
+            className={`group relative flex h-10 w-10 items-center justify-center rounded border transition-colors duration-100 ${
+              operatorOpen
+                ? "border-accent/40 bg-surface-overlay text-accent"
+                : "border-edge bg-surface-base text-content-secondary hover:border-edge-strong hover:text-content-primary"
+            }`}
+            title={`${t("rail.operator")} — ⌘J`}
+          >
+            {operatorOpen && (
+              <span
+                aria-hidden="true"
+                className="absolute bottom-2 start-0 top-2 w-0.5 rounded-e bg-accent"
+              />
+            )}
+            <span
+              className={operatorOpen ? "opacity-100" : "opacity-[0.7] group-hover:opacity-100"}
+            >
+              <IconOperator />
+            </span>
+          </button>
+        </li>
+
         {SPACES.map((space) => {
           const active = isActive(space.href, pathname);
           const label = t(space.labelKey as Parameters<typeof t>[0]);

@@ -17,7 +17,7 @@ vi.mock("@tanstack/router-plugin/vite", () => ({
   TanStackRouterVite: () => ({ name: "router-test-plugin" }),
 }));
 
-import { hostedApiBaseInjector } from "../../vite.config.mjs";
+import { hostedApiBaseInjector, studioProxy } from "../../vite.config.mjs";
 
 const vercelConfig = JSON.parse(
   fs.readFileSync(path.resolve(__dirname, "../../vercel.json"), "utf-8"),
@@ -70,5 +70,13 @@ describe("hosted API base injection", () => {
 
   it("injects nothing into plain builds", () => {
     expect(transformFor({})).toBeUndefined();
+  });
+});
+
+describe("local daemon proxy", () => {
+  it("proxies API requests, liveness, and the authenticated daemon identity", () => {
+    expect(Object.keys(studioProxy).sort()).toEqual(["/api", "/health", "/openapi.json"]);
+    expect(studioProxy["/health"]).toBe(studioProxy["/api"]);
+    expect(studioProxy["/openapi.json"]).toBe(studioProxy["/api"]);
   });
 });

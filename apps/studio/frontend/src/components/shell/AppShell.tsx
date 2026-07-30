@@ -5,31 +5,24 @@ import IconRail from "./IconRail";
 import CommandPalette from "./CommandPalette";
 import StatusFooter from "./StatusFooter";
 import TopBar from "./TopBar";
+import OperatorPanel from "@/components/operator/OperatorPanel";
+import { applyTheme, getTheme, THEME_CHANGE_EVENT } from "@/lib/theme";
 
 interface Props {
   children: ReactNode;
   onLocaleChange: (l: string) => void;
 }
 
-function getTheme(): "dark" | "light" {
-  if (typeof document === "undefined") return "dark";
-  return (document.documentElement.getAttribute("data-theme") as "dark" | "light") ?? "dark";
-}
-
-function applyTheme(theme: "dark" | "light") {
-  document.documentElement.setAttribute("data-theme", theme);
-  if (theme === "dark") {
-    document.documentElement.classList.add("dark");
-  } else {
-    document.documentElement.classList.remove("dark");
-  }
-  localStorage.setItem("theme", theme);
+function getOperatorOpen(): boolean {
+  if (typeof window === "undefined") return true;
+  return window.localStorage.getItem("studio:operator-visibility") !== "closed";
 }
 
 export default function AppShell({ children, onLocaleChange }: Props) {
   const t = useTranslations("shell");
   const [dark, setDark] = useState(() => getTheme() === "dark");
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [operatorOpen, setOperatorOpen] = useState(getOperatorOpen);
 
   const toggleTheme = useCallback(() => {
     const next = !dark;
@@ -37,17 +30,43 @@ export default function AppShell({ children, onLocaleChange }: Props) {
     applyTheme(next ? "dark" : "light");
   }, [dark]);
 
+  const toggleOperator = useCallback(() => {
+    setOperatorOpen((current) => {
+      const next = !current;
+      window.localStorage.setItem("studio:operator-visibility", next ? "open" : "closed");
+      return next;
+    });
+  }, []);
+
+  const closeOperator = useCallback(() => {
+    window.localStorage.setItem("studio:operator-visibility", "closed");
+    setOperatorOpen(false);
+  }, []);
+
+  useEffect(() => {
+    const syncTheme = () => setDark(getTheme() === "dark");
+    window.addEventListener(THEME_CHANGE_EVENT, syncTheme);
+    window.addEventListener("storage", syncTheme);
+    return () => {
+      window.removeEventListener(THEME_CHANGE_EVENT, syncTheme);
+      window.removeEventListener("storage", syncTheme);
+    };
+  }, []);
+
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
       if (e.isComposing) return;
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
         setPaletteOpen((v) => !v);
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "j") {
+        e.preventDefault();
+        toggleOperator();
       }
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, []);
+  }, [toggleOperator]);
 
   const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
 
@@ -64,7 +83,13 @@ export default function AppShell({ children, onLocaleChange }: Props) {
         )}
 
         {/* Icon rail */}
-        <IconRail dark={dark} onToggleTheme={toggleTheme} onLocaleChange={onLocaleChange} />
+        <IconRail
+          dark={dark}
+          operatorOpen={operatorOpen}
+          onToggleOperator={toggleOperator}
+          onToggleTheme={toggleTheme}
+          onLocaleChange={onLocaleChange}
+        />
 
         {/* Main area */}
         <div className="flex flex-1 flex-col overflow-hidden">
@@ -90,7 +115,10 @@ export default function AppShell({ children, onLocaleChange }: Props) {
           open={paletteOpen}
           onClose={() => setPaletteOpen(false)}
           toggleTheme={toggleTheme}
+          toggleOperator={toggleOperator}
         />
+
+        <OperatorPanel open={operatorOpen} onClose={closeOperator} />
       </div>
     </ToastProvider>
   );

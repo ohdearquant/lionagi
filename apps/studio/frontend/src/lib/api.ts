@@ -8,7 +8,16 @@ import type {
   PlaybookFormat,
   ProjectDetail,
   ProjectSummary,
+  OperatorConversation,
+  OperatorConversationSnapshot,
+  OperatorFrame,
+  OperatorFrameType,
+  OperatorProposalResult,
+  OperatorTurnAccepted,
+  OperatorTurnRequest,
   RunDetail,
+  RunResumeRequest,
+  RunResumeResponse,
   RunSummary,
   ScheduleDetail,
   ScheduleRunSummary,
@@ -68,6 +77,25 @@ export function resolveApiBase(): string {
 
 export const API_BASE = resolveApiBase();
 
+export class ApiError extends Error {
+  readonly status: number;
+  readonly detail: unknown;
+  readonly code?: string;
+  readonly retryable?: boolean;
+
+  constructor(status: number, message: string, detail?: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+    if (detail != null && typeof detail === "object" && !Array.isArray(detail)) {
+      const record = detail as Record<string, unknown>;
+      if (typeof record.code === "string") this.code = record.code;
+      if (typeof record.retryable === "boolean") this.retryable = record.retryable;
+    }
+  }
+}
+
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const url = `${API_BASE}${path}`;
 
@@ -92,14 +120,22 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     // Preserve the backend `detail` field (FastAPI/Pydantic validation errors,
     // our structured 409 body, etc.) so callers can surface it to the operator.
     // Falls back to the status code when the body is not JSON or has no detail.
-    let detail: string | undefined;
+    let detail: unknown;
     try {
-      const body = (await response.json()) as { detail?: string };
-      if (typeof body?.detail === "string") detail = body.detail;
+      const body = (await response.json()) as { detail?: unknown };
+      detail = body?.detail;
     } catch {
       // not JSON — ignore
     }
-    throw new Error(detail ?? `Request failed: ${response.status}`);
+    const message =
+      typeof detail === "string"
+        ? detail
+        : detail != null && typeof detail === "object" && !Array.isArray(detail)
+          ? typeof (detail as Record<string, unknown>).message === "string"
+            ? String((detail as Record<string, unknown>).message)
+            : `Request failed: ${response.status}`
+          : `Request failed: ${response.status}`;
+    throw new ApiError(response.status, message, detail);
   }
   // 204/empty-body responses have nothing to parse — return as-is (matches
   // callers that type these as `unknown`/`{ ok: boolean }` but never actually
@@ -188,6 +224,384 @@ function sseSubscribe(path: string, onData: (data: string) => void): () => void 
   return close;
 }
 
+// ─── Operator conversations (ADR-0083 v1) ──────────────────────────────────
+
+const OPERATOR_FRAME_TYPES = new Set<OperatorFrameType>([
+  "text",
+  "tool_call",
+  "tool_result",
+  "ui_command",
+  "proposal",
+  "confirmation",
+  "error",
+  "done",
+]);
+
+type RawRecord = Record<string, unknown>;
+
+function asRecord(value: unknown): RawRecord {
+  return value != null && typeof value === "object" && !Array.isArray(value)
+    ? (value as RawRecord)
+    : {};
+}
+
+function normalizeOperatorConversation(value: unknown): OperatorConversation {
+  const raw = asRecord(value);
+  const id = raw.id;
+  if (typeof id !== "string" || !id) {
+    throw new Error("Operator conversation response did not include an id.");
+  }
+  const status =
+    raw.status === "archived" || raw.status === "deleted" ? raw.status : ("active" as const);
+  const readNumber = (camel: string, snake: string): number | undefined => {
+    const candidate = raw[camel] ?? raw[snake];
+    return typeof candidate === "number" ? candidate : undefined;
+  };
+  const readString = (camel: string, snake: string): string | undefined => {
+    const candidate = raw[camel] ?? raw[snake];
+    return typeof candidate === "string" ? candidate : undefined;
+  };
+  return {
+    id,
+    status,
+    project: typeof raw.project === "string" ? raw.project : null,
+    title: typeof raw.title === "string" ? raw.title : null,
+    nextSequence: readNumber("nextSequence", "next_sequence"),
+    activeRequestId: readString("activeRequestId", "active_request_id") ?? null,
+    createdAt: readNumber("createdAt", "created_at"),
+    updatedAt: readNumber("updatedAt", "updated_at"),
+  };
+}
+
+export function isOperatorFrame(value: unknown): value is OperatorFrame {
+  const raw = asRecord(value);
+  return (
+    raw.version === 1 &&
+    typeof raw.conversationId === "string" &&
+    typeof raw.requestId === "string" &&
+    typeof raw.sequence === "number" &&
+    Number.isInteger(raw.sequence) &&
+    raw.sequence >= 1 &&
+    typeof raw.type === "string" &&
+    OPERATOR_FRAME_TYPES.has(raw.type as OperatorFrameType) &&
+    raw.payload != null &&
+    typeof raw.payload === "object" &&
+    typeof raw.createdAt === "number"
+  );
+}
+
+export async function createOperatorConversation(input?: {
+  project?: string | null;
+  title?: string | null;
+}): Promise<OperatorConversation> {
+  const response = await fetchJson<unknown>("/api/operator/conversations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input ?? {}),
+  });
+  const raw = asRecord(response);
+  return normalizeOperatorConversation(raw.conversation ?? raw);
+}
+
+export async function listOperatorConversations(): Promise<OperatorConversation[]> {
+  const response = await fetchJson<unknown>("/api/operator/conversations");
+  const raw = asRecord(response);
+  if (!Array.isArray(raw.conversations)) {
+    throw new Error("Operator conversation list response was invalid.");
+  }
+  return raw.conversations.map(normalizeOperatorConversation);
+}
+
+export async function getOperatorConversation(
+  conversationId: string,
+): Promise<OperatorConversationSnapshot> {
+  const pageSize = 1000;
+  let afterSequence = 0;
+  let conversation: OperatorConversation | null = null;
+  const frames: OperatorFrame[] = [];
+
+  for (;;) {
+    const response = await fetchJson<unknown>(
+      `/api/operator/conversations/${encodeURIComponent(conversationId)}?after_sequence=${afterSequence}&limit=${pageSize}`,
+    );
+    const raw = asRecord(response);
+    conversation = normalizeOperatorConversation(raw.conversation ?? raw);
+    const framesValue = raw.frames ?? raw.events;
+    const page = Array.isArray(framesValue) ? framesValue : [];
+    for (const frame of page) {
+      if (!isOperatorFrame(frame)) {
+        throw new Error("Operator history contains an unsupported protocol frame.");
+      }
+    }
+    frames.push(...page);
+    const hasMore = typeof raw.hasMore === "boolean" ? raw.hasMore : page.length >= pageSize;
+    if (!hasMore) break;
+    const reportedNext = raw.nextAfterSequence;
+    const nextSequence =
+      typeof reportedNext === "number"
+        ? reportedNext
+        : Math.max(...page.map((frame) => (frame as OperatorFrame).sequence));
+    if (nextSequence <= afterSequence) {
+      throw new Error("Operator history pagination did not advance.");
+    }
+    afterSequence = nextSequence;
+  }
+
+  if (!conversation) {
+    throw new Error("Operator conversation response was empty.");
+  }
+  return { conversation, frames };
+}
+
+export async function submitOperatorTurn(
+  conversationId: string,
+  request: OperatorTurnRequest,
+): Promise<OperatorTurnAccepted> {
+  return fetchJson<OperatorTurnAccepted>(
+    `/api/operator/conversations/${encodeURIComponent(conversationId)}/turns`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        instruction: request.instruction,
+        context: request.context,
+        expected_last_sequence: request.expectedLastSequence,
+      }),
+    },
+  );
+}
+
+export async function cancelOperatorRequest(
+  conversationId: string,
+  requestId: string,
+): Promise<void> {
+  await fetchJson<unknown>(
+    `/api/operator/conversations/${encodeURIComponent(conversationId)}/requests/${encodeURIComponent(requestId)}/cancel`,
+    { method: "POST" },
+  );
+}
+
+export type OperatorEffectRejectionCode =
+  | "unsupported"
+  | "invalid_params"
+  | "stale_context"
+  | "not_visible"
+  | "client_error";
+
+export async function acknowledgeOperatorEffect(
+  conversationId: string,
+  effectId: string,
+  acknowledgement:
+    | { status: "applied"; clientRoute: string }
+    | {
+        status: "rejected";
+        clientRoute?: string;
+        rejectionCode: OperatorEffectRejectionCode;
+      },
+): Promise<{ effectId: string; status: "applied" | "rejected" }> {
+  return fetchJson(
+    `/api/operator/conversations/${encodeURIComponent(conversationId)}/effects/${encodeURIComponent(effectId)}/ack`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(acknowledgement),
+    },
+  );
+}
+
+export async function confirmOperatorProposal(
+  conversationId: string,
+  proposalId: string,
+  expectedCommandHash: string,
+  expectedTargetVersion?: string | null,
+): Promise<OperatorProposalResult> {
+  return fetchJson<OperatorProposalResult>(
+    `/api/operator/conversations/${encodeURIComponent(conversationId)}/proposals/${encodeURIComponent(proposalId)}/confirm`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        expectedCommandHash,
+        expectedTargetVersion: expectedTargetVersion ?? null,
+      }),
+    },
+  );
+}
+
+export async function decideOperatorProposal(
+  conversationId: string,
+  proposalId: string,
+  decision: "allow" | "deny",
+  expectedCommandHash?: string,
+  expectedTargetVersion?: string | null,
+): Promise<OperatorProposalResult> {
+  return fetchJson<OperatorProposalResult>(
+    `/api/operator/conversations/${encodeURIComponent(conversationId)}/proposals/${encodeURIComponent(proposalId)}/decision`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        decision,
+        ...(expectedCommandHash ? { expectedCommandHash } : {}),
+        expectedTargetVersion: expectedTargetVersion ?? null,
+      }),
+    },
+  );
+}
+
+export interface OperatorSseChunk {
+  data: string[];
+  rest: string;
+}
+
+/**
+ * Consume complete SSE records while retaining a possibly-fragmented tail.
+ * Handles both LF and CRLF records and joins multi-line data fields.
+ */
+export function consumeOperatorSse(input: string): OperatorSseChunk {
+  const data: string[] = [];
+  let rest = input;
+  for (;;) {
+    const match = /\r?\n\r?\n/.exec(rest);
+    if (!match || match.index == null) break;
+    const record = rest.slice(0, match.index);
+    rest = rest.slice(match.index + match[0].length);
+    const payload = record
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).replace(/^ /, ""))
+      .join("\n");
+    if (payload) data.push(payload);
+  }
+  return { data, rest };
+}
+
+export type OperatorStreamConnection = "connecting" | "open" | "reconnecting";
+
+export interface OperatorStreamHandlers {
+  onFrame: (frame: OperatorFrame) => void;
+  onConnection?: (state: OperatorStreamConnection) => void;
+  onError?: (error: Error, fatal: boolean) => void;
+}
+
+/**
+ * Authenticated, replayable SSE subscription. The cursor advances only after
+ * a validated v1 frame and is sent on every reconnect, so delivery may repeat
+ * but never silently skips a durable frame.
+ */
+export function streamOperatorConversation(
+  conversationId: string,
+  afterSequence: number,
+  handlers: OperatorStreamHandlers,
+): () => void {
+  let closed = false;
+  let cursor = Math.max(0, afterSequence);
+  let controller: AbortController | null = null;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const wait = (delay: number) =>
+    new Promise<void>((resolve) => {
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        resolve();
+      }, delay);
+    });
+
+  const close = () => {
+    closed = true;
+    controller?.abort();
+    if (retryTimer) clearTimeout(retryTimer);
+  };
+
+  void (async () => {
+    let retryMs = 750;
+    let firstAttempt = true;
+    while (!closed) {
+      handlers.onConnection?.(firstAttempt ? "connecting" : "reconnecting");
+      controller = new AbortController();
+      try {
+        const query = new URLSearchParams({ after_sequence: String(cursor) });
+        const headers: Record<string, string> = { Accept: "text/event-stream" };
+        const token = resolveAuthToken();
+        if (token) headers.Authorization = `Bearer ${token}`;
+        const response = await fetch(
+          `${API_BASE}/api/operator/conversations/${encodeURIComponent(conversationId)}/stream?${query}`,
+          { headers, signal: controller.signal },
+        );
+        if (!response.ok || !response.body) {
+          const fatal =
+            response.status < 500 &&
+            response.status !== 408 &&
+            response.status !== 425 &&
+            response.status !== 429;
+          const error = new Error(`Operator stream request failed: ${response.status}`);
+          handlers.onError?.(error, fatal);
+          if (fatal) {
+            closed = true;
+            break;
+          }
+          throw error;
+        }
+
+        handlers.onConnection?.("open");
+        retryMs = 750;
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (!closed) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const chunk = consumeOperatorSse(buffer);
+          buffer = chunk.rest;
+          for (const payload of chunk.data) {
+            let candidate: unknown;
+            try {
+              candidate = JSON.parse(payload);
+            } catch {
+              const error = new Error("Operator stream sent malformed JSON.");
+              handlers.onError?.(error, true);
+              closed = true;
+              controller.abort();
+              break;
+            }
+            if (!isOperatorFrame(candidate)) {
+              const error = new Error("Operator stream sent an unsupported protocol frame.");
+              handlers.onError?.(error, true);
+              closed = true;
+              controller.abort();
+              break;
+            }
+            if (candidate.conversationId !== conversationId) {
+              const error = new Error("Operator stream frame belongs to another conversation.");
+              handlers.onError?.(error, true);
+              closed = true;
+              controller.abort();
+              break;
+            }
+            cursor = Math.max(cursor, candidate.sequence);
+            handlers.onFrame(candidate);
+          }
+        }
+      } catch (error) {
+        if (closed || controller.signal.aborted) break;
+        reportConnectivityFailure();
+        handlers.onError?.(
+          error instanceof Error ? error : new Error("Operator stream disconnected."),
+          false,
+        );
+      }
+      if (!closed) {
+        firstAttempt = false;
+        await wait(retryMs);
+        retryMs = Math.min(Math.round(retryMs * 1.8), 10_000);
+      }
+    }
+  })();
+
+  return close;
+}
+
 // ─── Runs ─────────────────────────────────────────────────────────────────────
 
 export interface RunListParams {
@@ -225,6 +639,17 @@ export async function listRuns(params?: RunListParams): Promise<RunListResponse>
 
 export async function getRun(runId: string): Promise<RunDetail> {
   return fetchJson<RunDetail>(`/api/runs/${encodeURIComponent(runId)}`);
+}
+
+export async function resumeRun(
+  runId: string,
+  request: RunResumeRequest,
+): Promise<RunResumeResponse> {
+  return fetchJson<RunResumeResponse>(`/api/runs/${encodeURIComponent(runId)}/resume`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
 }
 
 export interface RunFileContent {

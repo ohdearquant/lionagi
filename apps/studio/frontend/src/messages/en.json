@@ -6,6 +6,7 @@
       "library": "Library",
       "schedules": "Schedules",
       "system": "System",
+      "operator": "Operator",
       "toggleTheme": "Toggle theme",
       "switchToZh": "Switch to Chinese",
       "switchToEn": "Switch to English",
@@ -40,6 +41,117 @@
       "homeAria": "Home tabs"
     }
   },
+  "runResume": {
+    "title": "Continue this run",
+    "description": "Send a follow-up into the saved branch, even after the original run finished.",
+    "branch": "Branch",
+    "chooseBranch": "Choose a branch",
+    "instruction": "Follow-up instruction",
+    "placeholder": "What should this branch do next?",
+    "instructionRequired": "Enter a follow-up instruction.",
+    "noBranches": "This run has no resumable branch.",
+    "failed": "Could not resume this run.",
+    "copyFailed": "Could not copy the command.",
+    "accepted": "Follow-up accepted",
+    "viewActivity": "View activity",
+    "submitting": "Resuming…",
+    "submit": "Resume",
+    "shortcut": "⌘/Ctrl+Enter",
+    "cli": {
+      "title": "CLI escape hatch",
+      "copy": "Copy",
+      "copied": "Copied",
+      "help": "Use this command in a terminal if browser resume is unavailable."
+    }
+  },
+  "operator": {
+    "title": "Operator",
+    "command": "Toggle Operator",
+    "ariaLabel": "Operator conversation",
+    "close": "Close Operator",
+    "resize": "Resize Operator",
+    "loading": "Loading conversation",
+    "stop": "Stop",
+    "stopping": "Stopping…",
+    "retry": "Retry",
+    "newConversation": "Start a new conversation",
+    "jumpToLatest": "Jump to latest",
+    "loadOlder": "Load earlier activity",
+    "connection": {
+      "idle": "Ready",
+      "connecting": "Connecting",
+      "open": "Live",
+      "reconnecting": "Reconnecting",
+      "error": "Connection error"
+    },
+    "empty": {
+      "title": "What should we do?",
+      "body": "Ask Operator to investigate, explain, launch work, or prepare a change. Work it starts remains visible across Studio.",
+      "example": "Try: “Show me what needs attention.”"
+    },
+    "error": {
+      "title": "Conversation unavailable"
+    },
+    "errors": {
+      "load": "Could not load this conversation.",
+      "send": "Could not send this instruction.",
+      "stop": "Could not stop the current turn.",
+      "decision": "Could not record that decision.",
+      "effect": "Could not acknowledge this interface action."
+    },
+    "composer": {
+      "label": "Instruction",
+      "placeholder": "Ask Operator to investigate or run something…",
+      "busyPlaceholder": "Operator is working…",
+      "hint": "Enter to send · Shift+Enter for a new line",
+      "send": "Send",
+      "sending": "Sending…"
+    },
+    "message": {
+      "you": "You",
+      "operator": "Operator"
+    },
+    "tool": {
+      "read": "read",
+      "draft": "draft",
+      "done": "Tool completed",
+      "failed": "Tool failed"
+    },
+    "proposal": {
+      "ariaLabel": "Action requiring permission",
+      "title": "Permission required",
+      "noTarget": "No versioned target",
+      "review": "Review exact command",
+      "risk": {
+        "mutate": "change",
+        "execute": "execute",
+        "admin": "admin"
+      },
+      "allow": "Allow",
+      "deny": "Deny",
+      "deciding": "Saving…",
+      "resolved": "Decision recorded"
+    },
+    "confirmation": {
+      "required": "Waiting for your decision",
+      "confirmed": "Permission granted",
+      "denied": "Permission denied",
+      "cancelled": "Action cancelled",
+      "expired": "Permission expired",
+      "executed": "Approved action completed"
+    },
+    "effect": {
+      "requested": "Requested interface action: {kind}"
+    },
+    "outcome": {
+      "completed": "Turn completed",
+      "failed": "Turn failed",
+      "cancelled": "Turn stopped"
+    },
+    "run": {
+      "open": "Open run"
+    }
+  },
   "playfield": {
     "title": "Playfield",
     "subtitle": "All running and queued plays and sessions across projects",
@@ -70,6 +182,9 @@
     "newWorkflow": "New Workflow",
     "newAgent": "New Agent",
     "loading": "Loading…",
+    "loadError": "Some catalog sources are unavailable.",
+    "detailEmptyTitle": "Choose something to inspect",
+    "detailEmptyBody": "Select an item from the catalog to see its configuration and activity.",
     "empty": {
       "all": "No items found.",
       "allHint": "Create your first agent or workflow to get started.",
@@ -822,9 +937,13 @@
       "title": "Studio needs a local lionagi daemon",
       "body": "Studio couldn't reach a daemon at {base}. Default port is 8765; your data stays on your machine.",
       "install": "pip install \"lionagi[studio]\"",
-      "run": "li studio",
-      "runAlt": "li studio --no-open",
-      "runAltNote": "Already have this page open?"
+      "run": "li studio"
+    },
+    "pairing": {
+      "title": "Open Studio from the daemon",
+      "body": "A lionagi daemon answered at {base}, but this tab is not paired with it.",
+      "fix": "Run this command. Studio opens a new, authenticated tab:",
+      "command": "li studio"
     },
     "wrongApp": {
       "title": "Another program is using this port",

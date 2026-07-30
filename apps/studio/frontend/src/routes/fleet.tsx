@@ -49,7 +49,21 @@ function FleetPage() {
           ]}
         />
       </div>
-      <Suspense fallback={null}>
+      <Suspense
+        fallback={
+          <div className="flex min-h-0 flex-1">
+            <div className="w-[25rem] shrink-0 space-y-2 border-e border-edge p-4">
+              <div className="skeleton h-6 w-28 rounded" />
+              {Array.from({ length: 7 }, (_, index) => (
+                <div key={index} className="skeleton h-10 rounded" />
+              ))}
+            </div>
+            <div className="hidden min-w-0 flex-1 place-items-center p-8 sm:grid">
+              <div className="skeleton h-44 w-full max-w-xl rounded-lg" />
+            </div>
+          </div>
+        }
+      >
         <FleetView />
       </Suspense>
     </div>

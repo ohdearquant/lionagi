@@ -180,13 +180,14 @@ describe("fleet route validateSearch", () => {
 
 // ─── Selection state: detailActive wiring ────────────────────────────────────
 // SplitPane's detailActive determines collapsed-mode routing.
-// Contract: detailActive=true only after explicit narrow-screen selection.
+// Contract: detailActive=true after an explicit row click or a selected-run
+// deep link. Operator links must reveal detail even when the dock collapses
+// the Fleet split pane.
 
 describe("detailActive contract", () => {
-  it("starts false — no explicit narrow selection yet", () => {
-    // Mirrors FleetView: useState(false)
-    let narrowExplicit = false;
-    expect(narrowExplicit).toBe(false);
+  it("starts from whether the URL already identifies a run", () => {
+    expect(Boolean(null)).toBe(false);
+    expect(Boolean("run-from-operator")).toBe(true);
   });
 
   it("becomes true on explicit agent row click", () => {
@@ -275,6 +276,7 @@ describe("selectedRunId validation", () => {
 // ─── Formatter helpers ────────────────────────────────────────────────────────
 
 import { formatElapsed, formatCompactCount } from "./FleetView";
+import { resetDetailScrollPosition } from "./SessionDetail";
 
 describe("formatElapsed", () => {
   it("renders — for null, NaN, Infinity, and negative input", () => {
@@ -315,5 +317,18 @@ describe("formatCompactCount", () => {
     expect(formatCompactCount(1000)).toBe("1k");
     expect(formatCompactCount(5967)).toBe("5.9k");
     expect(formatCompactCount(999999)).toBe("999.9k");
+  });
+});
+
+describe("session detail scroll reset", () => {
+  it("returns every newly selected run to the top of its detail pane", () => {
+    const pane = document.createElement("div");
+    pane.scrollTop = 480;
+    resetDetailScrollPosition(pane);
+    expect(pane.scrollTop).toBe(0);
+
+    const source = fs.readFileSync(path.join(FLEET_DIR, "SessionDetail.tsx"), "utf-8");
+    expect(source).toContain("useLayoutEffect");
+    expect(source).toContain("[runId]");
   });
 });

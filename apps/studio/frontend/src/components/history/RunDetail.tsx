@@ -12,14 +12,21 @@ import InvocationSection from "@/components/history/InvocationDetail";
 import OperationGraphSection from "@/components/history/OperationGraphSection";
 import StatusVerdictChips from "@/components/ui/StatusVerdictChips";
 import ExpectedArtifacts from "@/components/runs/ExpectedArtifacts";
+import ResumeRun from "@/components/history/ResumeRun";
 import RunStepCard, { extractFilePaths } from "@/components/RunStepCard";
 import { IconChevronDown, IconChevronRight } from "@/components/ui/icons";
-import { getSession, streamSession, streamSignals, SESSION_MESSAGE_PAGE } from "@/lib/api";
+import {
+  getInvocation,
+  getSession,
+  streamSession,
+  streamSignals,
+  SESSION_MESSAGE_PAGE,
+} from "@/lib/api";
 import type { SessionDetail, SessionBranch, SessionMessage, SignalEvent } from "@/lib/api";
 import { buildNodeStatusesByName, buildOperationGraph, laneFor } from "@/lib/operationGraph";
 import type { LaneSignal, OperationStatus } from "@/lib/operationGraph";
-import { deriveDisplayStatus } from "@/lib/runStatus";
-import type { RunMessage, RunStep, WorkerGraph } from "@/lib/types";
+import { deriveDisplayStatus, isEffectivelyActive } from "@/lib/runStatus";
+import type { RunMessage, RunResumeResponse, RunStep, WorkerGraph } from "@/lib/types";
 import type { NodeExecStatus } from "@/components/canvas/StepNode";
 
 const WorkerCanvas = lazy(() => import("@/components/canvas/WorkerCanvas"));
@@ -849,6 +856,7 @@ export default function RunDetail({ id }: RunDetailProps) {
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
   const [signalEvents, setSignalEvents] = useState<SignalEvent[]>([]);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [resumeWatch, setResumeWatch] = useState<RunResumeResponse | null>(null);
   const olderOffsetRef = useRef(SESSION_MESSAGE_PAGE);
   const suppressAutoScrollRef = useRef(false);
   const initialScrollDoneRef = useRef(false);
@@ -904,6 +912,47 @@ export default function RunDetail({ id }: RunDetailProps) {
       })
       .catch((e: unknown) => setError(String(e)));
   }, [id]);
+
+  useEffect(() => {
+    if (!id || !resumeWatch || resumeWatch.run_id !== id) return;
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const poll = async () => {
+      try {
+        // Observe invocation state first. If it is terminal, the session read
+        // that follows is ordered after the worker's terminal transition and
+        // therefore includes its final persisted messages.
+        const invocation = await getInvocation(resumeWatch.invocation_id);
+        const fresh = await getSession(id);
+        if (cancelled) return;
+        setSession((previous) =>
+          previous && previous.id === fresh.id ? mergeCompletedSession(previous, fresh) : fresh,
+        );
+        if (isEffectivelyActive(invocation)) {
+          setDone(false);
+          setLive(true);
+        } else {
+          setDone(true);
+          setLive(false);
+          setResumeWatch(null);
+          return;
+        }
+      } catch {
+        // A just-created invocation can race its first detail read, and a
+        // transient daemon disconnect must not strand a successfully accepted
+        // continuation. Retry until the component unmounts or activity reaches
+        // a terminal state.
+      }
+      if (!cancelled) timer = window.setTimeout(() => void poll(), 750);
+    };
+
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer != null) window.clearTimeout(timer);
+    };
+  }, [id, resumeWatch]);
 
   useEffect(() => {
     if (!id) return;
@@ -1021,6 +1070,25 @@ export default function RunDetail({ id }: RunDetailProps) {
       .catch((e: unknown) => setError(String(e)))
       .finally(() => setLoadingOlder(false));
   }, [id, loadingOlder]);
+
+  const handleResumed = useCallback(
+    async (result: RunResumeResponse) => {
+      setDone(false);
+      setLive(true);
+      setResumeWatch(result);
+      try {
+        const fresh = await getSession(id);
+        setSession((previous) =>
+          previous && previous.id === fresh.id ? mergeCompletedSession(previous, fresh) : fresh,
+        );
+      } catch {
+        // The accepted resume remains visible in ResumeRun. The existing SSE
+        // subscriptions continue to deliver activity even if this eager
+        // refresh races a transient daemon disconnect.
+      }
+    },
+    [id],
+  );
 
   const sessionStatus = done ? "completed" : live ? "running" : "completed";
 
@@ -1220,6 +1288,12 @@ export default function RunDetail({ id }: RunDetailProps) {
       </div>
 
       <OverviewSection data={overviewData} />
+      <ResumeRun
+        key={session.id}
+        runId={session.id}
+        branches={session.branches}
+        onResumed={handleResumed}
+      />
       {session.invocation_id && (
         <InvocationSection invocationId={session.invocation_id} currentSessionId={session.id} />
       )}

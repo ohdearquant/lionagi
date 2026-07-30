@@ -1,11 +1,12 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslations } from "use-intl";
 import Timestamp from "@/components/ui/Timestamp";
 import { API_BASE, getAdminDoctor, runMaintenance } from "@/lib/api";
 import type { AdminDoctorResponse, MaintenanceAction } from "@/lib/api";
 import { IconHealth, IconTool, IconSettings } from "@/components/ui/icons";
 import { LOCALES } from "@/i18n/locales";
+import { applyTheme, getTheme, THEME_CHANGE_EVENT } from "@/lib/theme";
 
 // Old tab values are accepted so deep links keep working; the page itself
 // renders every section in one column.
@@ -34,21 +35,6 @@ function formatBytes(value: number): string {
   return `${(value / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
 }
 
-function applyTheme(theme: "dark" | "light") {
-  document.documentElement.setAttribute("data-theme", theme);
-  if (theme === "dark") {
-    document.documentElement.classList.add("dark");
-  } else {
-    document.documentElement.classList.remove("dark");
-  }
-  localStorage.setItem("theme", theme);
-}
-
-function getTheme(): "dark" | "light" {
-  if (typeof document === "undefined") return "dark";
-  return (document.documentElement.getAttribute("data-theme") as "dark" | "light") ?? "dark";
-}
-
 // ─── Section header ───────────────────────────────────────────────────────────
 
 function SectionHead({
@@ -73,14 +59,19 @@ function SectionHead({
 
 // ─── Health section ───────────────────────────────────────────────────────────
 
-function HealthSection({ doctor }: { doctor: AdminDoctorResponse | null; loading: boolean }) {
+function HealthSection({ doctor }: { doctor: AdminDoctorResponse }) {
   const t = useTranslations("system");
-  if (!doctor) return null;
+  const tShell = useTranslations("shell");
   const h = doctor.db_health;
   const phantoms = doctor.phantom_sessions.length;
   return (
     <section className="flex flex-col gap-3">
-      <SectionHead icon={<IconHealth size={18} />} label={t("sections.health")} />
+      <SectionHead icon={<IconHealth size={18} />} label={t("sections.health")}>
+        <span className="inline-flex items-center gap-1.5 font-data text-meta text-status-success">
+          <span className="size-1.5 rounded-full bg-status-success" />
+          {tShell("footer.healthy")}
+        </span>
+      </SectionHead>
       <div className="flex flex-wrap gap-x-6 gap-y-1 text-body text-content-secondary">
         <span>
           <span className="font-mono text-content-primary">{formatBytes(h.size_bytes)}</span>{" "}
@@ -256,6 +247,16 @@ function SettingsSection() {
     return m ? m[1] : "en";
   });
 
+  useEffect(() => {
+    const syncTheme = () => setTheme(getTheme());
+    window.addEventListener(THEME_CHANGE_EVENT, syncTheme);
+    window.addEventListener("storage", syncTheme);
+    return () => {
+      window.removeEventListener(THEME_CHANGE_EVENT, syncTheme);
+      window.removeEventListener("storage", syncTheme);
+    };
+  }, []);
+
   function toggleTheme() {
     const next: "dark" | "light" = theme === "dark" ? "light" : "dark";
     setTheme(next);
@@ -333,29 +334,70 @@ function SettingsSection() {
 
 function SystemPage() {
   const t = useTranslations("system");
+  const tDaemon = useTranslations("daemon");
   const [doctor, setDoctor] = useState<AdminDoctorResponse | null>(null);
   const [healthLoading, setHealthLoading] = useState(true);
-  const fetchedRef = useRef(false);
+  const [healthError, setHealthError] = useState(false);
 
-  useEffect(() => {
-    if (fetchedRef.current) return;
-    fetchedRef.current = true;
-    getAdminDoctor()
-      .then(setDoctor)
-      .catch(() => setDoctor(null))
-      .finally(() => setHealthLoading(false));
+  const loadHealth = useCallback(async () => {
+    setHealthLoading(true);
+    setHealthError(false);
+    try {
+      setDoctor(await getAdminDoctor());
+    } catch {
+      setDoctor(null);
+      setHealthError(true);
+    } finally {
+      setHealthLoading(false);
+    }
   }, []);
 
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial async health request owns the loading/error lifecycle
+    void loadHealth();
+  }, [loadHealth]);
+
   return (
-    <main className="flex w-full flex-col gap-8 px-6 py-6 animate-page-enter">
+    <main className="mx-auto flex w-full max-w-5xl flex-col gap-8 px-4 py-6 animate-page-enter sm:px-6 lg:py-8">
       <header className="flex flex-col gap-0.5">
-        <h1 className="text-heading font-semibold text-content-primary">{t("title")}</h1>
+        <h1 className="text-page-title font-semibold text-content-primary">{t("title")}</h1>
         <p className="text-body text-content-muted">{t("subtitle")}</p>
       </header>
 
-      <div className="flex w-full max-w-3xl flex-col gap-8">
-        {!healthLoading && <HealthSection doctor={doctor} loading={healthLoading} />}
-        <MaintenanceSection doctor={doctor} />
+      <div className="grid w-full gap-8 lg:grid-cols-[minmax(0,1.15fr)_minmax(20rem,0.85fr)] lg:items-start">
+        <div className="flex min-w-0 flex-col gap-8">
+          {healthLoading ? (
+            <section className="flex flex-col gap-3" aria-busy="true">
+              <SectionHead icon={<IconHealth size={18} />} label={t("sections.health")} />
+              <div className="space-y-2">
+                <div className="h-4 w-2/3 animate-pulse rounded bg-surface-overlay" />
+                <div className="h-4 w-1/2 animate-pulse rounded bg-surface-overlay" />
+              </div>
+            </section>
+          ) : healthError || !doctor ? (
+            <section className="flex flex-col gap-3">
+              <SectionHead icon={<IconHealth size={18} />} label={t("sections.health")} />
+              <div
+                role="alert"
+                className="flex flex-wrap items-center justify-between gap-3 rounded border border-status-failure/30 bg-status-error-bg px-3 py-3"
+              >
+                <p className="text-body text-content-secondary">
+                  {t("maintenance.operationFailed")}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void loadHealth()}
+                  className="rounded border border-edge-strong bg-surface-raised px-3 py-1.5 text-meta font-medium text-content-primary transition-colors hover:bg-surface-overlay"
+                >
+                  {tDaemon("retry")}
+                </button>
+              </div>
+            </section>
+          ) : (
+            <HealthSection doctor={doctor} />
+          )}
+          <MaintenanceSection doctor={doctor} />
+        </div>
         <SettingsSection />
       </div>
     </main>
