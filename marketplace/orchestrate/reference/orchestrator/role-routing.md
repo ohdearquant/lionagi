@@ -87,18 +87,25 @@ Do not put file paths, artifact names, or task logic into `guidance`. That belon
 
 ## Skills
 
-Skills live at `~/.lionagi/skills/<name>/SKILL.md`. Access them with `li skill <name>`.
+`li skill <name>` loads a skill from `~/.lionagi/skills/<name>/SKILL.md`. That directory is
+yours rather than the plugin's, and installing this plugin does not populate it.
 
-Load skills before acting on tasks that match a known procedure:
+Load a skill before acting on a task that matches a known procedure:
 
-| Situation | Skill to load |
-|---|---|
-| About to run `git commit` | `commit` |
-| About to open a PR | `pr` |
-| About to post a PR comment | `pr-review` |
-| About to run local CI | `ci` |
-| About to bump a version or tag a release | `release-prep` |
-| Editing a `.playbook.yaml` file | `write-playbook` |
+| Situation | Skill to load | Ships with this plugin |
+|---|---|---|
+| About to post a PR comment | `pr-review` | yes |
+| Editing a `.playbook.yaml` file | `playbook` | yes |
+| About to run `git commit` | `commit` | no |
+| About to open a PR | `pr` | no |
+| About to run local CI | `ci` | no |
+| About to bump a version or tag a release | `release-prep` | no |
+
+The rows marked no name procedures many teams already keep a skill for, but they are not part
+of this plugin and `li skill` will not resolve them unless something under that exact name is
+already in your skills directory. Treat those four as examples of the routing habit and
+replace them with whatever your own directory actually contains. The nine skills this plugin
+does ship are listed with descriptions in its README, and they load the same way.
 
 Distribute skills to workers by embedding a load directive in the op instruction:
 
