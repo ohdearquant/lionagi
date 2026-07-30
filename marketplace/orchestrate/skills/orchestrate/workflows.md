@@ -102,7 +102,8 @@ mcp__plugin_orchestrate_lion__request(ops=[
      "playbook": "code-review",
      "prompt": "Focus on error handling",
      "target": "src/auth.py",
-     "depth": 3
+     "depth": 3,
+     "cwd": "/absolute/path/to/your/checkout"
    },
    "schema_fingerprint": "<from help={'verb': 'play.submit', 'playbook': 'code-review'}>"}
 ])
@@ -113,6 +114,10 @@ block) — that's why `help={'verb': 'play.submit', 'playbook': 'code-review'}` 
 into the returned schema instead of the argument-free one. Read that schema before writing
 a playbook's custom args; don't guess their names or whether they nest under `args` or a
 sub-key.
+
+`cwd` is not one of them. It is a `play.submit` argument, and it is here because `target` is
+a relative path: without it the run starts in the server's directory rather than yours, and
+`src/auth.py` resolves somewhere else or nowhere.
 
 Use when: you want a reusable, parametrized pipeline someone has already saved.
 

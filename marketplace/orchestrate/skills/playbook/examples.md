@@ -82,8 +82,13 @@ prompt: |
 Run with `play.submit`, the `playbook` and `prompt` (`{input}`) args:
 
 ```json
-{"ops": [{"op": "play.submit", "args": {"playbook": "audit", "prompt": "src/auth/"}, "schema_fingerprint": "<from help={\"verb\": \"play.submit\", \"playbook\": \"audit\"}>"}]}
+{"ops": [{"op": "play.submit", "args": {"playbook": "audit", "prompt": "src/auth/", "cwd": "/absolute/path/to/your/checkout"}, "schema_fingerprint": "<from help={\"verb\": \"play.submit\", \"playbook\": \"audit\"}>"}]}
 ```
+
+`src/auth/` is relative, so the run has to be told what it is relative *to*. An omitted
+`cwd` resolves to the server's own directory, not yours, and the audit would then read a
+different tree or find nothing at all. The CLI form below needs no such argument because it
+already starts in your shell's directory.
 
 To set the custom `mode`/`workers`/`strict` args away from their YAML defaults, read the
 schema that same help call returns: naming the playbook is what resolves *its own* declared

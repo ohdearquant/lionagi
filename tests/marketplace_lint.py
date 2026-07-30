@@ -859,6 +859,15 @@ def test_a_spawn_example_whose_prompt_names_a_path_passes_cwd() -> None:
     what this rule does is stop a *known* phrasing from regressing; it does not
     certify that every example needing a `cwd` has one. That check is the author's.
 
+    Two later sites proved that concretely and are *not* this rule's to catch: a
+    `prompt` whose whole value was `src/auth/`, and a playbook's typed `target`
+    argument. Neither is prose, and both are decidable, so they are checked by
+    `test_a_spawn_example_whose_argument_is_wholly_a_relative_path_passes_cwd`
+    against a closed pattern. Do not widen this net toward them — the split is the
+    point. Where a value has a closed form the rule gets a boundary; where it is
+    prose the rule stays an admitted heuristic. Merging the two would relabel a
+    guarantee as a guess or a guess as a guarantee.
+
     Most spawn examples legitimately omit `cwd` — a minimal quick-start does not
     need one — so requiring it everywhere would put a placeholder path in every
     teaching example. That is why this is a pattern over prompts at all.
@@ -917,6 +926,118 @@ def test_the_cwd_pattern_reads_both_workspace_path_spellings() -> None:
     # An absolute path is already unambiguous, and a URL is not a workspace path.
     assert not _PROMPT_NEEDS_CWD.search("read /etc/hosts")
     assert not _PROMPT_NEEDS_CWD.search("see https://example.com/_context/diff.txt")
+
+
+# The rule above searches prose and is therefore a net. This one searches whole
+# argument values and is therefore closed, and the difference is the reason both
+# exist rather than one being a widening of the other.
+#
+# "read the diff in src/auth/" is a sentence that happens to contain a path, and no
+# pattern decides reliably whether such a sentence needs the run to start anywhere
+# in particular. But an argument whose *entire* value is `src/auth/` is a relative
+# path and nothing else: there is no reading of it under which the run does not have
+# to resolve it against some directory. That question has an answer, so this rule
+# gets a boundary instead of another widening.
+#
+# The two forms this caught on introduction were a `prompt` that was only a path and
+# a playbook's own typed `target` argument. The second is why this scans every
+# argument rather than `prompt` alone.
+_WHOLE_VALUE_RELATIVE_PATH = re.compile(
+    r"""^(?!/|~|<|https?://)                 # not absolute, not ~, not a placeholder, not a URL
+         (?=\S+$)                            # no whitespace: a sentence is prose, not a path
+         (?:[\w.\-]+/[\w./\-]*               # has a directory separator
+           |[\w\-]+\.(?:py|md|json|txt|ya?ml|toml|rs|ts|js|sh)   # or a source-file extension
+         )$""",
+    re.VERBOSE,
+)
+
+# `cwd` is the answer, not the question. `playbook`, `agent` and `model` are names
+# resolved from a registry, and a name like `code-review` must not be read as a path.
+_KEYS_THAT_ARE_NOT_TARGETS = frozenset({"cwd", "playbook", "agent", "model", "op"})
+
+_ARG_STRING_PAIR = re.compile(r"[\"']?([\w_]+)[\"']?\s*:\s*[\"']([^\"']*)[\"']")
+
+
+def test_a_spawn_example_whose_argument_is_wholly_a_relative_path_passes_cwd() -> None:
+    """A relative path as a complete argument value has to say what it is relative to.
+
+    An omitted `cwd` becomes `None` and reaches the spawn as the server process's own
+    directory. So an example passing `target: "src/auth.py"` reads a file in whatever
+    directory the server happens to run in — a different tree, or none. The user copies
+    a working-looking call and gets a report about code they did not ask about.
+
+    Unlike the prose net above, this rule is closed, and the measurement that settled
+    the boundary is worth recording: of 38 spawn examples in the bundle, it selects 2,
+    and both were genuine defects. Nothing legitimate is selected, which is what makes
+    it a requirement rather than a heuristic. Requiring `cwd` on every spawn example
+    was the alternative and it was wrong: 33 of the 38 correctly omit it, because a
+    quick-start that passes no paths does not need one.
+
+    The selected count is asserted as a low bound for a specific reason. Both selected
+    examples were fixed by *adding* `cwd`, not by rewriting the paths away, so they
+    remain this rule's positive control. Had they been reworded into prose the rule
+    would have gone quiet while still passing, which is the failure mode where an
+    instrument that resolves nothing reports a clean result.
+    """
+    from lionagi.mcp.verbs import VERBS
+
+    spawns = frozenset(name for name, verb in VERBS.items() if verb.executor == "spawn")
+    assert spawns, "no spawn verbs in the registry — the check would pass vacuously"
+
+    offenders: list[str] = []
+    selected = 0
+    for path in _SKILL_FILES:
+        text = _read(path)
+        for verb, window in _op_objects_in(text):
+            if verb not in spawns:
+                continue
+            paths = [
+                (key, value)
+                for key, value in _ARG_STRING_PAIR.findall(window)
+                if key not in _KEYS_THAT_ARE_NOT_TARGETS and _WHOLE_VALUE_RELATIVE_PATH.match(value)
+            ]
+            if not paths:
+                continue
+            selected += 1
+            if '"cwd"' in window:
+                continue
+            lineno = text[: text.find(window)].count("\n") + 1
+            offenders.append(f"{_rel(path)}:{lineno} {verb} {sorted(paths)}")
+
+    assert selected >= 2, (
+        f"only {selected} spawn examples pass a wholly-relative-path argument; the "
+        "bundle had 2 when this bound was set and both were kept as this rule's "
+        "positive control, so the rule has stopped seeing the form it exists to check"
+    )
+    assert not offenders, (
+        "these examples pass a relative path as a complete argument value but no "
+        "`cwd`, so the path resolves against the server's directory instead of the "
+        "caller's and the run reads the wrong tree: " + repr(sorted(offenders))
+    )
+
+
+def test_the_whole_value_path_rule_separates_paths_from_names_and_prose() -> None:
+    """The boundary in both directions, since a rule this strict fails silently.
+
+    Matching too little leaves the defect shipped. Matching too much would demand a
+    `cwd` on examples that pass a playbook name or a plain instruction, which is how
+    the requirement-everywhere version of this rule was wrong.
+    """
+    for value in ("src/auth/", "src/auth.py", "tests/mcp/test_dispatch.py", "config.yaml"):
+        assert _WHOLE_VALUE_RELATIVE_PATH.match(value), value
+
+    for value in (
+        "Focus on error handling",  # prose: has whitespace
+        "code-review",  # a playbook name, no separator, no extension
+        "orchestrator",  # an agent name
+        "/absolute/path/to/checkout",  # already unambiguous
+        "~/.lionagi/playbooks",  # home-relative, resolved by the shell
+        "<from help={'verb': 'x'}>",  # a placeholder
+        "https://example.com/a/b.py",  # a URL
+        "3",  # a number
+        "",  # absent
+    ):
+        assert not _WHOLE_VALUE_RELATIVE_PATH.match(value), value
 
 
 def test_the_qualified_source_check_rejects_a_source_for_a_different_playbook() -> None:
