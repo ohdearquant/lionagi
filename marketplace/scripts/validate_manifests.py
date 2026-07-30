@@ -23,19 +23,38 @@ _NOT_A_STRING = frozenset({"null", "true", "false", "yes", "no", "on", "off"})
 def _describes_a_nonempty_string(value: str) -> bool:
     """Whether a plain scalar is certainly a non-empty string to a YAML parser.
 
-    Deliberately a whitelist, not an attempt at parser equivalence. The value must
-    begin with a letter, which in one test rules out every YAML indicator character
-    and so every number, timestamp, quoted form, block or folded scalar, flow
-    collection, anchor, alias, tag and comment. What remains that a parser would not
-    call a string is the boolean and null wordlist above, which is closed.
+    Deliberately a whitelist, not an attempt at parser equivalence. Each clause below
+    exists because a sweep over generated values found documents it would otherwise
+    have let through, so none of them is precautionary:
 
-    A trailing ``#`` comment is dropped first, since a parser drops it and keeps the
-    text before it. That matters in both directions: ``text # note`` is the string
-    "text", while ``yes # note`` is still a boolean.
+    - **Begins with a letter.** Rules out every YAML indicator character in one test,
+      and so every number, timestamp, quoted form, block or folded scalar, flow
+      collection, anchor, alias, tag and comment.
+    - **No tab anywhere.** A tab around the value makes the *document* invalid, not
+      merely the value odd. Checked across the whole value rather than the part before
+      a comment, which costs one absurd form (a comment containing a tab) and buys not
+      having to reason about where a tab is tolerated.
+    - **No colon followed by whitespace, and none at the end.** That spelling makes the
+      line parse as a nested mapping, so the document is rejected outright. A colon
+      *not* followed by whitespace is fine, which keeps ``ratio 1:2`` usable.
+    - **Not a boolean or null word.** The remaining way a letter-initial scalar avoids
+      being a string. The set is closed and was measured: ``y`` and ``n`` are strings.
+
+    A trailing ``#`` comment is dropped before the letter and word tests, since a parser
+    drops it and keeps the text before it. That matters in both directions: ``text #
+    note`` is the string "text", while ``yes # note`` is still a boolean.
     """
-    head = value.split(" #", 1)[0].rstrip()
+    # The tab test must see the raw text. Stripping first would remove the very
+    # character being looked for, so this function takes everything after the colon
+    # exactly as written and does its own trimming below.
+    if "\t" in value:
+        return False
+    head = value.split(" #", 1)[0].strip()
     if not head or not head[0].isalpha():
         return False
+    for index, char in enumerate(head):
+        if char == ":" and (index + 1 == len(head) or head[index + 1].isspace()):
+            return False
     return head.lower() not in _NOT_A_STRING
 
 
@@ -60,13 +79,24 @@ def _has_frontmatter_description(path: Path) -> bool:
       ``description:value`` is a plain scalar, not a mapping, and must not count.
     """
 
+    try:
+        return _frontmatter_description_ok(path.read_text())
+    except OSError:
+        return False
+
+
+def _frontmatter_description_ok(text: str) -> bool:
+    """The grammar itself, over text rather than a file.
+
+    Split out from the file-reading wrapper so the surface suite can sweep it over
+    generated values without writing a file per candidate. That is what makes a corpus
+    of tens of thousands of documents cheap enough to be worth having.
+    """
+
     def is_fence(line: str) -> bool:
         return line.rstrip(" ") == "---"
 
-    try:
-        lines = path.read_text().splitlines()
-    except OSError:
-        return False
+    lines = text.splitlines()
     if not lines or not is_fence(lines[0]):
         return False
     close = next((i for i, line in enumerate(lines[1:], 1) if is_fence(line)), None)
@@ -78,7 +108,7 @@ def _has_frontmatter_description(path: Path) -> bool:
         rest = line[len("description:") :]
         if rest[:1] not in ("", " "):
             continue
-        return _describes_a_nonempty_string(rest.strip())
+        return _describes_a_nonempty_string(rest)
     return False
 
 

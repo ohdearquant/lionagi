@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import re
 import sys
 from pathlib import Path
@@ -412,6 +413,12 @@ _NAMED_REGRESSIONS: list[tuple[str, str, bool]] = [
     ("prose opening with a bool word", "---\ndescription: Yes really\n---\nb\n", True),
     ("prose opening with null", "---\ndescription: null pointer safety\n---\nb\n", True),
     ("y resolves to a string, not a bool", "---\ndescription: y\n---\nb\n", True),
+    ("colon-space nests the mapping", "---\ndescription: text: value\n---\nb\n", False),
+    ("trailing colon", "---\ndescription: text:\n---\nb\n", False),
+    ("colon without a space stays fine", "---\ndescription: ratio 1:2\n---\nb\n", True),
+    ("time of day stays fine", "---\ndescription: standup at 12:30 daily\n---\nb\n", True),
+    ("tab inside the value", "---\ndescription: text\there\n---\nb\n", False),
+    ("trailing tab", "---\ndescription: text\t\n---\nb\n", False),
     ("ordinary description", "---\ndescription: an agent that reviews\n---\nb\n", True),
 ]
 
@@ -423,6 +430,35 @@ def _description_check():
     from validate_manifests import _has_frontmatter_description
 
     return _has_frontmatter_description
+
+
+def _grammar_check():
+    """The same grammar over text, so a sweep needs no file per candidate."""
+    if _SCRIPTS_DIR not in sys.path:
+        sys.path.insert(0, _SCRIPTS_DIR)
+    from validate_manifests import _frontmatter_description_ok
+
+    return _frontmatter_description_ok
+
+
+# Alphabet for the lexical sweep. Every character class that has actually produced a
+# false pass in this lane is present: a letter, an uppercase letter, a digit, a space,
+# a colon, a hash, a quote, a bracket, a brace, a dash, a pipe, a tilde, a TAB and a
+# dot. Two of these were found only by sweeping — a colon followed by whitespace makes
+# the line parse as a nested mapping, and a tab makes the document invalid outright.
+_VALUE_ATOMS = ["a", "Z", "1", " ", ":", "#", '"', "[", "}", "-", "|", "~", "\t", "."]
+
+
+def _swept_values() -> list[str]:
+    """Every value of length 1 to 3 over the alphabet above.
+
+    Generated rather than listed. A curated vocabulary inherits whatever its author
+    failed to think of, which is how both of the sweep-only defects above survived a
+    2651-document cross product built from hand-picked value spellings.
+    """
+    return [
+        "".join(combo) for n in (1, 2, 3) for combo in itertools.product(_VALUE_ATOMS, repeat=n)
+    ]
 
 
 def _parser_says(document: str) -> bool:
@@ -439,39 +475,72 @@ def _parser_says(document: str) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
-def test_grammar_never_accepts_what_a_parser_rejects(tmp_path: Path) -> None:
-    """The invariant: nothing a parser rejects may pass the hand-rolled grammar.
+def _sweep_for_false_passes(documents: list[str], minimum: int) -> None:
+    """Assert the one invariant over a corpus, after asserting the corpus is informative.
 
-    The opposite direction is deliberately not asserted here. The grammar is narrower
-    than YAML, and each narrowing lives in _DOCUMENTED_NARROWINGS instead, so a form
-    it rejects is a recorded decision rather than a silent gap.
+    The opposite direction is deliberately not asserted. The grammar is narrower than
+    YAML, and each narrowing lives in _DOCUMENTED_NARROWINGS, so a form it rejects is a
+    recorded decision rather than a silent gap.
     """
-    check = _description_check()
-    subject = tmp_path / "agent.md"
-    corpus = _documents()
-
+    grammar = _grammar_check()
     accepted_by_us = accepted_by_parser = 0
     false_passes: list[str] = []
-    for document in corpus:
-        subject.write_text(document)
-        ours = check(subject)
+    for document in documents:
+        ours = grammar(document)
         parser = _parser_says(document)
         accepted_by_us += ours
         accepted_by_parser += parser
         if ours and not parser:
             false_passes.append(repr(document))
 
-    # A corpus that resolved nothing would satisfy the invariant vacuously, so the
-    # measurement is asserted to be informative before its result is trusted.
-    assert len(corpus) > 1000, f"corpus collapsed to {len(corpus)} documents"
+    # A corpus that resolved nothing satisfies the invariant vacuously, so the
+    # measurement is asserted informative before its result is trusted.
+    assert len(documents) >= minimum, f"corpus collapsed to {len(documents)} documents"
     assert accepted_by_us, "the grammar accepted nothing at all — it cannot discriminate"
     assert accepted_by_parser, "the parser accepted nothing at all — the corpus is malformed"
-    assert accepted_by_parser < len(corpus), "the parser accepted everything — corpus is trivial"
+    assert accepted_by_parser < len(documents), "the parser accepted everything — corpus is trivial"
 
     assert not false_passes, (
-        f"the grammar accepts {len(false_passes)} of {len(corpus)} documents that a parser "
-        f"rejects (listing up to 20):\n" + "\n".join(f"  {d}" for d in sorted(false_passes)[:20])
+        f"the grammar accepts {len(false_passes)} of {len(documents)} documents that a "
+        f"parser rejects (listing up to 20):\n"
+        + "\n".join(f"  {d}" for d in sorted(false_passes)[:20])
     )
+
+
+def test_grammar_never_accepts_what_a_parser_rejects() -> None:
+    """Structural sweep: fence x key x value spellings."""
+    _sweep_for_false_passes(_documents(), minimum=1000)
+
+
+def test_value_lexical_sweep_finds_no_false_pass() -> None:
+    """Lexical sweep: every generated value of length up to three.
+
+    This is the corpus that catches what a curated vocabulary misses. The rule it
+    guards was derived from a wider sweep than the one committed here — exhaustive to
+    length three over 27 atoms, plus length four over 12 — which found zero false
+    passes; this narrower version keeps every character class that mattered while
+    staying fast enough to run on every commit.
+    """
+    documents = [
+        f"---\nname: agent\ndescription: {value}\n---\nbody\n" for value in _swept_values()
+    ]
+    _sweep_for_false_passes(documents, minimum=2500)
+
+
+def test_grammar_and_file_wrapper_agree(tmp_path: Path) -> None:
+    """The Path wrapper and the text function answer identically.
+
+    The sweeps above exercise the text function for speed, so this is what stops the
+    shipped entry point drifting away from the thing that is actually swept.
+    """
+    grammar, check = _grammar_check(), _description_check()
+    subject = tmp_path / "agent.md"
+    disagreements = []
+    for document in _documents():
+        subject.write_text(document)
+        if check(subject) != grammar(document):
+            disagreements.append(repr(document))
+    assert not disagreements, f"wrapper and text function disagree on: {disagreements[:10]}"
 
 
 @pytest.mark.parametrize(
