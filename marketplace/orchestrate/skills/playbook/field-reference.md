@@ -32,6 +32,21 @@ a lionagi checkout.
 (`max-ops` and `max_ops` both work) on the CLI. The `args:` block is an exception — use
 only underscore keys there (see Pitfalls). Over MCP, always pass underscore keys.
 
+**Precedence**: a playbook field fills in only when the corresponding CLI flag is still at its
+default, so a flag you pass explicitly wins. Two consequences of *how* that is implemented are
+worth knowing before they surprise you.
+
+- **The boolean fields cannot be switched back off from the command line.** `bare`, `dry_run`,
+  `show_graph` and `with_synthesis` are flags that only ever turn something on; there is no
+  negating flag. A playbook that sets one to `true` sets it for every invocation of that
+  playbook, and no command line can undo it.
+- **`0` is both the default and a meaningful value for the two numeric caps.** `--max-ops 0`
+  means unlimited and `--max-concurrent 0` means run the whole phase at once, but `0` is also
+  what those flags hold when you do not pass them, so neither can be told apart from absence.
+  A playbook that sets `max_ops` or `workers` therefore overrides an explicit `0`, and the
+  uncapped run you asked for is capped without saying so. To actually run uncapped, remove the
+  field from the playbook rather than passing `0`.
+
 ---
 
 ## Args Schema
