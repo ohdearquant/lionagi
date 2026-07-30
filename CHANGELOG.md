@@ -6,7 +6,61 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-07-30
+
+### Upgrading from 0.31.1
+
+**The browser-credential system is gone.** Studio is a single-user tool bound to
+loopback, and it carried no authentication at all before the Operator workspace
+landed. The credential system introduced alongside that workspace is removed
+again, so there is no login step, no stored browser credential, and nothing to
+rotate. Anything that worked before the Operator arrived is unaffected. If you
+stored a credential during that window, discard it.
+
+**The Studio marketplace bundle now leads with its MCP server** and no longer
+ships a `.mcp.json`. The manifest declares the server inline, so there is no
+precedence question between two carriers. `uv` on PATH is the only prerequisite.
+The bundle version moves to 1.1.0, which is what makes an already installed
+plugin pick any of this up. A plugin-provided server's tools are namespaced, so
+the tool a plugin user calls is `mcp__plugin_orchestrate_lion__request` rather
+than the unscoped name. The `li` CLI stays documented as the path for someone
+working inside a lionagi checkout.
+
 ### Added
+
+- **An Operator workspace in Studio.** A conversational way to ask for work,
+  watch it run, and approve what it proposes, without having to learn the rest
+  of the Studio UI first. Everything that changes state is permission gated: the
+  Operator proposes, and the change happens when you approve it.
+
+- **The Operator keeps its session and can answer questions about the app.** A
+  conversation persists its provider session id and resumes it, so the second
+  message no longer meets a stranger and continuity is no longer faked by
+  replaying earlier frames as prompt text. The id is re-read every turn rather
+  than pinned on first write, because a resumed session is free to hand back a
+  new id and pinning would silently stop resuming the moment it did. The page
+  snapshot the browser already sent with every turn is now rendered into the
+  prompt, bounded per value the same way history frames are. Five read-only
+  tools answer questions the panel previously could not: run statistics over a
+  window, the current view, the schedule list with next fire and recent health,
+  the agent library, and the playbook names that launching one requires. Each is
+  a bounded, explicitly projected read, and project paths go through the same
+  leaf-name redaction as the existing run list.
+
+- **A model selector in the Operator header.** Switching models starts a fresh
+  provider session for that conversation, because a provider session belongs to
+  the model that opened it and resuming one under a different model is
+  undefined. Tool calls render compactly instead of dominating the transcript,
+  and agent definitions render as markdown rather than raw preformatted text.
+
+- **Codex sessions appear in Studio.** `~/.codex/sessions/**/rollout-*.jsonl` is
+  mirrored into StateDB the way `~/.claude/projects` already was, and enough
+  import provenance is recorded that a mirrored row can be told apart from a run
+  lionagi executed itself.
+
+- **khive context-injection counters in session detail.** A bare agent run
+  recorded no context-injection telemetry, so the counters lived only as long as
+  the process and `li monitor` had nothing to show.
 
 - A run reports which MCP servers it gave its workers. `mcp_config_servers` names
   them on the submit handle, and `job.status` now carries the whole `mcp_config`
@@ -20,20 +74,179 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   reports what was resolved, which is not a claim that the child's provider then
   started each server.
 
+### Changed
+
+- **The Studio marketplace bundle's primary interface is its MCP server.** The
+  nine skills and the README lead with it, and the manifest carries the server
+  declaration inline. See the upgrade note above for what an installed plugin
+  needs in order to receive this.
+
+- Markdown artifacts render through a guard that replaces an absolute or
+  protocol-relative image target with a visible placeholder naming the alt text.
+  Opening an artifact could otherwise issue requests to hosts named inside it.
+  Markdown rendered elsewhere is unchanged.
+
+### Removed
+
+- **The browser-credential system.** See the upgrade note above.
+
 ### Fixed
 
-- Resuming a codex leg that was given MCP servers with `env` or `http_headers`
+- Resuming a codex agent that was given MCP servers with `env` or `http_headers`
   no longer fails before spawn. Those fields are handed to codex through a
   generated config profile rather than the command line, and codex takes one
   profile per invocation, so the code refuses to add a second one when the
-  caller already asked for a profile of their own. A resumed leg re-spawns from
+  caller already asked for a profile of their own. A resumed agent re-spawns from
   its persisted request, which carries the profile the first run generated, and
   that was being read as a caller's profile. A profile named in the generated
   shape, `lionagi-mcp-` followed by 32 hex characters, is now replaced instead,
-  which is also what the resumed leg needs: the first run deleted its profile
+  which is also what the resumed agent needs: the first run deleted its profile
   file on the way out, so the inherited name pointed at nothing. That shape is
   reserved. Any other profile name, including another name under the same
   prefix, is the caller's and is still refused.
+
+- **A spawn that never resolved is no longer reported as still running.** A job
+  record whose spawn phase is still preparing names a spawn that was never
+  attempted, or one whose result was never written. The classifier makes no
+  claim about its fate, because no bound on the record can tell a loaded machine
+  from a dead spawn, and it now says so instead of presenting the row with the
+  signature of a live one. The job listing likewise says which running rows
+  never started, and no longer lists a directory that was reserved but whose
+  record has not been published: reserving a directory happens before the
+  command is prepared, and publishing the record is the boundary that turns a
+  reservation into a job. A record that exists but cannot be read is still
+  listed, along with the state of that read, rather than hidden.
+
+- **A spawn command rejects excess positionals before it submits.** These
+  commands take at most a model and a prompt positionally. An extra value used
+  to be accepted at the request layer and to fail later during argument parsing,
+  after a job record and a child process already existed, with the error visible
+  only in a console log rather than in the response.
+
+- **The fingerprint a help surface quotes is the one the call can send.** A
+  spawn verb's `schema_fingerprint` hashes the schema the call resolves, and for
+  the playbook and flow submissions that schema includes the named playbook's
+  own declared arguments, so the fingerprint is a function of the playbook. Two
+  surfaces disagreed about that.
+
+- **A terminal notice is signed by the seat that submitted the run.** The
+  delivery command was spawned without a working directory and inherited the
+  caller's, so a notifier that resolves its own identity from its working
+  directory signed with whoever owns the directory the run executed in.
+  Separately, a failed terminal notice is now classified without storing what it
+  said.
+
+- **Worker artifact directories are described only where they exist.** The
+  initial worker setup set CLI-only endpoint settings for every worker, so an
+  API-backed worker was told in its prompt that the artifact directory was its
+  working directory, which is not true for it. Reactively spawned workers on
+  non-CLI providers get an output-only artifact path for the same reason: tools
+  falling back to their own default working directory could otherwise write
+  relative output outside the named path.
+
+- **A generated profile name is matched at both ends.** A prefix match treated a
+  caller-supplied name that merely started like a generated one, such as one
+  with a trailing newline, as this code's own to overwrite.
+
+- **A job lock reports a release that did not happen.** Release failures were
+  suppressed unconditionally. Suppression now applies only when the protected
+  section itself failed, where a release failure must not answer in place of the
+  real one. When the section succeeded, a failure to unlock or close is the only
+  failure there is, and it reaches the caller.
+
+- **A caller-supplied working directory is resolved before it is checked.** The
+  directory check answers about the submitting process's own directory, and the
+  value was recorded unresolved, so a relative path was checked against one
+  directory and read back against whatever directory a later reader was in.
+
+- **Provider capability tables are complete and guarded at import.** The
+  per-provider yolo and bypass tables are keyed by provider spelling and were
+  maintained by hand, so they had drifted: three CLI provider spellings were
+  absent from both. Naming MCP servers for a gemini provider now raises rather
+  than being silently dropped, since the CLI behind it cannot carry them, and a
+  spawn is refused only when servers were actually named. Explicit MCP
+  configurations that are not supported are rejected outright. The agy print
+  mode gets a cap derived from the caller's timeout, validated before it reaches
+  argv, and an unrepresentable Antigravity deadline is rejected rather than
+  encoded.
+
+- **Scheduler and Studio startup.** Studio inspected Git state on the event
+  loop, so a slow repository read blocked the loop before the server began
+  serving; the inspection now runs in a worker thread and is still awaited in
+  place, which keeps the guarantee it exists for. A scheduled run exported an
+  invocation id to its children, but the child CLI had no way to read it, so
+  budget accounting saw zero spend for work that had really run. The one-time
+  dispatch-timestamp backfill ran in the same transaction as the statement that
+  added the column, so a database that gained the column in an earlier release
+  without the backfill never got one; it is now gated on a durable marker
+  claimed with an insert-if-absent, so it happens exactly once per database
+  regardless of when the column arrived. A failing scheduler subprocess now
+  carries its diagnostic instead of discarding stdout. Claim-time candidates
+  sort duration-valid first, so a row that can never run no longer consumes a
+  cap slot ahead of a valid one.
+
+- **A declarative command target's arguments are held to their own field's
+  contract.** They were validated against a different field's validator and
+  persisted to a destination whose imperative path validates it differently.
+
+- **State persistence backlog.** Standard-library `default=` conversions are
+  honored while non-finite values are still refused on the durable JSON path.
+  Schema inspection and migration are serialized under backend-appropriate
+  locks. Messages referenced only by owners that were deleted are pruned.
+  Inherited run identity is consumed after a single child allocation. Session
+  retention is based on the latest update and rechecked under the prune lock.
+  Float-list message embeddings are encoded as little-endian float32 blobs with
+  parity across backends.
+
+- **Concurrent streams no longer report each other's ending.** A stream's
+  terminal state was held in a plain attribute on the event, so two streams
+  running concurrently on one event overwrote each other and a post-stream hook
+  could be told how the other stream ended. The state now lives in a per-event
+  context variable for the duration of that hook, and is retained on the event
+  afterwards so a parent reading the property later still sees the last terminal
+  state.
+
+- **An explicitly supplied model that happens to be falsy is preserved.**
+  `chat()` resolved its model with an `or`, which discarded it. It now asks the
+  parameter class whether the argument is a sentinel, which is the policy that
+  decides every other omitted field on that class.
+
+- **The public message projection is nullable again.** `Message.chat_msg` is
+  documented to contain any projection failure and return `None`. A prior change
+  removed that guard, so a failure while reading the role or rendering content
+  escaped to callers that rely on the nullable result to skip an unrenderable
+  message.
+
+- **An artifact verdict that was never recorded is distinguishable from one that
+  failed.** Verification carried a single shape for three situations: checked
+  and passed, checked and failed, and never checked. Consumers indexed the
+  failure fields unconditionally, so a session with no stored verdict read as a
+  session that had missed its artifacts.
+
+- **`li kill` recognizes macOS framework Python launchers.** Framework builds
+  present argv[0] with a capital P, and the match was case-sensitive, so a
+  shebang-launched `li` started by a framework interpreter was not recognized as
+  ours and `li kill` declined to act on its own process. Team wakeup rounds are
+  also now told the artifact contract their result has to meet.
+
+- **The full-page graph editor's MiniMap uses its default dimensions.** It
+  rendered at a fixed size intended for a compact embed that no surface actually
+  renders.
+
+- **Packaging.** The VS Code extension no longer ships a source map that a
+  negation had re-included after `.vscodeignore` excluded it. The marketplace
+  manifest lint accepts only frontmatter a YAML parser can read, so a file can
+  no longer pass the lint and still fail to load in a plugin host.
+  `datamodel-code-generator` is floored at the patched release.
+
+### Internal
+
+- Two consecutive releases published no container image. Buildx setup is now
+  retried, since it pulls from a registry outside this project,
+  and the release now reads the tag back from the registry rather than trusting
+  the push step. Workflows also run when a draft pull request is marked ready,
+  which raises no event under GitHub's default activity types, and a pull
+  request's own in-flight runs are superseded instead of queueing beside them.
 
 ## [0.31.1] - 2026-07-28
 
