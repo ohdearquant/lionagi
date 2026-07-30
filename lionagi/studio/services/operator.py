@@ -21,8 +21,8 @@ from ..operator.types import (
     ConfirmProposalRequest,
     CreateConversationRequest,
     DecideProposalRequest,
-    OperatorContextSnapshot,
     OperatorTurnRequest,
+    OperatorViewReport,
 )
 from ..registry import studio_route
 from ._sse import sse_response
@@ -131,22 +131,25 @@ async def submit_operator_turn(conversation_id: str, body: OperatorTurnRequest) 
     method="POST",
     area="operator",
 )
-async def report_operator_view(
-    conversation_id: str, body: OperatorContextSnapshot
-) -> dict[str, Any]:
+async def report_operator_view(conversation_id: str, body: OperatorViewReport) -> dict[str, Any]:
     """Record where the human is now, so the Operator can read it mid-turn.
 
     A turn's context is frozen at submit. Without this the Operator answers
     "where am I" with wherever the human was when they hit send, which is
     wrong precisely when they have moved since.
+
+    A report the browser observed before the one already stored is discarded,
+    since reports race and the loser of that race is the stale view.
     """
     coordinator = get_operator_coordinator()
+    view = body.model_dump(by_alias=True)
+    observed_at = view.pop("observedAt")
     try:
         await coordinator.ensure_started()
-        observed_at = await coordinator.store.record_view(
-            conversation_id, body.model_dump(by_alias=True)
+        received_at, applied = await coordinator.store.record_view(
+            conversation_id, view, observed_at
         )
-        return {"ok": True, "observedAt": observed_at}
+        return {"ok": True, "receivedAt": received_at, "applied": applied}
     except OperatorStoreError as exc:
         raise _http_error(exc) from exc
 

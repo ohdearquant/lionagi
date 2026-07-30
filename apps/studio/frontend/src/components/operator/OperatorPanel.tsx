@@ -875,8 +875,13 @@ export default function OperatorPanel({ open, onClose }: Props) {
   useEffect(() => {
     if (!conversationId) return;
     const context = operatorContext(location.pathname, location.search as Record<string, unknown>);
+    // Stamped when the view is SEEN, not when the request fires, because the
+    // debounce and the network both reorder: two navigations can arrive at the
+    // server reversed, and the server keeps whichever the browser observed
+    // later rather than whichever arrived later.
+    const observedAt = Date.now();
     const timer = window.setTimeout(() => {
-      void reportOperatorView(conversationId, context).catch(() => {});
+      void reportOperatorView(conversationId, { ...context, observedAt }).catch(() => {});
     }, 150);
     return () => window.clearTimeout(timer);
   }, [conversationId, location.pathname, location.search]);

@@ -65,6 +65,23 @@ class OperatorContextSnapshot(WireModel):
     filters: dict[str, Any] = Field(default_factory=dict)
 
 
+class OperatorViewReport(OperatorContextSnapshot):
+    """A view the browser reports outside of any turn.
+
+    ``observed_at`` is when the *browser* saw this view, and it exists because
+    arrival order is not observation order: each report is its own request, so
+    two navigations in quick succession can reach the server reversed, and the
+    later-arriving older view would otherwise overwrite the newer one and still
+    be labelled current. Ordering reports by when the browser saw them, rather
+    than by when the server received them, is what makes a late report harmless.
+
+    It is compared only against other values from the same browser clock, never
+    against a server timestamp, so the two clocks never have to agree.
+    """
+
+    observed_at: float = Field(gt=0, alias="observedAt")
+
+
 # Closed set: the model reaches a CLI argument, so an open string would let the
 # browser choose what the daemon executes.
 OperatorModel = Literal["sonnet", "opus", "haiku"]

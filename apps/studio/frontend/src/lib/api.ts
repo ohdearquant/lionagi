@@ -383,7 +383,7 @@ export async function submitOperatorTurn(
  */
 export async function reportOperatorView(
   conversationId: string,
-  context: OperatorContextSnapshot,
+  context: OperatorContextSnapshot & { observedAt: number },
 ): Promise<void> {
   await fetchJson<unknown>(
     `/api/operator/conversations/${encodeURIComponent(conversationId)}/view`,

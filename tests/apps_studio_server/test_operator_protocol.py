@@ -1723,7 +1723,7 @@ async def test_current_view_prefers_a_navigation_reported_after_the_instruction(
 
     # The human navigates mid-turn and the browser reports it.
     await store.record_view(
-        cid, {"space": "library", "route": "/library?tab=playbook", "filters": {}}
+        cid, {"space": "library", "route": "/library?tab=playbook", "filters": {}}, 1_000.0
     )
 
     after = await get_current_view({})
@@ -1759,7 +1759,79 @@ async def test_live_view_columns_are_added_to_a_preexisting_conversation_store(t
     cid = (await store.create_conversation())["id"]
     assert await store.get_view(cid) == (None, None)
 
-    at = await store.record_view(cid, {"space": "system", "route": "/system", "filters": {}})
+    at, applied = await store.record_view(
+        cid, {"space": "system", "route": "/system", "filters": {}}, 1_000.0
+    )
+    assert applied is True
     view, seen_at = await store.get_view(cid)
     assert view["space"] == "system"
     assert seen_at == at
+
+
+@pytest.mark.asyncio
+async def test_a_late_arriving_older_navigation_does_not_overwrite_the_current_view(
+    tmp_path, monkeypatch
+):
+    """Reports race, and the loser of that race is the stale view.
+
+    Each navigation report is its own request, so arrival order is not
+    observation order. Ordering by arrival lets a delayed report for the page
+    the human already left overwrite the page they are actually on, and the
+    read still labels it "live" — a stale answer wearing the fresh label, which
+    is worse than the frozen snapshot this mechanism replaced.
+    """
+    from lionagi.studio.operator.application_mcp import get_current_view
+
+    path = tmp_path / "state.db"
+    store = OperatorStore(path)
+    cid = (await store.create_conversation())["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="where am I?",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    # The browser saw /library first and /schedules second, but the reports
+    # reach the server in the opposite order.
+    _, newer_applied = await store.record_view(
+        cid, {"space": "schedules", "route": "/schedules", "filters": {}}, 2_000.0
+    )
+    _, older_applied = await store.record_view(
+        cid, {"space": "library", "route": "/library", "filters": {}}, 1_000.0
+    )
+    assert newer_applied is True
+    assert older_applied is False, "an older observation must not overwrite a newer one"
+
+    view = await get_current_view({})
+    assert view["space"] == "schedules", "the human is on the page they navigated to last"
+    assert view["source"] == "live"
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_observation_timestamp_is_not_applied_twice(tmp_path):
+    """Equal observation times are the same observation, not a newer one.
+
+    Guarded explicitly because ">=" and ">" differ here only in the case a
+    retry produces, and a retried report re-applying is indistinguishable from
+    a real navigation until it is the stale one that wins.
+    """
+    path = tmp_path / "state.db"
+    store = OperatorStore(path)
+    cid = (await store.create_conversation())["id"]
+
+    _, first = await store.record_view(
+        cid, {"space": "library", "route": "/library", "filters": {}}, 5_000.0
+    )
+    _, replay = await store.record_view(
+        cid, {"space": "mission", "route": "/", "filters": {}}, 5_000.0
+    )
+    assert first is True
+    assert replay is False
+
+    view, _ = await store.get_view(cid)
+    assert view["space"] == "library"

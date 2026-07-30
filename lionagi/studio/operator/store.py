@@ -49,7 +49,14 @@ CREATE TABLE IF NOT EXISTS studio_operator_conversations (
   -- submit, so without this the Operator answers "where am I" with wherever the
   -- human was when they hit send, which is wrong exactly when they have moved.
   last_view_json      TEXT,
+  -- Server arrival time, compared only against a turn's own server-side
+  -- created_at so that freshness-vs-the-turn stays inside one clock.
   last_view_at        REAL,
+  -- When the BROWSER saw this view, compared only against other reports from
+  -- the same browser. Reports are independent requests, so arrival order is not
+  -- observation order; without this a late-arriving older view overwrites a
+  -- newer one and is still labelled current.
+  last_view_observed_at REAL,
   created_at         REAL NOT NULL,
   updated_at         REAL NOT NULL,
   archived_at        REAL,
@@ -198,6 +205,7 @@ class OperatorStore:
                         "provider_model": "TEXT",
                         "last_view_json": "TEXT",
                         "last_view_at": "REAL",
+                        "last_view_observed_at": "REAL",
                     },
                 )
                 await db.commit()
@@ -431,11 +439,21 @@ class OperatorStore:
             )
             await db.commit()
 
-    async def record_view(self, conversation_id: str, view: dict[str, Any]) -> float:
+    async def record_view(
+        self, conversation_id: str, view: dict[str, Any], observed_at: float
+    ) -> tuple[float, bool]:
         """Record where the human is now, independently of any turn.
 
-        Returns the timestamp written, so a caller can compare this against a
-        turn's own frozen context and prefer whichever is later.
+        *observed_at* is when the browser saw this view. Each report is its own
+        request, so two navigations in quick succession can arrive reversed; a
+        report older than the one already stored is DISCARDED rather than
+        written, because otherwise the stale view wins and is still labelled
+        current, which is the exact failure this whole mechanism exists to fix.
+
+        Returns the server arrival time and whether the report was applied. The
+        arrival time is what later gets compared against a turn's own
+        server-side timestamp, so that comparison stays inside one clock while
+        report-vs-report ordering stays inside the browser's.
         """
         await self.ensure_schema()
         seen_at = time.time()
@@ -443,20 +461,25 @@ class OperatorStore:
             await db.execute("BEGIN IMMEDIATE")
             row = await (
                 await db.execute(
-                    "SELECT id FROM studio_operator_conversations WHERE id = ?",
+                    "SELECT last_view_observed_at FROM studio_operator_conversations WHERE id = ?",
                     (conversation_id,),
                 )
             ).fetchone()
             if row is None:
                 await db.rollback()
                 raise OperatorNotFoundError(f"Operator conversation '{conversation_id}' not found")
+            previous = row["last_view_observed_at"]
+            if previous is not None and observed_at <= previous:
+                await db.rollback()
+                return seen_at, False
             await db.execute(
                 "UPDATE studio_operator_conversations "
-                "SET last_view_json = ?, last_view_at = ? WHERE id = ?",
-                (self._json(view), seen_at, conversation_id),
+                "SET last_view_json = ?, last_view_at = ?, last_view_observed_at = ? "
+                "WHERE id = ?",
+                (self._json(view), seen_at, observed_at, conversation_id),
             )
             await db.commit()
-        return seen_at
+        return seen_at, True
 
     async def get_view(self, conversation_id: str) -> tuple[dict[str, Any] | None, float | None]:
         """Return the last reported view and when it was reported."""
