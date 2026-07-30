@@ -493,12 +493,22 @@ def _resolve_command_target(target: CommandTarget) -> dict[str, Any]:
     from lionagi.studio.scheduler.subprocess import (
         _validate_action_command,
         _validate_command_allowlisted,
-        _validate_extra_args,
     )
+    from lionagi.studio.services.schedules import _svc_validate_command_args
 
     _validate_action_command(target.executable)
     _validate_command_allowlisted(target.executable)
-    _validate_extra_args(target.args)
+    # These args are persisted as ``action_command_args``, so they are held to
+    # that field's contract and not to ``action_extra_args``'. A command launch
+    # spawns the executable directly and never accepts action_extra_args at all,
+    # so the leading-'-' rejection that field carries does not apply here: a
+    # literal ``--repo`` is author-written, which is the point of a command
+    # runner. Flag safety for a ``{{var}}`` element is enforced against the
+    # rendered value at fire time, where a trigger-supplied value could actually
+    # inject one. Calling the same check the imperative create path calls is
+    # deliberate — the two used different validators for this one field, and
+    # nothing failed when they diverged.
+    _svc_validate_command_args(list(target.args))
     return {"kind": "command", "executable": target.executable, "args": list(target.args)}
 
 

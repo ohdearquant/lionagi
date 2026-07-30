@@ -1235,3 +1235,200 @@ async def test_dry_run_plan_never_writes(temp_db_path, agent_profile):
         assert [(e.qualified_name, e.action) for e in plan] == [("demo/nightly", "CREATE")]
         rows = await db.list_schedules()
         assert rows == []
+
+
+# ---------------------------------------------------------------------------
+# Command-target args: both create paths write action_command_args, so both
+# must hold it to the same contract
+# ---------------------------------------------------------------------------
+
+
+def _command_manifest(args_yaml: str, cwd: Path) -> str:
+    return f"""
+apiVersion: lionagi.io/v1alpha1
+kind: ScheduleSet
+metadata:
+  name: automation
+  project: demo
+schedules:
+  m:
+    trigger:
+      every: 1h
+    target:
+      kind: command
+      executable: refresh-index
+      args:
+{args_yaml}
+    execution:
+      cwd: {cwd}
+"""
+
+
+def test_declarative_command_target_accepts_author_written_flags(tmp_path, monkeypatch):
+    """A command runner whose args may not start with '-' cannot express a command.
+
+    Nearly every real command line carries a flag, so rejecting them left
+    ``kind: command`` unable to say what it exists to say. The args land in
+    ``action_command_args``, whose contract permits author-written flags; the
+    field that forbids them is ``action_extra_args``, which a command launch
+    never uses.
+    """
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
+    manifest = _command_manifest(
+        '        - "run"\n'
+        '        - "--no-project"\n'
+        '        - "python"\n'
+        '        - "worker.py"\n'
+        '        - "--repo"\n'
+        '        - "owner/name"\n',
+        tmp_path,
+    )
+    resolved = resolve_schedule_set(parse_schedule_set(manifest), tmp_path)
+    assert resolved["m"].db_fields["action_command_args"] == [
+        "run",
+        "--no-project",
+        "python",
+        "worker.py",
+        "--repo",
+        "owner/name",
+    ]
+
+
+def test_every_flag_position_resolves_not_only_the_first(tmp_path, monkeypatch):
+    """The old rejection returned at the first offending element.
+
+    That made the error name one token, so a reader inferred one defect and
+    tried renaming it. Each of these would have been refused in turn, so the
+    test asserts a flag resolves in first, middle and last position rather
+    than trusting a single case.
+    """
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
+    for args in (
+        ['        - "--first"\n', '        - "x"\n'],
+        ['        - "x"\n', '        - "--middle"\n', '        - "y"\n'],
+        ['        - "x"\n', '        - "--last"\n'],
+    ):
+        manifest = _command_manifest("".join(args), tmp_path)
+        resolved = resolve_schedule_set(parse_schedule_set(manifest), tmp_path)
+        got = resolved["m"].db_fields["action_command_args"]
+        assert any(tok.startswith("-") for tok in got), got
+
+
+def test_both_create_paths_hold_command_args_to_the_same_contract(tmp_path, monkeypatch):
+    """The divergence guard, and the test whose absence let the paths drift.
+
+    The declarative resolver and the imperative create service write the same
+    database field. They validated it with different functions, and nothing
+    failed when one of them was the wrong function. This asserts that whatever
+    the declarative path produces, the imperative path's own check accepts —
+    so a future change to either one has to face the other.
+    """
+    from lionagi.studio.services.schedules import _svc_validate_command_args
+
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
+    manifest = _command_manifest(
+        '        - "run"\n        - "--no-project"\n        - "worker.py"\n', tmp_path
+    )
+    resolved = resolve_schedule_set(parse_schedule_set(manifest), tmp_path)
+    _svc_validate_command_args(resolved["m"].db_fields["action_command_args"])
+
+
+def test_declarative_command_target_still_refuses_a_non_allowlisted_executable(
+    tmp_path, monkeypatch
+):
+    """Accepting flags must not have widened the boundary that is real.
+
+    For this kind the security boundary is the executable allow-list, not the
+    shape of the arguments.
+    """
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "something-else")
+    manifest = _command_manifest('        - "--flag"\n', tmp_path)
+    with pytest.raises(ValueError, match="ALLOWLIST"):
+        resolve_schedule_set(parse_schedule_set(manifest), tmp_path)
+
+
+def test_a_templated_arg_rendering_to_a_flag_is_still_refused(tmp_path):
+    """The protection that does apply, kept asserted.
+
+    A literal flag is author-written. A ``{{var}}`` element takes its value
+    from trigger context, which an attacker may influence, so the rendered
+    result is what gets checked — and it is checked where rendering happens.
+    """
+    from lionagi.studio.scheduler.subprocess import _render_command_arg
+
+    assert _render_command_arg("--repo", {}) == "--repo"
+    assert _render_command_arg("{{pr}}", {"pr": "123"}) == "123"
+    with pytest.raises(ValueError, match="would inject a flag"):
+        _render_command_arg("{{pr}}", {"pr": "--oops"})
+
+
+# The distinct argument shapes real scheduled commands take. Each is a command
+# line someone actually wrote and scheduled, reduced to its structure: an
+# interpreter subcommand, a scope flag, flag/value pairs whose values are paths,
+# a valueless boolean flag, a templated value behind a flag, and free-text
+# positionals. Paths and names here are placeholders; the shapes are the point.
+_REAL_COMMAND_ARG_SHAPES = [
+    ["run", "--project", "PROJECT_DIR", "python", "worker.py", "one arg", "another"],
+    [
+        "run",
+        "--project",
+        "PROJECT_DIR",
+        "python",
+        "probe.py",
+        "--config",
+        "probe.json",
+        "--state",
+        "probe_state.json",
+    ],
+    ["run", "--no-project", "python", "health.py", "--json", "--cwd", "PROJECT_DIR"],
+    ["run", "--no-project", "bash", "watch.sh"],
+    [
+        "run",
+        "--no-project",
+        "python",
+        "poll.py",
+        "--pr",
+        "{{pr_number}}",
+        "--repo",
+        "owner/name",
+        "--out",
+        "OUT_DIR",
+    ],
+]
+
+
+@pytest.mark.parametrize("args", _REAL_COMMAND_ARG_SHAPES)
+def test_real_command_shapes_are_expressible_declaratively(args, tmp_path, monkeypatch):
+    """Every shape a scheduled command actually uses must survive the resolver.
+
+    Flags are not an edge case for this kind: all five shapes carry at least
+    one, so a resolver that refuses them can express none of them. The last
+    shape is the mixed case that matters most — an author-written flag whose
+    value is a ``{{var}}`` template, which is exactly the combination the two
+    contracts have to tell apart.
+    """
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
+    args_yaml = "".join(f'        - "{a}"\n' for a in args)
+    resolved = resolve_schedule_set(
+        parse_schedule_set(_command_manifest(args_yaml, tmp_path)), tmp_path
+    )
+    assert resolved["m"].db_fields["action_command_args"] == args
+
+
+@pytest.mark.parametrize("args", _REAL_COMMAND_ARG_SHAPES)
+def test_the_other_fields_validator_would_refuse_every_real_shape(args):
+    """Proof the test above discriminates, and why the field identity matters.
+
+    ``action_extra_args`` and ``action_command_args`` are not two names for one
+    contract: this asserts the stricter one rejects every shape the looser one
+    must accept. That is what makes the accept assertions above meaningful
+    rather than vacuous — they would all fail against the stricter validator.
+
+    If this test ever fails because the strict check stopped rejecting flags,
+    the two contracts have converged and the reason these fields are validated
+    separately no longer holds. Read that before deleting this.
+    """
+    from lionagi.studio.scheduler.subprocess import _validate_extra_args
+
+    with pytest.raises(ValueError, match="starts with '-'"):
+        _validate_extra_args(args)
