@@ -765,11 +765,13 @@ def test_a_playbook_bearing_example_names_a_playbook_qualified_help_source() -> 
             start = text.find(window)
             lineno = text[:start].count("\n") + 1
             if playbook is None:
-                # A `"playbook"` present in the window that the `args` object did
-                # not yield is an example this rule cannot read, not one it has
+                # A playbook present in the window that the `args` object did not
+                # yield is an example this rule cannot read, not one it has
                 # cleared. Skipping it silently is how an uncovered example reads
-                # as a covered one.
-                if '"playbook"' in window:
+                # as a covered one. The trigger accepts the same quote spellings
+                # the reader does, so a form the reader would have understood
+                # cannot slip through the gap between them.
+                if re.search(r"[\"']playbook[\"']\s*[:=]", window):
                     unreadable.append(f"{_rel(path)}:{lineno} {verb}")
                 continue
             checked += 1
