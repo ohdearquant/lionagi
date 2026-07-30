@@ -16,6 +16,7 @@ back unchanged. Without it a writer that refused everything would pass.
 """
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -84,6 +85,29 @@ async def test_flow_checkpoint_refuses_non_finite(tmp_path):
     await good.flush()
     written = json.loads((tmp_path / "checkpoint.json").read_text())
     assert written["ops"]["a"]["response"] == CONTROL
+
+
+async def test_flow_checkpoint_checks_the_stringified_dataclass(tmp_path):
+    from lionagi.cli.orchestrate._checkpoint import CheckpointWriter
+
+    @dataclass
+    class Response:
+        score: float
+
+    response = Response(score=float("nan"))
+    writer = CheckpointWriter(
+        path=tmp_path / "checkpoint.json",
+        session_id="s",
+        prompt="p",
+        plan=[],
+        config={},
+        ops={"a": {"agent_id": "a", "status": "done", "response": response}},
+    )
+
+    await writer.flush()
+
+    written = json.loads((tmp_path / "checkpoint.json").read_text())
+    assert written["ops"]["a"]["response"] == str(response)
 
 
 def test_team_inbox_refuses_non_finite(tmp_path):

@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at    REAL    NOT NULL,
   node_metadata JSON,
   content       JSON    NOT NULL,
-  embedding     BLOB,                         -- packed float32 vec or NULL; sqlite-vec indexes these
+  embedding     BLOB,                         -- packed little-endian float32 vec or NULL
   sender        TEXT,
   recipient     TEXT,
   channel       TEXT,

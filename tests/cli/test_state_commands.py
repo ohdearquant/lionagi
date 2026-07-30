@@ -425,6 +425,62 @@ async def test_prune_frees_the_message_rows_the_deleted_session_held(
         assert row["n"] == 0
 
 
+async def test_prune_frees_direct_only_messages_of_deleted_session(temp_db_path: Path):
+    """Direct message references are prune candidates even outside progressions."""
+    now = time.time()
+    old = now - (60 * 86400)
+    async with StateDB() as db:
+        victim_sid, _ = await _seed_session_with_messages(
+            db,
+            n_messages=0,
+            updated_at=old,
+        )
+        keeper_sid, _ = await _seed_session_with_messages(
+            db,
+            n_messages=0,
+            updated_at=now,
+        )
+        victim_branch = await db.fetch_one(
+            "SELECT id FROM branches WHERE session_id = ?",
+            (victim_sid,),
+        )
+        message_ids = [str(uuid.uuid4()) for _ in range(3)]
+        for index, message_id in enumerate(message_ids):
+            await db.insert_message(
+                {
+                    "id": message_id,
+                    "created_at": now,
+                    "node_metadata": {},
+                    "content": {"text": f"direct-{index}"},
+                    "role": "user",
+                    "sender": "u",
+                    "recipient": "x",
+                    "channel": "test",
+                }
+            )
+        await db.execute(
+            "UPDATE sessions SET first_msg_id = ?, last_msg_id = ? WHERE id = ?",
+            (message_ids[0], message_ids[1], victim_sid),
+        )
+        await db.execute(
+            "UPDATE branches SET system_msg_id = ? WHERE id = ?",
+            (message_ids[2], victim_branch["id"]),
+        )
+
+    result = await _prune(keep_days=30, keep_n=1, dry_run=False)
+
+    assert result == {"sessions": 1, "branches": 1, "messages": 3}
+    async with StateDB() as db:
+        assert (await db.get_session(victim_sid)) is None
+        assert (await db.get_session(keeper_sid)) is not None
+        for message_id in message_ids:
+            row = await db.fetch_one(
+                "SELECT COUNT(*) AS n FROM messages WHERE id = ?",
+                (message_id,),
+            )
+            assert row["n"] == 0
+
+
 async def _seed_prune_fixture_with_shared_and_pinned_messages(db: StateDB) -> tuple[str, str, int]:
     """Seed one prunable session whose messages are only partly reclaimable.
 

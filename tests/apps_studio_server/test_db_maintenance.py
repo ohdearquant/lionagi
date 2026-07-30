@@ -37,6 +37,7 @@ async def _make_session(db: StateDB, *, status: str, started_at: float) -> str:
             "name": f"s-{status}-{sid[:6]}",
             "status": status,
             "started_at": started_at,
+            "updated_at": started_at,
         }
     )
     return sid
@@ -200,6 +201,37 @@ def test_prune_removes_old_terminal_sessions_only(tmp_path, monkeypatch):
     assert recent_completed in rem
 
 
+def test_prune_preserves_old_session_updated_by_a_recent_resume(tmp_path, monkeypatch):
+    """Retention is measured from the latest leg, not the first one."""
+    from lionagi.studio.services import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    old_ts = time.time() - 40 * 86400
+    recent_ts = time.time() - 1 * 86400
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            session_id = await _make_session(db, status="completed", started_at=old_ts)
+            await db.execute(
+                "UPDATE sessions SET updated_at = ? WHERE id = ?",
+                (recent_ts, session_id),
+            )
+            return session_id
+
+    session_id = run_async(seed())
+
+    result = run_async(maint.prune_old_data(keep_days=30, actor="test"))
+
+    assert result["sessions_pruned"] == 0
+
+    async def read():
+        async with StateDB(db_path) as db:
+            return await db.get_session(session_id)
+
+    assert run_async(read()) is not None
+
+
 def _reopen_before_call(monkeypatch, maint, session_id: str, *, call: int) -> None:
     """Return *session_id* to running just before the *call*-th chunked write.
 
@@ -264,6 +296,42 @@ def _session_and_its_history(db_path: Path, sid: str):
             )
 
     return run_async(read())
+
+
+def test_prune_rechecks_updated_at_after_candidate_lock(tmp_path, monkeypatch):
+    """A candidate refreshed before its lock keeps its row and history."""
+    from sqlalchemy import text
+
+    from lionagi.studio.services import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    sid = _seed_session_with_history(db_path, time.time() - 40 * 86400)
+    real_exec = maint._exec_chunked
+    refreshed = False
+
+    async def refresh_before_lock(
+        conn, sql_prefix, ids, extra_params=(), suffix="", suffix_params=()
+    ):
+        nonlocal refreshed
+        if not refreshed and sql_prefix.startswith("UPDATE sessions SET updated_at"):
+            refreshed = True
+            await conn.execute(
+                text("UPDATE sessions SET updated_at = :now WHERE id = :sid"),
+                {"now": time.time(), "sid": sid},
+            )
+        return await real_exec(conn, sql_prefix, ids, extra_params, suffix, suffix_params)
+
+    monkeypatch.setattr(maint, "_exec_chunked", refresh_before_lock)
+
+    result = run_async(maint.prune_old_data(keep_days=30, actor="test"))
+
+    row, transitions, artifacts = _session_and_its_history(db_path, sid)
+    assert refreshed, "the candidate was not refreshed at the lock seam"
+    assert row is not None and row["status"] == "completed"
+    assert len(transitions) == 1
+    assert len(artifacts) == 1
+    assert result["sessions_pruned"] == 0
 
 
 def test_the_candidate_rows_are_held_before_their_status_is_read(tmp_path, monkeypatch):

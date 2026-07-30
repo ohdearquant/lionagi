@@ -232,10 +232,13 @@ def allocate_run(
     save_dir: str | os.PathLike | None = None,
     run_id: str | None = None,
 ) -> RunDir:
-    """Allocate a run dir, inheriting run_id from LIONAGI_RUN_ID env var if set (subprocess handoff)."""
+    """Allocate a run dir, consuming an inherited run id as a one-hop handoff."""
     global _ALLOCATED_RUN_ID
 
-    rid = run_id or current_run_id() or _new_run_id()
+    inherited_run_id = current_run_id()
+    rid = run_id or inherited_run_id or _new_run_id()
+    if inherited_run_id is not None:
+        os.environ.pop(_RUN_ID_ENV_VAR, None)
     _ALLOCATED_RUN_ID = rid
     state_root = RUNS_ROOT / rid
 

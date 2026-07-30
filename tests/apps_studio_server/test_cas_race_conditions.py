@@ -330,6 +330,7 @@ def test_prune_cleans_orphaned_messages_and_progressions(tmp_path, monkeypatch):
                     "name": "old-session",
                     "status": "completed",
                     "started_at": old_ts,
+                    "updated_at": old_ts,
                 }
             )
             # Create two messages and record them in the progression's collection.
@@ -360,6 +361,7 @@ def test_prune_cleans_orphaned_messages_and_progressions(tmp_path, monkeypatch):
                     "name": "recent-session",
                     "status": "completed",
                     "started_at": recent_ts,
+                    "updated_at": recent_ts,
                 }
             )
             recent_msg1 = str(uuid.uuid4())
@@ -494,6 +496,7 @@ def test_newborn_orphan_global_delete_destroys_progression(tmp_path, monkeypatch
                     "name": "old-prunable",
                     "status": "completed",
                     "started_at": old_ts,
+                    "updated_at": old_ts,
                 }
             )
 
@@ -550,6 +553,7 @@ def test_newborn_orphan_scoped_delete_preserves_progression(tmp_path, monkeypatc
                     "name": "old-prunable-2",
                     "status": "completed",
                     "started_at": old_ts,
+                    "updated_at": old_ts,
                 }
             )
 
@@ -611,6 +615,7 @@ def test_null_in_collection_does_not_stall_message_cleanup(tmp_path, monkeypatch
                     "name": "null-trap-session",
                     "status": "completed",
                     "started_at": old_ts,
+                    "updated_at": old_ts,
                 }
             )
             # Insert a real message.
@@ -694,6 +699,7 @@ async def _seed_shared_message_scenario(db_path: Path) -> tuple[str, str, str, s
                 "name": "pruned-session",
                 "status": "completed",
                 "started_at": old_ts,
+                "updated_at": old_ts,
             }
         )
         # Both shared and unshared messages in the pruned progression.
@@ -713,6 +719,7 @@ async def _seed_shared_message_scenario(db_path: Path) -> tuple[str, str, str, s
                 "name": "surviving-session",
                 "status": "running",
                 "started_at": recent_ts,
+                "updated_at": recent_ts,
             }
         )
         branch_pid = str(uuid.uuid4())

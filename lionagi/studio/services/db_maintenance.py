@@ -91,6 +91,29 @@ _TERMINAL_SESSION_STATUSES = (
 _TERMINAL_RUN_STATUSES = ("completed", "failed", "skipped", "cancelled")
 
 
+def _session_retention_predicate(cutoff: float) -> tuple[str, tuple[Any, ...]]:
+    """What makes a session prunable, as a SQL fragment and its parameters.
+
+    Two conditions, both required: the session is in a terminal status, and it
+    has had no activity since *cutoff*. Returned as a fragment rather than a
+    whole statement because the prune asks the same question in two different
+    shapes -- once to select candidates, and once with an id restriction after
+    those rows are locked.
+
+    It comes from one place because the second read has to test exactly what the
+    first one did. Either condition can stop holding in between: a resume
+    returns a session to running, and any write moves ``updated_at`` forward. The
+    recheck exists to narrow the candidate set, so a second spelling that drifted
+    even slightly could widen it instead, and the row it wrongly admitted would
+    be one the selection had already decided to spare.
+    """
+    placeholders = ", ".join("?" * len(_TERMINAL_SESSION_STATUSES))
+    return (
+        f"status IN ({placeholders}) AND updated_at <= ?",
+        (*_TERMINAL_SESSION_STATUSES, cutoff),
+    )
+
+
 async def checkpoint_state_db(
     mode: str = "TRUNCATE",
     *,
@@ -177,8 +200,11 @@ async def prune_old_data(
     async with StateDB() as db:
         async with db.transaction() as conn:
             # ── find session IDs to prune ─────────────────────────────────
-            sql = f"SELECT id FROM sessions WHERE status IN ({sess_ph}) AND started_at <= ?"  # noqa: S608
-            rows = (await conn.execute(*_q(sql, (*_TERMINAL_SESSION_STATUSES, cutoff)))).fetchall()
+            # First of the predicate's two reads: candidate selection, over every
+            # session rather than a known set of ids.
+            retention_sql, retention_params = _session_retention_predicate(cutoff)
+            sql = f"SELECT id FROM sessions WHERE {retention_sql}"  # noqa: S608
+            rows = (await conn.execute(*_q(sql, retention_params))).fetchall()
             session_ids = [r[0] for r in rows]
 
             if session_ids:
@@ -204,14 +230,15 @@ async def prune_old_data(
                     session_ids,
                 )
 
-                # Now that the rows are held, re-read the status and drop any
-                # that came back to life before the lock, so the batch is never
-                # assembled around a session with a live leg on it.
+                # Second of the predicate's two reads: the recheck under lock,
+                # narrowed to the candidate ids. Now that the rows are held, both
+                # conditions are re-read so a session that came back to life or
+                # received recent activity before the lock drops out.
                 rows = await _fetch_chunked(
                     conn,
-                    f"SELECT id FROM sessions WHERE status IN ({sess_ph}) AND id",  # noqa: S608
+                    f"SELECT id FROM sessions WHERE {retention_sql} AND id",  # noqa: S608
                     session_ids,
-                    _TERMINAL_SESSION_STATUSES,
+                    retention_params,
                 )
                 session_ids = sorted({r[0] for r in rows})
 

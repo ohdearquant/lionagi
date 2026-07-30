@@ -164,13 +164,39 @@ async def test_insert_message_roundtrips_unicode_content(db: StateDB):
     assert content["text"] == payload
 
 
+async def test_insert_message_roundtrips_embedding_float_list(db: StateDB):
+    from sqlalchemy import text
+
+    embedding = [0.1, -0.2, 0.3, 0.0]
+    msg = _base_msg(embedding=embedding)
+    await db.insert_message(msg)
+
+    got = await db.get_message(msg["id"])
+    assert got["embedding"] == pytest.approx(embedding)
+
+    async with db._read() as conn:
+        row = (
+            await conn.execute(
+                text("SELECT typeof(embedding), length(embedding) FROM messages WHERE id = :id"),
+                {"id": msg["id"]},
+            )
+        ).first()
+    assert tuple(row) == ("blob", 4 * len(embedding))
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+async def test_insert_message_rejects_non_finite_embedding(db: StateDB, bad: float):
+    with pytest.raises(ValueError, match="finite"):
+        await db.insert_message(_base_msg(embedding=[0.1, bad]))
+
+
 async def test_insert_message_roundtrips_embedding_blob(db: StateDB):
     import struct
 
-    # A small float32 packed blob mimicking an embedding vector.
-    vec = struct.pack("4f", 0.1, 0.2, 0.3, 0.4)
+    values = [0.1, 0.2, 0.3, 0.4]
+    vec = struct.pack("<4f", *values)
     msg = _base_msg(embedding=vec)
     await db.insert_message(msg)
 
     got = await db.get_message(msg["id"])
-    assert got["embedding"] == vec
+    assert got["embedding"] == pytest.approx(values)
