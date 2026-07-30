@@ -245,25 +245,33 @@ async def get_current_view(arguments: dict[str, Any]) -> dict[str, Any]:
     source = "turn"
 
     # The turn's context is frozen at submit, so it is only the freshest answer
-    # until the human moves. Prefer a view the browser observed LATER IN ITS OWN
-    # COUNT of the views it has seen here.
+    # until the human moves. Prefer a view the SAME PAGE observed later in its
+    # own count of the views it has seen.
     #
-    # Both sides of this comparison come from that one count on purpose. Server
-    # arrival order cannot stand in for it: a report the browser saw before the
-    # instruction can arrive after it, and ordering by arrival would then
-    # present a view from before the question as the answer to it, labelled
-    # live. Neither can a wall clock, which can step backwards and leave a stale
-    # view holding the higher number. When the turn carries no count there is
-    # nothing to compare against, so the honest answer is the turn's own
-    # snapshot rather than a freshness claim that cannot be supported.
-    reported, reported_seq = await store.get_view(conversation_id)
+    # Both halves of that are load-bearing. Server arrival order cannot stand in
+    # for the count: a report the browser saw before the instruction can arrive
+    # after it, and ordering by arrival would present a view from before the
+    # question as the answer to it, labelled live. Nor can a wall clock, which
+    # can step backwards and leave a stale view holding the higher number. And a
+    # count from a different page cannot be compared at all: two tabs on one
+    # conversation are looking at two different pages, they count
+    # independently, and only the page the instruction came from can say where
+    # the human is.
+    #
+    # When the turn names no observer or no count there is nothing to compare
+    # against, so the honest answer is the turn's own snapshot rather than a
+    # freshness claim that cannot be supported.
+    reported, reported_seq, reported_observer = await store.get_view(conversation_id)
     turn_seq = (context or {}).get("observationSeq")
+    turn_observer = (context or {}).get("observerId")
     at = turn_seq if isinstance(turn_seq, int) else None
     if (
         reported is not None
         and isinstance(turn_seq, int)
         and isinstance(reported_seq, int)
         and reported_seq > turn_seq
+        and turn_observer is not None
+        and reported_observer == turn_observer
     ):
         context, at, source = reported, reported_seq, "live"
 

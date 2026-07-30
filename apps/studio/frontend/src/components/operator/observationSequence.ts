@@ -1,5 +1,5 @@
 /**
- * How many views this browser has observed, counted per conversation.
+ * Which page is doing the observing, and how many views it has seen.
  *
  * The Operator has to decide whether a reported view was seen after the
  * instruction it is answering. Arrival order cannot say: each report is its own
@@ -8,39 +8,33 @@
  * can step backwards, and then a page the human has already left holds the
  * higher number.
  *
- * So observations are counted rather than timed, and the count is resumed from
- * the conversation record, which is the one thing that outlives the page.
+ * So observations are counted rather than timed. A count is only meaningful
+ * inside the page that did the counting, which is why every observation also
+ * says who observed it. Two tabs open on one conversation are looking at two
+ * different pages, and neither one's count says anything about the other's:
+ * whichever tab the instruction was sent from is the only one whose later
+ * observations describe where the human is. Comparing counts across observers
+ * is what makes a page they have already left look current.
  *
- * The count belongs to the conversation, not to the browser. A single shared
- * counter would carry one conversation's total into the next one: a page that
- * had counted far in a busy conversation would number its first view of a quiet
- * one far above anything that conversation had ever seen, and every other page
- * on it — having resumed from the real, lower count — would be discarded as
- * behind while the inflated view kept the confident label.
+ * A reload is a new observer, deliberately. Its count restarts at one and is
+ * never measured against the count of the page it replaced.
  */
-const counts = new Map<string, number>();
+let observerId = crypto.randomUUID();
+let observed = 0;
 
-/**
- * Resume this conversation's count from a value the server holds.
- *
- * Only ever raises. A lower value is either an older read of the same
- * conversation or a report that lost a race, and adopting it would let this
- * page renumber below views it has already reported.
- */
-export function seedObservationCount(conversationId: string, seq: number | null | undefined): void {
-  if (typeof seq !== "number" || !Number.isFinite(seq)) return;
-  const floor = Math.floor(seq);
-  if (floor > (counts.get(conversationId) ?? 0)) counts.set(conversationId, floor);
+/** Identifies the page that observed a view. Stable for as long as it lives. */
+export function observationObserver(): string {
+  return observerId;
 }
 
-/** Number the next view observed in this conversation. */
-export function nextObservationSeq(conversationId: string): number {
-  const next = (counts.get(conversationId) ?? 0) + 1;
-  counts.set(conversationId, next);
-  return next;
+/** Number the next view this page observes. */
+export function nextObservationSeq(): number {
+  observed += 1;
+  return observed;
 }
 
-/** Test seam: forget every count, as a fresh page load would. */
-export function resetObservationCounts(): void {
-  counts.clear();
+/** Test seam: become a different page, as a reload would. */
+export function resetObservationSequence(): void {
+  observerId = crypto.randomUUID();
+  observed = 0;
 }

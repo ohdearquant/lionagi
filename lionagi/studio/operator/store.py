@@ -49,16 +49,16 @@ CREATE TABLE IF NOT EXISTS studio_operator_conversations (
   -- submit, so without this the Operator answers "where am I" with wherever the
   -- human was when they hit send, which is wrong exactly when they have moved.
   last_view_json      TEXT,
-  -- The browser's own count of how many views it has observed in this
-  -- conversation, and the only order any freshness question is answered in:
-  -- report against report, and report against the turn that asked. It is not a
-  -- time. Server arrival order cannot substitute, because reports are
-  -- independent requests and a view seen before an instruction can arrive after
-  -- it; a wall clock cannot either, because it can step backwards and then a
-  -- stale view outranks a live one. A browser seeds its count from this column
-  -- when it loads the conversation, so the count survives a reload without
-  -- trusting any clock.
+  -- Who reported that view, and how many views they had seen when they did.
+  -- Ordering is by the count and never by a clock: server arrival order cannot
+  -- substitute, because a view seen before an instruction can arrive after it,
+  -- and a wall clock cannot either, because it can step backwards and leave a
+  -- stale view holding the higher number. The count is only meaningful within
+  -- one observer, so the observer is stored beside it -- two tabs on one
+  -- conversation see two different pages, and only the one the instruction came
+  -- from can say where the human is.
   last_view_seq       INTEGER,
+  last_view_observer  TEXT,
   created_at         REAL NOT NULL,
   updated_at         REAL NOT NULL,
   archived_at        REAL,
@@ -207,6 +207,7 @@ class OperatorStore:
                         "provider_model": "TEXT",
                         "last_view_json": "TEXT",
                         "last_view_seq": "INTEGER",
+                        "last_view_observer": "TEXT",
                     },
                 )
                 await db.commit()
@@ -287,11 +288,6 @@ class OperatorStore:
             "activeRequestId": row["active_request_id"],
             "providerSessionId": row["provider_session_id"],
             "providerModel": row["provider_model"],
-            # What the browser must continue counting from. Sent on every
-            # conversation read so a freshly loaded page cannot start below what
-            # a previous page already reported and hand the stale view the
-            # higher number.
-            "lastViewSeq": row["last_view_seq"],
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
         }
@@ -446,60 +442,68 @@ class OperatorStore:
             await db.commit()
 
     async def record_view(
-        self, conversation_id: str, view: dict[str, Any], seq: int
-    ) -> tuple[int, bool]:
+        self, conversation_id: str, view: dict[str, Any], seq: int, observer: str
+    ) -> bool:
         """Record where the human is now, independently of any turn.
 
-        *seq* is the browser's own count of the views it has observed here. Each
-        report is its own request, so two navigations in quick succession can
-        arrive reversed; a report that does not count higher than the stored one
-        is DISCARDED rather than written, because otherwise the stale view wins
-        and is still labelled current, which is the exact failure this whole
+        *seq* is how many views *observer* had seen when it saw this one. Each
+        report is its own request, so two navigations by one page can arrive
+        reversed; a report that does not count higher than the stored one is
+        DISCARDED rather than written, because otherwise the stale view wins and
+        is still labelled current, which is the exact failure this whole
         mechanism exists to fix.
 
-        Returns the count now stored and whether this report was applied. The
-        count comes back either way so that a browser which has fallen behind
-        another page on the same conversation can catch up instead of having
-        every one of its reports silently dropped.
+        A report from a DIFFERENT observer is always written. Two pages count
+        independently, so their counts cannot be compared -- refusing the lower
+        number would silence whichever page happened to start later. Storing it
+        is safe because the read only trusts a view reported by the page the
+        instruction came from; a report from any other page can cost freshness
+        and never correctness.
+
+        Returns whether the report was applied.
         """
         await self.ensure_schema()
         async with open_db(str(self.path())) as db:
             await db.execute("BEGIN IMMEDIATE")
             row = await (
                 await db.execute(
-                    "SELECT last_view_seq FROM studio_operator_conversations WHERE id = ?",
+                    "SELECT last_view_seq, last_view_observer "
+                    "FROM studio_operator_conversations WHERE id = ?",
                     (conversation_id,),
                 )
             ).fetchone()
             if row is None:
                 await db.rollback()
                 raise OperatorNotFoundError(f"Operator conversation '{conversation_id}' not found")
+            same_observer = row["last_view_observer"] == observer
             previous = row["last_view_seq"]
-            if previous is not None and seq <= previous:
+            if same_observer and previous is not None and seq <= previous:
                 await db.rollback()
-                return int(previous), False
+                return False
             await db.execute(
                 "UPDATE studio_operator_conversations "
-                "SET last_view_json = ?, last_view_seq = ? WHERE id = ?",
-                (self._json(view), seq, conversation_id),
+                "SET last_view_json = ?, last_view_seq = ?, last_view_observer = ? WHERE id = ?",
+                (self._json(view), seq, observer, conversation_id),
             )
             await db.commit()
-        return seq, True
+        return True
 
-    async def get_view(self, conversation_id: str) -> tuple[dict[str, Any] | None, int | None]:
-        """Return the last reported view and the browser's count when it saw it."""
+    async def get_view(
+        self, conversation_id: str
+    ) -> tuple[dict[str, Any] | None, int | None, str | None]:
+        """Return the last reported view, its count, and who observed it."""
         await self.ensure_schema()
         async with open_db(str(self.path())) as db:
             row = await (
                 await db.execute(
-                    "SELECT last_view_json, last_view_seq "
+                    "SELECT last_view_json, last_view_seq, last_view_observer "
                     "FROM studio_operator_conversations WHERE id = ?",
                     (conversation_id,),
                 )
             ).fetchone()
         if row is None or row["last_view_json"] is None:
-            return None, None
-        return json.loads(row["last_view_json"]), row["last_view_seq"]
+            return None, None, None
+        return json.loads(row["last_view_json"]), row["last_view_seq"], row["last_view_observer"]
 
     async def select_provider_model(self, conversation_id: str, model: str) -> None:
         """Record the model for this conversation, dropping a stale session.

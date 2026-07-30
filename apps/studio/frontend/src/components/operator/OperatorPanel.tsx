@@ -60,7 +60,7 @@ import {
   rememberEffectAcknowledgement,
   type StoredEffectAcknowledgement,
 } from "./operatorEffects";
-import { nextObservationSeq, seedObservationCount } from "./observationSequence";
+import { nextObservationSeq, observationObserver } from "./observationSequence";
 import { applyTheme } from "@/lib/theme";
 
 const STORAGE_KEY = "studio:operator-conversation";
@@ -218,14 +218,13 @@ export function formatProposalCommand(command: Record<string, unknown>): Formatt
   return { text: formatted, elided: elided.hit, droppedCharacters: 0 };
 }
 
-// Numbered rather than timed, and numbered per conversation. See
-// ./observationSequence for why neither a clock nor a shared counter can order
-// these.
+// Numbered rather than timed, and stamped with who did the observing. See
+// ./observationSequence for why neither a clock nor another page's count can
+// order these.
 function operatorContext(
-  conversationId: string,
   pathname: string,
   search: Record<string, unknown>,
-): OperatorContextSnapshot & { observationSeq: number } {
+): OperatorContextSnapshot & { observationSeq: number; observerId: string } {
   let space: OperatorContextSnapshot["space"] = "mission";
   if (pathname.startsWith("/library")) space = "library";
   else if (pathname.startsWith("/schedules")) space = "schedules";
@@ -262,7 +261,8 @@ function operatorContext(
     route: `${pathname}${queryString ? `?${queryString}` : ""}`,
     selection: Object.keys(selection).length ? selection : null,
     filters,
-    observationSeq: nextObservationSeq(conversationId),
+    observationSeq: nextObservationSeq(),
+    observerId: observationObserver(),
   };
 }
 
@@ -656,10 +656,6 @@ export default function OperatorPanel({ open, onClose }: Props) {
       dispatch({ type: "LOAD_START" });
       try {
         const snapshot = await getOperatorConversation(conversationId);
-        // Resume counting from whatever a previous page already reported here,
-        // so a reload cannot number this page's live views below a view the
-        // human has already left.
-        seedObservationCount(snapshot.conversation.id, snapshot.conversation.lastViewSeq);
         window.localStorage.setItem(STORAGE_KEY, snapshot.conversation.id);
         setConversations((current) => {
           const index = current.findIndex((item) => item.id === snapshot.conversation.id);
@@ -888,17 +884,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
     // the debounce and the network both reorder, so two navigations can reach
     // the server reversed and the server has to keep whichever the browser
     // observed later rather than whichever arrived later.
-    const context = operatorContext(
-      conversationId,
-      location.pathname,
-      location.search as Record<string, unknown>,
-    );
+    const context = operatorContext(location.pathname, location.search as Record<string, unknown>);
     const timer = window.setTimeout(() => {
-      void reportOperatorView(conversationId, context)
-        // Catch up if another page on this conversation has counted further,
-        // so the next navigation is not dropped for being behind as well.
-        .then((seq) => seedObservationCount(conversationId, seq))
-        .catch(() => {});
+      void reportOperatorView(conversationId, context).catch(() => {});
     }, 150);
     return () => window.clearTimeout(timer);
   }, [conversationId, location.pathname, location.search]);
@@ -942,7 +930,6 @@ export default function OperatorPanel({ open, onClose }: Props) {
         dispatch({ type: "LOAD_SUCCESS", conversation, frames: [] });
       }
       const context = operatorContext(
-        conversation.id,
         location.pathname,
         location.search as Record<string, unknown>,
       );

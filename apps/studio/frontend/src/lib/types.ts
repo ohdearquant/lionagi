@@ -413,8 +413,6 @@ export interface OperatorConversation {
   nextSequence?: number;
   activeRequestId?: string | null;
   providerModel?: string | null;
-  /** Views already reported here. A page resumes its count from this. */
-  lastViewSeq?: number | null;
   createdAt?: number;
   updatedAt?: number;
 }
@@ -460,8 +458,10 @@ export interface OperatorContextSnapshot {
   route: string;
   selection?: Record<string, string> | null;
   filters: Record<string, OperatorJsonValue>;
-  /** The browser's count of views seen here. Orders a report against a turn. */
+  /** This page's count of views seen. Orders a report against a turn. */
   observationSeq?: number;
+  /** Which page observed it. A count means nothing outside its own page. */
+  observerId?: string;
 }
 
 export interface OperatorTextPayload {
