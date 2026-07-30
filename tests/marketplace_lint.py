@@ -822,13 +822,19 @@ def test_a_playbook_bearing_example_names_a_playbook_qualified_help_source() -> 
     )
 
 
-# A prompt that names a relative path, a workspace file, or a worktree is asking
-# the spawned run to read or write in a specific directory. The server resolves an
-# omitted `cwd` to its own directory, not the caller's, so such an example starts
-# the run where the files are not.
+# A prompt that names a workspace path or a worktree is asking the spawned run to
+# read or write in a specific directory. The server resolves an omitted `cwd` to
+# its own directory, not the caller's, so such an example starts the run where the
+# files are not.
+#
+# The underscore-prefixed workspace convention is matched with or without a
+# directory component, because the two spellings are the same reference: a rule
+# that accepted `_intent.md` and not `_context/diff.txt` passed three examples that
+# were wrong in exactly the way it existed to catch.
 _PROMPT_NEEDS_CWD = re.compile(
     r"""(?:
-          _[a-z_]+\.(?:md|json|txt|ya?ml)   # a workspace file: _intent.md, _verdict.json
+          (?<![\w:/.])_[a-z_]+/[\w./-]+          # _context/diff.txt
+        | (?<![\w:/.])_[a-z_]+\.(?:md|json|txt|ya?ml)   # _intent.md, _verdict.json
         | \bartifacts\b
         | \bworktree\b
         | <(?:play|show)_dir>
@@ -845,10 +851,17 @@ def test_a_spawn_example_whose_prompt_names_a_path_passes_cwd() -> None:
     does not exist, and the run reports on evidence it never saw — the failure is a
     verdict formed from absence, not an error.
 
-    This is the third and fourth site of one defect class: review found the play
-    submit, then two gate submits the first fix did not cover, and a sweep for the
-    class found one more in a different skill. Fixing instances one at a time is
-    what produced that sequence, so the class is pinned here instead.
+    **This is a net, not a proof, and the distinction is load-bearing.** Prompts are
+    prose, so there is no closed set of ways to say "read my files" — unlike a help
+    call, which has exactly two spellings and can therefore be enumerated. Four
+    sites of this class have been found so far, two by review and two by sweeping,
+    and each widening of the pattern is a hole closed rather than the last hole. So
+    what this rule does is stop a *known* phrasing from regressing; it does not
+    certify that every example needing a `cwd` has one. That check is the author's.
+
+    Most spawn examples legitimately omit `cwd` — a minimal quick-start does not
+    need one — so requiring it everywhere would put a placeholder path in every
+    teaching example. That is why this is a pattern over prompts at all.
     """
     from lionagi.mcp.verbs import VERBS
 
@@ -871,15 +884,39 @@ def test_a_spawn_example_whose_prompt_names_a_path_passes_cwd() -> None:
             lineno = text[:start].count("\n") + 1
             offenders.append(f"{_rel(path)}:{lineno} {verb}")
 
-    assert checked, (
-        "no spawn example with a path-bearing prompt found under marketplace/ at all — "
-        "the pattern no longer matches the bundle and this check is vacuous"
+    # Counting, not just non-emptiness: the pattern matching *one* example while
+    # missing five is what happened when it accepted only bare filenames, and a
+    # bare truthiness check cannot see that. The number is asserted low-bound so it
+    # falls when a phrasing stops matching, which is the failure this pattern has
+    # actually had.
+    assert checked >= 8, (
+        f"only {checked} spawn examples matched the path-bearing prompt pattern; the "
+        "bundle had 8 when this bound was set, so the pattern has stopped seeing "
+        "phrasings it used to catch"
     )
     assert not offenders, (
         "these examples tell the spawned run to read or write specific files but pass "
         "no `cwd`, so the run starts in the server's directory and reports on evidence "
         "it never saw: " + repr(sorted(offenders))
     )
+
+
+def test_the_cwd_pattern_reads_both_workspace_path_spellings() -> None:
+    """`_context/diff.txt` and `_intent.md` are the same reference, differently written.
+
+    The first version of this pattern accepted the second and not the first, which
+    passed three examples that told their workers to read a diff the run would not
+    find. Both spellings are pinned, and so is a case that must not fire, since a
+    pattern that matches everything demands a `cwd` on every teaching example.
+    """
+    assert _PROMPT_NEEDS_CWD.search("Diff is at _context/diff.txt.")
+    assert _PROMPT_NEEDS_CWD.search("Acceptance criteria from _intent.md:")
+    assert _PROMPT_NEEDS_CWD.search("artifacts saved to <play_dir>")
+    assert not _PROMPT_NEEDS_CWD.search("what is a monad?")
+    assert not _PROMPT_NEEDS_CWD.search("Review PR #123 for security only.")
+    # An absolute path is already unambiguous, and a URL is not a workspace path.
+    assert not _PROMPT_NEEDS_CWD.search("read /etc/hosts")
+    assert not _PROMPT_NEEDS_CWD.search("see https://example.com/_context/diff.txt")
 
 
 def test_the_qualified_source_check_rejects_a_source_for_a_different_playbook() -> None:

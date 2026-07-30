@@ -47,6 +47,7 @@ an op without it is refused with `stale_schema` and starts nothing):
       "op": "fanout.submit",
       "args": {
         "prompt": "Review PR #<pr_ref> for correctness only. Diff is at _context/diff.txt. Write findings to correctness_review/findings.md.",
+        "cwd": "/absolute/path/to/your/checkout",
         "num_workers": 1
       },
       "schema_fingerprint": "<from help='fanout.submit'>"
@@ -55,6 +56,7 @@ an op without it is refused with `stale_schema` and starts nothing):
       "op": "fanout.submit",
       "args": {
         "prompt": "Review PR #<pr_ref> for security only. Diff is at _context/diff.txt. Write findings to security_review/findings.md.",
+        "cwd": "/absolute/path/to/your/checkout",
         "num_workers": 1
       },
       "schema_fingerprint": "<from help='fanout.submit'>"
@@ -63,6 +65,7 @@ an op without it is refused with `stale_schema` and starts nothing):
       "op": "fanout.submit",
       "args": {
         "prompt": "Review PR #<pr_ref> for test coverage only. Diff is at _context/diff.txt. Write findings to tests_review/findings.md.",
+        "cwd": "/absolute/path/to/your/checkout",
         "num_workers": 1
       },
       "schema_fingerprint": "<from help='fanout.submit'>"
