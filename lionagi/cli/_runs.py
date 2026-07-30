@@ -927,11 +927,12 @@ async def teardown_persist(
             await db.close()
         except Exception as exc:
             _log.warning("live persist db.close failed: %s", exc, exc_info=True)
-        # Sweep the shared-db registry (our connection plus any stray a hook
-        # opened) so no non-daemon aiosqlite worker thread blocks process exit.
-        from lionagi.state.db import close_shared_db
+        if ctx.get("shared_db_registered", True):
+            # Ordinary CLI runs retain the historical sweep. Embedded daemon
+            # callers opt out so teardown cannot close unrelated shared state.
+            from lionagi.state.db import close_shared_db
 
-        await close_shared_db()
+            await close_shared_db()
 
 
 # Keep old names as aliases so callers don't break.
@@ -949,22 +950,24 @@ async def teardown_orchestration_persist(*args, **kwargs) -> str:
     return await teardown_persist(*args, **kwargs)
 
 
-async def _open_shared_db():
-    """Open a StateDB and register it as the process-wide shared connection."""
+async def _open_shared_db(*, register: bool = True):
+    """Open a StateDB, optionally registering it as the process-wide handle."""
     from lionagi.state.db import StateDB, register_shared_db, unregister_shared_db
 
     db = StateDB()
     try:
         await db.open()
-        # Lifecycle hooks reach a db via get_shared_db(); register ours so they reuse
-        # this connection rather than opening a second one whose worker thread leaks.
-        await register_shared_db(db)
+        if register:
+            # Ordinary CLI lifecycle hooks reuse this connection. Embedded
+            # callers bind their observer/message handlers directly instead.
+            await register_shared_db(db)
     except Exception:
         try:
             await db.close()
         except Exception as close_exc:
             _log.warning("fallback db.close after open failure also failed: %s", close_exc)
-        unregister_shared_db(db)
+        if register:
+            unregister_shared_db(db)
         raise
     return db
 
@@ -1143,6 +1146,8 @@ async def setup_agent_persist(
     provider: str | None = None,
     effort: str | None = None,
     project: str | None = None,
+    run_id: str | None = None,
+    share_db: bool = True,
 ) -> dict | None:
     from lionagi.session.session import Session
     from lionagi.state import provenance as _provenance
@@ -1156,7 +1161,7 @@ async def setup_agent_persist(
         session_id = str(session.id)
         branch_id = str(branch.id)
 
-        db = await _open_shared_db()
+        db = await _open_shared_db(register=share_db)
 
         existing_branch = await db.get_branch(branch_id)
         existing_session = None
@@ -1212,7 +1217,10 @@ async def setup_agent_persist(
             await db.create_session(
                 {
                     "id": session_id,
-                    "run_id": active_run_id(),
+                    # Embedded callers may own a RunDir without mutating the
+                    # CLI process-global allocation pointer. Ordinary CLI
+                    # callers omit this and retain the established behavior.
+                    "run_id": run_id if run_id is not None else active_run_id(),
                     "created_at": session_dict["created_at"],
                     "node_metadata": _node_meta,
                     "name": session_dict.get("name"),
@@ -1299,6 +1307,7 @@ async def setup_agent_persist(
             "message_retry_queues": message_retry_queues,
             "artifacts_path": artifacts_path,
             "artifact_contract": artifact_contract,
+            "shared_db_registered": share_db,
         }
 
         _on_message = _make_message_handler(
@@ -1338,8 +1347,9 @@ async def setup_agent_persist(
                 await db.close()
             except Exception as close_exc:
                 _log.warning("fallback db.close after setup failure also failed: %s", close_exc)
-            # Drop the now-closed handle so get_shared_db() can't hand it out.
-            from lionagi.state.db import unregister_shared_db
+            if share_db:
+                # Drop the now-closed handle so get_shared_db() can't hand it out.
+                from lionagi.state.db import unregister_shared_db
 
-            unregister_shared_db(db)
+                unregister_shared_db(db)
         return None

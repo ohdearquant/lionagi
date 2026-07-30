@@ -17,8 +17,8 @@ export interface DrawerHeaderProps {
  */
 export default function DrawerHeader({ name, badge, badgeColor, trailing }: DrawerHeaderProps) {
   return (
-    <div className="flex shrink-0 items-center gap-3 border-b border-edge px-4 py-3">
-      <span className="truncate font-data font-medium text-[length:var(--t-lg)] text-content-primary">
+    <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-edge px-4 py-3 sm:flex-nowrap">
+      <span className="min-w-0 basis-full break-words font-data font-medium text-[length:var(--t-lg)] leading-snug text-content-primary sm:basis-auto sm:flex-1 sm:truncate">
         {name}
       </span>
       {badge != null && (
@@ -31,7 +31,11 @@ export default function DrawerHeader({ name, badge, badgeColor, trailing }: Draw
           {badge}
         </span>
       )}
-      {trailing != null && <div className="ml-auto flex items-center gap-2">{trailing}</div>}
+      {trailing != null && (
+        <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
+          {trailing}
+        </div>
+      )}
     </div>
   );
 }

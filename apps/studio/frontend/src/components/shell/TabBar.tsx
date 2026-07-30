@@ -22,14 +22,17 @@ export interface TabSpec {
 
 export default function TabBar({ tabs, ariaLabel }: { tabs: TabSpec[]; ariaLabel?: string }) {
   return (
-    <nav aria-label={ariaLabel} className="flex items-end gap-1 border-b border-edge">
+    <nav
+      aria-label={ariaLabel}
+      className="flex items-end gap-1 overflow-x-auto border-b border-edge [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+    >
       {tabs.map((tab) => (
         <Link
           key={tab.id}
           to={tab.to}
           search={tab.search}
           aria-current={tab.active ? "page" : undefined}
-          className={`relative px-3 pb-2 pt-1 text-[length:var(--t-sm)] transition-colors duration-100 ${
+          className={`relative shrink-0 whitespace-nowrap px-3 pb-2 pt-1 text-[length:var(--t-sm)] transition-colors duration-100 ${
             tab.active ? "font-semibold text-content-primary" : "font-normal text-content-muted"
           }`}
         >

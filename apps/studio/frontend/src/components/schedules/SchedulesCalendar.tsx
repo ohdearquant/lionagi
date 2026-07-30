@@ -293,7 +293,22 @@ function truncateMiddle(text: string, max = 30): string {
   return `${text.slice(0, half)}…${text.slice(text.length - half)}`;
 }
 
-export { groupAgendaByHour, truncateMiddle };
+function formatCalendarDayLabel(
+  date: Date,
+  locale: string,
+  todayLabel: string,
+  isToday = false,
+): string {
+  const fullDate = date.toLocaleDateString(locale, {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  return isToday ? `${fullDate}, ${todayLabel}` : fullDate;
+}
+
+export { formatCalendarDayLabel, groupAgendaByHour, truncateMiddle };
 export type { AgendaEntry, AgendaGroup };
 
 export default function SchedulesCalendar({
@@ -571,9 +586,9 @@ export default function SchedulesCalendar({
     );
 
   return (
-    <div className="flex flex-col gap-3 px-6 pb-6">
+    <div className="flex flex-col gap-3 px-3 pb-6 sm:px-6">
       {/* Period nav + view switcher */}
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <IconButton
           aria-label={t("prevPeriod")}
           size="md"
@@ -590,7 +605,7 @@ export default function SchedulesCalendar({
         >
           ›
         </IconButton>
-        <span className="font-data text-label font-semibold text-content-primary">
+        <span className="min-w-0 flex-1 truncate font-data text-label font-semibold text-content-primary">
           {periodLabel}
         </span>
         {!isCurrentPeriod && (
@@ -605,8 +620,7 @@ export default function SchedulesCalendar({
             {t("today")}
           </button>
         )}
-        <div className="flex-1" />
-        <div className="flex overflow-hidden rounded border border-edge">
+        <div className="flex max-w-full overflow-x-auto rounded border border-edge [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {(["month", "week", "day"] as const).map((m) => (
             <button
               key={m}
@@ -652,6 +666,8 @@ export default function SchedulesCalendar({
                 <button
                   key={key}
                   type="button"
+                  aria-label={formatCalendarDayLabel(date, locale, t("today"), isToday)}
+                  aria-pressed={isSelected}
                   onClick={() => setSelectedDay(isSelected ? null : key)}
                   className={[
                     "flex h-[96px] flex-col items-stretch border-edge p-1.5 text-left transition-colors duration-100",
@@ -702,6 +718,8 @@ export default function SchedulesCalendar({
                 <button
                   key={key}
                   type="button"
+                  aria-label={formatCalendarDayLabel(d, locale, t("today"), isToday)}
+                  aria-pressed={selectedDay === key}
                   onClick={() => setSelectedDay(selectedDay === key ? null : key)}
                   className={[
                     "flex items-center gap-1.5 border-l border-edge px-2 py-1.5 text-left transition-colors duration-100 first:border-l-0",
@@ -801,6 +819,8 @@ export default function SchedulesCalendar({
                 <button
                   key={key}
                   type="button"
+                  aria-label={formatCalendarDayLabel(d, locale, t("today"), isToday)}
+                  aria-pressed={selectedDay === key}
                   onClick={() => setSelectedDay(selectedDay === key ? null : key)}
                   className={[
                     "flex items-center gap-1.5 border-l border-edge px-2 py-1.5 text-left transition-colors duration-100",

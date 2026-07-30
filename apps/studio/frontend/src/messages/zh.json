@@ -6,6 +6,7 @@
       "library": "资源库",
       "schedules": "计划任务",
       "system": "系统",
+      "operator": "操作台",
       "toggleTheme": "切换主题",
       "switchToZh": "切换到中文",
       "switchToEn": "切换到英文",
@@ -40,6 +41,119 @@
       "homeAria": "首页标签页"
     }
   },
+  "runResume": {
+    "title": "继续此运行",
+    "description": "向已保存的分支发送后续指令，即使原运行已经结束也可以继续。",
+    "branch": "分支",
+    "chooseBranch": "选择分支",
+    "instruction": "后续指令",
+    "placeholder": "这个分支接下来应该做什么？",
+    "instructionRequired": "请输入后续指令。",
+    "noBranches": "此运行没有可恢复的分支。",
+    "failed": "无法恢复此运行。",
+    "copyFailed": "无法复制命令。",
+    "accepted": "已接受后续任务",
+    "viewActivity": "查看活动",
+    "submitting": "正在恢复…",
+    "submit": "继续运行",
+    "shortcut": "⌘/Ctrl+Enter",
+    "cli": {
+      "title": "CLI 备用方式",
+      "copy": "复制",
+      "copied": "已复制",
+      "help": "如果浏览器无法恢复，请在终端中使用此命令。"
+    }
+  },
+  "operator": {
+    "title": "操作台",
+    "command": "打开或关闭操作台",
+    "ariaLabel": "操作台对话",
+    "close": "关闭操作台",
+    "resize": "调整操作台宽度",
+    "loading": "正在加载对话",
+    "stop": "停止",
+    "stopping": "正在停止…",
+    "retry": "重试",
+    "newConversation": "开始新对话",
+    "jumpToLatest": "跳到最新消息",
+    "loadOlder": "加载更早的活动",
+    "connection": {
+      "idle": "就绪",
+      "connecting": "正在连接",
+      "open": "实时",
+      "reconnecting": "正在重新连接",
+      "error": "连接错误"
+    },
+    "empty": {
+      "title": "接下来要做什么？",
+      "body": "让操作台调查、解释、启动工作或准备变更。它启动的工作会在 Studio 各处保持可见。",
+      "example": "试试：“告诉我哪些事项需要处理。”"
+    },
+    "error": {
+      "title": "对话暂时不可用"
+    },
+    "errors": {
+      "load": "无法加载此对话。",
+      "send": "无法发送此指令。",
+      "stop": "无法停止当前回合。",
+      "decision": "无法保存该决定。",
+      "effect": "无法确认此界面操作。"
+    },
+    "composer": {
+      "label": "指令",
+      "placeholder": "让操作台调查或运行任务…",
+      "busyPlaceholder": "操作台正在工作…",
+      "hint": "按 Enter 发送 · Shift+Enter 换行",
+      "send": "发送",
+      "sending": "正在发送…"
+    },
+    "message": {
+      "you": "你",
+      "operator": "操作台"
+    },
+    "tool": {
+      "read": "读取",
+      "draft": "草拟",
+      "done": "工具已完成",
+      "failed": "工具失败"
+    },
+    "proposal": {
+      "ariaLabel": "需要权限的操作",
+      "title": "需要你的许可",
+      "noTarget": "无版本化目标",
+      "review": "查看确切命令",
+      "elided": "此命令的部分内容未显示。允许即批准完整命令。",
+      "elidedCharacters": "有 {count} 个字符未显示。允许即批准完整命令。",
+      "risk": {
+        "mutate": "更改",
+        "execute": "执行",
+        "admin": "管理"
+      },
+      "allow": "允许",
+      "deny": "拒绝",
+      "deciding": "正在保存…",
+      "resolved": "决定已记录"
+    },
+    "confirmation": {
+      "required": "等待你的决定",
+      "confirmed": "已授予权限",
+      "denied": "已拒绝权限",
+      "cancelled": "操作已取消",
+      "expired": "权限请求已过期",
+      "executed": "已完成获批操作"
+    },
+    "effect": {
+      "requested": "请求界面操作：{kind}"
+    },
+    "outcome": {
+      "completed": "回合已完成",
+      "failed": "回合失败",
+      "cancelled": "回合已停止"
+    },
+    "run": {
+      "open": "打开运行"
+    }
+  },
   "playfield": {
     "title": "运行场",
     "subtitle": "所有项目中正在运行及排队的执行与会话",
@@ -70,6 +184,9 @@
     "newWorkflow": "新建工作流",
     "newAgent": "新建智能体",
     "loading": "加载中…",
+    "loadError": "部分资源目录暂时不可用。",
+    "detailEmptyTitle": "选择要查看的内容",
+    "detailEmptyBody": "从目录中选择一项，查看其配置和活动。",
     "empty": {
       "all": "暂无内容。",
       "allHint": "创建你的第一个智能体或工作流，马上开始。",
@@ -822,9 +939,13 @@
       "title": "Studio needs a local lionagi daemon",
       "body": "Studio couldn't reach a daemon at {base}. Default port is 8765; your data stays on your machine.",
       "install": "pip install \"lionagi[studio]\"",
-      "run": "li studio",
-      "runAlt": "li studio --no-open",
-      "runAltNote": "Already have this page open?"
+      "run": "li studio"
+    },
+    "pairing": {
+      "title": "Open Studio from the daemon",
+      "body": "A lionagi daemon answered at {base}, but this tab is not paired with it.",
+      "fix": "Run this command. Studio opens a new, authenticated tab:",
+      "command": "li studio"
     },
     "wrongApp": {
       "title": "Another program is using this port",

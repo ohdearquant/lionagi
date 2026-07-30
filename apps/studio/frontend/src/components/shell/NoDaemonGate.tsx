@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslations } from "use-intl";
 import Button from "@/components/ui/Button";
-import { IconClose, IconPort, IconTerminal } from "@/components/ui/icons";
-import { resolveApiBase } from "@/lib/api";
+import { IconPort, IconShield, IconTerminal } from "@/components/ui/icons";
+import { resolveApiBase, resolveAuthToken } from "@/lib/api";
 import { onConnectivityFailure } from "@/lib/connectivity";
 
 const POLL_INTERVAL_MS = 5000;
@@ -11,17 +11,18 @@ const POLL_INTERVAL_MS = 5000;
 // one /health check instead of one per request.
 const FAILURE_REPROBE_THROTTLE_MS = 2000;
 
-type ConnectivityStatus = "checking" | "connected" | "unreachable" | "wrongApp";
+type ConnectivityStatus = "checking" | "connected" | "unreachable" | "wrongApp" | "needsPairing";
 
 /**
- * Probe the configured API base's /health endpoint and classify what answered.
- * The lionagi daemon serves an unauthenticated `{ status: "ok" }` at /health
- * (lionagi/studio/app.py) with no auth gate — any other shape, a non-2xx, or
- * a body that isn't JSON at all means something other than the daemon is on
- * that port. A network-level failure (nothing listening, CORS) is a separate
- * bucket: there's no program to point at, just nothing running yet.
+ * Probe both the daemon's public liveness response and its authenticated
+ * OpenAPI identity. `/health` alone cannot establish a usable connection:
+ * a `li studio --no-open` process answers there while every application API
+ * correctly rejects an unpaired browser. Keeping that tab behind a designed
+ * pairing state prevents the shell from opening into a wall of 401s.
  */
-async function probeDaemon(apiBase: string): Promise<"connected" | "unreachable" | "wrongApp"> {
+async function probeDaemon(
+  apiBase: string,
+): Promise<"connected" | "unreachable" | "wrongApp" | "needsPairing"> {
   let response: Response;
   try {
     response = await fetch(`${apiBase}/health`);
@@ -35,22 +36,42 @@ async function probeDaemon(apiBase: string): Promise<"connected" | "unreachable"
     return "wrongApp";
   }
   const status = (body as { status?: unknown } | null)?.status;
-  return response.ok && status === "ok" ? "connected" : "wrongApp";
+  if (!response.ok || status !== "ok") return "wrongApp";
+
+  const token = resolveAuthToken();
+  const headers: Record<string, string> = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+  try {
+    response = await fetch(`${apiBase}/openapi.json`, { headers });
+  } catch {
+    return "unreachable";
+  }
+  if (response.status === 401 || response.status === 403) return "needsPairing";
+  try {
+    body = await response.json();
+  } catch {
+    return "wrongApp";
+  }
+  const title = (
+    body as {
+      info?: { title?: unknown };
+    } | null
+  )?.info?.title;
+  return response.ok && title === "Lion Studio Server" ? "connected" : "wrongApp";
 }
 
 /**
  * Wraps the app shell with connectivity awareness. The daemon is the
  * operator's own `li studio` process, not a backend this app controls — a
  * failed probe means "not started yet" or "something else is on this port",
- * not an app crash. The shell keeps rendering underneath a dismissible
- * banner rather than blanking the screen; views that don't need the daemon
- * stay usable.
+ * not an app crash. A failed probe replaces the data-dependent application
+ * with a composed recovery surface so stale or malformed content never sits
+ * behind a dismissible warning.
  */
 export default function NoDaemonGate({ children }: { children: ReactNode }) {
   const t = useTranslations("daemon");
   const apiBase = resolveApiBase();
   const [status, setStatus] = useState<ConnectivityStatus>("checking");
-  const [dismissed, setDismissed] = useState(false);
   const activeRef = useRef(true);
   const lastReprobeRef = useRef(0);
 
@@ -58,14 +79,10 @@ export default function NoDaemonGate({ children }: { children: ReactNode }) {
     const result = await probeDaemon(apiBase);
     if (!activeRef.current) return;
     setStatus(result);
-    // Recovering clears any earlier dismissal so the NEXT failure surfaces
-    // the banner again instead of staying silently hidden forever.
-    if (result === "connected") setDismissed(false);
   }, [apiBase]);
 
   useEffect(() => {
     activeRef.current = true;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial /health probe on mount; setState only lands after the async fetch resolves, guarded by activeRef against a torn-down effect
     void check();
     return () => {
       activeRef.current = false;
@@ -95,67 +112,157 @@ export default function NoDaemonGate({ children }: { children: ReactNode }) {
   }, [check]);
 
   const displayBase = apiBase || "http://127.0.0.1:8765";
-  const showBanner = (status === "unreachable" || status === "wrongApp") && !dismissed;
+
+  if (status === "connected") return <>{children}</>;
+
+  const isChecking = status === "checking";
+  const isWrongApp = status === "wrongApp";
+  const needsPairing = status === "needsPairing";
 
   return (
-    <>
-      {children}
-      {showBanner && (
-        <div
-          role="alert"
-          className="fixed inset-x-0 bottom-0 z-40 flex flex-col gap-2.5 border-t border-edge bg-surface-raised px-4 py-3 shadow-card-hover sm:flex-row sm:items-start sm:justify-between"
-          style={{ boxShadow: "var(--shadow-card-hover)" }}
-        >
-          <div className="flex items-start gap-2.5 text-body text-content-primary">
-            <span className="mt-0.5 shrink-0 text-content-muted">
-              {status === "wrongApp" ? <IconPort size={16} /> : <IconTerminal size={16} />}
-            </span>
-            {status === "wrongApp" ? (
-              <div>
-                <p className="font-medium">{t("wrongApp.title")}</p>
-                <p className="text-meta text-content-muted">
-                  {t("wrongApp.body", { base: displayBase })}
-                </p>
-                <p className="mt-1 text-meta text-content-muted">
-                  {t("wrongApp.fix")}{" "}
-                  <span className="font-data text-content-secondary">{t("wrongApp.command")}</span>
-                </p>
-              </div>
-            ) : (
-              <div>
-                <p className="font-medium">{t("unreachable.title")}</p>
-                <p className="text-meta text-content-muted">
-                  {t("unreachable.body", { base: displayBase })}
-                </p>
-                <p className="mt-1 text-meta text-content-secondary">
-                  <span className="font-data">{t("unreachable.install")}</span>
-                  {" · "}
-                  <span className="font-data">{t("unreachable.run")}</span>
-                </p>
-                <p className="text-meta text-content-muted">
-                  {t("unreachable.runAltNote")}{" "}
-                  <span className="font-data text-content-secondary">
-                    {t("unreachable.runAlt")}
-                  </span>
-                </p>
-              </div>
-            )}
-          </div>
-          <div className="flex shrink-0 items-center gap-2 self-end sm:self-start">
-            <Button variant="primary" size="sm" onClick={() => void check()}>
-              {t("retry")}
-            </Button>
-            <button
-              type="button"
-              aria-label={t("dismiss")}
-              onClick={() => setDismissed(true)}
-              className="text-content-muted transition-colors duration-100 hover:text-content-primary"
-            >
-              <IconClose size={12} strokeWidth={2.25} />
-            </button>
-          </div>
+    <div className="flex h-dvh min-h-[32rem] overflow-hidden bg-surface-base text-content-primary">
+      <aside
+        aria-hidden="true"
+        className="hidden w-14 shrink-0 flex-col items-center border-r border-edge bg-surface-raised py-4 sm:flex"
+      >
+        <div className="grid size-8 place-items-center rounded-md border border-edge-strong bg-surface-raised font-data text-xs font-semibold text-content-primary">
+          LI
         </div>
-      )}
-    </>
+        <div className="mt-8 flex flex-col gap-4">
+          {Array.from({ length: 5 }, (_, index) => (
+            <span
+              key={index}
+              className="block size-5 rounded bg-surface-overlay"
+              style={{ opacity: 1 - index * 0.12 }}
+            />
+          ))}
+        </div>
+      </aside>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex h-12 shrink-0 items-center border-b border-edge bg-surface-raised px-4">
+          <span className="font-data text-xs font-semibold tracking-wide text-content-secondary">
+            LION STUDIO
+          </span>
+          <span className="ml-auto inline-flex items-center gap-1.5 text-meta text-content-muted">
+            <span className="size-1.5 rounded-full bg-status-pending" />
+            {isChecking
+              ? null
+              : isWrongApp
+                ? t("wrongApp.title")
+                : needsPairing
+                  ? t("pairing.title")
+                  : t("unreachable.title")}
+          </span>
+        </header>
+
+        <main
+          role={isChecking ? "status" : "alert"}
+          aria-live="polite"
+          className="grid min-h-0 flex-1 place-items-center overflow-y-auto px-5 py-10 sm:px-10"
+        >
+          {isChecking ? (
+            <div
+              aria-label="Lion Studio"
+              className="w-full max-w-xl rounded-xl border border-edge bg-surface-raised p-6 shadow-card"
+            >
+              <div className="flex items-center gap-3">
+                <span className="grid size-10 place-items-center rounded-lg bg-surface-overlay text-content-muted">
+                  <IconTerminal size={20} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="h-3 w-40 animate-pulse rounded bg-surface-overlay" />
+                  <div className="mt-2 h-2.5 w-64 max-w-full animate-pulse rounded bg-surface-overlay" />
+                </div>
+              </div>
+              <div className="mt-6 space-y-2.5">
+                <div className="h-9 animate-pulse rounded-md bg-surface-overlay" />
+                <div className="h-9 animate-pulse rounded-md bg-surface-overlay" />
+              </div>
+            </div>
+          ) : (
+            <section className="w-full max-w-xl rounded-xl border border-edge bg-surface-raised p-6 shadow-card sm:p-8">
+              <div className="flex items-start gap-4">
+                <span
+                  className={`grid size-11 shrink-0 place-items-center rounded-lg ${
+                    isWrongApp || needsPairing
+                      ? "bg-status-warning-bg text-status-warning"
+                      : "bg-surface-overlay text-content-secondary"
+                  }`}
+                >
+                  {isWrongApp ? (
+                    <IconPort size={22} />
+                  ) : needsPairing ? (
+                    <IconShield size={22} />
+                  ) : (
+                    <IconTerminal size={22} />
+                  )}
+                </span>
+                <div className="min-w-0">
+                  <h1 className="text-xl font-semibold tracking-tight text-content-primary">
+                    {isWrongApp
+                      ? t("wrongApp.title")
+                      : needsPairing
+                        ? t("pairing.title")
+                        : t("unreachable.title")}
+                  </h1>
+                  <p className="mt-2 text-body leading-relaxed text-content-secondary">
+                    {isWrongApp
+                      ? t("wrongApp.body", { base: displayBase })
+                      : needsPairing
+                        ? t("pairing.body", { base: displayBase })
+                        : t("unreachable.body", { base: displayBase })}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-6 border-t border-edge pt-5">
+                {isWrongApp ? (
+                  <>
+                    <p className="text-body text-content-secondary">{t("wrongApp.fix")}</p>
+                    <code className="mt-2 block overflow-x-auto rounded-md border border-edge bg-surface-base px-3 py-2.5 font-data text-xs text-content-primary">
+                      {t("wrongApp.command")}
+                    </code>
+                  </>
+                ) : needsPairing ? (
+                  <>
+                    <p className="text-body text-content-secondary">{t("pairing.fix")}</p>
+                    <code className="mt-2 block overflow-x-auto rounded-md border border-edge bg-surface-base px-3 py-2.5 font-data text-xs text-content-primary">
+                      {t("pairing.command")}
+                    </code>
+                  </>
+                ) : (
+                  <div className="space-y-3">
+                    <div>
+                      <code className="block overflow-x-auto rounded-md border border-edge bg-surface-base px-3 py-2.5 font-data text-xs text-content-primary">
+                        {t("unreachable.install")}
+                      </code>
+                    </div>
+                    <div>
+                      <code className="block overflow-x-auto rounded-md border border-edge bg-surface-base px-3 py-2.5 font-data text-xs text-content-primary">
+                        {t("unreachable.run")}
+                      </code>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-6 flex flex-col-reverse gap-3 border-t border-edge pt-5 sm:flex-row sm:items-center sm:justify-between">
+                <p className="min-w-0 truncate font-data text-[11px] text-content-muted">
+                  {displayBase}
+                </p>
+                <Button variant="primary" size="sm" onClick={() => void check()}>
+                  {t("retry")}
+                </Button>
+              </div>
+            </section>
+          )}
+        </main>
+
+        <footer className="flex h-7 shrink-0 items-center border-t border-edge bg-surface-raised px-3 text-[11px] text-content-muted">
+          <span className="font-data">lionagi</span>
+        </footer>
+      </div>
+    </div>
   );
 }

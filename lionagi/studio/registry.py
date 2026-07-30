@@ -43,6 +43,7 @@ _DEDUP_KEYS: set[tuple[str, str, str, str]] = set()
 _STUDIO_ROUTE_MODULES: tuple[str, ...] = (
     "lionagi.studio.services.casts",
     "lionagi.studio.services.runs",
+    "lionagi.studio.services.run_resume",
     "lionagi.studio.services.engine_runs",
     "lionagi.studio.services.definitions",
     "lionagi.studio.services.agents",
@@ -58,7 +59,7 @@ _STUDIO_ROUTE_MODULES: tuple[str, ...] = (
     "lionagi.studio.services.workflow_defs",
     "lionagi.studio.services.sessions",
     "lionagi.studio.services.run_tags",
-    "lionagi.studio.services.leo",
+    "lionagi.studio.services.operator",
     "lionagi.studio.services.approvals",
     "lionagi.studio.services.admin",
     "lionagi.studio.services.schedules",

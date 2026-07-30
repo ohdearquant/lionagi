@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import shutil
 import signal
@@ -34,6 +35,39 @@ from .fixtures import seed_filesystem_fixtures, seed_state_db
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REAL_LIONAGI_HOME = Path("~/.lionagi").expanduser().resolve()
+
+_OPERATOR_SCRIPT = {
+    "version": 1,
+    "responses": [
+        {
+            "type": "error",
+            "kind": "timeout",
+            "message": "scripted wait",
+            "delay_ms": 10_000,
+            "when": {"prompt_contains": "wait until I stop you"},
+        },
+        {
+            "type": "stream",
+            "chunks": [
+                {
+                    "type": "text",
+                    "content": "Continuation complete.",
+                    "is_delta": True,
+                },
+                {"type": "result", "metadata": {"done": True}},
+            ],
+            "when": {"prompt_contains": "Continue with the next check."},
+        },
+        {
+            "type": "stream",
+            "chunks": [
+                {"type": "text", "content": "Fleet ", "is_delta": True},
+                {"type": "text", "content": "ready.", "is_delta": True},
+                {"type": "result", "metadata": {"done": True}},
+            ],
+        },
+    ],
+}
 
 
 def _free_port() -> int:
@@ -117,8 +151,17 @@ class SeededDaemon:
         # nondeterministic content and violate the "never touch the real
         # home dir" rule in spirit even though it's a different tree.
         env["LIONAGI_STUDIO_MIRROR_CLAUDE"] = "0"
-        # Deterministic no-auth, API-only daemon regardless of ambient shell env.
+        operator_script = tmp_dir / "operator-script.json"
+        operator_script.write_text(json.dumps(_OPERATOR_SCRIPT), encoding="utf-8")
+        env["LIONAGI_STUDIO_OPERATOR_PROVIDER"] = "scripted"
+        env["LIONAGI_STUDIO_OPERATOR_MODEL"] = "scripted-test"
+        env["LIONAGI_TEST_SCRIPT"] = str(operator_script)
+        # Ambient Studio credentials are never inherited. The test-only ASGI
+        # module mints its deterministic human bearer in process, matching the
+        # safe production launch mode rather than treating an environment
+        # variable as a trusted human principal.
         env.pop("LIONAGI_STUDIO_AUTH_TOKEN", None)
+        env.pop("LIONAGI_STUDIO_HUMAN_TOKEN", None)
         env.pop("LIONAGI_STUDIO_FRONTEND_DIST", None)
         env.pop("LIONAGI_STUDIO_URL", None)
 
@@ -127,7 +170,7 @@ class SeededDaemon:
                 sys.executable,
                 "-m",
                 "uvicorn",
-                "lionagi.studio.app:app",
+                "tests.e2e_studio.studio_app:app",
                 "--host",
                 host,
                 "--port",

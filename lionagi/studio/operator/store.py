@@ -1,0 +1,1674 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+"""SQLite-backed durable store for the ADR-0083 Operator protocol.
+
+These defensive ``CREATE TABLE IF NOT EXISTS`` statements intentionally make
+the protocol usable by direct Studio service callers as well as through the
+normal StateDB-opening daemon lifespan.  The tables use the canonical StateDB
+file and never fall back to process memory.
+
+Streamed frames are written once per provider chunk, so the durable record
+carries an explicit retention contract enforced on the write path -- see
+``MAX_FRAME_PAYLOAD_BYTES``, ``MAX_FRAMES_PER_TURN`` and
+``MAX_TURN_PAYLOAD_BYTES``.  Nothing is ever dropped silently: an oversized
+payload is stored truncated and says so, and frames refused past a turn's
+budget are counted into a single ``truncation`` summary frame naming what was
+elided and how much.  Terminal ``done`` frames are exempt so a turn can always
+be closed.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import time
+import uuid
+from pathlib import Path
+from typing import Any
+
+from lionagi.state import db as state_db_mod
+
+from ..services._db import open_db
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS studio_operator_conversations (
+  id                 TEXT PRIMARY KEY,
+  project            TEXT,
+  title              TEXT,
+  status             TEXT NOT NULL DEFAULT 'active'
+                     CHECK(status IN ('active', 'archived', 'deleted')),
+  next_sequence      INTEGER NOT NULL DEFAULT 1,
+  active_request_id  TEXT,
+  created_at         REAL NOT NULL,
+  updated_at         REAL NOT NULL,
+  archived_at        REAL,
+  deleted_at         REAL
+);
+
+CREATE TABLE IF NOT EXISTS studio_operator_turns (
+  request_id          TEXT PRIMARY KEY,
+  conversation_id    TEXT NOT NULL REFERENCES studio_operator_conversations(id),
+  instruction        TEXT NOT NULL,
+  context_json        TEXT NOT NULL,
+  context_hash        TEXT NOT NULL,
+  status              TEXT NOT NULL
+                      CHECK(status IN ('queued', 'running', 'awaiting_confirmation',
+                                       'completed', 'failed', 'cancelled')),
+  error_code          TEXT,
+  created_at          REAL NOT NULL,
+  started_at          REAL,
+  ended_at            REAL,
+  cancel_requested_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS studio_operator_frames (
+  conversation_id   TEXT NOT NULL REFERENCES studio_operator_conversations(id),
+  sequence          INTEGER NOT NULL,
+  request_id        TEXT NOT NULL REFERENCES studio_operator_turns(request_id),
+  frame_type        TEXT NOT NULL,
+  payload_json      TEXT NOT NULL,
+  created_at        REAL NOT NULL,
+  PRIMARY KEY(conversation_id, sequence)
+);
+CREATE INDEX IF NOT EXISTS idx_operator_frames_request
+  ON studio_operator_frames(request_id, sequence);
+
+CREATE TABLE IF NOT EXISTS studio_operator_proposals (
+  id                 TEXT PRIMARY KEY,
+  conversation_id   TEXT NOT NULL REFERENCES studio_operator_conversations(id),
+  request_id         TEXT NOT NULL REFERENCES studio_operator_turns(request_id),
+  command_type       TEXT NOT NULL,
+  command_json       TEXT NOT NULL,
+  command_hash       TEXT NOT NULL,
+  target_version     TEXT,
+  risk               TEXT NOT NULL CHECK(risk IN ('mutate', 'execute', 'admin')),
+  summary            TEXT NOT NULL,
+  idempotency_key    TEXT NOT NULL UNIQUE,
+  status             TEXT NOT NULL
+                     CHECK(status IN ('pending', 'confirmed', 'executing', 'succeeded',
+                                      'failed', 'expired', 'cancelled', 'conflict')),
+  expires_at         REAL NOT NULL,
+  confirmed_at       REAL,
+  completed_at       REAL,
+  result_json        TEXT,
+  error_code         TEXT,
+  created_at         REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_operator_proposals_request
+  ON studio_operator_proposals(request_id, created_at);
+
+CREATE TABLE IF NOT EXISTS studio_operator_effects (
+  id                 TEXT PRIMARY KEY,
+  conversation_id   TEXT NOT NULL REFERENCES studio_operator_conversations(id),
+  request_id         TEXT NOT NULL REFERENCES studio_operator_turns(request_id),
+  effect_type        TEXT NOT NULL,
+  effect_json        TEXT NOT NULL,
+  status             TEXT NOT NULL DEFAULT 'pending'
+                     CHECK(status IN ('pending', 'applied', 'rejected', 'expired')),
+  emitted_at         REAL NOT NULL,
+  acknowledged_at    REAL,
+  rejection_code     TEXT
+);
+"""
+
+# Durable retention contract for streamed frames, enforced in append_frame so
+# direct store callers cannot bypass it.
+MAX_FRAME_PAYLOAD_BYTES = 64 * 1024
+MAX_FRAMES_PER_TURN = 2000
+MAX_TURN_PAYLOAD_BYTES = 8 * 1024 * 1024
+TRUNCATION_FRAME_TYPE = "truncation"
+
+
+class OperatorStoreError(RuntimeError):
+    code = "service_failure"
+
+
+class OperatorNotFoundError(OperatorStoreError):
+    code = "not_found"
+
+
+class OperatorAuditUnavailableError(OperatorStoreError):
+    code = "audit_unavailable"
+
+
+class OperatorConflictError(OperatorStoreError):
+    code = "conflict"
+
+    def __init__(self, message: str, *, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.details = details or {}
+
+
+class OperatorStore:
+    def __init__(self, db_path: str | Path | None = None) -> None:
+        self._db_path = Path(db_path) if db_path is not None else None
+        self._schema_ready: tuple[Path, int, int] | None = None
+        self._schema_lock = asyncio.Lock()
+
+    def path(self) -> Path:
+        if self._db_path is not None:
+            return self._db_path
+        path = state_db_mod.state_db_file()
+        if path is None:
+            raise OperatorStoreError(
+                "Studio Operator currently requires a local StateDB file; "
+                "no ephemeral fallback is available"
+            )
+        return path
+
+    async def ensure_schema(self) -> None:
+        path = self.path().resolve()
+        try:
+            stat = path.stat()
+            identity = (path, stat.st_dev, stat.st_ino)
+        except FileNotFoundError:
+            identity = None
+        if self._schema_ready == identity and identity is not None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        async with self._schema_lock:
+            try:
+                stat = path.stat()
+                identity = (path, stat.st_dev, stat.st_ino)
+            except FileNotFoundError:
+                identity = None
+            if self._schema_ready == identity and identity is not None:
+                return
+            async with open_db(str(path)) as db:
+                await db.executescript(_SCHEMA)
+                await db.commit()
+            stat = path.stat()
+            self._schema_ready = (path, stat.st_dev, stat.st_ino)
+
+    @staticmethod
+    def _json(value: Any) -> str:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+    @staticmethod
+    def _byte_len(text: str) -> int:
+        return len(text.encode("utf-8"))
+
+    @classmethod
+    def _truncate_strings(cls, value: Any, budget: int) -> Any:
+        if isinstance(value, str):
+            raw = value.encode("utf-8")
+            if len(raw) <= budget:
+                return value
+            kept = raw[:budget].decode("utf-8", "ignore")
+            elided = len(raw) - len(kept.encode("utf-8"))
+            return f"{kept}…[{elided} bytes elided]"
+        if isinstance(value, dict):
+            return {key: cls._truncate_strings(item, budget) for key, item in value.items()}
+        if isinstance(value, list):
+            return [cls._truncate_strings(item, budget) for item in value]
+        return value
+
+    @classmethod
+    def _cap_frame_payload(cls, payload: dict[str, Any]) -> dict[str, Any]:
+        """Return a payload within ``MAX_FRAME_PAYLOAD_BYTES`` that states any elision."""
+        original_bytes = cls._byte_len(cls._json(payload))
+        if original_bytes <= MAX_FRAME_PAYLOAD_BYTES:
+            return payload
+        capped = cls._truncate_strings(payload, MAX_FRAME_PAYLOAD_BYTES // 2)
+        note = {
+            "reason": "frame_payload_bytes",
+            "limitBytes": MAX_FRAME_PAYLOAD_BYTES,
+            "originalBytes": original_bytes,
+        }
+        capped = {**capped, "truncation": note}
+        # Leave headroom for the storedBytes field added below.
+        if cls._byte_len(cls._json(capped)) > MAX_FRAME_PAYLOAD_BYTES - 64:
+            # The payload's own structure, not one long string, is oversized.
+            fields = sorted(map(str, payload))
+            capped = {
+                "truncation": {
+                    **note,
+                    "elidedFieldCount": len(fields),
+                    "elidedFields": [field[:64] for field in fields[:32]],
+                }
+            }
+        capped["truncation"]["storedBytes"] = cls._byte_len(cls._json(capped))
+        return capped
+
+    @staticmethod
+    def canonical_hash(value: Any) -> str:
+        return hashlib.sha256(OperatorStore._json(value).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _conversation(row: Any) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "project": row["project"],
+            "title": row["title"],
+            "status": row["status"],
+            "nextSequence": row["next_sequence"],
+            "activeRequestId": row["active_request_id"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    @staticmethod
+    def _frame(row: Any) -> dict[str, Any]:
+        return {
+            "version": 1,
+            "conversationId": row["conversation_id"],
+            "requestId": row["request_id"],
+            "sequence": row["sequence"],
+            "type": row["frame_type"],
+            "payload": json.loads(row["payload_json"]),
+            "createdAt": row["created_at"],
+        }
+
+    @staticmethod
+    def _proposal(row: Any) -> dict[str, Any]:
+        result = json.loads(row["result_json"]) if row["result_json"] else None
+        return {
+            "id": row["id"],
+            "conversationId": row["conversation_id"],
+            "requestId": row["request_id"],
+            "commandType": row["command_type"],
+            "command": json.loads(row["command_json"]),
+            "commandHash": row["command_hash"],
+            "targetVersion": row["target_version"],
+            "risk": row["risk"],
+            "summary": row["summary"],
+            "idempotencyKey": row["idempotency_key"],
+            "status": row["status"],
+            "expiresAt": row["expires_at"],
+            "confirmedAt": row["confirmed_at"],
+            "completedAt": row["completed_at"],
+            "result": result,
+            "errorCode": row["error_code"],
+            "createdAt": row["created_at"],
+        }
+
+    @staticmethod
+    def _proposal_target(
+        command_type: str,
+        command: dict[str, Any],
+        target_version: str | None,
+    ) -> dict[str, str] | None:
+        if target_version is None:
+            return None
+        if (
+            command_type == "launch"
+            and command.get("action_kind") == "play"
+            and isinstance(command.get("action_playbook"), str)
+        ):
+            return {
+                "kind": "playbook",
+                "id": command["action_playbook"],
+                "version": target_version,
+            }
+        return {
+            "kind": command_type,
+            "id": command_type,
+            "version": target_version,
+        }
+
+    @classmethod
+    def _proposal_audit_details(
+        cls,
+        row: Any,
+        *,
+        decision: str,
+        result: dict[str, Any] | None = None,
+        error_code: str | None = None,
+        confirmed_at: float | None = None,
+        completed_at: float | None = None,
+    ) -> dict[str, Any]:
+        """Build the exact ADR-0083 audit envelope from a proposal row."""
+        target = cls._proposal_target(
+            row["command_type"],
+            json.loads(row["command_json"]),
+            row["target_version"],
+        )
+        return {
+            "conversation_id": row["conversation_id"],
+            "request_id": row["request_id"],
+            "proposal_id": row["id"],
+            "command_type": row["command_type"],
+            "command_hash": row["command_hash"],
+            "target": target,
+            "risk": row["risk"],
+            "idempotency_key": row["idempotency_key"],
+            "decision": decision,
+            "result": result or {},
+            "error_code": error_code,
+            "confirmed_at": confirmed_at,
+            "completed_at": completed_at,
+        }
+
+    async def create_conversation(
+        self, *, project: str | None = None, title: str | None = None
+    ) -> dict[str, Any]:
+        await self.ensure_schema()
+        now = time.time()
+        conversation_id = str(uuid.uuid4())
+        async with open_db(str(self.path())) as db:
+            await db.execute(
+                "INSERT INTO studio_operator_conversations "
+                "(id, project, title, status, next_sequence, created_at, updated_at) "
+                "VALUES (?, ?, ?, 'active', 1, ?, ?)",
+                (conversation_id, project, title, now, now),
+            )
+            await db.commit()
+        return await self.get_conversation(conversation_id)
+
+    async def list_conversations(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        await self.ensure_schema()
+        async with open_db(str(self.path())) as db:
+            rows = await (
+                await db.execute(
+                    "SELECT * FROM studio_operator_conversations "
+                    "WHERE status != 'deleted' ORDER BY updated_at DESC LIMIT ?",
+                    (limit,),
+                )
+            ).fetchall()
+        return [self._conversation(row) for row in rows]
+
+    async def get_conversation(self, conversation_id: str) -> dict[str, Any]:
+        await self.ensure_schema()
+        async with open_db(str(self.path())) as db:
+            row = await (
+                await db.execute(
+                    "SELECT * FROM studio_operator_conversations WHERE id = ?",
+                    (conversation_id,),
+                )
+            ).fetchone()
+        if row is None or row["status"] == "deleted":
+            raise OperatorNotFoundError(f"Operator conversation '{conversation_id}' not found")
+        return self._conversation(row)
+
+    async def archive_or_delete(self, conversation_id: str) -> None:
+        await self.ensure_schema()
+        now = time.time()
+        async with open_db(str(self.path())) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute(
+                    "SELECT status, active_request_id FROM studio_operator_conversations "
+                    "WHERE id = ?",
+                    (conversation_id,),
+                )
+            ).fetchone()
+            if row is None or row["status"] == "deleted":
+                await db.rollback()
+                raise OperatorNotFoundError(f"Operator conversation '{conversation_id}' not found")
+            if row["active_request_id"]:
+                await db.rollback()
+                raise OperatorConflictError("Cannot delete a conversation with an active turn")
+            await db.execute(
+                "UPDATE studio_operator_conversations SET status='deleted', deleted_at=?, "
+                "updated_at=? WHERE id=?",
+                (now, now, conversation_id),
+            )
+            await db.commit()
+
+    async def list_frames(
+        self, conversation_id: str, *, after_sequence: int = 0, limit: int = 1000
+    ) -> list[dict[str, Any]]:
+        await self.get_conversation(conversation_id)
+        async with open_db(str(self.path())) as db:
+            rows = await (
+                await db.execute(
+                    "SELECT * FROM studio_operator_frames "
+                    "WHERE conversation_id=? AND sequence>? "
+                    "ORDER BY sequence ASC LIMIT ?",
+                    (conversation_id, after_sequence, limit),
+                )
+            ).fetchall()
+        return [self._frame(row) for row in rows]
+
+    async def list_recent_frames(
+        self, conversation_id: str, *, limit: int = 64
+    ) -> list[dict[str, Any]]:
+        """Return the newest ``limit`` frames, ordered chronologically."""
+        await self.get_conversation(conversation_id)
+        async with open_db(str(self.path())) as db:
+            rows = await (
+                await db.execute(
+                    "SELECT * FROM (SELECT * FROM studio_operator_frames "
+                    "WHERE conversation_id=? ORDER BY sequence DESC LIMIT ?) "
+                    "ORDER BY sequence ASC",
+                    (conversation_id, limit),
+                )
+            ).fetchall()
+        return [self._frame(row) for row in rows]
+
+    async def list_complete_turn_frame_groups(
+        self,
+        conversation_id: str,
+        *,
+        exclude_request_id: str,
+        limit: int = 64,
+    ) -> list[tuple[dict[str, Any], ...]]:
+        """Return recent durable turn frames, grouped newest-complete-turn first."""
+        await self.get_conversation(conversation_id)
+        bounded_limit = max(1, min(limit, 64))
+        async with open_db(str(self.path())) as db:
+            requests = await (
+                await db.execute(
+                    "SELECT t.request_id, MAX(f.sequence) AS terminal_sequence "
+                    "FROM studio_operator_turns AS t "
+                    "JOIN studio_operator_frames AS f "
+                    "ON f.request_id=t.request_id AND f.frame_type='done' "
+                    "WHERE t.conversation_id=? AND t.request_id!=? "
+                    "AND t.status IN ('completed','failed','cancelled') "
+                    "GROUP BY t.request_id "
+                    "ORDER BY terminal_sequence DESC LIMIT ?",
+                    (conversation_id, exclude_request_id, bounded_limit),
+                )
+            ).fetchall()
+            request_ids = [str(row["request_id"]) for row in requests]
+            if not request_ids:
+                return []
+            placeholders = ",".join("?" for _ in request_ids)
+            query = f"""\
+SELECT * FROM studio_operator_frames
+WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
+"""  # noqa: S608
+            rows = await (await db.execute(query, tuple(request_ids))).fetchall()
+
+        grouped: dict[str, list[dict[str, Any]]] = {request_id: [] for request_id in request_ids}
+        for row in rows:
+            grouped[str(row["request_id"])].append(self._frame(row))
+        return [tuple(grouped[request_id]) for request_id in request_ids]
+
+    async def record_context_compilation(
+        self, request_id: str, metadata: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Persist the exact durable-frame compilation receipt for one turn."""
+        await self.ensure_schema()
+        async with open_db(str(self.path())) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute(
+                    "SELECT context_json FROM studio_operator_turns WHERE request_id=?",
+                    (request_id,),
+                )
+            ).fetchone()
+            if row is None:
+                await db.rollback()
+                raise OperatorNotFoundError(f"Operator request '{request_id}' not found")
+            context = json.loads(row["context_json"])
+            context["operatorCompilation"] = dict(metadata)
+            context_json = self._json(context)
+            await db.execute(
+                "UPDATE studio_operator_turns SET context_json=?, context_hash=? "
+                "WHERE request_id=?",
+                (context_json, self.canonical_hash(context), request_id),
+            )
+            await db.commit()
+        return context
+
+    async def submit_turn(
+        self,
+        conversation_id: str,
+        *,
+        instruction: str,
+        context: dict[str, Any],
+        expected_last_sequence: int,
+    ) -> dict[str, Any]:
+        await self.ensure_schema()
+        request_id = str(uuid.uuid4())
+        now = time.time()
+        context_json = self._json(context)
+        context_hash = self.canonical_hash(context)
+        async with open_db(str(self.path())) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute(
+                    "SELECT status, next_sequence, active_request_id "
+                    "FROM studio_operator_conversations WHERE id=?",
+                    (conversation_id,),
+                )
+            ).fetchone()
+            if row is None or row["status"] == "deleted":
+                await db.rollback()
+                raise OperatorNotFoundError(f"Operator conversation '{conversation_id}' not found")
+            if row["status"] != "active":
+                await db.rollback()
+                raise OperatorConflictError("Archived Operator conversations are read-only")
+            if row["active_request_id"] is not None:
+                await db.rollback()
+                raise OperatorConflictError(
+                    "This conversation already has an active turn",
+                    details={"activeRequestId": row["active_request_id"]},
+                )
+            actual_last = int(row["next_sequence"]) - 1
+            if expected_last_sequence != actual_last:
+                await db.rollback()
+                raise OperatorConflictError(
+                    "Conversation cursor is stale",
+                    details={
+                        "code": "stale_context",
+                        "expectedLastSequence": expected_last_sequence,
+                        "actualLastSequence": actual_last,
+                    },
+                )
+            sequence = int(row["next_sequence"])
+            await db.execute(
+                "INSERT INTO studio_operator_turns "
+                "(request_id, conversation_id, instruction, context_json, context_hash, "
+                "status, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?)",
+                (request_id, conversation_id, instruction, context_json, context_hash, now),
+            )
+            await db.execute(
+                "UPDATE studio_operator_conversations SET active_request_id=?, "
+                "next_sequence=?, updated_at=? WHERE id=? AND active_request_id IS NULL",
+                (request_id, sequence + 1, now, conversation_id),
+            )
+            await db.execute(
+                "INSERT INTO studio_operator_frames "
+                "(conversation_id, sequence, request_id, frame_type, payload_json, created_at) "
+                "VALUES (?, ?, ?, 'text', ?, ?)",
+                (
+                    conversation_id,
+                    sequence,
+                    request_id,
+                    self._json(
+                        {
+                            "content": instruction,
+                            "format": "plain",
+                            # Additive discriminator used by the chat renderer.
+                            "role": "user",
+                        }
+                    ),
+                    now,
+                ),
+            )
+            await db.commit()
+        return {
+            "conversationId": conversation_id,
+            "requestId": request_id,
+            "acceptedSequence": sequence,
+        }
+
+    async def mark_running(self, request_id: str) -> bool:
+        await self.ensure_schema()
+        now = time.time()
+        async with open_db(str(self.path())) as db:
+            cur = await db.execute(
+                "UPDATE studio_operator_turns SET status='running', started_at=? "
+                "WHERE request_id=? AND status='queued'",
+                (now, request_id),
+            )
+            await db.commit()
+        return cur.rowcount == 1
+
+    async def get_turn(self, request_id: str) -> dict[str, Any]:
+        await self.ensure_schema()
+        async with open_db(str(self.path())) as db:
+            row = await (
+                await db.execute(
+                    "SELECT * FROM studio_operator_turns WHERE request_id=?", (request_id,)
+                )
+            ).fetchone()
+        if row is None:
+            raise OperatorNotFoundError(f"Operator request '{request_id}' not found")
+        return {
+            "requestId": row["request_id"],
+            "conversationId": row["conversation_id"],
+            "instruction": row["instruction"],
+            "context": json.loads(row["context_json"]),
+            "contextHash": row["context_hash"],
+            "status": row["status"],
+            "errorCode": row["error_code"],
+            "cancelRequestedAt": row["cancel_requested_at"],
+        }
+
+    @staticmethod
+    async def _turn_budget_exceeded(db: Any, request_id: str, payload_bytes: int) -> str | None:
+        """Name the retention limit this frame would breach, or None if it fits."""
+        usage = await (
+            await db.execute(
+                "SELECT COUNT(*) AS frame_count, "
+                "COALESCE(SUM(LENGTH(CAST(payload_json AS BLOB))), 0) AS payload_bytes "
+                "FROM studio_operator_frames WHERE request_id=?",
+                (request_id,),
+            )
+        ).fetchone()
+        if int(usage["frame_count"]) >= MAX_FRAMES_PER_TURN:
+            return "frames_per_turn"
+        if int(usage["payload_bytes"]) + payload_bytes > MAX_TURN_PAYLOAD_BYTES:
+            return "turn_payload_bytes"
+        return None
+
+    async def _record_elided_frame(
+        self,
+        db: Any,
+        *,
+        conversation_id: str,
+        request_id: str,
+        frame_type: str,
+        payload_bytes: int,
+        sequence: int,
+        reason: str,
+        now: float,
+    ) -> dict[str, Any] | None:
+        """Fold one refused frame into the turn's single truncation summary frame."""
+        existing = await (
+            await db.execute(
+                "SELECT sequence, payload_json FROM studio_operator_frames "
+                "WHERE request_id=? AND frame_type=? LIMIT 1",
+                (request_id, TRUNCATION_FRAME_TYPE),
+            )
+        ).fetchone()
+        if existing is not None:
+            summary = json.loads(existing["payload_json"])
+            summary["elidedFrames"] = int(summary.get("elidedFrames", 0)) + 1
+            summary["elidedBytes"] = int(summary.get("elidedBytes", 0)) + payload_bytes
+            by_type = dict(summary.get("elidedFrameTypes") or {})
+            by_type[frame_type] = int(by_type.get(frame_type, 0)) + 1
+            summary["elidedFrameTypes"] = by_type
+            summary["lastElidedAt"] = now
+            await db.execute(
+                "UPDATE studio_operator_frames SET payload_json=? "
+                "WHERE request_id=? AND sequence=?",
+                (self._json(summary), request_id, existing["sequence"]),
+            )
+            await db.commit()
+            return None
+        summary = {
+            "reason": reason,
+            "limits": {
+                "maxFramesPerTurn": MAX_FRAMES_PER_TURN,
+                "maxTurnPayloadBytes": MAX_TURN_PAYLOAD_BYTES,
+                "maxFramePayloadBytes": MAX_FRAME_PAYLOAD_BYTES,
+            },
+            "elidedFrames": 1,
+            "elidedBytes": payload_bytes,
+            "elidedFrameTypes": {frame_type: 1},
+            "firstElidedAt": now,
+            "lastElidedAt": now,
+            "message": (
+                "This turn reached its durable retention limit; frames after this "
+                "point were not stored and are counted here."
+            ),
+        }
+        await db.execute(
+            "UPDATE studio_operator_conversations SET next_sequence=?, updated_at=? WHERE id=?",
+            (sequence + 1, now, conversation_id),
+        )
+        await db.execute(
+            "INSERT INTO studio_operator_frames "
+            "(conversation_id, sequence, request_id, frame_type, payload_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                conversation_id,
+                sequence,
+                request_id,
+                TRUNCATION_FRAME_TYPE,
+                self._json(summary),
+                now,
+            ),
+        )
+        await db.commit()
+        return {
+            "version": 1,
+            "conversationId": conversation_id,
+            "requestId": request_id,
+            "sequence": sequence,
+            "type": TRUNCATION_FRAME_TYPE,
+            "payload": summary,
+            "createdAt": now,
+        }
+
+    async def append_frame(
+        self,
+        conversation_id: str,
+        request_id: str,
+        frame_type: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Insert before returning; returned frames are therefore safe to yield.
+
+        Enforces the per-turn retention contract: an oversized payload is stored
+        truncated, and once the turn's frame or byte budget is spent the frame is
+        folded into a single durable ``truncation`` summary instead of a new row.
+        """
+        await self.ensure_schema()
+        now = time.time()
+        async with open_db(str(self.path())) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            terminal = await (
+                await db.execute(
+                    "SELECT 1 FROM studio_operator_frames "
+                    "WHERE request_id=? AND frame_type='done' LIMIT 1",
+                    (request_id,),
+                )
+            ).fetchone()
+            if terminal is not None:
+                await db.rollback()
+                return None
+            row = await (
+                await db.execute(
+                    "SELECT next_sequence FROM studio_operator_conversations "
+                    "WHERE id=? AND active_request_id=?",
+                    (conversation_id, request_id),
+                )
+            ).fetchone()
+            if row is None:
+                await db.rollback()
+                return None
+            sequence = int(row["next_sequence"])
+            stored_payload = self._cap_frame_payload(dict(payload))
+            if frame_type == "done":
+                stored_payload["lastSequence"] = sequence
+            else:
+                over_budget = await self._turn_budget_exceeded(
+                    db,
+                    request_id,
+                    self._byte_len(self._json(stored_payload)),
+                )
+                if over_budget is not None:
+                    return await self._record_elided_frame(
+                        db,
+                        conversation_id=conversation_id,
+                        request_id=request_id,
+                        frame_type=frame_type,
+                        payload_bytes=self._byte_len(self._json(stored_payload)),
+                        sequence=sequence,
+                        reason=over_budget,
+                        now=now,
+                    )
+            await db.execute(
+                "UPDATE studio_operator_conversations SET next_sequence=?, updated_at=? WHERE id=?",
+                (sequence + 1, now, conversation_id),
+            )
+            await db.execute(
+                "INSERT INTO studio_operator_frames "
+                "(conversation_id, sequence, request_id, frame_type, payload_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    conversation_id,
+                    sequence,
+                    request_id,
+                    frame_type,
+                    self._json(stored_payload),
+                    now,
+                ),
+            )
+            await db.commit()
+        return {
+            "version": 1,
+            "conversationId": conversation_id,
+            "requestId": request_id,
+            "sequence": sequence,
+            "type": frame_type,
+            "payload": stored_payload,
+            "createdAt": now,
+        }
+
+    async def append_effect(
+        self,
+        conversation_id: str,
+        request_id: str,
+        effect: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Persist one pending UI effect and its frame in the same transaction."""
+        await self.ensure_schema()
+        kind = effect.get("kind")
+        if kind not in {"navigate", "select", "prefill", "theme"}:
+            raise OperatorConflictError("Operator emitted an unsupported UI effect")
+        effect_id = str(uuid.uuid4())
+        stored_effect = {**effect, "id": effect_id}
+        payload = {"effect": stored_effect}
+        now = time.time()
+        async with open_db(str(self.path())) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            terminal = await (
+                await db.execute(
+                    "SELECT 1 FROM studio_operator_frames "
+                    "WHERE request_id=? AND frame_type='done' LIMIT 1",
+                    (request_id,),
+                )
+            ).fetchone()
+            row = await (
+                await db.execute(
+                    "SELECT next_sequence FROM studio_operator_conversations "
+                    "WHERE id=? AND active_request_id=?",
+                    (conversation_id, request_id),
+                )
+            ).fetchone()
+            if terminal is not None or row is None:
+                await db.rollback()
+                return None
+            sequence = int(row["next_sequence"])
+            await db.execute(
+                "INSERT INTO studio_operator_effects "
+                "(id, conversation_id, request_id, effect_type, effect_json, "
+                "status, emitted_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+                (
+                    effect_id,
+                    conversation_id,
+                    request_id,
+                    str(kind),
+                    self._json(stored_effect),
+                    now,
+                ),
+            )
+            await db.execute(
+                "UPDATE studio_operator_conversations SET next_sequence=?, updated_at=? WHERE id=?",
+                (sequence + 1, now, conversation_id),
+            )
+            await db.execute(
+                "INSERT INTO studio_operator_frames "
+                "(conversation_id, sequence, request_id, frame_type, payload_json, created_at) "
+                "VALUES (?, ?, ?, 'ui_command', ?, ?)",
+                (conversation_id, sequence, request_id, self._json(payload), now),
+            )
+            await db.commit()
+        return {
+            "version": 1,
+            "conversationId": conversation_id,
+            "requestId": request_id,
+            "sequence": sequence,
+            "type": "ui_command",
+            "payload": payload,
+            "createdAt": now,
+        }
+
+    async def finish_turn(
+        self,
+        request_id: str,
+        *,
+        outcome: str,
+        error: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Append optional error + exactly one done and clear the active CAS."""
+        await self.ensure_schema()
+        now = time.time()
+        inserted: list[dict[str, Any]] = []
+        async with open_db(str(self.path())) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            turn = await (
+                await db.execute(
+                    "SELECT conversation_id FROM studio_operator_turns WHERE request_id=?",
+                    (request_id,),
+                )
+            ).fetchone()
+            if turn is None:
+                await db.rollback()
+                raise OperatorNotFoundError(f"Operator request '{request_id}' not found")
+            conversation_id = turn["conversation_id"]
+            existing = await (
+                await db.execute(
+                    "SELECT 1 FROM studio_operator_frames "
+                    "WHERE request_id=? AND frame_type='done' LIMIT 1",
+                    (request_id,),
+                )
+            ).fetchone()
+            if existing is not None:
+                await db.rollback()
+                return []
+            conv = await (
+                await db.execute(
+                    "SELECT next_sequence FROM studio_operator_conversations WHERE id=?",
+                    (conversation_id,),
+                )
+            ).fetchone()
+            sequence = int(conv["next_sequence"])
+            unfinished_proposals = await (
+                await db.execute(
+                    "SELECT * FROM studio_operator_proposals "
+                    "WHERE request_id=? AND status IN ('pending','confirmed')",
+                    (request_id,),
+                )
+            ).fetchall()
+            confirmed_without_result = [
+                proposal
+                for proposal in unfinished_proposals
+                if proposal["status"] == "confirmed" and outcome != "cancelled"
+            ]
+            terminal_error = error
+            if confirmed_without_result and outcome == "completed":
+                outcome = "failed"
+                terminal_error = {
+                    "code": "service_failure",
+                    "message": (
+                        "The provider ended without returning a terminal result "
+                        "for an approved tool"
+                    ),
+                    "retryable": False,
+                }
+            status = {
+                "completed": "completed",
+                "failed": "failed",
+                "cancelled": "cancelled",
+            }[outcome]
+            missing_result_error = {
+                "code": "service_failure",
+                "message": (
+                    "The provider ended without returning a terminal result for this approved tool"
+                ),
+                "retryable": False,
+            }
+            for proposal in confirmed_without_result:
+                command = json.loads(proposal["command_json"])
+                call_id = command.get("toolUseId") or proposal["id"]
+                payload = {
+                    "callId": call_id,
+                    "ok": False,
+                    "error": missing_result_error,
+                }
+                await db.execute(
+                    "INSERT INTO studio_operator_frames "
+                    "(conversation_id, sequence, request_id, frame_type, "
+                    "payload_json, created_at) "
+                    "VALUES (?, ?, ?, 'tool_result', ?, ?)",
+                    (
+                        conversation_id,
+                        sequence,
+                        request_id,
+                        self._json(payload),
+                        now,
+                    ),
+                )
+                inserted.append(
+                    {
+                        "version": 1,
+                        "conversationId": conversation_id,
+                        "requestId": request_id,
+                        "sequence": sequence,
+                        "type": "tool_result",
+                        "payload": payload,
+                        "createdAt": now,
+                    }
+                )
+                sequence += 1
+            if terminal_error is not None:
+                await db.execute(
+                    "INSERT INTO studio_operator_frames "
+                    "(conversation_id, sequence, request_id, frame_type, payload_json, created_at) "
+                    "VALUES (?, ?, ?, 'error', ?, ?)",
+                    (
+                        conversation_id,
+                        sequence,
+                        request_id,
+                        self._json({"error": terminal_error}),
+                        now,
+                    ),
+                )
+                inserted.append(
+                    {
+                        "version": 1,
+                        "conversationId": conversation_id,
+                        "requestId": request_id,
+                        "sequence": sequence,
+                        "type": "error",
+                        "payload": {"error": terminal_error},
+                        "createdAt": now,
+                    }
+                )
+                sequence += 1
+            done_payload = {"outcome": outcome, "lastSequence": sequence}
+            await db.execute(
+                "INSERT INTO studio_operator_frames "
+                "(conversation_id, sequence, request_id, frame_type, payload_json, created_at) "
+                "VALUES (?, ?, ?, 'done', ?, ?)",
+                (conversation_id, sequence, request_id, self._json(done_payload), now),
+            )
+            inserted.append(
+                {
+                    "version": 1,
+                    "conversationId": conversation_id,
+                    "requestId": request_id,
+                    "sequence": sequence,
+                    "type": "done",
+                    "payload": done_payload,
+                    "createdAt": now,
+                }
+            )
+            await db.execute(
+                "UPDATE studio_operator_turns SET status=?, error_code=?, ended_at=? "
+                "WHERE request_id=?",
+                (
+                    status,
+                    terminal_error["code"] if terminal_error else None,
+                    now,
+                    request_id,
+                ),
+            )
+            for proposal in unfinished_proposals:
+                was_pending = proposal["status"] == "pending"
+                proposal_status = "cancelled" if was_pending else "failed"
+                proposal_error = (
+                    "cancelled"
+                    if was_pending or outcome == "cancelled"
+                    else "provider_result_missing"
+                )
+                decision = "denied" if was_pending else "indeterminate"
+                details = self._proposal_audit_details(
+                    proposal,
+                    decision=decision,
+                    error_code=proposal_error,
+                    confirmed_at=proposal["confirmed_at"],
+                    completed_at=now,
+                )
+                await db.execute(
+                    "INSERT INTO admin_events "
+                    "(id, created_at, action, target_id, details, actor) "
+                    "VALUES (?, ?, 'studio.operator.command', ?, ?, 'studio_operator')",
+                    (
+                        uuid.uuid4().hex[:12],
+                        now,
+                        proposal["id"],
+                        self._json(details),
+                    ),
+                )
+                await db.execute(
+                    "UPDATE studio_operator_proposals SET status=?, completed_at=?, "
+                    "error_code=? WHERE id=? AND status=?",
+                    (
+                        proposal_status,
+                        now,
+                        proposal_error,
+                        proposal["id"],
+                        proposal["status"],
+                    ),
+                )
+            await db.execute(
+                "UPDATE studio_operator_conversations SET active_request_id=NULL, "
+                "next_sequence=?, updated_at=? "
+                "WHERE id=? AND active_request_id=?",
+                (sequence + 1, now, conversation_id, request_id),
+            )
+            await db.commit()
+        return inserted
+
+    async def request_cancel(self, conversation_id: str, request_id: str) -> dict[str, Any]:
+        await self.ensure_schema()
+        now = time.time()
+        async with open_db(str(self.path())) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute(
+                    "SELECT status FROM studio_operator_turns "
+                    "WHERE request_id=? AND conversation_id=?",
+                    (request_id, conversation_id),
+                )
+            ).fetchone()
+            if row is None:
+                await db.rollback()
+                raise OperatorNotFoundError(f"Operator request '{request_id}' not found")
+            terminal = row["status"] in {"completed", "failed", "cancelled"}
+            if not terminal:
+                await db.execute(
+                    "UPDATE studio_operator_turns SET cancel_requested_at=COALESCE("
+                    "cancel_requested_at, ?) WHERE request_id=?",
+                    (now, request_id),
+                )
+            await db.commit()
+        return {
+            "conversationId": conversation_id,
+            "requestId": request_id,
+            "status": row["status"],
+            "cancelRequested": not terminal,
+        }
+
+    async def create_proposal(
+        self,
+        conversation_id: str,
+        request_id: str,
+        *,
+        command_type: str,
+        command: dict[str, Any],
+        risk: str,
+        summary: str,
+        idempotency_key: str | None = None,
+        target_version: str | None = None,
+    ) -> dict[str, Any]:
+        await self.ensure_schema()
+        proposal_id = str(uuid.uuid4())
+        idempotency_key = idempotency_key or str(uuid.uuid4())
+        command_hash = self.canonical_hash(command)
+        now = time.time()
+        expires_at = now + 600
+        async with open_db(str(self.path())) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            existing = await (
+                await db.execute(
+                    "SELECT * FROM studio_operator_proposals WHERE idempotency_key=?",
+                    (idempotency_key,),
+                )
+            ).fetchone()
+            if existing is not None:
+                await db.rollback()
+                same_proposal = (
+                    existing["conversation_id"] == conversation_id
+                    and existing["request_id"] == request_id
+                    and existing["command_type"] == command_type
+                    and existing["command_json"] == self._json(command)
+                    and existing["command_hash"] == command_hash
+                    and existing["target_version"] == target_version
+                    and existing["risk"] == risk
+                )
+                if not same_proposal:
+                    raise OperatorConflictError(
+                        "Idempotency key was reused for a different Operator proposal",
+                        details={
+                            "idempotencyKey": idempotency_key,
+                            "existingProposalId": existing["id"],
+                        },
+                    )
+                return self._proposal(existing)
+            turn = await (
+                await db.execute(
+                    "SELECT status FROM studio_operator_turns "
+                    "WHERE request_id=? AND conversation_id=?",
+                    (request_id, conversation_id),
+                )
+            ).fetchone()
+            if turn is None or turn["status"] not in {"running", "awaiting_confirmation"}:
+                await db.rollback()
+                raise OperatorConflictError("Permission request is not attached to a running turn")
+            await db.execute(
+                "INSERT INTO studio_operator_proposals "
+                "(id, conversation_id, request_id, command_type, command_json, command_hash, "
+                "target_version, risk, summary, idempotency_key, status, expires_at, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+                (
+                    proposal_id,
+                    conversation_id,
+                    request_id,
+                    command_type,
+                    self._json(command),
+                    command_hash,
+                    target_version,
+                    risk,
+                    summary,
+                    idempotency_key,
+                    expires_at,
+                    now,
+                ),
+            )
+            await db.execute(
+                "UPDATE studio_operator_turns SET status='awaiting_confirmation' "
+                "WHERE request_id=? AND status='running'",
+                (request_id,),
+            )
+            await db.commit()
+        proposal = await self.get_proposal(proposal_id)
+        await self.append_frame(
+            conversation_id,
+            request_id,
+            "proposal",
+            {
+                "proposal": {
+                    "id": proposal_id,
+                    "command": command,
+                    "commandHash": command_hash,
+                    "risk": risk,
+                    "summary": summary,
+                    "target": self._proposal_target(
+                        command_type,
+                        command,
+                        target_version,
+                    ),
+                    "idempotencyKey": idempotency_key,
+                    "expiresAt": expires_at,
+                }
+            },
+        )
+        await self.append_frame(
+            conversation_id,
+            request_id,
+            "confirmation",
+            {"proposalId": proposal_id, "state": "required"},
+        )
+        return proposal
+
+    async def get_proposal(self, proposal_id: str) -> dict[str, Any]:
+        await self.ensure_schema()
+        async with open_db(str(self.path())) as db:
+            row = await (
+                await db.execute(
+                    "SELECT * FROM studio_operator_proposals WHERE id=?", (proposal_id,)
+                )
+            ).fetchone()
+        if row is None:
+            raise OperatorNotFoundError(f"Operator proposal '{proposal_id}' not found")
+        return self._proposal(row)
+
+    async def find_proposal_by_idempotency(self, idempotency_key: str) -> dict[str, Any] | None:
+        await self.ensure_schema()
+        async with open_db(str(self.path())) as db:
+            row = await (
+                await db.execute(
+                    "SELECT * FROM studio_operator_proposals WHERE idempotency_key=?",
+                    (idempotency_key,),
+                )
+            ).fetchone()
+        return self._proposal(row) if row is not None else None
+
+    async def list_proposals_for_request(self, request_id: str) -> list[dict[str, Any]]:
+        await self.ensure_schema()
+        async with open_db(str(self.path())) as db:
+            rows = await (
+                await db.execute(
+                    "SELECT * FROM studio_operator_proposals WHERE request_id=? "
+                    "ORDER BY created_at ASC",
+                    (request_id,),
+                )
+            ).fetchall()
+        return [self._proposal(row) for row in rows]
+
+    async def decide_proposal(
+        self,
+        conversation_id: str,
+        proposal_id: str,
+        *,
+        allow: bool,
+        expected_command_hash: str | None,
+        expected_target_version: str | None,
+        audit: bool = False,
+        claim_execution: bool = False,
+    ) -> dict[str, Any]:
+        await self.ensure_schema()
+        now = time.time()
+        transitioned = False
+        claimed_execution = False
+        async with open_db(str(self.path())) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute(
+                    "SELECT * FROM studio_operator_proposals WHERE id=? AND conversation_id=?",
+                    (proposal_id, conversation_id),
+                )
+            ).fetchone()
+            if row is None:
+                await db.rollback()
+                raise OperatorNotFoundError(f"Operator proposal '{proposal_id}' not found")
+            conversation = await (
+                await db.execute(
+                    "SELECT status FROM studio_operator_conversations WHERE id=?",
+                    (conversation_id,),
+                )
+            ).fetchone()
+            if conversation is None or conversation["status"] != "active":
+                await db.rollback()
+                raise OperatorConflictError("Operator conversation is no longer active")
+            if allow and expected_command_hash is None:
+                await db.rollback()
+                raise OperatorConflictError("Proposal command hash is required before execution")
+            if expected_command_hash and expected_command_hash != row["command_hash"]:
+                await db.rollback()
+                raise OperatorConflictError("Proposal command hash does not match")
+            if expected_target_version != row["target_version"]:
+                await db.rollback()
+                raise OperatorConflictError("Proposal target version changed")
+            if row["expires_at"] <= now and row["status"] == "pending":
+                if audit:
+                    details = self._proposal_audit_details(
+                        row,
+                        decision="expired",
+                        error_code="stale_context",
+                        confirmed_at=None,
+                        completed_at=now,
+                    )
+                    await db.execute(
+                        "INSERT INTO admin_events "
+                        "(id, created_at, action, target_id, details, actor) "
+                        "VALUES (?, ?, 'studio.operator.command', ?, ?, 'studio_operator')",
+                        (
+                            uuid.uuid4().hex[:12],
+                            now,
+                            proposal_id,
+                            self._json(details),
+                        ),
+                    )
+                await db.execute(
+                    "UPDATE studio_operator_proposals SET status='expired', "
+                    "completed_at=?, error_code='stale_context' WHERE id=?",
+                    (now, proposal_id),
+                )
+                await db.execute(
+                    "UPDATE studio_operator_turns SET status='running' "
+                    "WHERE request_id=? AND status='awaiting_confirmation'",
+                    (row["request_id"],),
+                )
+                await db.commit()
+                transitioned = True
+                expired = True
+            else:
+                expired = False
+            if expired:
+                pass
+            elif row["status"] != "pending":
+                await db.rollback()
+                existing = self._proposal(row)
+                existing["_claimedExecution"] = False
+                return existing
+            else:
+                status = (
+                    (
+                        "executing"
+                        if claim_execution and row["command_type"] != "provider_permission"
+                        else "confirmed"
+                    )
+                    if allow
+                    else "cancelled"
+                )
+                if audit:
+                    audit_details = self._proposal_audit_details(
+                        row,
+                        decision="confirmed" if allow else "denied",
+                        error_code=None if allow else "denied",
+                        confirmed_at=now,
+                        completed_at=now if not allow else None,
+                    )
+                    await db.execute(
+                        "INSERT INTO admin_events "
+                        "(id, created_at, action, target_id, details, actor) "
+                        "VALUES (?, ?, 'studio.operator.command', ?, ?, 'studio_operator')",
+                        (
+                            uuid.uuid4().hex[:12],
+                            now,
+                            proposal_id,
+                            self._json(audit_details),
+                        ),
+                    )
+                await db.execute(
+                    "UPDATE studio_operator_proposals SET status=?, confirmed_at=?, "
+                    "completed_at=CASE WHEN ?='cancelled' THEN ? ELSE completed_at END, "
+                    "error_code=CASE WHEN ?='cancelled' THEN 'denied' ELSE error_code END "
+                    "WHERE id=? AND status='pending'",
+                    (status, now, status, now, status, proposal_id),
+                )
+                await db.execute(
+                    "UPDATE studio_operator_turns SET status='running' "
+                    "WHERE request_id=? AND status='awaiting_confirmation'",
+                    (row["request_id"],),
+                )
+                await db.commit()
+                transitioned = True
+                claimed_execution = status == "executing"
+        if expired:
+            await self.append_frame(
+                conversation_id,
+                row["request_id"],
+                "confirmation",
+                {"proposalId": proposal_id, "state": "expired"},
+            )
+        elif transitioned and allow:
+            await self.append_frame(
+                conversation_id,
+                row["request_id"],
+                "confirmation",
+                {"proposalId": proposal_id, "state": "confirmed"},
+            )
+        elif transitioned:
+            await self.append_frame(
+                conversation_id,
+                row["request_id"],
+                "confirmation",
+                {"proposalId": proposal_id, "state": "cancelled"},
+            )
+            await self.append_frame(
+                conversation_id,
+                row["request_id"],
+                "error",
+                {
+                    "error": {
+                        "code": "denied",
+                        "message": "The operator denied this permission request",
+                        "retryable": False,
+                    }
+                },
+            )
+        proposal = await self.get_proposal(proposal_id)
+        proposal["_claimedExecution"] = claimed_execution
+        return proposal
+
+    async def complete_proposal(
+        self,
+        proposal_id: str,
+        *,
+        status: str,
+        result: dict[str, Any] | None = None,
+        error_code: str | None = None,
+        audit: bool = False,
+    ) -> dict[str, Any]:
+        await self.ensure_schema()
+        now = time.time()
+        async with open_db(str(self.path())) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute(
+                    "SELECT * FROM studio_operator_proposals WHERE id=?",
+                    (proposal_id,),
+                )
+            ).fetchone()
+            if row is None:
+                await db.rollback()
+                raise OperatorNotFoundError(f"Operator proposal '{proposal_id}' not found")
+            cur = await db.execute(
+                "UPDATE studio_operator_proposals SET status=?, result_json=?, "
+                "error_code=?, completed_at=? WHERE id=? "
+                "AND status IN ('confirmed','executing')",
+                (
+                    status,
+                    self._json(result) if result is not None else None,
+                    error_code,
+                    now,
+                    proposal_id,
+                ),
+            )
+            if cur.rowcount and audit:
+                details = self._proposal_audit_details(
+                    row,
+                    decision="executed" if status == "succeeded" else "failed",
+                    result=result,
+                    error_code=error_code,
+                    confirmed_at=row["confirmed_at"],
+                    completed_at=now,
+                )
+                await db.execute(
+                    "INSERT INTO admin_events "
+                    "(id, created_at, action, target_id, details, actor) "
+                    "VALUES (?, ?, 'studio.operator.command', ?, ?, 'studio_operator')",
+                    (
+                        uuid.uuid4().hex[:12],
+                        now,
+                        proposal_id,
+                        self._json(details),
+                    ),
+                )
+            await db.commit()
+        return await self.get_proposal(proposal_id)
+
+    async def complete_provider_permission(
+        self,
+        request_id: str,
+        tool_use_id: str,
+        *,
+        ok: bool,
+    ) -> dict[str, Any] | None:
+        """Terminalize the confirmed provider proposal for one native tool result."""
+        if not tool_use_id:
+            return None
+        await self.ensure_schema()
+        now = time.time()
+        matched_id: str | None = None
+        async with open_db(str(self.path())) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            rows = await (
+                await db.execute(
+                    "SELECT * FROM studio_operator_proposals "
+                    "WHERE request_id=? AND command_type='provider_permission' "
+                    "AND status='confirmed'",
+                    (request_id,),
+                )
+            ).fetchall()
+            row = next(
+                (
+                    candidate
+                    for candidate in rows
+                    if json.loads(candidate["command_json"]).get("toolUseId") == tool_use_id
+                ),
+                None,
+            )
+            if row is None:
+                await db.rollback()
+                return None
+            matched_id = row["id"]
+            status = "succeeded" if ok else "failed"
+            result = {"nativeToolCompleted": ok}
+            error_code = None if ok else "provider_tool_failed"
+            cur = await db.execute(
+                "UPDATE studio_operator_proposals SET status=?, result_json=?, "
+                "error_code=?, completed_at=? WHERE id=? AND status='confirmed'",
+                (
+                    status,
+                    self._json(result),
+                    error_code,
+                    now,
+                    matched_id,
+                ),
+            )
+            if not cur.rowcount:
+                await db.rollback()
+                return None
+            details = self._proposal_audit_details(
+                row,
+                decision="executed" if ok else "failed",
+                result=result,
+                error_code=error_code,
+                confirmed_at=row["confirmed_at"],
+                completed_at=now,
+            )
+            await db.execute(
+                "INSERT INTO admin_events "
+                "(id, created_at, action, target_id, details, actor) "
+                "VALUES (?, ?, 'studio.operator.command', ?, ?, 'studio_operator')",
+                (
+                    uuid.uuid4().hex[:12],
+                    now,
+                    matched_id,
+                    self._json(details),
+                ),
+            )
+            await db.commit()
+        return await self.get_proposal(matched_id)
+
+    async def expire_proposal(self, proposal_id: str) -> dict[str, Any]:
+        """Expire one still-pending proposal and release its waiting turn."""
+        await self.ensure_schema()
+        now = time.time()
+        async with open_db(str(self.path())) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute(
+                    "SELECT * FROM studio_operator_proposals WHERE id=?",
+                    (proposal_id,),
+                )
+            ).fetchone()
+            if row is None:
+                await db.rollback()
+                raise OperatorNotFoundError(f"Operator proposal '{proposal_id}' not found")
+            cur = await db.execute(
+                "UPDATE studio_operator_proposals SET status='expired', "
+                "completed_at=?, error_code='stale_context' "
+                "WHERE id=? AND status='pending' AND expires_at<=?",
+                (now, proposal_id, now),
+            )
+            if cur.rowcount:
+                details = self._proposal_audit_details(
+                    row,
+                    decision="expired",
+                    error_code="stale_context",
+                    confirmed_at=None,
+                    completed_at=now,
+                )
+                await db.execute(
+                    "INSERT INTO admin_events "
+                    "(id, created_at, action, target_id, details, actor) "
+                    "VALUES (?, ?, 'studio.operator.command', ?, ?, 'studio_operator')",
+                    (
+                        uuid.uuid4().hex[:12],
+                        now,
+                        proposal_id,
+                        self._json(details),
+                    ),
+                )
+                await db.execute(
+                    "UPDATE studio_operator_turns SET status='running' "
+                    "WHERE request_id=? AND status='awaiting_confirmation'",
+                    (row["request_id"],),
+                )
+            await db.commit()
+        if cur.rowcount:
+            await self.append_frame(
+                row["conversation_id"],
+                row["request_id"],
+                "confirmation",
+                {"proposalId": proposal_id, "state": "expired"},
+            )
+        return await self.get_proposal(proposal_id)
+
+    async def recover_interrupted_turns(self) -> list[str]:
+        await self.ensure_schema()
+        async with open_db(str(self.path())) as db:
+            rows = await (
+                await db.execute(
+                    "SELECT request_id FROM studio_operator_turns "
+                    "WHERE status IN ('queued','running','awaiting_confirmation')"
+                )
+            ).fetchall()
+        recovered: list[str] = []
+        for row in rows:
+            request_id = row["request_id"]
+            await self.finish_turn(
+                request_id,
+                outcome="failed",
+                error={
+                    "code": "service_restarted",
+                    "message": "The Operator daemon restarted during this turn",
+                    "retryable": True,
+                },
+            )
+            recovered.append(request_id)
+        return recovered
+
+    async def acknowledge_effect(
+        self,
+        conversation_id: str,
+        effect_id: str,
+        *,
+        status: str,
+        rejection_code: str | None,
+    ) -> dict[str, Any]:
+        await self.ensure_schema()
+        now = time.time()
+        desired = "applied" if status == "applied" else "rejected"
+        if desired == "applied" and rejection_code is not None:
+            raise OperatorConflictError("Applied effects cannot carry a rejection code")
+        if desired == "rejected" and rejection_code is None:
+            raise OperatorConflictError("Rejected effects require a rejection code")
+        async with open_db(str(self.path())) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute(
+                    "SELECT * FROM studio_operator_effects WHERE id=? AND conversation_id=?",
+                    (effect_id, conversation_id),
+                )
+            ).fetchone()
+            if row is None:
+                await db.rollback()
+                raise OperatorNotFoundError(f"Operator effect '{effect_id}' not found")
+            if row["status"] != "pending":
+                same_rejection = desired != "rejected" or row["rejection_code"] == rejection_code
+                if row["status"] != desired or not same_rejection:
+                    await db.rollback()
+                    raise OperatorConflictError("Effect was already acknowledged differently")
+            if row["status"] == "pending":
+                await db.execute(
+                    "UPDATE studio_operator_effects SET status=?, acknowledged_at=?, "
+                    "rejection_code=? WHERE id=?",
+                    (desired, now, rejection_code, effect_id),
+                )
+            await db.commit()
+        return {"effectId": effect_id, "status": desired}

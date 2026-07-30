@@ -50,7 +50,7 @@ export default function PageHeader({
 
       <div className="flex flex-wrap items-start gap-3">
         <div className="flex min-w-0 flex-1 items-center gap-2.5">
-          <h1 className="font-mono text-xl font-semibold tracking-tight text-content-primary truncate">
+          <h1 className="truncate font-mono text-page-title font-semibold text-content-primary">
             {title}
           </h1>
           {badges ? <div className="flex shrink-0 items-center gap-2">{badges}</div> : null}

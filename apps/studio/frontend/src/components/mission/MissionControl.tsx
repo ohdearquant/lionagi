@@ -38,9 +38,7 @@ export default function MissionControl() {
       {/* Page heading row with glanceable summary */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-[length:var(--t-base)] font-semibold text-content-primary">
-            {t("page.title")}
-          </h1>
+          <h1 className="text-page-title font-semibold text-content-primary">{t("page.title")}</h1>
           {isInitialLoad ? (
             <Skeleton className="mt-1.5 h-3 w-40" />
           ) : (

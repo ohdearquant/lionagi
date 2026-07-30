@@ -1,8 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 
-// Smoke-only scaffold: the UI is being redesigned in parallel, so this
-// deliberately stays shallow (boot + one API round-trip + direct-nav checks)
-// against a seeded daemon (see e2e/global-setup.ts and tests/e2e_studio/).
+// Browser contracts run against an isolated, seeded daemon (see
+// e2e/global-setup.ts and tests/e2e_studio/). The Operator provider is
+// deterministic here; the real CLI path is covered by the documented local
+// verification pass.
 export default defineConfig({
   testDir: "./e2e",
   timeout: 15_000,

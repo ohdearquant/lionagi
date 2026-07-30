@@ -1,18 +1,18 @@
 /**
- * NoDaemonGate — daemon connectivity banner.
+ * NoDaemonGate — daemon connectivity recovery surface.
  *
  * No @testing-library/react in this project (see history/InvocationDetail.test.tsx);
  * mounts via react-dom/client + act and drives the real /health probe through
  * a stubbed global fetch, same pattern as mission/usePulse.test.tsx.
  *
  * Covers:
- * - children always render, in every connectivity state (never blanks the app)
+ * - a composed shell skeleton renders while the first probe is pending
+ * - data-dependent children render only after a real, authenticated daemon answers
  * - unreachable (fetch throws — no daemon, CORS, or nothing listening)
  * - wrongApp (fetch resolves but the body isn't the lionagi `{ status: "ok" }` shape)
- * - connected (fetch resolves with the exact lionagi health shape) — no banner
- * - retry re-probes and clears the banner on success
- * - dismiss hides the banner; a fresh connectivity failure reported after a
- *   successful recovery shows the banner again
+ * - pairing required (public health succeeds but the protected identity returns 401)
+ * - connected (health and authenticated OpenAPI identity both match)
+ * - retry re-probes and restores the app on success
  * - a connectivity failure reported from elsewhere in the app (any other
  *   fetchJson call hitting a network-level error) triggers an immediate
  *   re-probe instead of waiting for the poll interval
@@ -28,14 +28,18 @@ import { reportConnectivityFailure } from "@/lib/connectivity";
 
 vi.mock("@/lib/api", () => ({
   resolveApiBase: () => "http://127.0.0.1:8765",
+  resolveAuthToken: () => "paired-browser-token",
 }));
 
-function jsonResponse(body: unknown, ok = true): Response {
+function jsonResponse(body: unknown, ok = true, status = ok ? 200 : 404): Response {
   return {
     ok,
+    status,
     json: () => Promise.resolve(body),
   } as Response;
 }
+
+const studioIdentity = { info: { title: "Lion Studio Server" } };
 
 describe("NoDaemonGate", () => {
   let container: HTMLDivElement;
@@ -77,37 +81,46 @@ describe("NoDaemonGate", () => {
     });
   }
 
-  it("renders children immediately in the 'checking' state, before the probe resolves", async () => {
+  it("renders a composed shell skeleton while the first probe is pending", async () => {
     fetchMock.mockReturnValue(new Promise(() => {}));
     await mount();
-    expect(container.querySelector('[data-testid="child"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="child"]')).toBeNull();
+    expect(container.querySelector('[role="status"]')).not.toBeNull();
     expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.textContent).toContain("LION STUDIO");
   });
 
-  it("keeps rendering children and shows no banner once a real daemon answers", async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ status: "ok" }));
+  it("renders children once a real daemon answers", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ status: "ok" }))
+      .mockResolvedValueOnce(jsonResponse(studioIdentity));
     await mount();
     expect(container.querySelector('[data-testid="child"]')).not.toBeNull();
     expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      headers: { Authorization: "Bearer paired-browser-token" },
+    });
   });
 
-  it("shows the unreachable banner on a network failure, without unmounting children", async () => {
+  it("shows the unreachable recovery state on a network failure", async () => {
     fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
     await mount();
-    expect(container.querySelector('[data-testid="child"]')).not.toBeNull();
-    const banner = container.querySelector('[role="alert"]');
-    expect(banner).not.toBeNull();
-    expect(banner?.textContent).toContain("Studio needs a local lionagi daemon");
-    expect(banner?.textContent).toContain("li studio");
+    expect(container.querySelector('[data-testid="child"]')).toBeNull();
+    const recovery = container.querySelector('[role="alert"]');
+    expect(recovery).not.toBeNull();
+    expect(recovery?.textContent).toContain("Studio needs a local lionagi daemon");
+    expect(recovery?.textContent).toContain('pip install "lionagi[studio]"');
+    expect(recovery?.textContent).toContain("li studio");
   });
 
-  it("shows the wrong-app banner when something answers but not with the lionagi health shape", async () => {
+  it("shows a distinct wrong-app recovery state when the health shape is invalid", async () => {
     fetchMock.mockResolvedValue(jsonResponse({ hello: "world" }));
     await mount();
-    const banner = container.querySelector('[role="alert"]');
-    expect(banner).not.toBeNull();
-    expect(banner?.textContent).toContain("Another program is using this port");
-    expect(banner?.textContent).toContain("li studio --port 8766");
+    expect(container.querySelector('[data-testid="child"]')).toBeNull();
+    const recovery = container.querySelector('[role="alert"]');
+    expect(recovery).not.toBeNull();
+    expect(recovery?.textContent).toContain("Another program is using this port");
+    expect(recovery?.textContent).toContain("li studio --port 8766");
   });
 
   it("shows the wrong-app banner when the port answers with a non-JSON body", async () => {
@@ -129,12 +142,37 @@ describe("NoDaemonGate", () => {
     );
   });
 
-  it("retry re-probes and clears the banner once the daemon comes up", async () => {
+  it("keeps an unpaired tab in a designed recovery state", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ status: "ok" }))
+      .mockResolvedValueOnce(jsonResponse({ detail: "unauthorized" }, false, 401));
+    await mount();
+
+    const recovery = container.querySelector('[role="alert"]');
+    expect(recovery?.textContent).toContain("Open Studio from the daemon");
+    expect(recovery?.textContent).toContain("li studio");
+    expect(recovery?.textContent).not.toContain("--no-open");
+    expect(container.querySelector('[data-testid="child"]')).toBeNull();
+  });
+
+  it("rejects a health lookalike without the Studio API identity", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ status: "ok" }))
+      .mockResolvedValueOnce(jsonResponse({ info: { title: "Other API" } }));
+    await mount();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "Another program is using this port",
+    );
+  });
+
+  it("retry re-probes and restores the app once the daemon comes up", async () => {
     fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
     await mount();
     expect(container.querySelector('[role="alert"]')).not.toBeNull();
 
-    fetchMock.mockResolvedValueOnce(jsonResponse({ status: "ok" }));
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ status: "ok" }))
+      .mockResolvedValueOnce(jsonResponse(studioIdentity));
     const retryButton = Array.from(container.querySelectorAll("button")).find((b) =>
       b.textContent?.includes("Retry"),
     );
@@ -145,46 +183,16 @@ describe("NoDaemonGate", () => {
       await Promise.resolve();
     });
     expect(container.querySelector('[role="alert"]')).toBeNull();
-  });
-
-  it("dismiss hides the banner immediately; a later failure after recovery shows it again", async () => {
-    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
-    await mount();
-    const dismissButton = container.querySelector('[aria-label="Dismiss"]');
-    expect(dismissButton).not.toBeNull();
-    await act(async () => {
-      dismissButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    expect(container.querySelector('[role="alert"]')).toBeNull();
-    // children still render while dismissed
     expect(container.querySelector('[data-testid="child"]')).not.toBeNull();
-
-    // background poll: daemon recovers — the gate stops polling once
-    // connected, so the dismissal flag has been cleared for whatever comes
-    // next.
-    fetchMock.mockResolvedValueOnce(jsonResponse({ status: "ok" }));
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(5000);
-    });
-    expect(container.querySelector('[role="alert"]')).toBeNull();
-
-    // some other view's API call now fails at the network level — the gate
-    // re-probes off that signal (it isn't polling anymore) and the banner
-    // must reappear rather than staying hidden from the earlier dismissal.
-    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
-    await act(async () => {
-      reportConnectivityFailure();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    expect(container.querySelector('[role="alert"]')).not.toBeNull();
   });
 
   it("re-probes on a connectivity failure reported elsewhere in the app, even while already connected", async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ status: "ok" }));
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ status: "ok" }))
+      .mockResolvedValueOnce(jsonResponse(studioIdentity));
     await mount();
     expect(container.querySelector('[role="alert"]')).toBeNull();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
 
     fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
     await act(async () => {
@@ -192,7 +200,7 @@ describe("NoDaemonGate", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(container.querySelector('[role="alert"]')).not.toBeNull();
   });
 

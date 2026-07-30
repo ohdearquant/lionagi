@@ -38,6 +38,11 @@
         "type": "boolean",
         "x-flag": "--no-open"
       },
+      "operator_token_stdin": {
+        "description": "==SUPPRESS==",
+        "type": "boolean",
+        "x-flag": "--operator-token-stdin"
+      },
       "port": {
         "description": "Backend API port (default: LIONAGI_STUDIO_PORT env or 8765)",
         "type": "integer",

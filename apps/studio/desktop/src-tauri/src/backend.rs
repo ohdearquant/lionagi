@@ -23,6 +23,7 @@
 use std::os::unix::process::CommandExt as _;
 
 use crate::port::{find_free_port, find_li_cli};
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -154,24 +155,48 @@ pub fn spawn_backend(app: &AppHandle, auth_token: &str) -> Result<BackendHandle,
     );
 
     let mut cmd = Command::new(&cli);
-    cmd.args(["studio", "--no-frontend", "--port", &port.to_string()])
-        .env("LIONAGI_STUDIO_HOST", "127.0.0.1")
-        .env("LIONAGI_STUDIO_AUTH_TOKEN", auth_token)
-        // The webview loads the SPA from the tauri custom protocol, so API
-        // calls are cross-origin; the backend's default CORS allowlist only
-        // covers localhost dev ports.
-        .env("CORS_ORIGINS", "tauri://localhost")
-        .stdout(log_stdio(app, "stdout"))
-        .stderr(log_stdio(app, "stderr"));
+    cmd.args([
+        "studio",
+        "--no-frontend",
+        "--operator-token-stdin",
+        "--port",
+        &port.to_string(),
+    ])
+    .env("LIONAGI_STUDIO_HOST", "127.0.0.1")
+    .env_remove("LIONAGI_STUDIO_AUTH_TOKEN")
+    .env_remove("LIONAGI_STUDIO_HUMAN_TOKEN")
+    // The webview loads the SPA from the tauri custom protocol, so API
+    // calls are cross-origin; the backend's default CORS allowlist only
+    // covers localhost dev ports.
+    .env("CORS_ORIGINS", "tauri://localhost")
+    // The launch-scoped bearer crosses a one-shot pipe, never argv or the
+    // inherited environment where an approved provider subprocess could
+    // recover it through process inspection.
+    .stdin(Stdio::piped())
+    .stdout(log_stdio(app, "stdout"))
+    .stderr(log_stdio(app, "stderr"));
 
     // On unix, spawn into a new process group so kill(-pgid, sig) reaches
     // the entire subtree (uvicorn workers, etc.).
     #[cfg(unix)]
     cmd.process_group(0);
 
-    let child = cmd
+    let mut child = cmd
         .spawn()
         .map_err(|e: std::io::Error| LaunchError::SpawnFailed(e.to_string()))?;
+    let write_result = child
+        .stdin
+        .take()
+        .ok_or_else(|| LaunchError::SpawnFailed("backend token pipe was unavailable".into()))
+        .and_then(|mut stdin| {
+            writeln!(stdin, "{auth_token}")
+                .map_err(|e| LaunchError::SpawnFailed(format!("backend token pipe failed: {e}")))
+        });
+    if let Err(error) = write_result {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
 
     Ok(BackendHandle {
         port,

@@ -83,6 +83,15 @@ function useLibraryData() {
         if (!alive) return;
 
         const out: LibraryItem[] = [];
+        const results = [
+          agentsRes,
+          builtinsRes,
+          playbooksRes,
+          workflowsRes,
+          skillsRes,
+          pluginsRes,
+          enginesRes,
+        ];
 
         if (agentsRes.status === "fulfilled") {
           setAllAgents(agentsRes.value.agents);
@@ -176,6 +185,9 @@ function useLibraryData() {
         }
 
         setItems(out);
+        if (results.some((result) => result.status === "rejected")) {
+          setError("degraded");
+        }
         setLoading(false);
       },
     );
@@ -257,6 +269,7 @@ function encodeSel(kind: LibraryKind, name: string, subKind?: PlaybookSubKind): 
 
 function LibraryPage() {
   const t = useTranslations("library");
+  const tDaemon = useTranslations("daemon");
   const { items, loading, error, reload, allAgents, allEngines } = useLibraryData();
   const navigate = useNavigate({ from: "/library" });
   const { tab, sel } = Route.useSearch();
@@ -406,8 +419,14 @@ function LibraryPage() {
 
       {/* Error banner */}
       {error && (
-        <div className="shrink-0 border-b border-edge px-3 py-1.5 text-[length:var(--t-xs)] text-status-failure">
-          {error}
+        <div
+          role="alert"
+          className="flex shrink-0 items-center justify-between gap-3 border-b border-edge bg-status-error-bg px-3 py-2 text-body text-content-secondary"
+        >
+          <span>{t("loadError")}</span>
+          <Button size="sm" variant="secondary" onClick={reload}>
+            {tDaemon("retry")}
+          </Button>
         </div>
       )}
 
@@ -445,7 +464,7 @@ function LibraryPage() {
                 className="text-[length:var(--t-xs)] uppercase tracking-[0.08em] text-content-muted border-b border-edge bg-surface-raised"
                 style={{ position: "sticky", top: 0, zIndex: 1 }}
               >
-                <th className="w-8 px-3 py-2 font-medium" aria-label="Kind" />
+                <th className="w-8 px-3 py-2 font-medium" aria-label={t("drawer.kind")} />
                 <th className="px-2 py-2 font-medium">{t("table.name")}</th>
               </tr>
             </thead>
@@ -457,8 +476,15 @@ function LibraryPage() {
                   <tr
                     key={item.key}
                     onClick={() => selectItem(item)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        selectItem(item);
+                      }
+                    }}
+                    tabIndex={0}
                     aria-selected={isSelected}
-                    className="cursor-pointer border-b border-edge"
+                    className="cursor-pointer border-b border-edge focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
                     style={{
                       background: isSelected ? "var(--surface-overlay)" : "transparent",
                     }}
@@ -479,9 +505,17 @@ function LibraryPage() {
                       <div className="font-data text-[length:var(--t-base)] font-medium leading-snug text-content-primary">
                         {item.name}
                       </div>
-                      {item.meta && (
-                        <div className="font-data text-[length:var(--t-xs)] leading-snug text-content-muted">
-                          {item.meta}
+                      {(item.description || item.meta) && (
+                        <div
+                          className="overflow-hidden font-data text-[length:var(--t-xs)] leading-snug text-content-muted"
+                          title={item.description ?? item.meta}
+                          style={{
+                            display: "-webkit-box",
+                            WebkitBoxOrient: "vertical",
+                            WebkitLineClamp: 2,
+                          }}
+                        >
+                          {item.description ?? item.meta}
                         </div>
                       )}
                     </td>
@@ -558,9 +592,12 @@ function LibraryPage() {
     );
   } else {
     detailPane = (
-      <div className="flex h-full items-center justify-center text-[length:var(--t-sm)] text-content-muted">
-        {t("loading")}
-      </div>
+      <EmptyState
+        glyph="⌁"
+        title={t("detailEmptyTitle")}
+        body={t("detailEmptyBody")}
+        className="h-full px-8 py-16"
+      />
     );
   }
 

@@ -2,13 +2,14 @@
 
 Web interface for Lion. The default experience is zero-install: the hosted
 client-side SPA at <https://lion-studio.khive.ai> connects to your local
-daemon at `http://127.0.0.1:8765` — data never leaves your machine. The
-same-origin FastAPI-served build remains available for Docker, source, and
-dev modes.
+daemon at `http://127.0.0.1:8765`. Studio state remains in that local daemon;
+model requests follow the data-handling terms of the provider you use. The
+same-origin FastAPI-served build remains available for Docker, source, and dev
+modes.
 
 ## Project Layout
 
-```
+```text
 apps/studio/
 └── frontend/               Vite + React SPA
     ├── src/                Source (routes, components, lib)
@@ -37,34 +38,88 @@ All variables are optional; defaults are shown.
 ## Running
 
 **Default (hosted UI + local daemon)**:
+
 ```bash
 li studio          # starts the local daemon and opens https://lion-studio.khive.ai;
                    # nothing is built locally (pass --no-open to skip the browser)
 ```
 
 **Self-contained local build (Docker or same-origin serve)**:
+
 ```bash
 li studio --docker # auto-pulls ghcr.io/ohdearquant/lion-studio; UI + API on :8765
 ```
 
 **Dev mode (hot-reload)**:
+
 ```bash
 li studio --dev    # Vite dev server on :3000 + uvicorn on :8765; Vite proxies /api
 ```
 
 **Backend only** (e.g. desktop shell):
+
 ```bash
 li studio --no-frontend
 ```
 
+## Operator quickstart
+
+Operator uses the locally installed Claude Code CLI and its own authenticated
+session by default. The Studio extra does not install or sign in to Claude
+Code.
+
+On a fresh machine:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install "lionagi[studio]"
+
+npm install -g @anthropic-ai/claude-code
+claude --version
+claude auth login
+
+li studio
+```
+
+See [Claude Code setup](https://code.claude.com/docs/en/setup) for other
+supported installation and authentication methods.
+
+In Studio, use the speech-bubble button at the top of the left rail, press
+<kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<kbd>J</kbd>, or choose **Toggle Operator** from
+the command palette. The dock can close while a turn runs; closing it does not
+stop the turn.
+
+- Conversation history is stored by the daemon. Reloading the page or reopening
+  the dock restores the selected conversation and its earlier activity.
+- **Stop** requests cancellation of the active turn. It does not undo tool work
+  that already completed.
+- Disk writes, commands, and other gated work pause on a **Permission required**
+  card. **Allow** permits that request; **Deny** blocks it. The engine waits for
+  the decision.
+- Every Operator turn has an **Open run** link into Fleet's Runs view. Run
+  detail also offers **Continue this run** for live or terminal runs that still
+  have a persisted branch. A follow-up submitted while the current leg is
+  still live is queued and starts after that leg reaches a terminal state.
+- The run detail CLI escape hatch is equivalent to:
+
+  ```bash
+  li agent -r '<branch-id>' --prompt '<follow-up instruction>'
+  ```
+
+For permission behavior, resume details, real-provider verification, and the
+CI stub boundary, see the [Studio guide](../../docs/guides/studio.md).
+
 ## Development
 
 **Backend** (auto-reloads):
+
 ```bash
 uv run uvicorn lionagi.studio.app:app --reload --host 127.0.0.1 --port 8765
 ```
 
 **Frontend** (separate terminal):
+
 ```bash
 cd apps/studio/frontend
 npm install
@@ -73,13 +128,35 @@ npm run dev        # http://localhost:5173 — proxies /api → :8765
 
 ## Authentication
 
-When `LIONAGI_STUDIO_AUTH_TOKEN` is unset, all local API routes are open.
+Bare `li studio` and `li studio --dev` mint a launch-scoped bearer, open the UI
+with it in the URL fragment, and require that bearer on `/api/*`. The bootstrap
+script stores the daemon URL and token in that browser tab's `sessionStorage`,
+then immediately removes both values from the address bar. It does not put the
+token in persistent browser storage.
 
-When set, all `/api/*` requests must include:
-```
+`--no-open` intentionally does not print the generated bearer. Restart without
+`--no-open` when you need Operator. API-only `--no-frontend` does not create a
+browser approval credential; it is suitable for integrations, while the
+desktop shell supplies its own credential over a private pipe.
+
+Directly starting uvicorn with no token leaves ordinary local API routes open,
+but Operator turns and approvals fail closed because there is no trusted
+browser-held human credential.
+
+`LIONAGI_STUDIO_AUTH_TOKEN` still protects ordinary API integrations. When it
+is set, all `/api/*` requests must include:
+
+```text
 Authorization: Bearer <token>
 ```
 
+Environment-derived `LIONAGI_STUDIO_AUTH_TOKEN` and
+`LIONAGI_STUDIO_HUMAN_TOKEN` values are not accepted as Operator's human
+approval boundary because process environments can be inspected. If either is
+set, Operator submission and decisions return a fail-closed remediation error.
+`LIONAGI_STUDIO_AUTH_TOKEN` continues to protect ordinary API requests;
+`LIONAGI_STUDIO_HUMAN_TOKEN` alone does not replace API authentication. Unset
+both and restart with `li studio`; setting both does not bypass this rule.
 `/health` remains open regardless.
 
 ## Database
@@ -123,6 +200,7 @@ cargo build --release     # binary only, no signing
 ```
 
 The shell finds the `li` CLI automatically (searches PATH,
-`~/.local/bin/li`, `~/.cargo/bin/li`, `/opt/homebrew/bin/li`), spawns
-`li studio --no-frontend --port <free-port>`, and loads the SPA with
-`window.__STUDIO_API_BASE__` pre-set via Tauri's initialization script API.
+`~/.local/bin/li`, `~/.cargo/bin/li`, `/opt/homebrew/bin/li`), spawns the
+backend on a free loopback port, passes its launch-scoped bearer over a
+one-shot stdin pipe, and loads the SPA with `window.__STUDIO_API_BASE__` and
+`window.__STUDIO_AUTH_TOKEN__` pre-set via Tauri's initialization script API.

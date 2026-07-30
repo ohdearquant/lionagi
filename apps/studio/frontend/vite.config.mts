@@ -1,8 +1,8 @@
-import { defineConfig } from 'vitest/config'
-import type { Plugin } from 'vite'
-import react from '@vitejs/plugin-react'
-import { TanStackRouterVite } from '@tanstack/router-plugin/vite'
-import path from 'path'
+import { defineConfig } from "vitest/config";
+import type { Plugin } from "vite";
+import react from "@vitejs/plugin-react";
+import { TanStackRouterVite } from "@tanstack/router-plugin/vite";
+import path from "path";
 
 // The hosted Studio (lion-studio.khive.ai and any Vercel preview) is a static,
 // local-first deploy: its origin has no API of its own, the page talks to the
@@ -15,22 +15,22 @@ import path from 'path'
 // (which run the same `vite build`) on their correct same-origin default.
 // Loopback http from an https page is exempt from mixed-content blocking.
 export function hostedApiBaseInjector(env: NodeJS.ProcessEnv = process.env): Plugin {
-  const onVercel = env.VERCEL === '1'
-  const base = env.STUDIO_HOSTED_API_BASE ?? 'http://127.0.0.1:8765'
+  const onVercel = env.VERCEL === "1";
+  const base = env.STUDIO_HOSTED_API_BASE ?? "http://127.0.0.1:8765";
   return {
-    name: 'studio-hosted-api-base',
-    apply: 'build',
+    name: "studio-hosted-api-base",
+    apply: "build",
     transformIndexHtml() {
-      if (!onVercel) return
+      if (!onVercel) return;
       return [
         {
-          tag: 'script',
+          tag: "script",
           children: `window.__STUDIO_API_BASE__=${JSON.stringify(base)};`,
-          injectTo: 'head-prepend',
+          injectTo: "head-prepend",
         },
-      ]
+      ];
     },
-  }
+  };
 }
 
 // The e2e harness points this at a seeded daemon on a dynamically-allocated
@@ -40,40 +40,68 @@ export function hostedApiBaseInjector(env: NodeJS.ProcessEnv = process.env): Plu
 // though preview itself (bound to --host 127.0.0.1) is healthy.
 // STUDIO_API_URL overrides the whole target (e.g. an isolated dev daemon).
 const apiTarget =
-  process.env.STUDIO_API_URL ?? `http://127.0.0.1:${process.env.STUDIO_E2E_API_PORT ?? '8765'}`
+  process.env.STUDIO_API_URL ?? `http://127.0.0.1:${process.env.STUDIO_E2E_API_PORT ?? "8765"}`;
+
+export const studioProxy = {
+  "/api": apiTarget,
+  "/health": apiTarget,
+  "/openapi.json": apiTarget,
+};
 
 export default defineConfig({
   plugins: [
     TanStackRouterVite({
-      routesDirectory: './src/routes',
-      generatedRouteTree: './src/routeTree.gen.ts',
+      routesDirectory: "./src/routes",
+      generatedRouteTree: "./src/routeTree.gen.ts",
+      autoCodeSplitting: true,
     }),
     react(),
     hostedApiBaseInjector(),
   ],
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, './src'),
+      "@": path.resolve(__dirname, "./src"),
     },
   },
   server: {
-    proxy: {
-      '/api': apiTarget,
-    },
+    proxy: studioProxy,
   },
   // `vite preview` serves the production build the same way the e2e harness
   // does: a single static origin proxying /api server-side, so the browser
   // never needs CORS and resolveApiBase() picks up the same-origin ("") path.
   preview: {
-    proxy: {
-      '/api': apiTarget,
+    proxy: studioProxy,
+  },
+  build: {
+    // Keep two large, independently stable payload families out of the shell.
+    // Broad node_modules chunking creates circular React/Zustand imports under
+    // Rolldown; these exact boundaries have one-way dependencies and preserve
+    // route-level splitting.
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            {
+              name: "locale",
+              test: /src[\\/]messages[\\/]/,
+              maxSize: 100_000,
+              priority: 2,
+            },
+            {
+              name: "markdown",
+              test: /node_modules[\\/]react-markdown[\\/]/,
+              priority: 1,
+            },
+          ],
+        },
+      },
     },
   },
   test: {
-    environment: 'jsdom',
+    environment: "jsdom",
     globals: true,
     // e2e/ holds Playwright specs (see playwright.config.ts) -- a different
     // test runner with its own test()/expect(), never vitest's.
-    exclude: ['e2e/**', 'node_modules/**'],
+    exclude: ["e2e/**", "node_modules/**"],
   },
-})
+});

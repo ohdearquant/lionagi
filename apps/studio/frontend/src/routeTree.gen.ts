@@ -10,8 +10,16 @@
 
 import { Route as rootRouteImport } from "./routes/__root";
 import { Route as SystemRouteImport } from "./routes/system";
+import { Route as ShowsRouteImport } from "./routes/shows";
+import { Route as RoutingRouteImport } from "./routes/routing";
+import { Route as OutcomesRouteImport } from "./routes/outcomes";
+import { Route as MissionRouteImport } from "./routes/mission";
 import { Route as LibraryRouteImport } from "./routes/library";
+import { Route as HistoryRouteImport } from "./routes/history";
 import { Route as FleetRouteImport } from "./routes/fleet";
+import { Route as DesignerRouteImport } from "./routes/designer";
+import { Route as CanvasRouteImport } from "./routes/canvas";
+import { Route as AgentsRouteImport } from "./routes/agents";
 import { Route as IndexRouteImport } from "./routes/index";
 import { Route as SkillsIndexRouteImport } from "./routes/skills/index";
 import { Route as SchedulesIndexRouteImport } from "./routes/schedules/index";
@@ -36,14 +44,54 @@ const SystemRoute = SystemRouteImport.update({
   path: "/system",
   getParentRoute: () => rootRouteImport,
 } as any);
+const ShowsRoute = ShowsRouteImport.update({
+  id: "/shows",
+  path: "/shows",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const RoutingRoute = RoutingRouteImport.update({
+  id: "/routing",
+  path: "/routing",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const OutcomesRoute = OutcomesRouteImport.update({
+  id: "/outcomes",
+  path: "/outcomes",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const MissionRoute = MissionRouteImport.update({
+  id: "/mission",
+  path: "/mission",
+  getParentRoute: () => rootRouteImport,
+} as any);
 const LibraryRoute = LibraryRouteImport.update({
   id: "/library",
   path: "/library",
   getParentRoute: () => rootRouteImport,
 } as any);
+const HistoryRoute = HistoryRouteImport.update({
+  id: "/history",
+  path: "/history",
+  getParentRoute: () => rootRouteImport,
+} as any);
 const FleetRoute = FleetRouteImport.update({
   id: "/fleet",
   path: "/fleet",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const DesignerRoute = DesignerRouteImport.update({
+  id: "/designer",
+  path: "/designer",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const CanvasRoute = CanvasRouteImport.update({
+  id: "/canvas",
+  path: "/canvas",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const AgentsRoute = AgentsRouteImport.update({
+  id: "/agents",
+  path: "/agents",
   getParentRoute: () => rootRouteImport,
 } as any);
 const IndexRoute = IndexRouteImport.update({
@@ -139,8 +187,16 @@ const PlaybooksNameEditIndexRoute = PlaybooksNameEditIndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   "/": typeof IndexRoute;
+  "/agents": typeof AgentsRoute;
+  "/canvas": typeof CanvasRoute;
+  "/designer": typeof DesignerRoute;
   "/fleet": typeof FleetRoute;
+  "/history": typeof HistoryRoute;
   "/library": typeof LibraryRoute;
+  "/mission": typeof MissionRoute;
+  "/outcomes": typeof OutcomesRoute;
+  "/routing": typeof RoutingRoute;
+  "/shows": typeof ShowsRoute;
   "/system": typeof SystemRoute;
   "/invocations/$id": typeof InvocationsIdRoute;
   "/runs/$id": typeof RunsIdRoute;
@@ -162,8 +218,16 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   "/": typeof IndexRoute;
+  "/agents": typeof AgentsRoute;
+  "/canvas": typeof CanvasRoute;
+  "/designer": typeof DesignerRoute;
   "/fleet": typeof FleetRoute;
+  "/history": typeof HistoryRoute;
   "/library": typeof LibraryRoute;
+  "/mission": typeof MissionRoute;
+  "/outcomes": typeof OutcomesRoute;
+  "/routing": typeof RoutingRoute;
+  "/shows": typeof ShowsRoute;
   "/system": typeof SystemRoute;
   "/invocations/$id": typeof InvocationsIdRoute;
   "/runs/$id": typeof RunsIdRoute;
@@ -186,8 +250,16 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport;
   "/": typeof IndexRoute;
+  "/agents": typeof AgentsRoute;
+  "/canvas": typeof CanvasRoute;
+  "/designer": typeof DesignerRoute;
   "/fleet": typeof FleetRoute;
+  "/history": typeof HistoryRoute;
   "/library": typeof LibraryRoute;
+  "/mission": typeof MissionRoute;
+  "/outcomes": typeof OutcomesRoute;
+  "/routing": typeof RoutingRoute;
+  "/shows": typeof ShowsRoute;
   "/system": typeof SystemRoute;
   "/invocations/$id": typeof InvocationsIdRoute;
   "/runs/$id": typeof RunsIdRoute;
@@ -211,8 +283,16 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath;
   fullPaths:
     | "/"
+    | "/agents"
+    | "/canvas"
+    | "/designer"
     | "/fleet"
+    | "/history"
     | "/library"
+    | "/mission"
+    | "/outcomes"
+    | "/routing"
+    | "/shows"
     | "/system"
     | "/invocations/$id"
     | "/runs/$id"
@@ -234,8 +314,16 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo;
   to:
     | "/"
+    | "/agents"
+    | "/canvas"
+    | "/designer"
     | "/fleet"
+    | "/history"
     | "/library"
+    | "/mission"
+    | "/outcomes"
+    | "/routing"
+    | "/shows"
     | "/system"
     | "/invocations/$id"
     | "/runs/$id"
@@ -257,8 +345,16 @@ export interface FileRouteTypes {
   id:
     | "__root__"
     | "/"
+    | "/agents"
+    | "/canvas"
+    | "/designer"
     | "/fleet"
+    | "/history"
     | "/library"
+    | "/mission"
+    | "/outcomes"
+    | "/routing"
+    | "/shows"
     | "/system"
     | "/invocations/$id"
     | "/runs/$id"
@@ -281,8 +377,16 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute;
+  AgentsRoute: typeof AgentsRoute;
+  CanvasRoute: typeof CanvasRoute;
+  DesignerRoute: typeof DesignerRoute;
   FleetRoute: typeof FleetRoute;
+  HistoryRoute: typeof HistoryRoute;
   LibraryRoute: typeof LibraryRoute;
+  MissionRoute: typeof MissionRoute;
+  OutcomesRoute: typeof OutcomesRoute;
+  RoutingRoute: typeof RoutingRoute;
+  ShowsRoute: typeof ShowsRoute;
   SystemRoute: typeof SystemRoute;
   InvocationsIdRoute: typeof InvocationsIdRoute;
   RunsIdRoute: typeof RunsIdRoute;
@@ -312,6 +416,34 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof SystemRouteImport;
       parentRoute: typeof rootRouteImport;
     };
+    "/shows": {
+      id: "/shows";
+      path: "/shows";
+      fullPath: "/shows";
+      preLoaderRoute: typeof ShowsRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/routing": {
+      id: "/routing";
+      path: "/routing";
+      fullPath: "/routing";
+      preLoaderRoute: typeof RoutingRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/outcomes": {
+      id: "/outcomes";
+      path: "/outcomes";
+      fullPath: "/outcomes";
+      preLoaderRoute: typeof OutcomesRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/mission": {
+      id: "/mission";
+      path: "/mission";
+      fullPath: "/mission";
+      preLoaderRoute: typeof MissionRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
     "/library": {
       id: "/library";
       path: "/library";
@@ -319,11 +451,39 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof LibraryRouteImport;
       parentRoute: typeof rootRouteImport;
     };
+    "/history": {
+      id: "/history";
+      path: "/history";
+      fullPath: "/history";
+      preLoaderRoute: typeof HistoryRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
     "/fleet": {
       id: "/fleet";
       path: "/fleet";
       fullPath: "/fleet";
       preLoaderRoute: typeof FleetRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/designer": {
+      id: "/designer";
+      path: "/designer";
+      fullPath: "/designer";
+      preLoaderRoute: typeof DesignerRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/canvas": {
+      id: "/canvas";
+      path: "/canvas";
+      fullPath: "/canvas";
+      preLoaderRoute: typeof CanvasRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/agents": {
+      id: "/agents";
+      path: "/agents";
+      fullPath: "/agents";
+      preLoaderRoute: typeof AgentsRouteImport;
       parentRoute: typeof rootRouteImport;
     };
     "/": {
@@ -457,8 +617,16 @@ declare module "@tanstack/react-router" {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AgentsRoute: AgentsRoute,
+  CanvasRoute: CanvasRoute,
+  DesignerRoute: DesignerRoute,
   FleetRoute: FleetRoute,
+  HistoryRoute: HistoryRoute,
   LibraryRoute: LibraryRoute,
+  MissionRoute: MissionRoute,
+  OutcomesRoute: OutcomesRoute,
+  RoutingRoute: RoutingRoute,
+  ShowsRoute: ShowsRoute,
   SystemRoute: SystemRoute,
   InvocationsIdRoute: InvocationsIdRoute,
   RunsIdRoute: RunsIdRoute,

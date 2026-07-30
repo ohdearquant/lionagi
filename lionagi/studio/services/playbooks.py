@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import shutil
 from functools import partial
 from pathlib import Path
@@ -174,6 +175,17 @@ def get_playbook(name: str) -> dict[str, Any] | None:
         except OSError:
             pass
     return result
+
+
+def fingerprint_playbook(name: str) -> str:
+    """Return the exact content version used to gate a playbook launch."""
+    stem = name.removesuffix(".playbook.yaml").removesuffix(".yaml")
+    safe_path_join(_PLAYBOOKS_ROOT, f"{stem}.playbook.yaml")
+    path = _PLAYBOOKS_ROOT / f"{stem}.playbook.yaml"
+    if not path.is_file():
+        raise FileNotFoundError(f"Playbook {stem!r} not found")
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return f"sha256:{digest}"
 
 
 def list_builtin_playbooks() -> list[dict[str, Any]]:

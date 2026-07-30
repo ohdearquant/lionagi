@@ -11,7 +11,7 @@ export type RetiredSearchPrimitive = string | number | boolean;
 export type RetiredSearchValue = RetiredSearchPrimitive | RetiredSearchPrimitive[];
 export type RetiredSearch = Record<string, RetiredSearchValue>;
 
-export type RetiredRedirectTo = "/fleet" | "/library" | "/schedules" | "/system";
+export type RetiredRedirectTo = "/" | "/fleet" | "/library" | "/schedules" | "/system";
 
 export interface RetiredRedirectTarget<TTo extends RetiredRedirectTo = RetiredRedirectTo> {
   to: TTo;

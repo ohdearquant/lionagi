@@ -1,13 +1,14 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for the Leo (Studio operator agent) endpoints.
+"""Tests for the retired Leo compatibility helpers.
 
-No network or real LLM calls — the Branch is monkey-patched with a fake ReAct().
+The legacy HTTP routes must stay unregistered. No network or real LLM calls —
+the compatibility Branch is monkey-patched with a fake ReAct().
 """
 
 from __future__ import annotations
 
-import threading
+import asyncio
 import time
 from pathlib import Path
 from typing import Any
@@ -41,9 +42,9 @@ def _make_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", fake_db)
     monkeypatch.setattr(stats_mod, "_DB", str(fake_db))
 
-    from lionagi.studio.app import app
+    from lionagi.studio.app import create_app
 
-    return TestClient(app, base_url="http://127.0.0.1:8765")
+    return TestClient(create_app(), base_url="http://127.0.0.1:8765")
 
 
 @pytest.fixture(autouse=True)
@@ -57,23 +58,25 @@ def _clear_leo_sessions():
 
 
 # ---------------------------------------------------------------------------
-# Session create
+# Retired HTTP surface and direct session compatibility
 # ---------------------------------------------------------------------------
 
 
-def test_leo_create_session(tmp_path, monkeypatch):
-    client = _make_client(tmp_path, monkeypatch)
-    r = client.post("/api/leo/sessions")
-    assert r.status_code == 200
-    data = r.json()
-    assert "id" in data
-    assert isinstance(data["id"], str)
-    assert len(data["id"]) == 36  # UUID
+def test_legacy_leo_routes_are_retired(tmp_path, monkeypatch):
+    with _make_client(tmp_path, monkeypatch) as client:
+        create = client.post("/api/leo/sessions")
+        send = client.post(
+            "/api/leo/sessions/does-not-exist/messages",
+            json={"content": "hello"},
+        )
+    assert create.status_code == 404
+    assert send.status_code == 404
 
 
-def test_leo_create_session_unique_ids(tmp_path, monkeypatch):
-    client = _make_client(tmp_path, monkeypatch)
-    ids = {client.post("/api/leo/sessions").json()["id"] for _ in range(3)}
+def test_leo_compatibility_session_unique_ids():
+    from lionagi.studio.services import leo as leo_svc
+
+    ids = {leo_svc.create_session().id for _ in range(3)}
     assert len(ids) == 3
 
 
@@ -171,23 +174,26 @@ def test_session_registry_idle_eviction_runs_on_create():
 
 
 # ---------------------------------------------------------------------------
-# 404 on unknown session
+# Direct compatibility handler rejects an unknown session
 # ---------------------------------------------------------------------------
 
 
-def test_leo_message_unknown_session(tmp_path, monkeypatch):
-    client = _make_client(tmp_path, monkeypatch)
-    r = client.post(
-        "/api/leo/sessions/does-not-exist/messages",
-        json={"content": "hello"},
-    )
-    assert r.status_code == 404
+def test_leo_compatibility_message_unknown_session():
+    from lionagi._errors import NotFoundError
+    from lionagi.studio.services import leo as leo_svc
+
+    with pytest.raises(NotFoundError):
+        asyncio.run(
+            leo_svc.send_leo_message_route(
+                "does-not-exist",
+                leo_svc._MessageBody(content="hello"),
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
-# Auth gate — the studio bearer-token middleware guards /api/leo like any
-# other /api/* route; no per-route auth code, so this proves the mount point
-# lands under the guarded prefix.
+# Auth gate — retired paths remain under the global /api/* bearer boundary,
+# even though an authenticated caller receives a route-level 404.
 # ---------------------------------------------------------------------------
 
 
@@ -200,23 +206,31 @@ def test_leo_requires_bearer_when_token_set(tmp_path, monkeypatch):
     # unlike importlib.reload(app_mod), there is no shared singleton to
     # restore afterwards.
     app = app_mod.create_app()
-    client = TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
-    r = client.post("/api/leo/sessions")
+    with TestClient(
+        app,
+        raise_server_exceptions=False,
+        base_url="http://127.0.0.1:8765",
+    ) as client:
+        r = client.post("/api/leo/sessions")
     assert r.status_code == 401
 
 
-def test_leo_correct_token_not_401(tmp_path, monkeypatch):
+def test_leo_correct_token_reaches_retired_route_404(tmp_path, monkeypatch):
     monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-leo-secret")
 
     import lionagi.studio.app as app_mod
 
     app = app_mod.create_app()
-    client = TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
-    r = client.post(
-        "/api/leo/sessions",
-        headers={"Authorization": "Bearer test-leo-secret"},
-    )
-    assert r.status_code == 200
+    with TestClient(
+        app,
+        raise_server_exceptions=False,
+        base_url="http://127.0.0.1:8765",
+    ) as client:
+        r = client.post(
+            "/api/leo/sessions",
+            headers={"Authorization": "Bearer test-leo-secret"},
+        )
+    assert r.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -386,29 +400,23 @@ def _fake_branch_with_response(text: str) -> MagicMock:
     return branch
 
 
-def test_leo_message_turn_text_response(tmp_path, monkeypatch):
-    client = _make_client(tmp_path, monkeypatch)
-
-    # Create a session
-    sid = client.post("/api/leo/sessions").json()["id"]
-
-    # Inject a fake branch into the session registry
+def _run_compatibility_turn(sess: Any, content: str) -> list[dict[str, Any]]:
     from lionagi.studio.services import leo as leo_svc
 
-    sess = leo_svc.get_session(sid)
-    assert sess is not None
+    async def collect() -> str:
+        await sess.lock.acquire()
+        return "".join([chunk async for chunk in leo_svc._run_turn_locked(sess, content)])
+
+    return _parse_sse(asyncio.run(collect()))
+
+
+def test_leo_message_turn_text_response():
+    from lionagi.studio.services import leo as leo_svc
+
+    sess = leo_svc.create_session()
     sess.branch = _fake_branch_with_response("There are 3 running playbooks.")
 
-    # Send a message and collect SSE
-    r = client.post(
-        f"/api/leo/sessions/{sid}/messages",
-        json={"content": "How many runs are running?"},
-    )
-    assert r.status_code == 200
-    assert "text/event-stream" in r.headers["content-type"]
-
-    # Parse SSE frames
-    events = _parse_sse(r.text)
+    events = _run_compatibility_turn(sess, "How many runs are running?")
     types = [e.get("type") for e in events]
     assert "text" in types
     assert "done" in types
@@ -417,15 +425,11 @@ def test_leo_message_turn_text_response(tmp_path, monkeypatch):
     assert "3 running playbooks" in text_event["content"]
 
 
-def test_leo_message_turn_proposed_action_surfaced(tmp_path, monkeypatch):
+def test_leo_message_turn_proposed_action_surfaced():
     """A mock branch that returns a proposed_action in an ActionResponse-like message."""
-    client = _make_client(tmp_path, monkeypatch)
-    sid = client.post("/api/leo/sessions").json()["id"]
-
     from lionagi.studio.services import leo as leo_svc
 
-    sess = leo_svc.get_session(sid)
-    assert sess is not None
+    sess = leo_svc.create_session()
 
     proposed = {
         "kind": "launch_playbook",
@@ -450,12 +454,7 @@ def test_leo_message_turn_proposed_action_surfaced(tmp_path, monkeypatch):
     branch.ReAct = AsyncMock(side_effect=fake_turn)
     sess.branch = branch
 
-    r = client.post(
-        f"/api/leo/sessions/{sid}/messages",
-        json={"content": "Launch the ci-sweep playbook"},
-    )
-    assert r.status_code == 200
-    events = _parse_sse(r.text)
+    events = _run_compatibility_turn(sess, "Launch the ci-sweep playbook")
     types = [e.get("type") for e in events]
     assert "proposed_action" in types
     assert "text" in types
@@ -465,15 +464,11 @@ def test_leo_message_turn_proposed_action_surfaced(tmp_path, monkeypatch):
     assert pa_event["action"]["kind"] == "launch_playbook"
 
 
-def test_leo_message_turn_ui_command_surfaced(tmp_path, monkeypatch):
+def test_leo_message_turn_ui_command_surfaced():
     """ui_command tool outputs stream as ui_command events before the text."""
-    client = _make_client(tmp_path, monkeypatch)
-    sid = client.post("/api/leo/sessions").json()["id"]
-
     from lionagi.studio.services import leo as leo_svc
 
-    sess = leo_svc.get_session(sid)
-    assert sess is not None
+    sess = leo_svc.create_session()
 
     command = {"kind": "navigate", "space": "fleet", "params": {"status": "failed"}}
 
@@ -491,12 +486,7 @@ def test_leo_message_turn_ui_command_surfaced(tmp_path, monkeypatch):
     branch.ReAct = AsyncMock(side_effect=fake_turn)
     sess.branch = branch
 
-    r = client.post(
-        f"/api/leo/sessions/{sid}/messages",
-        json={"content": "what are some failed jobs recently"},
-    )
-    assert r.status_code == 200
-    events = _parse_sse(r.text)
+    events = _run_compatibility_turn(sess, "what are some failed jobs recently")
     types = [e.get("type") for e in events]
     assert "ui_command" in types
     assert "text" in types
@@ -506,15 +496,11 @@ def test_leo_message_turn_ui_command_surfaced(tmp_path, monkeypatch):
     assert cmd_event["command"] == command
 
 
-def test_leo_prior_turn_proposals_not_reemitted(tmp_path, monkeypatch):
+def test_leo_prior_turn_proposals_not_reemitted():
     """Proposals from earlier turns must not resurface on later turns."""
-    client = _make_client(tmp_path, monkeypatch)
-    sid = client.post("/api/leo/sessions").json()["id"]
-
     from lionagi.studio.services import leo as leo_svc
 
-    sess = leo_svc.get_session(sid)
-    assert sess is not None
+    sess = leo_svc.create_session()
 
     stale_msg = ActionResponse(
         content={
@@ -531,12 +517,7 @@ def test_leo_prior_turn_proposals_not_reemitted(tmp_path, monkeypatch):
     branch.ReAct = AsyncMock(return_value="Nothing new to propose.")
     sess.branch = branch
 
-    r = client.post(
-        f"/api/leo/sessions/{sid}/messages",
-        json={"content": "Anything running?"},
-    )
-    assert r.status_code == 200
-    events = _parse_sse(r.text)
+    events = _run_compatibility_turn(sess, "Anything running?")
     types = [e.get("type") for e in events]
     assert "proposed_action" not in types
     assert "ui_command" not in types
@@ -545,50 +526,29 @@ def test_leo_prior_turn_proposals_not_reemitted(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Concurrent turns on the same session: the second must 409, never interleave
+# Compatibility handler rejects a second turn while the session is busy
 # ---------------------------------------------------------------------------
 
 
-def test_leo_concurrent_turn_second_gets_409(tmp_path, monkeypatch):
-    client = _make_client(tmp_path, monkeypatch)
+def test_leo_concurrent_turn_second_gets_409():
+    from fastapi import HTTPException
 
-    with client:
-        sid = client.post("/api/leo/sessions").json()["id"]
+    from lionagi.studio.services import leo as leo_svc
 
-        from lionagi.studio.services import leo as leo_svc
+    async def scenario() -> None:
+        sess = leo_svc.create_session()
+        await sess.lock.acquire()
+        try:
+            with pytest.raises(HTTPException) as error:
+                await leo_svc.send_leo_message_route(
+                    sess.id,
+                    leo_svc._MessageBody(content="hello"),
+                )
+            assert error.value.status_code == 409
+        finally:
+            sess.lock.release()
 
-        sess = leo_svc.get_session(sid)
-        assert sess is not None
-
-        async def slow_react(**_kwargs):
-            import asyncio
-
-            await asyncio.sleep(0.3)
-            return "done"
-
-        branch = MagicMock()
-        branch.messages = []
-        branch.ReAct = AsyncMock(side_effect=slow_react)
-        sess.branch = branch
-
-        results: dict[str, Any] = {}
-
-        def _post(key: str) -> None:
-            results[key] = client.post(
-                f"/api/leo/sessions/{sid}/messages",
-                json={"content": "hello"},
-            )
-
-        t1 = threading.Thread(target=_post, args=("first",))
-        t1.start()
-        time.sleep(0.1)  # let the first request acquire the session lock
-        t2 = threading.Thread(target=_post, args=("second",))
-        t2.start()
-        t1.join(timeout=5)
-        t2.join(timeout=5)
-
-    assert results["first"].status_code == 200
-    assert results["second"].status_code == 409
+    asyncio.run(scenario())
 
 
 # ---------------------------------------------------------------------------

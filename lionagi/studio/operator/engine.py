@@ -1,0 +1,464 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+"""Default Branch-backed engine for Studio Operator turns."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import os
+import sys
+from collections.abc import Sequence
+from contextlib import suppress
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from .types import OperatorEngineEvent, OperatorEngineTurn
+
+_SYSTEM_PROMPT = """\
+You are the resident Operator for Lion Studio. Be concise and factual.
+You may inspect the current project and help operate LionAGI. Never claim that
+an action completed until its tool result says so. Disk writes, commands, and
+other gated native work must go through the configured Studio permission
+prompt; wait for the human decision. Use the strict studio_operator MCP tools
+for recent-run queries, typed UI navigation/prefill, and playbook launches.
+The launch tool creates its own human-confirmed durable proposal. Do not
+attempt to bypass either gate or invent raw Studio endpoints.
+"""
+
+_END = object()
+_ONE_TURN_PERMISSION_KEYS = {
+    "permission_prompt_tool_name",
+    "strict_mcp_config",
+    "setting_sources",
+    "allowed_tools",
+}
+_REQUEST_SCOPED_MCP_SERVERS = {"studio_permission", "studio_operator"}
+_OPERATOR_MCP_TOOLS = [
+    "mcp__studio_operator__list_recent_runs",
+    "mcp__studio_operator__navigate",
+    "mcp__studio_operator__prefill_schedule",
+    "mcp__studio_operator__launch_playbook",
+]
+_MODEL_CONTEXT_FRAME_LIMIT = 64
+_MODEL_CONTEXT_BYTE_LIMIT = 128 * 1024
+
+
+class OperatorProviderUnavailableError(RuntimeError):
+    """The configured local Operator CLI is not installed."""
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledOperatorHistory:
+    """A bounded, replayable history plus its durable compilation receipt."""
+
+    frames: tuple[dict[str, Any], ...]
+    metadata: dict[str, Any]
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _render_history_frame(frame: dict[str, Any]) -> str | None:
+    """Render one normalized history frame for the provider-neutral prompt."""
+    frame_type = frame.get("type")
+    payload = frame.get("payload") or {}
+    if frame_type == "text":
+        content = payload.get("content")
+        if not isinstance(content, str) or not content:
+            return None
+        role = payload.get("role", "assistant")
+        return f"{role}: {content}"
+    if frame_type == "tool_call":
+        return (
+            f"assistant tool call {payload.get('tool', 'native_tool')} "
+            f"[{payload.get('callId', '')}]: "
+            f"{_canonical_json(payload.get('arguments') or {})}"
+        )
+    if frame_type == "tool_result":
+        state = "ok" if payload.get("ok") else "error"
+        return (
+            f"tool result [{payload.get('callId', '')}] ({state}): "
+            f"{_canonical_json(payload.get('result') or {})}"
+        )
+    if frame_type in {"proposal", "confirmation", "error"}:
+        return f"{frame_type}: {_canonical_json(payload)}"
+    return None
+
+
+def _normalize_complete_turn(
+    frames: Sequence[dict[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Merge streaming deltas and retain only complete native-tool pairs."""
+    if not frames or not any(frame.get("type") == "done" for frame in frames):
+        return ()
+
+    pending_calls: dict[str, list[int]] = {}
+    paired_tool_indices: set[int] = set()
+    for index, frame in enumerate(frames):
+        payload = frame.get("payload") or {}
+        call_id = payload.get("callId")
+        if not isinstance(call_id, str) or not call_id:
+            continue
+        if frame.get("type") == "tool_call":
+            pending_calls.setdefault(call_id, []).append(index)
+        elif frame.get("type") == "tool_result":
+            candidates = pending_calls.get(call_id)
+            if candidates:
+                paired_tool_indices.add(candidates.pop(0))
+                paired_tool_indices.add(index)
+
+    normalized: list[dict[str, Any]] = []
+    previous_raw_was_text = False
+    for index, frame in enumerate(frames):
+        frame_type = frame.get("type")
+        payload = frame.get("payload") or {}
+        if frame_type == "text":
+            content = payload.get("content")
+            if not isinstance(content, str) or not content:
+                previous_raw_was_text = False
+                continue
+            role = payload.get("role", "assistant")
+            text_format = payload.get("format", "plain")
+            if (
+                previous_raw_was_text
+                and normalized
+                and normalized[-1]["type"] == "text"
+                and normalized[-1]["payload"].get("role", "assistant") == role
+            ):
+                prior = normalized[-1]["payload"]
+                separator = "" if prior.get("format", "plain") == text_format else "\n\n"
+                prior["content"] += separator + content
+                prior["format"] = text_format
+            else:
+                normalized.append(
+                    {
+                        "version": 1,
+                        "conversationId": frame.get("conversationId"),
+                        "requestId": frame.get("requestId"),
+                        "type": "text",
+                        "payload": {
+                            "content": content,
+                            "format": text_format,
+                            "role": role,
+                        },
+                    }
+                )
+            previous_raw_was_text = True
+            continue
+
+        previous_raw_was_text = False
+        if frame_type in {"tool_call", "tool_result"}:
+            if index not in paired_tool_indices:
+                continue
+        elif frame_type not in {"proposal", "confirmation", "error"}:
+            continue
+        normalized.append(
+            {
+                "version": 1,
+                "conversationId": frame.get("conversationId"),
+                "requestId": frame.get("requestId"),
+                "type": frame_type,
+                "payload": dict(payload),
+            }
+        )
+    return tuple(normalized)
+
+
+def compile_operator_history(
+    complete_turns_newest_first: Sequence[Sequence[dict[str, Any]]],
+) -> CompiledOperatorHistory:
+    """Select newest complete turns atomically under the model history budget."""
+    selected: list[tuple[Sequence[dict[str, Any]], tuple[dict[str, Any], ...]]] = []
+    used_frames = 0
+    used_bytes = 0
+    for source_frames in complete_turns_newest_first:
+        normalized = _normalize_complete_turn(source_frames)
+        if not normalized:
+            continue
+        rendered = [
+            text for frame in normalized if (text := _render_history_frame(frame)) is not None
+        ]
+        group_bytes = sum(len(text.encode("utf-8")) for text in rendered)
+        group_bytes += max(0, len(rendered) - 1)
+        separator_bytes = 1 if selected and rendered else 0
+        if (
+            used_frames + len(normalized) > _MODEL_CONTEXT_FRAME_LIMIT
+            or used_bytes + separator_bytes + group_bytes > _MODEL_CONTEXT_BYTE_LIMIT
+        ):
+            # Do not skip a newer complete turn to admit an older one.
+            break
+        selected.append((source_frames, normalized))
+        used_frames += len(normalized)
+        used_bytes += separator_bytes + group_bytes
+
+    chronological = list(reversed(selected))
+    compiled_frames = tuple(frame for _source, group in chronological for frame in group)
+    source_sequences = [
+        int(frame["sequence"])
+        for source, _group in chronological
+        for frame in source
+        if isinstance(frame.get("sequence"), int)
+    ]
+    digest = hashlib.sha256(_canonical_json(compiled_frames).encode("utf-8")).hexdigest()
+    metadata = {
+        "version": 1,
+        "firstSequence": min(source_sequences) if source_sequences else None,
+        "lastSequence": max(source_sequences) if source_sequences else None,
+        "frameCount": len(compiled_frames),
+        "turnCount": len(selected),
+        "byteCount": used_bytes,
+        "hash": digest,
+    }
+    return CompiledOperatorHistory(compiled_frames, metadata)
+
+
+def _compile_operator_prompt(turn: OperatorEngineTurn) -> str:
+    """Render the coordinator's already-bounded, turn-atomic history."""
+    rendered = [
+        text for frame in turn.history if (text := _render_history_frame(frame)) is not None
+    ]
+    if not rendered:
+        return turn.instruction
+    return (
+        "Recent durable Operator conversation (oldest to newest):\n"
+        + "\n".join(rendered)
+        + "\n\nCurrent operator instruction:\n"
+        + turn.instruction
+    )
+
+
+async def write_resumable_operator_snapshot(branch: Any, snapshot_dir: str | Path) -> None:
+    """Write a branch snapshot without its request-scoped permission bridge.
+
+    The live branch must retain the MCP bridge while its provider subprocess
+    runs. A detached resume cannot reuse that bridge: it names a completed
+    Operator request. Temporarily removing the bridge only for serialization
+    preserves messages and provider state while making resumed gated work fail
+    closed through the CLI's ordinary permission mode.
+    """
+    from lionagi.cli._runs import _atomic_write_json
+
+    kwargs = branch.chat_model.endpoint.config.kwargs
+    original = dict(kwargs)
+    try:
+        for key in _ONE_TURN_PERMISSION_KEYS:
+            kwargs.pop(key, None)
+        servers = kwargs.get("mcp_servers")
+        if isinstance(servers, dict):
+            remaining = {
+                name: config
+                for name, config in servers.items()
+                if name not in _REQUEST_SCOPED_MCP_SERVERS
+            }
+            if remaining:
+                kwargs["mcp_servers"] = remaining
+            else:
+                kwargs.pop("mcp_servers", None)
+        snapshot_path = Path(snapshot_dir) / f"{branch.id}.json"
+        snapshot = branch.to_dict()
+        await asyncio.to_thread(_atomic_write_json, snapshot_path, snapshot)
+    finally:
+        kwargs.clear()
+        kwargs.update(original)
+
+
+def _message_text(message: Any) -> str | None:
+    """Best-effort final-message fallback for providers without delta chunks."""
+    for attr in ("response", "content"):
+        value = getattr(message, attr, None)
+        if isinstance(value, str) and value:
+            return value
+        if isinstance(value, dict):
+            for key in ("content", "text"):
+                text = value.get(key)
+                if isinstance(text, str) and text:
+                    return text
+    rendered = getattr(message, "rendered", None)
+    if isinstance(rendered, str) and rendered:
+        return rendered
+    return None
+
+
+class BranchOperatorEngine:
+    """Stream a fresh, bounded-context ``Branch.run`` for each durable turn.
+
+    The Branch is an execution detail, not the Operator conversation record.
+    Conversation continuity is reconstructed from durable frames supplied in
+    ``turn.history``.
+    """
+
+    def stream(self, turn: OperatorEngineTurn):
+        return self._stream(turn)
+
+    async def _stream(self, turn: OperatorEngineTurn):
+        provider = os.environ.get("LIONAGI_STUDIO_OPERATOR_PROVIDER", "claude_code")
+        if provider == "claude_code":
+            from lionagi.providers.anthropic.claude_code import CLAUDE_CLI
+
+            if not CLAUDE_CLI:
+                raise OperatorProviderUnavailableError(
+                    "Claude Code CLI is unavailable. Install it with "
+                    "`npm install -g @anthropic-ai/claude-code`, then run "
+                    "`claude auth login`."
+                )
+        branch = turn.runtime_branch or build_operator_branch(turn)
+        chat_model = branch.chat_model
+
+        prompt = _compile_operator_prompt(turn)
+
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+        saw_text = False
+
+        async def on_chunk(chunk: Any) -> None:
+            nonlocal saw_text
+            typ = getattr(chunk, "type", None)
+            if typ == "text":
+                content = getattr(chunk, "content", None)
+                if content:
+                    saw_text = True
+                    await queue.put(
+                        OperatorEngineEvent(
+                            "text",
+                            {"content": str(content), "format": "markdown", "role": "assistant"},
+                        )
+                    )
+            elif typ == "tool_use":
+                tool_name = getattr(chunk, "tool_name", None) or "native_tool"
+                lowered = tool_name.lower()
+                mode = (
+                    "draft"
+                    if any(
+                        token in lowered
+                        for token in (
+                            "bash",
+                            "write",
+                            "edit",
+                            "notebook",
+                            "command",
+                            "launch",
+                            "navigate",
+                            "prefill",
+                        )
+                    )
+                    else "read"
+                )
+                await queue.put(
+                    OperatorEngineEvent(
+                        "tool_call",
+                        {
+                            "callId": getattr(chunk, "tool_id", None) or "",
+                            "tool": tool_name,
+                            "arguments": getattr(chunk, "tool_input", None) or {},
+                            "mode": mode,
+                        },
+                    )
+                )
+            elif typ == "tool_result":
+                await queue.put(
+                    OperatorEngineEvent(
+                        "tool_result",
+                        {
+                            "callId": getattr(chunk, "tool_id", None) or "",
+                            "ok": not bool(getattr(chunk, "is_error", False)),
+                            # Native output may contain secrets or unbounded logs.
+                            "result": {"nativeToolCompleted": True},
+                        },
+                    )
+                )
+
+        chat_model.streaming_process_func = on_chunk
+
+        async def consume() -> None:
+            final_text: str | None = None
+            try:
+                # The coordinator owns canonical Operator snapshots because
+                # Branch.run would serialize the live request-scoped MCP
+                # permission bridge. StateDB message hooks still persist each
+                # turn; the coordinator writes a sanitized snapshot at link
+                # publication and terminalization.
+                async for message in branch.run(prompt):
+                    candidate = _message_text(message)
+                    if candidate:
+                        final_text = candidate
+                if final_text and not saw_text:
+                    await queue.put(
+                        OperatorEngineEvent(
+                            "text",
+                            {"content": final_text, "format": "markdown", "role": "assistant"},
+                        )
+                    )
+            except BaseException as exc:
+                await queue.put(exc)
+            finally:
+                await queue.put(_END)
+
+        task = asyncio.create_task(consume(), name=f"operator-provider-{turn.request_id}")
+        try:
+            while True:
+                item = await queue.get()
+                if item is _END:
+                    break
+                if isinstance(item, BaseException):
+                    raise item
+                yield item
+        finally:
+            if not task.done():
+                task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await task
+
+
+def build_operator_branch(turn: OperatorEngineTurn):
+    """Build the real, permission-gated Branch used by a canonical turn run."""
+    from lionagi.service.manager import iModel
+    from lionagi.session.branch import Branch
+
+    provider = os.environ.get("LIONAGI_STUDIO_OPERATOR_PROVIDER", "claude_code")
+    model_name = os.environ.get("LIONAGI_STUDIO_OPERATOR_MODEL", "sonnet")
+    model_kwargs: dict[str, Any] = {}
+    if provider == "claude_code":
+        from .store import OperatorStore
+
+        db_path = turn.store_path or str(OperatorStore().path())
+        model_kwargs = {
+            "endpoint": "query_cli",
+            # Claude's own auth is used by the CLI endpoint.
+            "api_key": "dummy",
+            "permission_mode": "default",
+            "include_partial_messages": True,
+            # These request-scoped application tools are safe to invoke
+            # directly: reads are bounded, UI effects remain client-ACKed, and
+            # launch_playbook performs its own durable human proposal.
+            "allowed_tools": _OPERATOR_MCP_TOOLS,
+            "permission_prompt_tool_name": "mcp__studio_permission__request_permission",
+            "strict_mcp_config": True,
+            # Do not inherit project/user MCP servers into this privileged
+            # control-plane conversation.
+            "setting_sources": "",
+            "mcp_servers": {
+                "studio_permission": {
+                    "command": sys.executable,
+                    "args": ["-m", "lionagi.studio.operator.permission_mcp"],
+                    "env": {
+                        "LIONAGI_OPERATOR_DB_PATH": db_path,
+                        "LIONAGI_OPERATOR_CONVERSATION_ID": turn.conversation_id,
+                        "LIONAGI_OPERATOR_REQUEST_ID": turn.request_id,
+                    },
+                },
+                "studio_operator": {
+                    "command": sys.executable,
+                    "args": ["-m", "lionagi.studio.operator.application_mcp"],
+                    "env": {
+                        "LIONAGI_OPERATOR_DB_PATH": db_path,
+                        "LIONAGI_OPERATOR_CONVERSATION_ID": turn.conversation_id,
+                        "LIONAGI_OPERATOR_REQUEST_ID": turn.request_id,
+                    },
+                },
+            },
+        }
+    chat_model = iModel(provider=provider, model=model_name, **model_kwargs)
+    return Branch(system=_SYSTEM_PROMPT, chat_model=chat_model)

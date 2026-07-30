@@ -1221,6 +1221,7 @@ class Branch(Element, Relational):
         image_detail="auto",
         stream_persist: bool = False,
         persist_dir: str | None = None,
+        snapshot_dir: str | None = None,
         response_format=None,
         **kwargs,
     ) -> "AsyncGenerator[RoledMessage, None]":
@@ -1242,6 +1243,8 @@ class Branch(Element, Relational):
             param_kw["imodel"] = chat_model
         if persist_dir is not None:
             param_kw["persist_dir"] = persist_dir
+        if snapshot_dir is not None:
+            param_kw["snapshot_dir"] = snapshot_dir
         if kwargs:
             param_kw["imodel_kw"] = kwargs
 
