@@ -118,6 +118,64 @@ _BYPASS_RE = re.compile(r"--bypass")
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Dead source-path check
+# ---------------------------------------------------------------------------
+
+# A backticked token. Source references in these docs are always in backticks.
+_BACKTICKED = re.compile(r"`([^`\s]+)`")
+
+# A trailing :123 line citation, which names a position rather than the file.
+_LINE_SUFFIX = re.compile(r":\d+$")
+
+
+def _repo_prefixes(repo_root: Path) -> tuple[str, ...]:
+    """Top-level directories of the repo, as path prefixes.
+
+    Derived from the tree rather than hardcoded, so a directory rename cannot
+    leave this rule quietly matching nothing.
+    """
+    return tuple(
+        f"{d.name}/" for d in repo_root.iterdir() if d.is_dir() and not d.name.startswith(".")
+    )
+
+
+def _looks_like_repo_path(token: str, prefixes: tuple[str, ...]) -> bool:
+    if not token.startswith(prefixes):
+        return False
+    # Shell variables, placeholders and globs are not literal paths.
+    return not any(c in token for c in "$<>*")
+
+
+def _resolves(token: str, repo_root: Path) -> bool:
+    cleaned = token.rstrip(".,;:)")
+    cleaned = _LINE_SUFFIX.sub("", cleaned)
+    # A reference may name a symbol inside a file: `schema.sql (CREATE TABLE x)`.
+    cleaned = cleaned.split("(")[0].strip()
+    return bool(cleaned) and (repo_root / cleaned).exists()
+
+
+def scan_dead_paths(path: Path, repo_root: Path, prefixes: tuple[str, ...]) -> list[str]:
+    """Flag backticked repo-relative paths that do not resolve.
+
+    These rot silently: a stale path sits in a table whose other rows are
+    correct, so reading the table does not reveal it.
+    """
+    findings: list[str] = []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return [f"[ERROR] {path} — cannot read: {exc}"]
+
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        for token in _BACKTICKED.findall(line):
+            if _looks_like_repo_path(token, prefixes) and not _resolves(token, repo_root):
+                findings.append(
+                    f"[DEAD_PATH] {path}:{lineno} — `{token}` does not exist in the repo"
+                )
+    return findings
+
+
 def _check_ocean_line(line: str) -> bool:
     """Return True if the line should be flagged for the Ocean check."""
     if not re.search(r"\bOcean\b", line):
@@ -205,8 +263,15 @@ def main(argv: list[str] | None = None) -> int:
     files = collect_md_files(scan_roots)
 
     if not files:
-        print("lint_skills: no .md files found to scan")
-        return 0
+        # Resolving nothing is an instrument defect, not a clean bill of health:
+        # a pass here is indistinguishable from a scan that never looked.
+        print(f"lint_skills: ERROR — no .md files found under {[str(r) for r in scan_roots]}")
+        return 1
+
+    prefixes = _repo_prefixes(repo_root)
+    if not prefixes:
+        print(f"lint_skills: ERROR — no top-level directories found under {repo_root}")
+        return 1
 
     all_findings: list[str] = []
     for f in files:
@@ -216,6 +281,8 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError:
             display_path = f
         file_findings = scan_file(f)
+        if f.suffix == ".md":
+            file_findings.extend(scan_dead_paths(f, repo_root, prefixes))
         # Replace absolute path with relative in finding strings
         file_findings = [finding.replace(str(f), str(display_path)) for finding in file_findings]
         all_findings.extend(file_findings)
