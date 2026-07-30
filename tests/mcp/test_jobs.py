@@ -2683,6 +2683,15 @@ _REFUSED_BEFORE_RUNNING = {
     "command": None,
 }
 _NOTHING_CONFIGURED = {"attempted": False}
+_DELIVERED_UNVERIFIED = {
+    "attempted": True,
+    "ok": True,
+    "exit_code": 0,
+    "error": None,
+    "command": "kkernel",
+    "delivery_verified": False,
+    "unverified_reason": "kkernel_exec_without_strict_exits_zero_on_a_refused_op",
+}
 
 
 def test_listing_tells_a_failed_notice_apart_from_a_delivered_one(sandbox):
@@ -2705,6 +2714,30 @@ def test_listing_tells_a_failed_notice_apart_from_a_delivered_one(sandbox):
     assert states[exited_nonzero] == "failed"
     assert states[never_started] == "failed"
     assert states[refused] == "failed"
+
+
+def test_listing_does_not_pass_an_unverified_delivery_off_as_delivered(sandbox):
+    """A zero exit that is known not to prove delivery gets its own word.
+
+    This is the whole point of recording the degraded state: an operator scanning
+    the listing sees "delivered" and stops looking. If the one shape we know can
+    exit zero on a refused send is spelled the same as a confirmed delivery, the
+    marker on the record is information nobody ever acts on.
+
+    It is equally not "failed" — the notice probably did arrive, and reporting a
+    failure that did not happen sends someone chasing it.
+    """
+    unverified = _terminal_run(_DELIVERED_UNVERIFIED)
+    delivered = _terminal_run(_DELIVERED)
+    failed = _terminal_run(_EXITED_NONZERO)
+
+    states = {j["run_id"]: j["notify_delivery_state"] for j in jobs.list_jobs()}
+    assert states[unverified] == "delivered_unverified"
+    assert states[unverified] != states[delivered]
+    assert states[unverified] != states[failed]
+    # a caller that treats anything other than "delivered" as needing a look gets
+    # the right behaviour without having to know this state exists
+    assert states[unverified] != "delivered"
 
 
 def test_listing_does_not_read_an_absent_notifier_as_a_failure(sandbox):
@@ -2841,6 +2874,16 @@ def test_a_submission_that_is_refused_leaves_no_directory_behind(sandbox, monkey
 
     assert not (config.JOBS_DIR / "20260101T000000-dddddd").exists()
     assert jobs.list_jobs() == []
+
+
+def test_a_reserved_directory_is_not_listed_until_its_job_record_is_published(sandbox):
+    run_id, _ = jobs._reserve_run_dir()
+
+    assert jobs.list_jobs() == []
+
+    jobs._write_job({"run_id": run_id, "kind": "agent", "status": "running"})
+
+    assert [entry["run_id"] for entry in jobs.list_jobs()] == [run_id]
 
 
 def test_a_submission_that_fails_between_its_writes_leaves_no_job_behind(sandbox, monkeypatch):
@@ -3150,6 +3193,51 @@ def test_releasing_the_lock_does_not_answer_in_place_of_what_the_body_raised(san
             raise ValueError("what the caller needs to see")
 
 
+def test_an_unlock_failure_after_a_successful_body_reaches_the_caller(sandbox, monkeypatch):
+    run_id = "20260101T000000-bbb333"
+    (config.JOBS_DIR / run_id).mkdir(parents=True)
+    jobs._write_job({"run_id": run_id, "kind": "agent", "status": "running"})
+
+    real_unlock = jobs._unlock_fd
+
+    def unlock_then_refuse(fd):
+        real_unlock(fd)
+        raise OSError(errno.EIO, "unlock failed")
+
+    monkeypatch.setattr(jobs, "_unlock_fd", unlock_then_refuse)
+
+    with pytest.raises(OSError, match="unlock failed"):
+        with jobs._locked_job(run_id) as guard:
+            assert guard.record is not None
+
+
+def test_a_close_failure_after_a_successful_body_reaches_the_caller(sandbox, monkeypatch):
+    run_id = "20260101T000000-bbb444"
+    (config.JOBS_DIR / run_id).mkdir(parents=True)
+    jobs._write_job({"run_id": run_id, "kind": "agent", "status": "running"})
+
+    taken = {}
+    real_lock = jobs._lock_fd
+    real_close = os.close
+
+    def remember_the_fd(fd):
+        taken["fd"] = fd
+        return real_lock(fd)
+
+    def close_then_refuse(fd):
+        if fd == taken.get("fd"):
+            real_close(fd)
+            raise OSError(errno.EIO, "close failed")
+        return real_close(fd)
+
+    monkeypatch.setattr(jobs, "_lock_fd", remember_the_fd)
+    monkeypatch.setattr(os, "close", close_then_refuse)
+
+    with pytest.raises(OSError, match="close failed"):
+        with jobs._locked_job(run_id) as guard:
+            assert guard.record is not None
+
+
 def test_an_interrupt_arriving_during_release_is_not_swallowed_and_still_closes(
     sandbox, monkeypatch
 ):
@@ -3201,3 +3289,133 @@ def test_an_interrupt_arriving_during_release_is_not_swallowed_and_still_closes(
             raise ValueError("the failure the interrupt arrived during")
 
     assert closed == [taken["fd"]]
+
+
+def test_submit_records_the_directory_the_submission_came_from(sandbox, monkeypatch, tmp_path):
+    """The anchor on the record is this process's own directory, not the run's.
+
+    Every other test of the delivery path writes `submit_cwd` by hand, so this is
+    the one that asks whether the writer puts the right value there. The two are
+    deliberately different here: a run pinned to one directory, submitted from
+    another.
+    """
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **k: _FakeProc(4242))
+    submitted_from = tmp_path / "seat"
+    submitted_from.mkdir()
+    ran_in = tmp_path / "worktree"
+    ran_in.mkdir()
+    monkeypatch.chdir(submitted_from)
+
+    rid = jobs.submit("agent", [], prompt="x", cwd=str(ran_in))["run_id"]
+
+    rec = jobs._read_job(rid)
+    assert rec["cwd"] == str(ran_in)
+    assert rec["submit_cwd"] == str(submitted_from)
+
+
+def test_a_submission_that_could_not_read_its_directory_records_that_it_could_not(
+    sandbox, monkeypatch
+):
+    """The anchor is absent as a value, not as a key.
+
+    The key being there with nothing in it is what lets the delivery path tell
+    "this run tried to record an anchor and could not" from "this record predates
+    the field". They are different facts and only the second may inherit.
+
+    Submitted with no MCP config on purpose. Resolving one reads the working
+    directory too, earlier and unguarded, so on that path a submission never
+    reaches the anchor — it fails at the resolve, inside a block that gives the
+    reserved directory back. This is the path where the anchor is the first
+    reader, which is the only one where the null it records can be observed.
+    """
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **k: _FakeProc(4242))
+    monkeypatch.setattr(jobs.os, "getcwd", lambda: (_ for _ in ()).throw(OSError("gone")))
+
+    rid = jobs.submit("agent", [], prompt="x", no_mcp_config=True)["run_id"]
+
+    rec = jobs._read_job(rid)
+    assert "submit_cwd" in rec
+    assert rec["submit_cwd"] is None
+
+
+def test_the_listing_says_which_running_rows_never_started(sandbox, monkeypatch):
+    """`running` is two different facts, and the listing has to tell them apart.
+
+    A record whose spawn was never attempted stays `running` on purpose — the
+    classifier refuses to resolve it by a bound that cannot tell a loaded machine
+    from a dead spawn. That refusal is right and it is exactly why the listing
+    must carry the spawn state: this is the surface a caller reads to answer what
+    is in flight, and a run that never began must not be counted there as one
+    doing work.
+    """
+    _live_process(monkeypatch)
+    never_started = jobs.new_run_id()
+    jobs._write_job(
+        {
+            "run_id": never_started,
+            "pid": None,
+            "kind": "agent",
+            "status": "running",
+            "spawn_state": "preparing",
+            "log": None,
+        }
+    )
+    working = jobs.new_run_id()
+    jobs._write_job(
+        {
+            "run_id": working,
+            "pid": 4242,
+            "pid_create_time": _SPAWNED_AT,
+            "kind": "agent",
+            "status": "running",
+            "spawn_state": "started",
+            "log": None,
+        }
+    )
+
+    listed = {j["run_id"]: j for j in jobs.list_jobs()}
+    assert set(listed) == {never_started, working}
+
+    # Both wear the same word, which is what makes the listing alone misleading.
+    assert listed[never_started]["status"] == listed[working]["status"] == "running"
+    # And the field that separates them is present without a per-run status call.
+    assert listed[never_started]["spawn_state"] == "preparing"
+    assert listed[working]["spawn_state"] == "started"
+
+
+def test_a_row_that_names_no_spawn_phase_is_not_read_as_never_started(sandbox, monkeypatch):
+    """Null is "no phase this listing can vouch for", not "never attempted".
+
+    A record written before the field existed reports null. A record carrying a
+    phase this code does not recognise reports that value verbatim, because the
+    listing repeats what the record says rather than judging it. Neither may be
+    mistaken for the phase that genuinely means never-attempted, which names
+    itself.
+    """
+    _live_process(monkeypatch)
+    legacy = jobs.new_run_id()
+    jobs._write_job(
+        {"run_id": legacy, "pid": None, "kind": "agent", "status": "running", "log": None}
+    )
+    junk = jobs.new_run_id()
+    jobs._write_job(
+        {
+            "run_id": junk,
+            "pid": None,
+            "kind": "agent",
+            "status": "running",
+            "spawn_state": "starting?",
+            "log": None,
+        }
+    )
+
+    listed = {j["run_id"]: j for j in jobs.list_jobs()}
+    # A record with no phase in it says so, and says nothing more.
+    assert listed[legacy]["spawn_state"] is None
+    assert listed[legacy]["record_state"] == "ok"
+    # An unrecognised value is passed through rather than laundered into a known
+    # phase, so a caller can see that the record says something it should not.
+    assert listed[junk]["spawn_state"] == "starting?"
+    # Neither is the value that means never-attempted.
+    assert listed[legacy]["spawn_state"] != "preparing"
+    assert listed[junk]["spawn_state"] != "preparing"

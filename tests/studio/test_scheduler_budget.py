@@ -10,6 +10,9 @@ claim/release reservations, plus the rolling-window fire cap.
 
 from __future__ import annotations
 
+import sys
+import textwrap
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -445,6 +448,115 @@ async def test_fire_now_succeeds_when_under_budget():
 # ---------------------------------------------------------------------------
 # sum_schedule_spend — real StateDB aggregate
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_spawned_cli_session_is_included_in_schedule_spend(tmp_path, monkeypatch):
+    from lionagi.state.db import StateDB
+    from lionagi.studio.scheduler.subprocess import spawn_and_wait
+
+    db_path = tmp_path / "state.db"
+    state = StateDB(db_path)
+    await state.open()
+
+    schedule_id = "sched-child-spend"
+    invocation_id = "inv-child-spend"
+    await state.create_schedule(
+        {
+            "id": schedule_id,
+            "name": "child-spend",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    await state.create_invocation(
+        {"id": invocation_id, "skill": "scheduled:child-spend", "started_at": 1.0}
+    )
+    await state.create_schedule_run(
+        {
+            "id": "run-child-spend",
+            "schedule_id": schedule_id,
+            "invocation_id": invocation_id,
+            "trigger_context": {},
+            "action_kind": "agent",
+            "action_args": [],
+            "status": "completed",
+            "chain_depth": 0,
+            "fired_at": 1.0,
+        }
+    )
+
+    child_script = tmp_path / "persist_scheduled_child.py"
+    child_script.write_text(
+        textwrap.dedent(
+            """
+            import argparse
+            import asyncio
+
+            import lionagi.cli.main as cli_main
+            from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
+            from lionagi.session.branch import Branch
+            from lionagi.state.db import StateDB
+
+
+            def agent_options():
+                spec = cli_main._COMMAND_BY_NAME["agent"]
+                parser, _ = cli_main._build_parser(spec)
+                subcommands = next(
+                    action
+                    for action in parser._actions
+                    if isinstance(action, argparse._SubParsersAction)
+                )
+                return subcommands.choices["agent"].parse_args([])
+
+
+            async def main():
+                options = agent_options()
+                live = await setup_agent_persist(
+                    Branch(),
+                    agent_name="scheduled-child",
+                    invocation_id=options.invocation,
+                )
+                if live is None:
+                    raise RuntimeError("child session persistence did not start")
+                session_id = live["session_id"]
+                await teardown_agent_persist(live, status="completed_empty")
+
+                db = StateDB()
+                await db.open()
+                await db.update_session(
+                    session_id,
+                    input_tokens=120,
+                    output_tokens=30,
+                    total_cost_usd=2.5,
+                )
+                await db.close()
+
+
+            asyncio.run(main())
+            """
+        )
+    )
+    monkeypatch.setenv("LIONAGI_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("LIONAGI_STATE_DB_URL", str(db_path))
+
+    exit_code, stderr = await spawn_and_wait(
+        [sys.executable, str(child_script)],
+        invocation_id,
+        cwd=str(Path(__file__).resolve().parents[2]),
+    )
+
+    assert exit_code == 0, stderr
+    sessions = await state.list_sessions_for_invocation(invocation_id)
+    assert len(sessions) == 1
+    assert sessions[0]["invocation_id"] == invocation_id
+    assert await state.sum_schedule_spend(schedule_id) == {
+        "cost_usd": pytest.approx(2.5),
+        "tokens": 150,
+    }
+
+    await state.close()
 
 
 @pytest.mark.asyncio

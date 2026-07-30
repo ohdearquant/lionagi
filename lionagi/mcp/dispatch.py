@@ -481,6 +481,40 @@ def render_argv(schema: dict[str, Any], args: dict[str, Any]) -> list[str]:
 # ── executors ────────────────────────────────────────────────────────────────
 
 
+_POSITIONAL_LIMITS = {
+    "agent": 2,
+    "flow": 2,
+    "fanout": 2,
+    "play": 2,
+}
+
+
+def _refuse_too_many_positionals(
+    verb: Verb,
+    args: dict[str, Any],
+    prompt: str | None,
+) -> None:
+    """Refuse a positional bucket the receiving CLI would reject.
+
+    Admission runs before any job record or child process can be created.
+    """
+    limit = _POSITIONAL_LIMITS.get(verb.job_kind)
+    query = args.get("query") or []
+    prompt_count = int(prompt is not None)
+    effective_count = len(query) + prompt_count
+    if limit is None or effective_count <= limit:
+        return
+    sources = f"{len(query)} in 'query'"
+    if prompt_count:
+        sources += " plus a resolved prompt"
+    raise OpError(
+        "invalid_input",
+        f"{verb.name!r} got {effective_count} positional values ({sources}), but accepts "
+        f"at most {limit}: [MODEL] PROMPT; pass the prompt exactly once, quote a "
+        "multi-word prompt, or use 'prompt' or 'prompt_file' instead",
+    )
+
+
 def _resolve_prompt(args: dict[str, Any]) -> str | None:
     prompt = args.get("prompt")
     prompt_file = args.get("prompt_file")
@@ -753,7 +787,7 @@ def _resolve_cwd(args: dict[str, Any]) -> str | None:
     cwd = args.get("cwd")
     if cwd is None:
         return None
-    resolved = Path(cwd).expanduser()
+    resolved = Path(cwd).expanduser().resolve()
     if not resolved.is_dir():
         raise OpError("invalid_input", f"cwd {cwd!r} is not a directory")
     return str(resolved)
@@ -761,6 +795,7 @@ def _resolve_cwd(args: dict[str, Any]) -> str | None:
 
 def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
     prompt = _resolve_prompt(args)
+    _refuse_too_many_positionals(verb, args, prompt)
     _refuse_without_model(verb, schema, args, prompt)
     _refuse_without_prompt(verb, args, prompt)
     cwd = _resolve_cwd(args)

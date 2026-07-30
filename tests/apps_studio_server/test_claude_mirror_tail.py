@@ -117,6 +117,55 @@ def test_mirror_forever_missing_root_is_noop(tmp_path, monkeypatch):
     assert not db_path.exists()
 
 
+def test_scoping_the_claude_root_does_not_reach_the_real_codex_tree(tmp_path, monkeypatch):
+    """A caller that scopes ``root`` must not silently acquire the home codex tree.
+
+    ``codex_root`` defaults to ~/.codex/sessions, so without the explicit source
+    selector a test (or any embedder) that carefully points the mirror at its own
+    directory would still walk the machine's whole codex rollout corpus.
+    """
+    import lionagi.cli.mirror as mirror_mod
+    import lionagi.state.db as state_db_mod
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", tmp_path / "offsets.json")
+
+    visited: list[str] = []
+
+    async def _spy_codex_pass(db, root, states, offsets, **kw):
+        visited.append(str(root))
+        return 0
+
+    monkeypatch.setattr(mirror_mod, "_codex_pass", _spy_codex_pass)
+
+    root = tmp_path / "claude_projects"
+    _write_transcript(
+        root, "aaaaaaaa-2222-3333-4444-555555555555", cwd=str(tmp_path), base_ts=time.time()
+    )
+
+    async def _run_once(**kwargs) -> None:
+        stop = asyncio.Event()
+        task = asyncio.create_task(
+            mirror_mod.mirror_forever(stop, root=root, since=None, interval=0.02, **kwargs)
+        )
+        await asyncio.sleep(0.15)
+        stop.set()
+        await asyncio.wait_for(task, timeout=5)
+
+    run_async(_run_once())
+    assert visited == [], f"default source reached codex roots: {visited}"
+
+    # The codex tree is read only when the caller asks for it, and then it is the
+    # one the caller named — never the home default. The tail polls repeatedly in
+    # the window, so it is the set of roots that is under test, not the count.
+    codex_root = tmp_path / "codex_sessions"
+    codex_root.mkdir()
+    run_async(_run_once(source="both", codex_root=codex_root))
+    assert visited, "explicit source=both never ran a codex pass"
+    assert set(visited) == {str(codex_root)}
+
+
 def test_start_claude_mirror_respects_flag(monkeypatch):
     """_start_claude_mirror no-ops when off, spawns and threads config when on."""
     import lionagi.studio.app as app_mod

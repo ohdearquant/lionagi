@@ -87,6 +87,27 @@ def _subcommand_set(command: str) -> list[str]:
     return sorted(sub_action.choices.keys())
 
 
+@pytest.mark.parametrize(
+    ("command", "subs"),
+    [
+        ("agent", ()),
+        ("orchestrate", ("flow",)),
+        ("orchestrate", ("fanout",)),
+    ],
+)
+def test_scheduled_cli_inherits_invocation_from_environment(
+    monkeypatch, command: str, subs: tuple[str, ...]
+):
+    monkeypatch.setenv("LIONAGI_INVOCATION_ID", "scheduled-invocation")
+
+    parser = _command_parser(command, *subs)
+
+    assert parser.parse_args([]).invocation == "scheduled-invocation"
+    assert parser.parse_args(["--invocation", "explicit-invocation"]).invocation == (
+        "explicit-invocation"
+    )
+
+
 # --- goldens: sorted flag sets, pinned from the actual parser definitions ---
 
 AGENT_HELP_FLAGS = [

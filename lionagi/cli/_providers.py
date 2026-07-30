@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -286,7 +287,7 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
         "--invocation",
         dest="invocation",
         metavar="ID",
-        default=None,
+        default=os.getenv("LIONAGI_INVOCATION_ID") or None,
         help=(
             "Parent invocation id (from `li invoke start`). Groups this "
             "session under a skill orchestration record. Optional."

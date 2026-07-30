@@ -523,6 +523,10 @@ li monitor --project myproject  # filter sessions by project
 | `-t, --type` | none | One of `session`, `invocation`, `show`, `play` |
 | `-p, --project` | none | Filter sessions by project name |
 
+A session detail view includes a `khive injection` block when an opted-in profile recorded
+non-zero recall, injection, failure, or writeback counters. The block contains aggregate counts,
+not injected source text.
+
 For scripts, use a waiter instead of scraping the watch display:
 
 ```bash

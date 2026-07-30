@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import signal
 import sys
 import time
@@ -17,6 +18,7 @@ from lionagi.cli.monitor import (
     _NON_TTY_MAX_COL_WIDTH,
     _cached_detect_project,
     _colour_status,
+    _detail_session,
     _detail_show,
     _elapsed,
     _find_entity,
@@ -1113,6 +1115,80 @@ async def test_run_detail_session(temp_db_path: Path) -> None:
     output = await _run_detail(sid)
     assert "SESSION" in output
     assert "running" in output.lower()
+
+
+@pytest.mark.asyncio
+async def test_run_detail_session_shows_khive_injection_stats(temp_db_path: Path) -> None:
+    async with StateDB() as db:
+        sid = await _make_session(db)
+        await db.update_session(
+            sid,
+            node_metadata=json.dumps(
+                {
+                    "khive_injection": {
+                        "recall_turns": 2,
+                        "blocks_injected": 3,
+                        "failed": 1,
+                        "writeback_records": 5,
+                        "writeback_failed": 2,
+                    }
+                }
+            ),
+        )
+
+    output = await _run_detail(sid)
+
+    assert "khive injection" in output
+    assert "recall_turns=2" in output
+    assert "blocks_injected=3" in output
+    assert "failed=1" in output
+    assert "writeback_records=5" in output
+    assert "writeback_failed=2" in output
+
+
+@pytest.mark.asyncio
+async def test_detail_session_ignores_malformed_khive_injection_stats(
+    temp_db_path: Path,
+) -> None:
+    async with StateDB() as db:
+        sid = await _make_session(db)
+        sess = await db.get_session(sid)
+        assert sess is not None
+        sess["node_metadata"] = json.dumps(
+            {
+                "khive_injection": {
+                    "recall_turns": "many",
+                    "blocks_injected": False,
+                    "failed": None,
+                }
+            }
+        )
+        output = await _detail_session(db, sess)
+
+    assert "SESSION" in output
+    assert "khive injection" not in output
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [-1, 0.5, float("nan"), float("inf")])
+async def test_detail_session_ignores_invalid_numeric_injection_stats(
+    temp_db_path: Path,
+    value: float,
+) -> None:
+    async with StateDB() as db:
+        sid = await _make_session(db)
+        sess = await db.get_session(sid)
+        assert sess is not None
+        sess["node_metadata"] = {
+            "khive_injection": {
+                "recall_turns": value,
+                "blocks_injected": 0,
+            }
+        }
+        output = await _detail_session(db, sess)
+
+    assert "SESSION" in output
+    assert "khive injection" not in output
 
 
 @pytest.mark.asyncio

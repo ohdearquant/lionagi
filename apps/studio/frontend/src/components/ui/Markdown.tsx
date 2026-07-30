@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
@@ -28,6 +28,24 @@ export interface MarkdownProps {
    * into clickable, in-Studio file-viewer links. Omit to render plain
    * markdown with no file-link behavior (existing callers unaffected). */
   fileContext?: FileResolutionContext;
+}
+
+const RemoteImageContext = createContext(false);
+
+export function RemoteImageGuard({ children }: { children: ReactNode }) {
+  return <RemoteImageContext.Provider value>{children}</RemoteImageContext.Provider>;
+}
+
+function GuardedImage({ src, alt }: { src?: string; alt?: string }) {
+  const candidate = src?.trimStart();
+  if (candidate && /^(?:https?:|[\\/]{2})/i.test(candidate)) {
+    return (
+      <span className="text-content-muted">
+        {alt ? `[Remote image blocked: ${alt}]` : "[Remote image blocked]"}
+      </span>
+    );
+  }
+  return <img src={src} alt={alt ?? ""} />;
 }
 
 function FileRefLink({
@@ -189,8 +207,11 @@ function FileViewerModal({
             {isMarkdown ? (
               // Deliberately rendered without a fileContext: a document being
               // previewed must not turn its own filename mentions into links
-              // that stack another viewer on top of this one.
-              <Markdown>{state.content}</Markdown>
+              // that stack another viewer on top of this one. The wrapper only
+              // blocks remote image requests from untrusted artifact content.
+              <RemoteImageGuard>
+                <Markdown>{state.content}</Markdown>
+              </RemoteImageGuard>
             ) : (
               <pre className="whitespace-pre-wrap break-words font-mono text-[length:var(--t-xs)] leading-relaxed text-content-secondary">
                 {state.content}
@@ -210,8 +231,9 @@ function FileViewerModal({
 
 export default function Markdown({ children, className, fileContext }: MarkdownProps) {
   const [openPath, setOpenPath] = useState<string | null>(null);
+  const guardRemoteImages = useContext(RemoteImageContext);
 
-  const components: Components | undefined = fileContext
+  const fileComponents: Components | undefined = fileContext
     ? {
         a: (props) => {
           const { href, children: linkChildren } = props;
@@ -265,6 +287,13 @@ export default function Markdown({ children, className, fileContext }: MarkdownP
         },
       }
     : undefined;
+  const components: Components | undefined =
+    fileComponents || guardRemoteImages
+      ? {
+          ...(fileComponents ?? {}),
+          ...(guardRemoteImages ? { img: GuardedImage } : {}),
+        }
+      : undefined;
 
   return (
     <div className={["markdown-body", className].filter(Boolean).join(" ")}>

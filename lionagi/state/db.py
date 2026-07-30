@@ -125,6 +125,7 @@ DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
 # original shape, before the migrations now applied on open existed.
 SCHEMA_VERSION = "2"
 _SCHEMA_MIGRATION_LOCK_KEY = "lionagi.state.schema.migration"
+_DISPATCHED_AT_BACKFILL_KEY = "migration.dispatched_at_backfill"
 
 
 class SchemaTooNewError(RuntimeError):
@@ -417,7 +418,7 @@ TransitionRejectedError = _lifecycle_adapters.TransitionRejectedError
 
 
 _INVOCATION_KINDS = frozenset({"agent", "play", "flow", "fanout", "show-play"})
-_SOURCE_KINDS = frozenset({"live", "imported_fs"})
+_SOURCE_KINDS = frozenset({"live", "imported_fs", "imported_codex"})
 
 _SHOW_STATUSES = frozenset({"active", "completed", "aborted", "imported"})
 _PLAY_STATUSES = frozenset(
@@ -896,7 +897,7 @@ class StateDB:
     async def _apply_schema(self) -> None:
         await self._reconcile_columns()
         if self.dialect == "sqlite":
-            await self._drop_legacy_session_status_check()
+            await self._rebuild_legacy_sessions_table()
             # existing DBs created before flow_yaml was added carry a
             # 4-value CHECK on schedules.action_kind that omits 'flow_yaml'.
             await self._drop_legacy_action_kind_check()
@@ -918,6 +919,7 @@ class StateDB:
             await self._refuse_newer_schema(conn)
             await conn.run_sync(metadata.create_all)
             await self._reconcile_indexes(conn)
+            await self._backfill_dispatched_at_once(conn)
             # Seed immutable reference rows; ON CONFLICT DO NOTHING is safe to
             # re-run on every open() because the rows are identity-stable.
             # The version row is the exception: the migrations above rewrite an
@@ -977,8 +979,6 @@ class StateDB:
                         async with self._engine.begin() as conn:
                             await self._refuse_newer_schema(conn)
                             await conn.execute(text(add_column))
-                            if table == "schedule_runs" and name == "dispatched_at":
-                                await self._backfill_dispatched_at(conn)
                     except OperationalError:
                         # SQLite has no ADD COLUMN IF NOT EXISTS. Another process
                         # may commit the same migration after our inspection but
@@ -1001,9 +1001,20 @@ class StateDB:
         for statement in self._MIGRATION_INDEXES.get(self.dialect, ()):
             await conn.execute(text(statement))
 
+    async def _backfill_dispatched_at_once(self, conn) -> None:
+        """Backfill legacy rows exactly once, even if the column predates this release."""
+        claimed = await conn.execute(
+            text(
+                "INSERT INTO schema_meta (key, value) VALUES (:key, '1') "
+                "ON CONFLICT (key) DO NOTHING"
+            ),
+            {"key": _DISPATCHED_AT_BACKFILL_KEY},
+        )
+        if claimed.rowcount:
+            await self._backfill_dispatched_at(conn)
+
     async def _backfill_dispatched_at(self, conn) -> None:
-        """One-time migration backfill for the ``dispatched_at`` column just
-        added to ``schedule_runs``.
+        """Set the dispatch marker on running rows that predate its backfill.
 
         ``dispatched_at`` is only stamped going forward, by
         ``SchedulerEngine._mark_dispatched()``. Without a backfill, every row
@@ -1024,9 +1035,9 @@ class StateDB:
         wall-clock deadline instead of being auto-retried on ambiguous
         evidence. Scoped to ``schedule_id IS NOT NULL`` to match
         ``list_undispatched_schedule_runs()`` and leave the leased ad-hoc
-        task queue (its own dispatch/lease model) untouched. Runs inside the
-        same transaction as the ``ALTER TABLE`` that adds the column, so it
-        only ever executes once, the moment the column is created.
+        task queue (its own dispatch/lease model) untouched. A durable
+        ``schema_meta`` marker makes this a one-time migration even when an
+        earlier release already added the column without running the update.
         """
         await conn.execute(
             text(
@@ -1085,9 +1096,26 @@ class StateDB:
                 raise
 
     _LEGACY_SESSION_STATUS_CHECK_MARKER = "'running', 'completed', 'failed', 'aborted'"
+    # Present only in a sessions CREATE SQL written before transcript imports had
+    # their own provenance value; its absence beside a source_kind CHECK is what
+    # marks a DB that would reject 'imported_codex'.
+    _NARROW_SOURCE_KIND_MARKER = "'live', 'imported_fs')"
 
-    async def _drop_legacy_session_status_check(self) -> None:
-        """Rebuild sessions table if it carries the legacy 4-value CHECK constraint."""
+    @classmethod
+    def _sessions_rebuild_needed(cls, create_sql: str) -> bool:
+        """Whether a sessions CREATE SQL still carries either legacy CHECK.
+
+        A DB with no source_kind CHECK at all (the column was added by column
+        reconciliation, which cannot attach one) accepts every value already, so
+        only a CHECK that names the narrow set needs widening.
+        """
+        if cls._LEGACY_SESSION_STATUS_CHECK_MARKER in create_sql:
+            return True
+        return cls._NARROW_SOURCE_KIND_MARKER in create_sql
+
+    async def _rebuild_legacy_sessions_table(self) -> None:
+        """Rebuild sessions if it carries either legacy CHECK: the 4-value status
+        vocabulary, or a source_kind that predates the codex-import provenance value."""
         if self.dialect != "sqlite":
             return
         async with self._engine.connect() as conn:
@@ -1103,7 +1131,7 @@ class StateDB:
         if row is None or row["sql"] is None:
             return
         create_sql: str = row["sql"]
-        if self._LEGACY_SESSION_STATUS_CHECK_MARKER not in create_sql:
+        if not self._sessions_rebuild_needed(create_sql):
             return
 
         async with self._engine.connect() as conn:
@@ -1182,7 +1210,8 @@ class StateDB:
                               artifacts_path  TEXT,
                               source_kind     TEXT    DEFAULT 'live' CHECK(
                                                 source_kind IS NULL
-                                                OR source_kind IN ('live', 'imported_fs')
+                                                OR source_kind IN
+                                                  ('live', 'imported_fs', 'imported_codex')
                                               ),
                               status          TEXT,
                               started_at      REAL,
@@ -1233,7 +1262,7 @@ class StateDB:
 
         await self._rebuild_check_constraint(
             "sessions",
-            lambda sql: sql is None or self._LEGACY_SESSION_STATUS_CHECK_MARKER not in sql,
+            lambda sql: sql is None or not self._sessions_rebuild_needed(sql),
             _rebuild,
         )
 
@@ -1246,7 +1275,7 @@ class StateDB:
 
         The old CHECK omits ``'flow_yaml'``; SQLite cannot drop a constraint via
         ALTER TABLE, so we use the rename → CREATE new → INSERT SELECT → DROP
-        old pattern (same as ``_drop_legacy_session_status_check``).
+        old pattern (same as ``_rebuild_legacy_sessions_table``).
         """
         if self.dialect != "sqlite":
             return
@@ -1570,7 +1599,7 @@ class StateDB:
 
         SQLite cannot drop a constraint via ALTER TABLE, so we use the same
         rename → CREATE new → INSERT SELECT → DROP old pattern as
-        ``_drop_legacy_session_status_check`` / ``_drop_legacy_action_kind_check``.
+        ``_rebuild_legacy_sessions_table`` / ``_drop_legacy_action_kind_check``.
         """
         if self.dialect != "sqlite":
             return

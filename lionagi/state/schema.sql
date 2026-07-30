@@ -133,7 +133,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   artifacts_path  TEXT,
   source_kind     TEXT    DEFAULT 'live' CHECK(
                     source_kind IS NULL
-                    OR source_kind IN ('live', 'imported_fs')
+                    OR source_kind IN ('live', 'imported_fs', 'imported_codex')
                   ),
   -- ── Lifecycle (ADR-0057) ─────────────────────
   -- No CHECK constraint: ADR-0057 makes Python the source of truth for
