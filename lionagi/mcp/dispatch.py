@@ -215,7 +215,13 @@ def schema_fingerprint(schema: dict[str, Any]) -> str:
     return hashlib.sha256(body.encode()).hexdigest()[:16]
 
 
-def _describe_fingerprint(entry: dict[str, Any], verb: Verb, schema: dict[str, Any]) -> None:
+def _describe_fingerprint(
+    entry: dict[str, Any],
+    verb: Verb,
+    schema: dict[str, Any],
+    *,
+    playbook: str | None = None,
+) -> None:
     """Say what a fingerprint-gated verb's ops have to carry.
 
     A playbook-aware verb is projected again once a playbook is named, so its
@@ -223,11 +229,16 @@ def _describe_fingerprint(entry: dict[str, Any], verb: Verb, schema: dict[str, A
     argument-free schema is a real call and its fingerprint is quoted; when the
     verb requires a playbook there is no such call, so quoting anything would
     hand the caller a string that is guaranteed to be refused.
+
+    Naming the playbook resolves that argument, so the schema is a real one and
+    its fingerprint is quoted. Both help surfaces route through here rather than
+    each deciding: the catalog withheld the unusable value while targeted help
+    returned it, which is one contract answered two ways by two callers.
     """
     varies = ["playbook"] if verb.playbook_aware else []
     if varies:
         entry["schema_fingerprint_varies_with"] = varies
-    if any(name in verb.requires for name in varies):
+    if playbook is None and any(name in verb.requires for name in varies):
         return
     entry["schema_fingerprint"] = schema_fingerprint(schema)
 
@@ -256,6 +267,14 @@ def _require_fingerprint(
     pointer that named the verb alone would send a caller who re-fetches to the
     argument-free schema and back into this same refusal.
     """
+    if playbook is None and verb.playbook_aware and "playbook" in verb.requires:
+        # The fingerprint this call would need is the argument-free schema's, and
+        # help does not hand that one out precisely because no successful call
+        # carries it. Complaining about it here would leave the caller with
+        # nothing to fetch. The real defect is the missing playbook, so let
+        # validation say that: it is the error the caller can act on, and no run
+        # starts either way.
+        return
     current = schema_fingerprint(schema)
     if supplied == current:
         return
@@ -1003,9 +1022,9 @@ def _help(target: Any) -> dict[str, Any]:
         schema = verb_schema(verb, playbook=playbook)
     except projection.SchemaProjectionError as exc:
         raise ValueError(f"{resolved!r} has no describable schema: {exc}") from exc
-    answer = {"verb": resolved, "schema": schema}
+    answer: dict[str, Any] = {"verb": resolved, "schema": schema}
     if verb.executor == "spawn":
-        answer["schema_fingerprint"] = schema_fingerprint(schema)
+        _describe_fingerprint(answer, verb, schema, playbook=playbook)
     return answer
 
 

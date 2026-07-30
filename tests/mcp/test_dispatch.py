@@ -282,8 +282,13 @@ def test_a_flag_a_detached_run_cannot_honour_is_refused_with_its_reason(submitte
 
 
 def test_a_missing_required_parameter_names_itself(submitted):
-    answer = call(ops=[spawn_op("play.submit", {})])
+    # No fingerprint is sent, deliberately: for a verb that requires a playbook and
+    # was given none, the missing playbook is the error the caller can act on, and
+    # the fingerprint gate must not preempt it with a complaint about a value help
+    # declines to hand out.
+    answer = call(ops=[{"op": "play.submit", "args": {}}])
     assert "missing required parameter 'playbook'" in answer["ops"][0]["error"]["message"]
+    assert submitted == {}
 
 
 def test_a_refusal_on_a_synchronous_verb_does_not_blame_a_background_run():
@@ -484,6 +489,50 @@ def test_a_stale_playbook_fingerprint_is_told_the_same_qualified_source(a_playbo
     assert submitted == {}
 
 
+def test_targeted_help_withholds_a_fingerprint_no_successful_call_can_carry():
+    """`play.submit` requires a playbook, so its argument-free fingerprint is dead.
+
+    Every *successful* `play.submit` op names a playbook and therefore resolves a
+    schema that is not the argument-free one. The argument-free fingerprint is
+    accepted only by a call that omits the playbook, which then fails validation —
+    so its sole effect is to buy a round-trip on the way to a different error. The
+    catalog withheld it and targeted help returned it, so one contract had two
+    answers depending on which way you asked.
+
+    Withholding it is not silence — the answer names the parameter the fingerprint
+    varies with, so the caller knows to ask again with a playbook rather than to
+    retry with a stale string.
+    """
+    answer = call(help="play.submit")
+    assert "schema_fingerprint" not in answer
+    assert answer["schema_fingerprint_varies_with"] == ["playbook"]
+    # The catalog says the same thing about the same verb.
+    entry = {e["verb"]: e for e in call(help=True)["verbs"]}["play.submit"]
+    assert "schema_fingerprint" not in entry
+    assert entry["schema_fingerprint_varies_with"] == ["playbook"]
+
+
+def test_targeted_help_quotes_the_fingerprint_once_the_playbook_is_named(a_playbook):
+    # The suppression above must be about the missing argument, not about the verb:
+    # naming the playbook resolves it, so the value is real and is quoted.
+    answer = call(help={"verb": "play.submit", "playbook": a_playbook})
+    assert answer["schema_fingerprint"]
+    assert answer["schema_fingerprint"] != schema_fingerprint_of_base_play_submit()
+
+
+def schema_fingerprint_of_base_play_submit() -> str:
+    return dispatch.schema_fingerprint(dispatch.verb_schema(verbs.VERBS["play.submit"]))
+
+
+def test_an_optional_playbook_still_quotes_its_argument_free_fingerprint():
+    # `flow.submit` takes a playbook without requiring one, so the argument-free
+    # schema is a real call and its fingerprint is usable. Pinned so the
+    # suppression above cannot widen into every playbook-aware verb.
+    answer = call(help="flow.submit")
+    assert answer["schema_fingerprint"]
+    assert answer["schema_fingerprint_varies_with"] == ["playbook"]
+
+
 def test_a_playbook_aware_call_naming_none_is_pointed_at_the_base_schema(submitted):
     # `flow.submit` takes a playbook but does not require one, so the
     # argument-free schema is a real call and its own fingerprint is the right
@@ -494,6 +543,38 @@ def test_a_playbook_aware_call_naming_none_is_pointed_at_the_base_schema(submitt
     assert error["kind"] == "stale_schema"
     assert error["detail"]["help"] == {"verb": "flow.submit"}
     assert "playbook" not in error["detail"]["help"]
+    assert submitted == {}
+
+
+def test_no_refusal_points_at_a_help_call_that_returns_no_fingerprint(submitted):
+    """Every fingerprint refusal's pointer must lead somewhere that answers it.
+
+    A refusal that says "ask help=X" while X withholds the fingerprint is a dead
+    end, and it is the failure the withholding above would introduce if the gate
+    still fired for a verb whose required playbook is missing. So the two are
+    checked against each other rather than separately: follow every reachable
+    pointer and require a fingerprint at the other end.
+    """
+    subjects = [
+        {"op": "agent.submit", "args": {"query": ["m"]}},
+        {"op": "flow.submit", "args": {"query": ["m", "do it"]}},
+        {"op": "fanout.submit", "args": {"query": ["m", "do it"]}},
+        {"op": "play.submit", "args": {}},
+    ]
+    seen = 0
+    for op in subjects:
+        error = call(ops=[op])["ops"][0].get("error") or {}
+        if error.get("kind") != "stale_schema":
+            continue
+        seen += 1
+        pointer = error["detail"]["help"]
+        answer = call(help=pointer)
+        assert "schema_fingerprint" in answer, (
+            f"{op['op']} is refused and told to ask help={pointer!r}, which returns no "
+            "fingerprint — the remedy leads nowhere"
+        )
+        assert answer["schema_fingerprint"] == error["detail"]["schema_fingerprint"]
+    assert seen, "no op was refused for its fingerprint — this check read nothing"
     assert submitted == {}
 
 
