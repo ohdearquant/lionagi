@@ -233,6 +233,15 @@ working inside a lionagi checkout.
   rendered at a fixed size intended for a compact embed that no surface actually
   renders.
 
+- **The served OpenAPI document states the running version.** The Studio app was
+  built without one, so the framework supplied its own default and every release
+  served the same string. A client reading that document to decide what the
+  server supports was reading a constant, which made two servers on different
+  releases indistinguishable and left a version-keyed feature gate unable to
+  move. Note that the published Python package carries the backend only: the
+  browser interface ships in the container image and in the hosted deployment,
+  both built from the same release.
+
 - **Packaging.** The VS Code extension no longer ships a source map that a
   negation had re-included after `.vscodeignore` excluded it. The marketplace
   manifest lint accepts only frontmatter a YAML parser can read, so a file can
