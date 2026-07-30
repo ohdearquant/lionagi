@@ -1111,17 +1111,6 @@ export default function OperatorPanel({ open, onClose }: Props) {
               </select>
             </div>
           </div>
-          {state.activeRequestId && (
-            <Button
-              variant="danger"
-              size="sm"
-              leading={<IconPause size={12} />}
-              disabled={stopping}
-              onClick={() => void handleStop()}
-            >
-              {stopping ? t("stopping") : t("stop")}
-            </Button>
-          )}
           <button
             type="button"
             className="focus-ring flex h-8 w-8 items-center justify-center rounded text-content-muted transition-colors hover:bg-surface-overlay hover:text-content-primary"
@@ -1270,8 +1259,10 @@ export default function OperatorPanel({ open, onClose }: Props) {
             <div className="flex items-center justify-between px-2 pb-2">
               <span className="font-data text-meta text-content-muted">{t("composer.hint")}</span>
               {state.activeRequestId ? (
-                // Send is disabled while a turn runs, so without this the only
-                // way to stop one is a header button that appears mid-turn.
+                // Send is disabled while a turn runs, so the same slot becomes
+                // Stop. Keeping it here rather than in the header puts the
+                // control where the eye already is, and leaves exactly one
+                // way to stop a turn.
                 <Button
                   variant="danger"
                   size="sm"
