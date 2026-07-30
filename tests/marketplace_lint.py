@@ -252,48 +252,167 @@ def test_lambda_names_are_canonical(path: Path) -> None:
 #
 # validate_manifests.py hand-rolls its frontmatter grammar because ci.sh runs it
 # on the bare system interpreter, where no YAML parser is available. This suite
-# does run under uv, so it is where that grammar gets pinned against a real
-# parser. Each case records both answers; where they differ, the reason is part
-# of the case. A change that makes one of them agree has to edit this table, so
-# the divergence set stays closed and stays explained.
+# runs under uv, so it is where that grammar is pinned against a real parser.
+#
+# The grammar is narrower than YAML on purpose, so exactly one direction is an
+# invariant: it must never accept a document a parser would reject. The opposite
+# direction is a judgement call per form, so every form rejected despite being
+# legal YAML is recorded below with a category drawn from a closed set.
+#
+# The corpus is a CROSS PRODUCT, not a list of remembered cases. A hand-picked
+# table is an enumeration: it reads as complete while being short, and two
+# review rounds found forms such a table had omitted. Generating fence x key x
+# value combinations covers pairings nobody thought to write down.
 # ---------------------------------------------------------------------------
 
 _SCRIPTS_DIR = str(_MARKETPLACE_ROOT / "scripts")
 
-# (label, document, our answer, a real parser's answer, why they differ)
-_FRONTMATTER_CASES: list[tuple[str, str, bool, bool, str]] = [
-    ("exact fence", "---\nname: x\ndescription: d\n---\nb\n", True, True, ""),
-    ("trailing space on fences", "--- \nname: x\ndescription: d\n--- \nb\n", True, True, ""),
-    ("trailing tab on fence", "---\t\nname: x\ndescription: d\n---\nb\n", False, False, ""),
-    ("leading space on fence", "  ---\nname: x\ndescription: d\n---\nb\n", False, False, ""),
-    ("no space after colon", "---\ndescription:valid\n---\nb\n", False, False, ""),
-    ("tab after colon", "---\ndescription:\tvalid\n---\nb\n", False, False, ""),
-    ("nested under another key", "---\nmeta:\n  description: n\n---\nb\n", False, False, ""),
-    ("empty block scalar", "---\ndescription: |\n---\nb\n", False, False, ""),
-    ("value is empty", "---\ndescription:\n---\nb\n", False, False, ""),
-    ("no closing fence", "---\ndescription: d\nb\n", False, False, ""),
-    ("description-prefixed key", "---\ndescription_of: d\n---\nb\n", False, False, ""),
-    (
-        "space before colon",
-        "---\ndescription : valid\n---\nb\n",
-        False,
-        True,
-        "legal YAML, but resolving a key spelled with padding needs a parser",
-    ),
-    (
-        "quoted key",
-        '---\n"description": valid\n---\nb\n',
-        False,
-        True,
-        "legal YAML, but unquoting a key needs a parser",
-    ),
-    (
-        "block scalar with content",
-        "---\ndescription: |\n  real text\n---\nb\n",
-        False,
-        True,
-        "legal YAML, but folding a block scalar needs a parser",
-    ),
+_FENCES = ["---", "--- ", "---\t", "  ---", "----", "--", "---x"]
+
+_KEYS = [
+    "description: ",
+    "description:",
+    "description :",
+    '"description":',
+    "description_of: ",
+    "  description: ",
+]
+
+# YAML-significant value spellings. Several resolve to something that is not a
+# string, which is the whole point: a parser answers for each one and the
+# grammar must never be more permissive than that answer.
+_VALUES = [
+    "",
+    " ",
+    '""',
+    '"   "',
+    "'   '",
+    "'x'",
+    '"x"',
+    "null",
+    "Null",
+    "NULL",
+    "~",
+    "true",
+    "false",
+    "True",
+    "FALSE",
+    "yes",
+    "no",
+    "Yes",
+    "on",
+    "off",
+    "y",
+    "n",
+    "123",
+    "-5",
+    "1.5",
+    "0x1f",
+    "0o17",
+    "1e3",
+    "2026-07-30",
+    "12:30:00",
+    "[]",
+    "[a]",
+    "{}",
+    "{a: b}",
+    "|",
+    ">",
+    "|-",
+    ">-",
+    "# comment",
+    "#c",
+    "text",
+    "text # comment",
+    "text#notcomment",
+    "yes # comment",
+    "*anchor",
+    "&a x",
+    "!!str x",
+    "nan",
+    ".nan",
+    "inf",
+    ".inf",
+    "-",
+    "? x",
+    ": x",
+    ", x",
+    "%x",
+    "@x",
+    "Yes really",
+    "No thanks",
+    "On call",
+    "null pointer safety",
+    "e5",
+    "an agent that reviews changes",
+]
+
+
+def _documents() -> list[str]:
+    """The cross product, plus structural shapes the product cannot express."""
+    docs = [
+        f"{fence}\nname: agent\n{key}{value}\n---\nbody\n"
+        for fence in _FENCES
+        for key in _KEYS
+        for value in _VALUES
+    ]
+    docs += [
+        "---\nname: agent\n",
+        "---\n---\nbody\n",
+        "---\nmeta:\n  description: nested\n---\nbody\n",
+        "",
+        "body only, no frontmatter\n",
+    ]
+    return docs
+
+
+# Categories are closed, so a plausible-sounding free-text explanation cannot
+# stand in for one. Each row is also asserted to be a real divergence, which is
+# what stops the record drifting into fiction.
+_NARROWING_CATEGORIES = frozenset(
+    {
+        "needs-a-parser-to-unquote",
+        "needs-a-parser-to-fold",
+        "needs-a-parser-to-resolve-the-key",
+        "outside-the-provable-whitelist",
+    }
+)
+
+# (document a parser accepts and the grammar rejects, category)
+_DOCUMENTED_NARROWINGS: list[tuple[str, str]] = [
+    ('---\ndescription: "x"\n---\nb\n', "needs-a-parser-to-unquote"),
+    ("---\ndescription: 'x'\n---\nb\n", "needs-a-parser-to-unquote"),
+    ("---\ndescription: |\n  real text\n---\nb\n", "needs-a-parser-to-fold"),
+    ("---\ndescription: >\n  real text\n---\nb\n", "needs-a-parser-to-fold"),
+    ("---\ndescription : valid\n---\nb\n", "needs-a-parser-to-resolve-the-key"),
+    ('---\n"description": valid\n---\nb\n', "needs-a-parser-to-resolve-the-key"),
+    ("---\ndescription: 0o17\n---\nb\n", "outside-the-provable-whitelist"),
+    ("---\ndescription: 1e3\n---\nb\n", "outside-the-provable-whitelist"),
+    ("---\ndescription: &a x\n---\nb\n", "outside-the-provable-whitelist"),
+    ("---\ndescription: !!str x\n---\nb\n", "outside-the-provable-whitelist"),
+]
+
+# Forms the review rounds actually surfaced, kept named so a reader can see which
+# ones were real defects rather than inferring it from the cross product.
+# (label, document, the grammar's required answer)
+_NAMED_REGRESSIONS: list[tuple[str, str, bool]] = [
+    ("trailing-space fence stays accepted", "--- \ndescription: text\n--- \nb\n", True),
+    ("trailing-tab fence", "---\t\ndescription: text\n---\nb\n", False),
+    ("no space after colon", "---\ndescription:text\n---\nb\n", False),
+    ("tab after colon", "---\ndescription:\ttext\n---\nb\n", False),
+    ("comment-only value", "---\ndescription: # c\n---\nb\n", False),
+    ("quoted empty value", '---\ndescription: ""\n---\nb\n', False),
+    ("quoted whitespace value", '---\ndescription: "   "\n---\nb\n', False),
+    ("null value", "---\ndescription: null\n---\nb\n", False),
+    ("sequence value", "---\ndescription: []\n---\nb\n", False),
+    ("mapping value", "---\ndescription: {}\n---\nb\n", False),
+    ("integer value", "---\ndescription: 123\n---\nb\n", False),
+    ("boolean value", "---\ndescription: yes\n---\nb\n", False),
+    ("boolean with a trailing comment", "---\ndescription: yes # c\n---\nb\n", False),
+    ("prose opening with a bool word", "---\ndescription: Yes really\n---\nb\n", True),
+    ("prose opening with null", "---\ndescription: null pointer safety\n---\nb\n", True),
+    ("y resolves to a string, not a bool", "---\ndescription: y\n---\nb\n", True),
+    ("ordinary description", "---\ndescription: an agent that reviews\n---\nb\n", True),
 ]
 
 
@@ -320,45 +439,83 @@ def _parser_says(document: str) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def test_grammar_never_accepts_what_a_parser_rejects(tmp_path: Path) -> None:
+    """The invariant: nothing a parser rejects may pass the hand-rolled grammar.
+
+    The opposite direction is deliberately not asserted here. The grammar is narrower
+    than YAML, and each narrowing lives in _DOCUMENTED_NARROWINGS instead, so a form
+    it rejects is a recorded decision rather than a silent gap.
+    """
+    check = _description_check()
+    subject = tmp_path / "agent.md"
+    corpus = _documents()
+
+    accepted_by_us = accepted_by_parser = 0
+    false_passes: list[str] = []
+    for document in corpus:
+        subject.write_text(document)
+        ours = check(subject)
+        parser = _parser_says(document)
+        accepted_by_us += ours
+        accepted_by_parser += parser
+        if ours and not parser:
+            false_passes.append(repr(document))
+
+    # A corpus that resolved nothing would satisfy the invariant vacuously, so the
+    # measurement is asserted to be informative before its result is trusted.
+    assert len(corpus) > 1000, f"corpus collapsed to {len(corpus)} documents"
+    assert accepted_by_us, "the grammar accepted nothing at all — it cannot discriminate"
+    assert accepted_by_parser, "the parser accepted nothing at all — the corpus is malformed"
+    assert accepted_by_parser < len(corpus), "the parser accepted everything — corpus is trivial"
+
+    assert not false_passes, (
+        f"the grammar accepts {len(false_passes)} of {len(corpus)} documents that a parser "
+        f"rejects (listing up to 20):\n" + "\n".join(f"  {d}" for d in sorted(false_passes)[:20])
+    )
+
+
+@pytest.mark.parametrize(
+    ("document", "category"),
+    _DOCUMENTED_NARROWINGS,
+    ids=[f"{i}-{category}" for i, (_d, category) in enumerate(_DOCUMENTED_NARROWINGS)],
+)
+def test_documented_narrowings_are_real(tmp_path: Path, document: str, category: str) -> None:
+    """Each recorded narrowing is a genuine parser-accepts, grammar-rejects pair.
+
+    Asserting both answers is what keeps the record honest: a row whose parser answer
+    changed, or that the grammar has since started accepting, fails here instead of
+    remaining in the table as a false explanation.
+    """
+    assert category in _NARROWING_CATEGORIES, f"unknown narrowing category {category!r}"
+    subject = tmp_path / "agent.md"
+    subject.write_text(document)
+    assert _parser_says(document) is True, "a parser no longer accepts this form"
+    assert _description_check()(subject) is False, "the grammar now accepts it — drop this row"
+
+
 @pytest.mark.parametrize(
     ("document", "expected"),
-    [(c[1], c[2]) for c in _FRONTMATTER_CASES],
-    ids=[c[0] for c in _FRONTMATTER_CASES],
+    [(d, e) for _label, d, e in _NAMED_REGRESSIONS],
+    ids=[label for label, _d, _e in _NAMED_REGRESSIONS],
 )
-def test_frontmatter_grammar(tmp_path: Path, document: str, expected: bool) -> None:
-    """The hand-rolled grammar answers each recorded case the recorded way."""
+def test_named_regressions(tmp_path: Path, document: str, expected: bool) -> None:
+    """Forms the review rounds surfaced, pinned individually so each one is named."""
     subject = tmp_path / "agent.md"
     subject.write_text(document)
     assert _description_check()(subject) is expected
 
 
 @pytest.mark.parametrize(
-    ("document", "parser_answer"),
-    [(c[1], c[3]) for c in _FRONTMATTER_CASES],
-    ids=[c[0] for c in _FRONTMATTER_CASES],
+    "document",
+    [d for _label, d, e in _NAMED_REGRESSIONS if e],
+    ids=[label for label, _d, e in _NAMED_REGRESSIONS if e],
 )
-def test_frontmatter_grammar_never_accepts_what_a_parser_rejects(
-    tmp_path: Path, document: str, parser_answer: bool
-) -> None:
-    """The dangerous direction stays closed: no malformed document may pass.
+def test_named_acceptances_agree_with_a_parser(document: str) -> None:
+    """Every form the grammar is required to accept is one a parser accepts too.
 
-    Erring toward rejection is tolerable and recorded per case. Erring toward
-    acceptance ships an agent the host cannot read, so it is an invariant.
+    Without this, a regression row could pin an accept that is itself a false pass.
     """
-    assert _parser_says(document) is parser_answer, "the recorded parser answer went stale"
-    if not parser_answer:
-        subject = tmp_path / "agent.md"
-        subject.write_text(document)
-        assert _description_check()(subject) is False
-
-
-def test_frontmatter_divergences_are_all_explained() -> None:
-    """Every case where the two disagree carries its reason, and no other case does."""
-    for label, _document, ours, parser_answer, reason in _FRONTMATTER_CASES:
-        if ours != parser_answer:
-            assert reason, f"{label}: diverges from a parser with no reason recorded"
-        else:
-            assert not reason, f"{label}: agrees with a parser but records a divergence reason"
+    assert _parser_says(document) is True
 
 
 def test_shipped_agents_satisfy_the_grammar() -> None:

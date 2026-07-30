@@ -13,24 +13,51 @@ PER_PLUGIN_STRING_FIELDS = ["name", "version", "description"]
 PER_PLUGIN_OPTIONAL_STRINGS = ["repository", "license", "homepage"]
 
 
+# Plain scalars spelled with letters that a YAML parser still resolves to something
+# other than a string. Compared case-insensitively, and measured rather than assumed:
+# `y` and `n` are NOT here, because a parser resolves those to the strings "y" and "n".
+# Do not add them.
+_NOT_A_STRING = frozenset({"null", "true", "false", "yes", "no", "on", "off"})
+
+
+def _describes_a_nonempty_string(value: str) -> bool:
+    """Whether a plain scalar is certainly a non-empty string to a YAML parser.
+
+    Deliberately a whitelist, not an attempt at parser equivalence. The value must
+    begin with a letter, which in one test rules out every YAML indicator character
+    and so every number, timestamp, quoted form, block or folded scalar, flow
+    collection, anchor, alias, tag and comment. What remains that a parser would not
+    call a string is the boolean and null wordlist above, which is closed.
+
+    A trailing ``#`` comment is dropped first, since a parser drops it and keeps the
+    text before it. That matters in both directions: ``text # note`` is the string
+    "text", while ``yes # note`` is still a boolean.
+    """
+    head = value.split(" #", 1)[0].rstrip()
+    if not head or not head[0].isalpha():
+        return False
+    return head.lower() not in _NOT_A_STRING
+
+
 def _has_frontmatter_description(path: Path) -> bool:
     """True when the file opens with frontmatter carrying a non-empty description.
 
     No YAML parser is used, and that is forced rather than preferred: ci.sh runs this
     file on the bare system interpreter, never through uv, so nothing outside the
-    standard library is available and an import would turn a lint into a crash. The
-    grammar below is therefore hand-rolled, and it was compared case by case against a
-    real parser so that where it disagrees it errs toward rejection:
+    standard library is available and an import would turn a lint into a crash.
+
+    The grammar is therefore hand-rolled, and it is narrower than YAML on purpose. It
+    is pinned in the marketplace surface suite against a real parser, over a generated
+    corpus rather than a list of remembered cases, with one invariant: it must never
+    accept a document a parser would reject. Forms it rejects despite being legal YAML
+    are recorded there with a category. Two rules worth stating here because both are
+    tempting to "fix":
 
     - A fence is ``---`` alone on its line, optionally followed by spaces. Trailing
       spaces are legal and accepted; a trailing tab is not legal and is rejected. Do
       not tighten this to ``line == "---"`` — that rejects a fence a parser accepts.
     - The colon after ``description`` must be followed by a space or end the line.
       ``description:value`` is a plain scalar, not a mapping, and must not count.
-    - The value must be a non-empty scalar on the same line. Block and folded scalars
-      (``|``, ``>``) are rejected even when they carry content, as are the
-      space-before-colon and quoted-key spellings, because evaluating those needs the
-      parser this cannot import. The failure message names the accepted form.
     """
 
     def is_fence(line: str) -> bool:
@@ -51,8 +78,7 @@ def _has_frontmatter_description(path: Path) -> bool:
         rest = line[len("description:") :]
         if rest[:1] not in ("", " "):
             continue
-        value = rest.strip()
-        return bool(value) and value[0] not in "|>"
+        return _describes_a_nonempty_string(rest.strip())
     return False
 
 
