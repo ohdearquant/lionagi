@@ -1318,19 +1318,44 @@ def test_both_create_paths_hold_command_args_to_the_same_contract(tmp_path, monk
     """The divergence guard, and the test whose absence let the paths drift.
 
     The declarative resolver and the imperative create service write the same
-    database field. They validated it with different functions, and nothing
-    failed when one of them was the wrong function. This asserts that whatever
-    the declarative path produces, the imperative path's own check accepts —
-    so a future change to either one has to face the other.
-    """
-    from lionagi.studio.services.schedules import _svc_validate_command_args
+    database field, and they validated it with different functions. What has to
+    be asserted is the *delegation*: that the resolver hands this field to the
+    imperative path's own validator rather than to a check of its own.
 
+    Calling that validator on the resolver's output would not assert it. The
+    resolver already calls it, so re-running it on the result passes by
+    construction and would stay green through exactly the regression this test
+    exists to catch: a resolver that substitutes a weaker check and still
+    returns a list. So the validator is replaced with a recorder and the call
+    itself is what gets asserted.
+    """
+    from lionagi.studio.services import schedules as schedules_svc
+
+    seen: list[list[str]] = []
+    real_validator = schedules_svc._svc_validate_command_args
+
+    def _recording_validator(value):
+        seen.append(value)
+        return real_validator(value)
+
+    # The resolver imports this symbol inside the function body, so patching it
+    # on the defining module is what the call actually resolves.
+    monkeypatch.setattr(schedules_svc, "_svc_validate_command_args", _recording_validator)
     monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
     manifest = _command_manifest(
         '        - "run"\n        - "--no-project"\n        - "worker.py"\n', tmp_path
     )
     resolved = resolve_schedule_set(parse_schedule_set(manifest), tmp_path)
-    _svc_validate_command_args(resolved["m"].db_fields["action_command_args"])
+
+    assert seen == [["run", "--no-project", "worker.py"]], (
+        "the resolver did not delegate action_command_args validation to the "
+        f"imperative path's validator; recorded calls: {seen}"
+    )
+    assert resolved["m"].db_fields["action_command_args"] == [
+        "run",
+        "--no-project",
+        "worker.py",
+    ]
 
 
 def test_declarative_command_target_still_refuses_a_non_allowlisted_executable(
@@ -1413,6 +1438,33 @@ def test_real_command_shapes_are_expressible_declaratively(args, tmp_path, monke
         parse_schedule_set(_command_manifest(args_yaml, tmp_path)), tmp_path
     )
     assert resolved["m"].db_fields["action_command_args"] == args
+
+
+def test_a_resolved_manifest_still_refuses_an_injected_flag_at_fire_time(tmp_path, monkeypatch):
+    """Manifest acceptance and fire-time rejection, joined end to end.
+
+    Permitting author-written flags is only safe because a templated element is
+    checked against its rendered value where the argv is built. Asserting
+    ``_render_command_arg`` directly leaves that argument one step short: it
+    does not show the fire path actually routes every element through it. This
+    takes what the resolver persisted, hands it to ``build_argv``, and asserts
+    a trigger-supplied flag is refused there.
+    """
+    from lionagi.studio.scheduler.subprocess import build_argv
+
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
+    manifest = _command_manifest(
+        '        - "--repo"\n        - "owner/name"\n        - "--pr"\n        - "{{pr_number}}"\n',
+        tmp_path,
+    )
+    resolved = resolve_schedule_set(parse_schedule_set(manifest), tmp_path)
+    schedule = dict(resolved["m"].db_fields)
+
+    argv, _ = build_argv(schedule, {"pr_number": "123"})
+    assert argv == ["refresh-index", "--repo", "owner/name", "--pr", "123"]
+
+    with pytest.raises(ValueError, match="would inject a flag"):
+        build_argv(schedule, {"pr_number": "--oops"})
 
 
 @pytest.mark.parametrize("args", _REAL_COMMAND_ARG_SHAPES)
