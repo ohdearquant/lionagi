@@ -3,6 +3,7 @@
 
 """Tests for lionagi.service.hooks.hooked_event — HookedEvent._invoke() and _stream()."""
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -331,6 +332,49 @@ async def test_stream_post_hook_runs_when_consumer_stops_early():
     agen = h._stream()
     async for _ in agen:
         break
+    await agen.aclose()
+
+    assert hook.invoked is True
+
+
+class SlowHooked(HookedEvent):
+    async def _core_stream(self):
+        yield "chunk1"
+        await asyncio.sleep(10)
+        yield "chunk2"
+
+
+@pytest.mark.asyncio
+async def test_stream_cancellation_propagates_and_runs_post_hook():
+    """Cancelling the consuming task must reach the caller as CancelledError,
+    and teardown still runs: the generator is closed outside the cancelled
+    await, so the hook's own awaits complete normally."""
+    h = SlowHooked()
+    hook = _fake_hook()
+    hook.invoked = False
+
+    async def _invoke():
+        await asyncio.sleep(0)
+        hook.invoked = True
+
+    hook.invoke = _invoke
+    h._post_invoke_hook_event = hook
+
+    started = asyncio.Event()
+    agen = h._stream()
+
+    async def consume():
+        async for _ in agen:
+            started.set()
+
+    task = asyncio.create_task(consume())
+    await started.wait()
+    await asyncio.sleep(0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
     await agen.aclose()
 
     assert hook.invoked is True

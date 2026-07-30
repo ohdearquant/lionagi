@@ -99,6 +99,12 @@ class HookedEvent(Event):
         # completed, raised, or the consumer stopped early (which resumes this
         # generator with GeneratorExit at the yield), so the loop is wrapped in
         # try/finally rather than falling through on the happy path only.
+        #
+        # Under cancellation the finally is entered via GeneratorExit when the
+        # generator is closed, not inside the cancelled await, so the hook's own
+        # awaits run to completion and the CancelledError still propagates to the
+        # consumer unchanged. `except Exception` in _run_post_stream_hook does not
+        # catch it, since the cancellation exception derives from BaseException.
         try:
             async for chunk in self._core_stream():
                 yield chunk
