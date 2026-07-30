@@ -215,7 +215,13 @@ def schema_fingerprint(schema: dict[str, Any]) -> str:
     return hashlib.sha256(body.encode()).hexdigest()[:16]
 
 
-def _describe_fingerprint(entry: dict[str, Any], verb: Verb, schema: dict[str, Any]) -> None:
+def _describe_fingerprint(
+    entry: dict[str, Any],
+    verb: Verb,
+    schema: dict[str, Any],
+    *,
+    playbook: str | None = None,
+) -> None:
     """Say what a fingerprint-gated verb's ops have to carry.
 
     A playbook-aware verb is projected again once a playbook is named, so its
@@ -223,16 +229,28 @@ def _describe_fingerprint(entry: dict[str, Any], verb: Verb, schema: dict[str, A
     argument-free schema is a real call and its fingerprint is quoted; when the
     verb requires a playbook there is no such call, so quoting anything would
     hand the caller a string that is guaranteed to be refused.
+
+    Naming the playbook resolves that argument, so the schema is a real one and
+    its fingerprint is quoted. Both help surfaces route through here rather than
+    each deciding: the catalog withheld the unusable value while targeted help
+    returned it, which is one contract answered two ways by two callers.
     """
     varies = ["playbook"] if verb.playbook_aware else []
     if varies:
         entry["schema_fingerprint_varies_with"] = varies
-    if any(name in verb.requires for name in varies):
+    if playbook is None and any(name in verb.requires for name in varies):
         return
     entry["schema_fingerprint"] = schema_fingerprint(schema)
 
 
-def _require_fingerprint(name: str, verb: Verb, schema: dict[str, Any], supplied: Any) -> None:
+def _require_fingerprint(
+    name: str,
+    verb: Verb,
+    schema: dict[str, Any],
+    supplied: Any,
+    *,
+    playbook: str | None = None,
+) -> None:
     """Spawn ops carry the fingerprint targeted help returned for them.
 
     What this establishes is agreement: the schema the caller validated against is
@@ -243,25 +261,41 @@ def _require_fingerprint(name: str, verb: Verb, schema: dict[str, Any], supplied
     inherited from someone who did read the schema.
 
     The refusal carries its own remedy, because a rejection that only says
-    "stale" strands exactly the caller this exists to help.
+    "stale" strands exactly the caller this exists to help. The remedy has to name
+    the playbook the call resolved: a playbook's own arguments are part of the
+    schema, so the fingerprint below is already qualified by it, and a help
+    pointer that named the verb alone would send a caller who re-fetches to the
+    argument-free schema and back into this same refusal.
     """
+    if playbook is None and verb.playbook_aware and "playbook" in verb.requires:
+        # The fingerprint this call would need is the argument-free schema's, and
+        # help does not hand that one out precisely because no successful call
+        # carries it. Complaining about it here would leave the caller with
+        # nothing to fetch. The real defect is the missing playbook, so let
+        # validation say that: it is the error the caller can act on, and no run
+        # starts either way.
+        return
     current = schema_fingerprint(schema)
     if supplied == current:
         return
-    remedy = {
-        "help": {"verb": name} if verb.playbook_aware else name,
-        "schema_fingerprint": current,
-    }
+    if playbook is not None:
+        source: Any = {"verb": name, "playbook": playbook}
+    elif verb.playbook_aware:
+        source = {"verb": name}
+    else:
+        source = name
+    remedy = {"help": source, "schema_fingerprint": current}
     # Where the key goes is the part a caller gets wrong: put it inside `args`
     # and it is simply not read, so this refusal repeats verbatim and the
     # failure reads as idempotent rather than as a misplaced key. Spelling the
     # whole op is the only form of the instruction that cannot be misread.
     shape = f"{{'op': {name!r}, 'args': {{...}}, 'schema_fingerprint': {current!r}}}"
+    ask = f"help={source!r}"
     if supplied is None:
         raise OpError(
             "stale_schema",
             f"{name!r} needs the schema_fingerprint that help returns for it; ask for "
-            f"help={name!r} and send the fingerprint as a sibling of 'args', not a "
+            f"{ask} and send the fingerprint as a sibling of 'args', not a "
             f"member of it: {shape}",
             remedy,
         )
@@ -269,7 +303,7 @@ def _require_fingerprint(name: str, verb: Verb, schema: dict[str, Any], supplied
         "stale_schema",
         f"{name!r} was called with schema_fingerprint {supplied!r}, which is not the "
         f"current {current!r}; the parameters changed since that schema was read. "
-        f"Re-read help={name!r} and send: {shape}",
+        f"Re-read {ask} and send: {shape}",
         remedy,
     )
 
@@ -988,9 +1022,9 @@ def _help(target: Any) -> dict[str, Any]:
         schema = verb_schema(verb, playbook=playbook)
     except projection.SchemaProjectionError as exc:
         raise ValueError(f"{resolved!r} has no describable schema: {exc}") from exc
-    answer = {"verb": resolved, "schema": schema}
+    answer: dict[str, Any] = {"verb": resolved, "schema": schema}
     if verb.executor == "spawn":
-        answer["schema_fingerprint"] = schema_fingerprint(schema)
+        _describe_fingerprint(answer, verb, schema, playbook=playbook)
     return answer
 
 
@@ -1071,7 +1105,13 @@ async def _run_one(entry: Any) -> dict[str, Any]:
         playbook = args.get("playbook") if verb.playbook_aware else None
         schema = verb_schema(verb, playbook=playbook if isinstance(playbook, str) else None)
         if verb.executor == "spawn":
-            _require_fingerprint(name, verb, schema, entry.get("schema_fingerprint"))
+            _require_fingerprint(
+                name,
+                verb,
+                schema,
+                entry.get("schema_fingerprint"),
+                playbook=playbook if isinstance(playbook, str) else None,
+            )
         _validate(schema, args, verb)
         if verb.executor == "spawn":
             result = _run_spawn(verb, schema, args)
