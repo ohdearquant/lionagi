@@ -689,3 +689,183 @@ def test_a_switch_looking_query_reaches_the_child_as_a_positional(spawned):
     from lionagi.cli import machine
 
     assert not machine.has_machine_flag(argv[1:])
+
+
+# --- an unresolved spawn is not something waiting can fix -----------------------
+
+
+async def test_wait_reports_an_aged_preparing_spawn_as_unresolved_not_pending(sandbox, monkeypatch):
+    """A spawn that never resolved leaves ``pending``, so ``timed_out`` stops lying.
+
+    Such a record was reported as pending with ``timed_out`` set, which is the same
+    shape a live run presents, so a caller waiting for it waited for as long as it
+    kept asking. Nothing about the record changes here: no end is written, it stays
+    non-terminal, and the classifier's refusal to judge the spawn's fate is intact.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    rid = jobs.new_run_id()
+    _record(rid, pid=None, spawn_state="preparing")  # submitted_at defaults to 2026-07-25
+
+    res = await jobs.wait([rid], max_wait=0, poll_interval=1)
+
+    # Every top-level field that can move for this row class, asserted together.
+    # The derived ones are the point: timed_out is pending being non-empty, so it
+    # cannot be checked by inspecting pending and reasoning about it.
+    assert res["unresolved_spawn"] == [rid]
+    assert res["pending"] == []
+    assert res["stopped_without_end"] == []
+    assert res["timed_out"] is False
+    assert res["all_terminal"] is False  # a run this cannot account for is not done
+    assert res["unresolved_spawn_after"] == jobs.UNRESOLVED_SPAWN_AFTER_SECONDS
+    assert res["runs"][0]["terminal"] is False
+    assert res["runs"][0]["outcome"] is None
+    assert res["runs"][0]["possibly_orphaned"] is False
+
+
+async def test_wait_keeps_a_freshly_submitted_preparing_spawn_pending(sandbox, monkeypatch):
+    """The guard against a bucket that would swallow every submission.
+
+    ``preparing`` is a legitimate phase for as long as a spawn legitimately takes,
+    and it does advance. A record derived flag with no age in it would report every
+    fresh submit as unresolved, which is why the age is what decides and why this
+    test exists rather than only its aged twin.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    rid = jobs.new_run_id()
+    _record(rid, pid=None, spawn_state="preparing", submitted_at=jobs._now_iso())
+
+    res = await jobs.wait([rid], max_wait=0, poll_interval=1)
+
+    assert res["unresolved_spawn"] == []
+    assert res["pending"] == [rid]
+    assert res["timed_out"] is True
+
+
+async def test_wait_does_not_read_a_null_spawn_phase_as_never_attempted(sandbox, monkeypatch):
+    """Null means "no phase this can vouch for", never "never attempted".
+
+    A record written before the phase field existed carries null, and the phase that
+    does mean never-attempted says ``preparing`` explicitly. So the bucket is keyed
+    on equality with ``preparing`` and not on difference from it; the natural
+    inverted form would sweep every pre-field record into a bucket asserting the
+    opposite of what is known about it.
+
+    Both records here are LIVE, which is what makes the test discriminating rather
+    than merely true. A pid-less record cannot reach the phase test at all — it is
+    excluded one condition earlier as an orphan — so it would pass under the
+    inverted form too and prove nothing. A running process is the case the inversion
+    actually damages: it would report every live run as an unresolved spawn.
+    """
+    _live_process(monkeypatch)
+    no_phase = jobs.new_run_id()
+    _record(no_phase, pid=4242, spawn_state=None)  # written before the field existed
+    started = jobs.new_run_id()
+    _record(started, pid=4242, spawn_state="started")
+
+    res = await jobs.wait([no_phase, started], max_wait=0, poll_interval=1)
+
+    assert res["unresolved_spawn"] == []
+    assert res["pending"] == [no_phase, started]
+    assert res["timed_out"] is True
+    assert res["runs"][0]["spawn_state"] is None
+    assert res["runs"][1]["spawn_state"] == "started"
+
+
+async def test_wait_does_not_collapse_an_orphan_into_an_unresolved_spawn(sandbox, monkeypatch):
+    """The two non-terminal buckets stay distinct, because they are different news.
+
+    ``possibly_orphaned`` presupposes a pid that existed and is now unaskable; an
+    unresolved spawn never acquired one. Collapsing them would give one field two
+    structurally different meanings, and an operator sent to look for a process that
+    was never started is sent to look for nothing.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    orphan = jobs.new_run_id()
+    _record(orphan, pid="999999")  # a pid the OS cannot even be asked about
+
+    res = await jobs.wait([orphan], max_wait=0, poll_interval=1)
+
+    assert res["stopped_without_end"] == [orphan]
+    assert res["unresolved_spawn"] == []
+    assert res["runs"][0]["possibly_orphaned"] is True
+
+
+async def test_wait_and_list_agree_on_the_spawn_phase(sandbox, monkeypatch):
+    """The two observation surfaces report the same phase for the same record.
+
+    Asserted between the surfaces rather than against a literal on each: a literal
+    would let both drift together, and the defect this closes was precisely the two
+    surfaces disagreeing about which facts a caller gets.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    rid = jobs.new_run_id()
+    _record(rid, pid=None, spawn_state="preparing")
+
+    waited = await jobs.wait([rid], max_wait=0, poll_interval=1)
+    listed = [row for row in jobs.list_jobs() if row["run_id"] == rid]
+
+    assert len(listed) == 1
+    assert waited["runs"][0]["spawn_state"] == listed[0]["spawn_state"]
+    assert waited["runs"][0]["submitted_at"] == listed[0]["submitted_at"]
+
+
+async def test_a_spawn_that_starts_between_observations_returns_to_pending(sandbox, monkeypatch):
+    """The bucket is a reading of the current record, never a latch.
+
+    This is what makes the bucket safe to put a live-but-slow spawn in: the row
+    leaves it the moment its phase advances, so the cost of a wrong guess is one
+    poll interval rather than a run written off. The claim is asserted across two
+    observations inside ONE wait, not across two calls — two calls would pass even
+    if a latch survived for the length of a call, which is exactly where a cache
+    would sit.
+
+    Both the clock and the sleep are driven rather than waited on. A wall-clock
+    version would either sleep for real or race its own deadline, and a flaky test
+    for a stickiness property is worse than no test: it fails for reasons unrelated
+    to stickiness and gets muted.
+
+    The pid moves with the phase, and it has to: a record claiming ``started`` with
+    no pid is not a running run to the classifier, it is an orphan, so a fixture
+    that only advanced the phase would be asserting a transition into a state it
+    cannot represent. Liveness is answered per-pid rather than by a flat ``False``
+    for the same reason — the source state needs a dead probe and the destination
+    state needs a live one, inside one test.
+    """
+    import anyio
+
+    live_pid = 4242
+    _live_process(monkeypatch, alive=lambda pid: pid == live_pid)
+    rid = jobs.new_run_id()
+    _record(rid, pid=None, spawn_state="preparing")
+
+    # First establish the row really is in the new bucket, so what follows is a
+    # transition OUT of it rather than a row that was never in it. Without this the
+    # test would pass against a build where the bucket never captured anything.
+    before = await jobs.wait([rid], max_wait=0, poll_interval=1)
+    assert before["unresolved_spawn"] == [rid]
+    assert before["pending"] == []
+
+    clock = {"t": 1_000.0}
+    seen: list[str | None] = []
+
+    async def flip_after_the_first_observation(delay):
+        clock["t"] += delay
+        # The phase the loop was looking at when it decided to keep waiting,
+        # captured before this sleep changes anything.
+        seen.append(jobs._wait_entry(rid)["spawn_state"])
+        if len(seen) == 1:
+            _record(rid, pid=live_pid, spawn_state="started")
+
+    monkeypatch.setattr(anyio, "current_time", lambda: clock["t"])
+    monkeypatch.setattr(anyio, "sleep", flip_after_the_first_observation)
+
+    res = await jobs.wait([rid], max_wait=2, poll_interval=1)
+
+    # The two observations the single call actually made, in order.
+    assert seen == ["preparing", "started"]
+    assert res["unresolved_spawn"] == []
+    assert res["pending"] == [rid]
+    # And the triple reads as "keep waiting" again, which is the point: the row is
+    # back to being something waiting can resolve.
+    assert res["timed_out"] is True
+    assert res["all_terminal"] is False

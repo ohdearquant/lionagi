@@ -185,6 +185,34 @@ WAIT_MAX_SECONDS = 600.0
 WAIT_MIN_POLL_SECONDS = 0.05
 WAIT_MAX_POLL_SECONDS = 60.0
 
+# How long a spawn may sit unresolved before wait() stops holding its window open.
+# This is a polling decision, not a verdict: nothing here terminalises a run, and
+# the classifier's refusal to resolve such a record stands untouched.
+#
+# The number is WAIT_MAX_SECONDS, and it is a defensible default rather than a
+# derivation. The distinction is worth the words, because calling it a derivation
+# tells a later reader the question is closed.
+#
+# What it can be argued from is one property, and only in the backward direction the
+# measurement actually supports: past this line, a caller who had waited since the
+# run was submitted would already have spent a full maximum window, so the bucket
+# never speaks about a spawn nobody could have waited out yet. That is a floor on
+# when this may report, not a claim about whether the spawn will resolve.
+#
+# What it cannot be argued from is the forward direction. A record aged exactly this
+# long may still resolve a second later, and that is true of any threshold whatever,
+# so no value distinguishes itself by "anything shorter would report spawns a caller
+# could still have waited out" — that holds here too. Choosing the longest window
+# this function will honour is a bet that a spawn which has outlived one is likelier
+# stuck than slow. It is a bet, and it is labelled one so that the next person to
+# question the number is questioning a choice rather than arguing with arithmetic.
+#
+# Not a parameter, because a caller wanting a different line no longer needs one —
+# every entry now carries the spawn phase and the submission time, which are the
+# two facts this constant is drawn from, so a caller can draw its own from the same
+# inputs without this function having to guess whose line to hold.
+UNRESOLVED_SPAWN_AFTER_SECONDS = WAIT_MAX_SECONDS
+
 # The terminal hook module, invoked by the CLI's --notify by absolute
 # interpreter path so it runs regardless of PATH in the CLI's environment.
 _NOTIFY_MODULE = "lionagi.mcp._notify_hook"
@@ -3060,6 +3088,27 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
     return out
 
 
+def _unresolved_spawn_age(submitted_at: Any) -> float | None:
+    """Seconds since *submitted_at*, or ``None`` when that cannot be established.
+
+    ``None`` is the answer both for a record naming no submission time — one
+    written before the field existed — and for a timestamp that does not parse.
+    Neither is read as an old row. The bucket this feeds says waiting has stopped
+    being useful, and an unreadable timestamp is no evidence for that; treating it
+    as one would resolve a record by the absence of a fact rather than by a fact.
+    """
+    if not isinstance(submitted_at, str) or not submitted_at.strip():
+        return None
+    try:
+        stamped = datetime.fromisoformat(submitted_at)
+    except ValueError:
+        return None
+    if stamped.tzinfo is None:
+        # A stamp written without an offset is this writer's own UTC.
+        stamped = stamped.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - stamped).total_seconds()
+
+
 def _wait_entry(run_id: Any) -> dict[str, Any]:
     """One observation of *run_id*, resolved through the same path ``status`` uses.
 
@@ -3067,6 +3116,14 @@ def _wait_entry(run_id: Any) -> dict[str, Any]:
     rather than raising, so one bad id never costs the caller the ids beside it.
     Every entry carries the full lifecycle shape, error or not, so a caller reads
     the same keys in both cases.
+
+    ``spawn_state`` and ``submitted_at`` are part of that shape. The listing verb
+    already carries both, and its reasoning applies here with more force: this is
+    the surface a caller polls to decide whether to keep waiting, and without the
+    spawn phase a run that never started is indistinguishable in it from one doing
+    work. Reading them here is what lets a caller — or the bucketing below — tell
+    those apart without asking the classifier to resolve what it correctly refuses
+    to resolve.
 
     An id with no record is ``not_found``; an id whose record is present and
     unusable is ``record_unusable``, and says which way it is unusable. They are
@@ -3083,6 +3140,8 @@ def _wait_entry(run_id: Any) -> dict[str, Any]:
         "outcome": None,
         "reason_code": None,
         "possibly_orphaned": False,
+        "spawn_state": None,
+        "submitted_at": None,
         "error": None,
     }
     if not isinstance(run_id, str) or not run_id.strip():
@@ -3109,6 +3168,8 @@ def _wait_entry(run_id: Any) -> dict[str, Any]:
             "outcome": st["outcome"],
             "reason_code": st["reason_code"],
             "possibly_orphaned": st["possibly_orphaned"],
+            "spawn_state": st["spawn_state"],
+            "submitted_at": st["submitted_at"],
         }
     )
     return entry
@@ -3133,9 +3194,10 @@ async def wait(
 
     A bounded observation, not a subscription. It returns one entry per requested
     id, in the order they were requested, plus ``all_terminal``, ``timed_out``,
-    the ids still ``pending`` and the ids ``stopped_without_end`` — never a bare
-    boolean, because mixed outcomes are the normal case and collapsing them forces
-    the follow-up poll this call exists to replace.
+    the ids still ``pending``, the ids ``stopped_without_end`` and the ids whose
+    spawn is ``unresolved_spawn`` — never a bare boolean, because mixed outcomes
+    are the normal case and collapsing them forces the follow-up poll this call
+    exists to replace.
 
     ``max_wait`` is clamped to ``[0, WAIT_MAX_SECONDS]`` and ``poll_interval`` to
     ``[WAIT_MIN_POLL_SECONDS, WAIT_MAX_POLL_SECONDS]``; the effective values are
@@ -3181,6 +3243,56 @@ async def wait(
     can enforce it once for every client, while a documented duty to back off is
     satisfied only by the clients that read it.
 
+    ``unresolved_spawn`` is the third thing waiting cannot fix, and it was
+    previously indistinguishable from the first. A record whose spawn phase is
+    still ``"preparing"`` names a spawn that was never attempted or whose result
+    was never written, and the classifier deliberately makes no claim about its
+    fate, because no bound on the record can tell a loaded machine from a dead
+    spawn. That refusal is right and nothing here disturbs it. But such a record
+    was landing in ``pending``, which set ``timed_out`` for a run that may never
+    have started, so a caller looping until ``all_terminal`` polled it until the
+    window closed and then did so again.
+
+    Past ``unresolved_spawn_after`` — echoed in the result, so the number is read
+    rather than assumed — those ids are reported here instead. This is a decision
+    about whether to hold a window open, not about how the run ended: no outcome
+    is written, ``terminal`` stays false, the durable record is untouched, and a
+    spawn that does resolve afterwards is classified by the next observation
+    exactly as it always was. ``all_terminal`` stays false while any id is here,
+    for the same reason it does for ``stopped_without_end``: a run this cannot
+    account for is not a completed one.
+
+    One population can never reach this bucket, and it is named here because it
+    looks like an oversight to anyone who notices it. The age is drawn from
+    ``submitted_at``, and a missing or unreadable stamp is read as *no evidence*
+    rather than as evidence of being old — so the records certain to be older than
+    any threshold are exactly the records that can never enter the bucket. That is
+    deliberate twice over. Such a record carries no usable spawn phase either, so
+    the phase test excludes it before the age test is reached; and reading an absent
+    stamp as age would resolve a row by a fact nobody recorded. It also cannot arise
+    from anything this module writes today: ``submitted_at`` and the opening
+    ``spawn_state`` are set in the same record literal and published by one atomic
+    write, so no run this code submits can hold ``"preparing"`` without a stamp. The
+    population is the pre-field one, and it keeps the behaviour it has always had.
+
+    That bucket changes what ``timed_out`` means for the ids in it, and the change
+    is not conservative, so it is stated rather than left to be discovered. These
+    ids leave ``pending``, and ``timed_out`` is ``pending`` being non-empty, so it
+    goes false for them — including for a spawn that is genuinely slow rather than
+    dead, which is exactly the case no bound on the record can tell apart from a
+    dead one. A caller reading ``timed_out`` alone would take such a run for one
+    that is no longer outstanding.
+
+    ``all_terminal`` is the field that does not move: it stays false, because the
+    run has no recorded end. So the reading is the triple, not any one field —
+    ``unresolved_spawn`` non-empty with ``timed_out`` false and ``all_terminal``
+    false says *this is not worth waiting on and it is not finished either, go and
+    look at it*. That is a different instruction from ``timed_out`` true, which
+    says keep waiting, and from ``all_terminal`` true, which says stop. Looking
+    means the two facts each entry now carries, ``spawn_state`` and
+    ``submitted_at``, plus whatever the machine says about the process; this
+    function deliberately does not decide it.
+
     Observing does not touch the run. This function only reads: a wait that
     expires, or whose caller cancels or disconnects, leaves the durable record
     exactly as it was — cancelling an observation is not cancelling the work.
@@ -3197,13 +3309,34 @@ async def wait(
     entries: list[dict[str, Any]] = []
     pending: list[str] = []
     stopped: list[str] = []
+    unresolved: list[str] = []
     waited = False
     while True:
         entries = [_wait_entry(rid) for rid in ordered]
         observed = [e for e in entries if e["error"] is None]
         stopped = [e["run_id"] for e in observed if e["possibly_orphaned"]]
+        # A spawn still in its opening phase past the bound above. Keyed on the
+        # phase equalling `"preparing"` rather than on it differing from it: a
+        # record written before the field existed carries null, which means "no
+        # phase this can vouch for" and never "never attempted", so a not-equal
+        # test would sweep every such record into a bucket that claims the
+        # opposite of what is known about it.
+        unresolved = [
+            e["run_id"]
+            for e in observed
+            if not e["terminal"]
+            and not e["possibly_orphaned"]
+            and e["spawn_state"] == "preparing"
+            and (age := _unresolved_spawn_age(e["submitted_at"])) is not None
+            and age >= UNRESOLVED_SPAWN_AFTER_SECONDS
+        ]
+        unresolved_ids = set(unresolved)
         pending = [
-            e["run_id"] for e in observed if not e["terminal"] and not e["possibly_orphaned"]
+            e["run_id"]
+            for e in observed
+            if not e["terminal"]
+            and not e["possibly_orphaned"]
+            and e["run_id"] not in unresolved_ids
         ]
         remaining = deadline - anyio.current_time()
         if remaining <= 0:
@@ -3211,8 +3344,9 @@ async def wait(
         # Nothing left worth waiting for. Return now unless the only unresolved
         # ids stopped without an end and this call has not waited at all — that
         # is the shape a loop-until-all_terminal caller repeats as fast as it can
-        # ask, so the floor is spent here rather than left to every client.
-        if not pending and (waited or not stopped):
+        # ask, so the floor is spent here rather than left to every client. An
+        # unresolved spawn earns the same floor for the same reason.
+        if not pending and (waited or not (stopped or unresolved)):
             break
         waited = True
         await anyio.sleep(min(eff_poll, remaining))
@@ -3220,10 +3354,12 @@ async def wait(
     errored = any(e["error"] is not None for e in entries)
     return {
         "runs": entries,
-        "all_terminal": not pending and not errored and not stopped,
+        "all_terminal": not pending and not errored and not stopped and not unresolved,
         "timed_out": bool(pending),
         "pending": pending,
         "stopped_without_end": stopped,
+        "unresolved_spawn": unresolved,
+        "unresolved_spawn_after": UNRESOLVED_SPAWN_AFTER_SECONDS,
         "max_wait": eff_max,
         "poll_interval": eff_poll,
         "requested_max_wait": max_wait,
