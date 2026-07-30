@@ -171,7 +171,70 @@ class ShowReasons:
 
 
 class ScheduleReasons:
-    """ADR-0070 schedule-fire outcomes."""
+    """ADR-0070 schedule-fire outcomes.
+
+    Three names here begin with ``schedule.skipped.``, and those three are
+    exactly that prefix -- but **the prefix is not the set of reasons a skipped
+    ``schedule_run`` can carry, and reading it as one is the mistake this
+    docstring exists to prevent.** Two other codes in this same class land on
+    rows whose status is ``skipped``: ``DEFERRED_CAPACITY`` and
+    ``BUDGET_EXHAUSTED``, neither of which carries the prefix. A third comes
+    from a different class entirely -- the task-admission path stamps a
+    ``schedule_run`` to ``skipped`` with the admission decision's own code,
+    falling back to ``RunReasons.SKIPPED_WAITER_CAP_EXCEEDED``.
+
+    So no enumeration here can be closed: that admission writer takes its code
+    from a decision object rather than from a literal, and the only bound
+    anywhere in the system is ``VALID_REASON_CODES``, which is the union across
+    every reason class in this module. A consumer filtering skipped rows by the
+    ``schedule.skipped.`` prefix will silently drop capacity deferrals, budget
+    exhaustion and admission rejections -- and silently is the operative word,
+    because the filter returns rows and looks like it worked.
+
+    What follows describes the three prefixed codes and is not a claim about
+    what else a skipped row may hold.
+
+    ``SKIPPED_OVERLAP`` is stamped when a fire arrives while the previous run of
+    the same schedule is still going.
+
+    ``SKIPPED_MISSED_FIRE`` is stamped for a fire whose due instant passed while
+    the scheduler was not running, on a schedule whose missed-fire policy is not
+    to run it late. Two properties of it surprise readers, and both are
+    properties of *when the check runs* rather than of the code:
+
+    - Detection is **once per process start**, not continuous. The missed-fire
+      sweep runs in the tick loop's preamble, before the loop begins, and never
+      again for the life of the process. So a scheduler that stops and restarts
+      records its missed fires, and a scheduler that stalls while still running
+      records nothing at all -- the second case leaves no row here and no
+      failing health check either.
+    - Consequently the timestamp on such a row is bounded by time-to-restart,
+      not by the tick interval. It is closer to a restart timestamp than to a
+      detection latency, and reading it as "how long the miss took to notice"
+      overstates what it measures. A row's lateness and a fired row's lateness
+      are set by different clocks and are not comparable.
+
+    ``SKIPPED_PRECONDITION`` is the odd one and the one worth reading twice: no
+    code path evaluates a precondition and stamps it. It is the DEFAULT reason
+    attached to a ``schedule_run`` that moves to ``skipped`` without an explicit
+    code, so in practice it means "skipped, and the writer gave no reason". A
+    consumer that treats it as evidence a precondition was checked and failed is
+    reading a fallback as a finding.
+
+    One property of ``DEFERRED_CAPACITY`` belongs with these, since it is the
+    same kind of trap: those rows are **sampled, not one-per-event**. The
+    scheduler counts every deferral and records only the first, then one every
+    N deferrals after that, so sustained saturation does not flood
+    ``schedule_runs``.
+
+    N is a constant in the scheduler module and this docstring deliberately does
+    not repeat its value. Prose here cannot be kept honest about a number
+    defined somewhere else: it would read as current long after the number
+    changed, and nothing would fail. What holds for any N above one is the part
+    worth relying on -- counting these rows undercounts deferrals, and a row's
+    timestamp is the sampled deferral's rather than the first one's in that
+    stretch.
+    """
 
     QUEUED_CREATED = "schedule.queued.created"
     FIRED_DUE = "schedule.fired.due"
