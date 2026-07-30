@@ -483,7 +483,9 @@ def build_operator_branch(turn: OperatorEngineTurn):
     from lionagi.session.branch import Branch
 
     provider = os.environ.get("LIONAGI_STUDIO_OPERATOR_PROVIDER", "claude_code")
-    model_name = os.environ.get("LIONAGI_STUDIO_OPERATOR_MODEL", "sonnet")
+    # The conversation's own selection wins; the environment is the default for
+    # a conversation that has never chosen one.
+    model_name = turn.model or os.environ.get("LIONAGI_STUDIO_OPERATOR_MODEL", "sonnet")
     model_kwargs: dict[str, Any] = {}
     if provider == "claude_code":
         from .store import OperatorStore
