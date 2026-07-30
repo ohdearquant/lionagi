@@ -122,22 +122,35 @@ _BYPASS_RE = re.compile(r"--bypass")
 # Dead source-path check
 # ---------------------------------------------------------------------------
 
-# A backticked token. Source references in these docs are always in backticks.
+# A backticked token. This rule checks backticked references only, which is the
+# convention these docs use for a source reference. It does NOT check paths
+# written as bare prose. That is deliberate rather than complete coverage: the
+# only bare path-shaped tokens in this bundle are illustrative example filenames,
+# and matching them would turn every example into a finding.
 _BACKTICKED = re.compile(r"`([^`\s]+)`")
 
 # A trailing :123 line citation, which names a position rather than the file.
 _LINE_SUFFIX = re.compile(r":\d+$")
 
+# A fenced block delimiter. Paths inside fences are illustrative far more often
+# than referential, so fences are skipped.
+_FENCE = re.compile(r"^\s*(```|~~~)")
 
-def _repo_prefixes(repo_root: Path) -> tuple[str, ...]:
-    """Top-level directories of the repo, as path prefixes.
+# The source roots this bundle's documentation refers to.
+#
+# Stated explicitly and then ASSERTED to exist, rather than derived from whatever
+# the checkout happens to contain. Deriving them looks more robust and is worse:
+# in a tree missing one of these (a sparse checkout, an sdist), the derived set
+# simply omits that root, every reference under it stops being recognised as a
+# path, and the rule reports a clean pass. That is precisely the silent-match-
+# nothing failure this check exists to prevent, so a missing root is an error
+# here and a rename fails loudly instead of quietly.
+DOC_SOURCE_ROOTS: tuple[str, ...] = ("lionagi/", "apps/", "tests/", "marketplace/")
 
-    Derived from the tree rather than hardcoded, so a directory rename cannot
-    leave this rule quietly matching nothing.
-    """
-    return tuple(
-        f"{d.name}/" for d in repo_root.iterdir() if d.is_dir() and not d.name.startswith(".")
-    )
+
+def missing_source_roots(repo_root: Path) -> list[str]:
+    """Return the declared source roots absent from this tree; empty means all present."""
+    return [r for r in DOC_SOURCE_ROOTS if not (repo_root / r.rstrip("/")).is_dir()]
 
 
 def _looks_like_repo_path(token: str, prefixes: tuple[str, ...]) -> bool:
@@ -155,11 +168,17 @@ def _resolves(token: str, repo_root: Path) -> bool:
     return bool(cleaned) and (repo_root / cleaned).exists()
 
 
-def scan_dead_paths(path: Path, repo_root: Path, prefixes: tuple[str, ...]) -> list[str]:
+def scan_dead_paths(
+    path: Path, repo_root: Path, prefixes: tuple[str, ...] = DOC_SOURCE_ROOTS
+) -> list[str]:
     """Flag backticked repo-relative paths that do not resolve.
 
     These rot silently: a stale path sits in a table whose other rows are
     correct, so reading the table does not reveal it.
+
+    Scope, so the rule is not mistaken for wider coverage than it has: backticked
+    tokens outside fenced blocks, under one of the declared source roots. A path
+    written as bare prose, or shown inside a fence, is not checked.
     """
     findings: list[str] = []
     try:
@@ -167,7 +186,13 @@ def scan_dead_paths(path: Path, repo_root: Path, prefixes: tuple[str, ...]) -> l
     except OSError as exc:
         return [f"[ERROR] {path} — cannot read: {exc}"]
 
+    in_fence = False
     for lineno, line in enumerate(text.splitlines(), start=1):
+        if _FENCE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
         for token in _BACKTICKED.findall(line):
             if _looks_like_repo_path(token, prefixes) and not _resolves(token, repo_root):
                 findings.append(
@@ -268,10 +293,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"lint_skills: ERROR — no .md files found under {[str(r) for r in scan_roots]}")
         return 1
 
-    prefixes = _repo_prefixes(repo_root)
-    if not prefixes:
-        print(f"lint_skills: ERROR — no top-level directories found under {repo_root}")
+    missing = missing_source_roots(repo_root)
+    if missing:
+        print(
+            f"lint_skills: ERROR — declared source root(s) {missing} absent under {repo_root}. "
+            "Path checks would silently skip every reference under them, so this is an error "
+            "rather than a pass. If a directory was renamed, update DOC_SOURCE_ROOTS."
+        )
         return 1
+    prefixes = DOC_SOURCE_ROOTS
 
     all_findings: list[str] = []
     for f in files:
