@@ -223,11 +223,17 @@ class ScheduleReasons:
 
     One property of ``DEFERRED_CAPACITY`` belongs with these, since it is the
     same kind of trap: those rows are **sampled, not one-per-event**. The
-    scheduler counts every deferral but writes a row only for the first and
-    every tenth after it, so that sustained saturation does not flood
-    ``schedule_runs``. Counting deferred-capacity rows therefore undercounts
-    deferrals, by up to that factor, and the row's own timestamp is the sampled
-    deferral's rather than the first one's.
+    scheduler counts every deferral and records only the first, then one every
+    N deferrals after that, so sustained saturation does not flood
+    ``schedule_runs``.
+
+    N is a constant in the scheduler module and this docstring deliberately does
+    not repeat its value. Prose here cannot be kept honest about a number
+    defined somewhere else: it would read as current long after the number
+    changed, and nothing would fail. What holds for any N above one is the part
+    worth relying on -- counting these rows undercounts deferrals, and a row's
+    timestamp is the sampled deferral's rather than the first one's in that
+    stretch.
     """
 
     QUEUED_CREATED = "schedule.queued.created"
