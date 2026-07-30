@@ -363,6 +363,19 @@ def _documents() -> list[str]:
         "---\nmeta:\n  description: nested\n---\nbody\n",
         "",
         "body only, no frontmatter\n",
+        # Shapes where the description entry is fine and the block is not. The product
+        # cannot express these, because it only ever varies one entry.
+        "---\ndescription: text\n\tname: a\n---\nbody\n",
+        "---\ndescription: text\n  name: a\n---\nbody\n",
+        "---\ndescription: text\nbarewords\n---\nbody\n",
+        "---\ndescription: text\nmeta:\n  k: v\n---\nbody\n",
+        "---\nname: a: b\ndescription: text\n---\nbody\n",
+        "---\nname: *x\ndescription: text\n---\nbody\n",
+        '---\nname: "unterminated\ndescription: text\n---\nbody\n',
+        "---\nname: {a: b\ndescription: text\n---\nbody\n",
+        "---\ndescription: text\ndescription: other\n---\nbody\n",
+        "﻿---\ndescription: text\n---\nbody\n",
+        "---\r\ndescription: text\r\n---\r\nbody\r\n",
     ]
     return docs
 
@@ -375,6 +388,8 @@ _NARROWING_CATEGORIES = frozenset(
         "needs-a-parser-to-unquote",
         "needs-a-parser-to-fold",
         "needs-a-parser-to-resolve-the-key",
+        "needs-a-parser-to-resolve-nested-structure",
+        "needs-a-parser-to-resolve-a-flow-collection",
         "outside-the-provable-whitelist",
     }
 )
@@ -391,6 +406,30 @@ _DOCUMENTED_NARROWINGS: list[tuple[str, str]] = [
     ("---\ndescription: 1e3\n---\nb\n", "outside-the-provable-whitelist"),
     ("---\ndescription: &a x\n---\nb\n", "outside-the-provable-whitelist"),
     ("---\ndescription: !!str x\n---\nb\n", "outside-the-provable-whitelist"),
+    # A value spelled entirely with zero-width characters. A parser calls it a non-empty
+    # string and it is, technically; a reader sees nothing. Refused deliberately.
+    ("---\ndescription: ﻿\n---\nb\n", "outside-the-provable-whitelist"),
+    # Sibling entries. Every one of these leaves the description entry well formed and a
+    # parser reads the file, so each is a price paid for classifying sibling values at
+    # all. Classifying them is what closed seven false passes, so the price is named
+    # rather than argued away.
+    (
+        "---\ndescription: text\nmeta:\n  k: v\n---\nb\n",
+        "needs-a-parser-to-resolve-nested-structure",
+    ),
+    ("---\nnotes: |\n  x\ndescription: text\n---\nb\n", "needs-a-parser-to-fold"),
+    ('---\nname: "a: b"\ndescription: text\n---\nb\n', "needs-a-parser-to-unquote"),
+    (
+        "---\nname: {a: b}\ndescription: text\n---\nb\n",
+        "needs-a-parser-to-resolve-a-flow-collection",
+    ),
+    (
+        "---\ntools: [a, b]\ndescription: text\n---\nb\n",
+        "needs-a-parser-to-resolve-a-flow-collection",
+    ),
+    ("---\nname: &a x\ndescription: text\n---\nb\n", "outside-the-provable-whitelist"),
+    ("---\nname: !!str x\ndescription: text\n---\nb\n", "outside-the-provable-whitelist"),
+    ("---\nname: # c\ndescription: text\n---\nb\n", "outside-the-provable-whitelist"),
 ]
 
 # Forms the review rounds actually surfaced, kept named so a reader can see which
@@ -420,6 +459,47 @@ _NAMED_REGRESSIONS: list[tuple[str, str, bool]] = [
     ("tab inside the value", "---\ndescription: text\there\n---\nb\n", False),
     ("trailing tab", "---\ndescription: text\t\n---\nb\n", False),
     ("ordinary description", "---\ndescription: an agent that reviews\n---\nb\n", True),
+    # Control characters other than TAB. All four were accepted before, and they reached
+    # the value check by a second route as well: str.splitlines() breaks on them, so
+    # splitting with it moved the character out of the value entirely.
+    ("vertical tab in the value", "---\ndescription: text\vhere\n---\nb\n", False),
+    ("form feed in the value", "---\ndescription: text\fhere\n---\nb\n", False),
+    ("NUL in the value", "---\ndescription: text\0here\n---\nb\n", False),
+    ("escape in the value", "---\ndescription: text\x1bhere\n---\nb\n", False),
+    ("C1 next-line in the value", "---\ndescription: text\x85here\n---\nb\n", False),
+    ("delete in the value", "---\ndescription: text\x7fhere\n---\nb\n", False),
+    ("unicode line separator", "---\ndescription: text here\n---\nb\n", False),
+    ("unicode paragraph separator", "---\ndescription: text here\n---\nb\n", False),
+    # The other direction, and the reason str.isprintable() is not usable here: these all
+    # look unprintable and a parser accepts every one of them.
+    ("non-breaking space stays fine", "---\ndescription: text\xa0here\n---\nb\n", True),
+    ("zero-width space stays fine", "---\ndescription: text​here\n---\nb\n", True),
+    ("byte-order mark inside the value", "---\ndescription: text﻿here\n---\nb\n", True),
+    ("emoji stays fine", "---\ndescription: ships \U0001f680 fast\n---\nb\n", True),
+    ("CJK stays fine", "---\ndescription: an agent 代理 here\n---\nb\n", True),
+    ("accented letters stay fine", "---\ndescription: rôle de révision\n---\nb\n", True),
+    # Line endings and the leading mark an editor adds. Both are files a host reads.
+    ("CRLF line endings", "---\r\ndescription: text\r\n---\r\nb\r\n", True),
+    ("leading byte-order mark", "﻿---\ndescription: text\n---\nb\n", True),
+    # Sibling lines. The description entry is well formed in every one of these; the file
+    # is broken by the line next to it. Classifying only the description vouched for all
+    # of them.
+    ("tab-indented sibling", "---\ndescription: text\n\tname: a\n---\nb\n", False),
+    ("over-indented sibling", "---\ndescription: text\n  name: a\n---\nb\n", False),
+    ("bare scalar sibling", "---\ndescription: text\nbarewords\n---\nb\n", False),
+    ("sibling colon-space nests", "---\nname: a: b\ndescription: text\n---\nb\n", False),
+    ("sibling colon then two spaces", "---\nname: a:  b\ndescription: text\n---\nb\n", False),
+    ("sibling trailing colon", "---\nname: text:\ndescription: text\n---\nb\n", False),
+    ("sibling alias with no anchor", "---\nname: *x\ndescription: text\n---\nb\n", False),
+    ("sibling unterminated quote", '---\nname: "unterminated\ndescription: text\n---\nb\n', False),
+    ("sibling unclosed flow mapping", "---\nname: {a: b\ndescription: text\n---\nb\n", False),
+    ("sibling unclosed flow sequence", "---\nname: [a\ndescription: text\n---\nb\n", False),
+    ("sibling colon without a space stays fine", "---\nname: a:b\ndescription: t\n---\nb\n", True),
+    ("sibling empty value stays fine", "---\nname:\ndescription: text\n---\nb\n", True),
+    ("sibling number stays fine", "---\nversion: 1.5\ndescription: text\n---\nb\n", True),
+    ("sibling bool stays fine", "---\nenabled: true\ndescription: text\n---\nb\n", True),
+    ("comment line in the block stays fine", "---\n# note\ndescription: text\n---\nb\n", True),
+    ("blank line in the block stays fine", "---\n\ndescription: text\n---\nb\n", True),
 ]
 
 
@@ -442,11 +522,47 @@ def _grammar_check():
 
 
 # Alphabet for the lexical sweep. Every character class that has actually produced a
-# false pass in this lane is present: a letter, an uppercase letter, a digit, a space,
-# a colon, a hash, a quote, a bracket, a brace, a dash, a pipe, a tilde, a TAB and a
-# dot. Two of these were found only by sweeping — a colon followed by whitespace makes
-# the line parse as a nested mapping, and a tab makes the document invalid outright.
-_VALUE_ATOMS = ["a", "Z", "1", " ", ":", "#", '"', "[", "}", "-", "|", "~", "\t", "."]
+# false pass in this lane is present, and each addition is here because a review round
+# or a sweep found something with it, never because it looked dangerous:
+#
+# * a letter, an uppercase letter, a digit, a space, a dot — ordinary text.
+# * a colon, a TAB — found only by sweeping. A colon followed by whitespace nests a
+#   mapping; a tab anywhere makes the document invalid outright.
+# * a hash, a quote, a bracket, a brace, a dash, a pipe, a tilde — indicator characters.
+# * a vertical tab, a form feed, NUL, ESC and 0x85 — a later round found all four of the
+#   first ones accepted while a parser rejects them. They are not interchangeable with
+#   TAB: they also split str.splitlines(), which is how they escaped the value and got
+#   past a character check that ran on the value alone.
+# * an apostrophe, a star, an ampersand, a comma — the alias, anchor and flow-collection
+#   openers. These found nothing in the value position and seven false passes in the
+#   sibling position, which is the argument for sweeping both positions rather than
+#   assuming a rule proven in one place holds in the other.
+_VALUE_ATOMS = [
+    "a",
+    "Z",
+    "1",
+    " ",
+    ":",
+    "#",
+    '"',
+    "[",
+    "}",
+    "-",
+    "|",
+    "~",
+    "\t",
+    ".",
+    "\v",
+    "\f",
+    "\0",
+    "\x1b",
+    "'",
+    "*",
+    "&",
+    "!",
+    ",",
+    "\x85",
+]
 
 
 def _swept_values() -> list[str]:
@@ -462,7 +578,20 @@ def _swept_values() -> list[str]:
 
 
 def _parser_says(document: str) -> bool:
-    """Whether a real parser finds a top-level non-empty string description."""
+    """Whether a real parser finds a top-level non-empty string description.
+
+    The whole document is handed to the parser, body included, and that is deliberate:
+    it means YAML's own ``---`` document splitting decides where the frontmatter ends,
+    so the fence rules are checked by something other than the code being tested. An
+    oracle that split on fences using the grammar's own logic could not catch a fence
+    defect at all, and two of this lane's findings were fence defects.
+
+    The price is a precondition: it is only a valid oracle for a document whose body is
+    inert as YAML. Every generated corpus here uses the body ``body``, and
+    ``_sweep_for_false_passes`` asserts that rather than trusting it, because a real
+    markdown body routinely is not valid YAML — an asterisk in prose reads as an alias
+    and the parser refuses the file. Use ``_parser_says_of_block`` for real files.
+    """
     import yaml
 
     try:
@@ -472,6 +601,32 @@ def _parser_says(document: str) -> bool:
     if not docs or not isinstance(docs[0], dict):
         return False
     value = docs[0].get("description")
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _parser_says_of_block(text: str) -> bool:
+    """The same question about a real file, parsing only the frontmatter block.
+
+    This is what a host actually does: split the fences, parse the block, ignore the
+    body. It is the right oracle for files whose body is prose, and the wrong one for
+    the generated corpora, since the split here is not independent of the grammar.
+    Both oracles exist because neither is correct for both jobs.
+    """
+    import yaml
+
+    lines = text.lstrip("﻿").split("\n")
+    if not lines or lines[0].rstrip(" ") != "---":
+        return False
+    close = next((i for i, line in enumerate(lines[1:], 1) if line.rstrip(" ") == "---"), None)
+    if close is None:
+        return False
+    try:
+        block = yaml.safe_load("\n".join(lines[1:close]))
+    except yaml.YAMLError:
+        return False
+    if not isinstance(block, dict):
+        return False
+    value = block.get("description")
     return isinstance(value, str) and bool(value.strip())
 
 
@@ -496,6 +651,14 @@ def _sweep_for_false_passes(documents: list[str], minimum: int) -> None:
     # A corpus that resolved nothing satisfies the invariant vacuously, so the
     # measurement is asserted informative before its result is trusted.
     assert len(documents) >= minimum, f"corpus collapsed to {len(documents)} documents"
+    # The oracle parses whole documents, so it only answers correctly for a corpus whose
+    # bodies are inert YAML. Stated as an assertion rather than left as a habit: a future
+    # corpus with a realistic body would make every answer here quietly meaningless.
+    # Carriage returns are stripped before the split. Without that this check reads a
+    # CRLF document as having no closing fence and hands back the whole file as its
+    # "body", which fails as a corpus complaint and points at nothing.
+    bodies = {d.replace("\r", "").split("---\n")[-1] for d in documents if d.count("---") >= 2}
+    assert bodies <= {"body\n", "b\n", ""}, f"corpus has a non-inert body: {sorted(bodies)[:5]}"
     assert accepted_by_us, "the grammar accepted nothing at all — it cannot discriminate"
     assert accepted_by_parser, "the parser accepted nothing at all — the corpus is malformed"
     assert accepted_by_parser < len(documents), "the parser accepted everything — corpus is trivial"
@@ -525,6 +688,49 @@ def test_value_lexical_sweep_finds_no_false_pass() -> None:
         f"---\nname: agent\ndescription: {value}\n---\nbody\n" for value in _swept_values()
     ]
     _sweep_for_false_passes(documents, minimum=2500)
+
+
+def test_sibling_value_sweep_finds_no_false_pass() -> None:
+    """The same alphabet in the position next to the description.
+
+    A rule proven in one position is not proven in the other, and this is where that
+    stopped being a principle and became a measurement: the value rules held while seven
+    spellings of a *sibling* value passed. Each of them leaves the description entry
+    perfectly well formed and makes the file unreadable anyway, so a check that reads only
+    the description reports a usable description for a file no host can load.
+    """
+    documents = [
+        f"---\nname: {value}\ndescription: real text\n---\nbody\n" for value in _swept_values()
+    ]
+    _sweep_for_false_passes(documents, minimum=2500)
+
+
+def test_line_safety_boundary_matches_a_parser() -> None:
+    """Every code point up to U+02FF, plus the ones above it that matter.
+
+    A per-code-point sweep rather than a list of suspicious characters, because the
+    finding that produced this test was a boundary question: the answer turned out to be
+    two disjoint ranges, and the C1 half of it is not one anybody proposed. Both
+    directions are asserted, since the tempting shortcut here (``str.isprintable()``) is
+    wrong in both — it would accept nothing dangerous and reject emoji and NBSP.
+    """
+    grammar = _grammar_check()
+    named_above_range = [0x2028, 0x2029, 0x3000, 0xFEFF, 0x1F680, 0xE000, 0xFFFD]
+    points = [c for c in range(0x300) if c != 0x0A] + named_above_range
+    false_passes, false_fails, rejected = [], [], 0
+    for code in points:
+        document = f"---\ndescription: a{chr(code)}b\n---\nbody\n"
+        ours, parser = grammar(document), _parser_says(document)
+        rejected += not parser
+        if ours and not parser:
+            false_passes.append(hex(code))
+        if parser and not ours:
+            false_fails.append(hex(code))
+
+    assert rejected, "the parser rejected no code point at all — the sweep is uninformative"
+    assert rejected < len(points), "the parser rejected every code point — corpus is trivial"
+    assert not false_passes, f"grammar accepts code points a parser rejects: {false_passes}"
+    assert not false_fails, f"grammar rejects code points a parser accepts: {false_fails}"
 
 
 def test_grammar_and_file_wrapper_agree(tmp_path: Path) -> None:
@@ -593,3 +799,81 @@ def test_shipped_agents_satisfy_the_grammar() -> None:
     assert agents, "no direct agent files found — the check below would be vacuous"
     check = _description_check()
     assert [a.name for a in agents if not check(a)] == []
+
+
+def test_shipped_agents_agree_with_a_parser() -> None:
+    """The files the validator actually reads get both answers, not just the grammar's.
+
+    The test above asserts the grammar accepts the shipped agents, which would also pass
+    if the grammar accepted a broken file. Asking a parser the same question is what makes
+    that accept mean something.
+
+    It has to be the block oracle. Two of these files contain an asterisk in prose, so a
+    whole-document parse refuses the body and reports a disagreement that is really the
+    oracle reading the wrong thing.
+    """
+    agents = sorted((_MARKETPLACE_ROOT / "orchestrate" / "agents").glob("*.md"))
+    assert len(agents) >= 2, f"only {len(agents)} agent files found — comparison is vacuous"
+    check = _description_check()
+    disagreements = [
+        f"{_rel(path)}: grammar={check(path)} parser={_parser_says_of_block(_read(path))}"
+        for path in agents
+        if check(path) != _parser_says_of_block(_read(path))
+    ]
+    assert not disagreements, f"grammar and parser disagree on shipped agents: {disagreements}"
+
+
+def test_shipped_skills_are_outside_the_grammar_and_outside_its_subject() -> None:
+    """A measured limit, pinned so that widening the grammar has to face it.
+
+    The validator reads descriptions under ``agents/`` only; skills are checked for
+    existence and never parsed. So this is not a live failure, and it is worth pinning
+    anyway, because the number is the argument: the grammar rejects **every** shipped
+    skill file, not an unusual one. They all write ``description: >`` folded over several
+    lines and carry an ``allowed-tools: [...]`` flow sequence, and both of those are
+    recorded narrowings.
+
+    That makes the folded-scalar narrowing much more expensive than the narrowing table
+    alone suggests, and anyone pointing this check at skills has to widen the grammar
+    first. This test fails the moment either of those things changes, which is the point:
+    it turns a cost that is currently invisible into one that has to be dealt with
+    deliberately.
+    """
+    skills = sorted((_MARKETPLACE_ROOT / "orchestrate" / "skills").glob("*/SKILL.md"))
+    assert len(skills) >= 5, f"only {len(skills)} skill files found — the count below is the claim"
+    check, problems = _description_check(), []
+    for path in skills:
+        parser_reads_it = _parser_says_of_block(_read(path))
+        if check(path) or not parser_reads_it:
+            problems.append(f"{_rel(path)}: grammar={check(path)} parser={parser_reads_it}")
+    assert not problems, (
+        "the shipped skills no longer sit exactly outside the grammar and inside a "
+        f"parser. Update the narrowing record and this test together: {problems}"
+    )
+
+
+def test_unreadable_file_is_reported_rather_than_raised(tmp_path: Path) -> None:
+    """A file the validator cannot decode fails the check without ending the run.
+
+    ``Path.read_text`` raises UnicodeDecodeError, which is a ValueError and so is not
+    caught by an ``except OSError``. The same crash class as an earlier round's, on a
+    different path, so both arms are pinned: the answer is False and the reason names the
+    problem rather than claiming the description is missing.
+    """
+    if _SCRIPTS_DIR not in sys.path:
+        sys.path.insert(0, _SCRIPTS_DIR)
+    from validate_manifests import _frontmatter_problem
+
+    undecodable = tmp_path / "agent.md"
+    undecodable.write_bytes(b"---\ndescription: \xff\xfe not utf-8\n---\nbody\n")
+    assert _description_check()(undecodable) is False
+    assert "UTF-8" in _frontmatter_problem(undecodable)
+
+    missing = tmp_path / "absent.md"
+    assert _description_check()(missing) is False
+    assert "could not be read" in _frontmatter_problem(missing)
+
+    # The reason string is load-bearing, so a correct description must produce no reason.
+    good = tmp_path / "good.md"
+    good.write_text("---\ndescription: a real description\n---\nbody\n")
+    assert _frontmatter_problem(good) == ""

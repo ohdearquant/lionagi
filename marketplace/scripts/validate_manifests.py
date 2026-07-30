@@ -20,6 +20,78 @@ PER_PLUGIN_OPTIONAL_STRINGS = ["repository", "license", "homepage"]
 _NOT_A_STRING = frozenset({"null", "true", "false", "yes", "no", "on", "off"})
 
 
+def _yaml_line_safe(text: str) -> bool:
+    """Whether every character is one YAML allows inside a line.
+
+    A character outside this set makes the whole document unreadable, so accepting one
+    would report a description while the host cannot load the file at all. The excluded
+    ranges were measured code point by code point against a real parser, not reasoned
+    about, and two of the results are counterintuitive enough to state:
+
+    - The C1 range is excluded along with C0. It is not only the obvious control
+      characters: a bare tab, a vertical tab, a form feed, NUL, escape and the C1 block
+      up to 0x9f all make the document invalid.
+    - Characters that merely *look* unprintable are fine. A non-breaking space, a
+      zero-width space, a byte-order mark, accented and CJK letters and emoji are all
+      accepted by a parser, so they are accepted here. Do not reach for
+      ``str.isprintable()`` as a shortcut — it rejects the first three and would turn
+      legitimate descriptions into failures.
+    """
+    return not any(
+        code < 0x20 or 0x7F <= code <= 0x9F or code in (0x2028, 0x2029) for code in map(ord, text)
+    )
+
+
+def _nests_a_mapping(head: str) -> bool:
+    """Whether a colon in this text makes the line parse as a nested mapping.
+
+    A colon followed by whitespace, or ending the line, opens a nested mapping, and a
+    mapping cannot open on a line that is already a mapping value. The document is then
+    rejected outright rather than merely resolving oddly. A colon *not* followed by
+    whitespace is ordinary text, which is what keeps ``ratio 1:2`` and ``12:30`` usable.
+    """
+    return any(
+        char == ":" and (index + 1 == len(head) or head[index + 1].isspace())
+        for index, char in enumerate(head)
+    )
+
+
+# Characters that, when they open a value, begin something other than a plain scalar:
+# flow collections, a comment, an anchor, an alias, a tag, a block scalar, either quote
+# style, and the two reserved indicators. Resolving any of them needs the parser this
+# file cannot import, so a value opening with one is refused rather than guessed at.
+_OPENS_NON_SCALAR = frozenset(",[]{}#&*!|>'\"%@`")
+
+
+def _value_stays_on_its_line(value: str) -> bool:
+    """Whether a frontmatter value provably cannot restructure the document.
+
+    Applied to every entry other than the description, which gets a stricter test. The
+    point is narrow: not "is this value sensible" but "can this value make the file
+    unparseable". A sibling entry is allowed to be empty, a number, a boolean or null,
+    since none of those affects whether the description is readable.
+
+    Each rejection below was measured as a document a parser refuses while the
+    description entry itself is perfectly well formed: ``name: a: b`` and ``name: text:``
+    nest a mapping, ``name: *x`` aliases an anchor that does not exist, and
+    ``name: "unterminated``, ``name: {a: b`` and ``name: [a`` never close. Forms that are
+    legal and are refused anyway, such as a quoted value containing a colon or an inline
+    flow mapping, are recorded as narrowings in the surface suite.
+
+    Trimming here is safe, unlike in the description path: the caller has already tested
+    the whole raw line for characters YAML does not allow, so no character this could
+    remove is one anything downstream still needs to see.
+    """
+    head = value.strip()
+    if not head:
+        return True
+    if head[0] in _OPENS_NON_SCALAR:
+        return False
+    if head[0] in "-?:" and (len(head) == 1 or head[1].isspace()):
+        return False
+    return not _nests_a_mapping(head)
+
+
 def _describes_a_nonempty_string(value: str) -> bool:
     """Whether a plain scalar is certainly a non-empty string to a YAML parser.
 
@@ -30,10 +102,9 @@ def _describes_a_nonempty_string(value: str) -> bool:
     - **Begins with a letter.** Rules out every YAML indicator character in one test,
       and so every number, timestamp, quoted form, block or folded scalar, flow
       collection, anchor, alias, tag and comment.
-    - **No tab anywhere.** A tab around the value makes the *document* invalid, not
-      merely the value odd. Checked across the whole value rather than the part before
-      a comment, which costs one absurd form (a comment containing a tab) and buys not
-      having to reason about where a tab is tolerated.
+    - **Every character is one YAML permits inside a line.** A character outside that
+      set makes the *document* invalid, not merely the value odd. The excluded set was
+      measured code point by code point rather than guessed; see ``_yaml_line_safe``.
     - **No colon followed by whitespace, and none at the end.** That spelling makes the
       line parse as a nested mapping, so the document is rejected outright. A colon
       *not* followed by whitespace is fine, which keeps ``ratio 1:2`` usable.
@@ -44,17 +115,16 @@ def _describes_a_nonempty_string(value: str) -> bool:
     drops it and keeps the text before it. That matters in both directions: ``text #
     note`` is the string "text", while ``yes # note`` is still a boolean.
     """
-    # The tab test must see the raw text. Stripping first would remove the very
-    # character being looked for, so this function takes everything after the colon
+    # The character test must see the raw text. Trimming first would remove the very
+    # characters being looked for, so this function takes everything after the colon
     # exactly as written and does its own trimming below.
-    if "\t" in value:
+    if not _yaml_line_safe(value):
         return False
     head = value.split(" #", 1)[0].strip()
     if not head or not head[0].isalpha():
         return False
-    for index, char in enumerate(head):
-        if char == ":" and (index + 1 == len(head) or head[index + 1].isspace()):
-            return False
+    if _nests_a_mapping(head):
+        return False
     return head.lower() not in _NOT_A_STRING
 
 
@@ -78,38 +148,98 @@ def _has_frontmatter_description(path: Path) -> bool:
     - The colon after ``description`` must be followed by a space or end the line.
       ``description:value`` is a plain scalar, not a mapping, and must not count.
     """
+    return not _frontmatter_problem(path)
 
+
+def _frontmatter_problem(path: Path) -> str:
+    """Empty when the file's frontmatter carries a usable description, else why not."""
     try:
-        return _frontmatter_description_ok(path.read_text())
-    except OSError:
-        return False
+        text = path.read_text()
+    except OSError as error:
+        return f"could not be read ({error.strerror or error})"
+    except UnicodeDecodeError:
+        # A decode error is a ValueError rather than an OSError, so leaving it uncaught
+        # would end the run with a traceback instead of a reported failure.
+        return "is not valid UTF-8"
+    return _frontmatter_description_problem(text)
 
 
-def _frontmatter_description_ok(text: str) -> bool:
-    """The grammar itself, over text rather than a file.
+def _is_plain_top_level_key(key: str) -> bool:
+    """Whether a key is one this validator can read without a parser."""
+    return bool(key) and key[0].isalpha() and all(c.isalnum() or c in "_-" for c in key)
 
-    Split out from the file-reading wrapper so the surface suite can sweep it over
-    generated values without writing a file per candidate. That is what makes a corpus
-    of tens of thousands of documents cheap enough to be worth having.
+
+def _frontmatter_description_problem(text: str) -> str:
+    """Empty when the frontmatter carries a description this validator can vouch for.
+
+    Otherwise a short phrase naming what is wrong, so a caller can report the actual
+    problem rather than always claiming the description is missing.
+
+    Every line of the block is classified, not just the description. A block whose
+    *other* lines are malformed is one a host cannot load at all, so returning early on
+    finding the description would vouch for a file that does not work. That is a real
+    case rather than a hypothetical: a tab-indented line, an over-indented line and a
+    bare scalar line each make the document invalid while leaving the description entry
+    itself perfectly well formed.
+
+    The cost is that nested frontmatter is rejected, since resolving it needs the parser
+    this cannot import. The message says so, which is the point of returning one.
     """
 
     def is_fence(line: str) -> bool:
         return line.rstrip(" ") == "---"
 
-    lines = text.splitlines()
+    # Split on newlines ONLY. str.splitlines() also breaks on vertical tab, form feed,
+    # carriage return, the file/group/record separators, NEL and the Unicode line and
+    # paragraph separators. A parser treats none of those as a line break here, so
+    # splitting on them would quietly move an illegal character out of a value and past
+    # the character check, which is exactly how such characters got through before. A
+    # lone trailing carriage return is normalised, because a parser accepts CRLF files.
+    # A leading byte-order mark is dropped rather than treated as content. Editors add
+    # one, a parser tolerates it at the start of a stream, and read_text() with the
+    # default encoding leaves it in place, so keeping it would fail such a file for a
+    # reason its author cannot see. It is spelled as an escape rather than pasted in
+    # literally, because a literal one is invisible in every editor that shows this file.
+    lines = [
+        line[:-1] if line.endswith("\r") else line for line in text.lstrip("\ufeff").split("\n")
+    ]
     if not lines or not is_fence(lines[0]):
-        return False
+        return "no opening '---' frontmatter fence"
     close = next((i for i, line in enumerate(lines[1:], 1) if is_fence(line)), None)
     if close is None:
-        return False
+        return "no closing '---' frontmatter fence"
+
+    description = None
     for line in lines[1:close]:
-        if not line.startswith("description:"):
+        if not line.strip() or line.startswith("#"):
             continue
-        rest = line[len("description:") :]
-        if rest[:1] not in ("", " "):
-            continue
-        return _describes_a_nonempty_string(rest)
-    return False
+        if not _yaml_line_safe(line):
+            return "frontmatter has a character YAML does not allow inside a line"
+        key, separator, rest = line.partition(":")
+        if not separator or not _is_plain_top_level_key(key) or rest[:1] not in ("", " "):
+            return f"frontmatter line is not a plain top-level key: {line.strip()[:40]!r}"
+        if key == "description":
+            description = rest
+        elif not _value_stays_on_its_line(rest):
+            # A sibling entry can break the file on its own, and it does so while the
+            # description entry stays well formed. Classifying only the keys left seven
+            # such spellings passing, so the value is classified too.
+            return f"frontmatter line needs a YAML parser to read: {line.strip()[:40]!r}"
+    if description is None:
+        return "no top-level 'description' key"
+    if not _describes_a_nonempty_string(description):
+        return "'description' is not a non-empty single-line scalar"
+    return ""
+
+
+def _frontmatter_description_ok(text: str) -> bool:
+    """The grammar as a boolean, over text rather than a file.
+
+    Split out from the file-reading wrapper so the surface suite can sweep it over
+    generated values without writing a file per candidate. That is what makes a corpus
+    of tens of thousands of documents cheap enough to be worth having.
+    """
+    return not _frontmatter_description_problem(text)
 
 
 def main() -> int:
@@ -207,14 +337,12 @@ def main() -> int:
                             )
                             plugin_ok = False
                             failures += 1
-                        elif not _has_frontmatter_description(md):
-                            print(
-                                f"FAIL [{name}]: agent needs a top-level frontmatter "
-                                f"'description' whose value is a non-empty single-line "
-                                f"scalar (block and folded forms are not accepted): {rel_md}"
-                            )
-                            plugin_ok = False
-                            failures += 1
+                        else:
+                            problem = _frontmatter_problem(md)
+                            if problem:
+                                print(f"FAIL [{name}]: agent {rel_md}: {problem}")
+                                plugin_ok = False
+                                failures += 1
 
                 # Per-plugin plugin.json validation
                 per_plugin_json = source_dir / ".claude-plugin" / "plugin.json"
