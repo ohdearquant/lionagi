@@ -421,13 +421,42 @@ _QUOTED = r"[\"']([^\"']+)[\"']"
 _KEYED = r"[\"']?{key}[\"']?\s*[:=]\s*" + _QUOTED
 
 
+def _balanced_object(text: str, *, one_line: bool) -> str | None:
+    """The brace-delimited object starting at *text*, or None if it does not close.
+
+    Quote-aware: a `{` or `}` inside a value would otherwise unbalance the count
+    and make a complete object read as unterminated, or an incomplete one read as
+    closed. Returning None for anything that does not balance keeps every caller's
+    failure loud rather than silently scoped to the wrong span.
+    """
+    body = text.split("\n", 1)[0] if one_line else text
+    depth = 0
+    quote: str | None = None
+    for i, char in enumerate(body):
+        if quote is not None:
+            if char == quote:
+                quote = None
+            continue
+        if char in "\"'":
+            quote = char
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return body[: i + 1]
+    return None
+
+
 def _playbook_in_args(window: str) -> str | None:
     """The playbook an op names in its own `args`, or None.
 
-    Read from the `args` object alone, by brace matching. Taking the first
-    `"playbook"` anywhere in the window would instead read the one inside a
-    `schema_fingerprint` placeholder whenever that key is written first, which
-    turns a mismatch into a self-satisfying match.
+    Read from the `args` object alone. Taking the first `"playbook"` anywhere in
+    the window would instead read the one inside a `schema_fingerprint`
+    placeholder whenever that key is written first, which turns a mismatch into a
+    self-satisfying match. An `args` object that does not close inside the window
+    yields None rather than a span reaching to the end of it, for the same reason;
+    the rule below reports that case separately instead of skipping the example.
     """
     args_at = window.find('"args"')
     if args_at == -1:
@@ -435,25 +464,20 @@ def _playbook_in_args(window: str) -> str | None:
     open_at = window.find("{", args_at)
     if open_at == -1:
         return None
-    depth = 0
-    end = len(window)
-    for i in range(open_at, len(window)):
-        if window[i] == "{":
-            depth += 1
-        elif window[i] == "}":
-            depth -= 1
-            if depth == 0:
-                end = i + 1
-                break
-    m = re.search(_KEYED.format(key="playbook"), window[open_at:end])
+    obj = _balanced_object(window[open_at:], one_line=False)
+    if obj is None:
+        return None
+    m = re.search(_KEYED.format(key="playbook"), obj)
     return m.group(1) if m else None
 
 
 # `help` immediately followed by its own object: `help={...}` in the tool-call
-# form, `"help": {...}` in JSON. The brace is what makes this a call rather than
-# a mention — a `help` *string* field, which every playbook declares per argument,
-# is followed by a quote instead and matches nothing.
-_HELP_OBJECT = re.compile(r"help[\"']?\s*[:=]\s*\{")
+# form, `"help": {...}` in JSON. Two things make this a call rather than a
+# mention. The brace: a `help` *string* field, which every playbook declares per
+# argument, is followed by a quote instead. And the left boundary: without it any
+# identifier merely ending in the letters (`nothelp`, `somehelp`) would match,
+# which is a fabricated source wearing a real one's shape.
+_HELP_OBJECT = re.compile(r"(?<![A-Za-z0-9_])help[\"']?\s*[:=]\s*\{")
 
 
 def _qualified_help_sources(source: str) -> set[tuple[str, str]]:
@@ -465,26 +489,15 @@ def _qualified_help_sources(source: str) -> set[tuple[str, str]]:
     and `playbook` keys and fabricate a pair no call ever named — which passes
     the rule below on an example that the server then refuses.
 
-    The object is bounded to one line: a call spanning lines is read as naming
-    nothing, which fails loudly rather than binding a playbook from the next
-    line. That direction is deliberate. The bundle writes these on one line, and
-    a false negative is a visible failure while a false positive ships a
-    fingerprint that does not resolve.
+    A call spanning lines is read as naming nothing, which fails loudly rather
+    than binding a playbook from the next line. That direction is deliberate. The
+    bundle writes these on one line, and a false negative is a visible failure
+    while a false positive ships a fingerprint that does not resolve.
     """
     plain = source.replace("\\", "")
     pairs: set[tuple[str, str]] = set()
     for m in _HELP_OBJECT.finditer(plain):
-        line = plain[m.end() - 1 :].split("\n", 1)[0]
-        depth = 0
-        obj = None
-        for i, char in enumerate(line):
-            if char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-                if depth == 0:
-                    obj = line[: i + 1]
-                    break
+        obj = _balanced_object(plain[m.end() - 1 :], one_line=True)
         if obj is None:
             continue
         verb = re.search(_KEYED.format(key="verb"), obj)
@@ -557,6 +570,46 @@ def test_qualified_help_extractor_ignores_a_help_field_that_is_not_a_call() -> N
         'help={"verb": "play.submit", "playbook": "a"} or help={"verb": "flow.submit", '
         '"playbook": "b"}'
     ) == {("play.submit", "a"), ("flow.submit", "b")}
+    # An identifier that merely ends in the letters is not the `help` parameter.
+    for name in ("nothelp", "xhelp", "somehelp", "self_help"):
+        assert (
+            _qualified_help_sources(
+                f'{{"{name}": {{"verb": "play.submit", "playbook": "target"}}}}'
+            )
+            == set()
+        ), name
+        assert (
+            _qualified_help_sources(f'{name}={{"verb": "play.submit", "playbook": "target"}}')
+            == set()
+        ), name
+
+
+def test_the_object_reader_is_quote_aware_in_both_directions() -> None:
+    """A brace inside a value must not decide where an object ends.
+
+    Counting braces blind fails both ways: a `}` in a value closes a complete
+    object early, and a `{` in one leaves a complete object reading as
+    unterminated — which reports a documented source as no source at all.
+    """
+    assert _qualified_help_sources('help={"verb": "play.submit", "playbook": "a } b"}') == {
+        ("play.submit", "a } b")
+    }
+    assert _qualified_help_sources('help={"verb": "play.submit", "playbook": "a { b"}') == {
+        ("play.submit", "a { b")
+    }
+    # And on the args side, where the object legitimately spans lines.
+    assert (
+        _playbook_in_args('{"op": "play.submit", "args": {\n  "playbook": "a } b"\n}}') == "a } b"
+    )
+    # An args object that never closes yields nothing rather than a span that
+    # reaches past it into a fingerprint placeholder.
+    assert (
+        _playbook_in_args(
+            '{"op": "play.submit", "args": {"playbook": "mine", '
+            '"schema_fingerprint": "<from help={\\"playbook\\": \\"other\\"}>"'
+        )
+        is None
+    )
 
 
 def test_documented_submit_ops_carry_a_schema_fingerprint() -> None:
@@ -687,10 +740,13 @@ def test_a_playbook_bearing_example_names_a_playbook_qualified_help_source() -> 
        other example can satisfy it.
     2. Otherwise the enclosing section, because a placeholder reading "from the
        help call above" is correct exactly when the call above it is the right
-       one. Residual limit, stated rather than closed: within one section this
-       cannot tell which of two correct-for-something calls a prose placeholder
-       points at. Closing that needs a structured per-example annotation, not a
-       tighter regex.
+       one.
+
+    Two residual limits, stated rather than closed, both of which fail loudly.
+    Within one section this cannot tell which of two correct-for-something calls a
+    prose placeholder points at; closing that needs a structured per-example
+    annotation, not a tighter pattern. And a help call written across lines names
+    nothing, so an example relying on one is reported as having no source.
     """
     from lionagi.mcp.verbs import VERBS
 
@@ -698,15 +754,25 @@ def test_a_playbook_bearing_example_names_a_playbook_qualified_help_source() -> 
     assert aware, "no playbook-aware verbs in the registry — the check would pass vacuously"
 
     offenders: list[str] = []
+    unreadable: list[str] = []
     checked = 0
     for path in _SKILL_FILES:
         text = _read(path)
         for verb, window in _op_objects_in(text):
+            if verb not in aware:
+                continue
             playbook = _playbook_in_args(window)
-            if verb not in aware or playbook is None:
+            start = text.find(window)
+            lineno = text[:start].count("\n") + 1
+            if playbook is None:
+                # A `"playbook"` present in the window that the `args` object did
+                # not yield is an example this rule cannot read, not one it has
+                # cleared. Skipping it silently is how an uncovered example reads
+                # as a covered one.
+                if '"playbook"' in window:
+                    unreadable.append(f"{_rel(path)}:{lineno} {verb}")
                 continue
             checked += 1
-            start = text.find(window)
             section = text.rfind("\n#", 0, start)
             scope = text[section if section != -1 else 0 : start + len(window)]
             if (verb, playbook) in _qualified_help_sources(window) or (
@@ -714,10 +780,14 @@ def test_a_playbook_bearing_example_names_a_playbook_qualified_help_source() -> 
                 playbook,
             ) in _qualified_help_sources(scope):
                 continue
-            lineno = text[:start].count("\n") + 1
             offenders.append(f"{_rel(path)}:{lineno} {verb} playbook={playbook!r}")
 
     assert checked, "no playbook-bearing spawn examples found under marketplace/ at all"
+    assert not unreadable, (
+        "these examples mention a playbook but this rule could not read it out of "
+        "their `args` object, so they are unchecked rather than clear — rewrite the "
+        "example or widen the reader: " + repr(sorted(unreadable))
+    )
     assert not offenders, (
         "these examples name a playbook in `args` but no help call naming that same "
         "verb and playbook appears in their section, so a reader takes the "
