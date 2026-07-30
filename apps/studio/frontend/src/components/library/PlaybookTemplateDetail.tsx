@@ -11,6 +11,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { useTranslations } from "use-intl";
 import {
   getBuiltinPlaybookRaw,
@@ -294,9 +295,11 @@ export function PlaybookTemplateDetail({
             ) : (
               <div className="overflow-hidden rounded border border-edge">
                 {runs.map((run, i) => (
-                  <div
+                  <Link
                     key={run.run_id}
-                    className="flex items-center gap-3 bg-surface-raised px-3 py-1.5"
+                    to="/fleet"
+                    search={{ s: run.run_id }}
+                    className="flex items-center gap-3 bg-surface-raised px-3 py-1.5 transition-colors duration-100 hover:bg-surface-overlay"
                     style={{ borderTop: i === 0 ? undefined : "1px solid var(--edge-hairline)" }}
                   >
                     <StatusVerdictChips
@@ -318,7 +321,7 @@ export function PlaybookTemplateDetail({
                         }
                       />
                     </span>
-                  </div>
+                  </Link>
                 ))}
               </div>
             )}
