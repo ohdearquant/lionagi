@@ -189,11 +189,23 @@ WAIT_MAX_POLL_SECONDS = 60.0
 # This is a polling decision, not a verdict: nothing here terminalises a run, and
 # the classifier's refusal to resolve such a record stands untouched.
 #
-# The number is WAIT_MAX_SECONDS, and that is the whole derivation rather than a
-# coincidence: a spawn that has not resolved in the time one maximum-length wait
-# could span is not going to resolve inside any single caller's window, so holding
-# a window open for it cannot pay off however long the caller waits. Anything
-# shorter would start reporting spawns that a caller could still have waited out.
+# The number is WAIT_MAX_SECONDS, and it is a defensible default rather than a
+# derivation. The distinction is worth the words, because calling it a derivation
+# tells a later reader the question is closed.
+#
+# What it can be argued from is one property, and only in the backward direction the
+# measurement actually supports: past this line, a caller who had waited since the
+# run was submitted would already have spent a full maximum window, so the bucket
+# never speaks about a spawn nobody could have waited out yet. That is a floor on
+# when this may report, not a claim about whether the spawn will resolve.
+#
+# What it cannot be argued from is the forward direction. A record aged exactly this
+# long may still resolve a second later, and that is true of any threshold whatever,
+# so no value distinguishes itself by "anything shorter would report spawns a caller
+# could still have waited out" — that holds here too. Choosing the longest window
+# this function will honour is a bet that a spawn which has outlived one is likelier
+# stuck than slow. It is a bet, and it is labelled one so that the next person to
+# question the number is questioning a choice rather than arguing with arithmetic.
 #
 # Not a parameter, because a caller wanting a different line no longer needs one —
 # every entry now carries the spawn phase and the submission time, which are the
@@ -3249,6 +3261,19 @@ async def wait(
     exactly as it always was. ``all_terminal`` stays false while any id is here,
     for the same reason it does for ``stopped_without_end``: a run this cannot
     account for is not a completed one.
+
+    One population can never reach this bucket, and it is named here because it
+    looks like an oversight to anyone who notices it. The age is drawn from
+    ``submitted_at``, and a missing or unreadable stamp is read as *no evidence*
+    rather than as evidence of being old — so the records certain to be older than
+    any threshold are exactly the records that can never enter the bucket. That is
+    deliberate twice over. Such a record carries no usable spawn phase either, so
+    the phase test excludes it before the age test is reached; and reading an absent
+    stamp as age would resolve a row by a fact nobody recorded. It also cannot arise
+    from anything this module writes today: ``submitted_at`` and the opening
+    ``spawn_state`` are set in the same record literal and published by one atomic
+    write, so no run this code submits can hold ``"preparing"`` without a stamp. The
+    population is the pre-field one, and it keeps the behaviour it has always had.
 
     That bucket changes what ``timed_out`` means for the ids in it, and the change
     is not conservative, so it is stated rather than left to be discovered. These

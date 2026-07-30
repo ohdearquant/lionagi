@@ -807,3 +807,65 @@ async def test_wait_and_list_agree_on_the_spawn_phase(sandbox, monkeypatch):
     assert len(listed) == 1
     assert waited["runs"][0]["spawn_state"] == listed[0]["spawn_state"]
     assert waited["runs"][0]["submitted_at"] == listed[0]["submitted_at"]
+
+
+async def test_a_spawn_that_starts_between_observations_returns_to_pending(sandbox, monkeypatch):
+    """The bucket is a reading of the current record, never a latch.
+
+    This is what makes the bucket safe to put a live-but-slow spawn in: the row
+    leaves it the moment its phase advances, so the cost of a wrong guess is one
+    poll interval rather than a run written off. The claim is asserted across two
+    observations inside ONE wait, not across two calls — two calls would pass even
+    if a latch survived for the length of a call, which is exactly where a cache
+    would sit.
+
+    Both the clock and the sleep are driven rather than waited on. A wall-clock
+    version would either sleep for real or race its own deadline, and a flaky test
+    for a stickiness property is worse than no test: it fails for reasons unrelated
+    to stickiness and gets muted.
+
+    The pid moves with the phase, and it has to: a record claiming ``started`` with
+    no pid is not a running run to the classifier, it is an orphan, so a fixture
+    that only advanced the phase would be asserting a transition into a state it
+    cannot represent. Liveness is answered per-pid rather than by a flat ``False``
+    for the same reason — the source state needs a dead probe and the destination
+    state needs a live one, inside one test.
+    """
+    import anyio
+
+    live_pid = 4242
+    _live_process(monkeypatch, alive=lambda pid: pid == live_pid)
+    rid = jobs.new_run_id()
+    _record(rid, pid=None, spawn_state="preparing")
+
+    # First establish the row really is in the new bucket, so what follows is a
+    # transition OUT of it rather than a row that was never in it. Without this the
+    # test would pass against a build where the bucket never captured anything.
+    before = await jobs.wait([rid], max_wait=0, poll_interval=1)
+    assert before["unresolved_spawn"] == [rid]
+    assert before["pending"] == []
+
+    clock = {"t": 1_000.0}
+    seen: list[str | None] = []
+
+    async def flip_after_the_first_observation(delay):
+        clock["t"] += delay
+        # The phase the loop was looking at when it decided to keep waiting,
+        # captured before this sleep changes anything.
+        seen.append(jobs._wait_entry(rid)["spawn_state"])
+        if len(seen) == 1:
+            _record(rid, pid=live_pid, spawn_state="started")
+
+    monkeypatch.setattr(anyio, "current_time", lambda: clock["t"])
+    monkeypatch.setattr(anyio, "sleep", flip_after_the_first_observation)
+
+    res = await jobs.wait([rid], max_wait=2, poll_interval=1)
+
+    # The two observations the single call actually made, in order.
+    assert seen == ["preparing", "started"]
+    assert res["unresolved_spawn"] == []
+    assert res["pending"] == [rid]
+    # And the triple reads as "keep waiting" again, which is the point: the row is
+    # back to being something waiting can resolve.
+    assert res["timed_out"] is True
+    assert res["all_terminal"] is False
