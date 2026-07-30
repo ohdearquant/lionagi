@@ -25,7 +25,7 @@ vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => router.navigate,
 }));
 
-const { default: OperatorPanel } = await import("./OperatorPanel");
+const { default: OperatorPanel, formatProposalCommand } = await import("./OperatorPanel");
 
 function textFrame(sequence: number, role: "user" | "assistant", content: string): OperatorFrame {
   return {
@@ -252,6 +252,136 @@ describe("OperatorPanel", () => {
     expect(api.getOperatorConversation).toHaveBeenCalledWith("conversation-prior");
     expect(container.textContent).toContain("Prior daemon transcript");
     expect(window.localStorage.getItem("studio:operator-conversation")).toBe("conversation-prior");
+  });
+
+  function mockProposal(command: Record<string, unknown>, risk = "execute") {
+    api.listOperatorConversations.mockResolvedValue([
+      {
+        id: "conversation-1",
+        title: "Permission review",
+        status: "active",
+        activeRequestId: null,
+      },
+    ]);
+    api.getOperatorConversation.mockResolvedValue({
+      conversation: { id: "conversation-1", status: "active", activeRequestId: null },
+      frames: [
+        {
+          version: 1,
+          conversationId: "conversation-1",
+          requestId: "request-1",
+          sequence: 1,
+          type: "proposal",
+          payload: {
+            proposal: {
+              id: "proposal-1",
+              command,
+              commandHash: "sha256",
+              risk,
+              summary: "Update the changelog date.",
+              idempotencyKey: "once",
+              expiresAt: 999,
+            },
+          },
+          createdAt: 1,
+        },
+      ] as unknown as OperatorFrame[],
+    });
+  }
+
+  it("warns outside the disclosure when the rendered command is cut short", async () => {
+    const command = {
+      operation: "shell",
+      note: "x".repeat(6_400),
+      argv: ["rm", "-rf", "/etc"],
+    };
+    // No sensitive keys, no deep nesting, no long arrays: the redaction pass is the
+    // identity here, so the dropped count is computable without the code under test.
+    const dropped = JSON.stringify(command, null, 2).length - 6_000;
+    expect(dropped).toBeGreaterThan(0);
+    expect(dropped).toBeLessThan(1_000); // stays un-grouped in en number formatting
+    mockProposal(command);
+
+    await mount();
+
+    const warning = container.querySelector('[data-testid="proposal-elided"]');
+    expect(warning).not.toBeNull();
+    // A warning inside <details> is one the operator can approve without ever seeing.
+    expect(warning?.closest("details")).toBeNull();
+    expect(warning?.textContent).toContain(String(dropped));
+    expect(container.querySelector("pre")?.textContent).not.toContain("/etc");
+  });
+
+  it("does not warn about elision for a short flat command", async () => {
+    mockProposal({ tool: "Bash", arguments: { command: "rm -rf /etc" } });
+
+    await mount();
+
+    expect(container.querySelector('[data-testid="proposal-elided"]')).toBeNull();
+    expect(container.querySelector("pre")?.textContent).toContain("/etc");
+  });
+
+  it("opens the command disclosure by default so Allow is never live over a hidden command", async () => {
+    mockProposal({ tool: "Bash", arguments: { command: "git status" } });
+
+    await mount();
+
+    const disclosure = container.querySelector("details");
+    expect(disclosure).not.toBeNull();
+    expect(disclosure?.open).toBe(true);
+    expect(
+      Array.from(container.querySelectorAll("button")).find(
+        (button) => button.textContent === "Allow",
+      ),
+    ).toBeDefined();
+  });
+
+  describe("formatProposalCommand", () => {
+    it("reports the length cut with the number of characters dropped", () => {
+      const command = { note: "x".repeat(6_400) };
+      const full = JSON.stringify(command, null, 2);
+      const shown = formatProposalCommand(command);
+
+      expect(shown.elided).toBe(true);
+      expect(shown.droppedCharacters).toBe(full.length - 6_000);
+      expect(shown.text.endsWith("\n…")).toBe(true);
+    });
+
+    it("reports the array cut", () => {
+      const shown = formatProposalCommand({
+        paths: [...Array.from({ length: 50 }, (_, index) => `/safe/${index}`), "/etc/shadow"],
+      });
+
+      expect(shown.elided).toBe(true);
+      expect(shown.droppedCharacters).toBe(0);
+      expect(shown.text).not.toContain("/etc/shadow");
+      expect(shown.text).toContain("[1 more items]");
+    });
+
+    it("reports the depth cut", () => {
+      let nested: Record<string, unknown> = { danger: "rm -rf /" };
+      for (let depth = 0; depth < 8; depth += 1) nested = { nested };
+      const shown = formatProposalCommand(nested);
+
+      expect(shown.elided).toBe(true);
+      expect(shown.text).not.toContain("rm -rf /");
+      expect(shown.text).toContain("[truncated]");
+    });
+
+    it("reports redaction", () => {
+      const shown = formatProposalCommand({ authorization: "Bearer secret" });
+
+      expect(shown.elided).toBe(true);
+      expect(shown.text).toContain("[redacted]");
+    });
+
+    it("reports a short flat command as complete", () => {
+      const shown = formatProposalCommand({ argv: ["rm", "-rf", "/etc"] });
+
+      expect(shown.elided).toBe(false);
+      expect(shown.droppedCharacters).toBe(0);
+      expect(shown.text).toContain("/etc");
+    });
   });
 
   it("reveals the bounded proposed command and disables it after a denial", async () => {

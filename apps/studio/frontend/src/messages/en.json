@@ -122,6 +122,8 @@
       "title": "Permission required",
       "noTarget": "No versioned target",
       "review": "Review exact command",
+      "elided": "Part of this command is hidden. Allow approves all of it.",
+      "elidedCharacters": "{count} characters are hidden. Allow approves all of it.",
       "risk": {
         "mutate": "change",
         "execute": "execute",

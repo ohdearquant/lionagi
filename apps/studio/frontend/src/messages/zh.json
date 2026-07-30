@@ -122,6 +122,8 @@
       "title": "需要你的许可",
       "noTarget": "无版本化目标",
       "review": "查看确切命令",
+      "elided": "此命令的部分内容未显示。允许即批准完整命令。",
+      "elidedCharacters": "有 {count} 个字符未显示。允许即批准完整命令。",
       "risk": {
         "mutate": "更改",
         "execute": "执行",

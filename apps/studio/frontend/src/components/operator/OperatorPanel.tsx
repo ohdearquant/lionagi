@@ -157,26 +157,61 @@ function findRunId(value: unknown, depth = 0): string | null {
 
 const SENSITIVE_COMMAND_KEY = /(?:authorization|credential|password|secret|token|api[_-]?key)/i;
 
-function redactCommandValue(value: unknown, depth = 0): unknown {
-  if (depth >= 7) return "[truncated]";
+const MAX_RENDERED_COMMAND_CHARS = 6_000;
+
+export interface FormattedProposalCommand {
+  /** The string drawn on screen — not necessarily the whole command. */
+  text: string;
+  /** True when the text is a lossy view: depth cut, array cut, length cut, or redaction. */
+  elided: boolean;
+  /** Characters dropped by the length cut. Zero when the length cut did not fire. */
+  droppedCharacters: number;
+}
+
+function redactCommandValue(value: unknown, depth: number, elided: { hit: boolean }): unknown {
+  if (depth >= 7) {
+    elided.hit = true;
+    return "[truncated]";
+  }
   if (Array.isArray(value)) {
-    const result = value.slice(0, 50).map((item) => redactCommandValue(item, depth + 1));
-    if (value.length > 50) result.push(`[${value.length - 50} more items]`);
+    const result = value.slice(0, 50).map((item) => redactCommandValue(item, depth + 1, elided));
+    if (value.length > 50) {
+      elided.hit = true;
+      result.push(`[${value.length - 50} more items]`);
+    }
     return result;
   }
   if (value == null || typeof value !== "object") return value;
   const redacted: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-    redacted[key] = SENSITIVE_COMMAND_KEY.test(key)
-      ? "[redacted]"
-      : redactCommandValue(item, depth + 1);
+    if (SENSITIVE_COMMAND_KEY.test(key)) {
+      elided.hit = true;
+      redacted[key] = "[redacted]";
+    } else {
+      redacted[key] = redactCommandValue(item, depth + 1, elided);
+    }
   }
   return redacted;
 }
 
-export function formatProposalCommand(command: Record<string, unknown>): string {
-  const formatted = JSON.stringify(redactCommandValue(command), null, 2);
-  return formatted.length > 6_000 ? `${formatted.slice(0, 6_000)}\n…` : formatted;
+/**
+ * Render a proposal command for review, reporting whether the rendering is lossy.
+ *
+ * The caller must surface `elided` outside any collapsed disclosure: the operator
+ * approves the whole command, so "what you are reading is smaller than what runs"
+ * has to be visible in the same glance as the Allow button.
+ */
+export function formatProposalCommand(command: Record<string, unknown>): FormattedProposalCommand {
+  const elided = { hit: false };
+  const formatted = JSON.stringify(redactCommandValue(command, 0, elided), null, 2);
+  if (formatted.length > MAX_RENDERED_COMMAND_CHARS) {
+    return {
+      text: `${formatted.slice(0, MAX_RENDERED_COMMAND_CHARS)}\n…`,
+      elided: true,
+      droppedCharacters: formatted.length - MAX_RENDERED_COMMAND_CHARS,
+    };
+  }
+  return { text: formatted, elided: elided.hit, droppedCharacters: 0 };
 }
 
 function operatorContext(
@@ -341,6 +376,7 @@ function ProposalCard({
 }) {
   const t = useTranslations("operator");
   const proposal = frame.payload.proposal;
+  const command = formatProposalCommand(proposal.command);
   const target = proposal.target
     ? `${proposal.target.kind} · ${proposal.target.id}`
     : t("proposal.noTarget");
@@ -364,14 +400,37 @@ function ProposalCard({
           <p className="mt-2 truncate font-data text-meta text-content-muted" title={target}>
             {target}
           </p>
-          <details className="mt-3 overflow-hidden rounded border border-status-pending/30 bg-surface-base">
+          {/*
+            Open by default: every proposal that reaches this card needs a permission
+            decision, and Allow must never be live over a command the operator has not
+            been shown.
+          */}
+          <details
+            open
+            className="mt-3 overflow-hidden rounded border border-status-pending/30 bg-surface-base"
+          >
             <summary className="focus-ring cursor-pointer px-2.5 py-2 text-meta font-medium text-content-secondary">
               {t("proposal.review")}
             </summary>
             <pre className="max-h-48 overflow-auto border-t border-status-pending/20 px-2.5 py-2 font-data text-meta leading-relaxed text-content-primary">
-              {formatProposalCommand(proposal.command)}
+              {command.text}
             </pre>
           </details>
+          {/*
+            Outside the disclosure on purpose — a warning rendered inside a collapsible
+            element is a warning the operator can approve without ever seeing.
+          */}
+          {command.elided && (
+            <p
+              data-testid="proposal-elided"
+              className="mt-2 flex items-start gap-1.5 text-meta text-status-failure"
+            >
+              <IconError size={13} className="mt-0.5 shrink-0" />
+              {command.droppedCharacters > 0
+                ? t("proposal.elidedCharacters", { count: command.droppedCharacters })
+                : t("proposal.elided")}
+            </p>
+          )}
           {resolved ? (
             <div className="mt-3 flex items-center gap-1.5 text-body text-status-success">
               <IconCheck size={13} />

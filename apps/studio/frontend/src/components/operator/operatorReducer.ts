@@ -36,6 +36,34 @@ export type OperatorAction =
   | { type: "CONNECTION"; state: OperatorConnectionState; error?: string }
   | { type: "RESET" };
 
+/**
+ * Frames retained in browser memory for one conversation. A long turn would
+ * otherwise grow the array — and the DOM — without limit, and every append
+ * re-sorts the whole thing.
+ */
+export const MAX_RETAINED_FRAMES = 2_000;
+
+/**
+ * Drop the oldest frames past the cap, except unresolved proposals.
+ *
+ * An unresolved proposal is a live permission prompt the daemon is still waiting
+ * on. Evicting one by age would take Allow/Deny off the screen with no way back,
+ * which is a worse failure than an unbounded array.
+ */
+function evictOldestFrames(frames: OperatorFrame[]): OperatorFrame[] {
+  if (frames.length <= MAX_RETAINED_FRAMES) return frames;
+  const unresolved = new Set(
+    pendingOperatorProposals(frames)
+      .filter((proposal) => !proposal.resolved)
+      .map((proposal) => proposal.frame.sequence),
+  );
+  const retained = frames.slice(-MAX_RETAINED_FRAMES);
+  const rescued = frames
+    .slice(0, frames.length - MAX_RETAINED_FRAMES)
+    .filter((frame) => unresolved.has(frame.sequence));
+  return rescued.length === 0 ? retained : [...rescued, ...retained];
+}
+
 export function mergeOperatorFrames(
   current: OperatorFrame[],
   incoming: OperatorFrame[],
@@ -48,7 +76,7 @@ export function mergeOperatorFrames(
     if (conversationId && frame.conversationId !== conversationId) continue;
     if (!bySequence.has(frame.sequence)) bySequence.set(frame.sequence, frame);
   }
-  return [...bySequence.values()].sort((a, b) => a.sequence - b.sequence);
+  return evictOldestFrames([...bySequence.values()].sort((a, b) => a.sequence - b.sequence));
 }
 
 function activeRequestAfterFrames(
@@ -56,7 +84,12 @@ function activeRequestAfterFrames(
   frames: OperatorFrame[],
 ): string | null {
   if (!activeRequestId) return null;
-  return frames.some((frame) => frame.requestId === activeRequestId && frame.type === "done")
+  // A terminal `error` frame ends the request just as `done` does; leaving the id
+  // set there strands the composer disabled until the operator reloads.
+  return frames.some(
+    (frame) =>
+      frame.requestId === activeRequestId && (frame.type === "done" || frame.type === "error"),
+  )
     ? null
     : activeRequestId;
 }
