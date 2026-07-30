@@ -636,6 +636,85 @@ async def test_list_sessions_surfaces_status_reason(patched_sessions_db):
     assert row["status_reason_summary"] == "worker exited with code 1"
 
 
+async def test_list_sessions_agrees_with_the_detail_route_on_terminal_absence(
+    patched_sessions_db,
+):
+    """The same session must not report absence one way and null the other."""
+    svc, db_path = patched_sessions_db
+    await seed_session(
+        db_path,
+        session_id="sess-terminal-absent",
+        status="completed",
+        artifacts_path=None,
+        artifact_contract_json=ARTIFACT_CONTRACT,
+        artifact_verification_json=None,
+    )
+
+    rows = await svc.list_sessions()
+    detail = await svc.get_session("sess-terminal-absent")
+
+    assert len(rows) == 1
+    assert rows[0]["artifact_verification_json"] == {"status": "not_recorded"}
+    # Asserted as equality between the two routes rather than against the literal
+    # twice: the defect being closed is a disagreement, so the test fails if
+    # either side moves, not only if the list side does.
+    assert detail is not None
+    assert rows[0]["artifact_verification_json"] == detail["artifact_verification_json"]
+
+
+async def test_list_sessions_preserves_a_stored_verdict(patched_sessions_db):
+    """A recorded verdict is returned as recorded, never re-derived."""
+    svc, db_path = patched_sessions_db
+    stored = {"status": "verified", "produced": [{"id": "report"}]}
+    await seed_session(
+        db_path,
+        session_id="sess-stored",
+        status="completed",
+        artifacts_path=None,
+        artifact_contract_json=ARTIFACT_CONTRACT,
+        artifact_verification_json=stored,
+    )
+
+    rows = await svc.list_sessions()
+
+    assert rows[0]["artifact_verification_json"] == stored
+
+
+async def test_list_sessions_does_not_read_the_artifacts_directory(patched_sessions_db, tmp_path):
+    """The list route declines the live-progress read, and that is deliberate.
+
+    The session is running, holds a contract, names a real artifacts directory,
+    and that directory contains the file the contract requires -- everything the
+    provisional arm needs to report progress. The list route still returns None,
+    because computing it means a filesystem walk per row on a paginated read.
+    Progress belongs to the single-session view, which this same fixture shape is
+    covered for elsewhere.
+
+    This is the test that fails if someone closes the remaining difference by
+    handing the list route its artifacts_path, so the decision has to be made
+    again rather than drifted into.
+    """
+    svc, db_path = patched_sessions_db
+    (tmp_path / "REPORT.md").write_text("ready")
+    await seed_session(
+        db_path,
+        session_id="sess-running-on-disk",
+        status="running",
+        artifacts_path=str(tmp_path),
+        artifact_contract_json=ARTIFACT_CONTRACT,
+        artifact_verification_json=None,
+    )
+
+    rows = await svc.list_sessions()
+
+    assert rows[0]["artifact_verification_json"] is None
+    # The detail route, given the same row, does report the progress -- which is
+    # what makes the None above a scoping decision rather than a lost capability.
+    detail = await svc.get_session("sess-running-on-disk")
+    assert detail is not None
+    assert detail["artifact_verification_json"]["provisional"] is True
+
+
 async def test_list_sessions_orders_by_updated_at_desc(patched_sessions_db):
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-a")
