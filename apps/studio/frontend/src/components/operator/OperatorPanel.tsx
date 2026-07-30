@@ -217,28 +217,36 @@ export function formatProposalCommand(command: Record<string, unknown>): Formatt
   return { text: formatted, elided: elided.hit, droppedCharacters: 0 };
 }
 
-// One clock for every observation this browser reports. A turn's frozen
-// snapshot and a standalone view report are both stamped here, so the server
-// can ask "was this view seen after that instruction" without ever comparing a
-// browser time against a server time -- arrival proves delivery, never
-// observation, and the two diverge under exactly the rapid navigation the
-// reports exist to handle.
+// How many views this browser has observed. A turn's frozen snapshot and a
+// standalone view report are both numbered from here, so the server can ask
+// "was this view seen after that instruction" in the only order that answers
+// it. Arrival order cannot: each report is its own request, so two navigations
+// can reach the server reversed and a view seen before an instruction can
+// arrive after it.
 //
-// Forced upward rather than read straight off the wall clock: the ordering has
-// to hold within a page load, which is where the debounce and concurrent
-// requests actually reorder things, and a clock that steps backwards mid-session
-// would otherwise let an earlier observation outrank a later one.
-let lastObservedAt = 0;
+// A count rather than a timestamp because a wall clock can step backwards, and
+// a page that reloaded just after one would number its live views below a view
+// the human had already left -- handing the stale page the higher number and
+// the confident label. The count instead resumes from what the server already
+// holds for the conversation, so it survives a reload without trusting a clock
+// at all.
+let observationCount = 0;
 
-function observationStamp(): number {
-  lastObservedAt = Math.max(lastObservedAt + 1, Date.now());
-  return lastObservedAt;
+function seedObservationCount(seq: number | null | undefined): void {
+  if (typeof seq === "number" && Number.isFinite(seq) && seq > observationCount) {
+    observationCount = Math.floor(seq);
+  }
+}
+
+function nextObservationSeq(): number {
+  observationCount += 1;
+  return observationCount;
 }
 
 function operatorContext(
   pathname: string,
   search: Record<string, unknown>,
-): OperatorContextSnapshot & { observedAt: number } {
+): OperatorContextSnapshot & { observationSeq: number } {
   let space: OperatorContextSnapshot["space"] = "mission";
   if (pathname.startsWith("/library")) space = "library";
   else if (pathname.startsWith("/schedules")) space = "schedules";
@@ -275,7 +283,7 @@ function operatorContext(
     route: `${pathname}${queryString ? `?${queryString}` : ""}`,
     selection: Object.keys(selection).length ? selection : null,
     filters,
-    observedAt: observationStamp(),
+    observationSeq: nextObservationSeq(),
   };
 }
 
@@ -669,6 +677,10 @@ export default function OperatorPanel({ open, onClose }: Props) {
       dispatch({ type: "LOAD_START" });
       try {
         const snapshot = await getOperatorConversation(conversationId);
+        // Resume counting from whatever a previous page already reported here,
+        // so a reload cannot number this page's live views below a view the
+        // human has already left.
+        seedObservationCount(snapshot.conversation.lastViewSeq);
         window.localStorage.setItem(STORAGE_KEY, snapshot.conversation.id);
         setConversations((current) => {
           const index = current.findIndex((item) => item.id === snapshot.conversation.id);
@@ -899,7 +911,11 @@ export default function OperatorPanel({ open, onClose }: Props) {
     // observed later rather than whichever arrived later.
     const context = operatorContext(location.pathname, location.search as Record<string, unknown>);
     const timer = window.setTimeout(() => {
-      void reportOperatorView(conversationId, context).catch(() => {});
+      void reportOperatorView(conversationId, context)
+        // Catch up if another page on this conversation has counted further,
+        // so the next navigation is not dropped for being behind as well.
+        .then(seedObservationCount)
+        .catch(() => {});
     }, 150);
     return () => window.clearTimeout(timer);
   }, [conversationId, location.pathname, location.search]);

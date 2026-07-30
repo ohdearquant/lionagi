@@ -269,6 +269,7 @@ function normalizeOperatorConversation(value: unknown): OperatorConversation {
     title: typeof raw.title === "string" ? raw.title : null,
     nextSequence: readNumber("nextSequence", "next_sequence"),
     activeRequestId: readString("activeRequestId", "active_request_id") ?? null,
+    lastViewSeq: readNumber("lastViewSeq", "last_view_seq") ?? null,
     createdAt: readNumber("createdAt", "created_at"),
     updatedAt: readNumber("updatedAt", "updated_at"),
   };
@@ -380,12 +381,16 @@ export async function submitOperatorTurn(
  * Operator answers "where am I" with wherever they were when they hit send.
  * Best effort by design: a dropped report costs freshness, never correctness,
  * because the tool falls back to the turn's own snapshot and labels it.
+ *
+ * Returns the count the conversation now holds, which is not always the one
+ * sent: another page on the same conversation may have counted further, and
+ * this caller has to catch up or every report it sends is dropped in silence.
  */
 export async function reportOperatorView(
   conversationId: string,
-  context: OperatorContextSnapshot & { observedAt: number },
-): Promise<void> {
-  await fetchJson<unknown>(
+  context: OperatorContextSnapshot & { observationSeq: number },
+): Promise<number | null> {
+  const response = await fetchJson<unknown>(
     `/api/operator/conversations/${encodeURIComponent(conversationId)}/view`,
     {
       method: "POST",
@@ -393,6 +398,8 @@ export async function reportOperatorView(
       body: JSON.stringify(context),
     },
   );
+  const seq = asRecord(response).observationSeq;
+  return typeof seq === "number" ? seq : null;
 }
 
 export async function cancelOperatorRequest(

@@ -138,18 +138,19 @@ async def report_operator_view(conversation_id: str, body: OperatorViewReport) -
     "where am I" with wherever the human was when they hit send, which is
     wrong precisely when they have moved since.
 
-    A report the browser observed before the one already stored is discarded,
-    since reports race and the loser of that race is the stale view.
+    A report that does not count higher than the one already stored is
+    discarded, since reports race and the loser of that race is the stale view.
+    The stored count comes back either way, so a page that has fallen behind
+    another page on the same conversation can catch up rather than have every
+    report it sends dropped in silence.
     """
     coordinator = get_operator_coordinator()
     view = body.model_dump(by_alias=True)
-    observed_at = view.pop("observedAt")
+    seq = view.pop("observationSeq")
     try:
         await coordinator.ensure_started()
-        received_at, applied = await coordinator.store.record_view(
-            conversation_id, view, observed_at
-        )
-        return {"ok": True, "receivedAt": received_at, "applied": applied}
+        stored_seq, applied = await coordinator.store.record_view(conversation_id, view, seq)
+        return {"ok": True, "observationSeq": stored_seq, "applied": applied}
     except OperatorStoreError as exc:
         raise _http_error(exc) from exc
 

@@ -1706,7 +1706,7 @@ async def test_current_view_prefers_a_navigation_reported_after_the_instruction(
     accepted = await store.submit_turn(
         cid,
         instruction="where am I?",
-        context={"space": "mission", "route": "/", "filters": {}, "observedAt": 1_000.0},
+        context={"space": "mission", "route": "/", "filters": {}, "observationSeq": 1},
         expected_last_sequence=0,
     )
     assert await store.mark_running(accepted["requestId"])
@@ -1720,18 +1720,18 @@ async def test_current_view_prefers_a_navigation_reported_after_the_instruction(
     assert before["known"] is True
     assert before["space"] == "mission"
     assert before["source"] == "turn"
-    assert before["observedAt"] == 1_000.0
+    assert before["observationSeq"] == 1
 
     # The human navigates mid-turn and the browser reports it.
     await store.record_view(
-        cid, {"space": "library", "route": "/library?tab=playbook", "filters": {}}, 2_000.0
+        cid, {"space": "library", "route": "/library?tab=playbook", "filters": {}}, 2
     )
 
     after = await get_current_view({})
     assert after["space"] == "library"
     assert after["route"] == "/library?tab=playbook"
     assert after["source"] == "live"
-    assert after["observedAt"] == 2_000.0
+    assert after["observationSeq"] == 2
 
 
 @pytest.mark.asyncio
@@ -1760,14 +1760,17 @@ async def test_live_view_columns_are_added_to_a_preexisting_conversation_store(t
     cid = (await store.create_conversation())["id"]
     assert await store.get_view(cid) == (None, None)
 
-    received_at, applied = await store.record_view(
-        cid, {"space": "system", "route": "/system", "filters": {}}, 1_000.0
+    stored_seq, applied = await store.record_view(
+        cid, {"space": "system", "route": "/system", "filters": {}}, 7
     )
     assert applied is True
-    view, observed_at = await store.get_view(cid)
+    assert stored_seq == 7
+    view, seq = await store.get_view(cid)
     assert view["space"] == "system"
-    assert observed_at == 1_000.0, "the stored stamp is the browser's, not the server's arrival"
-    assert received_at != observed_at, "arrival time is reported back, never stored as observation"
+    assert seq == 7
+    assert (await store.get_conversation(cid))["lastViewSeq"] == 7, (
+        "a reloading browser resumes counting from the conversation projection"
+    )
 
 
 @pytest.mark.asyncio
@@ -1790,7 +1793,7 @@ async def test_a_late_arriving_older_navigation_does_not_overwrite_the_current_v
     accepted = await store.submit_turn(
         cid,
         instruction="where am I?",
-        context={"space": "mission", "route": "/", "filters": {}, "observedAt": 1_500.0},
+        context={"space": "mission", "route": "/", "filters": {}, "observationSeq": 2},
         expected_last_sequence=0,
     )
     assert await store.mark_running(accepted["requestId"])
@@ -1801,10 +1804,10 @@ async def test_a_late_arriving_older_navigation_does_not_overwrite_the_current_v
     # The browser saw /library first and /schedules second, but the reports
     # reach the server in the opposite order.
     _, newer_applied = await store.record_view(
-        cid, {"space": "schedules", "route": "/schedules", "filters": {}}, 2_000.0
+        cid, {"space": "schedules", "route": "/schedules", "filters": {}}, 3
     )
     _, older_applied = await store.record_view(
-        cid, {"space": "library", "route": "/library", "filters": {}}, 1_000.0
+        cid, {"space": "library", "route": "/library", "filters": {}}, 1
     )
     assert newer_applied is True
     assert older_applied is False, "an older observation must not overwrite a newer one"
@@ -1848,7 +1851,7 @@ async def test_a_report_observed_before_the_turn_is_not_live_when_it_arrives_aft
             "space": "library",
             "route": "/library",
             "filters": {},
-            "observedAt": 1_000.0,
+            "observationSeq": 1,
         }
 
         # The human moves to /mission and asks from there.
@@ -1860,7 +1863,7 @@ async def test_a_report_observed_before_the_turn_is_not_live_when_it_arrives_aft
                     "space": "mission",
                     "route": "/",
                     "filters": {},
-                    "observedAt": 2_000.0,
+                    "observationSeq": 2,
                 },
                 "expectedLastSequence": 0,
             },
@@ -1885,7 +1888,7 @@ async def test_a_report_observed_before_the_turn_is_not_live_when_it_arrives_aft
         view = await get_current_view({})
         assert view["space"] == "mission", "a view seen before the question cannot answer it"
         assert view["source"] == "turn"
-        assert view["observedAt"] == 2_000.0
+        assert view["observationSeq"] == 2
 
         # And a report genuinely observed after the turn does flip it, so the
         # assertion above is about ordering rather than about live never firing.
@@ -1895,13 +1898,91 @@ async def test_a_report_observed_before_the_turn_is_not_live_when_it_arrives_aft
                 "space": "schedules",
                 "route": "/schedules",
                 "filters": {},
-                "observedAt": 3_000.0,
+                "observationSeq": 3,
             },
         )
         assert after.status_code == 200
         moved = await get_current_view({})
         assert moved["space"] == "schedules"
         assert moved["source"] == "live"
+    await coordinator.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_reloaded_page_resumes_the_count_instead_of_restarting_it(tmp_path, monkeypatch):
+    """A page that starts counting from scratch hands the stale view the higher number.
+
+    Nothing in a browser survives a reload, so if the ordering came from a
+    per-page counter, a reloaded page would number its live views below views
+    the human had already left, every one of its reports would be discarded for
+    being behind, and the abandoned page would keep the confident label. A wall
+    clock only hides this until it steps backwards. The count is therefore
+    resumed from the conversation itself, which is the one place that outlives
+    the page.
+    """
+    httpx = pytest.importorskip("httpx")
+    from lionagi.studio.app import create_app
+    from lionagi.studio.operator.application_mcp import get_current_view
+    from lionagi.studio.operator.coordinator import reset_operator_coordinator_for_testing
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+    app = create_app()
+    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=ScriptedEngine)
+    await reset_operator_coordinator_for_testing(coordinator)
+    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 54321))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8765") as client:
+        created = await client.post("/api/operator/conversations", json={"title": "reload"})
+        cid = created.json()["conversation"]["id"]
+
+        # The page before the reload got as far as /library on its 40th view.
+        first = await client.post(
+            f"/api/operator/conversations/{cid}/view",
+            json={"space": "library", "route": "/library", "filters": {}, "observationSeq": 40},
+        )
+        assert first.status_code == 200
+
+        # The reloaded page reads the conversation and continues from there,
+        # rather than starting at one and losing to the page it replaced.
+        reloaded = await client.get(f"/api/operator/conversations/{cid}", params={"limit": 1})
+        resumed = reloaded.json()["conversation"]["lastViewSeq"]
+        assert resumed == 40, "the conversation must say what the browser has to beat"
+
+        submitted = await client.post(
+            f"/api/operator/conversations/{cid}/turns",
+            json={
+                "instruction": "where am I?",
+                "context": {
+                    "space": "mission",
+                    "route": "/",
+                    "filters": {},
+                    "observationSeq": resumed + 1,
+                },
+                "expectedLastSequence": 0,
+            },
+        )
+        assert submitted.status_code == 202
+
+        monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+        monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+        monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", submitted.json()["requestId"])
+
+        view = await get_current_view({})
+        assert view["space"] == "mission", (
+            "the page the human left cannot outrank the one they ask from"
+        )
+        assert view["source"] == "turn"
+
+        # A page that has fallen behind is told what it has to beat, so it
+        # catches up instead of having every later report dropped in silence.
+        behind = await client.post(
+            f"/api/operator/conversations/{cid}/view",
+            json={"space": "system", "route": "/system", "filters": {}, "observationSeq": 5},
+        )
+        assert behind.status_code == 200
+        assert behind.json()["applied"] is False
+        assert behind.json()["observationSeq"] == 40
     await coordinator.shutdown()
 
 
@@ -1918,11 +1999,9 @@ async def test_a_repeated_observation_timestamp_is_not_applied_twice(tmp_path):
     cid = (await store.create_conversation())["id"]
 
     _, first = await store.record_view(
-        cid, {"space": "library", "route": "/library", "filters": {}}, 5_000.0
+        cid, {"space": "library", "route": "/library", "filters": {}}, 5
     )
-    _, replay = await store.record_view(
-        cid, {"space": "mission", "route": "/", "filters": {}}, 5_000.0
-    )
+    _, replay = await store.record_view(cid, {"space": "mission", "route": "/", "filters": {}}, 5)
     assert first is True
     assert replay is False
 

@@ -63,27 +63,29 @@ class OperatorContextSnapshot(WireModel):
     route: str = Field(min_length=1, max_length=4096)
     selection: dict[str, str] | None = None
     filters: dict[str, Any] = Field(default_factory=dict)
-    # When the BROWSER saw this view. Every ordering question about views is
-    # answered in this one clock -- report against report, and report against
-    # the turn -- because the alternative, ordering by when the server received
-    # something, answers a different question: arrival proves delivery, never
-    # observation, and the two diverge under exactly the rapid navigation this
-    # exists to handle. Optional so a client that does not send it degrades to
-    # "cannot establish freshness" rather than to a false claim of it.
-    observed_at: float | None = Field(default=None, gt=0, alias="observedAt")
+    # The browser's own count of the views it has observed in this conversation.
+    # Every ordering question is answered in this one count -- report against
+    # report, and report against the turn -- and deliberately not in any clock.
+    # Server arrival order answers a different question, since a view seen
+    # before an instruction can arrive after it. A wall clock answers it wrongly
+    # too: it can step backwards, and then a view from before the step outranks
+    # everything observed after it. A count that the browser seeds from the
+    # server survives both. Optional so a client that does not send one degrades
+    # to "cannot establish freshness" rather than to a false claim of it.
+    observation_seq: int | None = Field(default=None, ge=1, alias="observationSeq")
 
 
 class OperatorViewReport(OperatorContextSnapshot):
     """A view the browser reports outside of any turn.
 
-    ``observed_at`` is required here, unlike on a turn's snapshot: a report
+    ``observation_seq`` is required here, unlike on a turn's snapshot: a report
     exists only to answer "where is the human now", and one that cannot say
-    when it was observed cannot be ordered against anything, so accepting it
-    would mean storing a view that can only ever be reported with the wrong
-    freshness label.
+    where it falls in the browser's own sequence cannot be ordered against
+    anything, so accepting it would mean storing a view that can only ever be
+    reported with the wrong freshness label.
     """
 
-    observed_at: float = Field(gt=0, alias="observedAt")
+    observation_seq: int = Field(ge=1, alias="observationSeq")
 
 
 # Closed set: the model reaches a CLI argument, so an open string would let the

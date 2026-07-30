@@ -49,13 +49,16 @@ CREATE TABLE IF NOT EXISTS studio_operator_conversations (
   -- submit, so without this the Operator answers "where am I" with wherever the
   -- human was when they hit send, which is wrong exactly when they have moved.
   last_view_json      TEXT,
-  -- When the BROWSER saw this view. The only clock any ordering question about
-  -- views is answered in: report against report, and report against the turn
-  -- that asked. Server arrival time is deliberately not stored beside it,
-  -- because reports are independent requests and arrival order is not
-  -- observation order, so a server timestamp here could only ever be the wrong
-  -- thing to compare.
-  last_view_observed_at REAL,
+  -- The browser's own count of how many views it has observed in this
+  -- conversation, and the only order any freshness question is answered in:
+  -- report against report, and report against the turn that asked. It is not a
+  -- time. Server arrival order cannot substitute, because reports are
+  -- independent requests and a view seen before an instruction can arrive after
+  -- it; a wall clock cannot either, because it can step backwards and then a
+  -- stale view outranks a live one. A browser seeds its count from this column
+  -- when it loads the conversation, so the count survives a reload without
+  -- trusting any clock.
+  last_view_seq       INTEGER,
   created_at         REAL NOT NULL,
   updated_at         REAL NOT NULL,
   archived_at        REAL,
@@ -203,7 +206,7 @@ class OperatorStore:
                         "provider_session_id": "TEXT",
                         "provider_model": "TEXT",
                         "last_view_json": "TEXT",
-                        "last_view_observed_at": "REAL",
+                        "last_view_seq": "INTEGER",
                     },
                 )
                 await db.commit()
@@ -284,6 +287,11 @@ class OperatorStore:
             "activeRequestId": row["active_request_id"],
             "providerSessionId": row["provider_session_id"],
             "providerModel": row["provider_model"],
+            # What the browser must continue counting from. Sent on every
+            # conversation read so a freshly loaded page cannot start below what
+            # a previous page already reported and hand the stale view the
+            # higher number.
+            "lastViewSeq": row["last_view_seq"],
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
         }
@@ -438,61 +446,60 @@ class OperatorStore:
             await db.commit()
 
     async def record_view(
-        self, conversation_id: str, view: dict[str, Any], observed_at: float
-    ) -> tuple[float, bool]:
+        self, conversation_id: str, view: dict[str, Any], seq: int
+    ) -> tuple[int, bool]:
         """Record where the human is now, independently of any turn.
 
-        *observed_at* is when the browser saw this view. Each report is its own
-        request, so two navigations in quick succession can arrive reversed; a
-        report older than the one already stored is DISCARDED rather than
-        written, because otherwise the stale view wins and is still labelled
-        current, which is the exact failure this whole mechanism exists to fix.
+        *seq* is the browser's own count of the views it has observed here. Each
+        report is its own request, so two navigations in quick succession can
+        arrive reversed; a report that does not count higher than the stored one
+        is DISCARDED rather than written, because otherwise the stale view wins
+        and is still labelled current, which is the exact failure this whole
+        mechanism exists to fix.
 
-        Returns when the server received the report and whether it was applied.
-        The arrival time is reported back to the caller and never stored: it
-        says only that the request turned up, which is a different fact from
-        when the human saw the page, and nothing about freshness may be decided
-        from it.
+        Returns the count now stored and whether this report was applied. The
+        count comes back either way so that a browser which has fallen behind
+        another page on the same conversation can catch up instead of having
+        every one of its reports silently dropped.
         """
         await self.ensure_schema()
-        seen_at = time.time()
         async with open_db(str(self.path())) as db:
             await db.execute("BEGIN IMMEDIATE")
             row = await (
                 await db.execute(
-                    "SELECT last_view_observed_at FROM studio_operator_conversations WHERE id = ?",
+                    "SELECT last_view_seq FROM studio_operator_conversations WHERE id = ?",
                     (conversation_id,),
                 )
             ).fetchone()
             if row is None:
                 await db.rollback()
                 raise OperatorNotFoundError(f"Operator conversation '{conversation_id}' not found")
-            previous = row["last_view_observed_at"]
-            if previous is not None and observed_at <= previous:
+            previous = row["last_view_seq"]
+            if previous is not None and seq <= previous:
                 await db.rollback()
-                return seen_at, False
+                return int(previous), False
             await db.execute(
                 "UPDATE studio_operator_conversations "
-                "SET last_view_json = ?, last_view_observed_at = ? WHERE id = ?",
-                (self._json(view), observed_at, conversation_id),
+                "SET last_view_json = ?, last_view_seq = ? WHERE id = ?",
+                (self._json(view), seq, conversation_id),
             )
             await db.commit()
-        return seen_at, True
+        return seq, True
 
-    async def get_view(self, conversation_id: str) -> tuple[dict[str, Any] | None, float | None]:
-        """Return the last reported view and when the browser saw it."""
+    async def get_view(self, conversation_id: str) -> tuple[dict[str, Any] | None, int | None]:
+        """Return the last reported view and the browser's count when it saw it."""
         await self.ensure_schema()
         async with open_db(str(self.path())) as db:
             row = await (
                 await db.execute(
-                    "SELECT last_view_json, last_view_observed_at "
+                    "SELECT last_view_json, last_view_seq "
                     "FROM studio_operator_conversations WHERE id = ?",
                     (conversation_id,),
                 )
             ).fetchone()
         if row is None or row["last_view_json"] is None:
             return None, None
-        return json.loads(row["last_view_json"]), row["last_view_observed_at"]
+        return json.loads(row["last_view_json"]), row["last_view_seq"]
 
     async def select_provider_model(self, conversation_id: str, model: str) -> None:
         """Record the model for this conversation, dropping a stale session.

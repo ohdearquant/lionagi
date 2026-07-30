@@ -66,6 +66,7 @@ describe("Operator API v1", () => {
         status: "active",
         nextSequence: 4,
         activeRequestId: null,
+        lastViewSeq: null,
         createdAt: 10,
         updatedAt: 20,
       },

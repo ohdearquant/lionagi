@@ -245,25 +245,27 @@ async def get_current_view(arguments: dict[str, Any]) -> dict[str, Any]:
     source = "turn"
 
     # The turn's context is frozen at submit, so it is only the freshest answer
-    # until the human moves. Prefer a view the browser OBSERVED later.
+    # until the human moves. Prefer a view the browser observed LATER IN ITS OWN
+    # COUNT of the views it has seen here.
     #
-    # Both sides of this comparison are browser timestamps on purpose. Server
-    # receipt time cannot stand in for either one: a report the browser saw
-    # before the instruction can arrive after it, and ordering by arrival would
-    # then present a view from before the question as the answer to it, labelled
-    # live. When the turn carries no observation time there is nothing to
-    # compare against, so the honest answer is the turn's own snapshot rather
-    # than a freshness claim that cannot be supported.
-    reported, reported_observed_at = await store.get_view(conversation_id)
-    turn_observed_at = (context or {}).get("observedAt")
-    at = turn_observed_at if isinstance(turn_observed_at, int | float) else None
+    # Both sides of this comparison come from that one count on purpose. Server
+    # arrival order cannot stand in for it: a report the browser saw before the
+    # instruction can arrive after it, and ordering by arrival would then
+    # present a view from before the question as the answer to it, labelled
+    # live. Neither can a wall clock, which can step backwards and leave a stale
+    # view holding the higher number. When the turn carries no count there is
+    # nothing to compare against, so the honest answer is the turn's own
+    # snapshot rather than a freshness claim that cannot be supported.
+    reported, reported_seq = await store.get_view(conversation_id)
+    turn_seq = (context or {}).get("observationSeq")
+    at = turn_seq if isinstance(turn_seq, int) else None
     if (
         reported is not None
-        and isinstance(turn_observed_at, int | float)
-        and isinstance(reported_observed_at, int | float)
-        and reported_observed_at > turn_observed_at
+        and isinstance(turn_seq, int)
+        and isinstance(reported_seq, int)
+        and reported_seq > turn_seq
     ):
-        context, at, source = reported, reported_observed_at, "live"
+        context, at, source = reported, reported_seq, "live"
 
     if context is None:
         return {"known": False}
@@ -276,10 +278,10 @@ async def get_current_view(arguments: dict[str, Any]) -> dict[str, Any]:
         "filters": context.get("filters"),
         # "turn" means nothing observed later than the instruction has been
         # reported, so the human may have moved since. "live" means this is
-        # where they are. Null observedAt means the client never said when it
-        # saw this, which is why "live" was not claimed.
+        # where they are. A null count means the client never said where this
+        # view fell in its own sequence, which is why "live" was not claimed.
         "source": source,
-        "observedAt": at,
+        "observationSeq": at,
     }
 
 
