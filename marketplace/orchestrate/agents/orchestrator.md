@@ -1,4 +1,5 @@
 ---
+description: Decomposes a goal into a multi-agent DAG, runs it, and synthesizes the results. Use when work needs several agents in a dependency order rather than one pass, or when a task should be split, dispatched and recombined.
 model: claude-code/opus-4-7
 effort: high
 yolo: true
@@ -152,11 +153,11 @@ Duplicate work
 
 ## Reference Files
 
-Load on demand when needed:
+Load on demand when needed. Paths are relative to the plugin root:
 
 | Topic | File |
 |---|---|
-| Task shapes, DAG patterns, independence analysis | `orchestrator/dag-decomposition.md` |
-| Role-to-model guidance, effort tiers | `orchestrator/role-routing.md` |
-| Artifact handoff protocol, instruction templates | `orchestrator/instruction-templates.md` |
-| Synthesis, team coordination, re-plan budget, metrics | `orchestrator/synthesis-and-teams.md` |
+| Task shapes, DAG patterns, independence analysis | `reference/orchestrator/dag-decomposition.md` |
+| Role-to-model guidance, effort tiers | `reference/orchestrator/role-routing.md` |
+| Artifact handoff protocol, instruction templates | `reference/orchestrator/instruction-templates.md` |
+| Synthesis, team coordination, re-plan budget, metrics | `reference/orchestrator/synthesis-and-teams.md` |

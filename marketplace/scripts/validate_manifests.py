@@ -13,6 +13,24 @@ PER_PLUGIN_STRING_FIELDS = ["name", "version", "description"]
 PER_PLUGIN_OPTIONAL_STRINGS = ["repository", "license", "homepage"]
 
 
+def _has_frontmatter_description(path: Path) -> bool:
+    """True when the file opens with a frontmatter block carrying a non-empty description."""
+    try:
+        text = path.read_text()
+    except OSError:
+        return False
+    if not text.startswith("---"):
+        return False
+    _, _, rest = text.partition("\n")
+    block, sep, _ = rest.partition("\n---")
+    if not sep:
+        return False
+    return any(
+        line.startswith("description:") and line[len("description:") :].strip()
+        for line in block.splitlines()
+    )
+
+
 def main() -> int:
     repo_root = Path(__file__).parent.parent.parent
     manifest_path = repo_root / ".claude-plugin" / "marketplace.json"
@@ -92,6 +110,29 @@ def main() -> int:
                             plugin_ok = False
                             failures += 1
 
+                # Agent markdown must be a direct child of agents/ and carry a
+                # description. Plugin hosts walk nested agents/<subdir>/*.md as
+                # agents too, so support docs kept there surface as malformed
+                # agents; the description is what makes an agent selectable by
+                # intent rather than merely installed.
+                agents_dir = source_dir / "agents"
+                if agents_dir.is_dir():
+                    for md in sorted(agents_dir.rglob("*.md")):
+                        rel_md = md.relative_to(repo_root)
+                        if md.parent != agents_dir:
+                            print(
+                                f"FAIL [{name}]: agent markdown must be a direct child of "
+                                f"agents/: {rel_md}"
+                            )
+                            plugin_ok = False
+                            failures += 1
+                        elif not _has_frontmatter_description(md):
+                            print(
+                                f"FAIL [{name}]: agent missing frontmatter 'description': {rel_md}"
+                            )
+                            plugin_ok = False
+                            failures += 1
+
                 # Per-plugin plugin.json validation
                 per_plugin_json = source_dir / ".claude-plugin" / "plugin.json"
                 if not per_plugin_json.exists():
@@ -138,9 +179,18 @@ def main() -> int:
                         )
                         plugin_ok = False
                         failures += 1
-                    # Reject stub mcpServers entries
-                    for server_cfg in per_plugin.get("mcpServers", {}).values():
-                        if server_cfg.get("type") == "stub":
+                    # Each server entry must be an object before it is inspected: a
+                    # string or list value raises on .get and kills the run with a
+                    # traceback instead of reporting a failure line.
+                    for server_name, server_cfg in per_plugin.get("mcpServers", {}).items():
+                        if not isinstance(server_cfg, dict):
+                            print(
+                                f"FAIL [{name}]: plugin.json mcpServers['{server_name}'] must be "
+                                f"an object, got {type(server_cfg).__name__}"
+                            )
+                            plugin_ok = False
+                            failures += 1
+                        elif server_cfg.get("type") == "stub":
                             print(f"FAIL [{name}]: plugin.json contains stub mcpServers entry")
                             plugin_ok = False
                             failures += 1
@@ -164,8 +214,16 @@ def main() -> int:
                     print(f"FAIL [standalone:{plugin_dir}]: plugin.json missing '{field}'")
                     failures += 1
                     ok = False
-            for server_cfg in pdata.get("mcpServers", {}).values():
-                if server_cfg.get("type") == "stub":
+            for server_name, server_cfg in pdata.get("mcpServers", {}).items():
+                if not isinstance(server_cfg, dict):
+                    print(
+                        f"FAIL [standalone:{plugin_dir}]: plugin.json "
+                        f"mcpServers['{server_name}'] must be an object, got "
+                        f"{type(server_cfg).__name__}"
+                    )
+                    failures += 1
+                    ok = False
+                elif server_cfg.get("type") == "stub":
                     print(
                         f"FAIL [standalone:{plugin_dir}]: plugin.json contains stub mcpServers entry"
                     )
