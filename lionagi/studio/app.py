@@ -16,6 +16,7 @@ from starlette.responses import FileResponse, JSONResponse
 from starlette.staticfiles import StaticFiles
 
 from lionagi._errors import LionError
+from lionagi.version import __version__
 
 from .config import CORS_ORIGINS, HOST
 from .registry import iter_studio_routes, load_studio_route_modules
@@ -320,7 +321,11 @@ def _mount_spa(application: FastAPI, dist: Path) -> None:
 def create_app() -> FastAPI:
     """Build and return a fresh Studio FastAPI app instance, so callers
     (notably tests) can get a clean one without `importlib.reload`."""
-    application = FastAPI(title="Lion Studio Server", lifespan=lifespan)
+    # The served OpenAPI document is a surface that states a version, and a
+    # client reading it to decide what the server supports gets whatever it
+    # says. Left unset, FastAPI supplies its own default, which is the same
+    # string for every release and so tells a client nothing.
+    application = FastAPI(title="Lion Studio Server", version=__version__, lifespan=lifespan)
 
     @application.exception_handler(LionError)
     async def _lion_error_handler(request: Request, exc: LionError) -> JSONResponse:
