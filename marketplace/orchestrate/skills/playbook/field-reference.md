@@ -10,12 +10,12 @@ a lionagi checkout.
 
 | Field | Type | CLI equivalent | Description |
 |---|---|---|---|
-| `name` | str | — | Playbook identifier. Must match the filename stem exactly. |
-| `description` | str | — | Free-text shown by `li play list` and `li play <name> --help`. |
+| `name` | str | — | Descriptive identifier. Keep it equal to the filename stem: the CLI resolves a playbook by filename, and nothing validates the two against each other, so a mismatch is silent. |
+| `description` | str | — | Free text shown by `li play <name> --help`. `li play list` prints names only. |
 | `argument-hint` | str | — | CC-compatible display hint, e.g. `'[--mode MODE] [--strict]'`. Used in `--help` output only. |
 | `model` | str | positional | Model spec: `claude-code/sonnet-4-6`, `codex/gpt-5.4`. |
 | `agent` | str | `-a/--agent` | Orchestrator agent profile from `~/.lionagi/agents/<name>/<name>.md`. |
-| `effort` | str | `--effort` | `low \| medium \| high \| xhigh`. Omit to use the profile default. |
+| `effort` | str | `--effort` | Accepted values depend on the provider: Claude `low \| medium \| high \| xhigh \| max`; Codex `none \| minimal \| low \| medium \| high \| xhigh \| max \| ultra`, where `max` and `ultra` clamp to what the model supports. Gemini folds effort into the model spec instead. Omit to use the profile default. |
 | `workers` | int | `--max-concurrent` | Max concurrent agents. Range: 1–32. |
 | `max_ops` | int | `--max-ops` | Cap on total DAG operations. `0` = unlimited. Range: 0–50. |
 | `with_synthesis` | bool or str | `--with-synthesis` | `true` uses the orchestrator model; a model spec string uses that model. |
@@ -77,17 +77,27 @@ does not do. The same call returns the `schema_fingerprint` the op must carry as
 Inside a lionagi checkout, the same run with the custom flags set is:
 `li play audit --mode security --worker-count 4 --strict "scan auth/"`
 
-**Field rules**:
-- `type` must be one of `str`, `int`, `float`, `bool`
-- `default` is required; do not leave it null unless `type: str` and absence is meaningful
-- `help` should be one concise sentence with allowed values if applicable
+**Field rules**, grouped by how they fail. That grouping is the useful part: only the first
+group stops you, and the further down the list a mistake sits, the more it looks like it worked.
+
+*Enforced — the spec is rejected with a message:*
 - Key names must be alphanumeric and use underscores only (not dashes)
+- `type`, **when present**, must be one of `str`, `int`, `float`, `bool`
+
+*Warned and degraded — the run continues without your argument:*
 - Key names must not collide with a built-in flag. An arg named `workers` becomes `--workers`,
   which already means the comma-separated worker-model pool, so the playbook's own argument is
   dropped with a warning and the built-in flag takes the value instead. The command still runs,
   which is why this is worth checking rather than waiting to be told: name it `worker_count`
   and the flag becomes `--worker-count`. Run `li play <name> --help` after declaring an arg to
   see whether it actually appears.
+
+*Unchecked — nothing validates these, so the default is applied silently:*
+- `type` may be omitted, in which case it is `str`. Declare it whenever the value is not a
+  string, since the arg is otherwise passed through to the prompt as text
+- `default` may be omitted, in which case it is null. Supply one unless absence is meaningful
+- `help` may be omitted, in which case `--help` shows a generated line naming the argument and
+  its type. Write one sentence with the allowed values if they matter
 
 ---
 
@@ -143,14 +153,28 @@ team_attach: project-audit
 
 ## Reserved Arg Names
 
-These flags are already defined by the base CLI parser. Declaring an `args:` key
-that maps to one of them will be silently skipped (a warning is logged; the built-in
-flag wins).
+**The rule**: every option already installed on the `li o flow` parser is reserved. The
+resolver compares each generated flag against the parser's entire existing option set, so the
+reserved names are whatever that parser happens to define — not a fixed list this document
+owns. Declaring an `args:` key that maps to one of them logs a warning and skips your argument;
+the built-in flag keeps the name and takes the value.
 
-`file`, `playbook`, `agent`, `with_synthesis`, `max_concurrent`, `output`, `save`,
-`team_mode`, `team_attach`, `dry_run`, `show_graph`, `background`, `bare`, `max_ops`,
-`yolo`, `bypass`, `verbose`, `theme`, `fast`, `effort`, `cwd`, `timeout`,
-`invocation`, `project`
+**The check that is always current**: run `li play <name> --help` after declaring an argument.
+If your flag is not listed, it collided. This is worth doing rather than consulting any list,
+because the list below can only be correct for the version it was written against.
+
+Reserved as of this revision, all 36 of them:
+
+`agent`, `allow_degraded_context`, `background`, `bare`, `bypass`, `cwd`, `dry_run`, `effort`,
+`fast`, `file`, `help`, `invocation`, `max_agents`, `max_concurrent`, `max_ops`, `mcp_config`,
+`no_mcp_config`, `notify`, `output`, `pack`, `playbook`, `project`, `reactive`, `resume`,
+`resume_on_timeout`, `save`, `show_graph`, `team_attach`, `team_max_rounds`, `team_mode`,
+`theme`, `timeout`, `verbose`, `with_synthesis`, `workers`, `yolo`
+
+Note `workers` in that list. It is the collision the example above walks through, and it is the
+reason to trust the rule over any list: an earlier revision of this page listed 24 names and
+omitted `workers` along with 11 others, while explaining the `workers` collision two sections
+up. A hand-maintained list drifts from the parser silently and in the reassuring direction.
 
 ---
 

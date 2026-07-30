@@ -66,11 +66,13 @@ from a template that declares `{input}` explicitly.
 
 - [ ] Filename: `<name>.playbook.yaml`
 - [ ] Location: `~/.lionagi/playbooks/`
-- [ ] `name:` matches the filename stem exactly
+- [ ] `name:` equals the filename stem — nothing validates the two against each other, and the
+      CLI resolves by filename, so a mismatch is silent rather than an error
 - [ ] `description:` is one clear sentence
 - [ ] Either `model:` or `agent:` is set (both is allowed; `agent` provides the profile, `model` overrides the model)
 - [ ] `prompt:` references only declared `args` keys and optional `{input}`
-- [ ] Every `args` entry has `type`, `default`, and `help`
+- [ ] Every `args` entry declares `type`, `default`, and `help`. All three are optional and
+      unvalidated; omitting them silently yields a string, a null, and a generated help line
 - [ ] No dashed keys inside `args:`
 - [ ] `team_mode` and `team_attach` are not both set
 - [ ] `workers` is 1–32 if set; `max_ops` is 0–50 if set

@@ -210,7 +210,7 @@ li agent -c "Continue the previous conversation"
 | `-c / --continue-last` | false | Continue the most recently used branch |
 | `--yolo` | false | Auto-approve all tool calls |
 | `--bypass` | false | Bypass all codex approvals and sandbox |
-| `--effort LEVEL` | — | `low\|medium\|high\|xhigh\|max` (claude); `none\|minimal\|low\|medium\|high\|xhigh` (codex) |
+| `--effort LEVEL` | — | `low\|medium\|high\|xhigh\|max` (claude); `none\|minimal\|low\|medium\|high\|xhigh\|max\|ultra` (codex, where `max`/`ultra` clamp per model support) |
 | `--cwd DIR` | — | Working directory for CLI provider |
 | `--timeout SECONDS` | — | Kill after N seconds |
 | `--invocation ID` | — | Parent invocation id (from `li invoke start`) |
