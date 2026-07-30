@@ -21,10 +21,9 @@ tool this plugin ships (see [procedure.md](procedure.md) for the exact calls).
 Everything about git — worktrees, branches, merges — is plain git and always
 runs as Bash; there is no MCP verb for it and none is needed. If you are
 working inside a lionagi checkout with `li` on PATH, `li play` and `li agent`
-fire the same work, and `li monitor`, `li runs` and `li kill` observe and stop
-it. The mapping is not one to one: there is no CLI equivalent of waiting on a
-run the way `job.wait` does. Treat the CLI as a local convenience, not the
-primary path.
+fire the same work; `li wait` blocks until a run reaches a terminal state, the
+way `job.wait` does; and `li monitor`, `li runs` and `li kill` observe and stop
+it. Treat the CLI as a local convenience, not the primary path.
 
 ## Shows vs flows — pick the right tool
 

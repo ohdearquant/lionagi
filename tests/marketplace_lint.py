@@ -126,14 +126,24 @@ _KNOWN_MCP_SERVERS: frozenset[str] = frozenset(
 # twenty-three, so a skill correctly documenting `li monitor` or `li runs`
 # failed this check while nothing re-derived the list.
 #
-# `play` and `skill` must stay explicit because they are NOT in the registry.
-# Both are handled by a pre-parse shim ahead of argparse, so they are absent
-# from `li --help` and from _COMMAND_BY_NAME while being real commands with
-# their own usage output. Deriving alone would therefore reject them.
+# The shims below cannot be derived the same way. Each is dispatched by an
+# `_argv[0] == "..."` branch in main() ahead of argparse, so all three are
+# absent from `li --help` and from _COMMAND_BY_NAME while being real commands
+# with their own usage output. Deriving alone would reject them.
+#
+# This list is still hand-maintained, and it was short by `wait` on its first
+# outing, which produced the same false rejection the registry half had just
+# been fixed to stop producing. So it does not stand alone:
+# test_pre_parse_shims_are_all_declared re-derives the branches from main()'s
+# source and fails when a new one appears. Hand-maintained is survivable; hand
+# maintained with nothing detecting drift is what went wrong twice.
+_PRE_PARSE_SHIMS: frozenset[str] = frozenset({"play", "skill", "wait"})
+
+
 def _known_li_subcommands() -> frozenset[str]:
     from lionagi.cli.main import _COMMAND_BY_NAME
 
-    return frozenset(_COMMAND_BY_NAME) | {"play", "skill"}
+    return frozenset(_COMMAND_BY_NAME) | _PRE_PARSE_SHIMS
 
 
 _KNOWN_LI_SUBCOMMANDS: frozenset[str] = _known_li_subcommands()
@@ -230,6 +240,74 @@ def test_cli_subcommands_exist(path: Path) -> None:
             bad.append(f"line {lineno}: `li {cmd}` — unknown subcommand")
     assert not bad, f"{_rel(path)} references unknown `li` subcommands:\n" + "\n".join(
         f"  {b}" for b in bad
+    )
+
+
+# Names compared against argv[0] in main(), which is how a pre-parse shim is
+# dispatched. Both operators matter: the `play` branch tests `argv[0] != "play"`
+# to bail out early, while `skill` and `wait` test `== `.
+_ARGV0_EQ_RE = re.compile(r"_?argv\[0\]\s*(?:==|!=)\s*\"([a-z][a-z_-]*)\"")
+_ARGV0_IN_RE = re.compile(r"_?argv\[0\]\s+in\s+\(([^)]*)\)")
+
+
+def _shim_candidates_in(source: str) -> set[str]:
+    """Every name main() dispatches on by comparing argv[0], from source text.
+
+    Takes the text rather than reading the file so the extractor itself can be
+    tested against a synthetic input. An extractor exercised only on the real
+    source cannot be shown to fail.
+    """
+    names = {m.group(1) for m in _ARGV0_EQ_RE.finditer(source)}
+    for m in _ARGV0_IN_RE.finditer(source):
+        names.update(re.findall(r"\"([a-z][a-z_-]*)\"", m.group(1)))
+    return names
+
+
+def test_shim_extractor_finds_both_comparison_forms() -> None:
+    """The guard below is only as good as this extractor, so prove it works.
+
+    Without this, a regex that silently matched nothing would make the drift
+    guard pass forever while detecting nothing.
+    """
+    synthetic = """
+    if _argv and _argv[0] == "alpha":
+        return run_alpha(_argv[1:])
+    if not argv or argv[0] != "beta":
+        return argv
+    if _argv and _argv[0] in ("gamma", "g"):
+        return run_gamma(_argv[1:])
+    """
+    assert _shim_candidates_in(synthetic) == {"alpha", "beta", "gamma", "g"}
+    assert _shim_candidates_in("nothing to see here") == set()
+
+
+def test_pre_parse_shims_are_all_declared() -> None:
+    """Fail when main() gains a pre-parse shim that _PRE_PARSE_SHIMS does not name.
+
+    `_KNOWN_LI_SUBCOMMANDS` derives its registry half from the CLI, but a shim
+    is dispatched before argparse and appears in no registry, so that half
+    cannot see one. The hand-written half was short by `wait` on its first
+    outing, which made this check reject a skill that correctly documented
+    `li wait` — the same false rejection the derived half had just been
+    introduced to stop producing. This is the drift detector for the part that
+    still has to be written by hand.
+    """
+    from lionagi.cli import main as cli_main
+    from lionagi.cli.main import _COMMAND_BY_NAME
+
+    source = Path(cli_main.__file__).read_text(encoding="utf-8")
+    candidates = _shim_candidates_in(source)
+    assert candidates, "extractor found no argv[0] comparisons in main.py at all"
+
+    # Names already in the registry are dispatched normally; an argv[0] check on
+    # one of those is an interception of a SUBcommand (`li agent status`,
+    # `li monitor run`), not a top-level shim.
+    undeclared = candidates - frozenset(_COMMAND_BY_NAME) - _PRE_PARSE_SHIMS
+    assert not undeclared, (
+        "main() dispatches these on argv[0] but they are in neither the CLI "
+        f"registry nor _PRE_PARSE_SHIMS: {sorted(undeclared)}. A skill "
+        "documenting one would be reported as an unknown subcommand. Add them "
+        "to _PRE_PARSE_SHIMS."
     )
 
 

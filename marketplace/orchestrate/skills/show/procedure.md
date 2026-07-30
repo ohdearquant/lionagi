@@ -119,16 +119,24 @@ current `schema_fingerprint`, and that fingerprint depends on which `playbook` y
 {"help": {"verb": "play.submit", "playbook": "<playbook_name>"}}
 ```
 
-Then fire the play. The `--cwd`-equivalent for a submitted run is whatever
-directory the args imply; run the request from the worktree so a relative
-prompt file resolves there:
+Then fire the play. **Pass `cwd` explicitly, as an absolute path.** A play runs
+in whatever directory `cwd` names, and its default is the directory the MCP
+server itself is running in, which has nothing to do with yours. Your own
+working directory does not reach the run, so a show whose whole premise is one
+worktree per play must say which worktree each play gets. For the same reason
+any path in the request is absolute: `prompt_file` is documented as requiring
+one, and a relative path would resolve against the server's directory.
 
 ```json
 {
   "ops": [
     {
       "op": "play.submit",
-      "args": {"playbook": "<playbook_name>", "prompt": "<contents of _prompt.md>"},
+      "args": {
+        "playbook": "<playbook_name>",
+        "prompt": "<contents of _prompt.md>",
+        "cwd": "/absolute/path/to/worktree"
+      },
       "schema_fingerprint": "<from the help call above>"
     }
   ]
