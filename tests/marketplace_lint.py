@@ -859,14 +859,26 @@ def test_a_spawn_example_whose_prompt_names_a_path_passes_cwd() -> None:
     what this rule does is stop a *known* phrasing from regressing; it does not
     certify that every example needing a `cwd` has one. That check is the author's.
 
-    Two later sites proved that concretely and are *not* this rule's to catch: a
+    Two later sites were of a different shape and this rule does not see them: a
     `prompt` whose whole value was `src/auth/`, and a playbook's typed `target`
-    argument. Neither is prose, and both are decidable, so they are checked by
-    `test_a_spawn_example_whose_argument_is_wholly_a_relative_path_passes_cwd`
-    against a closed pattern. Do not widen this net toward them — the split is the
-    point. Where a value has a closed form the rule gets a boundary; where it is
-    prose the rule stays an admitted heuristic. Merging the two would relabel a
-    guarantee as a guess or a guess as a guarantee.
+    argument. Both are fixed in the bundle and both carry an explicit `cwd`.
+
+    A second rule was written for that shape and then removed, and the reason is
+    worth keeping so it is not written again. The idea was sound: an argument whose
+    *entire* value is a relative path is decidable in a way a path inside prose is
+    not, so it could carry a closed boundary. But the layer underneath it could not.
+    Deciding which argument values an example passes means reading quoted strings out
+    of JSON-ish documentation samples, and a regex cannot do that: successive versions
+    missed a hand-written extension list's gaps, then every element of an array, then
+    a filename containing `]`, then an escaped quote. Each fix was correct and each
+    left the class open. A real parser would have been closed and would also have
+    covered only one of the two examples, since the other is not valid JSON.
+
+    So the boundary was honest and the substrate was not, and a rule that advertises
+    closure it does not have is worse than one that admits it is a net, because a
+    reader stops checking. What guards this class now is this heuristic, the two
+    fixed examples standing as the documented pattern, and author judgment. If it
+    regresses, write a parser or accept the limit — do not add a third regex.
 
     Most spawn examples legitimately omit `cwd` — a minimal quick-start does not
     need one — so requiring it everywhere would put a placeholder path in every
@@ -926,212 +938,6 @@ def test_the_cwd_pattern_reads_both_workspace_path_spellings() -> None:
     # An absolute path is already unambiguous, and a URL is not a workspace path.
     assert not _PROMPT_NEEDS_CWD.search("read /etc/hosts")
     assert not _PROMPT_NEEDS_CWD.search("see https://example.com/_context/diff.txt")
-
-
-# The rule above searches prose and is therefore a net. This one searches whole
-# argument values and is therefore closed, and the difference is the reason both
-# exist rather than one being a widening of the other.
-#
-# "read the diff in src/auth/" is a sentence that happens to contain a path, and no
-# pattern decides reliably whether such a sentence needs the run to start anywhere
-# in particular. But an argument whose *entire* value is `src/auth/` is a relative
-# path and nothing else: there is no reading of it under which the run does not have
-# to resolve it against some directory. That question has an answer, so this rule
-# gets a boundary instead of another widening.
-#
-# The two forms this caught on introduction were a `prompt` that was only a path and
-# a playbook's own typed `target` argument. The second is why this scans every
-# argument rather than `prompt` alone.
-#
-# The separator is the whole test, and it is the whole test on purpose. An earlier
-# version also accepted a bare filename by matching a hand-written list of source
-# extensions, which made the closure claim false: the list omitted `.go`, `.tsx` and
-# `Cargo.lock` among others, so the rule advertised a boundary while quietly having
-# the same open edge as the prose net it was introduced to be different from.
-#
-# There is no allowlist-free way to decide a bare filename. `main.go` and
-# `code-review` differ only in whether the suffix names a file type, which is exactly
-# the knowledge an allowlist encodes and cannot complete. So a bare filename is
-# **out of scope here** rather than covered badly, and the test below pins that
-# exclusion with its reason. Do not restore an extension arm: it converts a true
-# narrow guarantee back into a false wide one.
-_WHOLE_VALUE_RELATIVE_PATH = re.compile(
-    r"""^(?!/|~|<|https?://)      # not absolute, not ~, not a placeholder, not a URL
-         (?=\S+$)                 # no whitespace: a sentence is prose, not a path
-         [\w.\-]+/[\w./\-]*$      # contains a directory separator, which decides it
-      """,
-    re.VERBOSE,
-)
-
-# `cwd` is the answer, not the question. `playbook`, `agent` and `model` are names
-# resolved from a registry, and a name like `code-review` must not be read as a path.
-_KEYS_THAT_ARE_NOT_TARGETS = frozenset({"cwd", "playbook", "agent", "model", "op"})
-
-# Values arrive keyed to a scalar *or* keyed to an array, and the array form is not a
-# curiosity: `li agent` takes `--image PATH` repeatably, so `agent.submit` accepts a
-# list of image paths that the spawned run opens. Extracting only `"key": "value"`
-# missed every element of `"image": ["assets/diagram.png"]`, which is a path by the
-# same reasoning as any other and needs the same `cwd`.
-_ARG_SCALAR = re.compile(r"[\"']?([\w_]+)[\"']?\s*:\s*[\"']([^\"']*)[\"']")
-_ARG_ARRAY = re.compile(r"[\"']?([\w_]+)[\"']?\s*:\s*\[([^\]]*)\]")
-_QUOTED_ELEMENT = re.compile(r"[\"']([^\"']*)[\"']")
-
-
-def _argument_strings(window: str) -> list[tuple[str, str]]:
-    """Every (key, string value) an op passes, through scalars and arrays alike."""
-    pairs = _ARG_SCALAR.findall(window)
-    for key, body in _ARG_ARRAY.findall(window):
-        pairs.extend((key, element) for element in _QUOTED_ELEMENT.findall(body))
-    return pairs
-
-
-def test_a_spawn_example_whose_argument_is_wholly_a_relative_path_passes_cwd() -> None:
-    """A relative path as a complete argument value has to say what it is relative to.
-
-    An omitted `cwd` becomes `None` and reaches the spawn as the server process's own
-    directory. So an example passing `target: "src/auth.py"` reads a file in whatever
-    directory the server happens to run in — a different tree, or none. The user copies
-    a working-looking call and gets a report about code they did not ask about.
-
-    Unlike the prose net above, this rule is closed over what it claims, and the claim
-    is deliberately narrow: a value containing a directory separator. That needs no
-    list of anything, which is what makes the word "closed" true here. A bare filename
-    is excluded and the exclusion is pinned below with its reason.
-
-    The measurement that settled the boundary, re-derived against the current bundle
-    rather than restated: 38 spawn examples, of which this rule selects 2, and both
-    were genuine defects. Nothing legitimate is selected, which is what makes it a
-    requirement rather than a heuristic. Requiring `cwd` on every spawn example was the
-    alternative and it was wrong: 28 of the 38 omit it and 10 carry it, so the
-    requirement would have put a placeholder path in most of the bundle's teaching
-    examples.
-
-    That 28 replaces a 33 this docstring carried on introduction. The 33 was measured
-    against a different question at an earlier head and then restated here as current,
-    which is how a stale figure survives: nothing about a number's appearance says when
-    it was taken. Re-derive rather than carry forward.
-
-    The selected count is asserted as a low bound for a specific reason. Both selected
-    examples were fixed by *adding* `cwd`, not by rewriting the paths away, so they
-    remain this rule's positive control. Had they been reworded into prose the rule
-    would have gone quiet while still passing, which is the failure mode where an
-    instrument that resolves nothing reports a clean result.
-    """
-    from lionagi.mcp.verbs import VERBS
-
-    spawns = frozenset(name for name, verb in VERBS.items() if verb.executor == "spawn")
-    assert spawns, "no spawn verbs in the registry — the check would pass vacuously"
-
-    offenders: list[str] = []
-    selected = 0
-    for path in _SKILL_FILES:
-        text = _read(path)
-        for verb, window in _op_objects_in(text):
-            if verb not in spawns:
-                continue
-            paths = [
-                (key, value)
-                for key, value in _argument_strings(window)
-                if key not in _KEYS_THAT_ARE_NOT_TARGETS and _WHOLE_VALUE_RELATIVE_PATH.match(value)
-            ]
-            if not paths:
-                continue
-            selected += 1
-            if '"cwd"' in window:
-                continue
-            lineno = text[: text.find(window)].count("\n") + 1
-            offenders.append(f"{_rel(path)}:{lineno} {verb} {sorted(paths)}")
-
-    assert selected >= 2, (
-        f"only {selected} spawn examples pass a wholly-relative-path argument; the "
-        "bundle had 2 when this bound was set and both were kept as this rule's "
-        "positive control, so the rule has stopped seeing the form it exists to check"
-    )
-    assert not offenders, (
-        "these examples pass a relative path as a complete argument value but no "
-        "`cwd`, so the path resolves against the server's directory instead of the "
-        "caller's and the run reads the wrong tree: " + repr(sorted(offenders))
-    )
-
-
-def test_the_whole_value_path_rule_separates_paths_from_names_and_prose() -> None:
-    """The boundary in both directions, since a rule this strict fails silently.
-
-    Matching too little leaves the defect shipped. Matching too much would demand a
-    `cwd` on examples that pass a playbook name or a plain instruction, which is how
-    the requirement-everywhere version of this rule was wrong.
-    """
-    for value in ("src/auth/", "src/auth.py", "tests/mcp/test_dispatch.py", "a/b"):
-        assert _WHOLE_VALUE_RELATIVE_PATH.match(value), value
-
-    for value in (
-        "Focus on error handling",  # prose: has whitespace
-        "code-review",  # a playbook name, no separator
-        "orchestrator",  # an agent name
-        "/absolute/path/to/checkout",  # already unambiguous
-        "~/.lionagi/playbooks",  # home-relative, resolved by the shell
-        "<from help={'verb': 'x'}>",  # a placeholder
-        "https://example.com/a/b.py",  # a URL
-        "3",  # a number
-        "",  # absent
-    ):
-        assert not _WHOLE_VALUE_RELATIVE_PATH.match(value), value
-
-
-def test_a_bare_filename_is_out_of_scope_rather_than_covered_badly() -> None:
-    """The exclusion is pinned so nobody restores the extension list that caused it.
-
-    An earlier version accepted a bare filename by matching a hand-written list of
-    source extensions. The list omitted `.go`, `.tsx` and `Cargo.lock`, so the rule
-    claimed a closed boundary while having the same open edge as the prose net it was
-    written to be different from. A false wide guarantee is worse than a true narrow
-    one, because a reader stops checking.
-
-    There is no allowlist-free test for a bare filename: `main.go` and `code-review`
-    differ only in whether the suffix names a file type. So all of these are excluded,
-    and a path with a separator is what this rule speaks for.
-    """
-    for value in ("main.go", "Cargo.lock", "index.tsx", "config.yaml", "main.py"):
-        assert not _WHOLE_VALUE_RELATIVE_PATH.match(value), (
-            f"{value!r} matched; if an extension arm was restored, read the docstring "
-            "above before keeping it"
-        )
-    # The same names become decidable the moment a directory is present.
-    for value in ("cmd/main.go", "web/index.tsx", "./Cargo.lock"):
-        assert _WHOLE_VALUE_RELATIVE_PATH.match(value), value
-
-
-def test_the_argument_extractor_reads_array_values_not_only_scalars() -> None:
-    """`li agent` takes `--image PATH` repeatably, so a path can arrive inside a list.
-
-    Reading only `"key": "value"` pairs missed every element of
-    `"image": ["assets/diagram.png"]`. That element is a relative path by exactly the
-    reasoning this rule rests on, and an example passing one without `cwd` would have
-    the spawned run open a file relative to the server's directory. The scalar-only
-    extractor made the rule's closure claim false for a real, documented argument
-    shape rather than a hypothetical one.
-    """
-    scalar_only = '{"op": "agent.submit", "args": {"prompt": "review this"}}'
-    assert _argument_strings(scalar_only) == [("op", "agent.submit"), ("prompt", "review this")]
-
-    with_array = (
-        '{"op": "agent.submit", "args": {"prompt": "review", '
-        '"image": ["assets/diagram.png", "assets/flow.png"]}}'
-    )
-    pairs = _argument_strings(with_array)
-    assert ("image", "assets/diagram.png") in pairs, pairs
-    assert ("image", "assets/flow.png") in pairs, pairs
-
-    # And the rule selects them, which is the behaviour the finding was about.
-    selected = [
-        (k, v)
-        for k, v in pairs
-        if k not in _KEYS_THAT_ARE_NOT_TARGETS and _WHOLE_VALUE_RELATIVE_PATH.match(v)
-    ]
-    assert len(selected) == 2, selected
-
-    # An empty array must not crash the extractor or invent a value.
-    assert _argument_strings('{"args": {"image": []}}') == []
 
 
 def test_the_qualified_source_check_rejects_a_source_for_a_different_playbook() -> None:
