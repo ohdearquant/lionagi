@@ -234,7 +234,7 @@ li o fanout claude/sonnet "Suggest API design approaches" -n 3 \
 | `MODEL` | (positional, optional) | Orchestrator model; also default worker model |
 | `PROMPT` | (positional, required) | Task for the orchestrator to decompose |
 | `-a / --agent NAME` | — | Load orchestrator profile |
-| `-n / --num-workers N` | 3 | Number of workers (ignored if `--workers` set) |
+| `-n / --num-workers N` | 3 | Max assignments the orchestrator generates; caps `--workers` specs beyond it |
 | `--workers M1,M2,...` | — | Explicit comma-separated worker model specs |
 | `--max-concurrent N` | 0 (all) | Max workers running at once |
 | `--with-synthesis [MODEL]` | false | Enable synthesis. Bare flag uses orchestrator model |

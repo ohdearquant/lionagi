@@ -45,7 +45,7 @@ args:
     type: str        # str | int | float | bool
     default: dry
     help: "audit mode: dry | security | dead-code"
-  workers:
+  worker_count:
     type: int
     default: 8
     help: "parallel workers (1-32)"
@@ -75,13 +75,19 @@ does not do. The same call returns the `schema_fingerprint` the op must carry as
 ```
 
 Inside a lionagi checkout, the same run with the custom flags set is:
-`li play audit --mode security --workers 4 --strict "scan auth/"`
+`li play audit --mode security --worker-count 4 --strict "scan auth/"`
 
 **Field rules**:
 - `type` must be one of `str`, `int`, `float`, `bool`
 - `default` is required; do not leave it null unless `type: str` and absence is meaningful
 - `help` should be one concise sentence with allowed values if applicable
 - Key names must be alphanumeric and use underscores only (not dashes)
+- Key names must not collide with a built-in flag. An arg named `workers` becomes `--workers`,
+  which already means the comma-separated worker-model pool, so the playbook's own argument is
+  dropped with a warning and the built-in flag takes the value instead. The command still runs,
+  which is why this is worth checking rather than waiting to be told: name it `worker_count`
+  and the flag becomes `--worker-count`. Run `li play <name> --help` after declaring an arg to
+  see whether it actually appears.
 
 ---
 
@@ -98,12 +104,12 @@ The `prompt` field is a template. Substitution rules:
 
 ```yaml
 prompt: |
-  Run a {mode} audit with {workers} parallel workers. Strict: {strict}.
+  Run a {mode} audit with {worker_count} parallel workers. Strict: {strict}.
 
   Target: {input}
 ```
 
-If `mode=dry`, `workers=8`, `strict=false`, and the caller passes `"src/auth/"`
+If `mode=dry`, `worker_count=8`, `strict=false`, and the caller passes `"src/auth/"`
 (inside a lionagi checkout: `li play audit "src/auth/"`), the rendered prompt becomes:
 
 ```

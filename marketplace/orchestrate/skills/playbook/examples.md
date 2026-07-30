@@ -50,7 +50,7 @@ end. No `args:` block is needed.
 ```yaml
 name: audit
 description: Parametric audit — typed args with template interpolation.
-argument-hint: '[--mode MODE] [--workers N] [--strict]'
+argument-hint: '[--mode MODE] [--worker-count N] [--strict]'
 
 model: claude-code/sonnet-4-6
 agent: orchestrator
@@ -61,7 +61,7 @@ args:
     type: str
     default: dry
     help: "audit mode: dry | security | dead-code | api-surface"
-  workers:
+  worker_count:
     type: int
     default: 8
     help: "number of parallel codex workers"
@@ -71,7 +71,7 @@ args:
     help: "fail on any finding above MEDIUM severity"
 
 prompt: |
-  Run a {mode} audit with {workers} parallel workers. Strict mode: {strict}.
+  Run a {mode} audit with {worker_count} parallel workers. Strict mode: {strict}.
 
   Target scope: {input}
 
@@ -90,19 +90,19 @@ Run with `play.submit`, the `playbook` and `prompt` (`{input}`) args:
 different tree or find nothing at all. The CLI form below needs no such argument because it
 already starts in your shell's directory.
 
-To set the custom `mode`/`workers`/`strict` args away from their YAML defaults, read the
+To set the custom `mode`/`worker_count`/`strict` args away from their YAML defaults, read the
 schema that same help call returns: naming the playbook is what resolves *its own* declared
 arguments into the reply, which a bare `help=true` catalog request does not do. That call is
 required anyway, since its fingerprint is what the op above carries. Inside a lionagi
 checkout, the same run with those flags set is:
-`li play audit --mode security --workers 4 --strict "src/auth/"`
+`li play audit --mode security --worker-count 4 --strict "src/auth/"`
 
 Key points:
 - `argument-hint` populates the CLI `--help` display but does not affect parsing.
 - `args:` keys must use underscores (not dashes). `strict` is a `bool` arg, so
   passing `--strict` on the CLI sets it to `true` without a value.
 - `{input}` receives the positional text (`"src/auth/"`).
-- `{mode}`, `{workers}`, and `{strict}` are filled from args or their defaults.
+- `{mode}`, `{worker_count}`, and `{strict}` are filled from args or their defaults.
 
 ---
 

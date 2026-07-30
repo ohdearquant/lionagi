@@ -63,7 +63,7 @@ See [`skills/`](./skills/) for minimal and structured examples.
 # ~/.lionagi/playbooks/audit.playbook.yaml
 name: audit
 description: Run parallel audit across a target
-argument-hint: '[--mode MODE] [--workers N]'
+argument-hint: '[--mode MODE] [--worker-count N]'
 
 model: claude-code/opus-4-7
 agent: orchestrator
@@ -73,18 +73,18 @@ args:
     type: str
     default: dry
     help: "audit mode: dry | security | dead-code"
-  workers:
+  worker_count:
     type: int
     default: 8
 
 prompt: |
-  Run a {mode} audit with {workers} parallel workers.
+  Run a {mode} audit with {worker_count} parallel workers.
 
   Target: {input}
 ```
 
 ```bash
-li play audit --mode security --workers 12 "the auth service"
+li play audit --mode security --worker-count 12 "the auth service"
 # → model=claude-code/opus-4-7, agent=orchestrator
 # → prompt = "Run a security audit with 12 parallel workers.\n\nTarget: the auth service"
 ```

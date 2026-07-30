@@ -72,10 +72,12 @@ The reply carries a `run_id`. Its transcript and artifacts land under
 {"ops": [{"op": "job.output", "args": {"run_id": "<run_id>"}}]}
 ```
 
-**Checkout-local alternative.** Inside a lionagi checkout, `li agent --save --prompt
-"Summarize progress on [topic] in 5 bullet points"` does the same capture as a foreground
-call, with `--save` persisting the transcript to the same `~/.lionagi/runs/{run_id}/`
-location without a `run_id` round-trip.
+**Checkout-local alternative.** Inside a lionagi checkout, `li agent --prompt "Summarize
+progress on [topic] in 5 bullet points"` does the same capture as a foreground call. It needs
+no flag to persist: the CLI writes every run under `~/.lionagi/runs/{run_id}/` on its own, so
+the difference from the MCP form is only that you read the result directly instead of doing a
+`run_id` round-trip. (`--save DIR` exists on `li o fanout` and `li o flow`, which write one
+artifact per worker, but not on `li agent`.)
 
 ## Continue Working
 
