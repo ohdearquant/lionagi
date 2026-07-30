@@ -30,7 +30,14 @@ prompt: |
   with one concrete example.
 ```
 
-Run: `li play minimal "what is a monad?"`
+Run with `play.submit`, whose op carries the fingerprint that
+`help={"verb": "play.submit", "playbook": "minimal"}` returns, as a sibling of `args`:
+
+```json
+{"ops": [{"op": "play.submit", "args": {"playbook": "minimal", "prompt": "what is a monad?"}, "schema_fingerprint": "<from that help call>"}]}
+```
+
+Inside a lionagi checkout: `li play minimal "what is a monad?"`
 
 The positional text is appended after a blank line because `{input}` is not
 declared in the template. This is equivalent to a `{input}` placeholder at the
@@ -43,7 +50,7 @@ end. No `args:` block is needed.
 ```yaml
 name: audit
 description: Parametric audit — typed args with template interpolation.
-argument-hint: '[--mode MODE] [--workers N] [--strict]'
+argument-hint: '[--mode MODE] [--worker-count N] [--strict]'
 
 model: claude-code/sonnet-4-6
 agent: orchestrator
@@ -54,7 +61,7 @@ args:
     type: str
     default: dry
     help: "audit mode: dry | security | dead-code | api-surface"
-  workers:
+  worker_count:
     type: int
     default: 8
     help: "number of parallel codex workers"
@@ -64,7 +71,7 @@ args:
     help: "fail on any finding above MEDIUM severity"
 
 prompt: |
-  Run a {mode} audit with {workers} parallel workers. Strict mode: {strict}.
+  Run a {mode} audit with {worker_count} parallel workers. Strict mode: {strict}.
 
   Target scope: {input}
 
@@ -72,14 +79,30 @@ prompt: |
   all workers return.
 ```
 
-Run: `li play audit --mode security --workers 4 "src/auth/"`
+Run with `play.submit`, the `playbook` and `prompt` (`{input}`) args:
+
+```json
+{"ops": [{"op": "play.submit", "args": {"playbook": "audit", "prompt": "src/auth/", "cwd": "/absolute/path/to/your/checkout"}, "schema_fingerprint": "<from help={\"verb\": \"play.submit\", \"playbook\": \"audit\"}>"}]}
+```
+
+`src/auth/` is relative, so the run has to be told what it is relative *to*. An omitted
+`cwd` resolves to the server's own directory, not yours, and the audit would then read a
+different tree or find nothing at all. The CLI form below needs no such argument because it
+already starts in your shell's directory.
+
+To set the custom `mode`/`worker_count`/`strict` args away from their YAML defaults, read the
+schema that same help call returns: naming the playbook is what resolves *its own* declared
+arguments into the reply, which a bare `help=true` catalog request does not do. That call is
+required anyway, since its fingerprint is what the op above carries. Inside a lionagi
+checkout, the same run with those flags set is:
+`li play audit --mode security --worker-count 4 --strict "src/auth/"`
 
 Key points:
-- `argument-hint` populates the `--help` display but does not affect parsing.
+- `argument-hint` populates the CLI `--help` display but does not affect parsing.
 - `args:` keys must use underscores (not dashes). `strict` is a `bool` arg, so
   passing `--strict` on the CLI sets it to `true` without a value.
 - `{input}` receives the positional text (`"src/auth/"`).
-- `{mode}`, `{workers}`, and `{strict}` are filled from args or their defaults.
+- `{mode}`, `{worker_count}`, and `{strict}` are filled from args or their defaults.
 
 ---
 
@@ -249,7 +272,17 @@ prompt: |
   <Numbered list of CRITICAL and HIGH items only>
 ```
 
-Run: `li play pr-review --focus security --depth deep 123`
+Run with `play.submit`. For the custom `focus`/`depth`/`repo`/`comment` args, read the schema
+returned by `help={"verb": "play.submit", "playbook": "pr-review"}` — naming the playbook is
+what resolves its declared arguments into the reply, and that same call returns the
+fingerprint the op has to carry:
+
+```json
+{"ops": [{"op": "play.submit", "args": {"playbook": "pr-review", "prompt": "123"}, "schema_fingerprint": "<from that help call>"}]}
+```
+
+Inside a lionagi checkout, the same run with those flags set is:
+`li play pr-review --focus security --depth deep 123`
 
 Key points:
 - `show-graph: true` renders the DAG after planning — useful for auditing what

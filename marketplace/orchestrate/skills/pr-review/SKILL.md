@@ -11,7 +11,8 @@ allowed-tools: [Bash, Read, Glob, Grep]
 # PR review procedure
 
 A reusable rubric for reviewing a pull request. Works as an orchestrated
-flow (via `li o fanout` or `li o flow`) or for a solo reviewer.
+flow (via the `fanout.submit` or `flow.submit` MCP verbs, or `li o fanout` /
+`li o flow` from a lionagi checkout) or for a solo reviewer.
 
 ## When to use
 
@@ -54,4 +55,4 @@ internal code review, security sign-off, release gate.
 - `li skill review` — general correctness/quality rubric
 
 See [specialist-guide.md](specialist-guide.md) for specialist dimensions,
-severity rubric, synthesis format, CLI examples, and source code reference.
+severity rubric, synthesis format, MCP and CLI examples, and source code reference.

@@ -103,13 +103,41 @@ Final: Run full suite + lint to verify everything (the project CI pipeline (fmt 
 
 ## Parallel Agent TDD
 
-For complex features, use `li o fanout` to run multiple hypothesis tests in parallel:
+For complex features, run multiple hypothesis tests in parallel through the plugin's MCP
+server, `fanout.submit`. It is a spawn verb, so its op needs the current `schema_fingerprint`
+— ask for it first:
 
-```bash
-li o fanout \
-  --prompt "Write failing tests for: [feature description]. Cover: happy path, edge cases, error paths." \
-  --workers 2
+```json
+{"help": "fanout.submit"}
 ```
+
+Then submit:
+
+```json
+{
+  "ops": [
+    {
+      "op": "fanout.submit",
+      "args": {
+        "prompt": "Write failing tests for: [feature description]. Cover: happy path, edge cases, error paths.",
+        "num_workers": 2
+      },
+      "schema_fingerprint": "<from the help call above>"
+    }
+  ]
+}
+```
+
+The reply carries a `run_id` for the fan-out. Wait for it and read the results:
+
+```json
+{"ops": [{"op": "job.wait", "args": {"run_ids": ["<run_id>"]}}]}
+{"ops": [{"op": "job.output", "args": {"run_id": "<run_id>"}}]}
+```
+
+**Checkout-local alternative.** Inside a lionagi checkout, `li o fanout -n 2 "..."` runs the
+same fan-out as a foreground call. The prompt is positional and `-n` is the worker count;
+`--workers` takes a comma-separated list of model specs instead.
 
 Then synthesize the test files and implement against the combined suite.
 

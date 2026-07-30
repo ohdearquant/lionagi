@@ -2,7 +2,8 @@
 name: playbook
 description: >
   Author lionagi playbooks — reusable YAML workflow templates that define parametric
-  agent tasks. Playbooks live at ~/.lionagi/playbooks/ and run via li play <name>.
+  agent tasks. Playbooks live at ~/.lionagi/playbooks/ and run via the `play.submit`
+  MCP verb (or `li play <name>` from a lionagi checkout).
   Use when: creating reusable workflows, parameterizing agent tasks, or setting up
   repeatable pipelines.
 allowed-tools: [Bash, Read, Write, Glob, Grep]
@@ -11,7 +12,26 @@ allowed-tools: [Bash, Read, Write, Glob, Grep]
 # Authoring Lionagi Playbooks
 
 A playbook is a `.playbook.yaml` file that defines a reusable, parametric agent
-workflow. Install in `~/.lionagi/playbooks/` and invoke with
+workflow. Install it in `~/.lionagi/playbooks/` on the machine the MCP server runs
+on — that filesystem step is the same whichever interface runs the playbook.
+
+To run it, call the `mcp__plugin_orchestrate_lion__request` tool with `play.submit`. Ask for
+the fingerprint first, naming the playbook — `play.submit`'s schema depends on which playbook
+you name, because a playbook's own declared arguments are resolved into it:
+
+```json
+{"help": {"verb": "play.submit", "playbook": "hello"}}
+```
+
+```json
+{"ops": [{"op": "play.submit", "args": {"playbook": "hello", "prompt": "what is a monad?"}, "schema_fingerprint": "<from the help call above>"}]}
+```
+
+The fingerprint is a **sibling of `args`**, never a key inside it. Omit it and the op is
+refused with `stale_schema` and no run starts; nest it inside `args` and it is not read, so
+the same refusal repeats and the failure reads as idempotent.
+
+If you're working inside a lionagi checkout, the CLI equivalent is
 `li play <name> "<prompt>"`, which expands to `li o flow -p <name> "<prompt>"`.
 
 ---
@@ -28,7 +48,13 @@ prompt: |
   with one concrete example.
 ```
 
-Run: `li play hello "what is a monad?"`
+Run it with `play.submit`:
+
+```json
+{"ops": [{"op": "play.submit", "args": {"playbook": "hello", "prompt": "what is a monad?"}, "schema_fingerprint": "<from help={\"verb\": \"play.submit\", \"playbook\": \"hello\"}>"}]}
+```
+
+Inside a lionagi checkout: `li play hello "what is a monad?"`
 
 The positional text is appended to the prompt with a blank line because the
 template contains no `{input}` placeholder. That is the only behaviour difference
@@ -40,16 +66,21 @@ from a template that declares `{input}` explicitly.
 
 - [ ] Filename: `<name>.playbook.yaml`
 - [ ] Location: `~/.lionagi/playbooks/`
-- [ ] `name:` matches the filename stem exactly
+- [ ] `name:` equals the filename stem — nothing validates the two against each other, and the
+      CLI resolves by filename, so a mismatch is silent rather than an error
 - [ ] `description:` is one clear sentence
 - [ ] Either `model:` or `agent:` is set (both is allowed; `agent` provides the profile, `model` overrides the model)
 - [ ] `prompt:` references only declared `args` keys and optional `{input}`
-- [ ] Every `args` entry has `type`, `default`, and `help`
+- [ ] Every `args` entry declares `type`, `default`, and `help`. All three are optional and
+      unvalidated; omitting them silently yields a string, a null, and a generated help line
 - [ ] No dashed keys inside `args:`
 - [ ] `team_mode` and `team_attach` are not both set
 - [ ] `workers` is 1–32 if set; `max_ops` is 0–50 if set
-- [ ] Dry-run check: `li o flow -p <name> --dry-run "test prompt"` plans without executing
-- [ ] Help check: `li play <name> --help` lists your custom flags (if `argument-hint` is set)
+- [ ] Dry-run check: `play.submit` with `dry_run: true` plans without executing (call
+      `help=true` first to confirm the argument name for your published server version)
+- [ ] Help check (lionagi checkout only): `li play <name> --help` lists your custom
+      flags (if `argument-hint` is set) — the MCP catalog's `help=true` returns the
+      verb list, not a given playbook's own argument hints
 
 ---
 

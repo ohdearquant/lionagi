@@ -6,7 +6,10 @@ How the orchestrator plans and executes multi-agent workflows.
 
 ## FlowPlan Data Model
 
-When running `li o flow`, an orchestrator LLM produces a `FlowPlan` before execution.
+When a `flow.submit` (or `play.submit`) call runs, an orchestrator LLM produces a
+`FlowPlan` before execution. This is the same engine and the same data model whether the
+call arrives through the MCP tool or the `li o flow` CLI command underneath it — the plan
+shape below governs both.
 
 **FlowPlan**
 

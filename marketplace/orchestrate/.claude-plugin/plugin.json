@@ -1,7 +1,7 @@
 {
   "name": "orchestrate",
   "description": "Multi-agent orchestration for lionagi: plan DAG workflows, author playbooks, run multi-play shows with quality gates, and monitor execution in Lion Studio.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": {
     "name": "HaiyangLi",
     "url": "https://github.com/ohdearquant"
@@ -9,5 +9,11 @@
   "homepage": "https://github.com/ohdearquant/lionagi",
   "repository": "https://github.com/ohdearquant/lionagi",
   "license": "Apache-2.0",
-  "keywords": ["multi-agent", "orchestration", "dag", "playbook", "show", "lionagi"]
+  "keywords": ["multi-agent", "orchestration", "dag", "playbook", "show", "lionagi"],
+  "mcpServers": {
+    "lion": {
+      "command": "uvx",
+      "args": ["--from", "lionagi[mcp]", "li", "mcp", "serve"]
+    }
+  }
 }

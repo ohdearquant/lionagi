@@ -1,71 +1,120 @@
 ---
 name: orchestrate
 description: >
-  Plan and execute multi-agent workflows using lionagi's CLI: li o flow (DAG pipelines),
-  li o fanout (parallel workers), and li play (playbook invocations). Use when a task
-  needs multiple agents working in parallel or staged phases.
+  Plan and execute multi-agent workflows through lionagi's orchestration MCP tool:
+  flow.submit (DAG pipelines), fanout.submit (parallel workers), agent.submit (one
+  agent), and play.submit (saved playbooks). Use when a task needs multiple agents
+  working in parallel or staged phases.
 allowed-tools: [Bash, Read, Write, Glob, Grep]
 ---
 
 # orchestrate
 
-Plan and execute multi-agent workflows using lionagi's CLI.
+Plan and execute multi-agent workflows through lionagi's orchestration MCP server. The
+plugin ships one MCP tool, `mcp__plugin_orchestrate_lion__request`, which dispatches
+namespaced verbs behind a single `ops` array — not a CLI, not one tool per verb.
 
-## When to use which command
+## Start here, every session
 
-| Situation | Command |
+```
+mcp__plugin_orchestrate_lion__request(help=true)
+```
+
+Call this once, in its own call (never combined with `ops`), before writing any spawn call.
+It returns the verb catalog, each verb's required parameters, and the `schema_fingerprint`
+a call needs to carry alongside `args` (see `reference.md`). Never guess a parameter name —
+this call and `help="<verb>"` are the source of truth.
+
+## When to use which verb
+
+| Situation | Verb |
 |---|---|
-| Single task, one agent | `li agent MODEL PROMPT` |
-| Same prompt to N independent workers | `li o fanout MODEL PROMPT -n N` |
-| Staged pipeline with dependencies | `li o flow MODEL PROMPT` |
-| Pre-saved parametric workflow | `li play NAME [PROMPT]` |
+| Single task, one agent | `agent.submit` |
+| Same prompt to N independent workers | `fanout.submit` |
+| Staged pipeline with dependencies | `flow.submit` |
+| Pre-saved parametric workflow | `play.submit` |
+| Check on a run already submitted | `job.status`, `job.wait`, `job.output` |
 
-If all subtasks are independent (no output feeds another), use `fanout`.
-If any subtask depends on the output of another, use `flow`.
-`li play NAME` is sugar for `li o flow -p NAME`.
+If all subtasks are independent (no output feeds another), use `fanout.submit`.
+If any subtask depends on the output of another, use `flow.submit`.
+`play.submit` is `flow.submit` with a saved playbook name instead of a hand-written plan.
+
+Every `*.submit` call spawns a **detached background run** and returns a run id right
+away — there is no blocking call that returns a finished answer. Read the result back with
+`job.status`, `job.wait`, or `job.output`.
 
 ## Quick start
 
-```bash
+```
+# Catalog + fingerprints, once per session
+mcp__plugin_orchestrate_lion__request(help=true)
+
 # Single agent
-li agent claude "Write unit tests for auth.py"
+mcp__plugin_orchestrate_lion__request(ops=[
+  {"op": "agent.submit", "args": {"prompt": "Write unit tests for auth.py", "agent": "implementer"},
+   "schema_fingerprint": "<from help>"}
+])
 
 # Fan out 4 parallel workers + synthesize
-li o fanout claude "Review this codebase for security issues" -n 4 \
-    --with-synthesis --save ./out --yolo --bypass
+mcp__plugin_orchestrate_lion__request(ops=[
+  {"op": "fanout.submit",
+   "args": {"prompt": "Review this codebase for security issues", "num_workers": 4, "with_synthesis": true},
+   "schema_fingerprint": "<from help>"}
+])
 
-# DAG flow — dry-run first, then execute
-li o flow claude "Audit auth, implement fixes, verify with tests" \
-    --dry-run --effort high
-li o flow claude "Audit auth, implement fixes, verify with tests" \
-    --with-synthesis --save ./flow-out --yolo --bypass
+# DAG flow — dry-run first, then commit
+mcp__plugin_orchestrate_lion__request(ops=[
+  {"op": "flow.submit",
+   "args": {"prompt": "Audit auth, implement fixes, verify with tests", "agent": "orchestrator", "dry_run": true},
+   "schema_fingerprint": "<from help>"}
+])
+# ... inspect the plan, then resend without dry_run ...
 
 # Run a saved playbook
-li play security-audit "JWT middleware" --save ./out
-li play list  # list available playbooks
+mcp__plugin_orchestrate_lion__request(ops=[
+  {"op": "play.submit", "args": {"playbook": "security-audit", "prompt": "JWT middleware"},
+   "schema_fingerprint": "<from help={'verb': 'play.submit', 'playbook': 'security-audit'}>"}
+])
+
+# Check a run
+mcp__plugin_orchestrate_lion__request(ops=[
+  {"op": "job.wait", "args": {"run_ids": ["<run-id>"], "max_wait": 60}}
+])
 ```
 
 ## Key principles
 
-- **Critic runs last** — never parallel with producers. Set `control=True`.
+- **`help=true` in its own call, before writing a spawn call** — never combine `help` and
+  `ops` in one call; the server refuses it.
+- **`schema_fingerprint` rides as a sibling of `args`**, never inside it — every
+  `*.submit` verb requires it, fetched from `help`.
+- **Critic runs last** — never parallel with producers. Set `control=true` in the plan.
 - **Agent reuse > spawning** — reusing `agent_id` across ops preserves memory.
 - **Artifact handoff** — agents write to `{save_dir}/{agent_id}/`, downstream reads from `../{dep_id}/`.
-- **`depends_on` is mandatory** for every non-root op.
-- **`--dry-run` before executing** — preview the DAG before committing.
+- **`depends_on` is mandatory** for every non-root op in a `flow.submit` plan.
+- **`dry_run` before executing** — preview the DAG before committing compute.
+- **The catalog is the authority, not this bundle** — `reference.md` documents the verbs
+  these skills call, which is a subset of what the server offers; and the shipped server
+  resolves the latest lionagi *release*, so a verb you found by reading a checkout may not
+  be there yet. `help=true` settles both questions.
 
 ## Companion references
 
 For detailed documentation, read these companion files in this skill directory:
 
-- **[cli-reference.md](cli-reference.md)** — complete flag tables for `li agent`, `li o fanout`, `li o flow`, `li play`, `li team`, `li invoke`
+- **[reference.md](reference.md)** — the MCP tool's parameter shapes for the verbs these
+  skills call, the `schema_fingerprint` protocol, and the secondary `li` CLI flag tables
 - **[dag-planning.md](dag-planning.md)** — FlowPlan data model, DAG decomposition principles, role-to-model routing, re-plan rounds
-- **[workflows.md](workflows.md)** — standard workflow patterns (parallel exploration, staged pipeline, background flow, spec files, visualization)
-- **[teams-and-tracking.md](teams-and-tracking.md)** — team coordination patterns, invocation tracking, scheduling
+- **[workflows.md](workflows.md)** — standard workflow patterns (parallel exploration, staged pipeline, long-running work, playbooks, visualization)
+- **[teams-and-tracking.md](teams-and-tracking.md)** — team coordination patterns, invocation tracking, scheduling — and which of these are CLI-only today
 
 ## Source code
 
+For someone working inside a lionagi checkout — informational, not part of the MCP surface:
+
 | Component | Path |
 |---|---|
+| MCP server + verb catalog | `lionagi/mcp/server.py`, `lionagi/mcp/verbs.py`, `lionagi/mcp/dispatch.py` |
 | CLI entrypoint | `lionagi/cli/main.py` |
 | Flow engine (FlowPlan, FlowOp, FlowAgent) | `lionagi/cli/orchestrate/flow.py` |
 | Fanout engine | `lionagi/cli/orchestrate/fanout.py` |
@@ -73,4 +122,4 @@ For detailed documentation, read these companion files in this skill directory:
 | Agent CLI | `lionagi/cli/agent.py` |
 | Teams | `lionagi/cli/team.py` |
 | Invocations | `lionagi/cli/invoke.py` |
-| Scheduler engine | `apps/studio/server/scheduler/engine.py` |
+| Scheduler engine | `lionagi/studio/scheduler/engine.py` |

@@ -1,29 +1,52 @@
 # Procedure
 
-Full 8-step show procedure with code examples.
+Full 8-step show procedure with the exact calls.
+
+Firing a play and reading its state go through the plugin's MCP server, tool
+`mcp__plugin_orchestrate_lion__request`. Ask for the shape before relying on
+it — `help=true` in its own call returns the verb catalog, and `help='<verb>'`
+returns that verb's parameter schema — because a catalog request and an `ops`
+request are different reply shapes and the server refuses a request that asks
+for both. Everything about git (worktrees, branches, merges) stays plain git
+run as Bash; there is no MCP verb for it.
+
+If you are working inside a lionagi checkout with `li` on PATH, each MCP call
+below has a `li` equivalent, noted at the point it applies. Treat it as a
+local convenience for that situation, not the path most readers will use.
 
 ## Workspace layout
 
 ```
-${LIONAGI_SHOWS_ROOT:-$HOME/.lionagi/shows}/<topic>/
+${LIONAGI_SHOWS_ROOT}/<topic>/          # set this explicitly; see the note below
 ├── _show.md              # Living plan: goal, plays, decisions, status
 ├── _final_verdict.json   # Show-level gate result
 ├── _ABORT                # Soft-abort sentinel — touch to stop new plays
 └── <play_name>/
     ├── _intent.md        # What this play must accomplish
-    ├── _prompt.md        # Exact prompt passed to li play
+    ├── _prompt.md        # Exact prompt passed to play.submit
     ├── _verdict.json     # Gate result: {gate_passed, feedback, notes}
-    ├── _meta.json        # worktree, branch, attempt, timestamps, exit_code
-    ├── .pid              # PID of running li play process
-    └── .log              # Captured stdout/stderr
+    ├── _meta.json        # worktree, branch, attempt, run_id, timestamps
+    └── .log              # Local copy of the run's console tail (job.output)
 ```
 
-Worktrees live at `$HOME/.lionagi/worktrees/<topic>-<play_name>[-attempt<N>]`.
+**Set `LIONAGI_SHOWS_ROOT` explicitly, in the environment Studio sees as well as your own.**
+The skill and Studio each fall back to a built-in default when it is unset, and relying on
+those matching is how a show ends up somewhere Studio never enumerates — it does not appear
+and nothing reports an error. Export it once for both.
+
+Worktrees live at `$HOME/.lionagi/worktrees/<topic>-<play_name>[-attempt<N>]`. Nothing reads
+that path, so it is a convention this skill keeps rather than a setting.
+
+A play fired through `play.submit` runs as a background job the MCP server
+tracks by `run_id` — there is no PID file to manage by hand. `job.status`,
+`job.output` and `job.wait` read that job record; use them instead of reading
+a process table or tailing a log file directly.
 
 ## _show.md format
 
-The parser in `shows.py` reads specific patterns from `_show.md`. Use this structure
-so Studio can display goal, repo, and branches correctly:
+Studio reads four things out of `_show.md`: the goal, and the repo, base and integration
+branches. Everything else in the file is for the people and agents working the show. Use this
+structure so the four it does read are found:
 
 ```markdown
 # Show: <topic>
@@ -40,7 +63,7 @@ so Studio can display goal, repo, and branches correctly:
 
 **<play_name>**
 - Intent: <what this play produces>
-- deps: [<other_play_name>, ...]   ← PlayDag reads this for edges
+- deps: [<other_play_name>, ...]   ← for readers of the plan; see the note below
 - Acceptance: <1-3 concrete criteria>
 
 **<play_name_2>**
@@ -52,8 +75,12 @@ so Studio can display goal, repo, and branches correctly:
 <!-- Updated after each play completes -->
 ```
 
-The `deps: [...]` syntax on the line after a play name drives the PlayDag visualization.
-Keep the `**play_name**` / `deps:` pattern intact — the frontend parser is line-oriented.
+**`deps:` is not read by anything.** It records the ordering you intend, which is worth
+writing down and worth keeping accurate, but nothing parses it: the show importer extracts
+only goal, repo, base and integration from `_show.md`, and every play is imported with an
+empty `depends_on`. Nothing renders it either: there is no Studio show page and the `PlayDag`
+component in the source tree is imported by nothing. Sequencing is yours to enforce, by the
+order in which you fire plays and by the gate you apply between them.
 
 ---
 
@@ -72,13 +99,15 @@ git checkout -b "show/$TOPIC/integration" origin/main
 git push -u origin "show/$TOPIC/integration"
 ```
 
-Write `_show.md` with goal, repo, branches, and the initial play list. Dependencies
-between plays go in the `deps: [...]` line — the PlayDag renders them as edges.
+Write `_show.md` with goal, repo, branches, and the initial play list. Record the ordering
+you intend in the `deps: [...]` line so readers of the plan can see it. Nothing parses that
+line, so enforce the ordering yourself: fire plays in the order you want and apply the gate
+between them.
 
 ## Step 2 — Pick
 
 Select the next ready play: status is `pending` and all `depends_on` plays are `merged`.
-If multiple are ready, fire them in parallel (separate worktrees, separate processes).
+If multiple are ready, fire them in parallel (separate worktrees, separate `play.submit` calls).
 
 ## Step 3 — Worktree
 
@@ -96,55 +125,75 @@ Write `_intent.md` and `_prompt.md` inside `$SHOW_DIR/$PLAY/` before firing.
 
 ## Step 4 — Fire
 
-Run the play inside the worktree. Pass `--invocation` so Studio groups it with the show:
+Ask what `play.submit` takes, once per play — it is a spawn verb, so its op must carry the
+current `schema_fingerprint`, and that fingerprint depends on which `playbook` you name:
 
-```bash
-PLAY_DIR="$SHOW_DIR/$PLAY"
-mkdir -p "$PLAY_DIR"
-
-# Start invocation tracking
-INV_ID=$(li invoke start --skill show --prompt "$TOPIC/$PLAY" 2>/dev/null || echo "")
-
-# Fire the play (runs li o flow internally)
-(
-  cd "$WORKTREE"
-  li play <playbook_name> "$(cat $PLAY_DIR/_prompt.md)" \
-    --yolo --bypass \
-    --save "$PLAY_DIR" \
-    ${INV_ID:+--invocation "$INV_ID"} \
-    > "$PLAY_DIR/.log" 2>&1 &
-  echo $! > "$PLAY_DIR/.pid"
-  wait $!
-  echo $? > "$PLAY_DIR/.exit_code"
-)
+```json
+{"help": {"verb": "play.submit", "playbook": "<playbook_name>"}}
 ```
 
-Write `_meta.json` after the process exits:
+Then fire the play. **Pass `cwd` explicitly, as an absolute path.** A play runs
+in whatever directory `cwd` names, and its default is the directory the MCP
+server itself is running in, which has nothing to do with yours. Your own
+working directory does not reach the run, so a show whose whole premise is one
+worktree per play must say which worktree each play gets. For the same reason
+any path in the request is absolute: `prompt_file` is documented as requiring
+one, and a relative path would resolve against the server's directory.
+
+```json
+{
+  "ops": [
+    {
+      "op": "play.submit",
+      "args": {
+        "playbook": "<playbook_name>",
+        "prompt": "<contents of _prompt.md>",
+        "cwd": "/absolute/path/to/worktree"
+      },
+      "schema_fingerprint": "<from the help call above>"
+    }
+  ]
+}
+```
+
+The reply carries the allocated `run_id` (never a bare success flag — check
+`ok` on the op before trusting it). Write it into `_meta.json` immediately:
 
 ```json
 {
   "worktree": "/path/to/worktree",
   "branch": "show/topic/play-name",
   "attempt": 1,
+  "run_id": "<run_id from the reply>",
   "started_at": 1748000000.0,
-  "ended_at":   1748003600.0,
-  "exit_code":  0,
-  "status":     "running_complete"
+  "status": "running"
 }
 ```
 
+**Checkout-local alternative.** Inside a lionagi checkout, `li play <playbook> "<prompt>"
+--yolo --bypass --save "$PLAY_DIR"` does the same thing as a foreground/backgrounded shell
+process instead of a server-tracked job; if you use it, note that `--invocation`-based
+grouping under Studio's `/invocations` page (`li invoke start`/`li invoke end`) is a CLI-only
+feature — there is no MCP verb for it, since the server has no caller identity to attach an
+invocation record to. `job.status`/`job.output`/`job.wait` do not need it: they key on
+`run_id`, not on an invocation.
+
 ## Step 5 — Gate
 
-See [gate-protocol.md](gate-protocol.md) for gate agent invocation and verdict schema.
+See [gate-protocol.md](gate-protocol.md) for the gate call and verdict schema.
 
 ## Step 6 — Decide
 
-Read `_verdict.json` and branch:
+Poll or block on the run, then read `_verdict.json` and branch:
+
+```json
+{"ops": [{"op": "job.wait", "args": {"run_ids": ["<run_id>"]}}]}
+```
 
 ```
-gate_passed = true  → merge to integration branch (Step 6a)
-gate_passed = false, attempt = 1 → redo with feedback injected (Step 6b)
-gate_passed = false, attempt = 2 → escalate (Step 6c)
+gate_passed = true            → merge to integration (Step 6a)
+gate_passed = false, attempt 1 → redo with feedback injected (Step 6b)
+gate_passed = false, attempt 2 → escalate (Step 6c)
 ```
 
 **6a — Merge:**
@@ -160,7 +209,8 @@ git push origin "show/$TOPIC/integration"
 **6b — Redo (attempt 2):**
 
 Create a fresh worktree from integration at `$HOME/.lionagi/worktrees/$TOPIC-$PLAY-attempt2`.
-Prepend the gate feedback to the play prompt and re-fire. Record `attempt: 2` in `_meta.json`.
+Prepend the gate feedback to the play prompt and re-fire with a new `play.submit` call.
+Record `attempt: 2` and the new `run_id` in `_meta.json`.
 
 **6c — Escalate:**
 
@@ -179,56 +229,65 @@ After each play merges or escalates, update `_show.md`:
 
 ## Step 8 — Final gate
 
-When all plays have reached a terminal status (merged, escalated, or skipped):
+When all plays have reached a terminal status (merged, escalated, or skipped),
+submit the final gate as an agent run. `agent.submit` is a spawn verb, so ask for its current
+`schema_fingerprint` first:
 
-```bash
-li agent -a reviewer "$(cat <<'EOF'
-You are the final gate agent for show '$TOPIC'.
-Read _show.md for the original goal.
-For each play, read its _verdict.json and _meta.json.
-Determine: does the integration branch now satisfy the show goal?
-Output ONLY valid JSON:
-{"show_passed": true,  "summary": "...", "blockers": []}
-{"show_passed": false, "summary": "...", "blockers": ["play_name: reason"]}
-EOF
-)"
-# Write result to $SHOW_DIR/_final_verdict.json
+```json
+{"help": "agent.submit"}
 ```
 
-If `show_passed = true`, open a PR from `show/$TOPIC/integration` into `base_branch`.
-If `show_passed = false`, address blockers or escalate the whole show.
-
-Close the invocation:
-
-```bash
-[ -n "$INV_ID" ] && li invoke end "$INV_ID" --status completed
+```json
+{
+  "ops": [
+    {
+      "op": "agent.submit",
+      "args": {
+        "agent": "reviewer",
+        "cwd": "/absolute/path/to/<show_dir>",
+        "prompt": "You are the final gate agent for show '<topic>'. Read _show.md for the original goal. For each play, read its _verdict.json and _meta.json. Determine: does the integration branch now satisfy the show goal? Output ONLY valid JSON: {\"show_passed\": true, \"summary\": \"...\", \"blockers\": []} or {\"show_passed\": false, \"summary\": \"...\", \"blockers\": [\"play_name: reason\"]}"
+      },
+      "schema_fingerprint": "<from the help call above>"
+    }
+  ]
+}
 ```
+
+Wait for it and read its output:
+
+```json
+{"ops": [{"op": "job.wait", "args": {"run_ids": ["<run_id>"]}}]}
+```
+
+```json
+{"ops": [{"op": "job.output", "args": {"run_id": "<run_id>"}}]}
+```
+
+Write the parsed result to `$SHOW_DIR/_final_verdict.json`. If `show_passed = true`, open
+a PR from `show/$TOPIC/integration` into `base_branch`. If `show_passed = false`, address
+blockers or escalate the whole show.
 
 ---
 
 ## Quick reference
 
-```bash
-TOPIC="my-feature"
-SHOW_DIR="${LIONAGI_SHOWS_ROOT:-$HOME/.lionagi/shows}/$TOPIC"
-WORKTREES="$HOME/.lionagi/worktrees"
+```json
+// 1. Ask what play.submit takes for this playbook (schema_fingerprint depends on it)
+{"help": {"verb": "play.submit", "playbook": "<name>"}}
 
-# Bootstrap
-mkdir -p "$SHOW_DIR"
-INV_ID=$(li invoke start --skill show --prompt "$TOPIC" 2>/dev/null || echo "")
+// 2. Fire a play — the fingerprint comes from the playbook-qualified help call above,
+//    not from an unqualified help='play.submit', which returns a different schema's
+{"ops": [{"op": "play.submit", "args": {"playbook": "<name>", "prompt": "<from _prompt.md>", "cwd": "/absolute/path/to/worktree"}, "schema_fingerprint": "<from the help call above>"}]}
+// -> record the returned run_id in _meta.json
 
-# Per play
-PLAY="backend-api"
-BRANCH="show/$TOPIC/$PLAY"
-git worktree add -b "$BRANCH" "$WORKTREES/$TOPIC-$PLAY" "show/$TOPIC/integration"
-li play <name> "$(cat $SHOW_DIR/$PLAY/_prompt.md)" --yolo --bypass \
-  --save "$SHOW_DIR/$PLAY" ${INV_ID:+--invocation "$INV_ID"} \
-  > "$SHOW_DIR/$PLAY/.log" 2>&1
+// 3. Wait for it, then read its output
+{"ops": [{"op": "job.wait", "args": {"run_ids": ["<run_id>"]}}]}
+{"ops": [{"op": "job.output", "args": {"run_id": "<run_id>"}}]}
 
-# Gate verdict → _verdict.json
-# Merge or redo or escalate based on gate_passed
+// 4. Gate verdict -> _verdict.json; merge, redo, or escalate (Step 6)
 
-# Final gate → _final_verdict.json
-# Close
-[ -n "$INV_ID" ] && li invoke end "$INV_ID" --status completed
+// 5. Final gate (Step 8) -> _final_verdict.json
 ```
+
+Local git steps (integration branch, worktree per play, merge on pass) run as plain Bash
+throughout — see Steps 1, 3 and 6a above.

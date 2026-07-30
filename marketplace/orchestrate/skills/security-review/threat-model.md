@@ -107,11 +107,12 @@ CWE reference: CWE-400 (uncontrolled resource consumption), CWE-770 (allocation 
 
 | File | Purpose |
 |---|---|
-| `lionagi/agent/permissions.py` | PermissionPolicy — allowlist / denylist / confirm modes |
-| `lionagi/agent/hooks.py` | guard_destructive, guard_paths, log_tool_use built-in hooks |
+| `lionagi/agent/permissions.py` | PermissionPolicy — `allow_all`, `deny_all` and `rules` modes, the last carrying allow/deny/escalate rule sets |
+| `lionagi/agent/hooks.py` | guard_destructive, guard_paths, log_tool_call built-in hooks (`log_tool_use` is a deprecated alias) |
 | `lionagi/agent/spec.py` | AgentSpec presets (coding) with path policies |
 | `lionagi/tools/sandbox.py` | SandboxSession — git worktree isolation for speculative edits |
-| `lionagi/service/connections/providers/` | Provider wrappers (OpenAI, Anthropic, Gemini, Ollama, etc.) |
-| `lionagi/protocols/action/` | Tool schema generation via function_to_schema(); MCP integration |
+| `lionagi/providers/` | Provider wrappers, one package each (OpenAI, Anthropic, Gemini, Ollama, etc.) |
+| `lionagi/protocols/action/` | Tool registration and MCP integration |
+| `lionagi/libs/schema/function_to_schema.py` | Tool schema generation from a function signature |
 | `lionagi/session/branch.py` | Branch facade — where tool registration and call dispatch happen |
 | `lionagi/ln/` | Utilities: retry, fuzzy_json — check for unsafe deserialization paths |

@@ -122,8 +122,9 @@ Control op (`control: true`) in FlowOp marks critic checkpoints — the orchestr
 re-planning turn if the critic returns `should_continue=true`:
 `lionagi/cli/orchestrate/flow.py`
 
-Gate verdicts are surfaced in Studio's runs view:
-`apps/studio/server/services/shows.py`
+Gate verdicts are stored on the play row (`gate_passed`, `gate_feedback`) and served over
+the `/api/shows` endpoints. No Studio page displays them:
+`lionagi/studio/services/shows.py`
 
 ---
 

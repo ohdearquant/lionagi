@@ -66,10 +66,14 @@ file organization decisions, naming conventions.
 - Over-capturing: not every line of code matters
 
 See [checkpoint-format.md](checkpoint-format.md) for detailed checkpoint template,
-memory type distinction, decision/pattern/lesson capture templates, and quality guide.
+memory type distinction, decision/pattern/lesson capture templates, a delegated-capture
+example through the plugin's MCP server, and the quality guide.
 
 ## Relevant Source Files
 
 - `lionagi/cli/_runs.py` — run persistence at `~/.lionagi/runs/{run_id}/`
 - `lionagi/cli/_logging.py` — structured logging conventions used in CLI sessions
-- `lionagi/cli/agent.py` — `li agent --save` for artifact persistence
+- `lionagi/mcp/server.py`, `lionagi/mcp/verbs.py` — `agent.submit` / `job.output`, the MCP
+  path for delegating a capture to a sub-agent and reading back its saved artifacts
+- `lionagi/cli/agent.py` — `li agent`, the checkout-local equivalent; it persists runs without
+  a flag
