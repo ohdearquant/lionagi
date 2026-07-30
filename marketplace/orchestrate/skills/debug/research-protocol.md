@@ -35,7 +35,10 @@ That catalog is the authority on what exists; the orchestration verbs used here 
 `agent.submit`, `flow.submit`, `fanout.submit`, `play.submit`, `job.status`, `job.output`,
 `job.list`, `job.wait`, `job.kill`, `profile.list` and `profile.show`. Submit the research
 task with `agent.submit`. Every call to the tool carries `ops` as an array of `{op, args}`
-objects:
+objects, and every `*.submit` op additionally carries the `schema_fingerprint` its `help`
+reply returned, as a **sibling of `args`** rather than a key inside it. Without it the op is
+refused with `stale_schema` and no run starts; put it inside `args` and it is not read at
+all, so the same refusal repeats and the failure looks idempotent:
 
 ```json
 {
@@ -45,7 +48,8 @@ objects:
       "args": {
         "prompt": "Research this error: [paste error]. Find root cause and solutions for [tool/library version].",
         "agent": "researcher"
-      }
+      },
+      "schema_fingerprint": "<from help='agent.submit'>"
     }
   ]
 }
@@ -82,7 +86,8 @@ If research doesn't yield a clear solution, spawn parallel diagnostic agents wit
       "args": {
         "prompt": "Diagnose: [error]. Codebase: [path]. Find root cause and propose fix.",
         "num_workers": 2
-      }
+      },
+      "schema_fingerprint": "<from help='fanout.submit'>"
     }
   ]
 }
@@ -98,7 +103,8 @@ Or spawn a single focused analyst with `agent.submit`:
       "args": {
         "prompt": "Context: [paste relevant error messages and code]\n\nResearch findings so far:\n- [finding 1]\n- [finding 2]\n\nAnalyze:\n1. What is the root cause?\n2. What are possible solutions?\n3. What are the tradeoffs?",
         "agent": "analyst"
-      }
+      },
+      "schema_fingerprint": "<from help='agent.submit'>"
     }
   ]
 }

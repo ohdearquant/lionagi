@@ -30,10 +30,11 @@ prompt: |
   with one concrete example.
 ```
 
-Run with `play.submit`:
+Run with `play.submit`, whose op carries the fingerprint that
+`help={"verb": "play.submit", "playbook": "minimal"}` returns, as a sibling of `args`:
 
 ```json
-{"ops": [{"op": "play.submit", "args": {"playbook": "minimal", "prompt": "what is a monad?"}}]}
+{"ops": [{"op": "play.submit", "args": {"playbook": "minimal", "prompt": "what is a monad?"}, "schema_fingerprint": "<from that help call>"}]}
 ```
 
 Inside a lionagi checkout: `li play minimal "what is a monad?"`
@@ -81,12 +82,14 @@ prompt: |
 Run with `play.submit`, the `playbook` and `prompt` (`{input}`) args:
 
 ```json
-{"ops": [{"op": "play.submit", "args": {"playbook": "audit", "prompt": "src/auth/"}}]}
+{"ops": [{"op": "play.submit", "args": {"playbook": "audit", "prompt": "src/auth/"}, "schema_fingerprint": "<from help={\"verb\": \"play.submit\", \"playbook\": \"audit\"}>"}]}
 ```
 
-Setting the custom `mode`/`workers`/`strict` args away from their YAML defaults over
-MCP is not pinned in this guide — call `help=true` and read `play.submit`'s own
-argument list first. Inside a lionagi checkout, the same run with those flags set is:
+To set the custom `mode`/`workers`/`strict` args away from their YAML defaults, read the
+schema that same help call returns: naming the playbook is what resolves *its own* declared
+arguments into the reply, which a bare `help=true` catalog request does not do. That call is
+required anyway, since its fingerprint is what the op above carries. Inside a lionagi
+checkout, the same run with those flags set is:
 `li play audit --mode security --workers 4 --strict "src/auth/"`
 
 Key points:
@@ -264,11 +267,13 @@ prompt: |
   <Numbered list of CRITICAL and HIGH items only>
 ```
 
-Run with `play.submit` (custom `focus`/`depth`/`repo`/`comment` args over MCP are not
-pinned here — check `help=true` first):
+Run with `play.submit`. For the custom `focus`/`depth`/`repo`/`comment` args, read the schema
+returned by `help={"verb": "play.submit", "playbook": "pr-review"}` — naming the playbook is
+what resolves its declared arguments into the reply, and that same call returns the
+fingerprint the op has to carry:
 
 ```json
-{"ops": [{"op": "play.submit", "args": {"playbook": "pr-review", "prompt": "123"}}]}
+{"ops": [{"op": "play.submit", "args": {"playbook": "pr-review", "prompt": "123"}, "schema_fingerprint": "<from that help call>"}]}
 ```
 
 Inside a lionagi checkout, the same run with those flags set is:

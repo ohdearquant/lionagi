@@ -36,7 +36,9 @@ table. No prose, structured data only.
 For a quick parallel fan-out where each specialist is independent, call the plugin's
 MCP tool, `mcp__plugin_orchestrate_lion__request`, with one `fanout.submit` op per
 dimension (or a single call with a `synthesis_prompt` if you want the fan-out itself
-to consolidate — see `help=true` for the exact fields your published server exposes):
+to consolidate — see `help='fanout.submit'` for the exact fields your published server
+exposes, and for the `schema_fingerprint` every op below has to carry as a sibling of `args`;
+an op without it is refused with `stale_schema` and starts nothing):
 
 ```json
 {
@@ -46,21 +48,24 @@ to consolidate — see `help=true` for the exact fields your published server ex
       "args": {
         "prompt": "Review PR #<pr_ref> for correctness only. Diff is at _context/diff.txt. Write findings to correctness_review/findings.md.",
         "num_workers": 1
-      }
+      },
+      "schema_fingerprint": "<from help='fanout.submit'>"
     },
     {
       "op": "fanout.submit",
       "args": {
         "prompt": "Review PR #<pr_ref> for security only. Diff is at _context/diff.txt. Write findings to security_review/findings.md.",
         "num_workers": 1
-      }
+      },
+      "schema_fingerprint": "<from help='fanout.submit'>"
     },
     {
       "op": "fanout.submit",
       "args": {
         "prompt": "Review PR #<pr_ref> for test coverage only. Diff is at _context/diff.txt. Write findings to tests_review/findings.md.",
         "num_workers": 1
-      }
+      },
+      "schema_fingerprint": "<from help='fanout.submit'>"
     }
   ]
 }
@@ -88,7 +93,8 @@ and let the planner build the DAG:
       "args": {
         "prompt": "Phase 0: fetch diff with gh pr diff <pr_ref> and save to _context/diff.txt. Phase 1: run correctness, security, and tests specialists in parallel. Phase 2: critic synthesises all findings into critic_final/final_synthesis.md.",
         "agent": "orchestrator"
-      }
+      },
+      "schema_fingerprint": "<from help={\"verb\": \"flow.submit\"}>"
     }
   ]
 }

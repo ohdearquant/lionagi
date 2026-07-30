@@ -371,6 +371,99 @@ def test_documented_mcp_verbs_are_runnable_on_the_published_server() -> None:
         )
 
 
+def _op_objects_in(source: str) -> list[tuple[str, str]]:
+    """Each documented op as (verb, the text of the object it appears in).
+
+    The window runs from the `"op"` key to whichever comes first: the next `"op"`
+    key, or the end of the enclosing fenced block. That is enough to tell a
+    sibling key from a key belonging to the next op, without parsing markdown
+    around JSON that is deliberately not valid JSON — the examples carry
+    `<from help>` placeholders where a real value would go.
+    """
+    found: list[tuple[str, str]] = []
+    matches = list(_OP_NAME_RE.finditer(source))
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(source)
+        window = source[m.start() : end]
+        fence = window.find("\n```")
+        if fence != -1:
+            window = window[:fence]
+        found.append((m.group(1), window))
+    return found
+
+
+def test_op_object_extractor_separates_siblings_from_the_next_op() -> None:
+    """Prove the window logic before trusting the check below.
+
+    The failure it has to avoid is reading the *next* op's fingerprint as this
+    op's, which would pass a batch where only the last entry carried one.
+    """
+    synthetic = '```json\n{"ops": [\n'
+    synthetic += '  {"op": "a.submit", "args": {}},\n'
+    synthetic += '  {"op": "b.submit", "args": {}, "schema_fingerprint": "f"}\n'
+    synthetic += "]}\n```\n"
+    objects = _op_objects_in(synthetic)
+    assert [verb for verb, _ in objects] == ["a.submit", "b.submit"]
+    assert "schema_fingerprint" not in objects[0][1], (
+        "the first op's window bled into the second's — the check would pass a "
+        "batch where only the last op carried a fingerprint"
+    )
+    assert "schema_fingerprint" in objects[1][1]
+    # A fingerprint after the fence belongs to no op inside it.
+    leaked = '```json\n{"op": "c.submit", "args": {}}\n```\nschema_fingerprint in prose\n'
+    assert "schema_fingerprint" not in _op_objects_in(leaked)[0][1]
+
+
+def test_documented_submit_ops_carry_a_schema_fingerprint() -> None:
+    """Every documented `*.submit` op must show the fingerprint it has to carry.
+
+    The server requires it as a **sibling of `args`** on every spawn verb and
+    refuses an op without one, so an example that omits it does not start a run.
+    An example that nests it inside `args` is worse: the key is not read there,
+    the identical refusal repeats, and the failure reads as idempotent rather
+    than as a misplaced key — so nesting is rejected here too.
+
+    Which verbs need one is read from the server's own registry rather than
+    listed, since 'the spawn verbs' is a fact about the release, not about this
+    file. The verb-name check above cannot catch this: an op naming a real verb
+    and omitting a mandatory sibling passes it while being unusable.
+    """
+    from lionagi.mcp.verbs import VERBS
+
+    needs = frozenset(name for name, verb in VERBS.items() if verb.executor == "spawn")
+    assert needs, "no spawn verbs found in the registry — the check would pass vacuously"
+
+    missing: list[str] = []
+    nested: list[str] = []
+    checked = 0
+    for path in _SKILL_FILES:
+        for verb, window in _op_objects_in(_read(path)):
+            if verb not in needs:
+                continue
+            checked += 1
+            if "schema_fingerprint" not in window:
+                missing.append(f"{_rel(path)}: {verb}")
+                continue
+            # A sibling sits at the object's own level. Inside `args` it is
+            # preceded by the opening of `args` and not closed before it.
+            args_at = window.find('"args"')
+            fp_at = window.find("schema_fingerprint")
+            if args_at != -1 and fp_at > args_at:
+                between = window[args_at:fp_at]
+                if between.count("{") > between.count("}"):
+                    nested.append(f"{_rel(path)}: {verb}")
+
+    assert checked, "no spawn-verb examples found under marketplace/ at all"
+    assert not missing, (
+        "these documented spawn ops omit the schema_fingerprint the server "
+        f"requires, so a reader copying them gets a refusal and no run: {sorted(missing)}"
+    )
+    assert not nested, (
+        "these documented spawn ops put schema_fingerprint inside `args`, where "
+        f"it is not read; it must be a sibling of `args`: {sorted(nested)}"
+    )
+
+
 @pytest.mark.parametrize("path", _SKILL_FILES, ids=[_rel(p) for p in _SKILL_FILES])
 def test_lambda_names_are_canonical(path: Path) -> None:
     """Warn (xfail) if a lambda: namespace not in the canonical roster is referenced.

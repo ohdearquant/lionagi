@@ -15,11 +15,21 @@ A playbook is a `.playbook.yaml` file that defines a reusable, parametric agent
 workflow. Install it in `~/.lionagi/playbooks/` on the machine the MCP server runs
 on — that filesystem step is the same whichever interface runs the playbook.
 
-To run it, call the `mcp__plugin_orchestrate_lion__request` tool with `play.submit`:
+To run it, call the `mcp__plugin_orchestrate_lion__request` tool with `play.submit`. Ask for
+the fingerprint first, naming the playbook — `play.submit`'s schema depends on which playbook
+you name, because a playbook's own declared arguments are resolved into it:
 
 ```json
-{"ops": [{"op": "play.submit", "args": {"playbook": "hello", "prompt": "what is a monad?"}}]}
+{"help": {"verb": "play.submit", "playbook": "hello"}}
 ```
+
+```json
+{"ops": [{"op": "play.submit", "args": {"playbook": "hello", "prompt": "what is a monad?"}, "schema_fingerprint": "<from the help call above>"}]}
+```
+
+The fingerprint is a **sibling of `args`**, never a key inside it. Omit it and the op is
+refused with `stale_schema` and no run starts; nest it inside `args` and it is not read, so
+the same refusal repeats and the failure reads as idempotent.
 
 If you're working inside a lionagi checkout, the CLI equivalent is
 `li play <name> "<prompt>"`, which expands to `li o flow -p <name> "<prompt>"`.
@@ -41,7 +51,7 @@ prompt: |
 Run it with `play.submit`:
 
 ```json
-{"ops": [{"op": "play.submit", "args": {"playbook": "hello", "prompt": "what is a monad?"}}]}
+{"ops": [{"op": "play.submit", "args": {"playbook": "hello", "prompt": "what is a monad?"}, "schema_fingerprint": "<from help={\"verb\": \"play.submit\", \"playbook\": \"hello\"}>"}]}
 ```
 
 Inside a lionagi checkout: `li play hello "what is a monad?"`

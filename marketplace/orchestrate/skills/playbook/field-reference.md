@@ -55,17 +55,20 @@ args:
     help: "fail on any finding above MEDIUM severity"
 ```
 
-Over MCP, `playbook` and `prompt` are confirmed `play.submit` argument names; how a
-custom `args:` field such as `mode` or `strict` is passed alongside them is not pinned
-here — call `help=true` and read `play.submit`'s own argument list before wiring one up,
-for example:
+Over MCP, `playbook` and `prompt` are confirmed `play.submit` argument names. For a custom
+`args:` field such as `mode` or `strict`, read the schema that
+`help={"verb": "play.submit", "playbook": "audit"}` returns: naming the playbook resolves
+*that* playbook's declared arguments into the reply, which a bare `help=true` catalog request
+does not do. The same call returns the `schema_fingerprint` the op must carry as a sibling of
+`args`; without it the op is refused with `stale_schema` and no run starts:
 
 ```json
 {
   "ops": [
     {
       "op": "play.submit",
-      "args": {"playbook": "audit", "prompt": "scan auth/"}
+      "args": {"playbook": "audit", "prompt": "scan auth/"},
+      "schema_fingerprint": "<from that help call>"
     }
   ]
 }
