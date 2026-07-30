@@ -195,13 +195,18 @@ def _frontmatter_description_problem(text: str) -> str:
     # splitting on them would quietly move an illegal character out of a value and past
     # the character check, which is exactly how such characters got through before. A
     # lone trailing carriage return is normalised, because a parser accepts CRLF files.
-    # A leading byte-order mark is dropped rather than treated as content. Editors add
-    # one, a parser tolerates it at the start of a stream, and read_text() with the
+    # Exactly ONE leading byte-order mark is dropped, not every one of them. Editors add
+    # a mark, a parser tolerates it at the start of a stream, and read_text() with the
     # default encoding leaves it in place, so keeping it would fail such a file for a
-    # reason its author cannot see. It is spelled as an escape rather than pasted in
-    # literally, because a literal one is invisible in every editor that shows this file.
+    # reason its author cannot see. But the tolerance is for one mark at the stream start
+    # only: a second mark is content sitting before the document marker and the parser
+    # refuses the file, so removing every leading mark would vouch for a file no host can
+    # load. removeprefix drops at most one; lstrip drops all of them. It is spelled as an
+    # escape rather than pasted in literally, because a literal mark is invisible in every
+    # editor that shows this file.
     lines = [
-        line[:-1] if line.endswith("\r") else line for line in text.lstrip("\ufeff").split("\n")
+        line[:-1] if line.endswith("\r") else line
+        for line in text.removeprefix("\ufeff").split("\n")
     ]
     if not lines or not is_fence(lines[0]):
         return "no opening '---' frontmatter fence"

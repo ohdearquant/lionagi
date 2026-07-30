@@ -481,6 +481,17 @@ _NAMED_REGRESSIONS: list[tuple[str, str, bool]] = [
     # Line endings and the leading mark an editor adds. Both are files a host reads.
     ("CRLF line endings", "---\r\ndescription: text\r\n---\r\nb\r\n", True),
     ("leading byte-order mark", "﻿---\ndescription: text\n---\nb\n", True),
+    # A parser tolerates one mark at the stream start and no more. Stripping every leading
+    # mark accepted a file the parser refuses, so the count is what these pin.
+    ("two leading byte-order marks", "﻿﻿---\ndescription: text\n---\nb\n", False),
+    ("three leading byte-order marks", "﻿﻿﻿---\ndescription: text\n---\nb\n", False),
+    ("byte-order mark then space", "﻿ ---\ndescription: text\n---\nb\n", False),
+    ("space then byte-order mark", " ﻿---\ndescription: text\n---\nb\n", False),
+    ("byte-order mark alone", "﻿", False),
+    # Multiplicity matters for the mark and not for a trailing space, so both are pinned:
+    # a fence may carry any number of trailing spaces and stays valid.
+    ("fence with three trailing spaces", "---   \ndescription: text\n---\nb\n", True),
+    ("closing fence with trailing spaces", "---\ndescription: text\n---   \nb\n", True),
     # Sibling lines. The description entry is well formed in every one of these; the file
     # is broken by the line next to it. Classifying only the description vouched for all
     # of them.
@@ -705,6 +716,25 @@ def test_sibling_value_sweep_finds_no_false_pass() -> None:
     _sweep_for_false_passes(documents, minimum=2500)
 
 
+def test_stream_prefix_sweep_finds_no_false_pass() -> None:
+    """Everything that can sit between the start of the file and the opening fence.
+
+    Generated over the characters an editor or a merge can actually leave there, at every
+    count from none to three, because **the count is the thing that decides validity** and
+    a corpus that varies content while holding position fixed cannot see it. A parser
+    tolerates one byte-order mark at the stream start and treats a second as content
+    before the document marker; stripping every leading mark accepted such a file. The
+    per-code-point sweep could not catch it, since that one places its character inside a
+    value where multiplicity is irrelevant.
+    """
+    prefix_atoms = ["﻿", " ", "\t", "\n", "\r"]
+    prefixes = [""] + [
+        "".join(combo) for n in (1, 2, 3) for combo in itertools.product(prefix_atoms, repeat=n)
+    ]
+    documents = [f"{prefix}---\ndescription: real text\n---\nbody\n" for prefix in prefixes]
+    _sweep_for_false_passes(documents, minimum=150)
+
+
 def test_line_safety_boundary_matches_a_parser() -> None:
     """Every code point up to U+02FF, plus the ones above it that matter.
 
@@ -850,6 +880,38 @@ def test_shipped_skills_are_outside_the_grammar_and_outside_its_subject() -> Non
         "the shipped skills no longer sit exactly outside the grammar and inside a "
         f"parser. Update the narrowing record and this test together: {problems}"
     )
+
+
+def test_validator_runs_on_the_interpreter_ci_actually_uses() -> None:
+    """The script is executed the way ci.sh executes it, not the way this suite imports it.
+
+    ci.sh calls ``python3 validate_manifests.py`` on the bare system interpreter with no uv
+    arm, and this suite runs under uv. Those are different interpreters — measured here as
+    3.9.6 against 3.10.15 — so every other test in this file exercises a Python the lint
+    never uses. Anything 3.10-only in that script would pass this whole suite and break the
+    actual lint, which is why the dependency-free constraint has to be checked by running
+    it rather than by remembering it.
+    """
+    import shutil
+    import subprocess
+
+    interpreter = shutil.which("python3") or shutil.which("python")
+    assert interpreter, "no python3 on PATH — ci.sh would skip the validator entirely"
+    script = _MARKETPLACE_ROOT / "scripts" / "validate_manifests.py"
+    completed = subprocess.run(
+        [interpreter, str(script)],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert completed.returncode == 0, (
+        f"{interpreter} failed on the validator (rc {completed.returncode}):\n"
+        f"{completed.stdout}\n{completed.stderr}"
+    )
+    # A run that printed nothing would satisfy the rc check without having validated
+    # anything, so the output is asserted to name what it checked.
+    assert "plugin(s)" in completed.stdout, f"validator produced no verdict: {completed.stdout!r}"
 
 
 def test_unreadable_file_is_reported_rather_than_raised(tmp_path: Path) -> None:
