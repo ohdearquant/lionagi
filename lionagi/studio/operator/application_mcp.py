@@ -263,11 +263,10 @@ async def get_current_view(arguments: dict[str, Any]) -> dict[str, Any]:
     # freshness claim that cannot be supported.
     turn_seq = (context or {}).get("observationSeq")
     turn_observer = (context or {}).get("observerId")
-    at = turn_seq if isinstance(turn_seq, int) else None
     if isinstance(turn_seq, int) and isinstance(turn_observer, str):
         reported, reported_seq = await store.get_view(conversation_id, turn_observer)
         if reported is not None and isinstance(reported_seq, int) and reported_seq > turn_seq:
-            context, at, source = reported, reported_seq, "live"
+            context, source = reported, "live"
 
     if context is None:
         return {"known": False}
@@ -280,10 +279,13 @@ async def get_current_view(arguments: dict[str, Any]) -> dict[str, Any]:
         "filters": context.get("filters"),
         # "turn" means nothing observed later than the instruction has been
         # reported, so the human may have moved since. "live" means this is
-        # where they are. A null count means the client never said where this
-        # view fell in its own sequence, which is why "live" was not claimed.
+        # where they are.
+        #
+        # The observation count that decided this is deliberately NOT returned.
+        # It counts what one page has seen and means nothing outside that page,
+        # so a bare number here could only invite a comparison that is not
+        # valid -- which is the defect this whole mechanism was built to remove.
         "source": source,
-        "observationSeq": at,
     }
 
 

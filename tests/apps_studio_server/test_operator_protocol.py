@@ -1726,7 +1726,6 @@ async def test_current_view_prefers_a_navigation_reported_after_the_instruction(
     assert before["known"] is True
     assert before["space"] == "mission"
     assert before["source"] == "turn"
-    assert before["observationSeq"] == 1
 
     # The human navigates mid-turn and the browser reports it.
     await store.record_view(
@@ -1737,7 +1736,6 @@ async def test_current_view_prefers_a_navigation_reported_after_the_instruction(
     assert after["space"] == "library"
     assert after["route"] == "/library?tab=playbook"
     assert after["source"] == "live"
-    assert after["observationSeq"] == 2
 
 
 @pytest.mark.asyncio
@@ -1900,7 +1898,6 @@ async def test_a_report_observed_before_the_turn_is_not_live_when_it_arrives_aft
         view = await get_current_view({})
         assert view["space"] == "mission", "a view seen before the question cannot answer it"
         assert view["source"] == "turn"
-        assert view["observationSeq"] == 2
 
         # And a report genuinely observed after the turn does flip it, so the
         # assertion above is about ordering rather than about live never firing.
@@ -2064,7 +2061,6 @@ async def test_another_pages_report_does_not_readmit_a_stale_one_from_the_asking
     view = await get_current_view({})
     assert view["space"] == "schedules", "the asking page is where its newest report put it"
     assert view["source"] == "live"
-    assert view["observationSeq"] == 3
 
 
 @pytest.mark.asyncio
