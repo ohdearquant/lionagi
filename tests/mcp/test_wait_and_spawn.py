@@ -708,8 +708,12 @@ async def test_wait_reports_an_aged_preparing_spawn_as_unresolved_not_pending(sa
 
     res = await jobs.wait([rid], max_wait=0, poll_interval=1)
 
+    # Every top-level field that can move for this row class, asserted together.
+    # The derived ones are the point: timed_out is pending being non-empty, so it
+    # cannot be checked by inspecting pending and reasoning about it.
     assert res["unresolved_spawn"] == [rid]
     assert res["pending"] == []
+    assert res["stopped_without_end"] == []
     assert res["timed_out"] is False
     assert res["all_terminal"] is False  # a run this cannot account for is not done
     assert res["unresolved_spawn_after"] == jobs.UNRESOLVED_SPAWN_AFTER_SECONDS
