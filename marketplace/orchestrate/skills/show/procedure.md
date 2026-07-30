@@ -17,7 +17,7 @@ local convenience for that situation, not the path most readers will use.
 ## Workspace layout
 
 ```
-${LIONAGI_SHOWS_ROOT:-$HOME/.lionagi/shows}/<topic>/
+${LIONAGI_SHOWS_ROOT}/<topic>/          # set this explicitly; see the note below
 ├── _show.md              # Living plan: goal, plays, decisions, status
 ├── _final_verdict.json   # Show-level gate result
 ├── _ABORT                # Soft-abort sentinel — touch to stop new plays
@@ -29,7 +29,13 @@ ${LIONAGI_SHOWS_ROOT:-$HOME/.lionagi/shows}/<topic>/
     └── .log              # Local copy of the run's console tail (job.output)
 ```
 
-Worktrees live at `$HOME/.lionagi/worktrees/<topic>-<play_name>[-attempt<N>]`.
+**Set `LIONAGI_SHOWS_ROOT` explicitly, in the environment Studio sees as well as your own.**
+The skill and Studio each fall back to a built-in default when it is unset, and relying on
+those matching is how a show ends up somewhere Studio never enumerates — it does not appear
+and nothing reports an error. Export it once for both.
+
+Worktrees live at `$HOME/.lionagi/worktrees/<topic>-<play_name>[-attempt<N>]`. Nothing reads
+that path, so it is a convention this skill keeps rather than a setting.
 
 A play fired through `play.submit` runs as a background job the MCP server
 tracks by `run_id` — there is no PID file to manage by hand. `job.status`,
@@ -38,8 +44,9 @@ a process table or tailing a log file directly.
 
 ## _show.md format
 
-The parser in `shows.py` reads specific patterns from `_show.md`. Use this structure
-so Studio can display goal, repo, and branches correctly:
+Studio reads four things out of `_show.md`: the goal, and the repo, base and integration
+branches. Everything else in the file is for the people and agents working the show. Use this
+structure so the four it does read are found:
 
 ```markdown
 # Show: <topic>
@@ -56,7 +63,7 @@ so Studio can display goal, repo, and branches correctly:
 
 **<play_name>**
 - Intent: <what this play produces>
-- deps: [<other_play_name>, ...]   ← PlayDag reads this for edges
+- deps: [<other_play_name>, ...]   ← for readers of the plan; see the note below
 - Acceptance: <1-3 concrete criteria>
 
 **<play_name_2>**
@@ -68,8 +75,12 @@ so Studio can display goal, repo, and branches correctly:
 <!-- Updated after each play completes -->
 ```
 
-The `deps: [...]` syntax on the line after a play name drives the PlayDag visualization.
-Keep the `**play_name**` / `deps:` pattern intact — the frontend parser is line-oriented.
+**`deps:` is not read by anything.** It records the ordering you intend, which is worth
+writing down and worth keeping accurate, but nothing parses it: the show importer extracts
+only goal, repo, base and integration from `_show.md`, and every play is imported with an
+empty `depends_on`. Nothing renders it either: there is no Studio show page and the `PlayDag`
+component in the source tree is imported by nothing. Sequencing is yours to enforce, by the
+order in which you fire plays and by the gate you apply between them.
 
 ---
 

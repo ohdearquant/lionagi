@@ -87,32 +87,40 @@ Do not put file paths, artifact names, or task logic into `guidance`. That belon
 
 ## Skills
 
-`li skill <name>` loads a skill from `~/.lionagi/skills/<name>/SKILL.md`. That directory is
-yours rather than the plugin's, and installing this plugin does not populate it.
+Two different things get called skills around here, and they do not share a lookup path.
 
-Load a skill before acting on a task that matches a known procedure:
+**`li skill <name>` reads `~/.lionagi/skills/<name>/SKILL.md` and nowhere else.** That
+directory is yours, and installing this plugin puts nothing in it. Workers spawned through
+lionagi reach skills this way, so a `li skill` directive resolves only for a skill already
+sitting in that directory.
 
-| Situation | Skill to load | Ships with this plugin |
-|---|---|---|
-| About to post a PR comment | `pr-review` | yes |
-| Editing a `.playbook.yaml` file | `playbook` | yes |
-| About to run `git commit` | `commit` | no |
-| About to open a PR | `pr` | no |
-| About to run local CI | `ci` | no |
-| About to bump a version or tag a release | `release-prep` | no |
+**The nine skills this plugin ships** become available to Claude through Claude Code once the
+plugin is enabled. They are listed with descriptions in the plugin README. They are *not*
+reachable with `li skill` unless you separately place a copy under `~/.lionagi/skills/`.
 
-The rows marked no name procedures many teams already keep a skill for, but they are not part
-of this plugin and `li skill` will not resolve them unless something under that exact name is
-already in your skills directory. Treat those four as examples of the routing habit and
-replace them with whatever your own directory actually contains. The nine skills this plugin
-does ship are listed with descriptions in its README, and they load the same way.
+Load a skill before acting on a task that matches a known procedure. The rows below are
+examples of the habit rather than a supported list, because what resolves depends entirely on
+what your own directory holds:
+
+| Situation | Skill |
+|---|---|
+| About to run `git commit` | `commit` |
+| About to open a PR | `pr` |
+| About to post a PR comment | `pr-review` |
+| About to run local CI | `ci` |
+| About to bump a version or tag a release | `release-prep` |
+| Editing a `.playbook.yaml` file | `playbook` |
+
+Replace them with whatever you actually keep. A name that is not there fails at load, naming
+the path it looked in and listing what is available, so a wrong row is loud rather than
+silent.
 
 Distribute skills to workers by embedding a load directive in the op instruction:
 
 ```text
-Before analyzing, run `li skill security-review` and follow its
-threat-modeling procedure. Produce findings.md with severity × file:line
-× suggestion for each finding.
+Before analyzing, run `li skill <your-threat-model-skill>` and follow its
+procedure. Produce findings.md with severity × file:line × suggestion for
+each finding.
 ```
 
 Do not copy-paste the skill body into the instruction — use the load directive. Do not

@@ -78,11 +78,9 @@ For the complete procedure with the exact MCP calls, see [procedure.md](procedur
 
 | File | Purpose |
 |---|---|
-| `lionagi/state/schema.sql` line ~218 | `shows` and `plays` table DDL |
-| `apps/studio/server/services/shows.py` | List, detail, import, SSE watcher |
-| `apps/studio/server/routers/shows.py` | REST + SSE endpoints |
-| `apps/studio/frontend/app/shows/page.tsx` | Show list page |
-| `apps/studio/frontend/app/shows/[topic]/page.tsx` | Show detail page |
-| `apps/studio/frontend/app/shows/[topic]/components/PlayDag.tsx` | DAG visualization |
-| `apps/studio/server/config.py` | `LIONAGI_SHOWS_ROOT` env var |
+| `lionagi/state/schema.sql` (`CREATE TABLE shows`, `CREATE TABLE plays`) | `shows` and `plays` table DDL |
+| `lionagi/studio/services/shows.py` | List, detail, import, SSE watcher, and the `/api/shows` routes |
+| `lionagi/studio/registry.py` | Registers that service with the app |
+| `lionagi/studio/config.py` | `LIONAGI_SHOWS_ROOT` and the root it falls back to |
+| `apps/studio/frontend/src/components/shows/PlayDag.tsx` | DAG visualization |
 | `lionagi/mcp/server.py`, `lionagi/mcp/verbs.py` | MCP verb registry — `play.submit`, `job.*` |
