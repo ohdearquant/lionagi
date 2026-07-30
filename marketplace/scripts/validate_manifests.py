@@ -14,21 +14,30 @@ PER_PLUGIN_OPTIONAL_STRINGS = ["repository", "license", "homepage"]
 
 
 def _has_frontmatter_description(path: Path) -> bool:
-    """True when the file opens with a frontmatter block carrying a non-empty description."""
+    """True when the file opens with a frontmatter block carrying a non-empty description.
+
+    The accepted grammar is deliberately narrow and no YAML parser is involved: the
+    opening and closing fences must each be a line that is exactly ``---``, the key must
+    be top-level, and its value must be a non-empty scalar on the same line. Block and
+    folded scalars (``|``, ``>``) are rejected rather than guessed at, so a form this
+    cannot evaluate fails visibly instead of passing because a marker character happens
+    to be non-whitespace.
+    """
     try:
-        text = path.read_text()
+        lines = path.read_text().splitlines()
     except OSError:
         return False
-    if not text.startswith("---"):
+    if not lines or lines[0].rstrip() != "---":
         return False
-    _, _, rest = text.partition("\n")
-    block, sep, _ = rest.partition("\n---")
-    if not sep:
+    close = next((i for i, line in enumerate(lines[1:], 1) if line.rstrip() == "---"), None)
+    if close is None:
         return False
-    return any(
-        line.startswith("description:") and line[len("description:") :].strip()
-        for line in block.splitlines()
-    )
+    for line in lines[1:close]:
+        if line[:1].isspace() or not line.startswith("description:"):
+            continue
+        value = line[len("description:") :].strip()
+        return bool(value) and value[0] not in "|>"
+    return False
 
 
 def main() -> int:
@@ -128,7 +137,9 @@ def main() -> int:
                             failures += 1
                         elif not _has_frontmatter_description(md):
                             print(
-                                f"FAIL [{name}]: agent missing frontmatter 'description': {rel_md}"
+                                f"FAIL [{name}]: agent needs a one-line frontmatter "
+                                f"'description' (single-line scalar between exact '---' "
+                                f"fences; block and folded forms are not accepted): {rel_md}"
                             )
                             plugin_ok = False
                             failures += 1
@@ -172,17 +183,21 @@ def main() -> int:
                         )
                         plugin_ok = False
                         failures += 1
+                    # A malformed mcpServers block has to end in a reported failure and
+                    # never a traceback, which means the type check must GATE the
+                    # iteration rather than only report alongside it. The same applies
+                    # one level down, to each entry inside the block.
                     mcp = per_plugin.get("mcpServers")
-                    if mcp is not None and not isinstance(mcp, dict):
+                    if mcp is None:
+                        mcp = {}
+                    elif not isinstance(mcp, dict):
                         print(
                             f"FAIL [{name}]: plugin.json 'mcpServers' must be an object, got {type(mcp).__name__}"
                         )
                         plugin_ok = False
                         failures += 1
-                    # Each server entry must be an object before it is inspected: a
-                    # string or list value raises on .get and kills the run with a
-                    # traceback instead of reporting a failure line.
-                    for server_name, server_cfg in per_plugin.get("mcpServers", {}).items():
+                        mcp = {}
+                    for server_name, server_cfg in mcp.items():
                         if not isinstance(server_cfg, dict):
                             print(
                                 f"FAIL [{name}]: plugin.json mcpServers['{server_name}'] must be "
@@ -214,7 +229,18 @@ def main() -> int:
                     print(f"FAIL [standalone:{plugin_dir}]: plugin.json missing '{field}'")
                     failures += 1
                     ok = False
-            for server_name, server_cfg in pdata.get("mcpServers", {}).items():
+            mcp = pdata.get("mcpServers")
+            if mcp is None:
+                mcp = {}
+            elif not isinstance(mcp, dict):
+                print(
+                    f"FAIL [standalone:{plugin_dir}]: plugin.json 'mcpServers' must be an "
+                    f"object, got {type(mcp).__name__}"
+                )
+                failures += 1
+                ok = False
+                mcp = {}
+            for server_name, server_cfg in mcp.items():
                 if not isinstance(server_cfg, dict):
                     print(
                         f"FAIL [standalone:{plugin_dir}]: plugin.json "
