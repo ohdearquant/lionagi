@@ -416,6 +416,87 @@ def test_a_verb_with_no_playbook_stage_refuses_one():
         call(help={"verb": "agent.submit", "playbook": "anything"})
 
 
+@pytest.fixture
+def a_playbook(tmp_path, monkeypatch):
+    """A playbook declaring one argument of its own, resolvable from cwd.
+
+    Project-local rather than in the user's real playbook directory: a run dying
+    between write and cleanup would otherwise leave a fixture behind where a real
+    playbook of the same name could collide with it.
+    """
+    directory = tmp_path / ".lionagi" / "playbooks"
+    directory.mkdir(parents=True)
+    (directory / "remedy-fixture.playbook.yaml").write_text(
+        json.dumps(
+            {
+                "name": "remedy-fixture",
+                "description": "fixture for the fingerprint remedy",
+                "prompt": "act on {subject}",
+                "args": {"subject": {"type": "str", "default": ".", "help": "what to act on"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    return "remedy-fixture"
+
+
+def test_a_refused_playbook_call_is_told_to_ask_help_for_that_playbook(a_playbook, submitted):
+    """The remedy has to name the playbook, or a caller who re-reads it loops.
+
+    A playbook's own arguments are part of the schema, so the fingerprint the
+    refusal quotes is qualified by the playbook. A `help` pointer naming the verb
+    alone sends a caller who re-fetches to the argument-free schema, whose
+    fingerprint this same call then refuses — the remedy would return the caller
+    to the error it is answering.
+    """
+    answer = call(ops=[{"op": "play.submit", "args": {"playbook": a_playbook}}])
+    error = answer["ops"][0]["error"]
+    assert error["kind"] == "stale_schema"
+    assert error["detail"]["help"] == {"verb": "play.submit", "playbook": a_playbook}
+    assert a_playbook in error["message"]
+    # Following the remedy exactly must produce a call this verb accepts, which is
+    # the property the pointer exists for.
+    qualified = call(help={"verb": "play.submit", "playbook": a_playbook})
+    assert error["detail"]["schema_fingerprint"] == qualified["schema_fingerprint"]
+    assert error["detail"]["schema_fingerprint"] != call(help="play.submit").get(
+        "schema_fingerprint"
+    )
+    assert submitted == {}
+
+
+def test_a_stale_playbook_fingerprint_is_told_the_same_qualified_source(a_playbook, submitted):
+    # The base fingerprint is the wrong-schema value a caller most plausibly
+    # arrives with, so it is the one worth pinning on the stale branch.
+    base = call(help="play.submit").get("schema_fingerprint") or "0000000000000000"
+    answer = call(
+        ops=[
+            {
+                "op": "play.submit",
+                "args": {"playbook": a_playbook},
+                "schema_fingerprint": base,
+            }
+        ]
+    )
+    error = answer["ops"][0]["error"]
+    assert error["kind"] == "stale_schema"
+    assert error["detail"]["help"] == {"verb": "play.submit", "playbook": a_playbook}
+    assert submitted == {}
+
+
+def test_a_playbook_aware_call_naming_none_is_pointed_at_the_base_schema(submitted):
+    # `flow.submit` takes a playbook but does not require one, so the
+    # argument-free schema is a real call and its own fingerprint is the right
+    # answer here. Pinned so the qualified case above cannot be satisfied by
+    # always naming a playbook.
+    answer = call(ops=[{"op": "flow.submit", "args": {"query": ["m", "do it"]}}])
+    error = answer["ops"][0]["error"]
+    assert error["kind"] == "stale_schema"
+    assert error["detail"]["help"] == {"verb": "flow.submit"}
+    assert "playbook" not in error["detail"]["help"]
+    assert submitted == {}
+
+
 # ── the long tail runs as a subprocess and returns a versioned envelope ──────
 
 

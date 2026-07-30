@@ -232,7 +232,14 @@ def _describe_fingerprint(entry: dict[str, Any], verb: Verb, schema: dict[str, A
     entry["schema_fingerprint"] = schema_fingerprint(schema)
 
 
-def _require_fingerprint(name: str, verb: Verb, schema: dict[str, Any], supplied: Any) -> None:
+def _require_fingerprint(
+    name: str,
+    verb: Verb,
+    schema: dict[str, Any],
+    supplied: Any,
+    *,
+    playbook: str | None = None,
+) -> None:
     """Spawn ops carry the fingerprint targeted help returned for them.
 
     What this establishes is agreement: the schema the caller validated against is
@@ -243,25 +250,33 @@ def _require_fingerprint(name: str, verb: Verb, schema: dict[str, Any], supplied
     inherited from someone who did read the schema.
 
     The refusal carries its own remedy, because a rejection that only says
-    "stale" strands exactly the caller this exists to help.
+    "stale" strands exactly the caller this exists to help. The remedy has to name
+    the playbook the call resolved: a playbook's own arguments are part of the
+    schema, so the fingerprint below is already qualified by it, and a help
+    pointer that named the verb alone would send a caller who re-fetches to the
+    argument-free schema and back into this same refusal.
     """
     current = schema_fingerprint(schema)
     if supplied == current:
         return
-    remedy = {
-        "help": {"verb": name} if verb.playbook_aware else name,
-        "schema_fingerprint": current,
-    }
+    if playbook is not None:
+        source: Any = {"verb": name, "playbook": playbook}
+    elif verb.playbook_aware:
+        source = {"verb": name}
+    else:
+        source = name
+    remedy = {"help": source, "schema_fingerprint": current}
     # Where the key goes is the part a caller gets wrong: put it inside `args`
     # and it is simply not read, so this refusal repeats verbatim and the
     # failure reads as idempotent rather than as a misplaced key. Spelling the
     # whole op is the only form of the instruction that cannot be misread.
     shape = f"{{'op': {name!r}, 'args': {{...}}, 'schema_fingerprint': {current!r}}}"
+    ask = f"help={source!r}"
     if supplied is None:
         raise OpError(
             "stale_schema",
             f"{name!r} needs the schema_fingerprint that help returns for it; ask for "
-            f"help={name!r} and send the fingerprint as a sibling of 'args', not a "
+            f"{ask} and send the fingerprint as a sibling of 'args', not a "
             f"member of it: {shape}",
             remedy,
         )
@@ -269,7 +284,7 @@ def _require_fingerprint(name: str, verb: Verb, schema: dict[str, Any], supplied
         "stale_schema",
         f"{name!r} was called with schema_fingerprint {supplied!r}, which is not the "
         f"current {current!r}; the parameters changed since that schema was read. "
-        f"Re-read help={name!r} and send: {shape}",
+        f"Re-read {ask} and send: {shape}",
         remedy,
     )
 
@@ -1071,7 +1086,13 @@ async def _run_one(entry: Any) -> dict[str, Any]:
         playbook = args.get("playbook") if verb.playbook_aware else None
         schema = verb_schema(verb, playbook=playbook if isinstance(playbook, str) else None)
         if verb.executor == "spawn":
-            _require_fingerprint(name, verb, schema, entry.get("schema_fingerprint"))
+            _require_fingerprint(
+                name,
+                verb,
+                schema,
+                entry.get("schema_fingerprint"),
+                playbook=playbook if isinstance(playbook, str) else None,
+            )
         _validate(schema, args, verb)
         if verb.executor == "spawn":
             result = _run_spawn(verb, schema, args)
