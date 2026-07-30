@@ -6,6 +6,15 @@ These defensive ``CREATE TABLE IF NOT EXISTS`` statements intentionally make
 the protocol usable by direct Studio service callers as well as through the
 normal StateDB-opening daemon lifespan.  The tables use the canonical StateDB
 file and never fall back to process memory.
+
+Streamed frames are written once per provider chunk, so the durable record
+carries an explicit retention contract enforced on the write path -- see
+``MAX_FRAME_PAYLOAD_BYTES``, ``MAX_FRAMES_PER_TURN`` and
+``MAX_TURN_PAYLOAD_BYTES``.  Nothing is ever dropped silently: an oversized
+payload is stored truncated and says so, and frames refused past a turn's
+budget are counted into a single ``truncation`` summary frame naming what was
+elided and how much.  Terminal ``done`` frames are exempt so a turn can always
+be closed.
 """
 
 from __future__ import annotations
@@ -103,6 +112,13 @@ CREATE TABLE IF NOT EXISTS studio_operator_effects (
 );
 """
 
+# Durable retention contract for streamed frames, enforced in append_frame so
+# direct store callers cannot bypass it.
+MAX_FRAME_PAYLOAD_BYTES = 64 * 1024
+MAX_FRAMES_PER_TURN = 2000
+MAX_TURN_PAYLOAD_BYTES = 8 * 1024 * 1024
+TRUNCATION_FRAME_TYPE = "truncation"
+
 
 class OperatorStoreError(RuntimeError):
     code = "service_failure"
@@ -168,6 +184,52 @@ class OperatorStore:
     @staticmethod
     def _json(value: Any) -> str:
         return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+    @staticmethod
+    def _byte_len(text: str) -> int:
+        return len(text.encode("utf-8"))
+
+    @classmethod
+    def _truncate_strings(cls, value: Any, budget: int) -> Any:
+        if isinstance(value, str):
+            raw = value.encode("utf-8")
+            if len(raw) <= budget:
+                return value
+            kept = raw[:budget].decode("utf-8", "ignore")
+            elided = len(raw) - len(kept.encode("utf-8"))
+            return f"{kept}…[{elided} bytes elided]"
+        if isinstance(value, dict):
+            return {key: cls._truncate_strings(item, budget) for key, item in value.items()}
+        if isinstance(value, list):
+            return [cls._truncate_strings(item, budget) for item in value]
+        return value
+
+    @classmethod
+    def _cap_frame_payload(cls, payload: dict[str, Any]) -> dict[str, Any]:
+        """Return a payload within ``MAX_FRAME_PAYLOAD_BYTES`` that states any elision."""
+        original_bytes = cls._byte_len(cls._json(payload))
+        if original_bytes <= MAX_FRAME_PAYLOAD_BYTES:
+            return payload
+        capped = cls._truncate_strings(payload, MAX_FRAME_PAYLOAD_BYTES // 2)
+        note = {
+            "reason": "frame_payload_bytes",
+            "limitBytes": MAX_FRAME_PAYLOAD_BYTES,
+            "originalBytes": original_bytes,
+        }
+        capped = {**capped, "truncation": note}
+        # Leave headroom for the storedBytes field added below.
+        if cls._byte_len(cls._json(capped)) > MAX_FRAME_PAYLOAD_BYTES - 64:
+            # The payload's own structure, not one long string, is oversized.
+            fields = sorted(map(str, payload))
+            capped = {
+                "truncation": {
+                    **note,
+                    "elidedFieldCount": len(fields),
+                    "elidedFields": [field[:64] for field in fields[:32]],
+                }
+            }
+        capped["truncation"]["storedBytes"] = cls._byte_len(cls._json(capped))
+        return capped
 
     @staticmethod
     def canonical_hash(value: Any) -> str:
@@ -557,6 +619,103 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
             "cancelRequestedAt": row["cancel_requested_at"],
         }
 
+    @staticmethod
+    async def _turn_budget_exceeded(db: Any, request_id: str, payload_bytes: int) -> str | None:
+        """Name the retention limit this frame would breach, or None if it fits."""
+        usage = await (
+            await db.execute(
+                "SELECT COUNT(*) AS frame_count, "
+                "COALESCE(SUM(LENGTH(CAST(payload_json AS BLOB))), 0) AS payload_bytes "
+                "FROM studio_operator_frames WHERE request_id=?",
+                (request_id,),
+            )
+        ).fetchone()
+        if int(usage["frame_count"]) >= MAX_FRAMES_PER_TURN:
+            return "frames_per_turn"
+        if int(usage["payload_bytes"]) + payload_bytes > MAX_TURN_PAYLOAD_BYTES:
+            return "turn_payload_bytes"
+        return None
+
+    async def _record_elided_frame(
+        self,
+        db: Any,
+        *,
+        conversation_id: str,
+        request_id: str,
+        frame_type: str,
+        payload_bytes: int,
+        sequence: int,
+        reason: str,
+        now: float,
+    ) -> dict[str, Any] | None:
+        """Fold one refused frame into the turn's single truncation summary frame."""
+        existing = await (
+            await db.execute(
+                "SELECT sequence, payload_json FROM studio_operator_frames "
+                "WHERE request_id=? AND frame_type=? LIMIT 1",
+                (request_id, TRUNCATION_FRAME_TYPE),
+            )
+        ).fetchone()
+        if existing is not None:
+            summary = json.loads(existing["payload_json"])
+            summary["elidedFrames"] = int(summary.get("elidedFrames", 0)) + 1
+            summary["elidedBytes"] = int(summary.get("elidedBytes", 0)) + payload_bytes
+            by_type = dict(summary.get("elidedFrameTypes") or {})
+            by_type[frame_type] = int(by_type.get(frame_type, 0)) + 1
+            summary["elidedFrameTypes"] = by_type
+            summary["lastElidedAt"] = now
+            await db.execute(
+                "UPDATE studio_operator_frames SET payload_json=? "
+                "WHERE request_id=? AND sequence=?",
+                (self._json(summary), request_id, existing["sequence"]),
+            )
+            await db.commit()
+            return None
+        summary = {
+            "reason": reason,
+            "limits": {
+                "maxFramesPerTurn": MAX_FRAMES_PER_TURN,
+                "maxTurnPayloadBytes": MAX_TURN_PAYLOAD_BYTES,
+                "maxFramePayloadBytes": MAX_FRAME_PAYLOAD_BYTES,
+            },
+            "elidedFrames": 1,
+            "elidedBytes": payload_bytes,
+            "elidedFrameTypes": {frame_type: 1},
+            "firstElidedAt": now,
+            "lastElidedAt": now,
+            "message": (
+                "This turn reached its durable retention limit; frames after this "
+                "point were not stored and are counted here."
+            ),
+        }
+        await db.execute(
+            "UPDATE studio_operator_conversations SET next_sequence=?, updated_at=? WHERE id=?",
+            (sequence + 1, now, conversation_id),
+        )
+        await db.execute(
+            "INSERT INTO studio_operator_frames "
+            "(conversation_id, sequence, request_id, frame_type, payload_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                conversation_id,
+                sequence,
+                request_id,
+                TRUNCATION_FRAME_TYPE,
+                self._json(summary),
+                now,
+            ),
+        )
+        await db.commit()
+        return {
+            "version": 1,
+            "conversationId": conversation_id,
+            "requestId": request_id,
+            "sequence": sequence,
+            "type": TRUNCATION_FRAME_TYPE,
+            "payload": summary,
+            "createdAt": now,
+        }
+
     async def append_frame(
         self,
         conversation_id: str,
@@ -564,7 +723,12 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
         frame_type: str,
         payload: dict[str, Any],
     ) -> dict[str, Any] | None:
-        """Insert before returning; returned frames are therefore safe to yield."""
+        """Insert before returning; returned frames are therefore safe to yield.
+
+        Enforces the per-turn retention contract: an oversized payload is stored
+        truncated, and once the turn's frame or byte budget is spent the frame is
+        folded into a single durable ``truncation`` summary instead of a new row.
+        """
         await self.ensure_schema()
         now = time.time()
         async with open_db(str(self.path())) as db:
@@ -590,9 +754,26 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                 await db.rollback()
                 return None
             sequence = int(row["next_sequence"])
-            stored_payload = dict(payload)
+            stored_payload = self._cap_frame_payload(dict(payload))
             if frame_type == "done":
                 stored_payload["lastSequence"] = sequence
+            else:
+                over_budget = await self._turn_budget_exceeded(
+                    db,
+                    request_id,
+                    self._byte_len(self._json(stored_payload)),
+                )
+                if over_budget is not None:
+                    return await self._record_elided_frame(
+                        db,
+                        conversation_id=conversation_id,
+                        request_id=request_id,
+                        frame_type=frame_type,
+                        payload_bytes=self._byte_len(self._json(stored_payload)),
+                        sequence=sequence,
+                        reason=over_budget,
+                        now=now,
+                    )
             await db.execute(
                 "UPDATE studio_operator_conversations SET next_sequence=?, updated_at=? WHERE id=?",
                 (sequence + 1, now, conversation_id),
