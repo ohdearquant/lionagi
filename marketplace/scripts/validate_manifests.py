@@ -189,12 +189,18 @@ def _frontmatter_description_problem(text: str) -> str:
     def is_fence(line: str) -> bool:
         return line.rstrip(" ") == "---"
 
-    # Split on newlines ONLY. str.splitlines() also breaks on vertical tab, form feed,
-    # carriage return, the file/group/record separators, NEL and the Unicode line and
-    # paragraph separators. A parser treats none of those as a line break here, so
-    # splitting on them would quietly move an illegal character out of a value and past
-    # the character check, which is exactly how such characters got through before. A
-    # lone trailing carriage return is normalised, because a parser accepts CRLF files.
+    # Line breaks are normalised to newlines and then split on, rather than handed to
+    # str.splitlines(). The three sequences below are exactly the ones a YAML parser treats
+    # as a line break, and CR alone is one of them: a CR-only file is valid and its
+    # frontmatter loads, so splitting on "\n" alone never found the opening fence and
+    # rejected a file the host reads. str.splitlines() would fix that and break more,
+    # because it ALSO breaks on vertical tab, form feed, the file/group/record separators,
+    # NEL and the Unicode line and paragraph separators — none of which a parser accepts
+    # here, so splitting on them moves an illegal character out of a value and past the
+    # character check. That is how such characters got through before, so the set stays
+    # explicit. Note the ordering: CRLF must collapse before a lone CR, or one break
+    # becomes two. A CR *inside* a value is still refused, because normalising it leaves a
+    # bare scalar on its own line and the block walk rejects that.
     # Exactly ONE leading byte-order mark is dropped, not every one of them. Editors add
     # a mark, a parser tolerates it at the start of a stream, and read_text() with the
     # default encoding leaves it in place, so keeping it would fail such a file for a
@@ -204,10 +210,7 @@ def _frontmatter_description_problem(text: str) -> str:
     # load. removeprefix drops at most one; lstrip drops all of them. It is spelled as an
     # escape rather than pasted in literally, because a literal mark is invisible in every
     # editor that shows this file.
-    lines = [
-        line[:-1] if line.endswith("\r") else line
-        for line in text.removeprefix("\ufeff").split("\n")
-    ]
+    lines = text.removeprefix("\ufeff").replace("\r\n", "\n").replace("\r", "\n").split("\n")
     if not lines or not is_fence(lines[0]):
         return "no opening '---' frontmatter fence"
     close = next((i for i, line in enumerate(lines[1:], 1) if is_fence(line)), None)

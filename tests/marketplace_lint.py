@@ -376,6 +376,11 @@ def _documents() -> list[str]:
         "---\ndescription: text\ndescription: other\n---\nbody\n",
         "﻿---\ndescription: text\n---\nbody\n",
         "---\r\ndescription: text\r\n---\r\nbody\r\n",
+        # Lone CR and a mix. Present so the wrapper/function agreement test covers the
+        # terminator axis: read_text translates these, the text function has to as well, and
+        # nothing else in this corpus would notice if they drifted apart.
+        "---\rdescription: text\r---\rbody\r",
+        "---\rdescription: text\n---\rbody\n",
     ]
     return docs
 
@@ -390,6 +395,7 @@ _NARROWING_CATEGORIES = frozenset(
         "needs-a-parser-to-resolve-the-key",
         "needs-a-parser-to-resolve-nested-structure",
         "needs-a-parser-to-resolve-a-flow-collection",
+        "frontmatter-must-be-the-first-line",
         "outside-the-provable-whitelist",
     }
 )
@@ -430,6 +436,13 @@ _DOCUMENTED_NARROWINGS: list[tuple[str, str]] = [
     ("---\nname: &a x\ndescription: text\n---\nb\n", "outside-the-provable-whitelist"),
     ("---\nname: !!str x\ndescription: text\n---\nb\n", "outside-the-provable-whitelist"),
     ("---\nname: # c\ndescription: text\n---\nb\n", "outside-the-provable-whitelist"),
+    # A blank line before the opening fence. A parser is happy to find the mapping on the
+    # second line; this treats frontmatter as something that opens the file, which is what
+    # every host that reads it does. Recorded for each line-break kind because the fix for
+    # CR-only files made these three reachable by different routes to the same answer.
+    ("\n---\ndescription: text\n---\nb\n", "frontmatter-must-be-the-first-line"),
+    ("\r---\ndescription: text\n---\nb\n", "frontmatter-must-be-the-first-line"),
+    ("\r\n---\ndescription: text\n---\nb\n", "frontmatter-must-be-the-first-line"),
 ]
 
 # Forms the review rounds actually surfaced, kept named so a reader can see which
@@ -480,6 +493,9 @@ _NAMED_REGRESSIONS: list[tuple[str, str, bool]] = [
     ("accented letters stay fine", "---\ndescription: rôle de révision\n---\nb\n", True),
     # Line endings and the leading mark an editor adds. Both are files a host reads.
     ("CRLF line endings", "---\r\ndescription: text\r\n---\r\nb\r\n", True),
+    ("lone CR line endings", "---\rdescription: text\r---\rb\r", True),
+    ("mixed CR and LF endings", "---\rdescription: text\n---\rb\n", True),
+    ("CR inside the value", "---\ndescription: a\rb\n---\nb\n", False),
     ("leading byte-order mark", "﻿---\ndescription: text\n---\nb\n", True),
     # A parser tolerates one mark at the stream start and no more. Stripping every leading
     # mark accepted a file the parser refuses, so the count is what these pin.
@@ -665,10 +681,16 @@ def _sweep_for_false_passes(documents: list[str], minimum: int) -> None:
     # The oracle parses whole documents, so it only answers correctly for a corpus whose
     # bodies are inert YAML. Stated as an assertion rather than left as a habit: a future
     # corpus with a realistic body would make every answer here quietly meaningless.
-    # Carriage returns are stripped before the split. Without that this check reads a
-    # CRLF document as having no closing fence and hands back the whole file as its
-    # "body", which fails as a corpus complaint and points at nothing.
-    bodies = {d.replace("\r", "").split("---\n")[-1] for d in documents if d.count("---") >= 2}
+    # Line breaks are normalised the same way the code under test normalises them, rather
+    # than deleted. Deleting carriage returns leaves a CR-only document with no "---\n" in
+    # it at all, so the split returns the whole file as its "body" and this check fails as a
+    # corpus complaint pointing at nothing. CRLF collapses before a lone CR, or one break
+    # becomes two.
+    bodies = {
+        d.replace("\r\n", "\n").replace("\r", "\n").split("---\n")[-1]
+        for d in documents
+        if d.count("---") >= 2
+    }
     assert bodies <= {"body\n", "b\n", ""}, f"corpus has a non-inert body: {sorted(bodies)[:5]}"
     assert accepted_by_us, "the grammar accepted nothing at all — it cannot discriminate"
     assert accepted_by_parser, "the parser accepted nothing at all — the corpus is malformed"
@@ -714,6 +736,48 @@ def test_sibling_value_sweep_finds_no_false_pass() -> None:
         f"---\nname: {value}\ndescription: real text\n---\nbody\n" for value in _swept_values()
     ]
     _sweep_for_false_passes(documents, minimum=2500)
+
+
+_LINE_BREAKS = ["\n", "\r\n", "\r"]
+
+
+def test_every_yaml_line_break_is_read_the_same_way() -> None:
+    """The three sequences a parser treats as a line break, in every combination.
+
+    This is the axis the corpora held constant. Everything else here varies *content* while
+    terminating every line with ``\\n``, so a file that uses a different terminator was
+    outside every sweep, and a CR-only file is valid YAML whose frontmatter loads.
+
+    What that cost is worth stating precisely, because it is NOT "a real file was rejected".
+    ``Path.read_text`` applies universal newlines, so the **file** path never sees a lone CR:
+    it arrives already translated and the wrapper answered correctly throughout. The defect
+    was in the text function, which is the surface every one of these sweeps measures. So a
+    whole class of input was being measured against something *stricter than the product*, and
+    the two entry points disagreed about it. That is the same hazard as a rule measured apart
+    from its live route, arriving from the other side: here the route was right and the
+    measured function was wrong.
+
+    Both directions are asserted for each mix, since the risk runs both ways: missing a
+    terminator rejects a good file, and normalising too eagerly would accept a bad one. A CR
+    *inside* a value must stay rejected, which is the case the last row covers.
+    """
+    grammar = _grammar_check()
+    disagreements = []
+    for opening in _LINE_BREAKS:
+        for middle in _LINE_BREAKS:
+            for closing in _LINE_BREAKS:
+                document = f"---{opening}description: real text{middle}---{closing}body{closing}"
+                ours, parser = grammar(document), _parser_says(document)
+                if ours != parser:
+                    disagreements.append(f"{opening!r}/{middle!r}/{closing!r} ours={ours}")
+    assert not disagreements, f"line-break mixes read differently: {disagreements}"
+
+    # A CR that terminates a line is a break; a CR sitting inside a value is not, and a
+    # parser refuses the document. Normalising line breaks must not blur the two.
+    for value_break in ("\r", "\r\n", "\n"):
+        document = f"---\ndescription: a{value_break}b\n---\nbody\n"
+        assert not grammar(document), f"accepted a value containing {value_break!r}"
+        assert not _parser_says(document), f"parser now accepts {value_break!r} in a value"
 
 
 def test_stream_prefix_sweep_finds_no_false_pass() -> None:
