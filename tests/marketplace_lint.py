@@ -449,22 +449,46 @@ def _playbook_in_args(window: str) -> str | None:
     return m.group(1) if m else None
 
 
-def _qualified_help_sources(source: str) -> set[tuple[str, str]]:
-    """Every (verb, playbook) pair named together by one `help` call in `source`.
+# `help` immediately followed by its own object: `help={...}` in the tool-call
+# form, `"help": {...}` in JSON. The brace is what makes this a call rather than
+# a mention — a `help` *string* field, which every playbook declares per argument,
+# is followed by a quote instead and matches nothing.
+_HELP_OBJECT = re.compile(r"help[\"']?\s*[:=]\s*\{")
 
-    A call has to name both to be a usable source, so the pair is the unit. The
-    search window is bounded to the rest of the line: a call spanning lines is
-    read as naming nothing, which fails the check loudly rather than binding a
-    playbook from the next line's example. That direction is deliberate — the
-    bundle writes these on one line, and a false negative is a visible failure
-    while a false positive ships a fingerprint that does not resolve.
+
+def _qualified_help_sources(source: str) -> set[tuple[str, str]]:
+    """Every (verb, playbook) pair named together inside one `help` call.
+
+    A call has to name both to be a usable source, so the pair is the unit, and
+    both names must come from the *same* object. Reading them from anywhere on
+    the line instead lets an unrelated `help` field sit next to sibling `verb`
+    and `playbook` keys and fabricate a pair no call ever named — which passes
+    the rule below on an example that the server then refuses.
+
+    The object is bounded to one line: a call spanning lines is read as naming
+    nothing, which fails loudly rather than binding a playbook from the next
+    line. That direction is deliberate. The bundle writes these on one line, and
+    a false negative is a visible failure while a false positive ships a
+    fingerprint that does not resolve.
     """
     plain = source.replace("\\", "")
     pairs: set[tuple[str, str]] = set()
-    for m in re.finditer(r"help", plain, re.IGNORECASE):
-        line = plain[m.start() :].split("\n", 1)[0]
-        verb = re.search(_KEYED.format(key="verb"), line)
-        playbook = re.search(_KEYED.format(key="playbook"), line)
+    for m in _HELP_OBJECT.finditer(plain):
+        line = plain[m.end() - 1 :].split("\n", 1)[0]
+        depth = 0
+        obj = None
+        for i, char in enumerate(line):
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    obj = line[: i + 1]
+                    break
+        if obj is None:
+            continue
+        verb = re.search(_KEYED.format(key="verb"), obj)
+        playbook = re.search(_KEYED.format(key="playbook"), obj)
         if verb and playbook:
             pairs.add((verb.group(1), playbook.group(1)))
     return pairs
@@ -505,6 +529,34 @@ def test_qualified_help_extractor_reads_both_quote_spellings() -> None:
     assert _qualified_help_sources('help="play.submit"') == set()
     # A playbook named on the next line does not bind.
     assert _qualified_help_sources('help={"verb": "play.submit",\n "playbook": "d"}') == set()
+
+
+def test_qualified_help_extractor_ignores_a_help_field_that_is_not_a_call() -> None:
+    """`help` is also an ordinary field name, so a mention must not read as a call.
+
+    Every playbook declares a `help` string per argument, and the bundle prints
+    those blocks. Reading `verb` and `playbook` from anywhere on the line lets
+    such a field stand in for a source that was never named — the pair is
+    fabricated, the rule below passes, and the server refuses the example. Both
+    names have to come from inside the call's own object.
+    """
+    # A JSON `help` string beside sibling keys: no call, so no pair.
+    assert (
+        _qualified_help_sources(
+            '{"op": "play.submit", "args": {"help": "mode: dry | security", '
+            '"verb": "play.submit", "playbook": "target"}}'
+        )
+        == set()
+    )
+    # The YAML form a playbook's own args block uses.
+    assert _qualified_help_sources('  mode:\n    help: "audit mode"\n    playbook: x\n') == set()
+    # An unterminated object names nothing rather than running past its line.
+    assert _qualified_help_sources('help={"verb": "play.submit", "playbook": "a"') == set()
+    # Two calls on one line are read separately, not merged into a third pair.
+    assert _qualified_help_sources(
+        'help={"verb": "play.submit", "playbook": "a"} or help={"verb": "flow.submit", '
+        '"playbook": "b"}'
+    ) == {("play.submit", "a"), ("flow.submit", "b")}
 
 
 def test_documented_submit_ops_carry_a_schema_fingerprint() -> None:
