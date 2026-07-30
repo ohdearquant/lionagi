@@ -137,6 +137,7 @@ class OperatorEngineTurn:
     runtime_branch: Any | None = None
     store_path: str | None = None
     run_dir: Any | None = None
+    provider_session_id: str | None = None
 
 
 class OperatorEngine(Protocol):

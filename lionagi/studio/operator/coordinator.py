@@ -267,6 +267,8 @@ class OperatorCoordinator:
                         return PermissionDecision(False, current["id"])
                     await asyncio.sleep(0.05)
 
+            conversation_row = await self.store.get_conversation(conversation_id)
+            resumed_session_id = conversation_row.get("providerSessionId")
             engine_turn = OperatorEngineTurn(
                 conversation_id=conversation_id,
                 request_id=request_id,
@@ -275,6 +277,9 @@ class OperatorCoordinator:
                 history=compiled.frames,
                 request_permission=request_permission,
                 store_path=str(self.store.path()),
+                provider_session_id=(
+                    resumed_session_id if isinstance(resumed_session_id, str) else None
+                ),
             )
             run_branch = build_operator_branch(engine_turn)
             engine_turn = OperatorEngineTurn(
@@ -286,6 +291,7 @@ class OperatorCoordinator:
                 request_permission=engine_turn.request_permission,
                 runtime_branch=run_branch,
                 store_path=engine_turn.store_path,
+                provider_session_id=engine_turn.provider_session_id,
             )
             from lionagi.cli import _runs as cli_runs
 
@@ -348,7 +354,10 @@ class OperatorCoordinator:
                 request_id,
                 "text",
                 {
-                    "content": f"[Open this Operator run](/runs/{run_id})",
+                    # Trailing break: consecutive assistant text frames are
+                    # concatenated for display, so without it this link runs
+                    # straight into the first word of the model's reply.
+                    "content": f"[Open this Operator run](/runs/{run_id})\n\n",
                     "format": "markdown",
                     "role": "assistant",
                 },
@@ -370,6 +379,14 @@ class OperatorCoordinator:
                 if not isinstance(event, OperatorEngineEvent):
                     raise TypeError("Operator engine yielded an invalid event")
                 if event.type == "done":
+                    continue
+                if event.type == "session":
+                    # Continuity state, not conversation content: remembered on
+                    # the conversation so the next turn resumes, never appended
+                    # as a frame the human has to read.
+                    session_id = event.payload.get("providerSessionId")
+                    if isinstance(session_id, str) and session_id:
+                        await self.store.set_provider_session_id(conversation_id, session_id)
                     continue
                 if event.type == "ui_command":
                     effect = event.payload.get("effect")

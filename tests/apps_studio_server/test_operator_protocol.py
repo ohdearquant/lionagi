@@ -132,12 +132,44 @@ def test_real_operator_branch_exposes_only_strict_request_scoped_mcp_tools(tmp_p
     assert kwargs.get("allow_dangerously_skip_permissions") is not True
     assert set(kwargs["mcp_servers"]) == {"studio_permission", "studio_operator"}
     assert kwargs["permission_prompt_tool_name"] == ("mcp__studio_permission__request_permission")
+    # Widening this set is a deliberate act. Everything added since the
+    # original four is read-only; the three gated tools are unchanged.
     assert set(kwargs["allowed_tools"]) == {
         "mcp__studio_operator__list_recent_runs",
+        "mcp__studio_operator__run_stats",
+        "mcp__studio_operator__get_current_view",
+        "mcp__studio_operator__list_schedules",
+        "mcp__studio_operator__list_agents",
+        "mcp__studio_operator__list_playbooks",
         "mcp__studio_operator__navigate",
         "mcp__studio_operator__prefill_schedule",
         "mcp__studio_operator__launch_playbook",
     }
+    # The first turn of a conversation has nothing to resume.
+    assert "resume" not in kwargs
+
+
+def test_operator_branch_resumes_the_conversations_provider_session(tmp_path):
+    """A second turn continues the same provider session instead of a new one."""
+    from lionagi.studio.operator.engine import build_operator_branch
+    from lionagi.studio.operator.types import OperatorEngineTurn
+
+    async def request_permission(*_args):
+        raise AssertionError("branch construction cannot request permission")
+
+    branch = build_operator_branch(
+        OperatorEngineTurn(
+            conversation_id="conversation",
+            request_id="request-2",
+            instruction="and what about yesterday?",
+            context={},
+            history=(),
+            request_permission=request_permission,
+            store_path=str(tmp_path / "state.db"),
+            provider_session_id="session-abc",
+        )
+    )
+    assert branch.chat_model.endpoint.config.kwargs["resume"] == "session-abc"
 
 
 @pytest.mark.asyncio
@@ -991,6 +1023,117 @@ def test_context_compiler_keeps_newest_complete_turn_when_older_turn_exceeds_bud
     assert "recent context survives" in prompt
     assert "x" * 1024 not in prompt
     assert prompt.endswith("current instruction")
+
+
+@pytest.mark.asyncio
+async def test_provider_session_column_is_added_to_a_preexisting_conversation_store(tmp_path):
+    """CREATE TABLE IF NOT EXISTS is a no-op on an existing database.
+
+    The demo store predates this column, so without the additive migration the
+    round-trip below raises and every turn silently starts a new session.
+    """
+    import aiosqlite
+
+    db_path = tmp_path / "state.db"
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "CREATE TABLE studio_operator_conversations ("
+            "id TEXT PRIMARY KEY, project TEXT, title TEXT, "
+            "status TEXT NOT NULL DEFAULT 'active', "
+            "next_sequence INTEGER NOT NULL DEFAULT 1, active_request_id TEXT, "
+            "created_at REAL NOT NULL, updated_at REAL NOT NULL, "
+            "archived_at REAL, deleted_at REAL)"
+        )
+        await db.commit()
+
+    store = OperatorStore(db_path)
+    conversation_id = (await store.create_conversation())["id"]
+    assert (await store.get_conversation(conversation_id))["providerSessionId"] is None
+
+    await store.set_provider_session_id(conversation_id, "session-xyz")
+    assert (await store.get_conversation(conversation_id))["providerSessionId"] == "session-xyz"
+
+
+def test_compiled_prompt_carries_the_view_the_human_is_looking_at():
+    """The browser sends a view snapshot every turn; the prompt must show it.
+
+    Without this the Operator answers "I cannot tell which page you are on"
+    while the turn it is answering carries the route verbatim.
+    """
+    from lionagi.studio.operator.engine import _compile_operator_prompt
+    from lionagi.studio.operator.types import OperatorEngineTurn
+
+    async def request_permission(*_args):
+        raise AssertionError("prompt compilation cannot request permission")
+
+    prompt = _compile_operator_prompt(
+        OperatorEngineTurn(
+            conversation_id="conversation",
+            request_id="request",
+            instruction="which page am I on?",
+            context={
+                "space": "library",
+                "route": "/library?sel=agent%3Aadvisor",
+                "project": "lionagi",
+                "selection": {"agent": "advisor"},
+                "filters": {"kind": "agent"},
+            },
+            history=(),
+            request_permission=request_permission,
+        )
+    )
+    assert "library" in prompt
+    assert "/library?sel=agent%3Aadvisor" in prompt
+    assert "advisor" in prompt
+    # The instruction stays last so the model reads the view as background.
+    assert prompt.endswith("which page am I on?")
+
+
+def test_compiled_prompt_bounds_an_oversized_filter_payload():
+    from lionagi.studio.operator.engine import (
+        _CONTEXT_VALUE_BYTE_LIMIT,
+        _compile_operator_prompt,
+    )
+    from lionagi.studio.operator.types import OperatorEngineTurn
+
+    async def request_permission(*_args):
+        raise AssertionError("prompt compilation cannot request permission")
+
+    prompt = _compile_operator_prompt(
+        OperatorEngineTurn(
+            conversation_id="conversation",
+            request_id="request",
+            instruction="current instruction",
+            context={"space": "history", "route": "/fleet", "filters": {"q": "y" * 16_384}},
+            history=(),
+            request_permission=request_permission,
+        )
+    )
+    assert "truncated" in prompt
+    assert "y" * (_CONTEXT_VALUE_BYTE_LIMIT + 1) not in prompt
+    assert prompt.endswith("current instruction")
+
+
+def test_compiled_prompt_is_the_bare_instruction_without_view_or_history():
+    from lionagi.studio.operator.engine import _compile_operator_prompt
+    from lionagi.studio.operator.types import OperatorEngineTurn
+
+    async def request_permission(*_args):
+        raise AssertionError("prompt compilation cannot request permission")
+
+    assert (
+        _compile_operator_prompt(
+            OperatorEngineTurn(
+                conversation_id="conversation",
+                request_id="request",
+                instruction="current instruction",
+                context={},
+                history=(),
+                request_permission=request_permission,
+            )
+        )
+        == "current instruction"
+    )
 
 
 @pytest.mark.asyncio

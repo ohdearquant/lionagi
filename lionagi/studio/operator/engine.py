@@ -23,9 +23,23 @@ You may inspect the current project and help operate LionAGI. Never claim that
 an action completed until its tool result says so. Disk writes, commands, and
 other gated native work must go through the configured Studio permission
 prompt; wait for the human decision. Use the strict studio_operator MCP tools
-for recent-run queries, typed UI navigation/prefill, and playbook launches.
-The launch tool creates its own human-confirmed durable proposal. Do not
-attempt to bypass either gate or invent raw Studio endpoints.
+for reads, typed UI navigation/prefill, and playbook launches. The launch tool
+creates its own human-confirmed durable proposal. Do not attempt to bypass
+either gate or invent raw Studio endpoints.
+
+Pick the right read tool. list_recent_runs returns only the newest 20, so it
+can never answer "how many" — use run_stats for any count or rate over a
+window. Use list_schedules, list_agents and list_playbooks to answer what
+exists; call list_playbooks before proposing a launch, because launch_playbook
+needs an exact existing name.
+
+Every turn tells you which Studio view the human is on, including the route
+and any selection or filters, and get_current_view re-reads it on demand. Use
+it instead of asking, and never say you cannot tell what they are looking at.
+There is no pixel screenshot: the view snapshot is the structured equivalent
+and is what you should reason from. You also cannot restyle the page. A visual
+change means editing source files through the permission prompt and
+rebuilding, so say that plainly rather than implying a live tweak.
 """
 
 _END = object()
@@ -38,12 +52,18 @@ _ONE_TURN_PERMISSION_KEYS = {
 _REQUEST_SCOPED_MCP_SERVERS = {"studio_permission", "studio_operator"}
 _OPERATOR_MCP_TOOLS = [
     "mcp__studio_operator__list_recent_runs",
+    "mcp__studio_operator__run_stats",
+    "mcp__studio_operator__get_current_view",
+    "mcp__studio_operator__list_schedules",
+    "mcp__studio_operator__list_agents",
+    "mcp__studio_operator__list_playbooks",
     "mcp__studio_operator__navigate",
     "mcp__studio_operator__prefill_schedule",
     "mcp__studio_operator__launch_playbook",
 ]
 _MODEL_CONTEXT_FRAME_LIMIT = 64
 _MODEL_CONTEXT_BYTE_LIMIT = 128 * 1024
+_CONTEXT_VALUE_BYTE_LIMIT = 2 * 1024
 
 
 class OperatorProviderUnavailableError(RuntimeError):
@@ -216,19 +236,57 @@ def compile_operator_history(
     return CompiledOperatorHistory(compiled_frames, metadata)
 
 
+def _render_operator_context(context: Any) -> str | None:
+    """Render the caller's view snapshot so the Operator knows where the human is.
+
+    The browser sends this with every turn and the store persists it. Dropping
+    it here is what makes the Operator answer "I cannot see which page you are
+    on" — a statement about this function, not about what the turn carries.
+    ``filters`` and ``selection`` are open-ended, so each rendered value is
+    capped the same way history frames are.
+    """
+    if not isinstance(context, dict):
+        return None
+    lines: list[str] = []
+
+    def add(label: str, value: Any) -> None:
+        if value is None or value == {} or value == "":
+            return
+        text = value if isinstance(value, str) else _canonical_json(value)
+        if len(text) > _CONTEXT_VALUE_BYTE_LIMIT:
+            text = text[:_CONTEXT_VALUE_BYTE_LIMIT] + "… (truncated)"
+        lines.append(f"- {label}: {text}")
+
+    add("space", context.get("space"))
+    add("route", context.get("route"))
+    add("project", context.get("project"))
+    add("selection", context.get("selection"))
+    add("filters", context.get("filters"))
+    if not lines:
+        return None
+    return (
+        "The human is looking at this Studio view right now. Treat it as "
+        "current fact and resolve their deictic references ('this page', "
+        "'this agent', 'what am I looking at') against it:\n" + "\n".join(lines)
+    )
+
+
 def _compile_operator_prompt(turn: OperatorEngineTurn) -> str:
-    """Render the coordinator's already-bounded, turn-atomic history."""
+    """Render the caller's view plus the coordinator's bounded, turn-atomic history."""
+    sections: list[str] = []
+    if (view := _render_operator_context(turn.context)) is not None:
+        sections.append(view)
     rendered = [
         text for frame in turn.history if (text := _render_history_frame(frame)) is not None
     ]
-    if not rendered:
+    if rendered:
+        sections.append(
+            "Recent durable Operator conversation (oldest to newest):\n" + "\n".join(rendered)
+        )
+    if not sections:
         return turn.instruction
-    return (
-        "Recent durable Operator conversation (oldest to newest):\n"
-        + "\n".join(rendered)
-        + "\n\nCurrent operator instruction:\n"
-        + turn.instruction
-    )
+    sections.append("Current operator instruction:\n" + turn.instruction)
+    return "\n\n".join(sections)
 
 
 async def write_resumable_operator_snapshot(branch: Any, snapshot_dir: str | Path) -> None:
@@ -316,7 +374,14 @@ class BranchOperatorEngine:
         async def on_chunk(chunk: Any) -> None:
             nonlocal saw_text
             typ = getattr(chunk, "type", None)
-            if typ == "text":
+            if typ == "system":
+                metadata = getattr(chunk, "metadata", None) or {}
+                session_id = metadata.get("session_id")
+                if isinstance(session_id, str) and session_id:
+                    await queue.put(
+                        OperatorEngineEvent("session", {"providerSessionId": session_id})
+                    )
+            elif typ == "text":
                 content = getattr(chunk, "content", None)
                 if content:
                     saw_text = True
@@ -436,6 +501,10 @@ def build_operator_branch(turn: OperatorEngineTurn):
             "allowed_tools": _OPERATOR_MCP_TOOLS,
             "permission_prompt_tool_name": "mcp__studio_permission__request_permission",
             "strict_mcp_config": True,
+            # Continue the conversation's own provider session instead of
+            # meeting the human as a stranger on every turn. Absent on the
+            # first turn, which is the only turn that should start fresh.
+            **({"resume": turn.provider_session_id} if turn.provider_session_id else {}),
             # Do not inherit project/user MCP servers into this privileged
             # control-plane conversation.
             "setting_sources": "",

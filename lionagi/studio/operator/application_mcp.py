@@ -43,6 +43,27 @@ class RecentRunsInput(_StrictInput):
     status: Literal["pending", "running", "completed", "failed", "cancelled"] | None = None
 
 
+class ListSchedulesInput(_StrictInput):
+    limit: int = Field(default=20, ge=1, le=50)
+    enabled: bool | None = None
+
+
+class ListAgentsInput(_StrictInput):
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+class ListPlaybooksInput(_StrictInput):
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+class RunStatsInput(_StrictInput):
+    window: Literal["24h", "7d"] = "24h"
+
+
+class CurrentViewInput(_StrictInput):
+    """No arguments: the view is a property of the turn, not of the request."""
+
+
 class NavigateInput(_StrictInput):
     space: OperatorSpace = Field(
         description=(
@@ -94,6 +115,11 @@ class _PrefillEffect(BaseModel):
 
 _TOOL_MODELS: dict[str, type[_StrictInput]] = {
     "list_recent_runs": RecentRunsInput,
+    "run_stats": RunStatsInput,
+    "get_current_view": CurrentViewInput,
+    "list_schedules": ListSchedulesInput,
+    "list_agents": ListAgentsInput,
+    "list_playbooks": ListPlaybooksInput,
     "navigate": NavigateInput,
     "prefill_schedule": PrefillScheduleInput,
     "launch_playbook": LaunchPlaybookInput,
@@ -101,6 +127,24 @@ _TOOL_MODELS: dict[str, type[_StrictInput]] = {
 
 _TOOL_DESCRIPTIONS = {
     "list_recent_runs": ("List at most 20 recent Studio runs as a redacted read-only projection."),
+    "run_stats": (
+        "Count runs over a whole window (24h or 7d) with per-status totals and "
+        "completion rate. Use this for 'how many runs did I have', which "
+        "list_recent_runs cannot answer because it only returns the newest 20."
+    ),
+    "get_current_view": (
+        "Read the Studio view the human is on right now: space, route, "
+        "selection and filters. Read-only and always current for this turn."
+    ),
+    "list_schedules": (
+        "List Studio schedules as a redacted read-only projection: trigger, "
+        "next fire time, and recent health."
+    ),
+    "list_agents": ("List the agent profiles in the library, names and models only."),
+    "list_playbooks": (
+        "List playbook names available to launch_playbook. Call this before "
+        "proposing a launch: launch_playbook needs an exact existing name."
+    ),
     "navigate": (
         "Request a typed Studio navigation effect. The browser applies and "
         "acknowledges it; this tool does not claim that navigation completed. "
@@ -134,21 +178,23 @@ def _identity() -> tuple[OperatorStore, str, str]:
     return OperatorStore(db_path), conversation_id, request_id
 
 
+def public_project(value: Any) -> str | None:
+    """Reduce a project to a leaf name so no filesystem layout is disclosed."""
+    if not isinstance(value, str) or not value:
+        return None
+    if Path(value).is_absolute():
+        return Path(value).name or "external-project"
+    windows_path = PureWindowsPath(value)
+    if windows_path.is_absolute():
+        return windows_path.name or "external-project"
+    return value[:160]
+
+
 async def list_recent_runs(arguments: dict[str, Any]) -> dict[str, Any]:
     args = RecentRunsInput.model_validate(arguments)
     from lionagi.studio.services.runs import list_runs
 
     rows = await list_runs(status=args.status, limit=args.limit, offset=0)
-
-    def public_project(value: Any) -> str | None:
-        if not isinstance(value, str) or not value:
-            return None
-        if Path(value).is_absolute():
-            return Path(value).name or "external-project"
-        windows_path = PureWindowsPath(value)
-        if windows_path.is_absolute():
-            return windows_path.name or "external-project"
-        return value[:160]
 
     projected = [
         {
@@ -164,6 +210,103 @@ async def list_recent_runs(arguments: dict[str, Any]) -> dict[str, Any]:
         if isinstance(row.get("id"), str)
     ]
     return {"runs": projected, "count": len(projected), "bounded": True}
+
+
+async def run_stats(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = RunStatsInput.model_validate(arguments)
+    from lionagi.studio.services.stats import get_activity_stats
+
+    stats = await get_activity_stats(args.window)
+    buckets = stats.get("buckets") or []
+    totals = {key: 0 for key in ("completed", "failed", "cancelled", "running")}
+    for bucket in buckets:
+        for key in totals:
+            value = bucket.get(key)
+            if isinstance(value, int):
+                totals[key] += value
+    return {
+        "window": stats.get("window"),
+        "total": stats.get("total"),
+        "byStatus": totals,
+        "completionRate": stats.get("completion_rate"),
+    }
+
+
+async def get_current_view(arguments: dict[str, Any]) -> dict[str, Any]:
+    CurrentViewInput.model_validate(arguments)
+    store, _conversation_id, request_id = _identity()
+    turn = await store.get_turn(request_id)
+    context = turn.get("context")
+    if not isinstance(context, dict):
+        return {"known": False}
+    return {
+        "known": True,
+        "space": context.get("space"),
+        "route": context.get("route"),
+        "project": public_project(context.get("project")),
+        "selection": context.get("selection"),
+        "filters": context.get("filters"),
+    }
+
+
+async def list_schedules(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = ListSchedulesInput.model_validate(arguments)
+    from lionagi.studio.services.schedules import list_schedules as _list_schedules
+
+    rows = await _list_schedules(enabled=args.enabled)
+    projected = [
+        {
+            "id": row.get("id"),
+            "name": row.get("name"),
+            "enabled": bool(row.get("enabled")),
+            "triggerType": row.get("trigger_type"),
+            "cron": row.get("cron_expr"),
+            "intervalSec": row.get("interval_sec"),
+            "actionKind": row.get("action_kind"),
+            "nextFireAt": row.get("next_fire_at"),
+            "lastFiredAt": row.get("last_fired_at"),
+            "lastStatus": row.get("last_status"),
+            "consecutiveFailures": row.get("consecutive_failures"),
+            "project": public_project(row.get("project")),
+        }
+        for row in rows[: args.limit]
+        if isinstance(row.get("id"), str)
+    ]
+    return {"schedules": projected, "count": len(projected), "bounded": True}
+
+
+async def list_agents(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = ListAgentsInput.model_validate(arguments)
+    from lionagi.studio.services.agents import list_agents as _list_agents
+
+    rows = await anyio.to_thread.run_sync(_list_agents)
+    projected = [
+        {
+            "name": row.get("name"),
+            "provider": row.get("provider") or None,
+            "model": row.get("model") or None,
+            "description": (row.get("description") or "")[:500] or None,
+        }
+        for row in rows[: args.limit]
+        if isinstance(row.get("name"), str)
+    ]
+    return {"agents": projected, "count": len(projected), "bounded": True}
+
+
+async def list_playbooks(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = ListPlaybooksInput.model_validate(arguments)
+    from lionagi.studio.services.playbooks import list_playbooks as _list_playbooks
+
+    rows = await anyio.to_thread.run_sync(_list_playbooks)
+    projected = [
+        {
+            "name": row.get("name"),
+            "description": (row.get("description") or "")[:500] or None,
+        }
+        for row in rows[: args.limit]
+        if isinstance(row.get("name"), str)
+    ]
+    return {"playbooks": projected, "count": len(projected), "bounded": True}
 
 
 async def navigate(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -271,6 +414,11 @@ async def launch_playbook(arguments: dict[str, Any]) -> dict[str, Any]:
 
 _TOOL_HANDLERS = {
     "list_recent_runs": list_recent_runs,
+    "run_stats": run_stats,
+    "get_current_view": get_current_view,
+    "list_schedules": list_schedules,
+    "list_agents": list_agents,
+    "list_playbooks": list_playbooks,
     "navigate": navigate,
     "prefill_schedule": prefill_schedule,
     "launch_playbook": launch_playbook,

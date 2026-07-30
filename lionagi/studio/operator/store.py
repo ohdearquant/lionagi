@@ -40,6 +40,9 @@ CREATE TABLE IF NOT EXISTS studio_operator_conversations (
                      CHECK(status IN ('active', 'archived', 'deleted')),
   next_sequence      INTEGER NOT NULL DEFAULT 1,
   active_request_id  TEXT,
+  -- The provider-side session this conversation resumes, so a second turn
+  -- continues the first instead of starting a stranger.
+  provider_session_id TEXT,
   created_at         REAL NOT NULL,
   updated_at         REAL NOT NULL,
   archived_at        REAL,
@@ -177,9 +180,26 @@ class OperatorStore:
                 return
             async with open_db(str(path)) as db:
                 await db.executescript(_SCHEMA)
+                # CREATE TABLE IF NOT EXISTS is a no-op on a database created
+                # before a column was added, so additive columns need their own
+                # migration or an existing conversation store silently lacks them.
+                await self._add_missing_columns(
+                    db,
+                    "studio_operator_conversations",
+                    {"provider_session_id": "TEXT"},
+                )
                 await db.commit()
             stat = path.stat()
             self._schema_ready = (path, stat.st_dev, stat.st_ino)
+
+    @staticmethod
+    async def _add_missing_columns(db: Any, table: str, columns: dict[str, str]) -> None:
+        """Add additive columns a pre-existing database was created without."""
+        rows = await (await db.execute(f"PRAGMA table_info({table})")).fetchall()
+        present = {row[1] for row in rows}
+        for name, decl in columns.items():
+            if name not in present:
+                await db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
     @staticmethod
     def _json(value: Any) -> str:
@@ -244,6 +264,7 @@ class OperatorStore:
             "status": row["status"],
             "nextSequence": row["next_sequence"],
             "activeRequestId": row["active_request_id"],
+            "providerSessionId": row["provider_session_id"],
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
         }
@@ -380,6 +401,22 @@ class OperatorStore:
         if row is None or row["status"] == "deleted":
             raise OperatorNotFoundError(f"Operator conversation '{conversation_id}' not found")
         return self._conversation(row)
+
+    async def set_provider_session_id(self, conversation_id: str, session_id: str) -> None:
+        """Remember the provider session so the next turn resumes this one.
+
+        Written every turn rather than only the first: the provider is free to
+        hand back a new session id on resume, and pinning the first one forever
+        would silently stop resuming the moment it does.
+        """
+        await self.ensure_schema()
+        async with open_db(str(self.path())) as db:
+            await db.execute(
+                "UPDATE studio_operator_conversations "
+                "SET provider_session_id = ?, updated_at = ? WHERE id = ?",
+                (session_id, time.time(), conversation_id),
+            )
+            await db.commit()
 
     async def archive_or_delete(self, conversation_id: str) -> None:
         await self.ensure_schema()
