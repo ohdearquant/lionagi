@@ -3,7 +3,11 @@ name: "CodeQL"
 on:
   push:
     branches: [ main, develop ]
+  # ready_for_review is not a default activity type, so without this a draft PR
+  # marked ready starts no run. Naming types replaces the defaults rather than
+  # extending them, so the three defaults are listed back.
   pull_request:
+    types: [ opened, synchronize, reopened, ready_for_review ]
     branches: [ main, develop ]
   schedule:
     - cron: '0 0 * * 0'

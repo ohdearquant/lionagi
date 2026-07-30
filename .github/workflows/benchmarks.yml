@@ -9,6 +9,12 @@ name: Benchmarks
 on:
   push:
     branches: [ main, master ]
+  # Deliberately left on the default activity types, unlike the other
+  # pull_request workflows here. They name ready_for_review so that marking a
+  # draft ready starts a run; this one emits no required check, and a benchmark
+  # re-run costs real machine time and adds a timing sample nobody asked for.
+  # If a benchmark result is ever made a required check, add ready_for_review
+  # here too, with [ opened, synchronize, reopened ] listed back alongside it.
   pull_request:
     branches: [ main, master ]
 
