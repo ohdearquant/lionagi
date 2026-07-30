@@ -1685,3 +1685,81 @@ async def test_http_create_submit_and_paged_replay_contract(tmp_path, monkeypatc
         assert body["latestSequence"] >= 5
         assert body["frames"][0]["requestId"] == accepted["requestId"]
     await coordinator.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_current_view_prefers_a_navigation_reported_after_the_instruction(
+    tmp_path, monkeypatch
+):
+    """A turn's context is frozen at submit, so it goes stale the moment the human moves.
+
+    Without preferring a later-reported view, the Operator answers "where am I"
+    with wherever they were when they hit send. That is wrong precisely in the
+    case the question gets asked, and it is wrong in the confident direction:
+    the answer looks like a live read.
+    """
+    from lionagi.studio.operator.application_mcp import get_current_view
+
+    path = tmp_path / "state.db"
+    store = OperatorStore(path)
+    cid = (await store.create_conversation())["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="where am I?",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    # Nothing reported yet: the turn's own snapshot is the freshest thing there
+    # is, and the answer says so rather than implying it is live.
+    before = await get_current_view({})
+    assert before["known"] is True
+    assert before["space"] == "mission"
+    assert before["source"] == "turn"
+
+    # The human navigates mid-turn and the browser reports it.
+    await store.record_view(
+        cid, {"space": "library", "route": "/library?tab=playbook", "filters": {}}
+    )
+
+    after = await get_current_view({})
+    assert after["space"] == "library"
+    assert after["route"] == "/library?tab=playbook"
+    assert after["source"] == "live"
+    assert after["observedAt"] >= before["observedAt"]
+
+
+@pytest.mark.asyncio
+async def test_live_view_columns_are_added_to_a_preexisting_conversation_store(tmp_path):
+    """The demo store predates these columns, so the additive migration carries them.
+
+    CREATE TABLE IF NOT EXISTS is a no-op on an existing database, so without
+    the migration record_view raises on every navigation against a store that
+    already exists, which is every store that matters.
+    """
+    import aiosqlite
+
+    db_path = tmp_path / "state.db"
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "CREATE TABLE studio_operator_conversations ("
+            "id TEXT PRIMARY KEY, project TEXT, title TEXT, "
+            "status TEXT NOT NULL DEFAULT 'active', "
+            "next_sequence INTEGER NOT NULL DEFAULT 1, active_request_id TEXT, "
+            "created_at REAL NOT NULL, updated_at REAL NOT NULL, "
+            "archived_at REAL, deleted_at REAL)"
+        )
+        await db.commit()
+
+    store = OperatorStore(db_path)
+    cid = (await store.create_conversation())["id"]
+    assert await store.get_view(cid) == (None, None)
+
+    at = await store.record_view(cid, {"space": "system", "route": "/system", "filters": {}})
+    view, seen_at = await store.get_view(cid)
+    assert view["space"] == "system"
+    assert seen_at == at

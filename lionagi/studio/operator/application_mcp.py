@@ -133,8 +133,12 @@ _TOOL_DESCRIPTIONS = {
         "list_recent_runs cannot answer because it only returns the newest 20."
     ),
     "get_current_view": (
-        "Read the Studio view the human is on right now: space, route, "
-        "selection and filters. Read-only and always current for this turn."
+        "Read the Studio view the human is on: space, route, selection and "
+        "filters. Read-only. The 'source' field says how fresh the answer is: "
+        "'live' means the browser reported this view after the instruction was "
+        "sent, so it is where they are now; 'turn' means nothing newer has been "
+        "reported, so it is where they were when they sent the instruction and "
+        "they may have moved since."
     ),
     "list_schedules": (
         "List Studio schedules as a redacted read-only projection: trigger, "
@@ -234,10 +238,20 @@ async def run_stats(arguments: dict[str, Any]) -> dict[str, Any]:
 
 async def get_current_view(arguments: dict[str, Any]) -> dict[str, Any]:
     CurrentViewInput.model_validate(arguments)
-    store, _conversation_id, request_id = _identity()
+    store, conversation_id, request_id = _identity()
     turn = await store.get_turn(request_id)
     context = turn.get("context")
-    if not isinstance(context, dict):
+    context = context if isinstance(context, dict) else None
+    at = turn.get("createdAt")
+    source = "turn"
+
+    # The turn's context is frozen at submit, so it is only the freshest answer
+    # until the human moves. Prefer a view the browser reported later.
+    reported, reported_at = await store.get_view(conversation_id)
+    if reported is not None and (at is None or (reported_at or 0) > at):
+        context, at, source = reported, reported_at, "live"
+
+    if context is None:
         return {"known": False}
     return {
         "known": True,
@@ -246,6 +260,10 @@ async def get_current_view(arguments: dict[str, Any]) -> dict[str, Any]:
         "project": public_project(context.get("project")),
         "selection": context.get("selection"),
         "filters": context.get("filters"),
+        # "turn" means nothing newer than the instruction has been reported, so
+        # the human may have moved since. "live" means this is where they are.
+        "source": source,
+        "observedAt": at,
     }
 
 

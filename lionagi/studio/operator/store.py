@@ -44,6 +44,12 @@ CREATE TABLE IF NOT EXISTS studio_operator_conversations (
   -- continues the first instead of starting a stranger.
   provider_session_id TEXT,
   provider_model      TEXT,
+  -- The view the human was last seen on, updated whenever the browser reports
+  -- one rather than only at turn submission. A turn's own context is frozen at
+  -- submit, so without this the Operator answers "where am I" with wherever the
+  -- human was when they hit send, which is wrong exactly when they have moved.
+  last_view_json      TEXT,
+  last_view_at        REAL,
   created_at         REAL NOT NULL,
   updated_at         REAL NOT NULL,
   archived_at        REAL,
@@ -187,7 +193,12 @@ class OperatorStore:
                 await self._add_missing_columns(
                     db,
                     "studio_operator_conversations",
-                    {"provider_session_id": "TEXT", "provider_model": "TEXT"},
+                    {
+                        "provider_session_id": "TEXT",
+                        "provider_model": "TEXT",
+                        "last_view_json": "TEXT",
+                        "last_view_at": "REAL",
+                    },
                 )
                 await db.commit()
             stat = path.stat()
@@ -419,6 +430,48 @@ class OperatorStore:
                 (session_id, time.time(), conversation_id),
             )
             await db.commit()
+
+    async def record_view(self, conversation_id: str, view: dict[str, Any]) -> float:
+        """Record where the human is now, independently of any turn.
+
+        Returns the timestamp written, so a caller can compare this against a
+        turn's own frozen context and prefer whichever is later.
+        """
+        await self.ensure_schema()
+        seen_at = time.time()
+        async with open_db(str(self.path())) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute(
+                    "SELECT id FROM studio_operator_conversations WHERE id = ?",
+                    (conversation_id,),
+                )
+            ).fetchone()
+            if row is None:
+                await db.rollback()
+                raise OperatorNotFoundError(f"Operator conversation '{conversation_id}' not found")
+            await db.execute(
+                "UPDATE studio_operator_conversations "
+                "SET last_view_json = ?, last_view_at = ? WHERE id = ?",
+                (self._json(view), seen_at, conversation_id),
+            )
+            await db.commit()
+        return seen_at
+
+    async def get_view(self, conversation_id: str) -> tuple[dict[str, Any] | None, float | None]:
+        """Return the last reported view and when it was reported."""
+        await self.ensure_schema()
+        async with open_db(str(self.path())) as db:
+            row = await (
+                await db.execute(
+                    "SELECT last_view_json, last_view_at FROM studio_operator_conversations "
+                    "WHERE id = ?",
+                    (conversation_id,),
+                )
+            ).fetchone()
+        if row is None or row["last_view_json"] is None:
+            return None, None
+        return json.loads(row["last_view_json"]), row["last_view_at"]
 
     async def select_provider_model(self, conversation_id: str, model: str) -> None:
         """Record the model for this conversation, dropping a stale session.
@@ -690,6 +743,7 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
             "contextHash": row["context_hash"],
             "status": row["status"],
             "errorCode": row["error_code"],
+            "createdAt": row["created_at"],
             "cancelRequestedAt": row["cancel_requested_at"],
         }
 

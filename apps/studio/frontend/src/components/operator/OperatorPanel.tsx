@@ -14,6 +14,7 @@ import {
   ApiError,
   acknowledgeOperatorEffect,
   cancelOperatorRequest,
+  reportOperatorView,
   createOperatorConversation,
   decideOperatorProposal,
   getOperatorConversation,
@@ -864,6 +865,21 @@ export default function OperatorPanel({ open, onClose }: Props) {
     if (added && !nearBottomRef.current) setVisibleCount((count) => count + added);
     previousItemCountRef.current = items.length;
   }, [items.length]);
+
+  // Report where the human is whenever they move, not only when they send.
+  // A turn's context is frozen at submit, so without this the Operator's answer
+  // to "where am I" is wherever they were when they hit send. Best effort: a
+  // failed report costs freshness, never correctness, because the read falls
+  // back to the turn's own snapshot and says which one it used.
+  const conversationId = state.conversation?.id;
+  useEffect(() => {
+    if (!conversationId) return;
+    const context = operatorContext(location.pathname, location.search as Record<string, unknown>);
+    const timer = window.setTimeout(() => {
+      void reportOperatorView(conversationId, context).catch(() => {});
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [conversationId, location.pathname, location.search]);
 
   useLayoutEffect(() => {
     const oldHeight = anchorHeightRef.current;

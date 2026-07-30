@@ -21,6 +21,7 @@ from ..operator.types import (
     ConfirmProposalRequest,
     CreateConversationRequest,
     DecideProposalRequest,
+    OperatorContextSnapshot,
     OperatorTurnRequest,
 )
 from ..registry import studio_route
@@ -121,6 +122,31 @@ async def submit_operator_turn(conversation_id: str, body: OperatorTurnRequest) 
             expected_last_sequence=body.expected_last_sequence,
             model=body.model,
         )
+    except OperatorStoreError as exc:
+        raise _http_error(exc) from exc
+
+
+@studio_route(
+    "/operator/conversations/{conversation_id}/view",
+    method="POST",
+    area="operator",
+)
+async def report_operator_view(
+    conversation_id: str, body: OperatorContextSnapshot
+) -> dict[str, Any]:
+    """Record where the human is now, so the Operator can read it mid-turn.
+
+    A turn's context is frozen at submit. Without this the Operator answers
+    "where am I" with wherever the human was when they hit send, which is
+    wrong precisely when they have moved since.
+    """
+    coordinator = get_operator_coordinator()
+    try:
+        await coordinator.ensure_started()
+        observed_at = await coordinator.store.record_view(
+            conversation_id, body.model_dump(by_alias=True)
+        )
+        return {"ok": True, "observedAt": observed_at}
     except OperatorStoreError as exc:
         raise _http_error(exc) from exc
 
