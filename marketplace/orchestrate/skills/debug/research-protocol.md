@@ -23,7 +23,34 @@ If nothing relevant is found, proceed with web search and codebase exploration:
 grep -r "error_keyword" /path/to/project/src/ --include="*.py" -n
 ```
 
-Or spawn a researcher via `li agent`:
+Or spawn a researcher through the plugin's MCP server, `mcp__plugin_orchestrate_lion__request`.
+Ask what it can run first — a catalog request (`help`) is a separate call from any request
+that carries `ops`:
+
+```json
+{"help": true}
+```
+
+Then submit the research task with `agent.submit`, one of the eleven published verbs
+(`agent.submit`, `flow.submit`, `fanout.submit`, `play.submit`, `job.status`, `job.output`,
+`job.list`, `job.wait`, `job.kill`, `profile.list`, `profile.show`). Every call to the tool
+carries `ops` as an array of `{op, args}` objects:
+
+```json
+{
+  "ops": [
+    {
+      "op": "agent.submit",
+      "args": {
+        "prompt": "Research this error: [paste error]. Find root cause and solutions for [tool/library version].",
+        "agent": "researcher"
+      }
+    }
+  ]
+}
+```
+
+If you're working inside a lionagi checkout, the CLI equivalent is:
 
 ```bash
 li agent --prompt "Research this error: [paste error]. Find root cause and solutions for [tool/library version]."
@@ -43,15 +70,54 @@ li agent --prompt "Research this error: [paste error]. Find root cause and solut
 
 ## Phase 2: Orchestrate Agents
 
-If research doesn't yield a clear solution, spawn parallel diagnostic agents via `li o fanout`:
+If research doesn't yield a clear solution, spawn parallel diagnostic agents with
+`fanout.submit`:
+
+```json
+{
+  "ops": [
+    {
+      "op": "fanout.submit",
+      "args": {
+        "prompt": "Diagnose: [error]. Codebase: [path]. Find root cause and propose fix.",
+        "num_workers": 2
+      }
+    }
+  ]
+}
+```
+
+Or spawn a single focused analyst with `agent.submit`:
+
+```json
+{
+  "ops": [
+    {
+      "op": "agent.submit",
+      "args": {
+        "prompt": "Context: [paste relevant error messages and code]\n\nResearch findings so far:\n- [finding 1]\n- [finding 2]\n\nAnalyze:\n1. What is the root cause?\n2. What are possible solutions?\n3. What are the tradeoffs?",
+        "agent": "analyst"
+      }
+    }
+  ]
+}
+```
+
+Track a submitted job and read its result with `job.wait` / `job.output` (call `help=true`
+if you need the exact argument name a given job verb expects — `job.wait` takes a list):
+
+```json
+{"ops": [{"op": "job.wait", "args": {"run_ids": ["<id returned by the submit call above>"]}}]}
+```
+
+If you're working inside a lionagi checkout, the CLI equivalents are `li o fanout` and
+`li agent`:
 
 ```bash
 li o fanout \
   --prompt "Diagnose: [error]. Codebase: [path]. Find root cause and propose fix." \
   --workers 2
 ```
-
-Or spawn a single focused analyst:
 
 ```bash
 li agent --prompt "
@@ -70,13 +136,13 @@ Analyze:
 
 ### Agent Selection Table
 
-| Problem Type             | Approach                          |
-|--------------------------|-----------------------------------|
-| Unknown error root cause | `li agent` with analyst role      |
-| Need more information    | `li agent` with researcher role   |
-| Parallel hypothesis test | `li o fanout` with 2-3 workers    |
-| Implementation approach  | `li agent` with implementer role  |
-| Verify proposed solution | `li agent` with tester/critic role|
+| Problem Type             | MCP call                                            | CLI equivalent (lionagi checkout only) |
+|--------------------------|------------------------------------------------------|-----------------------------------------|
+| Unknown error root cause | `agent.submit` with `agent: "analyst"`                | `li agent` with analyst role      |
+| Need more information    | `agent.submit` with `agent: "researcher"`             | `li agent` with researcher role   |
+| Parallel hypothesis test | `fanout.submit` with `num_workers: 2-3`               | `li o fanout` with 2-3 workers    |
+| Implementation approach  | `agent.submit` with `agent: "implementer"`            | `li agent` with implementer role  |
+| Verify proposed solution | `agent.submit` with `agent: "tester"` or `"critic"`   | `li agent` with tester/critic role|
 
 **Gate**: Agent must produce actionable insight, not just restate the problem.
 
@@ -129,5 +195,6 @@ cat >> ./notes/debug-log.md << 'EOF'
 EOF
 ```
 
-For lionagi runs, the session transcript in `~/.lionagi/runs/{run_id}/` already captures the
-resolution — no extra step needed if the agent solved it during a `li agent` session.
+The run this fix came from is already recorded: `job.output` returns it by run id (see
+`help=true` for the exact argument name). Inside a lionagi checkout the same transcript also
+sits at `~/.lionagi/runs/{run_id}/` — no extra step needed either way.

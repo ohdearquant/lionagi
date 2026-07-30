@@ -44,6 +44,17 @@ DEPRECATED_PATTERNS: list[tuple[str, str]] = [
     (r"\bmcp__khive__waves\b", "nonexistent verb (mcp__khive__waves)"),
     (r"\bmcp__khive__work\b", "nonexistent verb (mcp__khive__work)"),
     (r"\bmcp__khive__communication\b", "nonexistent verb (mcp__khive__communication)"),
+    # A plugin-provided MCP server's tools are namespaced
+    # mcp__plugin_<plugin-name>_<server-name>__<tool>, never the bare mcp__<server>__
+    # form. A bare reference names a tool that does not exist for a user who
+    # installed this bundle as a plugin, even though it reads correctly and lints
+    # clean otherwise. The negative lookahead is what keeps a correctly scoped name
+    # (mcp__plugin_orchestrate_lion__request) out of this rule.
+    (
+        r"\bmcp__(?!plugin_)[a-z0-9_]+__",
+        "unscoped MCP tool name (mcp__<server>__) — a plugin-provided server's tools "
+        "are namespaced mcp__plugin_<plugin>_<server>__<tool>",
+    ),
 ]
 
 # Only matched in .md files (not plugin.json where Ocean is an author name)

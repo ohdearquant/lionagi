@@ -3,7 +3,8 @@
 - **Status**: Accepted (2026-07-09), amended 2026-07-30 — see Amendment history
 - **Kind**: Retrospective
 - **Area**: cli-surface
-- **Date**: 2026-07-09 (amended 2026-07-30 — D2 and D4, see Amendment history)
+- **Date**: 2026-07-09 (amended 2026-07-30 — D2 and D4 by Amendment 1; D2's MCP flag
+  and delta #3 by Amendment 2, see Amendment history)
 - **Relations**: supersedes v0-0003, v0-0007
 
 ## Amendment history
@@ -70,7 +71,63 @@ this one.
 bundle's declared version has been `1.0.0` since it was introduced on 2026-05-19, while 12
 commits changed its contents afterward, the last on 2026-06-15. A capability change that does
 not move the version is not installable as a change, so the version bump belongs to whichever
-change next alters what the bundle does.
+change next alters what the bundle does. *(Both figures in this sentence were miscounted;
+corrected in Amendment 2 below, with the span each one belongs to.)*
+
+**2026-07-30 — Amendment 2: the bundle now declares an MCP server, which closes delta 3 and
+falsifies D2's flag sentence a second time; two figures in Amendment 1's own context
+paragraph are corrected here rather than carried forward.**
+
+1. **D2's exact-semantics sentence is re-recorded.** It read: "The current official bundle
+   has neither hooks nor MCP configuration, so both flags are false." As of the commit that
+   lands this amendment, `plugin.json` declares a truthy `mcpServers`, so `has_mcp` is now
+   true; `has_hooks` is unaffected and stays false, since no `hooks/hooks.json` exists. The
+   sentence is rewritten below rather than left to go stale, matching the Retrospective kind's
+   own rule: this document describes the tree as shipped.
+
+2. **The single carrier is named, which is delta 3's stated acceptance.** `mcpServers` is
+   declared inline in `plugin.json`, keyed `lion`, and the bundle ships no `.mcp.json`. D6's
+   `.mcp.json`-over-`plugin.json.mcpServers` read precedence therefore never engages: exactly
+   one file defines the server, by construction, not by which file happens to win when both
+   exist.
+
+3. **The resolved scoped tool name is recorded, so a plugin user has the determinate
+   string.** A plugin-provided MCP server's tools are namespaced
+   `mcp__plugin_<plugin-name>_<server-name>__<tool>`, never the bare `mcp__<server-name>__`
+   form this fleet types internally. This bundle is the plugin named `orchestrate`, and the
+   server's own reported `serverInfo.name` is `lion` — matching the `plugin.json` key, which
+   is what makes the tool name determinate rather than dependent on an unresolved question
+   about which of the two the vendor's scoping actually reads. The tool a plugin user's Claude
+   session calls is:
+
+   ```text
+   mcp__plugin_orchestrate_lion__request
+   ```
+
+   `mcp__lion__request` is not a name any plugin user's session resolves.
+
+4. **Delta 3 is closed.** Its stated acceptance was that this document names the single
+   carrier and the flag sentence agrees with the tree; both are done by points 1 and 2 above.
+
+**Two figures in Amendment 1's context paragraph were miscounted, corrected here with the
+span each one belongs to rather than swapped in place.** That paragraph read: "the bundle's
+declared version has been `1.0.0` since it was introduced on 2026-05-19, while 12 commits
+changed its contents afterward, the last on 2026-06-15." Measured at the git record:
+
+- The manifest was introduced at `0.1.0` on 2026-05-19 (`a29a140fc`) and moved to `1.0.0` on
+  2026-05-23 (`0aab5a9ed`); it has not moved since. "`1.0.0` since it was introduced on
+  2026-05-19" conflated the introduction commit with the bump four days later.
+- Commits touching `marketplace/orchestrate/` since the version froze at `0aab5a9ed`: **2**
+  — `27d09726f` (2026-06-15) and the commit that landed Amendment 1 above. One of those two
+  predates this lane's own merge: `27d09726f`, 2026-06-15. Counting instead from the
+  2026-05-19 introduction, which is the span the original "12" was actually bound to, gives
+  **13** by direct count — a different span than the one the sentence's claim was making, not
+  a rounding error.
+
+The paragraph's argument is unaffected by either correction: one content change nobody
+received is still a change nobody received, and a capability change that does not move the
+version is not installable as a change. The version bump lands with this amendment's own
+commit, to `1.1.0`.
 
 ## Context
 
@@ -252,8 +309,10 @@ inventory is nine skills and two agents.
   flag to be true.
 - `.mcp.json` existence sets `has_mcp`. If absent, a truthy `plugin.json.mcpServers`
   also sets it.
-- The current official bundle has neither hooks nor MCP configuration, so both flags
-  are false.
+- The current official bundle has no `hooks/hooks.json`, so `has_hooks` is false. It
+  declares `mcpServers.lion` inline in `plugin.json` and ships no `.mcp.json`, so
+  `has_mcp` is true and the `plugin.json` fallback path is the one that sets it — see
+  Amendment 2.
 - Files outside the direct `skills/<directory>` and `agents/*.md` patterns are support
   material, not separately enumerated capabilities.
 
@@ -541,7 +600,7 @@ the async server loop.
 |---|---|---|---|
 | 1 | Add a marketplace consistency check that validates every official source path, matches each catalog name to its plugin metadata, and confirms directory-discovered skills and agents are readable; acceptance: catalog or layout drift fails the focused test. | S | (filled at issue-open time) |
 | 2 | Generate or validate the marketplace README inventory from the root manifest and directory scan; acceptance: the documented official plugins and capability lists cannot disagree with repository discovery. | S | (filled at issue-open time) |
-| 3 | Re-record the MCP state in D2 at the commit where the bundle first declares a server: `has_mcp` and the "neither hooks nor MCP configuration" sentence both stop being true at that commit, and neither is amended before it. The bundle is to declare `mcpServers` in `plugin.json` and ship no `.mcp.json`, so D6's `.mcp.json`-over-`plugin.json.mcpServers` precedence never engages and exactly one carrier defines the server; acceptance: this document names the single carrier and the flag sentence agrees with the tree. | S | (filled at issue-open time) |
+| 3 | **Closed by Amendment 2 (2026-07-30).** Re-record the MCP state in D2 at the commit where the bundle first declares a server: `has_mcp` and the "neither hooks nor MCP configuration" sentence both stop being true at that commit, and neither is amended before it. The bundle is to declare `mcpServers` in `plugin.json` and ship no `.mcp.json`, so D6's `.mcp.json`-over-`plugin.json.mcpServers` precedence never engages and exactly one carrier defines the server; acceptance: this document names the single carrier and the flag sentence agrees with the tree. | S | closed |
 
 ## Alternatives considered
 

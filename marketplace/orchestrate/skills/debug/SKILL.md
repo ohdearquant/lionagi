@@ -32,12 +32,12 @@ Systematic approach to difficult debugging. Research → Orchestrate → Escalat
 | Phase | Action | Gate |
 |-------|--------|------|
 | **1. Research** | Check prior runs, search codebase, spawn researcher agent | 2-3 focused queries before any fix attempt |
-| **2. Orchestrate** | Parallel diagnostic agents via `li o fanout` or focused analyst | Agent must produce actionable insight |
+| **2. Orchestrate** | Parallel diagnostic agents via `fanout.submit`, or a focused agent via `agent.submit` | Agent must produce actionable insight |
 | **3. Escalate** | Generate consultation request with full evidence | Must demonstrate exhaustive research first |
 | **4. Document** | Write fix to `./notes/debug-log.md` | Only after resolution |
 
 See [research-protocol.md](research-protocol.md) for detailed methodology, agent selection
-table, phase-by-phase commands, and escalation template.
+table, phase-by-phase MCP calls, and escalation template.
 
 ## Key Principles
 
@@ -49,6 +49,10 @@ table, phase-by-phase commands, and escalation template.
 
 ## Relevant Source Files
 
-- `lionagi/cli/agent.py` — `li agent` one-shot and resumed turn entry point
-- `lionagi/cli/orchestrate/fanout.py` — `li o fanout` parallel workers
-- `lionagi/cli/_runs.py` — run persistence at `~/.lionagi/runs/`
+These are the CLI-side entry points; read them if you're working inside a lionagi
+checkout. A plugin install has no access to them — it only sees the MCP server.
+
+- `lionagi/cli/agent.py` — `li agent`, the CLI counterpart of `agent.submit`
+- `lionagi/cli/orchestrate/fanout.py` — `li o fanout`, the CLI counterpart of `fanout.submit`
+- `lionagi/cli/_runs.py` — run persistence at `~/.lionagi/runs/`, also readable
+  through `job.status` / `job.output`

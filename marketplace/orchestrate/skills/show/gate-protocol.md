@@ -4,27 +4,44 @@ Gate agents, verdict format, decision logic, and abort/resume protocols.
 
 ## Per-play gate agent
 
-After the play completes (`running_complete`), run a gate agent to evaluate its output:
+After the play's run reaches a terminal state (`job.wait` reports it done), submit a gate
+agent to evaluate its output. `agent.submit` is a spawn verb — its op needs the current
+`schema_fingerprint`, from `help='agent.submit'`:
 
-```bash
-li agent -a reviewer "$(cat <<'EOF'
-You are the gate agent for play '$PLAY' of show '$TOPIC'.
-
-Read the play output in $PLAY_DIR/.log and any artifacts saved to $PLAY_DIR/.
-
-Acceptance criteria from _intent.md:
-$(cat $PLAY_DIR/_intent.md)
-
-Evaluate: did the play meet every acceptance criterion?
-
-Output ONLY valid JSON to stdout:
-{"gate_passed": true,  "feedback": null,    "notes": "All criteria met."}
-{"gate_passed": false, "feedback": "Missing error handling for X.", "notes": null}
-EOF
-)"
+```json
+{"help": "agent.submit"}
 ```
 
-Write the result to `$PLAY_DIR/_verdict.json`.
+```json
+{
+  "ops": [
+    {
+      "op": "agent.submit",
+      "args": {
+        "agent": "reviewer",
+        "prompt": "You are the gate agent for play '<play>' of show '<topic>'. Read the play output (job.output for run_id <run_id>) and any artifacts saved to <play_dir>. Acceptance criteria from _intent.md: <contents of _intent.md>. Evaluate: did the play meet every acceptance criterion? Output ONLY valid JSON to stdout: {\"gate_passed\": true, \"feedback\": null, \"notes\": \"All criteria met.\"} or {\"gate_passed\": false, \"feedback\": \"Missing error handling for X.\", \"notes\": null}"
+      },
+      "schema_fingerprint": "<from the help call above>"
+    }
+  ]
+}
+```
+
+Wait for the gate run and read its result:
+
+```json
+{"ops": [{"op": "job.wait", "args": {"run_ids": ["<gate_run_id>"]}}]}
+```
+
+```json
+{"ops": [{"op": "job.output", "args": {"run_id": "<gate_run_id>"}}]}
+```
+
+Write the parsed result to `$PLAY_DIR/_verdict.json`.
+
+**Checkout-local alternative.** Inside a lionagi checkout, `li agent -a reviewer "<prompt>"`
+runs the same gate as a foreground call and prints the JSON verdict to stdout directly,
+without a `run_id` round-trip.
 
 ## Verdict JSON schema
 
@@ -58,16 +75,19 @@ Written to `$SHOW_DIR/_final_verdict.json`:
 {"show_passed": false, "summary": "...", "blockers": ["play_name: reason"]}
 ```
 
-## Invocation tracking
+## Grouping runs under one show
 
-Studio's `/invocations` page groups all sessions fired by a show under one parent record.
-Every `li play` call in the show should carry `--invocation "$INV_ID"`.
+Studio's `/invocations` page can group a set of related sessions under one parent record via
+`li invoke start`/`li invoke end`, but that mechanism is CLI-only: there is no `invoke.*`
+verb on the MCP surface, because the server has no caller identity to attach an invocation
+record to. If you fire plays through the `li` CLI directly inside a checkout, you can still
+use it:
 
 ```bash
 # At show start
 INV_ID=$(li invoke start --skill show --prompt "$TOPIC" 2>/dev/null || echo "")
 
-# Each play (pass-through — li play forwards to li o flow)
+# Each play (pass-through — li play forwards to a flow run)
 li play <name> "<prompt>" --yolo --bypass --invocation "$INV_ID"
 
 # At show end
@@ -75,8 +95,9 @@ li play <name> "<prompt>" --yolo --bypass --invocation "$INV_ID"
 # or: --status failed / --status aborted
 ```
 
-If `li invoke` is unavailable (older install), omit the `--invocation` flag — plays still
-run and appear in `/runs`; they just won't be grouped under a show parent in `/invocations`.
+Plays fired through `play.submit` are not grouped this way, and don't need to be: every
+play's `run_id` is already recoverable from its own `_meta.json`, and `job.status`/
+`job.output`/`job.wait` key on `run_id` directly rather than on an invocation.
 
 Source: `lionagi/cli/invoke.py`.
 
@@ -96,14 +117,14 @@ Before firing any new play, check:
 [ -f "$SHOW_DIR/_ABORT" ] && { echo "Show aborted — not launching $PLAY"; exit 0; }
 ```
 
-**Hard abort** — kill running plays immediately:
+**Hard abort** — stop running plays immediately:
 
-```bash
-for pid_file in "$SHOW_DIR"/*/.pid; do
-  PID=$(cat "$pid_file" 2>/dev/null)
-  [ -n "$PID" ] && kill "$PID" 2>/dev/null
-done
+```json
+{"ops": [{"op": "job.kill", "args": {"run_id": "<run_id>"}}]}
 ```
+
+Do this once per play directory with a non-terminal `_meta.json` status. Checkout-local
+alternative: `li kill <run_id>` does the same thing without going through the MCP server.
 
 Worktrees are preserved after abort for forensic review. Clean up manually:
 
@@ -118,19 +139,25 @@ On resuming a show, classify each play directory and act:
 | Play status | Action |
 |---|---|
 | `merged` | Skip — already in integration branch |
-| `running` | Check `.pid`. If PID alive: wait. If dead: mark `exit_code` unknown, re-gate. |
+| `running` | Check the run: `job.status` for its `run_id`. Live → wait. Terminal but ungated → re-gate. |
 | `running_complete` | Run gate (Step 5) — play finished but was not yet evaluated |
 | `gate_failed` attempt 1 | Redo with feedback (Step 6b) |
 | `gate_failed` attempt 2 | Escalate (Step 6c) |
 | `escalated` | Log in `_show.md`, continue with other plays |
 | `pending` | Check deps — if all deps merged, fire (Step 4) |
 
-Resume bash check:
+Resume check: `job.status` takes one `run_id` per call, but a single request's `ops` array
+can carry several `job.status` entries — or one `job.wait` with a `run_ids` list — instead of
+looping separate requests:
 
-```bash
-for play_dir in "$SHOW_DIR"/*/; do
-  play=$(basename "$play_dir")
-  status=$(python3 -c "import json; d=json.load(open('$play_dir/_meta.json')); print(d.get('status','pending'))" 2>/dev/null || echo "pending")
-  echo "$play: $status"
-done
+```json
+{
+  "ops": [
+    {"op": "job.status", "args": {"run_id": "<run_id from play A's _meta.json>"}},
+    {"op": "job.status", "args": {"run_id": "<run_id from play B's _meta.json>"}}
+  ]
+}
 ```
+
+For any play whose `_meta.json` predates `play.submit` adoption and still has a `.pid` file
+instead of a `run_id`, fall back to `kill -0 "$(cat "$play_dir/.pid")"` to check liveness.

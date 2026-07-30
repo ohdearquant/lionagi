@@ -2,12 +2,19 @@
 
 Team coordination patterns, invocation tracking, and scheduling.
 
+**Both team messaging and invocation tracking are CLI-only today** — neither is in the
+published MCP verb catalog (`reference.md` lists all eleven verbs the MCP tool exposes).
+Reach them through `li team` and `li invoke` from inside a lionagi checkout; nothing in
+this file has an MCP equivalent yet.
+
 ---
 
-## Team Coordination
+## Team Coordination (CLI-only)
 
 Teams enable inter-agent messaging during a flow or fanout. Agents can broadcast
-findings or ask peers for clarification.
+findings or ask peers for clarification. This is orthogonal to which interface submitted
+the run — a flow's own agents message each other through the team regardless — but
+*creating, listing, and sending to* a team from the outside is a CLI operation only.
 
 ### Fresh team per invocation (`--team-mode`)
 
@@ -60,10 +67,12 @@ li team receive --team my-team --as reviewer
 
 ---
 
-## Invocation Tracking (ADR-0020)
+## Invocation Tracking (ADR-0020, CLI-only)
 
 Group multiple sessions spawned by a skill into one parent record, visible
-in Studio's `/invocations` page.
+in Studio's `/invocations` page. `job.list` (MCP) shows recent runs newest-first with a
+status filter, but grouping several runs under one shared parent record is not exposed as
+an MCP verb — it needs `li invoke`:
 
 ```bash
 # Open an invocation
@@ -92,8 +101,9 @@ Accepted statuses: `completed`, `failed`, `timed_out`, `aborted`, `cancelled`.
 ## Scheduling (ADR-0027)
 
 The Studio scheduler engine fires `li agent`, `li o flow`, and `li play` as
-subprocesses on a schedule. Manage schedules via the Studio UI at `/schedules`
-or the REST API.
+subprocesses on a schedule — this is a background service, not something a chat session
+drives directly through either the MCP tool or the CLI. Manage schedules via the Studio UI
+at `/schedules` or the REST API.
 
 ### Trigger types
 

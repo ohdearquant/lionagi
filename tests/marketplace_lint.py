@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import itertools
+import json
 import re
 import sys
 from pathlib import Path
@@ -116,21 +119,24 @@ _KNOWN_MCP_SERVERS: frozenset[str] = frozenset(
     }
 )
 
-# Top-level `li` subcommands derived from lionagi/cli/main.py
-# (agent, o/orchestrate, team, studio, state, invoke) plus sugar (play, skill)
-_KNOWN_LI_SUBCOMMANDS: frozenset[str] = frozenset(
-    {
-        "agent",
-        "o",
-        "orchestrate",
-        "team",
-        "studio",
-        "state",
-        "invoke",
-        "play",  # sugar for li o flow -p NAME
-        "skill",  # prints skill body
-    }
-)
+
+# Top-level `li` subcommands. The registry half is READ FROM THE CLI, not
+# listed here: a hand-maintained copy goes stale in the direction that rejects
+# true documentation, and it did. It named eleven while the CLI registered
+# twenty-three, so a skill correctly documenting `li monitor` or `li runs`
+# failed this check while nothing re-derived the list.
+#
+# `play` and `skill` must stay explicit because they are NOT in the registry.
+# Both are handled by a pre-parse shim ahead of argparse, so they are absent
+# from `li --help` and from _COMMAND_BY_NAME while being real commands with
+# their own usage output. Deriving alone would therefore reject them.
+def _known_li_subcommands() -> frozenset[str]:
+    from lionagi.cli.main import _COMMAND_BY_NAME
+
+    return frozenset(_COMMAND_BY_NAME) | {"play", "skill"}
+
+
+_KNOWN_LI_SUBCOMMANDS: frozenset[str] = _known_li_subcommands()
 
 # Explicitly banned model strings (deprecated / hallucinated names)
 _BANNED_MODELS: list[tuple[re.Pattern[str], str]] = [
@@ -1003,3 +1009,171 @@ def test_unreadable_file_is_reported_rather_than_raised(tmp_path: Path) -> None:
     good = tmp_path / "good.md"
     good.write_text("---\ndescription: a real description\n---\nbody\n")
     assert _frontmatter_problem(good) == ""
+
+
+# ---------------------------------------------------------------------------
+# mcpServers gate
+#
+# `validate_manifests.py` checks a plugin.json's `mcpServers` block is a dict and
+# each entry inside it is too, before ever calling a dict method on either. The
+# per-plugin branch and the standalone-scan branch share one gate function, so a
+# non-object value (a string, a list) is reported as FAIL rather than raising
+# AttributeError from `.get(...)` on something that is not a dict. Both branches
+# are exercised end to end here, broken on purpose and then restored, because a
+# clean run cannot tell a check that passed from a check that never looked.
+# ---------------------------------------------------------------------------
+
+
+def _mcp_gate():
+    if _SCRIPTS_DIR not in sys.path:
+        sys.path.insert(0, _SCRIPTS_DIR)
+    from validate_manifests import _mcp_servers_gate
+
+    return _mcp_servers_gate
+
+
+def _validator_main():
+    if _SCRIPTS_DIR not in sys.path:
+        sys.path.insert(0, _SCRIPTS_DIR)
+    from validate_manifests import main
+
+    return main
+
+
+def test_mcp_servers_gate_accepts_absent_and_empty() -> None:
+    """No block and an empty block both mean 'nothing to check', not a failure."""
+    gate = _mcp_gate()
+    assert gate(None) == ({}, [])
+    assert gate({}) == ({}, [])
+
+
+@pytest.mark.parametrize("bad", ["stub-server", ["lion"], 5, True], ids=type)
+def test_mcp_servers_gate_rejects_non_object_top_level(bad: object) -> None:
+    """A string, list, number or bool where mcpServers should be an object is
+    reported by name and type, and nothing is left for the caller to iterate."""
+    gate = _mcp_gate()
+    usable, problems = gate(bad)
+    assert usable == {}
+    assert len(problems) == 1
+    assert "'mcpServers' must be an object" in problems[0]
+    assert type(bad).__name__ in problems[0]
+
+
+def test_mcp_servers_gate_drops_non_object_entries_and_keeps_the_rest() -> None:
+    """A malformed entry is reported and excluded; a well-formed sibling survives
+    so the stub check downstream still runs on it."""
+    gate = _mcp_gate()
+    usable, problems = gate({"lion": {"command": "uvx"}, "bad": "not-an-object", "worse": [1, 2]})
+    assert usable == {"lion": {"command": "uvx"}}
+    assert len(problems) == 2
+    assert any("mcpServers['bad']" in p and p.endswith("got str") for p in problems)
+    assert any("mcpServers['worse']" in p and p.endswith("got list") for p in problems)
+
+
+def _write_marketplace_json(root: Path, plugins: list[dict]) -> None:
+    manifest_dir = root / ".claude-plugin"
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    (manifest_dir / "marketplace.json").write_text(
+        json.dumps({"name": "x", "version": "1.0.0", "description": "d", "plugins": plugins})
+    )
+
+
+def _run_validator(main, repo_root: Path) -> tuple[int, str]:
+    stdout = io.StringIO()
+    with contextlib.redirect_stdout(stdout):
+        rc = main(repo_root=repo_root)
+    return rc, stdout.getvalue()
+
+
+def test_per_plugin_malformed_mcp_server_entry_fails_without_raising(tmp_path: Path) -> None:
+    """The defect this pins: a string-valued mcpServers entry used to raise
+    AttributeError from `.get("type")` inside the per-plugin branch of main(),
+    because the entry's type was never checked before that call. Broken on
+    purpose here with a non-object entry — the run must answer FAIL, never a
+    traceback — then restored to a well-formed entry to prove the failure was
+    about the malformed value and not something else in the fixture.
+    """
+    plugin_dir = tmp_path / "marketplace" / "p1"
+    skill_dir = plugin_dir / "skills" / "hello"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\ndescription: d\n---\nbody\n")
+    plugin_json_dir = plugin_dir / ".claude-plugin"
+    plugin_json_dir.mkdir(parents=True)
+    plugin_json = plugin_json_dir / "plugin.json"
+    plugin_json.write_text(
+        json.dumps(
+            {
+                "name": "p1",
+                "version": "1.0.0",
+                "description": "d",
+                "mcpServers": {"lion": "not-an-object"},
+            }
+        )
+    )
+    _write_marketplace_json(
+        tmp_path, [{"name": "p1", "source": "./marketplace/p1", "description": "d"}]
+    )
+
+    main = _validator_main()
+    rc, output = _run_validator(main, tmp_path)
+    assert rc == 1
+    assert "FAIL [p1]: plugin.json mcpServers['lion'] must be an object, got str" in output, output
+    assert "Traceback" not in output
+
+    plugin_json.write_text(
+        json.dumps(
+            {
+                "name": "p1",
+                "version": "1.0.0",
+                "description": "d",
+                "mcpServers": {"lion": {"command": "uvx"}},
+            }
+        )
+    )
+    rc, output = _run_validator(main, tmp_path)
+    assert rc == 0
+    assert "PASS [p1]" in output
+
+
+def test_standalone_malformed_mcp_server_entry_fails_without_raising(tmp_path: Path) -> None:
+    """The same defect class on the standalone-scan branch: a plugin.json not
+    referenced by marketplace.json still has to answer FAIL rather than raise
+    when one of its mcpServers entries is not an object.
+    """
+    _write_marketplace_json(tmp_path, [])
+    plugin_dir = tmp_path / "marketplace" / "p2"
+    plugin_json_dir = plugin_dir / ".claude-plugin"
+    plugin_json_dir.mkdir(parents=True)
+    plugin_json = plugin_json_dir / "plugin.json"
+    plugin_json.write_text(
+        json.dumps(
+            {
+                "name": "p2",
+                "version": "1.0.0",
+                "description": "d",
+                "mcpServers": {"lion": ["not", "an", "object"]},
+            }
+        )
+    )
+
+    main = _validator_main()
+    rc, output = _run_validator(main, tmp_path)
+    assert rc == 1
+    assert (
+        "FAIL [standalone:p2]: plugin.json mcpServers['lion'] must be an object, got list" in output
+    ), output
+    assert "Traceback" not in output
+
+    plugin_json.write_text(
+        json.dumps(
+            {
+                "name": "p2",
+                "version": "1.0.0",
+                "description": "d",
+                "mcpServers": {"lion": {"command": "uvx"}},
+            }
+        )
+    )
+    rc, output = _run_validator(main, tmp_path)
+    assert rc == 0
+    assert "PASS [standalone:p2]" in output

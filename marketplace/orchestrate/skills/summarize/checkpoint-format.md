@@ -43,13 +43,39 @@ status: continuing
 
 ## Episodic Capture (inline, no file needed)
 
-For quick captures that don't warrant a file, write a brief structured note to the run log:
+For quick captures that don't warrant a file, delegate the capture to a sub-agent through
+the plugin's MCP server rather than writing it out inline. `agent.submit` is a spawn verb —
+ask for its current `schema_fingerprint` before the first call:
 
-```bash
-# Session artifacts land in ~/.lionagi/runs/{run_id}/artifacts/
-# For a running li agent session, --save persists the transcript automatically
-li agent --save --prompt "Summarize progress on [topic] in 5 bullet points"
+```json
+{"help": "agent.submit"}
 ```
+
+Then submit:
+
+```json
+{
+  "ops": [
+    {
+      "op": "agent.submit",
+      "args": {"prompt": "Summarize progress on [topic] in 5 bullet points", "agent": "commentator"},
+      "schema_fingerprint": "<from the help call above>"
+    }
+  ]
+}
+```
+
+The reply carries a `run_id`. Its transcript and artifacts land under
+`~/.lionagi/runs/{run_id}/artifacts/`; read them back with:
+
+```json
+{"ops": [{"op": "job.output", "args": {"run_id": "<run_id>"}}]}
+```
+
+**Checkout-local alternative.** Inside a lionagi checkout, `li agent --save --prompt
+"Summarize progress on [topic] in 5 bullet points"` does the same capture as a foreground
+call, with `--save` persisting the transcript to the same `~/.lionagi/runs/{run_id}/`
+location without a `run_id` round-trip.
 
 ## Continue Working
 

@@ -2,6 +2,12 @@
 
 ## Complete Field Table
 
+Over MCP, call `play.submit` with `args: {playbook: "<name>", ...}`, where the
+remaining keys are the underscore form of the fields below (e.g. `max_ops`,
+`with_synthesis`). Confirm exact argument names for your published server version
+with `help=true` before relying on this table. The CLI column applies only inside
+a lionagi checkout.
+
 | Field | Type | CLI equivalent | Description |
 |---|---|---|---|
 | `name` | str | — | Playbook identifier. Must match the filename stem exactly. |
@@ -20,11 +26,11 @@
 | `show_graph` | bool | `--show-graph` | Render a DAG visualisation after planning. |
 | `save` | str | `--save` | Directory to write artifact output to. |
 | `prompt` | str | — | Template string. May contain `{input}` and `{arg_name}` placeholders. |
-| `args` | dict | dynamic flags | Typed argument schema. Each key becomes a CLI flag. |
+| `args` | dict | dynamic flags | Typed argument schema. Each key becomes a CLI flag, or an `args` entry in the `play.submit` MCP call. |
 
 **Key normalization**: top-level keys accept both dash and underscore forms
-(`max-ops` and `max_ops` both work). The `args:` block is an exception — use
-only underscore keys there (see Pitfalls).
+(`max-ops` and `max_ops` both work) on the CLI. The `args:` block is an exception — use
+only underscore keys there (see Pitfalls). Over MCP, always pass underscore keys.
 
 ---
 
@@ -49,7 +55,24 @@ args:
     help: "fail on any finding above MEDIUM severity"
 ```
 
-These become CLI flags: `li play audit --mode security --workers 4 --strict "scan auth/"`
+Over MCP, `playbook` and `prompt` are confirmed `play.submit` argument names; how a
+custom `args:` field such as `mode` or `strict` is passed alongside them is not pinned
+here — call `help=true` and read `play.submit`'s own argument list before wiring one up,
+for example:
+
+```json
+{
+  "ops": [
+    {
+      "op": "play.submit",
+      "args": {"playbook": "audit", "prompt": "scan auth/"}
+    }
+  ]
+}
+```
+
+Inside a lionagi checkout, the same run with the custom flags set is:
+`li play audit --mode security --workers 4 --strict "scan auth/"`
 
 **Field rules**:
 - `type` must be one of `str`, `int`, `float`, `bool`
@@ -63,8 +86,9 @@ These become CLI flags: `li play audit --mode security --workers 4 --strict "sca
 
 The `prompt` field is a template. Substitution rules:
 
-1. `{input}` is replaced with the positional text the user passes after the playbook name.
-2. `{arg_name}` is replaced with the value of the corresponding arg (CLI override or default).
+1. `{input}` is replaced with the positional text the user passes — the `prompt` argument
+   on a `play.submit` call, or the trailing quoted string on `li play <name> "..."`.
+2. `{arg_name}` is replaced with the value of the corresponding arg (override or default).
 3. If the template has **no** placeholders and the user passed positional text, the positional
    text is appended after a blank line (CC-skill style).
 4. Missing keys are left as literal `{name}` tokens — they do not raise errors.
@@ -76,8 +100,8 @@ prompt: |
   Target: {input}
 ```
 
-If the user runs `li play audit "src/auth/"`, and `mode=dry`, `workers=8`, `strict=false`,
-the rendered prompt becomes:
+If `mode=dry`, `workers=8`, `strict=false`, and the caller passes `"src/auth/"`
+(inside a lionagi checkout: `li play audit "src/auth/"`), the rendered prompt becomes:
 
 ```
 Run a dry audit with 8 parallel workers. Strict: False.

@@ -31,9 +31,42 @@ Pick dimensions based on what the PR touches. Do NOT invent new dimensions
 Each specialist writes `{role}_review/{role}_findings.md` — a severity x file:line x suggestion
 table. No prose, structured data only.
 
-### Running with `li o fanout`
+### Running with `fanout.submit`
 
-For a quick parallel fan-out where each specialist is independent:
+For a quick parallel fan-out where each specialist is independent, call the plugin's
+MCP tool, `mcp__plugin_orchestrate_lion__request`, with one `fanout.submit` op per
+dimension (or a single call with a `synthesis_prompt` if you want the fan-out itself
+to consolidate — see `help=true` for the exact fields your published server exposes):
+
+```json
+{
+  "ops": [
+    {
+      "op": "fanout.submit",
+      "args": {
+        "prompt": "Review PR #<pr_ref> for correctness only. Diff is at _context/diff.txt. Write findings to correctness_review/findings.md.",
+        "num_workers": 1
+      }
+    },
+    {
+      "op": "fanout.submit",
+      "args": {
+        "prompt": "Review PR #<pr_ref> for security only. Diff is at _context/diff.txt. Write findings to security_review/findings.md.",
+        "num_workers": 1
+      }
+    },
+    {
+      "op": "fanout.submit",
+      "args": {
+        "prompt": "Review PR #<pr_ref> for test coverage only. Diff is at _context/diff.txt. Write findings to tests_review/findings.md.",
+        "num_workers": 1
+      }
+    }
+  ]
+}
+```
+
+Inside a lionagi checkout, the CLI equivalent is `li o fanout`:
 
 ```bash
 li o fanout \
@@ -42,9 +75,30 @@ li o fanout \
   "Review PR #<pr_ref> for test coverage only. Diff is at _context/diff.txt. Write findings to tests_review/findings.md."
 ```
 
-### Running with `li o flow` (DAG with synthesis)
+### Running with `flow.submit` (DAG with synthesis)
 
-For a structured plan with critic synthesis:
+For a structured plan with critic synthesis, describe the whole task in one prompt
+and let the planner build the DAG:
+
+```json
+{
+  "ops": [
+    {
+      "op": "flow.submit",
+      "args": {
+        "prompt": "Phase 0: fetch diff with gh pr diff <pr_ref> and save to _context/diff.txt. Phase 1: run correctness, security, and tests specialists in parallel. Phase 2: critic synthesises all findings into critic_final/final_synthesis.md.",
+        "agent": "orchestrator"
+      }
+    }
+  ]
+}
+```
+
+`flow.submit` plans a DAG, so it will naturally sequence Phase 0 before Phase 1 and
+Phase 1 before Phase 2. Track it with `job.wait` (`args: {"run_ids": ["<id>"]}`) and
+read the result with `job.output`.
+
+Inside a lionagi checkout, the CLI equivalent is `li o flow`:
 
 ```bash
 li o flow "
@@ -53,9 +107,6 @@ li o flow "
   Phase 2: critic synthesises all findings into critic_final/final_synthesis.md.
 "
 ```
-
-The `li o flow` orchestrator plans a DAG, so it will naturally sequence
-Phase 0 before Phase 1 and Phase 1 before Phase 2.
 
 ## Phase 2 — Discussion (optional)
 

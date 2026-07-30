@@ -40,7 +40,7 @@ Source: `lionagi/state/schema.sql` line ~218.
 |---|---|
 | `pending` | Not yet started; waiting for deps to merge |
 | `prepared` | Worktree and prompt files written; not yet fired |
-| `running` | `li play` process is live (`.pid` present) |
+| `running` | The play's run is live (`job.status` for its `run_id` reports it non-terminal) |
 | `running_complete` | Process exited; gate not yet run |
 | `gated` | Gate ran and passed (synonym: about to merge) |
 | `gate_failed` | Gate ran and failed; may redo |

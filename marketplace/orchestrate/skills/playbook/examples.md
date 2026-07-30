@@ -30,7 +30,13 @@ prompt: |
   with one concrete example.
 ```
 
-Run: `li play minimal "what is a monad?"`
+Run with `play.submit`:
+
+```json
+{"ops": [{"op": "play.submit", "args": {"playbook": "minimal", "prompt": "what is a monad?"}}]}
+```
+
+Inside a lionagi checkout: `li play minimal "what is a monad?"`
 
 The positional text is appended after a blank line because `{input}` is not
 declared in the template. This is equivalent to a `{input}` placeholder at the
@@ -72,10 +78,19 @@ prompt: |
   all workers return.
 ```
 
-Run: `li play audit --mode security --workers 4 "src/auth/"`
+Run with `play.submit`, the `playbook` and `prompt` (`{input}`) args:
+
+```json
+{"ops": [{"op": "play.submit", "args": {"playbook": "audit", "prompt": "src/auth/"}}]}
+```
+
+Setting the custom `mode`/`workers`/`strict` args away from their YAML defaults over
+MCP is not pinned in this guide — call `help=true` and read `play.submit`'s own
+argument list first. Inside a lionagi checkout, the same run with those flags set is:
+`li play audit --mode security --workers 4 --strict "src/auth/"`
 
 Key points:
-- `argument-hint` populates the `--help` display but does not affect parsing.
+- `argument-hint` populates the CLI `--help` display but does not affect parsing.
 - `args:` keys must use underscores (not dashes). `strict` is a `bool` arg, so
   passing `--strict` on the CLI sets it to `true` without a value.
 - `{input}` receives the positional text (`"src/auth/"`).
@@ -249,7 +264,15 @@ prompt: |
   <Numbered list of CRITICAL and HIGH items only>
 ```
 
-Run: `li play pr-review --focus security --depth deep 123`
+Run with `play.submit` (custom `focus`/`depth`/`repo`/`comment` args over MCP are not
+pinned here — check `help=true` first):
+
+```json
+{"ops": [{"op": "play.submit", "args": {"playbook": "pr-review", "prompt": "123"}}]}
+```
+
+Inside a lionagi checkout, the same run with those flags set is:
+`li play pr-review --focus security --depth deep 123`
 
 Key points:
 - `show-graph: true` renders the DAG after planning — useful for auditing what

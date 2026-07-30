@@ -58,10 +58,15 @@ cargo test --workspace                 # full workspace
 Check after each cycle: `uv run pytest --cov=src --cov-report=term-missing`
 
 See [methodology.md](methodology.md) for detailed cycle steps, multi-cycle patterns,
-parallel agent TDD with `li o fanout`, anti-patterns, and lint/quality commands.
+parallel agent TDD through the plugin's MCP server (`fanout.submit`), anti-patterns, and
+lint/quality commands.
 
 ## Relevant Source Files
 
-- `lionagi/cli/orchestrate/fanout.py` — `li o fanout` parallel workers for multi-agent TDD
-- `lionagi/cli/agent.py` — `li agent` for single-agent implementation sessions
+- `lionagi/mcp/server.py`, `lionagi/mcp/verbs.py` — `fanout.submit` / `agent.submit`, the
+  MCP path for parallel and single-agent TDD sessions
+- `lionagi/cli/orchestrate/fanout.py` — `li o fanout`, the checkout-local equivalent for
+  parallel workers
+- `lionagi/cli/agent.py` — `li agent`, the checkout-local equivalent for a single-agent
+  implementation session
 - `pyproject.toml` — project test configuration and coverage settings

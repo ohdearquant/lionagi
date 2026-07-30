@@ -164,6 +164,33 @@ def _frontmatter_problem(path: Path) -> str:
     return _frontmatter_description_problem(text)
 
 
+def _mcp_servers_gate(mcp: object) -> tuple[dict[str, dict], list[str]]:
+    """Validate a plugin.json 'mcpServers' block without ever raising.
+
+    Returns the entries safe to iterate further (e.g. for the stub check) plus a
+    list of problem descriptions. A malformed top-level block, or an entry whose
+    value is not itself an object, is reported and dropped from the returned
+    dict — never left in it — so a caller can keep going without calling a dict
+    method on something that turned out not to be one. Both the per-plugin and
+    the standalone-scan branch share this gate, so a fix here fixes both at once
+    and the two can never drift back apart.
+    """
+    if mcp is None:
+        return {}, []
+    if not isinstance(mcp, dict):
+        return {}, [f"'mcpServers' must be an object, got {type(mcp).__name__}"]
+    usable: dict[str, dict] = {}
+    problems: list[str] = []
+    for server_name, server_cfg in mcp.items():
+        if not isinstance(server_cfg, dict):
+            problems.append(
+                f"mcpServers['{server_name}'] must be an object, got {type(server_cfg).__name__}"
+            )
+            continue
+        usable[server_name] = server_cfg
+    return usable, problems
+
+
 def _is_plain_top_level_key(key: str) -> bool:
     """Whether a key is one this validator can read without a parser."""
     return bool(key) and key[0].isalpha() and all(c.isalnum() or c in "_-" for c in key)
@@ -250,8 +277,9 @@ def _frontmatter_description_ok(text: str) -> bool:
     return not _frontmatter_description_problem(text)
 
 
-def main() -> int:
-    repo_root = Path(__file__).parent.parent.parent
+def main(repo_root: Path | None = None) -> int:
+    if repo_root is None:
+        repo_root = Path(__file__).parent.parent.parent
     manifest_path = repo_root / ".claude-plugin" / "marketplace.json"
 
     if not manifest_path.exists():
@@ -395,25 +423,13 @@ def main() -> int:
                     # never a traceback, which means the type check must GATE the
                     # iteration rather than only report alongside it. The same applies
                     # one level down, to each entry inside the block.
-                    mcp = per_plugin.get("mcpServers")
-                    if mcp is None:
-                        mcp = {}
-                    elif not isinstance(mcp, dict):
-                        print(
-                            f"FAIL [{name}]: plugin.json 'mcpServers' must be an object, got {type(mcp).__name__}"
-                        )
+                    mcp, mcp_problems = _mcp_servers_gate(per_plugin.get("mcpServers"))
+                    for problem in mcp_problems:
+                        print(f"FAIL [{name}]: plugin.json {problem}")
                         plugin_ok = False
                         failures += 1
-                        mcp = {}
-                    for server_name, server_cfg in mcp.items():
-                        if not isinstance(server_cfg, dict):
-                            print(
-                                f"FAIL [{name}]: plugin.json mcpServers['{server_name}'] must be "
-                                f"an object, got {type(server_cfg).__name__}"
-                            )
-                            plugin_ok = False
-                            failures += 1
-                        elif server_cfg.get("type") == "stub":
+                    for server_cfg in mcp.values():
+                        if server_cfg.get("type") == "stub":
                             print(f"FAIL [{name}]: plugin.json contains stub mcpServers entry")
                             plugin_ok = False
                             failures += 1
@@ -437,27 +453,13 @@ def main() -> int:
                     print(f"FAIL [standalone:{plugin_dir}]: plugin.json missing '{field}'")
                     failures += 1
                     ok = False
-            mcp = pdata.get("mcpServers")
-            if mcp is None:
-                mcp = {}
-            elif not isinstance(mcp, dict):
-                print(
-                    f"FAIL [standalone:{plugin_dir}]: plugin.json 'mcpServers' must be an "
-                    f"object, got {type(mcp).__name__}"
-                )
+            mcp, mcp_problems = _mcp_servers_gate(pdata.get("mcpServers"))
+            for problem in mcp_problems:
+                print(f"FAIL [standalone:{plugin_dir}]: plugin.json {problem}")
                 failures += 1
                 ok = False
-                mcp = {}
-            for server_name, server_cfg in mcp.items():
-                if not isinstance(server_cfg, dict):
-                    print(
-                        f"FAIL [standalone:{plugin_dir}]: plugin.json "
-                        f"mcpServers['{server_name}'] must be an object, got "
-                        f"{type(server_cfg).__name__}"
-                    )
-                    failures += 1
-                    ok = False
-                elif server_cfg.get("type") == "stub":
+            for server_cfg in mcp.values():
+                if server_cfg.get("type") == "stub":
                     print(
                         f"FAIL [standalone:{plugin_dir}]: plugin.json contains stub mcpServers entry"
                     )
