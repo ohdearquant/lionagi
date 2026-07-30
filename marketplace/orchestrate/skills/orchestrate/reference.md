@@ -38,7 +38,17 @@ Read the catalog before writing a call you're not sure of. It names every verb's
 parameters and, for the four that need one, the `schema_fingerprint` to send with the call
 (see below) — often enough to write the call correctly with no second round-trip.
 
-## The eleven verbs
+## The verbs these skills use
+
+The catalog is larger than this table, and it is the authority: read it with `help=true`
+rather than treating any list written here as closed. Two things it tells you that a table
+cannot. First, it names verbs beyond orchestration — schedules, run history, lifecycle and
+state reads, team and invocation reads, server health. Second, some entries are there to
+say the server will *not* run them, each with its reason: `team.send` and `invoke.start`
+are named that way, so a call to one is refused with an explanation rather than failing as
+an unknown verb.
+
+The verbs the skills in this bundle actually call:
 
 | Verb | Does | Detached run? | Needs `schema_fingerprint`? |
 |---|---|---|---|
@@ -54,9 +64,9 @@ parameters and, for the four that need one, the `schema_fingerprint` to send wit
 | `profile.list` | Agent profiles `agent.submit` would accept here. | no | no |
 | `profile.show` | What one profile name resolves to. | no | no |
 
-A verb outside this list does not exist for a plugin user, even if it exists in a lionagi
-checkout — `uvx --from lionagi[mcp] li mcp serve` resolves the latest **released** lionagi,
-not any local checkout's `main`.
+What the server offers is the **released** lionagi's catalog: `uvx --from lionagi[mcp] li mcp
+serve` resolves the latest release, not any local checkout's `main`. A verb you found by
+reading a checkout may therefore not be there yet, and `help=true` is what settles it.
 
 Every `*.submit` verb spawns a **detached** background run and returns a run id immediately;
 there is no blocking "wait for the final answer" call. Follow up with `job.status`,

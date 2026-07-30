@@ -2,19 +2,23 @@
 
 Team coordination patterns, invocation tracking, and scheduling.
 
-**Both team messaging and invocation tracking are CLI-only today** — neither is in the
-published MCP verb catalog (`reference.md` lists all eleven verbs the MCP tool exposes).
-Reach them through `li team` and `li invoke` from inside a lionagi checkout; nothing in
-this file has an MCP equivalent yet.
+**Writing to a team, and opening or closing an invocation record, are CLI-only today.**
+Reading is not: the MCP catalog carries `team.list` and `invoke.list`, so you can see what
+exists over MCP and only need `li team` / `li invoke` from inside a lionagi checkout to
+change it. The write verbs are in the catalog too, named as ones the server declines with
+its reason — `invoke.start` and `invoke.end` because the surface cannot tell that whoever
+opened a record is the one closing it. Call `help=true` and read what the catalog says
+about a verb before assuming it is missing.
 
 ---
 
-## Team Coordination (CLI-only)
+## Team Coordination (reads over MCP, writes CLI-only)
 
 Teams enable inter-agent messaging during a flow or fanout. Agents can broadcast
 findings or ask peers for clarification. This is orthogonal to which interface submitted
-the run — a flow's own agents message each other through the team regardless — but
-*creating, listing, and sending to* a team from the outside is a CLI operation only.
+the run — a flow's own agents message each other through the team regardless. From the
+outside, `team.list` over MCP shows which teams exist; creating one, showing its messages,
+and sending to it are CLI operations.
 
 ### Fresh team per invocation (`--team-mode`)
 
@@ -67,12 +71,13 @@ li team receive --team my-team --as reviewer
 
 ---
 
-## Invocation Tracking (ADR-0020, CLI-only)
+## Invocation Tracking (ADR-0020, reads over MCP, writes CLI-only)
 
 Group multiple sessions spawned by a skill into one parent record, visible
-in Studio's `/invocations` page. `job.list` (MCP) shows recent runs newest-first with a
-status filter, but grouping several runs under one shared parent record is not exposed as
-an MCP verb — it needs `li invoke`:
+in Studio's `/invocations` page. `invoke.list` over MCP reads those records, and `job.list`
+reads recent runs newest-first with a status filter. *Opening and closing* a record is the
+CLI's job: the catalog names `invoke.start` and `invoke.end` as verbs it declines, because
+the surface cannot tell that the caller who opened a record is the one closing it.
 
 ```bash
 # Open an invocation
@@ -101,9 +106,13 @@ Accepted statuses: `completed`, `failed`, `timed_out`, `aborted`, `cancelled`.
 ## Scheduling (ADR-0027)
 
 The Studio scheduler engine fires `li agent`, `li o flow`, and `li play` as
-subprocesses on a schedule — this is a background service, not something a chat session
-drives directly through either the MCP tool or the CLI. Manage schedules via the Studio UI
-at `/schedules` or the REST API.
+subprocesses on a schedule. The engine is a background service, but the schedules
+themselves are ordinary records you can manage from a session: the MCP catalog carries
+`schedule.*` verbs for listing, reading, validating, creating, triggering,
+enabling/disabling, deleting and exporting them, and `li schedule <subcommand>` is the same
+surface from a terminal. Studio's `/schedules` page and the REST API are a third view of
+the same records, not the only way in. Ask `help='schedule.create'` for the argument shape
+before writing one; the fields below describe what a schedule contains.
 
 ### Trigger types
 

@@ -93,16 +93,17 @@ mcp__plugin_orchestrate_lion__request(ops=[
 - **Artifact handoff** — agents write to `{save_dir}/{agent_id}/`, downstream reads from `../{dep_id}/`.
 - **`depends_on` is mandatory** for every non-root op in a `flow.submit` plan.
 - **`dry_run` before executing** — preview the DAG before committing compute.
-- **Only the published catalog exists** — a verb this checkout's source shows but that
-  isn't in `reference.md`'s eleven-verb table does not exist for a plugin user, because
-  the shipped server resolves the latest lionagi release, not any local checkout.
+- **The catalog is the authority, not this bundle** — `reference.md` documents the verbs
+  these skills call, which is a subset of what the server offers; and the shipped server
+  resolves the latest lionagi *release*, so a verb you found by reading a checkout may not
+  be there yet. `help=true` settles both questions.
 
 ## Companion references
 
 For detailed documentation, read these companion files in this skill directory:
 
-- **[reference.md](reference.md)** — the MCP tool's parameter shapes for all eleven verbs,
-  the `schema_fingerprint` protocol, and the secondary `li` CLI flag tables
+- **[reference.md](reference.md)** — the MCP tool's parameter shapes for the verbs these
+  skills call, the `schema_fingerprint` protocol, and the secondary `li` CLI flag tables
 - **[dag-planning.md](dag-planning.md)** — FlowPlan data model, DAG decomposition principles, role-to-model routing, re-plan rounds
 - **[workflows.md](workflows.md)** — standard workflow patterns (parallel exploration, staged pipeline, long-running work, playbooks, visualization)
 - **[teams-and-tracking.md](teams-and-tracking.md)** — team coordination patterns, invocation tracking, scheduling — and which of these are CLI-only today

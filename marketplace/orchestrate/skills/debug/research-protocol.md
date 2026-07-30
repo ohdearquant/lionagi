@@ -31,10 +31,11 @@ that carries `ops`:
 {"help": true}
 ```
 
-Then submit the research task with `agent.submit`, one of the eleven published verbs
-(`agent.submit`, `flow.submit`, `fanout.submit`, `play.submit`, `job.status`, `job.output`,
-`job.list`, `job.wait`, `job.kill`, `profile.list`, `profile.show`). Every call to the tool
-carries `ops` as an array of `{op, args}` objects:
+That catalog is the authority on what exists; the orchestration verbs used here are
+`agent.submit`, `flow.submit`, `fanout.submit`, `play.submit`, `job.status`, `job.output`,
+`job.list`, `job.wait`, `job.kill`, `profile.list` and `profile.show`. Submit the research
+task with `agent.submit`. Every call to the tool carries `ops` as an array of `{op, args}`
+objects:
 
 ```json
 {

@@ -78,10 +78,11 @@ Written to `$SHOW_DIR/_final_verdict.json`:
 ## Grouping runs under one show
 
 Studio's `/invocations` page can group a set of related sessions under one parent record via
-`li invoke start`/`li invoke end`, but that mechanism is CLI-only: there is no `invoke.*`
-verb on the MCP surface, because the server has no caller identity to attach an invocation
-record to. If you fire plays through the `li` CLI directly inside a checkout, you can still
-use it:
+`li invoke start`/`li invoke end`. Opening and closing a record that way is CLI-only: the MCP
+catalog names `invoke.start` and `invoke.end` as verbs it declines, because the surface
+cannot tell that the caller who opened a record is the one closing it. Reading is available
+over MCP — `invoke.list` returns what the CLI wrote. If you fire plays through the `li` CLI
+directly inside a checkout, you can still open and close records:
 
 ```bash
 # At show start
@@ -124,7 +125,9 @@ Before firing any new play, check:
 ```
 
 Do this once per play directory with a non-terminal `_meta.json` status. Checkout-local
-alternative: `li kill <run_id>` does the same thing without going through the MCP server.
+alternative: `li kill` stops in-progress runs, sessions, plays and shows from a terminal.
+It resolves ids against the local state store rather than against this server's job records,
+so use `job.kill` with the `run_id` you were given for a play you submitted over MCP.
 
 Worktrees are preserved after abort for forensic review. Clean up manually:
 

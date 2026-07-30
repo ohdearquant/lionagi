@@ -59,11 +59,14 @@ both at once:
 {"help": true}
 ```
 
-That returns the full verb catalog. The eleven verbs published today: `agent.submit`,
+That returns the full verb catalog, which is the authority — the server resolves whatever
+lionagi release `uvx` has cached, so the catalog is the source of truth over anything written
+here. It covers more than orchestration (schedules, run history, state and lifecycle reads,
+server health), and it also names some verbs only to say the server will not run them, with
+the reason. The orchestration verbs the skills in this bundle call are `agent.submit`,
 `flow.submit`, `fanout.submit`, `play.submit`, `job.status`, `job.output`, `job.list`,
-`job.wait`, `job.kill`, `profile.list`, `profile.show`. Ask `help='<verb>'` for one verb's
-parameter schema before filling in `args` — the server resolves whatever lionagi release
-`uvx` has cached, so this is the source of truth over anything written here.
+`job.wait`, `job.kill`, `profile.list` and `profile.show`. Ask `help='<verb>'` for one verb's
+parameter schema before filling in `args`.
 
 `ops` is always an array of `{"op": "<verb>", "args": {...}}` objects, even for one operation.
 The four spawn verbs (`agent.submit`, `flow.submit`, `fanout.submit`, `play.submit`) each also

@@ -311,6 +311,66 @@ def test_pre_parse_shims_are_all_declared() -> None:
     )
 
 
+# The verb name in a documented `{"op": "...", "args": {...}}` example. Written to
+# take source text so the extractor can be tested against a synthetic input; an
+# extractor exercised only on the real files cannot be shown to fail, and one that
+# silently matched nothing would make the check below pass while reading nothing.
+_OP_NAME_RE = re.compile(r"\"op\"\s*:\s*\"([a-z][a-z0-9_.]*)\"")
+
+
+def _op_names_in(source: str) -> set[str]:
+    return set(_OP_NAME_RE.findall(source))
+
+
+def test_op_name_extractor_finds_quoted_ops() -> None:
+    synthetic = """
+    {"ops": [{"op": "play.submit", "args": {"playbook": "x"}}]}
+    {"ops": [{ "op" : "job.wait", "args": {"run_ids": ["a"]}}]}
+    the word op in prose, and "operation": "not.a.verb"
+    """
+    assert _op_names_in(synthetic) == {"play.submit", "job.wait"}
+    assert _op_names_in("nothing to see here") == set()
+
+
+def test_documented_mcp_verbs_are_runnable_on_the_published_server() -> None:
+    """Every verb the bundle shows in an `op` position must be one the server runs.
+
+    Two failure modes this catches, both of which read as correct documentation.
+    A verb that does not exist at all, and — the one a plain catalog membership
+    check would miss — a verb the catalog names only to decline, with a reason.
+    `team.send` and `invoke.start` are named that way: present in `help=true`
+    output, refused when called. So membership is checked against the runnable
+    registry and declined names are rejected explicitly rather than by omission.
+
+    The registry is read from the installed lionagi rather than listed here. A
+    hand-kept copy of someone else's catalog goes stale in whichever direction
+    nobody is watching, which is how this file's `li` subcommand list went wrong
+    twice.
+    """
+    from lionagi.mcp.verbs import ABSENT, VERBS
+
+    runnable = frozenset(VERBS)
+    declined = frozenset(a.name for a in ABSENT)
+    assert runnable, "lionagi.mcp.verbs.VERBS is empty — the check would pass vacuously"
+    assert declined, "lionagi.mcp.verbs.ABSENT is empty — the declined arm would never fire"
+
+    documented: dict[str, list[str]] = {}
+    for path in _SKILL_FILES:
+        for verb in _op_names_in(_read(path)):
+            documented.setdefault(verb, []).append(_rel(path))
+    assert documented, 'no `"op": "..."` examples found under marketplace/ at all'
+
+    for verb, where in sorted(documented.items()):
+        assert verb not in declined, (
+            f"{verb} is documented in {sorted(where)} but the published server names it "
+            "as a verb it declines to run; a reader following the example gets a refusal"
+        )
+        assert verb in runnable, (
+            f"{verb} is documented in {sorted(where)} but is not a verb the published "
+            f"server runs. Runnable verbs: {sorted(runnable)}"
+        )
+
+
 @pytest.mark.parametrize("path", _SKILL_FILES, ids=[_rel(p) for p in _SKILL_FILES])
 def test_lambda_names_are_canonical(path: Path) -> None:
     """Warn (xfail) if a lambda: namespace not in the canonical roster is referenced.

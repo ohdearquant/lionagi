@@ -136,13 +136,14 @@ Then read the run's artifact list with `job.output` to find the rendered graph.
 
 ## 6. Grouping related runs
 
-The MCP surface has no equivalent of `li invoke start`/`li invoke end` — grouping several
-runs under one parent record is CLI-only today (see `teams-and-tracking.md`). The closest
-MCP-native approximation is `job.list`, filtered by status, to see everything currently in
-flight:
+*Creating* a parent record is CLI-only: the MCP catalog declines `invoke.start` and
+`invoke.end`, because the surface cannot tell that whoever opened a record is closing it
+(see `teams-and-tracking.md`). Reading is not — `invoke.list` returns the records the CLI
+wrote, and `job.list` filtered by status shows everything currently in flight:
 
 ```
 mcp__plugin_orchestrate_lion__request(ops=[
+  {"op": "invoke.list", "args": {"limit": 10}},
   {"op": "job.list", "args": {"limit": 20, "status": "running"}}
 ])
 ```
