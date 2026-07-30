@@ -114,11 +114,6 @@ _BYPASS_RE = re.compile(r"--bypass")
 
 
 # ---------------------------------------------------------------------------
-# Core scanner
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
 # Dead source-path check
 # ---------------------------------------------------------------------------
 
@@ -134,7 +129,14 @@ _LINE_SUFFIX = re.compile(r":\d+$")
 
 # A fenced block delimiter. Paths inside fences are illustrative far more often
 # than referential, so fences are skipped.
-_FENCE = re.compile(r"^\s*(```|~~~)")
+#
+# The delimiter's CHARACTER AND LENGTH are both captured because a fence may be
+# longer than three markers, and inside such a fence a shorter run is ordinary
+# content that cannot close it. Toggling a flag on any three-marker line instead
+# desynchronises from the document: the scanner leaves a block the document is
+# still inside, skips real prose, and ends in the un-fenced state so the
+# unterminated-fence diagnostic does not fire either.
+_FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 
 # The source roots this bundle's documentation refers to.
 #
@@ -145,7 +147,14 @@ _FENCE = re.compile(r"^\s*(```|~~~)")
 # path, and the rule reports a clean pass. That is precisely the silent-match-
 # nothing failure this check exists to prevent, so a missing root is an error
 # here and a rename fails loudly instead of quietly.
-DOC_SOURCE_ROOTS: tuple[str, ...] = ("lionagi/", "apps/", "tests/", "marketplace/")
+DOC_SOURCE_ROOTS: tuple[str, ...] = (
+    "lionagi/",
+    "apps/",
+    "tests/",
+    "marketplace/",
+    "docs/",
+    "examples/",
+)
 
 
 def missing_source_roots(repo_root: Path) -> list[str]:
@@ -153,19 +162,63 @@ def missing_source_roots(repo_root: Path) -> list[str]:
     return [r for r in DOC_SOURCE_ROOTS if not (repo_root / r.rstrip("/")).is_dir()]
 
 
+# Characters marking a token as a template, glob or shell expansion, not a
+# literal path.
+_PLACEHOLDER_CHARS = "$<>*{}"
+
+
 def _looks_like_repo_path(token: str, prefixes: tuple[str, ...]) -> bool:
     if not token.startswith(prefixes):
         return False
-    # Shell variables, placeholders and globs are not literal paths.
-    return not any(c in token for c in "$<>*")
+    return not any(c in token for c in _PLACEHOLDER_CHARS)
 
 
-def _resolves(token: str, repo_root: Path) -> bool:
-    cleaned = token.rstrip(".,;:)")
+def _undeclared_root(token: str, repo_root: Path, prefixes: tuple[str, ...]) -> str | None:
+    """Name the root of a token that points into a real directory nobody declared.
+
+    The declared roots protect only what is listed, so a reference under a
+    top-level directory added later is not recognised as a path at all and its
+    nonexistence reads as a pass. Asserting that the listed roots exist does not
+    close that: it confirms the old names are still there, not that the list
+    still covers the tree.
+
+    The check is gated on the root EXISTING because that is what separates the
+    rot case from ordinary prose. Measured against this bundle, every
+    path-shaped token under an undeclared root named a directory that is not in
+    the tree at all: a workspace the orchestrator creates at run time, a
+    deliberately generic example, a bundle-relative link, a model spec whose
+    version reads as a file extension. Flagging those is 17 false positives and
+    no true ones. A token pointing into a directory that IS in the tree is the
+    opposite: something the docs reference and nothing checks.
+
+    Limit worth stating: a reference to a root that never existed stays
+    unchecked. That is a typo rather than rot, and it is the price of not
+    guessing which path-shaped strings in prose are meant to be repo paths.
+    """
+    if "/" not in token or "://" in token:
+        return None
+    if token[0] in "/~." or any(c in token for c in _PLACEHOLDER_CHARS):
+        return None
+    root = token.split("/", 1)[0]
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", root):
+        return None
+    if f"{root}/" in prefixes or not (repo_root / root).is_dir():
+        return None
+    return root
+
+
+def _resolves(token: str, base: Path) -> bool:
+    # Trailing sentence punctuation that ran into the reference. A closing paren
+    # is NOT stripped and no split on "(" happens: a token here is backtick-
+    # delimited and whitespace-free, so a parenthesis inside it belongs to the
+    # pathname. The annotated form these docs use, `schema.sql` (`CREATE TABLE x`),
+    # is two separate backtick spans and never arrives as one token. Treating
+    # every paren as an annotation separator instead truncates a real path at its
+    # first paren, and the surviving prefix is usually a directory that exists,
+    # so a missing file resolves clean.
+    cleaned = token.rstrip(".,;:")
     cleaned = _LINE_SUFFIX.sub("", cleaned)
-    # A reference may name a symbol inside a file: `schema.sql (CREATE TABLE x)`.
-    cleaned = cleaned.split("(")[0].strip()
-    return bool(cleaned) and (repo_root / cleaned).exists()
+    return bool(cleaned) and (base / cleaned).exists()
 
 
 def scan_dead_paths(
@@ -177,8 +230,11 @@ def scan_dead_paths(
     correct, so reading the table does not reveal it.
 
     Scope, so the rule is not mistaken for wider coverage than it has: backticked
-    tokens outside fenced blocks, under one of the declared source roots. A path
-    written as bare prose, or shown inside a fence, is not checked.
+    tokens outside fenced blocks. Under a declared source root, the path must
+    resolve. Under a root that exists in the tree but was never declared, the
+    reference is reported so the root gets added rather than staying invisible.
+    A path written as bare prose, shown inside a fence, or naming a root that is
+    not in the tree at all, is not checked.
     """
     findings: list[str] = []
     try:
@@ -186,30 +242,52 @@ def scan_dead_paths(
     except OSError as exc:
         return [f"[ERROR] {path} — cannot read: {exc}"]
 
-    in_fence = False
+    opener = ""  # the delimiter run that opened the current fence; "" when outside one
     fence_opened_at = 0
     for lineno, line in enumerate(text.splitlines(), start=1):
-        if _FENCE.match(line):
-            in_fence = not in_fence
-            fence_opened_at = lineno if in_fence else 0
-            continue
-        if in_fence:
+        fence = _FENCE.match(line)
+        if fence:
+            delim, trailing = fence.group(1), fence.group(2)
+            if not opener:
+                opener = delim
+                fence_opened_at = lineno
+                continue
+            # A closer must use the opener's own character, run at least as long,
+            # and carry nothing but whitespace after it. Anything shorter or
+            # different is content inside the block, not the end of it.
+            if delim[0] == opener[0] and len(delim) >= len(opener) and not trailing.strip():
+                opener = ""
+                fence_opened_at = 0
+                continue
+        if opener:
             continue
         for token in _BACKTICKED.findall(line):
-            if _looks_like_repo_path(token, prefixes) and not _resolves(token, repo_root):
+            if _looks_like_repo_path(token, prefixes):
+                if not _resolves(token, repo_root):
+                    findings.append(
+                        f"[DEAD_PATH] {path}:{lineno} — `{token}` does not exist in the repo"
+                    )
+            elif root := _undeclared_root(token, repo_root, prefixes):
                 findings.append(
-                    f"[DEAD_PATH] {path}:{lineno} — `{token}` does not exist in the repo"
+                    f"[UNDECLARED_ROOT] {path}:{lineno} — `{token}` points into `{root}/`, "
+                    "a directory in this tree that is not in DOC_SOURCE_ROOTS, so nothing "
+                    "checks whether it resolves. Add the root to the list."
                 )
 
     # Ending inside a fence means every line after it was skipped. That is lost
     # coverage, and staying quiet about it would reproduce, one level down, the
     # silent-match-nothing failure this check exists to prevent.
-    if in_fence:
+    if opener:
         findings.append(
             f"[UNTERMINATED_FENCE] {path}:{fence_opened_at} — fence opened here is never "
             "closed, so path checks were skipped for the rest of the file"
         )
     return findings
+
+
+# ---------------------------------------------------------------------------
+# Core scanner
+# ---------------------------------------------------------------------------
 
 
 def _check_ocean_line(line: str) -> bool:
