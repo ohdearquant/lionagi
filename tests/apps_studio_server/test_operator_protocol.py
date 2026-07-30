@@ -1706,7 +1706,7 @@ async def test_current_view_prefers_a_navigation_reported_after_the_instruction(
     accepted = await store.submit_turn(
         cid,
         instruction="where am I?",
-        context={"space": "mission", "route": "/", "filters": {}},
+        context={"space": "mission", "route": "/", "filters": {}, "observedAt": 1_000.0},
         expected_last_sequence=0,
     )
     assert await store.mark_running(accepted["requestId"])
@@ -1720,17 +1720,18 @@ async def test_current_view_prefers_a_navigation_reported_after_the_instruction(
     assert before["known"] is True
     assert before["space"] == "mission"
     assert before["source"] == "turn"
+    assert before["observedAt"] == 1_000.0
 
     # The human navigates mid-turn and the browser reports it.
     await store.record_view(
-        cid, {"space": "library", "route": "/library?tab=playbook", "filters": {}}, 1_000.0
+        cid, {"space": "library", "route": "/library?tab=playbook", "filters": {}}, 2_000.0
     )
 
     after = await get_current_view({})
     assert after["space"] == "library"
     assert after["route"] == "/library?tab=playbook"
     assert after["source"] == "live"
-    assert after["observedAt"] >= before["observedAt"]
+    assert after["observedAt"] == 2_000.0
 
 
 @pytest.mark.asyncio
@@ -1759,13 +1760,14 @@ async def test_live_view_columns_are_added_to_a_preexisting_conversation_store(t
     cid = (await store.create_conversation())["id"]
     assert await store.get_view(cid) == (None, None)
 
-    at, applied = await store.record_view(
+    received_at, applied = await store.record_view(
         cid, {"space": "system", "route": "/system", "filters": {}}, 1_000.0
     )
     assert applied is True
-    view, seen_at = await store.get_view(cid)
+    view, observed_at = await store.get_view(cid)
     assert view["space"] == "system"
-    assert seen_at == at
+    assert observed_at == 1_000.0, "the stored stamp is the browser's, not the server's arrival"
+    assert received_at != observed_at, "arrival time is reported back, never stored as observation"
 
 
 @pytest.mark.asyncio
@@ -1788,7 +1790,7 @@ async def test_a_late_arriving_older_navigation_does_not_overwrite_the_current_v
     accepted = await store.submit_turn(
         cid,
         instruction="where am I?",
-        context={"space": "mission", "route": "/", "filters": {}},
+        context={"space": "mission", "route": "/", "filters": {}, "observedAt": 1_500.0},
         expected_last_sequence=0,
     )
     assert await store.mark_running(accepted["requestId"])
@@ -1810,6 +1812,97 @@ async def test_a_late_arriving_older_navigation_does_not_overwrite_the_current_v
     view = await get_current_view({})
     assert view["space"] == "schedules", "the human is on the page they navigated to last"
     assert view["source"] == "live"
+
+
+@pytest.mark.asyncio
+async def test_a_report_observed_before_the_turn_is_not_live_when_it_arrives_after(
+    tmp_path, monkeypatch
+):
+    """Arriving after the instruction is not the same as being seen after it.
+
+    A report the browser sent while on the previous page can be delayed past
+    the submission of a turn sent from the next one. If arrival decided
+    freshness, that pre-question observation would come back as the answer to
+    the question, labelled live, and the human would be told they are on a page
+    they had already left before they asked. Driven over HTTP because the
+    ordering that matters is the one the wire produces.
+    """
+    httpx = pytest.importorskip("httpx")
+    from lionagi.studio.app import create_app
+    from lionagi.studio.operator.application_mcp import get_current_view
+    from lionagi.studio.operator.coordinator import reset_operator_coordinator_for_testing
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+    app = create_app()
+    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=ScriptedEngine)
+    await reset_operator_coordinator_for_testing(coordinator)
+    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 54321))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8765") as client:
+        created = await client.post("/api/operator/conversations", json={"title": "ordering"})
+        cid = created.json()["conversation"]["id"]
+
+        # Seen on /library, but the report is held back by the network.
+        stale_report = {
+            "space": "library",
+            "route": "/library",
+            "filters": {},
+            "observedAt": 1_000.0,
+        }
+
+        # The human moves to /mission and asks from there.
+        submitted = await client.post(
+            f"/api/operator/conversations/{cid}/turns",
+            json={
+                "instruction": "where am I?",
+                "context": {
+                    "space": "mission",
+                    "route": "/",
+                    "filters": {},
+                    "observedAt": 2_000.0,
+                },
+                "expectedLastSequence": 0,
+            },
+        )
+        assert submitted.status_code == 202
+        request_id = submitted.json()["requestId"]
+
+        # Only now does the /library report land.
+        delayed = await client.post(
+            f"/api/operator/conversations/{cid}/view",
+            json=stale_report,
+        )
+        assert delayed.status_code == 200
+        assert delayed.json()["applied"] is True, (
+            "the first report on a conversation is stored; being stored is not being current"
+        )
+
+        monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+        monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+        monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", request_id)
+
+        view = await get_current_view({})
+        assert view["space"] == "mission", "a view seen before the question cannot answer it"
+        assert view["source"] == "turn"
+        assert view["observedAt"] == 2_000.0
+
+        # And a report genuinely observed after the turn does flip it, so the
+        # assertion above is about ordering rather than about live never firing.
+        after = await client.post(
+            f"/api/operator/conversations/{cid}/view",
+            json={
+                "space": "schedules",
+                "route": "/schedules",
+                "filters": {},
+                "observedAt": 3_000.0,
+            },
+        )
+        assert after.status_code == 200
+        moved = await get_current_view({})
+        assert moved["space"] == "schedules"
+        assert moved["source"] == "live"
+    await coordinator.shutdown()
 
 
 @pytest.mark.asyncio

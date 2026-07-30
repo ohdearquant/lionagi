@@ -49,13 +49,12 @@ CREATE TABLE IF NOT EXISTS studio_operator_conversations (
   -- submit, so without this the Operator answers "where am I" with wherever the
   -- human was when they hit send, which is wrong exactly when they have moved.
   last_view_json      TEXT,
-  -- Server arrival time, compared only against a turn's own server-side
-  -- created_at so that freshness-vs-the-turn stays inside one clock.
-  last_view_at        REAL,
-  -- When the BROWSER saw this view, compared only against other reports from
-  -- the same browser. Reports are independent requests, so arrival order is not
-  -- observation order; without this a late-arriving older view overwrites a
-  -- newer one and is still labelled current.
+  -- When the BROWSER saw this view. The only clock any ordering question about
+  -- views is answered in: report against report, and report against the turn
+  -- that asked. Server arrival time is deliberately not stored beside it,
+  -- because reports are independent requests and arrival order is not
+  -- observation order, so a server timestamp here could only ever be the wrong
+  -- thing to compare.
   last_view_observed_at REAL,
   created_at         REAL NOT NULL,
   updated_at         REAL NOT NULL,
@@ -204,7 +203,6 @@ class OperatorStore:
                         "provider_session_id": "TEXT",
                         "provider_model": "TEXT",
                         "last_view_json": "TEXT",
-                        "last_view_at": "REAL",
                         "last_view_observed_at": "REAL",
                     },
                 )
@@ -450,10 +448,11 @@ class OperatorStore:
         written, because otherwise the stale view wins and is still labelled
         current, which is the exact failure this whole mechanism exists to fix.
 
-        Returns the server arrival time and whether the report was applied. The
-        arrival time is what later gets compared against a turn's own
-        server-side timestamp, so that comparison stays inside one clock while
-        report-vs-report ordering stays inside the browser's.
+        Returns when the server received the report and whether it was applied.
+        The arrival time is reported back to the caller and never stored: it
+        says only that the request turned up, which is a different fact from
+        when the human saw the page, and nothing about freshness may be decided
+        from it.
         """
         await self.ensure_schema()
         seen_at = time.time()
@@ -474,27 +473,26 @@ class OperatorStore:
                 return seen_at, False
             await db.execute(
                 "UPDATE studio_operator_conversations "
-                "SET last_view_json = ?, last_view_at = ?, last_view_observed_at = ? "
-                "WHERE id = ?",
-                (self._json(view), seen_at, observed_at, conversation_id),
+                "SET last_view_json = ?, last_view_observed_at = ? WHERE id = ?",
+                (self._json(view), observed_at, conversation_id),
             )
             await db.commit()
         return seen_at, True
 
     async def get_view(self, conversation_id: str) -> tuple[dict[str, Any] | None, float | None]:
-        """Return the last reported view and when it was reported."""
+        """Return the last reported view and when the browser saw it."""
         await self.ensure_schema()
         async with open_db(str(self.path())) as db:
             row = await (
                 await db.execute(
-                    "SELECT last_view_json, last_view_at FROM studio_operator_conversations "
-                    "WHERE id = ?",
+                    "SELECT last_view_json, last_view_observed_at "
+                    "FROM studio_operator_conversations WHERE id = ?",
                     (conversation_id,),
                 )
             ).fetchone()
         if row is None or row["last_view_json"] is None:
             return None, None
-        return json.loads(row["last_view_json"]), row["last_view_at"]
+        return json.loads(row["last_view_json"]), row["last_view_observed_at"]
 
     async def select_provider_model(self, conversation_id: str, model: str) -> None:
         """Record the model for this conversation, dropping a stale session.
@@ -766,7 +764,6 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
             "contextHash": row["context_hash"],
             "status": row["status"],
             "errorCode": row["error_code"],
-            "createdAt": row["created_at"],
             "cancelRequestedAt": row["cancel_requested_at"],
         }
 

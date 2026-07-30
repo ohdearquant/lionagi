@@ -217,10 +217,28 @@ export function formatProposalCommand(command: Record<string, unknown>): Formatt
   return { text: formatted, elided: elided.hit, droppedCharacters: 0 };
 }
 
+// One clock for every observation this browser reports. A turn's frozen
+// snapshot and a standalone view report are both stamped here, so the server
+// can ask "was this view seen after that instruction" without ever comparing a
+// browser time against a server time -- arrival proves delivery, never
+// observation, and the two diverge under exactly the rapid navigation the
+// reports exist to handle.
+//
+// Forced upward rather than read straight off the wall clock: the ordering has
+// to hold within a page load, which is where the debounce and concurrent
+// requests actually reorder things, and a clock that steps backwards mid-session
+// would otherwise let an earlier observation outrank a later one.
+let lastObservedAt = 0;
+
+function observationStamp(): number {
+  lastObservedAt = Math.max(lastObservedAt + 1, Date.now());
+  return lastObservedAt;
+}
+
 function operatorContext(
   pathname: string,
   search: Record<string, unknown>,
-): OperatorContextSnapshot {
+): OperatorContextSnapshot & { observedAt: number } {
   let space: OperatorContextSnapshot["space"] = "mission";
   if (pathname.startsWith("/library")) space = "library";
   else if (pathname.startsWith("/schedules")) space = "schedules";
@@ -257,6 +275,7 @@ function operatorContext(
     route: `${pathname}${queryString ? `?${queryString}` : ""}`,
     selection: Object.keys(selection).length ? selection : null,
     filters,
+    observedAt: observationStamp(),
   };
 }
 
@@ -874,14 +893,13 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const conversationId = state.conversation?.id;
   useEffect(() => {
     if (!conversationId) return;
+    // Stamped here, when the view is SEEN, not below when the request fires:
+    // the debounce and the network both reorder, so two navigations can reach
+    // the server reversed and the server has to keep whichever the browser
+    // observed later rather than whichever arrived later.
     const context = operatorContext(location.pathname, location.search as Record<string, unknown>);
-    // Stamped when the view is SEEN, not when the request fires, because the
-    // debounce and the network both reorder: two navigations can arrive at the
-    // server reversed, and the server keeps whichever the browser observed
-    // later rather than whichever arrived later.
-    const observedAt = Date.now();
     const timer = window.setTimeout(() => {
-      void reportOperatorView(conversationId, { ...context, observedAt }).catch(() => {});
+      void reportOperatorView(conversationId, context).catch(() => {});
     }, 150);
     return () => window.clearTimeout(timer);
   }, [conversationId, location.pathname, location.search]);

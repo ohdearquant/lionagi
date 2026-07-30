@@ -242,14 +242,28 @@ async def get_current_view(arguments: dict[str, Any]) -> dict[str, Any]:
     turn = await store.get_turn(request_id)
     context = turn.get("context")
     context = context if isinstance(context, dict) else None
-    at = turn.get("createdAt")
     source = "turn"
 
     # The turn's context is frozen at submit, so it is only the freshest answer
-    # until the human moves. Prefer a view the browser reported later.
-    reported, reported_at = await store.get_view(conversation_id)
-    if reported is not None and (at is None or (reported_at or 0) > at):
-        context, at, source = reported, reported_at, "live"
+    # until the human moves. Prefer a view the browser OBSERVED later.
+    #
+    # Both sides of this comparison are browser timestamps on purpose. Server
+    # receipt time cannot stand in for either one: a report the browser saw
+    # before the instruction can arrive after it, and ordering by arrival would
+    # then present a view from before the question as the answer to it, labelled
+    # live. When the turn carries no observation time there is nothing to
+    # compare against, so the honest answer is the turn's own snapshot rather
+    # than a freshness claim that cannot be supported.
+    reported, reported_observed_at = await store.get_view(conversation_id)
+    turn_observed_at = (context or {}).get("observedAt")
+    at = turn_observed_at if isinstance(turn_observed_at, int | float) else None
+    if (
+        reported is not None
+        and isinstance(turn_observed_at, int | float)
+        and isinstance(reported_observed_at, int | float)
+        and reported_observed_at > turn_observed_at
+    ):
+        context, at, source = reported, reported_observed_at, "live"
 
     if context is None:
         return {"known": False}
@@ -260,8 +274,10 @@ async def get_current_view(arguments: dict[str, Any]) -> dict[str, Any]:
         "project": public_project(context.get("project")),
         "selection": context.get("selection"),
         "filters": context.get("filters"),
-        # "turn" means nothing newer than the instruction has been reported, so
-        # the human may have moved since. "live" means this is where they are.
+        # "turn" means nothing observed later than the instruction has been
+        # reported, so the human may have moved since. "live" means this is
+        # where they are. Null observedAt means the client never said when it
+        # saw this, which is why "live" was not claimed.
         "source": source,
         "observedAt": at,
     }

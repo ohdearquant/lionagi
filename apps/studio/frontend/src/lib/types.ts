@@ -458,6 +458,8 @@ export interface OperatorContextSnapshot {
   route: string;
   selection?: Record<string, string> | null;
   filters: Record<string, OperatorJsonValue>;
+  /** When the browser saw this view. Orders a view report against a turn. */
+  observedAt?: number;
 }
 
 export interface OperatorTextPayload {
