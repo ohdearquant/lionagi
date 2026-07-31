@@ -177,8 +177,6 @@ class TerminalCallbackRegistry:
             return
         overrides = [r for r in targets if r.override]
         if overrides:
-            # A per-run override wins this envelope outright, replacing any
-            # non-override match for this run's scope only.
             targets = overrides
 
         async def _run_one(reg: _Registration) -> None:
@@ -186,9 +184,7 @@ class TerminalCallbackRegistry:
                 if is_coro_func(reg.handler):
                     await maybe_await(reg.handler(envelope))
                 else:
-                    # Offload to a worker thread (never run sync handler body
-                    # on the loop); abandon_on_cancel=True so a slow handler
-                    # can't re-block the shared deadline — see runtime.md.
+                    # offloaded so a sync handler body never blocks the loop; see runtime.md
                     await maybe_await(
                         await anyio.to_thread.run_sync(
                             reg.handler, envelope, abandon_on_cancel=True

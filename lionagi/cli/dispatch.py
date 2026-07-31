@@ -97,13 +97,9 @@ async def _ack_outcome(db: Any, dispatch_id: str, ack_token: str) -> dict[str, A
 
     if applied:
         return {"outcome": "acked"}
-    # The transition was refused because the row left the status it was read in.
-    # Its current status is the useful thing to report, so it is re-read rather
-    # than described. A row that is gone by the time of the re-read is not a
-    # conflict with a missing status; it is an absence, and reporting it as
-    # `status_changed` with a null status would give one value two meanings and
-    # leave the caller unable to tell a surviving conflicting row from a deleted
-    # one. Same answer the exception path above gives for the same state.
+    # Re-read the row's current status rather than describe the refusal: a row
+    # gone by re-read time is reported as `not_found`, not `status_changed`
+    # with a null status, so the two cases stay distinguishable to the caller.
     row = await get_dispatch(db, dispatch_id)
     if row is None:
         return {"outcome": "not_found"}

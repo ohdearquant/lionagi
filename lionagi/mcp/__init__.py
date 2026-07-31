@@ -21,12 +21,8 @@ def serve() -> None:
     try:
         from .server import main
     except ModuleNotFoundError as exc:  # pragma: no cover - exercised via the CLI path
-        # Re-raised as the same type, not as a plain ImportError. A caller
-        # deciding whether this installation is unusable or merely broken keys
-        # off the type, and flattening it here would discard exactly the fact
-        # that distinguishes "the extra is not installed" from "the extra is
-        # installed and something in it is wrong". `name` is carried through for
-        # the same reason: it is what a caller reports.
+        # Re-raised as the same type (not plain ImportError) so a caller can
+        # still tell "extra not installed" from "extra installed but broken".
         raise ModuleNotFoundError(
             "the lionagi MCP server requires the 'mcp' extra; "
             "install it with: pip install 'lionagi[mcp]'",

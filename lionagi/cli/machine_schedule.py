@@ -3,27 +3,9 @@
 """`li schedule ... --machine` — the schedule family's machine results.
 
 The envelope contract lives in :mod:`lionagi.cli.machine`; this module only
-decides what each schedule subcommand's payload says. Three rules shape all of
-them.
-
-*The parser is the CLI's own.* Each subcommand's argv is parsed by the very
-parser ``li schedule <sub>`` builds for a human invocation, not by a mirror of
-it, so a flag that moves in the CLI moves here with it and a caller's rendered
-argv is read exactly once, by one parser. A flag the machine path does not act
-on is refused by name rather than parsed and dropped — a caller that passes one
-believes it took effect.
-
-*A mutation says what landed and nothing further.* `trigger` reports that a fire
-was accepted and which run id it allocated; it does not report that anything
-ran, because at that moment nothing has. `create` reports the row that was
-written and, separately, when the trigger it just wrote next resolves — computed
-through the scheduler's own resolver, since a cron expression echoed back proves
-only that the string survived the trip.
-
-*Reaching the schedule store is a fact that can fail.* Most of these commands
-are HTTP calls to a running Studio; when it is not running the answer is an
-explicit ``unavailable`` refusal naming the URL, never an empty list that reads
-as "there are no schedules".
+decides what each schedule subcommand's payload says. See docs/internals/cli.md
+for the three rules shaping every payload (parser reuse, mutation-reports-only-
+what-landed, and explicit `unavailable` when the schedule store is unreachable).
 """
 
 from __future__ import annotations

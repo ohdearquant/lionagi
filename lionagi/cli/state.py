@@ -637,12 +637,10 @@ async def _prune(
                     .first()["n"]
                 )
 
-                # progressions carry no ownership edge back to the session or
-                # branch that made them, so nothing removes them when their
-                # owner goes. They are collected here while the owners are still
-                # readable, and the collection is held in a scratch table rather
-                # than in a parameter list so a large prune does not run into the
-                # bound-parameter ceiling.
+                # progressions carry no ownership edge back to their session/
+                # branch, so they're collected here (while owners are still
+                # readable) into a scratch table rather than a parameter list,
+                # to avoid the bound-parameter ceiling on a large prune.
                 await conn.execute(text("DROP TABLE IF EXISTS prune_orphan_progressions"))
                 await conn.execute(
                     text("CREATE TEMPORARY TABLE prune_orphan_progressions (id TEXT PRIMARY KEY)")

@@ -16,19 +16,9 @@ from .models import EdgePolicy, LifecyclePolicy
 
 
 class ImmutableEdgeMap(Mapping):
-    """An immutable mapping of from-status -> declared edges.
-
-    Deliberately NOT a ``dict`` subclass: dict's C-level mutators reach the
-    underlying storage without going through Python-level overrides
-    (``dict.__setitem__(m, ...)``, inherited ``__ior__``, re-invoking
-    ``__init__``), so a subclass can never actually guarantee immutability.
-    Wrapping a private dict behind the ``Mapping`` interface leaves no
-    inherited mutation surface at all: there is no ``__setitem__``,
-    ``update``, or ``__ior__`` to reach, and re-invoking ``__init__`` is
-    refused. ``pickle``/``copy.deepcopy`` round-trip via ``__reduce__``
-    (reconstructing through the constructor), and ``dataclasses.asdict()``
-    deep-copies the map rather than raising.
-    """
+    """An immutable mapping of from-status -> declared edges. Deliberately
+    not a ``dict`` subclass — see docs/internals/runtime.md for why a dict
+    subclass can't actually guarantee immutability here."""
 
     __slots__ = ("_edges",)
 
@@ -38,9 +28,7 @@ class ImmutableEdgeMap(Mapping):
                 f"{type(self).__name__} is immutable; registered lifecycle "
                 "policies cannot have their edge map reinitialized in place"
             )
-        # The backing store is itself a read-only view: the private slot is
-        # still reachable as an ordinary attribute, so a plain dict here
-        # would leave `m._edges[...] = ...` as a working mutation path.
+        # backing store must itself be read-only, or the private slot is a mutation path
         object.__setattr__(self, "_edges", MappingProxyType(dict(edges)))
 
     def __setattr__(self, name, value) -> None:
@@ -67,15 +55,11 @@ class ImmutableEdgeMap(Mapping):
 
 class PolicyRegistry:
     """Maps entity_type -> frozen LifecyclePolicy, validated at registration.
-
-    Registered policies are stored with their edge maps wrapped in an
-    immutable mapping (``ImmutableEdgeMap``) so a caller holding a
-    policy returned by ``get()`` cannot mutate global transition behavior
-    for the process. ``seal()`` additionally closes the registry to further
-    registration; ``DEFAULT_REGISTRY`` seals itself once its built-in
-    policies are registered, while a locally constructed ``PolicyRegistry()``
-    stays open until its own caller seals it.
-    """
+    Edge maps are wrapped in ``ImmutableEdgeMap`` so a caller holding a
+    policy from ``get()`` cannot mutate global transition behavior.
+    ``DEFAULT_REGISTRY`` seals itself once its built-ins are registered; a
+    locally constructed ``PolicyRegistry()`` stays open until its caller
+    calls ``seal()``."""
 
     def __init__(self) -> None:
         self._by_entity_type: dict[str, LifecyclePolicy] = {}
@@ -136,13 +120,6 @@ class PolicyRegistry:
                         f"edge {from_status!r} -> {edge.to_status!r} requires guard field(s) "
                         f"{sorted(unknown_guard)} outside the policy's patch_fields allowlist"
                     )
-        # Defensively wrap the edge map in an immutable mapping before storing —
-        # the caller's own dict (and any built-in `_edges(...)` dict) stays
-        # mutable in the caller's hands, but the copy this registry hands
-        # back from `get()` cannot be reassigned through item assignment.
-        # ImmutableEdgeMap has no inherited mutation surface (unlike a dict
-        # subclass) while remaining compatible with dataclasses.asdict(),
-        # pickle, and copy.deepcopy().
         frozen_policy = dataclasses.replace(policy, edges=ImmutableEdgeMap(policy.edges))
         self._by_entity_type[policy.entity_type] = frozen_policy
         self._by_table[policy.table] = policy.entity_type
@@ -178,9 +155,7 @@ def _to(*statuses: str) -> tuple[EdgePolicy, ...]:
 def build_default_registry() -> PolicyRegistry:
     registry = PolicyRegistry()
 
-    # ── session / invocation ────────────────────────────────────────────
-    # Same seven-value execution vocabulary and same execution graph.
-    # No exit from a terminal status without override.
+    # session/invocation: same execution vocabulary/graph; no exit from terminal without override
     session_statuses = frozenset(
         {"running", "completed", "completed_empty", "failed", "timed_out", "aborted", "cancelled"}
     )
@@ -196,9 +171,7 @@ def build_default_registry() -> PolicyRegistry:
             "total_cost_usd",
             "num_turns",
             "duration_ms",
-            # The process markers a sweep reads to decide whether a row its
-            # status filter selected is still alive. Status and markers have to
-            # agree at every instant a sweep could look, so they move together.
+            # liveness markers a sweep reads; must move atomically with status
             "node_metadata",
         }
     )
@@ -229,10 +202,7 @@ def build_default_registry() -> PolicyRegistry:
         )
     )
 
-    # ── show ─────────────────────────────────────────────────────────────
-    # Deliberately permissive compatibility graph: either nonterminal
-    # status may move to any *other* declared show status. completed/
-    # aborted require override to exit.
+    # show: any nonterminal status may move to any other declared status; completed/aborted require override to exit
     show_statuses = frozenset({"active", "completed", "aborted", "imported"})
     show_terminal = frozenset({"completed", "aborted"})
     show_nonterminal = show_statuses - show_terminal
@@ -253,10 +223,7 @@ def build_default_registry() -> PolicyRegistry:
         )
     )
 
-    # ── play ─────────────────────────────────────────────────────────────
-    # Same compatibility-graph shape as show: any nonterminal play status
-    # may move to any other declared play status. merged/escalated/
-    # gate_failed/blocked/aborted_after_finish require override to exit.
+    # play: same compatibility-graph shape as show; terminal statuses require override to exit
     play_statuses = frozenset(
         {
             "pending",
@@ -295,7 +262,6 @@ def build_default_registry() -> PolicyRegistry:
         )
     )
 
-    # ── team ─────────────────────────────────────────────────────────────
     registry.register(
         LifecyclePolicy(
             entity_type="team",
@@ -310,11 +276,8 @@ def build_default_registry() -> PolicyRegistry:
         )
     )
 
-    # ── schedule_run ─────────────────────────────────────────────────────
-    # This target graph reconciles the shipped schema vocabulary with the
-    # pre-existing partial validators. timed_out joins the terminal set
-    # here, closing a gap where the legacy `update_status()` terminal set
-    # omitted it.
+    # schedule_run: timed_out joins the terminal set here, closing a gap the
+    # legacy update_status() terminal set omitted.
     schedule_run_statuses = frozenset(
         {
             "queued",
@@ -360,14 +323,10 @@ def build_default_registry() -> PolicyRegistry:
         )
     )
 
-    # ── dispatch ─────────────────────────────────────────────────────────
-    # dead_letter/expired are terminal but operator-recoverable via an
-    # ordinary declared edge (not a generic override) back to pending.
-    # delivering -> delivering is the same-status crash-recovery claim: two
-    # workers racing on the same row must never both win it, so the edge
-    # declares required_guard_fields — the service refuses the edge unless
-    # the caller supplies an equivalent expected_version or extra_guard
-    # covering those columns (see SQLAlchemyLifecycleService._transition).
+    # dispatch: dead_letter/expired are terminal but operator-recoverable via
+    # a declared edge (not a generic override) back to pending. delivering ->
+    # delivering is the same-status crash-recovery claim, guarded by
+    # required_guard_fields so two racing workers can't both win it.
     dispatch_statuses = frozenset(
         {"pending", "delivering", "delivered", "acked", "dead_letter", "expired"}
     )
@@ -380,9 +339,7 @@ def build_default_registry() -> PolicyRegistry:
                 EdgePolicy(to_status="delivering", required_guard_fields=frozenset({"attempt"})),
                 EdgePolicy(to_status="pending"),
                 EdgePolicy(to_status="delivered"),
-                # A consumer may present its ack_token while the delivery loop
-                # still holds the row mid-tick (fast ack); ack must not have to
-                # wait for the row to loop back to pending.
+                # a fast ack_token can arrive mid-tick; needn't wait for pending
                 EdgePolicy(to_status="acked"),
                 EdgePolicy(to_status="dead_letter"),
                 EdgePolicy(to_status="expired"),

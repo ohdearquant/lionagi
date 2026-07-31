@@ -2,15 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """lionagi MCP server — one advertised tool, every operation a verb behind it.
 
-An advertised tool schema is not free: it is sent to the model on every request,
-in every session, by every caller, for as long as the server is registered. So
-this server advertises exactly one tool, whose schema describes ``ops`` and
-``help`` and nothing else, and a verb's parameters are fetched by asking for them
-rather than carried in the tool list.
-
-The verbs live in :mod:`lionagi.mcp.verbs` and dispatch in
-:mod:`lionagi.mcp.dispatch`. Adding a command to the CLI does not add a verb
-here; a verb exists because someone registered it.
+An advertised tool schema is sent to the model on every request in every
+session, so this server advertises exactly one tool (``ops`` and ``help``) and
+a verb's parameters are fetched by asking rather than carried in the tool
+list. Verbs live in :mod:`lionagi.mcp.verbs`, dispatch in
+:mod:`lionagi.mcp.dispatch`; a CLI command doesn't become a verb automatically.
 """
 
 from __future__ import annotations
@@ -22,13 +18,10 @@ from pydantic import Field
 
 from . import dispatch
 
-# The advertised server name. It moved from "lionagi" to "lion" when this surface
-# became the machine contract a peer system drives; the previous name is kept as a
-# readable constant because it is what older registrations and logs show. fastmcp
-# carries exactly one name in the initialize response and offers no alias for it,
-# so nothing here can make a client that asks for "lionagi" by name resolve — but
-# nothing needs to: a client addresses this server by its own local config entry
-# (the command it launches), not by this string.
+# Renamed from "lionagi" to "lion" when this became a peer-driven machine
+# contract; kept as a readable constant since older registrations/logs show it.
+# fastmcp carries one name with no alias — a client addresses this server by
+# its own config entry (the launch command), not by this string.
 SERVER_NAME = "lion"
 PREVIOUS_SERVER_NAME = "lionagi"
 
@@ -61,23 +54,13 @@ async def request(
 ) -> dict[str, Any]:
     """Dispatch lionagi operations, or ask what operations exist.
 
-    Start with ``help=true``: it returns every verb with its required parameters,
-    a one-line summary, and — for the verbs whose ops must carry one — the
-    ``schema_fingerprint`` to send with the call, which is enough to write the
-    common call without a second round-trip. ``help='<verb>'`` returns that
-    verb's full schema. Ask for help in its own call: a catalog and a list of op
-    results are different shapes, so one reply cannot carry both, and a request
-    that asks for both is refused rather than answered in half.
-
-    Results come back as ``{'status': 'success'|'partial', 'ops': [...]}``, one
-    entry per op in the order given, each ``{'ok': true, 'op', 'result'}`` or
-    ``{'ok': false, 'op', 'error'}``. A per-op failure never fails the call —
-    check each ``ok``. A rejected op carries the schema it was judged against, so
-    a wrong parameter tells you the right shape in the same reply.
-
-    Argument validation is closed: an unknown or misspelled parameter is refused
-    by name rather than ignored. Every value comes back as raw machine JSON — no
-    relative timestamps, no formatted durations, no tables.
+    Start with ``help=true`` (catalog) or ``help='<verb>'`` (full schema),
+    each in its own call — a catalog and op results are different shapes, so
+    a request combining both is refused. Results:
+    ``{'status': 'success'|'partial', 'ops': [{'ok', 'op', 'result'|'error'}, ...]}``
+    — a per-op failure never fails the call. A rejected op carries the schema
+    it was judged against. Argument validation is closed (unknown/misspelled
+    parameters refused by name); values are raw machine JSON.
     """
     return await dispatch.request(ops=ops, help=help)
 
@@ -86,10 +69,9 @@ def main() -> None:
     """Console entrypoint: run the server over stdio."""
     from lionagi.cli._code_identity import snapshot_git_position
 
-    # Read where this server's code came from before serving anything. The
-    # process keeps the modules it imported for its whole life, so a checkout
-    # that moves later is divergence to report, not a new answer to give — and
-    # only a reading taken now can tell the two apart.
+    # Taken now, before serving anything: the process keeps its imported
+    # modules for its whole life, so a checkout that moves later is divergence
+    # to report, not a new answer — only this snapshot can tell the two apart.
     snapshot_git_position()
     mcp.run()
 

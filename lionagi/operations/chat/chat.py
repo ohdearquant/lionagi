@@ -46,12 +46,9 @@ async def chat(
     chat_param: ChatParam,
     return_ins_res_message: bool = False,
 ) -> tuple[Instruction, AssistantResponse] | str:
-    # Built synchronously and purely from (instruction, chat_param) — no
-    # context-provider I/O. This is the only thing the guard below needs,
-    # so it happens before any other awaited operation for this turn,
-    # mirroring run()'s ordering (operations/run/run.py): the guard is
-    # evaluated before context providers get a chance to run their
-    # (potentially side-effecting) gather.
+    # Built synchronously, no I/O — the guard below must run before context
+    # providers get a chance to run their (potentially side-effecting) gather,
+    # mirroring run()'s ordering (operations/run/run.py).
     ins = _build_instruction(branch, instruction, chat_param)
 
     # Sentinel status, not truthiness: a supplied model that defines __bool__
@@ -77,11 +74,8 @@ async def chat(
     try:
         api_call = await imodel.invoke(**kw)
     except BaseException as exc:
-        # BaseException, not Exception: asyncio.CancelledError is a
-        # BaseException, and cancellation mid-invoke must still pair with a
-        # post emission -- an unpaired pre-call leaves an open span for any
-        # observer of the hook bus. The original exception always propagates
-        # unchanged.
+        # BaseException (asyncio.CancelledError included): cancellation mid-invoke
+        # must still pair with a post emission, or a hook-bus observer sees an open span.
         await emit_api_post_call(branch, imodel, error=exc)
         raise
     await emit_api_post_call(branch, imodel, api_call)

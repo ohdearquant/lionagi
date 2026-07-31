@@ -259,10 +259,8 @@ class Session(Node, Relational):
         # reparentable state. Branch data (messages/memory/logs) stays with it.
         branch._owning_session_id = None
         branch._observer = None
-        # Routed through attach_hook_bus (not a direct `branch._hooks = None`)
-        # so the branch's handlers are actually unregistered from this
-        # session's bus -- otherwise they keep firing on it forever, even
-        # after the branch has moved to (or become standalone from) it.
+        # Routed through attach_hook_bus (not `branch._hooks = None`) so the
+        # branch's handlers actually unregister from this session's bus.
         branch.attach_hook_bus(None)
         branch._operation_manager = OperationManager()
         if branch.user == self.id:

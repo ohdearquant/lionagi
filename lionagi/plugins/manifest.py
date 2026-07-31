@@ -36,16 +36,10 @@ _CALLABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 def parse_tool_target(target: str, *, label: str = "tool target") -> tuple[str, str]:
     """Split a bundle-relative ``path.py:callable`` reference into ``(path, callable)``.
 
-    This is the single parser both declared-file collection (what gets
-    content-hashed at trust time, in ``discovery.py``) and activation (what
-    gets imported, in ``registry.py``) must use — never two independently
-    written splitting expressions. A target with anything other than
-    exactly one ``:`` is rejected outright (no "last colon wins" vs "first
-    colon wins" ambiguity is possible once that's enforced), and the
-    callable part must be a plain Python identifier: no colons, no path
-    separators, no dots. A bundle-relative filename is separately barred
-    from containing ``:`` at all (see ``discovery._validate_bundle_relative``),
-    which closes the same gap from the other side.
+    The single parser both declared-file collection (``discovery.py``) and
+    activation (``registry.py``) must use. Exactly one ``:`` is required (no
+    ambiguity between first/last colon), and the callable part must be a
+    plain Python identifier.
     """
     parts = target.split(":")
     if len(parts) != 2:

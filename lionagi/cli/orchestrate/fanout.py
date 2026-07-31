@@ -163,12 +163,9 @@ async def _run_fanout(
             on_rejection=_notify_override_refused,
         )
 
-    # notify.on_terminal (settings-driven, independent of --notify) outcome
-    # attribution: bind this run into the handler at registration time so a
-    # late-arriving outcome for this entity lands here or nowhere -- never
-    # on a different run this process later allocates. Skipped when --notify
-    # already owns this same entity as an exclusive override (registering a
-    # second override for the same entity would fire the adapter twice).
+    # Bind this run into the notify.on_terminal handler at registration time so
+    # a late outcome lands here or nowhere, never on a later run. Skipped when
+    # --notify already owns this entity (a second override would double-fire).
     from lionagi.state.lifecycle.notify_settings import (
         register_run_notify_outcome_scope,
         unregister_run_notify_outcome_scope,
@@ -284,13 +281,10 @@ async def _run_fanout_inner(
         env.exchange = Exchange()
         env.messenger = LionMessenger(env.exchange)
         env.roster = {}
-        # Mixed-provider teams (heterogeneous --workers pool) build one worker
-        # branch at a time, so which teammates end up messenger-bound isn't
-        # fully known until the whole loop below finishes. Resolve it here,
-        # for every team member up front, so each worker's prompt can flag
-        # CLI-provider teammates as unreachable via messenger regardless of
-        # build order (worker_is_cli is a cheap, side-effect-free pre-pass —
-        # no branch/iModel with real I/O is constructed).
+        # Resolved up front (before the build loop below) so each worker's
+        # prompt can flag CLI-provider teammates as messenger-unreachable
+        # regardless of build order. worker_is_cli is a side-effect-free
+        # pre-pass — no branch/iModel with real I/O is constructed.
         env.messenger_names = frozenset(
             wname
             for i, (wname, ta) in enumerate(zip(worker_names, assignments, strict=True))

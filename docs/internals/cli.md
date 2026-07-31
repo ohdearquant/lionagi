@@ -38,6 +38,65 @@ leftover positionals back in order. `li agent status`, `li monitor run
 argparse dispatch, because a positional `id`/free-form-ids slot would
 otherwise swallow a literal token like `"status"` or `"run"`.
 
+## `_code_identity.py` — worktree fingerprint semantics
+
+`_worktree_fingerprint` digests uncommitted state via the status listing, the diff against
+HEAD, and each named path's size/mtime/inode — never file content, so cost doesn't scale with
+file size. A clean tree skips the diff call entirely. Absence (a deletion) is a measured value,
+not a gap; a path that exists but can't be read yields no digest at all ("cannot tell", not
+"unchanged"). The allowance shared with the git calls means a timeout mid-measurement also
+yields no digest, never a partial one — a partial digest would compare unequal to a full one
+taken later and report a phantom edit.
+
+Known blind spots, kept as an explicit list because "only one case" silently goes stale:
+metadata-preserving rewrites (same size/mtime/mode/inode); anything under `.gitignore`;
+ownership and xattrs. The inode is included so a rename-over-file replacement stays visible,
+at the cost of false positives on filesystems (some network/userspace ones) that hand out
+fresh synthetic inodes for unchanged paths.
+
+This asymmetry is deliberate: the surface exists to answer "is the code I'm running the code
+I think I'm running", and a false "nothing changed" defeats that purpose far worse than an
+occasional false "something changed".
+
+## `machine.py` — machine-result envelope contract
+
+Every `li <command> --machine` call answers with exactly one JSON object on stdout and
+nothing else; every human-facing byte goes to stderr — the consumer is a subprocess caller in
+another language that cannot read this file, so the shape is fixed here and `CONTRACT_VERSION`
+is the only thing it has to negotiate. Pieces: `ok`/`failure` are the two envelope constructors
+(`ERROR_KINDS` is closed); `available`/`unavailable` are the availability wrapper, so "there are
+none" and "could not establish whether there are any" never share an encoding; `reserve_stdout`
+takes stdout away from everything except the envelope at the file-descriptor level, so a stray
+`print` (or a child process that inherited the descriptor) lands on stderr instead of corrupting
+the result; `dispatch_machine` runs one machine command and turns any failure into an envelope
+rather than a traceback.
+
+## `_mcp_resolve.py` — MCP server resolution at submit time
+
+A CLI-backed agent otherwise discovers MCP servers by walking up from its own working
+directory, making its tool surface a property of *where it was told to work* rather than of the
+submission — nothing fails or is reported when this yields no servers, the agent just quietly
+has fewer tools than its instructions assume. The submitting side resolves the config from its
+own directory and hands the result to the child explicitly, snapshotted rather than passed as a
+path (a path would be re-read by the child at an unknown later moment, and would have to live
+inside the child's working directory to survive the provider's repo-containment check — exactly
+the directory that doesn't have it). "Nothing was configured" and "something was configured and
+could not be used" are returned as distinct states, so a failed resolution always carries its
+reason.
+
+## `machine_schedule.py` — `li schedule ... --machine` payload rules
+
+Three rules shape every schedule subcommand's machine payload (the envelope contract itself
+lives in `machine.py`): each subcommand's argv is parsed by the CLI's own human-invocation
+parser, never a mirror of it, so a flag unmoved to the machine path is refused by name rather
+than silently parsed and dropped. A mutation reports only what landed, not what may follow:
+`trigger` reports the fire was accepted and its allocated run id, not that anything ran yet;
+`create` reports the written row plus, separately, when the trigger next resolves — computed
+through the scheduler's own resolver, since an echoed cron expression only proves the string
+survived the trip. Reaching the schedule store is itself a fact that can fail — most of these
+commands are HTTP calls to a running Studio, so an unreachable Studio answers with an explicit
+`unavailable` naming the URL, never an empty list that reads as "there are no schedules".
+
 ## `orchestrate/` (`li o fanout` / `li o flow`)
 
 `_common.py`'s `TEAM_COORD_SECTION` / `TEAM_COORD_SECTION_MESSENGER`: two

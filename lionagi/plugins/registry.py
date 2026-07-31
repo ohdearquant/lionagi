@@ -465,15 +465,12 @@ class PluginRegistry:
     @classmethod
     def snapshot_generation(cls) -> int:
         """Cheap process-lifetime token for the cached plugin scan: identical
-        across calls until ``reset()`` forces a rebuild, at which point it
-        strictly increases. Lets a caller that already fully validated a
-        plugin against the live snapshot cheaply detect ``nothing has been
-        reset since`` without repeating the scan itself; never a substitute
-        for the full, per-target trust/eligibility check ``activate_target()``
-        performs whenever this token *does* change. A monotonic counter
-        (not ``id()`` of the cached snapshot list) so the token can never
-        repeat across the process lifetime, even after many reset() cycles
-        recycle the same memory address for a new snapshot object.
+        across calls until ``reset()`` forces a rebuild, then strictly
+        increases. Lets a caller cheaply detect "nothing reset since" without
+        repeating the scan; never a substitute for ``activate_target()``'s
+        full per-target recheck whenever this token *does* change. A
+        monotonic counter, not ``id()`` of the snapshot list, so it can never
+        repeat even after ``id()`` recycling across many resets.
         """
         cls._ensure_loaded()
         return cls._generation

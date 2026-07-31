@@ -132,12 +132,10 @@ def run_async(coro: Awaitable[T]) -> T:
 
         return _handler
 
-    # Take over a signal only when the previous handler can be given back.
-    # getsignal() reports None for a handler installed outside Python, and
-    # signal.signal(signum, None) raises, so restoring one is impossible:
-    # taking it over would leave this runner's handler installed for the rest
-    # of the process. Abstaining per signal costs the caller's own cancellation
-    # wiring for that signal and keeps whatever was already there working.
+    # Take over a signal only when the previous handler can be restored later
+    # (getsignal() reports None for one installed outside Python, and
+    # signal.signal(signum, None) raises). See
+    # docs/internals/agent-runtime.md#signal-handler-takeover-and-restore.
     installed: list[tuple[int, Any]] = []
     if in_main_thread:
         for signum, requested in (
@@ -154,11 +152,9 @@ def run_async(coro: Awaitable[T]) -> T:
     try:
         thread.join()
     finally:
-        # Restore only what was installed above. Each restore stands alone: this
-        # runs in a finally, often while an exception is already propagating, and
-        # a failure on one signal must not strand the others with this runner's
-        # handler still installed. Failures are logged rather than raised, since
-        # raising here would replace whatever the caller was actually failing on.
+        # Each restore stands alone: a failure on one signal must not strand
+        # the others, and failures log rather than raise (this often runs
+        # while an exception is already propagating).
         for signum, prior in installed:
             try:
                 signal.signal(signum, prior)

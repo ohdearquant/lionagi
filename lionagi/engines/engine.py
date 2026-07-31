@@ -81,10 +81,8 @@ _ROLE_PROFILE_CACHE: dict[tuple[str, str], tuple[str | None, str | None]] = {}
 
 
 def _profile_cache_key(role: str) -> tuple[str, str]:
-    # Profile resolution is project-local (load_agent_profile searches from
-    # Path.cwd() outward), so the cache key must include the resolved project
-    # dir — a role-only key lets a long-lived process retain the first
-    # project's routing after a cwd change.
+    # Profile resolution is project-local; a role-only key would retain the
+    # first project's routing after a cwd change in a long-lived process.
     return (role, os.getcwd())
 
 
@@ -102,15 +100,11 @@ def role_profile_route(role: str) -> tuple[str | None, str | None]:
 
         prof = load_agent_profile(role)
     except FileNotFoundError:
-        # No profile configured for this role. Do not cache: a profile added
-        # later (or a cwd change back to a project that has one) must be
-        # picked up on the very next call, not masked by a stale (None, None).
+        # Not cached: a profile added later must be picked up on the next call.
         logger.debug("role_profile_route(%r): no agent profile found", role)
         return (None, None)
     except Exception as exc:
-        # Malformed profile or a transient filesystem error — same
-        # do-not-cache rule, distinguished only in the log line so a parse
-        # failure isn't confused with "no profile configured".
+        # Same do-not-cache rule; distinguished only in the log line.
         logger.warning("role_profile_route(%r): profile failed to parse: %s", role, exc)
         return (None, None)
     route = (prof.model, prof.effort)
@@ -404,11 +398,8 @@ class EngineRun:
             cwd = self.engine.agent_cwd
         if extra_prompt is None:
             extra_prompt = self.engine.agent_extra_prompt
-        # Resolution order: explicit call > engine-wide > the role's agent
-        # profile. An effort baked into the model spec's suffix outranks the
-        # profile default too — only apply prof_effort when the resolved
-        # model has no suffix of its own, so a profile can't silently
-        # override an explicit `codex/gpt-5.6-luna-high`-style effort.
+        # Resolution order: explicit call > engine-wide > role profile. An
+        # effort suffix baked into the model spec outranks prof_effort too.
         prof_model, prof_effort = role_profile_route(role)
         resolved_model = model or self.engine.model or prof_model
         resolved_effort = effort or self.engine.effort
@@ -417,8 +408,7 @@ class EngineRun:
 
             if not parse_model_spec(resolved_model).effort:
                 resolved_effort = prof_effort
-        # Same precedence for khive injection; an explicit False at any level
-        # disables and stops the profile fallback.
+        # Same precedence for khive injection; explicit False stops the profile fallback.
         injection = khive_injection
         if injection is None:
             injection = self.engine.khive_injection
@@ -445,8 +435,7 @@ class EngineRun:
             from lionagi.agent.spec import _wire_secure_guards
 
             _wire_secure_guards(spec, cwd)
-        # create_agent is the single grant site: emits is threaded through the
-        # spec above, so capabilities are granted once during construction.
+        # create_agent is the single grant site; capabilities are granted once here.
         branch = await create_agent(spec, load_settings=False)
         if name:
             branch.name = name
@@ -473,16 +462,13 @@ class EngineRun:
         model only gets lionagi's registered tool schemas, and therefore only
         invokes them, when ``branch.operate(actions=True)``.
         """
-        # CLI workers emit prose, not fenced JSON — they need the full example form.
+        # CLI workers emit prose, not fenced JSON — front-load the full example
+        # form; waiting for the repair pass costs a whole extra CLI process.
         is_cli = bool(getattr(getattr(branch, "chat_model", None), "is_cli", False))
         hint = emission_keys(emits)
         if is_cli:
-            # Front-load the contract: waiting for the repair pass costs a whole
-            # extra CLI process per worker that defaults to prose.
             instruction = f"{instruction}{_cli_emission_primer(hint, emits)}"
-        # actions=False is branch.operate()'s own default: omit the kwarg
-        # entirely in that (common) case rather than passing it explicitly,
-        # so a minimal test double's operate(self, *, instruction) still works.
+        # Omit actions entirely when False so a minimal test double still works.
         operate_kwargs: dict[str, Any] = {"actions": True} if actions else {}
         res = await branch.operate(instruction=instruction, **operate_kwargs)
         attempt = 0

@@ -42,12 +42,9 @@ class DiscoveredPlugin:
 def _collect_declared_paths(manifest: PluginManifest) -> list[str]:
     """Every bundle-relative file the manifest declares — the exact set the trust record hashes.
 
-    A tool's file portion comes from ``parse_tool_target`` — the same parser
-    ``registry.activate_target`` resolves from later — so the file that gets
-    hashed here can never diverge from the file that gets imported there.
-    ``ToolCapability`` already validates ``target`` at manifest-parse time,
-    so this call cannot raise for a manifest that parsed successfully; it's
-    kept explicit rather than re-deriving the path some other way.
+    A tool's file portion comes from ``parse_tool_target``, the same parser
+    ``registry.activate_target`` resolves from later, so the file hashed
+    here can never diverge from the file imported there.
     """
     paths: list[str] = []
     for tool in manifest.capabilities.tools:
@@ -67,14 +64,9 @@ def _collect_declared_paths(manifest: PluginManifest) -> list[str]:
 
 
 def _validate_bundle_relative(bundle_dir: Path, rel: str, *, label: str) -> None:
-    """Raise ValueError if *rel* is empty, absolute, traversal-bearing, escapes *bundle_dir*,
-    or contains ``:``.
-
-    A bundle-relative filename has no legitimate reason to contain ``:`` —
-    it's reserved as the tool-target/callable separator (see
-    ``manifest.parse_tool_target``). Refusing it here too, not just in the
-    target parser, means a colon-bearing filename can never even be
-    declared, regardless of which capability kind is doing the declaring.
+    """Raise ValueError if *rel* is empty, absolute, traversal-bearing, escapes
+    *bundle_dir*, or contains ``:`` (reserved as the tool-target/callable
+    separator — see ``manifest.parse_tool_target``).
     """
     if not rel or not rel.strip():
         raise ValueError(f"{label} entry is empty")
@@ -98,16 +90,11 @@ def _validate_bundle_relative(bundle_dir: Path, rel: str, *, label: str) -> None
 def _validate_agent_profile_names(manifest: PluginManifest) -> None:
     """Every declared agent profile filename must produce a legal profile token.
 
-    ``PluginRegistry.active_agent_profile_files()`` advertises
-    ``<plugin>/<Path(rel).stem>`` for each declared agent file, and
-    ``lionagi.cli._providers.load_agent_profile()`` validates that same
-    ``<plugin>/<name>`` token against a bare-identifier rule (no dots) before
-    resolving it. ``Path.stem`` only strips the last suffix, so a filename
-    like ``research.v2.md`` produces the advertised token ``p1/research.v2``
-    that ``load_agent_profile()`` then rejects outright — a plugin the
-    registry lists as fine but nothing can actually load. Reject that shape
-    at discovery, the same way any other manifest defect invalidates the
-    whole bundle, instead of letting it surface as a load-time dead end.
+    ``Path.stem`` only strips the last suffix, so a filename like
+    ``research.v2.md`` produces an advertised token
+    (``<plugin>/research.v2``) that ``load_agent_profile()``'s
+    bare-identifier rule then rejects outright. Caught at discovery instead
+    of surfacing as a load-time dead end.
     """
     for rel in manifest.capabilities.agents:
         validate_bare_name(Path(rel).stem, label=f"plugin {manifest.name!r} agent profile name")

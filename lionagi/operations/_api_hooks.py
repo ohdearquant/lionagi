@@ -1,15 +1,13 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 """Typed, optional service-to-session observation adapter for API_PRE_CALL / API_POST_CALL /
-API_STREAM_CHUNK (ADR-0047 delta row 2).
+API_STREAM_CHUNK.
 
-These helpers only fire when the calling Branch is session-bound
-(``branch._hooks is not None``); a standalone ``iModel`` never reaches
-``operations/chat/chat.py`` or ``operations/run/run.py``, so its behavior is
-unaffected. Emission is purely observational: it wraps the existing
-``imodel.invoke()`` / streaming call sites from the outside and never touches
-``HookRegistry``/``HookedEvent``, so per-``iModel`` pre-invocation control
-(replace/abort/exit) is unchanged.
+Only fires when the calling Branch is session-bound (``branch._hooks is not
+None``); a standalone ``iModel`` is unaffected. Purely observational — wraps
+the existing invoke/streaming call sites without touching
+``HookRegistry``/``HookedEvent``, so per-``iModel`` pre-invocation control is
+unchanged.
 """
 
 from __future__ import annotations
@@ -23,12 +21,8 @@ if TYPE_CHECKING:
 
 __all__ = ("emit_api_pre_call", "emit_api_post_call", "emit_api_stream_chunk")
 
-# Closed status vocabulary for the emitted payload — every EventStatus value
-# (the terminal status an APICalling can settle into) plus "error" (this
-# adapter's own label for a raised exception, never provider-reported).
-# Anything outside this set — a raw provider status string, or a status
-# object whose ``.value`` was never validated against EventStatus — is
-# redacted to "unknown" rather than forwarded.
+# Every EventStatus value plus "error" (this adapter's own label for a raised
+# exception). Anything else is redacted to "unknown" rather than forwarded.
 _STATUS_VOCAB = frozenset(
     {
         "pending",
@@ -42,18 +36,12 @@ _STATUS_VOCAB = frozenset(
     }
 )
 
-# Expected shape for a model/provider identifier: lionagi's own naming
-# convention (letters, digits, ``. _ - : /``), capped well above any real
-# identifier in use. A value outside this shape is redacted rather than
-# forwarded verbatim, even though these fields are normally sourced from
-# local iModel/endpoint configuration rather than provider response text.
+# lionagi model/provider identifier shape; anything outside it is redacted.
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_.:/-]{1,128}$")
 
-# A credential can satisfy the identifier allowlist above (API keys are
-# typically ``[A-Za-z0-9_-]``), so a well-formed value carrying a known secret
-# prefix is redacted anyway. Defense-in-depth: model/provider come from local
-# config, but a misconfiguration that lands a key here must not reach telemetry
-# verbatim. No real model/provider identifier starts with these prefixes.
+# A credential can satisfy the identifier allowlist above, so known secret
+# prefixes are redacted too — defense-in-depth against a misconfigured key
+# landing in model/provider fields.
 _CREDENTIAL_RE = re.compile(
     r"(?i)^(?:bearer[\s_-]|basic[\s_-]|sk-|sk_|pk-|pk_|rk_|ak_|api[_-]?key|"
     r"token[_-]|secret[_-]|ghp_|gho_|ghs_|ghr_|github_pat_|xox[baprs]-)"
@@ -72,12 +60,9 @@ def _safe_identifier(value: Any) -> str:
     return value
 
 
-# Closed chunk-type vocabulary — the normalized ``StreamChunk.type`` values
-# (``service/types/stream_chunk.py``). Unlike model/provider, ``chunk.type``
-# reaches this adapter from a provider stream (``operations/run/run.py``), so a
-# malformed or compromised adapter could set it to an arbitrary string,
-# including a prefixless credential the identifier allowlist would admit. Only
-# the closed vocabulary is forwarded; anything else is redacted.
+# Normalized StreamChunk.type values (service/types/stream_chunk.py); chunk.type
+# reaches this adapter from a provider stream and could carry arbitrary text,
+# so only this closed vocabulary is forwarded — anything else is redacted.
 _CHUNK_TYPE_VOCAB = frozenset(
     {"system", "thinking", "text", "tool_use", "tool_result", "result", "error"}
 )
@@ -98,13 +83,7 @@ def _model_and_provider(imodel: Any) -> tuple[str, str]:
 
 
 def _extract_tokens(response: Any) -> dict | None:
-    """Best-effort provider-usage extraction; ``None`` when the shape is unrecognized.
-
-    Mirrors the normalization already used by
-    ``lionagi.session.signal._collect_branch_usage``: a provider's raw
-    response dict (or the last item of a list of them) carries an optional
-    ``usage`` mapping.
-    """
+    """Best-effort provider-usage extraction; ``None`` when the shape is unrecognized."""
     item = response[-1] if isinstance(response, list) and response else response
     if not isinstance(item, dict):
         return None
@@ -115,13 +94,9 @@ def _extract_tokens(response: Any) -> dict | None:
 def _typed_usage(tokens: dict | None) -> dict[str, int] | None:
     """Reduce a best-effort usage mapping to a typed numeric summary.
 
-    The raw ``tokens`` dict (a provider's own response shape, forwarded
-    verbatim before this fix) can carry non-numeric fields alongside the
-    counts. Only ``input_tokens``/``output_tokens`` (or their
-    ``prompt_tokens``/``completion_tokens`` synonyms — same normalization as
-    ``_collect_branch_usage``) survive, coerced to ``int``; every other key,
-    and any non-numeric value under a recognized key, is dropped. ``None``
-    when neither count is present, matching the prior no-usage contract.
+    Only ``input_tokens``/``output_tokens`` (or their ``prompt_tokens``/
+    ``completion_tokens`` synonyms) survive, coerced to ``int``; everything
+    else is dropped. ``None`` when neither count is present.
     """
     if not isinstance(tokens, dict):
         return None
@@ -145,14 +120,9 @@ def _typed_usage(tokens: dict | None) -> dict[str, int] | None:
 def _error_summary(error: str | BaseException | None) -> str | None:
     """Exception-class-name-only summary of a call failure.
 
-    Matches the ``TOOL_ERROR`` hook convention (``operations/act/act.py``
-    forwards the exception object itself, never a stringified message) --
-    the raw text of a provider exception routinely carries request bodies,
-    full URLs with query parameters, or header/credential fragments, and
-    this payload is persisted verbatim to observer telemetry. A
-    non-exception failure reason (``APICalling.execution.error`` can be a
-    plain ``str``) is equally capable of embedding that text, so it gets the
-    same generic, content-free label rather than a per-type name.
+    Never the raw message — provider exception text routinely carries request
+    bodies, URLs, or credential fragments, and this is persisted verbatim to
+    observer telemetry.
     """
     if error is None:
         return None
@@ -187,25 +157,10 @@ async def emit_api_post_call(
     tokens: dict | None = None,
 ) -> None:
     """Fire API_POST_CALL once the call has settled — success, provider-reported
-    failure (``api_call.status``), or a raised exception (``error``).
+    failure, or a raised exception.
 
-    Every ``API_PRE_CALL`` this adapter's caller emits is paired with exactly
-    one ``API_POST_CALL`` carrying whatever is actually known about how the
-    call ended:
-
-    - ``status``: ``"error"`` when an exception was raised (``error`` is
-      set), otherwise ``api_call.status`` mapped onto the closed status
-      vocabulary (``"completed"``/``"failed"``/... — anything else becomes
-      ``"unknown"``, never a raw provider string).
-    - ``error``: populated whenever *either* an exception was raised *or*
-      the call settled with a provider-reported failure and nothing was
-      raised (``api_call.execution.error``) -- a FAILED ``APICalling`` that
-      never raises must not leave this field null just because raising
-      wasn't how it failed. Always reduced to a class-name-only summary
-      (see ``_error_summary``), never the raw message.
-    - ``tokens``: typed numeric usage summary (``input_tokens``/
-      ``output_tokens`` ints); ``None`` when the shape is unrecognized or
-      the call never produced one. Never the raw provider usage mapping.
+    See docs/internals/providers.md#api-post-call-contract for the pairing
+    and field-population contract.
     """
     hooks = branch._hooks
     if hooks is None:
@@ -245,9 +200,7 @@ async def emit_api_post_call(
 async def emit_api_stream_chunk(branch: Branch, imodel: Any, chunk: Any) -> None:
     """Fire API_STREAM_CHUNK for one chunk of a session-bound streaming response.
 
-    Only a redacted chunk-type discriminator is forwarded — matching the
-    TOOL_PRE/TOOL_POST convention of summary-only telemetry (see
-    ``operations/act/act.py``) rather than the raw chunk payload.
+    Only a redacted chunk-type discriminator is forwarded, never the raw chunk payload.
     """
     hooks = branch._hooks
     if hooks is None:

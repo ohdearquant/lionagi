@@ -356,7 +356,7 @@ class iModel:  # noqa: N801
                 EventStatus.PENDING,
             ):
                 try:
-                    # TODO(#1043 Phase 2): migrate to anyio cancel scope for timeout
+                    # TODO: migrate to anyio cancel scope for timeout
                     await asyncio.wait_for(
                         api_call.completion_event.wait(),
                         timeout=10.0,

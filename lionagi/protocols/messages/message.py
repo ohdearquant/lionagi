@@ -355,19 +355,10 @@ class Message(Node, Sendable):
         return rendered
 
     def _content_is_render_safe(self, content: Any) -> bool:
-        """True if `content` is fully JSON-safe (no untracked-mutable value
-        reachable at any depth, including dict keys) — memoized per
-        (content identity, tracked revision) so a warm JSON-safe content is
-        walked at most once per revision instead of on every render.
-
-        Only the *safe* verdict is ever cached. An untracked-mutable object
-        can mutate without bumping the tracked revision (that is the whole
-        reason the render cache must bypass for it), so a cached *unsafe*
-        verdict has no revision to reliably invalidate on; recomputing it
-        every call is the only way to keep it honest. Content that never
-        clears the walk is presumably rare, so re-walking it is cheap in
-        practice.
-        """
+        """True if `content` is fully JSON-safe, memoized per (content identity,
+        tracked revision). Only the *safe* verdict is ever cached — an unsafe
+        verdict has no revision to reliably invalidate on, so it's recomputed
+        every call. See docs/internals/core.md#message-render-cache-safety."""
         revision = getattr(content, "_render_revision", 0)
         verdict = self._untracked_mutable_safe
         if verdict is not None and verdict[0] is content and verdict[1] == revision:
@@ -432,18 +423,11 @@ class _ExitFrame:
 
 
 def _has_untracked_mutable(root: Any) -> bool:
-    """True if `root` holds — at any depth, including dict keys — a mutable
-    object whose in-place mutation `_TrackedList`/`_TrackedDict` cannot
-    observe: anything besides JSON-safe primitives and list/dict/tuple/
-    frozenset nesting of them. `type` objects are exempt — content only
-    ever reads their class-level schema, never live instance state (see
-    `_build_structure` in instruction.py).
-
-    Iterative (explicit stack, not recursion) so deeply nested-but-safe
-    input cannot raise `RecursionError`. Fails safe — returns True without
-    raising — for a self-referential (cyclic) container or once traversal
-    exceeds a bounded depth, since neither can be proven safe to cache.
-    """
+    """True if `root` holds, at any depth, a mutable object whose in-place
+    mutation `_TrackedList`/`_TrackedDict` cannot observe. Iterative (not
+    recursive) so deep-but-safe input can't raise `RecursionError`; fails safe
+    (True) for a cyclic container or once traversal exceeds a bounded depth.
+    See docs/internals/core.md#message-render-cache-safety."""
     stack: list[tuple[Any, int]] = [(root, 0)]
     on_path: set[int] = set()
 
@@ -483,16 +467,11 @@ def _has_untracked_mutable(root: Any) -> bool:
 
 def _content_has_untracked_mutable(content: Any) -> bool:
     """True if any render input on `content` carries a value the revision
-    tracker cannot observe in-place mutation of — the cache must not trust its
-    revision counter and should re-render on every call.
-
-    Only `MessageContent` enumerates its render inputs through `allowed()`.
-    `Message.content` is typed `Any`, so an arbitrary payload may carry an
-    unrelated attribute of that name with its own signature and meaning;
-    calling it would be calling a stranger's method. Such a payload is instead
-    walked directly — it has no tracked revision, so an immutable one stays
-    cacheable and anything else bypasses the cache.
-    """
+    tracker cannot observe mutation of. Only `MessageContent` enumerates its
+    render inputs through `allowed()`; an arbitrary non-`MessageContent`
+    payload (`Message.content` is typed `Any`) is instead walked directly,
+    since calling `allowed()` on it could invoke an unrelated method of the
+    same name."""
     if not isinstance(content, MessageContent):
         return _has_untracked_mutable(content)
     return any(_has_untracked_mutable(getattr(content, name, None)) for name in content.allowed())

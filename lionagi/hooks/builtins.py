@@ -55,15 +55,10 @@ async def persist_session_start(
     if current_status in SESSION_TERMINAL_STATUSES:
         return
 
-    # A session can be created with status="running" directly (its
-    # initial-state history row already carries STARTED_OK before this hook
-    # ever fires), and the CLI can pre-stamp started_at before SESSION_START
-    # is emitted -- neither signal is owned by this handler, so neither can
-    # tell a genuine first emission from a duplicate. Write idempotently
-    # instead of classifying: provenance fields are safe to re-write every
-    # time (a duplicate carries the same values), an omitted field must
-    # leave the stored one alone, and started_at is "first writer wins" via
-    # a single atomic COALESCE update rather than a read-then-write.
+    # Neither a pre-existing STARTED_OK row nor a CLI-prestamped started_at
+    # tells this handler a genuine first emission from a duplicate, so writes
+    # here are idempotent: provenance fields safely re-write, and started_at
+    # is "first writer wins" via an atomic COALESCE rather than read-then-write.
     provenance = {
         "model": model,
         "provider": provider,
@@ -184,16 +179,11 @@ async def persist_branch_end(
     """Stamp the branch row's terminal status/ended_at — the BRANCH_END
     counterpart to BRANCH_CREATE's persist_branch_provenance.
 
-    Delegates the actual guard to StateDB.finalize_branch(): a no-op when
-    *status* is not itself a genuine terminal outcome (e.g. "running"), a
-    no-op when the branch row is already at ANY terminal status (not just
-    "completed"/"failed" -- "cancelled", "timed_out", "aborted", and
-    "completed_empty" are equally immutable), so this run-level finalize
-    never clobbers a more specific outcome a per-op writer already recorded
-    (e.g. the reactive DAG runner's own NodeCompleted/NodeFailed
-    branch-status updates in cli/orchestrate/flow.py). Also a no-op when the
-    branch row doesn't exist yet (a DAG leg that never got a first message,
-    so create_branch() never ran for it) -- there is nothing to finalize.
+    Delegates the guard to StateDB.finalize_branch(), which no-ops on a
+    non-terminal status, on a branch already at any terminal status (so a
+    more specific outcome recorded elsewhere, e.g. the DAG runner's own
+    NodeCompleted/NodeFailed updates, is never clobbered), and on a branch
+    row that doesn't exist yet.
     """
     db = await _db()
     await db.finalize_branch(branch_id, status=status, ended_at=ended_at or time.time())
