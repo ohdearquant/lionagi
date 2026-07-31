@@ -112,6 +112,11 @@ class _FileState:
     # produced it rather than to nothing.
     turn: dict[str, str] = field(default_factory=dict)
     barren_reported: bool = False  # whether "read records, mirrored none" was surfaced
+    # Rollout spawned headlessly by an orchestrator (originator in
+    # SKIPPED_ORIGINATORS): never mirrored — the spawning run already has a
+    # session of its own. Derived from the head peek, so it is re-derived after
+    # a restart rather than persisted.
+    orchestrated: bool = False
 
 
 @dataclass
@@ -536,9 +541,15 @@ def _first_codex_prompt(records: list[dict[str, Any]]) -> str | None:
 
 async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str, str]) -> int:
     """Mirror new records from one rollout file; returns messages written."""
-    from lionagi.state.codex_mirror import link_session_lineage, mirror_session
+    from lionagi.state.codex_mirror import (
+        SKIPPED_ORIGINATORS,
+        absorb_orchestrated_session,
+        link_session_lineage,
+        mirror_session,
+    )
 
-    records, new_offset, unreadable = _read_new_events(path, state)
+    if state.orchestrated:
+        return 0
 
     meta: dict[str, Any] | None = None
     if not state.head_checked:
@@ -546,10 +557,20 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
         meta = _peek_codex_meta(path)
         if meta:
             state.session_uid = meta["rollout_uid"] or path.stem
+            if meta.get("originator") in SKIPPED_ORIGINATORS:
+                # An orchestrator's own run (e.g. a lionagi agent leg) — its
+                # session already exists under the agent's name; importing the
+                # rollout too is the double entry. Absorb what an older version
+                # may have imported, then never read this file again.
+                state.orchestrated = True
+                await absorb_orchestrated_session(db, state.session_uid)
+                return 0
             if meta.get("cwd"):
                 state.project, state.project_source = _resolve_project_for_mirror(meta["cwd"])
     if not state.session_uid:
         state.session_uid = path.stem
+
+    records, new_offset, unreadable = _read_new_events(path, state)
     if not records:
         state.offset = new_offset
         return 0
@@ -622,7 +643,7 @@ async def _codex_pass(db, root: Path, states, offsets, *, since, live_window, th
                 states[key] = state
             total += await _mirror_one_codex(db, path, state, threads)
             offsets[key] = state.offset
-            if state.session_uid:
+            if state.session_uid and not state.orchestrated:
                 seen.add(state.session_uid)
         except FileNotFoundError:
             continue
@@ -631,6 +652,25 @@ async def _codex_pass(db, root: Path, states, offsets, *, since, live_window, th
     for uid in seen:
         await reconcile_session_status(db, uid, now=now, live_window=live_window)
     return total
+
+
+async def _absorb_backfill(db) -> None:
+    """Remove previously-imported rows for orchestrator-spawned rollouts.
+
+    Runs once per mirror process. It reads recorded provenance rather than the
+    rollout tree, so it also reaches rows whose files fall outside the sweep
+    window; per-file absorption in ``_mirror_one_codex`` covers the rest. Errors
+    are logged and swallowed — reconciliation must never keep the mirror down.
+    """
+    from lionagi.state.codex_mirror import absorb_orchestrated_backfill
+
+    try:
+        removed = await absorb_orchestrated_backfill(db)
+    except Exception:
+        _log.exception("codex mirror orchestrated-session backfill failed")
+        return
+    if removed:
+        progress(f"  mirror: absorbed {removed} orchestrator-spawned codex session(s)")
 
 
 async def mirror_forever(
@@ -671,9 +711,13 @@ async def mirror_forever(
     _seed_lineage(lineage, states)
     # The connection lives inside the supervise loop so a failure to open it (e.g. a
     # locked/half-migrated state.db at studio startup) is retried, not fatal.
+    backfilled = False
     while not stop.is_set():
         try:
             async with StateDB() as db:
+                if want_codex and not backfilled:
+                    backfilled = True
+                    await _absorb_backfill(db)
                 while not stop.is_set():
                     try:
                         if want_claude and root.exists():
@@ -749,6 +793,8 @@ async def _run(args: argparse.Namespace) -> int:
     hint(f"li mirror: {mode} over {trees}")
 
     async with StateDB() as db:
+        if want_codex:
+            await _absorb_backfill(db)
         while True:
             n = 0
             if want_claude:

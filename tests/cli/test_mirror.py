@@ -1161,3 +1161,92 @@ async def test_codex_file_that_mirrors_nothing_is_reported_not_skipped(tmp_path,
     assert "function_call" in text and "message" in text
     # Reported once per file, not on every poll pass.
     assert state.barren_reported
+
+
+# ── Orchestrated codex rollouts (headless `codex exec`) ──────────────────────
+
+
+def _codex_rollout_lines(uid: str, originator: str) -> str:
+    meta = {
+        "type": "session_meta",
+        "timestamp": "2026-07-31T09:00:00Z",
+        "payload": {"id": uid, "session_id": uid, "cwd": "/x", "originator": originator},
+    }
+    user = {
+        "type": "response_item",
+        "timestamp": "2026-07-31T09:00:01Z",
+        "payload": {"type": "message", "role": "user", "id": "m1", "content": [{"text": "q"}]},
+    }
+    asst = {
+        "type": "response_item",
+        "timestamp": "2026-07-31T09:00:02Z",
+        "payload": {"type": "message", "role": "assistant", "id": "m2", "content": [{"text": "a"}]},
+    }
+    return "".join(json.dumps(e) + "\n" for e in (meta, user, asst))
+
+
+async def test_orchestrated_rollout_is_never_mirrored(tmp_path):
+    """A `codex exec` rollout is an orchestrator's run — the run that spawned it
+    already has a session of its own, so mirroring it would show the same work
+    twice (the agent's session plus an extra "codex" one)."""
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    uid = "0199bbbb-0000-0000-0000-000000000001"
+    path = tmp_path / "rollout-exec.jsonl"
+    path.write_text(_codex_rollout_lines(uid, "codex_exec"))
+    state = _FileState(session_uid="")
+
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        assert await _mirror_one_codex(db, path, state, {}) == 0
+        assert state.orchestrated
+        assert await db.get_session(codex_sid(uid)) is None
+        # Later passes stay skipped without re-reading the file.
+        assert await _mirror_one_codex(db, path, state, {}) == 0
+
+
+async def test_orchestrated_rollout_absorbs_an_earlier_import(tmp_path):
+    """A row imported before this rule existed is removed the first time the
+    mirror reclassifies its rollout, so old double entries heal on upgrade."""
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+    from lionagi.state.codex_mirror import mirror_session as codex_mirror_session
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    uid = "0199bbbb-0000-0000-0000-000000000002"
+    path = tmp_path / "rollout-exec-old.jsonl"
+    path.write_text(_codex_rollout_lines(uid, "codex_exec"))
+
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        await codex_mirror_session(
+            db,
+            rollout_uid=uid,
+            records=[json.loads(line) for line in path.read_text().splitlines()],
+            tool_names={},
+            source_path=str(path),
+        )
+        assert await db.get_session(codex_sid(uid)) is not None
+
+        state = _FileState(session_uid="")
+        assert await _mirror_one_codex(db, path, state, {}) == 0
+        assert await db.get_session(codex_sid(uid)) is None
+
+
+async def test_interactive_rollout_still_mirrors(tmp_path):
+    """The skip is scoped to orchestrated originators: desktop/TUI/IDE history —
+    the mirror's actual subject — keeps mirroring exactly as before."""
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+    from lionagi.state.codex_mirror import SOURCE_KIND as CODEX_SOURCE_KIND
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    uid = "0199bbbb-0000-0000-0000-000000000003"
+    path = tmp_path / "rollout-desktop.jsonl"
+    path.write_text(_codex_rollout_lines(uid, "Codex Desktop"))
+    state = _FileState(session_uid="")
+
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        written = await _mirror_one_codex(db, path, state, {})
+        assert written == 2
+        assert not state.orchestrated
+        row = await db.get_session(codex_sid(uid))
+        assert row is not None
+        assert row["source_kind"] == CODEX_SOURCE_KIND
