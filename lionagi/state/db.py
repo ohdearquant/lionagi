@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import shutil
 import sqlite3
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import JSON, MetaData, bindparam, event, inspect, text
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.schema import CreateTable
 
 from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
@@ -572,6 +573,9 @@ async def _restore_foreign_keys(conn, driver) -> None:
 
     if not confirmed:
         await shield(conn.invalidate)
+
+
+_log = logging.getLogger(__name__)
 
 
 class StateDB:
@@ -2383,23 +2387,53 @@ class StateDB:
                 if self.dialect == "sqlite"
                 else "LATERAL json_array_elements_text(p.collection::json) je(value)"
             )
+            # A malformed collection on some UNRELATED progression must not sink
+            # the whole absorb: SQLite filters those rows out; on other dialects
+            # the savepoint below catches the cast error and fails toward
+            # retention for that chunk.
+            valid_guard = " AND json_valid(p.collection)" if self.dialect == "sqlite" else ""
             # Interpolations are bound-param placeholder names, never values.
-            shared_sql = f"SELECT DISTINCT je.value AS mid FROM progressions p, {unnest} WHERE p.id NOT IN ({prog_ph}) AND je.value IN ({{msg_ph}})"  # noqa: S608, E501
+            shared_sql = f"SELECT DISTINCT je.value AS mid FROM progressions p, {unnest} WHERE p.id NOT IN ({prog_ph}){valid_guard} AND je.value IN ({{msg_ph}})"  # noqa: S608, E501
             shared: set[str] = set()
             for chunk in _chunks(sorted(msg_ids)):
                 params = {f"m{i}": mid for i, mid in enumerate(chunk)}
                 msg_ph = ", ".join(f":{k}" for k in params)
-                rows = (
-                    (
-                        await conn.execute(
-                            text(shared_sql.format(msg_ph=msg_ph)),  # noqa: S608
-                            {**prog_params, **params},
+                try:
+                    async with conn.begin_nested():
+                        rows = (
+                            (
+                                await conn.execute(
+                                    text(shared_sql.format(msg_ph=msg_ph)),  # noqa: S608
+                                    {**prog_params, **params},
+                                )
+                            )
+                            .mappings()
+                            .all()
                         )
+                except SQLAlchemyError:
+                    # Retaining is the safe direction: an over-retained message is
+                    # a stray row a later maintenance pass can orphan-collect; an
+                    # over-deleted one breaks a live session.
+                    _log.warning(
+                        "delete_imported_session: shared-reference check failed for a "
+                        "chunk of %d message(s); retaining them",
+                        len(chunk),
+                        exc_info=True,
                     )
-                    .mappings()
-                    .all()
-                )
+                    shared.update(chunk)
+                    continue
                 shared.update(str(r["mid"]) for r in rows)
+
+            # Soft session FKs (no CASCADE) are someone else's rows pointing at
+            # this one — nullify the pointer, keep the row, same as the studio
+            # prune path (db_maintenance.py).
+            for table in ("artifacts", "plays", "team_messages", "dispatch_outbox", "approvals"):
+                await conn.execute(
+                    text(
+                        f"UPDATE {table} SET session_id = NULL WHERE session_id = :id"  # noqa: S608
+                    ),
+                    {"id": session_id},
+                )
 
             # Referencing rows go before what they reference: branches (their
             # system_msg_id points at messages), then the session (first/last
@@ -2409,11 +2443,22 @@ class StateDB:
                 text("DELETE FROM branches WHERE session_id = :id"), {"id": session_id}
             )
             await conn.execute(text("DELETE FROM sessions WHERE id = :id"), {"id": session_id})
+            # This session's own rows are already gone, so any first/last/system
+            # pointer the subquery still sees belongs to a survivor — such a
+            # message is retained even when no progression carries it.
+            retain_refs = (
+                " AND id NOT IN ("
+                "SELECT first_msg_id FROM sessions WHERE first_msg_id IS NOT NULL"
+                " UNION SELECT last_msg_id FROM sessions WHERE last_msg_id IS NOT NULL"
+                " UNION SELECT system_msg_id FROM branches WHERE system_msg_id IS NOT NULL)"
+            )
             for chunk in _chunks(sorted(msg_ids - shared)):
                 params = {f"m{i}": mid for i, mid in enumerate(chunk)}
                 placeholders = ", ".join(f":{k}" for k in params)
                 await conn.execute(
-                    text(f"DELETE FROM messages WHERE id IN ({placeholders})"),  # noqa: S608
+                    text(
+                        f"DELETE FROM messages WHERE id IN ({placeholders}){retain_refs}"  # noqa: S608, E501
+                    ),
                     params,
                 )
             for chunk in _chunks(prog_ids):
@@ -2423,6 +2468,15 @@ class StateDB:
                     text(f"DELETE FROM progressions WHERE id IN ({placeholders})"),  # noqa: S608
                     params,
                 )
+            # terminal_deliveries holds an FK into status_transitions: children first.
+            await conn.execute(
+                text(
+                    "DELETE FROM terminal_deliveries WHERE transition_id IN ("
+                    "SELECT id FROM status_transitions "
+                    "WHERE entity_type = 'session' AND entity_id = :id)"
+                ),
+                {"id": session_id},
+            )
             await conn.execute(
                 text(
                     "DELETE FROM status_transitions "

@@ -1306,3 +1306,107 @@ async def test_reclassification_absorbs_a_row_keyed_by_the_stem_fallback(tmp_pat
         assert state.orchestrated
         assert await db.get_session(codex_sid(stem)) is None
         assert await db.get_session(codex_sid(uid)) is None
+
+
+async def test_torn_header_defers_mirroring_so_one_rollout_stays_one_session(tmp_path):
+    """When the header is torn the whole file waits: writing records under the
+    path stem while the real UID arrives next pass would split one interactive
+    rollout into two sessions."""
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    uid = "0199bbbb-0000-0000-0000-000000000006"
+    full = _codex_rollout_lines(uid, "Codex Desktop")
+    header_line = full.splitlines(keepends=True)[0]
+    path = tmp_path / "rollout-torn-interactive.jsonl"
+    path.write_text(header_line[: len(header_line) // 2])  # torn mid-JSON, no newline
+
+    state = _FileState(session_uid="")
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        assert await _mirror_one_codex(db, path, state, {}) == 0
+        assert not state.head_checked
+        assert not state.session_uid  # nothing was keyed under the stem
+        assert await db.get_session(codex_sid(path.stem)) is None
+
+        path.write_text(full)  # the writer finished the file
+        assert await _mirror_one_codex(db, path, state, {}) == 2
+        assert state.session_uid == uid
+        assert await db.get_session(codex_sid(uid)) is not None
+        assert await db.get_session(codex_sid(path.stem)) is None
+
+
+async def test_headerless_rollout_still_mirrors_under_the_stem(tmp_path):
+    """A complete first line that is not a session_meta settles classification:
+    an append-only file never gains a header later, so the stem fallback is
+    correct and the file keeps mirroring."""
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    full = _codex_rollout_lines("ignored-uid", "x")
+    body = "".join(full.splitlines(keepends=True)[1:])  # drop the meta line
+    path = tmp_path / "rollout-headerless.jsonl"
+    path.write_text(body)
+
+    state = _FileState(session_uid="")
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        assert await _mirror_one_codex(db, path, state, {}) == 2
+        assert state.head_checked
+        assert state.session_uid == path.stem
+        assert await db.get_session(codex_sid(path.stem)) is not None
+
+
+async def test_cli_tail_loop_retries_a_failed_backfill(tmp_path, monkeypatch):
+    """The plain `li mirror` tail loop keeps retrying an unclean backfill sweep
+    instead of retiring it after one failed attempt (parity with the studio's
+    mirror_forever)."""
+    import argparse
+
+    from lionagi.cli import mirror as mirror_mod
+
+    attempts: list[bool] = []
+
+    async def fake_backfill(db):
+        attempts.append(True)
+        return len(attempts) >= 2  # first sweep fails, second is clean
+
+    async def fake_codex_pass(db, root, states, offsets, *, since, live_window, threads):
+        return 0
+
+    class _Stop(Exception):
+        pass
+
+    sleeps: list[int] = []
+
+    async def fake_sleep(_):
+        sleeps.append(1)
+        if len(sleeps) >= 3:
+            raise _Stop
+
+    class FakeDB:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(mirror_mod, "_absorb_backfill", fake_backfill)
+    monkeypatch.setattr(mirror_mod, "_codex_pass", fake_codex_pass)
+    monkeypatch.setattr(mirror_mod, "_load_states", lambda: {})
+    monkeypatch.setattr(mirror_mod, "_save_states", lambda states: None)
+    monkeypatch.setattr("lionagi.state.db.StateDB", lambda: FakeDB())
+    monkeypatch.setattr("anyio.sleep", fake_sleep)
+
+    args = argparse.Namespace(
+        root=None,
+        codex_root=str(tmp_path),
+        source="codex",
+        since=None,
+        once=False,
+        interval=0.01,
+        live_window=300.0,
+    )
+    with pytest.raises(_Stop):
+        await mirror_mod._run(args)
+    # Iteration 1 attempted and failed, iteration 2 retried and succeeded,
+    # iteration 3 stood down: exactly two attempts across three passes.
+    assert len(attempts) == 2

@@ -469,3 +469,112 @@ async def test_delete_retains_messages_another_progression_references(db):
     for mid in other_mids:
         assert await db.get_message(mid) is None
     assert await db.get_progression(outside_prog) == [shared_mid]
+
+
+async def test_delete_retains_a_message_a_live_session_points_at(db):
+    """A surviving session's first/last message pointer blocks deletion of that
+    message: direct FK references count as ownership, not just progressions."""
+    from sqlalchemy import text
+
+    written, _ = await _mirror(db, _records())
+    assert written == 4
+    sid = session_db_id(ROLLOUT_UID)
+    msg_ids = await db.get_progression(_det(ROLLOUT_UID, "sprog"))
+    pointed_mid, other_mids = msg_ids[0], msg_ids[1:]
+
+    prog = "live-prog-ptr"
+    await db.create_progression(prog)
+    await db.create_session(
+        {
+            "id": "live-session-ptr",
+            "created_at": 1.0,
+            "progression_id": prog,
+            "name": "agent",
+            "status": "running",
+            "source_kind": "live",
+        }
+    )
+    async with db._tx() as conn:
+        await conn.execute(
+            text("UPDATE sessions SET first_msg_id = :m WHERE id = 'live-session-ptr'"),
+            {"m": pointed_mid},
+        )
+
+    assert await db.delete_imported_session(sid, require_source_kind=SOURCE_KIND) is True
+    assert await db.get_session(sid) is None
+    assert await db.get_message(pointed_mid) is not None  # retained: pointed at
+    for mid in other_mids:
+        assert await db.get_message(mid) is None
+    assert await db.get_session("live-session-ptr") is not None
+
+
+async def test_delete_survives_soft_references_and_delivery_acks(db):
+    """An artifact pointing at the imported session keeps its row with the
+    pointer nullified, and an acked terminal delivery goes with its transition
+    instead of aborting the whole absorb on the FK."""
+    from sqlalchemy import text
+
+    written, _ = await _mirror(db, _records())
+    assert written == 4
+    sid = session_db_id(ROLLOUT_UID)
+
+    async with db._tx() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO artifacts (id, session_id, created_at, updated_at, kind, name, content) "
+                "VALUES ('art-1', :sid, 1.0, 1.0, 'review', 'verdict', '{}')"
+            ),
+            {"sid": sid},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO status_transitions "
+                "(id, entity_type, entity_id, status, reason_code, source, created_at) "
+                "VALUES ('tr-1', 'session', :sid, 'completed', 'imported', 'system', 1.0)"
+            ),
+            {"sid": sid},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO terminal_deliveries (transition_id, consumer, acked_at) "
+                "VALUES ('tr-1', 'test-consumer', 2.0)"
+            )
+        )
+
+    assert await db.delete_imported_session(sid, require_source_kind=SOURCE_KIND) is True
+    assert await db.get_session(sid) is None
+    async with db._tx() as conn:
+        art = (
+            await conn.execute(text("SELECT session_id FROM artifacts WHERE id = 'art-1'"))
+        ).first()
+        assert art is not None and art[0] is None  # row kept, pointer cleared
+        assert (
+            await conn.execute(text("SELECT 1 FROM status_transitions WHERE id = 'tr-1'"))
+        ).first() is None
+        assert (
+            await conn.execute(
+                text("SELECT 1 FROM terminal_deliveries WHERE transition_id = 'tr-1'")
+            )
+        ).first() is None
+
+
+async def test_delete_tolerates_a_malformed_unrelated_progression(db):
+    """One damaged collection elsewhere in the store must not sink an absorb:
+    the shared-reference check filters it out rather than erroring globally."""
+    from sqlalchemy import text
+
+    written, _ = await _mirror(db, _records())
+    assert written == 4
+    sid = session_db_id(ROLLOUT_UID)
+    msg_ids = await db.get_progression(_det(ROLLOUT_UID, "sprog"))
+
+    await db.create_progression("damaged-prog")
+    async with db._tx() as conn:
+        await conn.execute(
+            text("UPDATE progressions SET collection = 'not-json' WHERE id = 'damaged-prog'")
+        )
+
+    assert await db.delete_imported_session(sid, require_source_kind=SOURCE_KIND) is True
+    assert await db.get_session(sid) is None
+    for mid in msg_ids:
+        assert await db.get_message(mid) is None

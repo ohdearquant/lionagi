@@ -495,20 +495,29 @@ async def _one_pass(db, root: Path, states, offsets, *, since, live_window, line
     return total
 
 
-def _peek_codex_meta(path: Path) -> dict[str, Any] | None:
-    """Read a rollout's session_meta (its first line) without consuming the tail."""
+def _peek_codex_head(path: Path) -> tuple[str, dict[str, Any] | None]:
+    """Classify a rollout's first line without consuming the tail.
+
+    Returns ``("meta", meta)`` for a parsed session_meta header,
+    ``("headerless", None)`` for a complete first record that is not one (such a
+    file will never gain a header — rollouts are append-only), and
+    ``("torn", None)`` when the line is unreadable or still being written. A
+    successful JSON parse is what proves the line is complete; a torn line
+    cannot parse.
+    """
     from lionagi.state.codex_mirror import session_meta
 
     try:
         with path.open("rb") as fh:
             line = fh.readline()
     except OSError:
-        return None
+        return "torn", None
     try:
         rec = json.loads(line)
     except json.JSONDecodeError:
-        return None
-    return session_meta(rec) if isinstance(rec, dict) else None
+        return "torn", None
+    meta = session_meta(rec) if isinstance(rec, dict) else None
+    return ("meta", meta) if meta else ("headerless", None)
 
 
 def _derive_codex_metadata(state: _FileState, records: list[dict[str, Any]]) -> None:
@@ -553,13 +562,17 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
 
     meta: dict[str, Any] | None = None
     if not state.head_checked:
-        meta = _peek_codex_meta(path)
+        head_status, meta = _peek_codex_head(path)
+        if head_status == "torn":
+            # The first line is still being written (or unreadable), so the
+            # rollout's identity is unknown. Mirroring waits along with the
+            # classification: writing records now would key them under the path
+            # stem while the header's real UID arrives next pass, splitting one
+            # rollout into two sessions — and committing head_checked would let
+            # an orchestrated rollout slip past the skip forever.
+            return 0
+        state.head_checked = True
         if meta:
-            # Only a successfully parsed header settles classification. A file
-            # whose first line is still being written peeks as None and MUST be
-            # re-peeked next pass — committing head_checked here would let an
-            # orchestrated rollout slip past the skip forever.
-            state.head_checked = True
             prior_uid = state.session_uid  # a stem fallback from a pre-header pass
             state.session_uid = meta["rollout_uid"] or path.stem
             if meta.get("originator") in SKIPPED_ORIGINATORS:
@@ -807,9 +820,13 @@ async def _run(args: argparse.Namespace) -> int:
     hint(f"li mirror: {mode} over {trees}")
 
     async with StateDB() as db:
-        if want_codex:
-            await _absorb_backfill(db)
+        # Retried every pass until one sweep completes cleanly, same as the
+        # studio's mirror_forever — a transient failure on the first attempt
+        # must not retire the backfill for the process lifetime.
+        backfilled = not want_codex
         while True:
+            if not backfilled:
+                backfilled = await _absorb_backfill(db)
             n = 0
             if want_claude:
                 n += await _one_pass(
