@@ -650,3 +650,60 @@ async def test_detached_artifact_renames_instead_of_colliding(db):
     assert rows["art-free"]["name"] == "verdict"  # untouched
     assert rows["art-att"]["session_id"] is None
     assert rows["art-att"]["name"] == f"verdict (detached {sid})"
+
+
+async def test_detached_artifact_suffix_allocation_is_collision_free(db):
+    """The derived "(detached <sid>)" name can itself be occupied — by an
+    unattached row or by another artifact of the deleted session — and the
+    invocation-only domain collides independently of the unattached one. Each
+    final name must be proven unused before the session_id flips, or the
+    UNIQUE failure rolls back the whole absorption."""
+    from sqlalchemy import text
+
+    written, _ = await _mirror(db, _records())
+    assert written == 4
+    sid = session_db_id(ROLLOUT_UID)
+
+    async with db._tx() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO invocations (id, skill, started_at, created_at, updated_at) "
+                "VALUES ('inv-1', 's', 1.0, 1.0, 1.0)"
+            )
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO artifacts "
+                "(id, session_id, invocation_id, created_at, updated_at, kind, name, content) VALUES "
+                "('art-free', NULL, NULL, 1.0, 1.0, 'review', 'verdict', '{}'), "
+                "('art-sfx', NULL, NULL, 1.0, 1.0, 'review', 'verdict (detached ' || :sid || ')', '{}'), "
+                "('art-att', :sid, NULL, 1.0, 1.0, 'review', 'verdict', '{}'), "
+                "('art-att2', :sid, NULL, 1.0, 1.0, 'review', 'verdict (detached ' || :sid || ')', '{}'), "
+                "('art-inv-free', NULL, 'inv-1', 1.0, 1.0, 'review', 'verdict', '{}'), "
+                "('art-inv-att', :sid, 'inv-1', 1.0, 1.0, 'review', 'verdict', '{}')"
+            ),
+            {"sid": sid},
+        )
+
+    assert await db.delete_imported_session(sid, require_source_kind=SOURCE_KIND) is True
+    assert await db.get_session(sid) is None
+    async with db._tx() as conn:
+        rows = {
+            r["id"]: dict(r)
+            for r in (
+                await conn.execute(
+                    text("SELECT id, name, session_id, invocation_id FROM artifacts")
+                )
+            ).mappings()
+        }
+    assert rows["art-free"]["name"] == "verdict"  # untouched
+    assert rows["art-sfx"]["name"] == f"verdict (detached {sid})"  # untouched
+    # base and first suffix both occupied in the unattached domain
+    assert rows["art-att"]["name"] == f"verdict (detached {sid} 2)"
+    # a session row whose own name IS the derived name of another
+    assert rows["art-att2"]["name"] == f"verdict (detached {sid}) (detached {sid})"
+    # invocation-only domain collides independently; its base suffix is free
+    assert rows["art-inv-free"]["name"] == "verdict"
+    assert rows["art-inv-att"]["name"] == f"verdict (detached {sid})"
+    for aid in ("art-att", "art-att2", "art-inv-att"):
+        assert rows[aid]["session_id"] is None

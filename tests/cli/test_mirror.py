@@ -1428,10 +1428,42 @@ async def test_complete_corrupt_header_settles_headerless_and_mirrors_the_body(t
     bad_utf8 = tmp_path / "rollout-bad-utf8-header.jsonl"
     bad_utf8.write_bytes(b"\xff\xfe garbage\n" + body.encode())
 
+    # A BOM-shaped prefix surfaces as JSONDecodeError; a bare invalid byte
+    # surfaces as UnicodeDecodeError — the body reader must survive both.
+    bad_byte = tmp_path / "rollout-bad-byte-header.jsonl"
+    bad_byte.write_bytes(b"\x80 invalid utf8\n" + body.encode())
+
     async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
-        for path in (corrupt, bad_utf8):
+        for path in (corrupt, bad_utf8, bad_byte):
             state = _FileState(session_uid="")
             assert await _mirror_one_codex(db, path, state, {}) == 2
             assert state.head_checked
             assert state.session_uid == path.stem
             assert await db.get_session(codex_sid(path.stem)) is not None
+
+
+async def test_valid_but_unterminated_header_stays_torn_until_the_newline(tmp_path):
+    """A first line that parses as session_meta but has no trailing newline is
+    still being written — appended bytes could extend or corrupt it — so the
+    file defers instead of spending the identity fence on a provisional parse."""
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex, _peek_codex_head
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    uid = "0199bbbb-0000-0000-0000-000000000007"
+    full = _codex_rollout_lines(uid, "Codex Desktop")
+    header_line = full.splitlines(keepends=True)[0]
+    path = tmp_path / "rollout-unterminated-meta.jsonl"
+    path.write_text(header_line.rstrip("\n"))  # valid JSON, newline not yet written
+
+    assert _peek_codex_head(path) == ("torn", None)
+
+    state = _FileState(session_uid="")
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        assert await _mirror_one_codex(db, path, state, {}) == 0
+        assert not state.head_checked
+        assert await db.get_session(codex_sid(path.stem)) is None
+
+        path.write_text(full)  # the writer finished the header and the body
+        assert await _mirror_one_codex(db, path, state, {}) == 2
+        assert state.session_uid == uid
+        assert await db.get_session(codex_sid(uid)) is not None

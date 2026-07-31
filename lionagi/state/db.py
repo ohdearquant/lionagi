@@ -2455,19 +2455,64 @@ class StateDB:
             # (kind, name) slot may already be taken by an unattached row or one
             # under the same invocation. Deterministic policy: a colliding row
             # keeps its data and takes a suffixed name recording the session it
-            # came from; non-colliding rows keep their names.
-            await conn.execute(
-                text(
-                    "UPDATE artifacts SET name = name || ' (detached ' || :id || ')' "
-                    "WHERE session_id = :id AND EXISTS ("
-                    "SELECT 1 FROM artifacts o WHERE o.id != artifacts.id "
-                    "AND o.session_id IS NULL "
-                    "AND o.kind = artifacts.kind AND o.name = artifacts.name "
-                    "AND ((artifacts.invocation_id IS NULL AND o.invocation_id IS NULL) "
-                    "OR o.invocation_id = artifacts.invocation_id))"
-                ),
-                {"id": session_id},
+            # came from; non-colliding rows keep their names. The suffixed name
+            # is allocated against BOTH the destination domain and this
+            # session's own soon-to-detach rows — a fixed suffix can itself be
+            # occupied, and a UNIQUE failure here rolls back the whole
+            # absorption.
+            srows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT id, kind, name, invocation_id FROM artifacts "
+                            "WHERE session_id = :id ORDER BY id"
+                        ),
+                        {"id": session_id},
+                    )
+                )
+                .mappings()
+                .all()
             )
+            if srows:
+                kinds = sorted({str(r["kind"]) for r in srows})
+                external: dict[tuple[Any, str], set[str]] = {}
+                for chunk in _chunks(kinds):
+                    ph = ", ".join(f":k{i}" for i in range(len(chunk)))
+                    rows = (
+                        (
+                            await conn.execute(
+                                text(
+                                    f"SELECT kind, name, invocation_id FROM artifacts "  # noqa: S608
+                                    f"WHERE session_id IS NULL AND kind IN ({ph})"
+                                ),
+                                {f"k{i}": k for i, k in enumerate(chunk)},
+                            )
+                        )
+                        .mappings()
+                        .all()
+                    )
+                    for r in rows:
+                        external.setdefault((r["invocation_id"], str(r["kind"])), set()).add(
+                            str(r["name"])
+                        )
+                taken = {dom: set(names) for dom, names in external.items()}
+                for r in srows:
+                    dom = (r["invocation_id"], str(r["kind"]))
+                    taken.setdefault(dom, set()).add(str(r["name"]))
+                for r in srows:
+                    dom = (r["invocation_id"], str(r["kind"]))
+                    if str(r["name"]) not in external.get(dom, set()):
+                        continue
+                    final = f"{r['name']} (detached {session_id})"
+                    n = 2
+                    while final in taken[dom]:
+                        final = f"{r['name']} (detached {session_id} {n})"
+                        n += 1
+                    taken[dom].add(final)
+                    await conn.execute(
+                        text("UPDATE artifacts SET name = :nm WHERE id = :aid"),
+                        {"nm": final, "aid": r["id"]},
+                    )
             # Soft session FKs (no CASCADE) are someone else's rows pointing at
             # this one — nullify the pointer, keep the row, same as the studio
             # prune path (db_maintenance.py). Only artifacts carry unique indexes

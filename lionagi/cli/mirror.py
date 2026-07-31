@@ -307,7 +307,7 @@ def _read_new_events(path: Path, state: _FileState) -> tuple[list[dict[str, Any]
             continue
         try:
             obj = json.loads(raw)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             unreadable += 1
             continue
         if isinstance(obj, dict):
@@ -501,10 +501,12 @@ def _peek_codex_head(path: Path) -> tuple[str, dict[str, Any] | None]:
     Returns ``("meta", meta)`` for a parsed session_meta header,
     ``("headerless", None)`` for a complete first line that is not one, and
     ``("torn", None)`` when the line is still being written or unreadable.
-    Completeness is decided by the trailing newline: rollouts are append-only
-    JSONL, so a newline-terminated line that cannot parse is permanently
-    corrupt — it settles as headerless and the normal reader accounts for the
-    bad line — while a line without its newline is still arriving and defers.
+    Completeness is decided by the trailing newline BEFORE any parse attempt:
+    rollouts are append-only JSONL, so a line without its newline is still
+    arriving and defers even when the bytes so far happen to parse — later
+    appends can extend or corrupt it. A newline-terminated line that cannot
+    parse is permanently corrupt and settles as headerless; the normal reader
+    accounts for the bad line.
     """
     from lionagi.state.codex_mirror import session_meta
 
@@ -513,10 +515,12 @@ def _peek_codex_head(path: Path) -> tuple[str, dict[str, Any] | None]:
             line = fh.readline()
     except OSError:
         return "torn", None
+    if not line.endswith(b"\n"):
+        return "torn", None
     try:
         rec = json.loads(line)
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return ("headerless", None) if line.endswith(b"\n") else ("torn", None)
+        return "headerless", None
     meta = session_meta(rec) if isinstance(rec, dict) else None
     return ("meta", meta) if meta else ("headerless", None)
 
