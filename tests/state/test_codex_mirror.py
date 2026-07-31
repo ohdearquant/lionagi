@@ -338,14 +338,14 @@ async def test_delete_imported_session_removes_the_whole_graph(db):
     msg_ids = await db.get_progression(sprog)
     assert msg_ids  # the graph exists before the delete
 
-    assert await db.delete_imported_session(sid) is True
+    assert await db.delete_imported_session(sid, require_source_kind=SOURCE_KIND) is True
 
     assert await db.get_session(sid) is None
     assert await db.get_progression(sprog) == []
     for mid in msg_ids:
         assert await db.get_message(mid) is None
     # Idempotent: a second delete finds nothing and says so.
-    assert await db.delete_imported_session(sid) is False
+    assert await db.delete_imported_session(sid, require_source_kind=SOURCE_KIND) is False
 
 
 async def test_delete_imported_session_refuses_live_rows(db):
@@ -363,7 +363,12 @@ async def test_delete_imported_session_refuses_live_rows(db):
             "source_kind": "live",
         }
     )
-    assert await db.delete_imported_session("live-session-1") is False
+    assert (
+        await db.delete_imported_session("live-session-1", require_source_kind="imported_live")
+        is False
+    )
+    # Even naming the row's own kind cannot make a non-imported row eligible.
+    assert await db.delete_imported_session("live-session-1", require_source_kind="live") is False
     assert await db.get_session("live-session-1") is not None
 
 
@@ -398,11 +403,69 @@ async def test_backfill_absorbs_only_orchestrated_imports(db):
             source_path=f"/tmp/rollout-{uid}.jsonl",
         )
 
-    removed = await absorb_orchestrated_backfill(db)
+    removed, failed = await absorb_orchestrated_backfill(db)
 
-    assert removed == 1
+    assert (removed, failed) == (1, 0)
     assert await db.get_session(session_db_id(uid_exec)) is None
     # Interactive history stays; a row with no recorded originator is not treated
     # as orchestrated, because absent provenance is not evidence.
     assert await db.get_session(session_db_id(uid_desktop)) is not None
     assert await db.get_session(session_db_id(uid_bare)) is not None
+
+
+async def test_backfill_skips_malformed_originator_without_dying(db):
+    """One row whose recorded originator is not a string must neither crash the
+    sweep nor be treated as orchestrated; the rest of the sweep still runs."""
+    from lionagi.state.codex_mirror import absorb_orchestrated_backfill
+
+    def rollout(uid: str) -> list[dict]:
+        return [
+            _rec("session_meta", {"id": uid, "cwd": "/x"}),
+            _rec(
+                "response_item",
+                {"type": "message", "role": "user", "id": "m1", "content": [{"text": "q"}]},
+            ),
+        ]
+
+    uid_bad = "0199cccc-0000-0000-0000-000000000001"
+    uid_exec = "0199cccc-0000-0000-0000-000000000002"
+    for uid, meta in (
+        (uid_bad, {"codex": {"originator": []}}),
+        (uid_exec, {"codex": {"originator": "codex_exec"}}),
+    ):
+        await mirror_session(
+            db,
+            rollout_uid=uid,
+            records=rollout(uid),
+            tool_names={},
+            node_metadata=meta,
+            source_path=f"/tmp/rollout-{uid}.jsonl",
+        )
+
+    removed, failed = await absorb_orchestrated_backfill(db)
+
+    assert (removed, failed) == (1, 0)
+    assert await db.get_session(session_db_id(uid_bad)) is not None
+    assert await db.get_session(session_db_id(uid_exec)) is None
+
+
+async def test_delete_retains_messages_another_progression_references(db):
+    """A message some other progression also holds is not this session's to
+    destroy: the delete removes the session graph but keeps that message."""
+    written, _ = await _mirror(db, _records())
+    assert written == 4
+    sid = session_db_id(ROLLOUT_UID)
+    msg_ids = await db.get_progression(_det(ROLLOUT_UID, "sprog"))
+    shared_mid, other_mids = msg_ids[0], msg_ids[1:]
+
+    outside_prog = "outside-progression-1"
+    await db.create_progression(outside_prog)
+    await db.append_to_progression(outside_prog, shared_mid)
+
+    assert await db.delete_imported_session(sid, require_source_kind=SOURCE_KIND) is True
+
+    assert await db.get_session(sid) is None
+    assert await db.get_message(shared_mid) is not None  # retained: still referenced
+    for mid in other_mids:
+        assert await db.get_message(mid) is None
+    assert await db.get_progression(outside_prog) == [shared_mid]

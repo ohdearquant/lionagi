@@ -553,17 +553,25 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
 
     meta: dict[str, Any] | None = None
     if not state.head_checked:
-        state.head_checked = True
         meta = _peek_codex_meta(path)
         if meta:
+            # Only a successfully parsed header settles classification. A file
+            # whose first line is still being written peeks as None and MUST be
+            # re-peeked next pass — committing head_checked here would let an
+            # orchestrated rollout slip past the skip forever.
+            state.head_checked = True
+            prior_uid = state.session_uid  # a stem fallback from a pre-header pass
             state.session_uid = meta["rollout_uid"] or path.stem
             if meta.get("originator") in SKIPPED_ORIGINATORS:
                 # An orchestrator's own run (e.g. a lionagi agent leg) — its
                 # session already exists under the agent's name; importing the
                 # rollout too is the double entry. Absorb what an older version
-                # may have imported, then never read this file again.
+                # may have imported (under either id this file was ever keyed
+                # by), then never read this file again.
                 state.orchestrated = True
                 await absorb_orchestrated_session(db, state.session_uid)
+                if prior_uid and prior_uid != state.session_uid:
+                    await absorb_orchestrated_session(db, prior_uid)
                 return 0
             if meta.get("cwd"):
                 state.project, state.project_source = _resolve_project_for_mirror(meta["cwd"])
@@ -654,23 +662,30 @@ async def _codex_pass(db, root: Path, states, offsets, *, since, live_window, th
     return total
 
 
-async def _absorb_backfill(db) -> None:
+async def _absorb_backfill(db) -> bool:
     """Remove previously-imported rows for orchestrator-spawned rollouts.
 
-    Runs once per mirror process. It reads recorded provenance rather than the
-    rollout tree, so it also reaches rows whose files fall outside the sweep
-    window; per-file absorption in ``_mirror_one_codex`` covers the rest. Errors
-    are logged and swallowed — reconciliation must never keep the mirror down.
+    It reads recorded provenance rather than the rollout tree, so it also
+    reaches rows whose files fall outside the sweep window; per-file absorption
+    in ``_mirror_one_codex`` covers the rest. Returns whether the sweep
+    completed cleanly — a caller that runs this once per process must only
+    stand down on True, else one bad pass would retire the backfill for the
+    process lifetime. Errors are logged, never raised: reconciliation must not
+    keep the mirror down.
     """
     from lionagi.state.codex_mirror import absorb_orchestrated_backfill
 
     try:
-        removed = await absorb_orchestrated_backfill(db)
+        removed, failed = await absorb_orchestrated_backfill(db)
     except Exception:
         _log.exception("codex mirror orchestrated-session backfill failed")
-        return
+        return False
     if removed:
         progress(f"  mirror: absorbed {removed} orchestrator-spawned codex session(s)")
+    if failed:
+        warn(f"codex mirror backfill: {failed} row(s) failed to reconcile; will retry")
+        return False
+    return True
 
 
 async def mirror_forever(
@@ -715,11 +730,10 @@ async def mirror_forever(
     while not stop.is_set():
         try:
             async with StateDB() as db:
-                if want_codex and not backfilled:
-                    backfilled = True
-                    await _absorb_backfill(db)
                 while not stop.is_set():
                     try:
+                        if want_codex and not backfilled:
+                            backfilled = await _absorb_backfill(db)
                         if want_claude and root.exists():
                             await _one_pass(
                                 db,

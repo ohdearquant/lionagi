@@ -2295,17 +2295,28 @@ class StateDB:
             )
         return [self._row_to_dict(row) for row in rows]
 
-    async def delete_imported_session(self, session_id: str) -> bool:
+    async def delete_imported_session(self, session_id: str, *, require_source_kind: str) -> bool:
         """Delete a mirror-imported session and everything the mirror wrote for it:
-        the session row, its branches, their progressions, and the messages those
-        progressions hold. Returns True only when a row was actually deleted.
+        the session row, its branches, their progressions, the messages those
+        progressions hold, and the session's status-transition history. Returns
+        True only when a row was actually deleted.
 
-        Fails closed on ownership: rows whose ``source_kind`` does not start with
-        ``imported_`` are refused, so a live run's session can never be deleted by
-        an importer reconciling its own output. Mirror-written message ids are
-        derived per-rollout (uuid5 under the mirror's namespace), so the messages
-        deleted here cannot be shared with any other session.
+        Fails closed on ownership twice over: the row's ``source_kind`` must equal
+        ``require_source_kind`` exactly AND that value must start with
+        ``imported_`` — a live run's session is never eligible, and an importer
+        can only reconcile rows of its own kind (an fs-import, which records
+        first/last message pointers this teardown does not manage, is refused
+        rather than half-deleted). Messages still referenced by any progression
+        outside this session are retained, not deleted: a reference someone else
+        holds is not this session's to destroy.
+
+        Concurrency: on SQLite the process write lock serialises this with the
+        mirror's own writes. On PostgreSQL the orphan check runs in the same
+        transaction as the deletes; quiesce concurrent importers of the same
+        rollout tree before bulk reconciliation.
         """
+        if not require_source_kind.startswith("imported_"):
+            return False
         async with self._tx() as conn:
             row = (
                 (
@@ -2319,7 +2330,7 @@ class StateDB:
             )
             if row is None:
                 return False
-            if not str(row["source_kind"] or "").startswith("imported_"):
+            if str(row["source_kind"] or "") != require_source_kind:
                 return False
 
             prog_ids: list[str] = [row["progression_id"]] if row["progression_id"] else []
@@ -2363,19 +2374,48 @@ class StateDB:
                 for i in range(0, len(values), size):
                     yield values[i : i + size]
 
+            # A message referenced by any progression OUTSIDE this session is not
+            # ours to delete — drop it from the candidate set instead.
+            prog_params = {f"pp{i}": pid for i, pid in enumerate(prog_ids)}
+            prog_ph = ", ".join(f":{k}" for k in prog_params) or "''"
+            unnest = (
+                "json_each(p.collection) je"
+                if self.dialect == "sqlite"
+                else "LATERAL json_array_elements_text(p.collection::json) je(value)"
+            )
+            # Interpolations are bound-param placeholder names, never values.
+            shared_sql = f"SELECT DISTINCT je.value AS mid FROM progressions p, {unnest} WHERE p.id NOT IN ({prog_ph}) AND je.value IN ({{msg_ph}})"  # noqa: S608, E501
+            shared: set[str] = set()
             for chunk in _chunks(sorted(msg_ids)):
+                params = {f"m{i}": mid for i, mid in enumerate(chunk)}
+                msg_ph = ", ".join(f":{k}" for k in params)
+                rows = (
+                    (
+                        await conn.execute(
+                            text(shared_sql.format(msg_ph=msg_ph)),  # noqa: S608
+                            {**prog_params, **params},
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                shared.update(str(r["mid"]) for r in rows)
+
+            # Referencing rows go before what they reference: branches (their
+            # system_msg_id points at messages), then the session (first/last
+            # message pointers and the progression FK), then the now-unreferenced
+            # messages, then the progressions.
+            await conn.execute(
+                text("DELETE FROM branches WHERE session_id = :id"), {"id": session_id}
+            )
+            await conn.execute(text("DELETE FROM sessions WHERE id = :id"), {"id": session_id})
+            for chunk in _chunks(sorted(msg_ids - shared)):
                 params = {f"m{i}": mid for i, mid in enumerate(chunk)}
                 placeholders = ", ".join(f":{k}" for k in params)
                 await conn.execute(
                     text(f"DELETE FROM messages WHERE id IN ({placeholders})"),  # noqa: S608
                     params,
                 )
-            # Rows that reference the progressions go first (branches, then the
-            # session), else the progression deletes trip their FKs.
-            await conn.execute(
-                text("DELETE FROM branches WHERE session_id = :id"), {"id": session_id}
-            )
-            await conn.execute(text("DELETE FROM sessions WHERE id = :id"), {"id": session_id})
             for chunk in _chunks(prog_ids):
                 params = {f"p{i}": pid for i, pid in enumerate(chunk)}
                 placeholders = ", ".join(f":{k}" for k in params)
@@ -2383,6 +2423,13 @@ class StateDB:
                     text(f"DELETE FROM progressions WHERE id IN ({placeholders})"),  # noqa: S608
                     params,
                 )
+            await conn.execute(
+                text(
+                    "DELETE FROM status_transitions "
+                    "WHERE entity_type = 'session' AND entity_id = :id"
+                ),
+                {"id": session_id},
+            )
         return True
 
     @staticmethod

@@ -1250,3 +1250,59 @@ async def test_interactive_rollout_still_mirrors(tmp_path):
         row = await db.get_session(codex_sid(uid))
         assert row is not None
         assert row["source_kind"] == CODEX_SOURCE_KIND
+
+
+async def test_partial_header_defers_classification_instead_of_bypassing_it(tmp_path):
+    """A rollout whose first line is still being written must not settle its
+    classification: committing the head check on an unreadable header would let
+    an orchestrated rollout mirror forever once the header completed."""
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    uid = "0199bbbb-0000-0000-0000-000000000004"
+    full = _codex_rollout_lines(uid, "codex_exec")
+    header_line = full.splitlines(keepends=True)[0]
+    path = tmp_path / "rollout-partial.jsonl"
+    path.write_text(header_line[: len(header_line) // 2])  # torn mid-JSON, no newline
+
+    state = _FileState(session_uid="")
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        assert await _mirror_one_codex(db, path, state, {}) == 0
+        assert not state.head_checked  # classification deferred, not spent
+        assert not state.orchestrated
+
+        path.write_text(full)  # the writer finished the file
+        assert await _mirror_one_codex(db, path, state, {}) == 0
+        assert state.orchestrated
+        assert await db.get_session(codex_sid(uid)) is None
+
+
+async def test_reclassification_absorbs_a_row_keyed_by_the_stem_fallback(tmp_path):
+    """An earlier version that failed the header peek imported the file under
+    its path stem. When classification finally lands, that stem-keyed row is
+    absorbed too, not just the rollout-uid one."""
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+    from lionagi.state.codex_mirror import mirror_session as codex_mirror_session
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    uid = "0199bbbb-0000-0000-0000-000000000005"
+    path = tmp_path / "rollout-stem-import.jsonl"
+    path.write_text(_codex_rollout_lines(uid, "codex_exec"))
+    stem = path.stem
+
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        await codex_mirror_session(
+            db,
+            rollout_uid=stem,  # what the old fallback keyed the row by
+            records=[json.loads(line) for line in path.read_text().splitlines()],
+            tool_names={},
+            source_path=str(path),
+        )
+        assert await db.get_session(codex_sid(stem)) is not None
+
+        # Restart shape: the persisted state still carries the stem uid.
+        state = _FileState(session_uid=stem)
+        assert await _mirror_one_codex(db, path, state, {}) == 0
+        assert state.orchestrated
+        assert await db.get_session(codex_sid(stem)) is None
+        assert await db.get_session(codex_sid(uid)) is None
