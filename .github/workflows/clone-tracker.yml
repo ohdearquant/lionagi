@@ -1,0 +1,93 @@
+name: Clone Tracker (14-day rolling)
+
+# GitHub's traffic API retains only 14 days of clone/view data. This runs
+# every 13 days so consecutive snapshots always overlap the full window with
+# a one-day margin, and appends the snapshot to data/traffic/ledger.json on
+# main — the ledger is the only durable history of that data.
+# (Pattern adapted from ruvnet/ruflo's clone tracker.)
+
+on:
+  schedule:
+    # Every 13 days, off the :00 mark.
+    - cron: '29 5 */13 * *'
+  workflow_dispatch:
+    # Manual runs are for capturing a spike (e.g. right after a release
+    # announcement) without waiting out the cycle.
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/clone-tracker.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: clone-tracker
+  cancel-in-progress: false
+
+jobs:
+  track:
+    name: Snapshot traffic
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: Fetch traffic snapshot
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Each read is validated before anything is written: a failed API read
+        # must abort the run, never append an empty-looking snapshot that later
+        # reads as "traffic went to zero".
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/traffic/clones" > /tmp/clones.json
+          gh api "repos/${GITHUB_REPOSITORY}/traffic/views" > /tmp/views.json
+          gh api "repos/${GITHUB_REPOSITORY}/traffic/popular/referrers" > /tmp/referrers.json
+          gh api "repos/${GITHUB_REPOSITORY}" > /tmp/repo.json
+          jq -e '.count >= 0 and .uniques >= 0' /tmp/clones.json > /dev/null
+          jq -e '.count >= 0' /tmp/views.json > /dev/null
+          jq -e '.stargazers_count >= 0' /tmp/repo.json > /dev/null
+          jq -n \
+            --slurpfile clones /tmp/clones.json \
+            --slurpfile views /tmp/views.json \
+            --slurpfile referrers /tmp/referrers.json \
+            --slurpfile repo /tmp/repo.json \
+            '{
+              captured_at: (now | todate),
+              clones_14d: { count: $clones[0].count, uniques: $clones[0].uniques },
+              views_14d: { count: $views[0].count, uniques: $views[0].uniques },
+              stargazers: $repo[0].stargazers_count,
+              forks: $repo[0].forks_count,
+              referrers: [ $referrers[0][] | { referrer, count, uniques } ]
+            }' > /tmp/snapshot.json
+          jq -e '.clones_14d.count >= 0' /tmp/snapshot.json > /dev/null
+          cat /tmp/snapshot.json
+
+      - name: Append to ledger
+        run: |
+          set -euo pipefail
+          mkdir -p data/traffic
+          if [ ! -f data/traffic/ledger.json ]; then
+            echo '[]' > data/traffic/ledger.json
+          fi
+          jq -e 'type == "array"' data/traffic/ledger.json > /dev/null
+          jq --slurpfile snap /tmp/snapshot.json '. + $snap' data/traffic/ledger.json > /tmp/ledger.json
+          mv /tmp/ledger.json data/traffic/ledger.json
+          echo "ledger snapshots: $(jq 'length' data/traffic/ledger.json)"
+
+      - name: Commit + push snapshot
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/traffic/ledger.json
+          if git diff --cached --quiet; then
+            echo "No change to commit"
+            exit 0
+          fi
+          COUNT=$(jq 'length' data/traffic/ledger.json)
+          CLONES=$(jq '.[-1].clones_14d.count' data/traffic/ledger.json)
+          git commit -m "chore(data): traffic snapshot #${COUNT} — ${CLONES} clones (14d)"
+          git push origin main
