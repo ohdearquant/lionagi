@@ -578,3 +578,75 @@ async def test_delete_tolerates_a_malformed_unrelated_progression(db):
     assert await db.get_session(sid) is None
     for mid in msg_ids:
         assert await db.get_message(mid) is None
+
+
+async def test_delete_retains_a_progression_a_survivor_references(db):
+    """A survivor session whose progression_id names one of the imported
+    session's progressions keeps that progression and its messages; the absorb
+    still completes instead of aborting on the FK."""
+    from sqlalchemy import text
+
+    written, _ = await _mirror(db, _records())
+    assert written == 4
+    sid = session_db_id(ROLLOUT_UID)
+    sprog = _det(ROLLOUT_UID, "sprog")
+    msgs_in_sprog = await db.get_progression(sprog)
+    assert msgs_in_sprog
+
+    await db.create_progression("survivor-own-prog")
+    await db.create_session(
+        {
+            "id": "survivor-1",
+            "created_at": 1.0,
+            "progression_id": "survivor-own-prog",
+            "name": "agent",
+            "status": "running",
+            "source_kind": "live",
+        }
+    )
+    async with db._tx() as conn:
+        await conn.execute(
+            text("UPDATE sessions SET progression_id = :p WHERE id = 'survivor-1'"),
+            {"p": sprog},
+        )
+
+    assert await db.delete_imported_session(sid, require_source_kind=SOURCE_KIND) is True
+    assert await db.get_session(sid) is None
+    assert await db.get_session("survivor-1") is not None
+    assert await db.get_progression(sprog) == msgs_in_sprog  # progression + messages kept
+    for mid in msgs_in_sprog:
+        assert await db.get_message(mid) is not None
+
+
+async def test_detached_artifact_renames_instead_of_colliding(db):
+    """Detaching a session-scoped artifact whose (kind, name) is already taken
+    in the unattached index domain renames the detached row deterministically
+    instead of aborting the absorb on the unique constraint."""
+    from sqlalchemy import text
+
+    written, _ = await _mirror(db, _records())
+    assert written == 4
+    sid = session_db_id(ROLLOUT_UID)
+
+    async with db._tx() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO artifacts (id, session_id, created_at, updated_at, kind, name, content) "
+                "VALUES ('art-free', NULL, 1.0, 1.0, 'review', 'verdict', '{}'), "
+                "('art-att', :sid, 1.0, 1.0, 'review', 'verdict', '{}')"
+            ),
+            {"sid": sid},
+        )
+
+    assert await db.delete_imported_session(sid, require_source_kind=SOURCE_KIND) is True
+    assert await db.get_session(sid) is None
+    async with db._tx() as conn:
+        rows = {
+            r["id"]: dict(r)
+            for r in (
+                await conn.execute(text("SELECT id, name, session_id FROM artifacts"))
+            ).mappings()
+        }
+    assert rows["art-free"]["name"] == "verdict"  # untouched
+    assert rows["art-att"]["session_id"] is None
+    assert rows["art-att"]["name"] == f"verdict (detached {sid})"

@@ -2310,9 +2310,11 @@ class StateDB:
         ``imported_`` — a live run's session is never eligible, and an importer
         can only reconcile rows of its own kind (an fs-import, which records
         first/last message pointers this teardown does not manage, is refused
-        rather than half-deleted). Messages still referenced by any progression
-        outside this session are retained, not deleted: a reference someone else
-        holds is not this session's to destroy.
+        rather than half-deleted). Anything a survivor still references is
+        retained, not deleted: messages held by an outside progression or
+        pointed at by a surviving session/branch, and target progressions a
+        survivor's progression_id names (together with their messages) — a
+        reference someone else holds is not this session's to destroy.
 
         Concurrency: on SQLite the process write lock serialises this with the
         mirror's own writes. On PostgreSQL the orphan check runs in the same
@@ -2350,8 +2352,36 @@ class StateDB:
             )
             prog_ids.extend(b["progression_id"] for b in branch_rows if b["progression_id"])
 
+            # Chunked IN-lists keep each statement under SQLite's bound-variable cap.
+            def _chunks(values: list[str], size: int = 400):
+                for i in range(0, len(values), size):
+                    yield values[i : i + size]
+
+            # A survivor session or branch may point its progression_id FK at one
+            # of these progressions — such a progression, and the messages it
+            # holds, are not ours to delete.
+            kept_progs: set[str] = set()
+            for chunk in _chunks(prog_ids):
+                params = {f"p{i}": pid for i, pid in enumerate(chunk)}
+                ph = ", ".join(f":{k}" for k in params)
+                rows = (
+                    (
+                        await conn.execute(
+                            text(
+                                f"SELECT progression_id AS pid FROM sessions WHERE id != :sid AND progression_id IN ({ph}) "  # noqa: S608, E501
+                                f"UNION SELECT progression_id FROM branches WHERE session_id != :sid AND progression_id IN ({ph})"  # noqa: S608, E501
+                            ),
+                            {"sid": session_id, **params},
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                kept_progs.update(str(r["pid"]) for r in rows)
+            deletable_progs = [p for p in prog_ids if p not in kept_progs]
+
             msg_ids: set[str] = set()
-            for pid in prog_ids:
+            for pid in deletable_progs:
                 prow = (
                     (
                         await conn.execute(
@@ -2373,14 +2403,10 @@ class StateDB:
                 if isinstance(collection, list):
                     msg_ids.update(str(m) for m in collection)
 
-            # Chunked IN-lists keep each statement under SQLite's bound-variable cap.
-            def _chunks(values: list[str], size: int = 400):
-                for i in range(0, len(values), size):
-                    yield values[i : i + size]
-
-            # A message referenced by any progression OUTSIDE this session is not
-            # ours to delete — drop it from the candidate set instead.
-            prog_params = {f"pp{i}": pid for i, pid in enumerate(prog_ids)}
+            # A message referenced by any progression OUTSIDE the deletable set is
+            # not ours to delete — a retained target progression counts as an
+            # outside holder here, so its shared messages survive with it.
+            prog_params = {f"pp{i}": pid for i, pid in enumerate(deletable_progs)}
             prog_ph = ", ".join(f":{k}" for k in prog_params) or "''"
             unnest = (
                 "json_each(p.collection) je"
@@ -2424,9 +2450,28 @@ class StateDB:
                     continue
                 shared.update(str(r["mid"]) for r in rows)
 
+            # Detaching an artifact moves it into another partial unique-index
+            # domain (schema.sql idx_artifacts_natural_key_*), where its
+            # (kind, name) slot may already be taken by an unattached row or one
+            # under the same invocation. Deterministic policy: a colliding row
+            # keeps its data and takes a suffixed name recording the session it
+            # came from; non-colliding rows keep their names.
+            await conn.execute(
+                text(
+                    "UPDATE artifacts SET name = name || ' (detached ' || :id || ')' "
+                    "WHERE session_id = :id AND EXISTS ("
+                    "SELECT 1 FROM artifacts o WHERE o.id != artifacts.id "
+                    "AND o.session_id IS NULL "
+                    "AND o.kind = artifacts.kind AND o.name = artifacts.name "
+                    "AND ((artifacts.invocation_id IS NULL AND o.invocation_id IS NULL) "
+                    "OR o.invocation_id = artifacts.invocation_id))"
+                ),
+                {"id": session_id},
+            )
             # Soft session FKs (no CASCADE) are someone else's rows pointing at
             # this one — nullify the pointer, keep the row, same as the studio
-            # prune path (db_maintenance.py).
+            # prune path (db_maintenance.py). Only artifacts carry unique indexes
+            # over session_id (handled above); the other four tables do not.
             for table in ("artifacts", "plays", "team_messages", "dispatch_outbox", "approvals"):
                 await conn.execute(
                     text(
@@ -2461,7 +2506,7 @@ class StateDB:
                     ),
                     params,
                 )
-            for chunk in _chunks(prog_ids):
+            for chunk in _chunks(deletable_progs):
                 params = {f"p{i}": pid for i, pid in enumerate(chunk)}
                 placeholders = ", ".join(f":{k}" for k in params)
                 await conn.execute(

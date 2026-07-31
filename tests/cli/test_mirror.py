@@ -1410,3 +1410,28 @@ async def test_cli_tail_loop_retries_a_failed_backfill(tmp_path, monkeypatch):
     # Iteration 1 attempted and failed, iteration 2 retried and succeeded,
     # iteration 3 stood down: exactly two attempts across three passes.
     assert len(attempts) == 2
+
+
+async def test_complete_corrupt_header_settles_headerless_and_mirrors_the_body(tmp_path):
+    """A newline-terminated first line that cannot parse is permanently corrupt
+    (append-only file), not torn: the file settles as headerless and its valid
+    body records still mirror instead of being suppressed forever."""
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    full = _codex_rollout_lines("ignored-uid", "x")
+    body = "".join(full.splitlines(keepends=True)[1:])  # the two valid records
+
+    corrupt = tmp_path / "rollout-corrupt-header.jsonl"
+    corrupt.write_text('{"broken":\n' + body)  # complete but unparseable first line
+
+    bad_utf8 = tmp_path / "rollout-bad-utf8-header.jsonl"
+    bad_utf8.write_bytes(b"\xff\xfe garbage\n" + body.encode())
+
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        for path in (corrupt, bad_utf8):
+            state = _FileState(session_uid="")
+            assert await _mirror_one_codex(db, path, state, {}) == 2
+            assert state.head_checked
+            assert state.session_uid == path.stem
+            assert await db.get_session(codex_sid(path.stem)) is not None

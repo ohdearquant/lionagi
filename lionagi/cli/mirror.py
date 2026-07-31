@@ -499,11 +499,12 @@ def _peek_codex_head(path: Path) -> tuple[str, dict[str, Any] | None]:
     """Classify a rollout's first line without consuming the tail.
 
     Returns ``("meta", meta)`` for a parsed session_meta header,
-    ``("headerless", None)`` for a complete first record that is not one (such a
-    file will never gain a header — rollouts are append-only), and
-    ``("torn", None)`` when the line is unreadable or still being written. A
-    successful JSON parse is what proves the line is complete; a torn line
-    cannot parse.
+    ``("headerless", None)`` for a complete first line that is not one, and
+    ``("torn", None)`` when the line is still being written or unreadable.
+    Completeness is decided by the trailing newline: rollouts are append-only
+    JSONL, so a newline-terminated line that cannot parse is permanently
+    corrupt — it settles as headerless and the normal reader accounts for the
+    bad line — while a line without its newline is still arriving and defers.
     """
     from lionagi.state.codex_mirror import session_meta
 
@@ -514,8 +515,8 @@ def _peek_codex_head(path: Path) -> tuple[str, dict[str, Any] | None]:
         return "torn", None
     try:
         rec = json.loads(line)
-    except json.JSONDecodeError:
-        return "torn", None
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return ("headerless", None) if line.endswith(b"\n") else ("torn", None)
     meta = session_meta(rec) if isinstance(rec, dict) else None
     return ("meta", meta) if meta else ("headerless", None)
 
