@@ -6,6 +6,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.32.1] - 2026-07-31
+
+### Fixed
+
+- **One agent run no longer shows up twice in Studio.** The codex mirror
+  imported every rollout under `~/.codex/sessions`, including the rollouts
+  written by headless `codex exec` runs that lionagi itself had spawned as
+  agent legs — so a single run appeared once under its agent's name and again
+  as an extra "Codex session". Rollouts whose originator marks them as
+  headless (`codex_exec`) are no longer imported: the run that spawned them
+  already persists a first-class session. Interactive Codex history (desktop
+  app, TUI, IDE) mirrors exactly as before. Rows imported by earlier versions
+  are absorbed on the mirror's next start, so existing double entries heal on
+  upgrade; the removal is scoped to importer-written rows (`imported_*`) and
+  can never touch a live run's session.
+
 ## [0.32.0] - 2026-07-30
 
 ### Upgrading from 0.31.1
