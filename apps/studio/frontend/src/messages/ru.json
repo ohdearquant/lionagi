@@ -157,6 +157,10 @@
     },
     "model": {
       "label": "Model"
+    },
+    "effort": {
+      "label": "Усилие",
+      "default": "По умолчанию"
     }
   },
   "playfield": {

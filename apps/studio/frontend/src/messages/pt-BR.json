@@ -157,6 +157,10 @@
     },
     "model": {
       "label": "Model"
+    },
+    "effort": {
+      "label": "Esforço",
+      "default": "Padrão"
     }
   },
   "playfield": {

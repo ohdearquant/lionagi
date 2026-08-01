@@ -90,6 +90,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/operator/conversations"),
     ("GET", "/api/operator/conversations/{conversation_id}"),
     ("GET", "/api/operator/conversations/{conversation_id}/stream"),
+    ("GET", "/api/operator/models"),
     ("GET", "/api/playbook-templates/"),
     ("GET", "/api/playbook-templates/{name}"),
     ("GET", "/api/playbooks/"),
@@ -255,7 +256,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 109
+    assert len(_GOLDEN_ROUTES) == 110
 
 
 def _compiled_match_shape(path_template: str) -> str:

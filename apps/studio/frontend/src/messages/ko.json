@@ -157,6 +157,10 @@
     },
     "model": {
       "label": "Model"
+    },
+    "effort": {
+      "label": "노력",
+      "default": "기본값"
     }
   },
   "playfield": {

@@ -10,6 +10,7 @@ const api = vi.hoisted(() => ({
   cancelOperatorRequest: vi.fn(),
   createOperatorConversation: vi.fn(),
   decideOperatorProposal: vi.fn(),
+  fetchOperatorModelCatalog: vi.fn(() => Promise.resolve({ models: [] })),
   getOperatorConversation: vi.fn(),
   listOperatorConversations: vi.fn(),
   streamOperatorConversation: vi.fn(() => vi.fn()),

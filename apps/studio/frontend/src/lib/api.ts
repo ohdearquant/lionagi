@@ -12,6 +12,7 @@ import type {
   OperatorConversationSnapshot,
   OperatorFrame,
   OperatorFrameType,
+  OperatorModelCatalog,
   OperatorProposalResult,
   OperatorTurnAccepted,
   OperatorTurnRequest,
@@ -367,9 +368,15 @@ export async function submitOperatorTurn(
         context: request.context,
         expected_last_sequence: request.expectedLastSequence,
         ...(request.model ? { model: request.model } : {}),
+        ...(request.provider ? { provider: request.provider } : {}),
+        ...(request.effort ? { effort: request.effort } : {}),
       }),
     },
   );
+}
+
+export async function fetchOperatorModelCatalog(): Promise<OperatorModelCatalog> {
+  return fetchJson<OperatorModelCatalog>("/api/operator/models");
 }
 
 export async function cancelOperatorRequest(

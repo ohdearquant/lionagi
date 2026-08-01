@@ -157,6 +157,10 @@
     },
     "model": {
       "label": "Model"
+    },
+    "effort": {
+      "label": "労力",
+      "default": "デフォルト"
     }
   },
   "playfield": {

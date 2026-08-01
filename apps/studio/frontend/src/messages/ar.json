@@ -157,6 +157,10 @@
     },
     "model": {
       "label": "Model"
+    },
+    "effort": {
+      "label": "الجهد",
+      "default": "افتراضي"
     }
   },
   "playfield": {

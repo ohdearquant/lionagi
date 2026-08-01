@@ -157,6 +157,10 @@
     },
     "model": {
       "label": "Model"
+    },
+    "effort": {
+      "label": "प्रयास",
+      "default": "डिफ़ॉल्ट"
     }
   },
   "playfield": {

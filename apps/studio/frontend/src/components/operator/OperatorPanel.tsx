@@ -16,6 +16,7 @@ import {
   cancelOperatorRequest,
   createOperatorConversation,
   decideOperatorProposal,
+  fetchOperatorModelCatalog,
   getOperatorConversation,
   listOperatorConversations,
   streamOperatorConversation,
@@ -26,15 +27,16 @@ import type {
   OperatorConfirmationPayload,
   OperatorConversation,
   OperatorDonePayload,
+  OperatorEffort,
   OperatorErrorPayload,
   OperatorFrame,
+  OperatorModelCatalogEntry,
   OperatorProposalPayload,
   OperatorTextPayload,
   OperatorToolCallPayload,
   OperatorToolResultPayload,
   OperatorUiCommandPayload,
 } from "@/lib/types";
-import { OPERATOR_MODELS, type OperatorModel } from "@/lib/types";
 import Button from "@/components/ui/Button";
 import Markdown from "@/components/ui/Markdown";
 import {
@@ -624,7 +626,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const navigate = useNavigate();
   const [state, dispatch] = useReducer(operatorReducer, initialOperatorState);
   const [instruction, setInstruction] = useState("");
-  const [model, setModel] = useState<OperatorModel>(OPERATOR_MODELS[0]);
+  const [modelCatalog, setModelCatalog] = useState<OperatorModelCatalogEntry[]>([]);
+  const [model, setModel] = useState<string>("");
+  const [effort, setEffort] = useState<OperatorEffort | "">("");
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -671,6 +675,35 @@ export default function OperatorPanel({ open, onClose }: Props) {
     },
     [t],
   );
+
+  useEffect(() => {
+    let active = true;
+    void fetchOperatorModelCatalog()
+      .then((catalog) => {
+        if (!active) return;
+        setModelCatalog(catalog.models);
+        setModel((current) =>
+          current && catalog.models.some((entry) => entry.id === current)
+            ? current
+            : (catalog.models[0]?.id ?? ""),
+        );
+      })
+      .catch(() => {
+        // The composer still works with no model selected -- the daemon
+        // falls back to its own env-var default for a turn that omits one.
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const effortChoices = useMemo(
+    () => modelCatalog.find((entry) => entry.id === model)?.efforts ?? [],
+    [modelCatalog, model],
+  );
+  // Derived, not synced via effect: a stale selection from a previous model
+  // just stops being offered rather than needing a setState-on-effect sync.
+  const effectiveEffort = effort && effortChoices.includes(effort) ? effort : "";
 
   useEffect(() => {
     let active = true;
@@ -911,7 +944,8 @@ export default function OperatorPanel({ open, onClose }: Props) {
         instruction: trimmed,
         context,
         expectedLastSequence: state.lastSequence,
-        model,
+        ...(model ? { model } : {}),
+        ...(effectiveEffort ? { effort: effectiveEffort } : {}),
       });
       dispatch({ type: "TURN_ACCEPTED", requestId: accepted.requestId });
       setInstruction("");
@@ -934,6 +968,8 @@ export default function OperatorPanel({ open, onClose }: Props) {
     instruction,
     location.pathname,
     location.search,
+    model,
+    effectiveEffort,
     sending,
     state.activeRequestId,
     state.conversation,
@@ -1100,15 +1136,37 @@ export default function OperatorPanel({ open, onClose }: Props) {
                 aria-label={t("model.label")}
                 title={t("model.label")}
                 value={model}
-                onChange={(event) => setModel(event.target.value as OperatorModel)}
+                onChange={(event) => {
+                  setModel(event.target.value);
+                  // A previous model's effort selection may not exist on the
+                  // new one; clear it explicitly rather than carrying a value
+                  // effortChoices no longer offers.
+                  setEffort("");
+                }}
                 className="shrink-0 border-0 bg-transparent py-0 font-data text-meta text-content-muted outline-none focus:text-content-primary"
               >
-                {OPERATOR_MODELS.map((name) => (
-                  <option key={name} value={name}>
-                    {name}
+                {modelCatalog.map((entry) => (
+                  <option key={entry.id} value={entry.id}>
+                    {entry.label}
                   </option>
                 ))}
               </select>
+              {effortChoices.length > 0 && (
+                <select
+                  aria-label={t("effort.label")}
+                  title={t("effort.label")}
+                  value={effectiveEffort}
+                  onChange={(event) => setEffort(event.target.value as OperatorEffort)}
+                  className="shrink-0 border-0 bg-transparent py-0 font-data text-meta text-content-muted outline-none focus:text-content-primary"
+                >
+                  <option value="">{t("effort.default")}</option>
+                  {effortChoices.map((choice) => (
+                    <option key={choice} value={choice}>
+                      {choice}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
           </div>
           <button

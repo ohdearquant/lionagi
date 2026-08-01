@@ -157,6 +157,10 @@
     },
     "model": {
       "label": "模型"
+    },
+    "effort": {
+      "label": "强度",
+      "default": "默认"
     }
   },
   "playfield": {

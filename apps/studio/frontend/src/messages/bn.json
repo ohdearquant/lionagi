@@ -157,6 +157,10 @@
     },
     "model": {
       "label": "Model"
+    },
+    "effort": {
+      "label": "প্রচেষ্টা",
+      "default": "ডিফল্ট"
     }
   },
   "playfield": {

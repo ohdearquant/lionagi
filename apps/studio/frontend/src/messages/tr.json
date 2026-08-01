@@ -157,6 +157,10 @@
     },
     "model": {
       "label": "Model"
+    },
+    "effort": {
+      "label": "Çaba",
+      "default": "Varsayılan"
     }
   },
   "playfield": {

@@ -44,6 +44,9 @@ CREATE TABLE IF NOT EXISTS studio_operator_conversations (
   -- continues the first instead of starting a stranger.
   provider_session_id TEXT,
   provider_model      TEXT,
+  -- Provider the conversation is currently pinned to; NULL means "use the
+  -- env-var default" (see build_operator_branch), same as provider_model.
+  provider            TEXT,
   created_at         REAL NOT NULL,
   updated_at         REAL NOT NULL,
   archived_at        REAL,
@@ -59,6 +62,9 @@ CREATE TABLE IF NOT EXISTS studio_operator_turns (
   status              TEXT NOT NULL
                       CHECK(status IN ('queued', 'running', 'awaiting_confirmation',
                                        'completed', 'failed', 'cancelled')),
+  -- Effort is per-turn (unlike provider/model, it never invalidates a
+  -- resumed provider session), so it lives on the turn, not the conversation.
+  effort              TEXT,
   error_code          TEXT,
   created_at          REAL NOT NULL,
   started_at          REAL,
@@ -144,6 +150,10 @@ class OperatorConflictError(OperatorStoreError):
         self.details = details or {}
 
 
+class OperatorValidationError(OperatorStoreError):
+    code = "validation"
+
+
 class OperatorStore:
     def __init__(self, db_path: str | Path | None = None) -> None:
         self._db_path = Path(db_path) if db_path is not None else None
@@ -187,7 +197,12 @@ class OperatorStore:
                 await self._add_missing_columns(
                     db,
                     "studio_operator_conversations",
-                    {"provider_session_id": "TEXT", "provider_model": "TEXT"},
+                    {"provider_session_id": "TEXT", "provider_model": "TEXT", "provider": "TEXT"},
+                )
+                await self._add_missing_columns(
+                    db,
+                    "studio_operator_turns",
+                    {"effort": "TEXT"},
                 )
                 await db.commit()
             stat = path.stat()
@@ -267,6 +282,7 @@ class OperatorStore:
             "activeRequestId": row["active_request_id"],
             "providerSessionId": row["provider_session_id"],
             "providerModel": row["provider_model"],
+            "provider": row["provider"],
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
         }
@@ -420,38 +436,54 @@ class OperatorStore:
             )
             await db.commit()
 
-    async def select_provider_model(self, conversation_id: str, model: str) -> None:
-        """Record the model for this conversation, dropping a stale session.
+    async def select_provider_model(
+        self,
+        conversation_id: str,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        """Record the provider and/or model for this conversation, dropping a stale session.
 
-        A provider session belongs to the model that created it, so resuming
-        one under a different model is undefined. Switching models therefore
-        starts a fresh session on purpose rather than resuming into a mismatch.
+        A provider session belongs to the (provider, model) pair that created
+        it, so resuming one under a different provider or model is undefined.
+        Changing either therefore starts a fresh session on purpose rather
+        than resuming into a mismatch. A ``None`` argument leaves that column
+        untouched -- e.g. selecting only a model on a conversation that
+        already pinned a provider does not clear the provider pin.
         """
+        if provider is None and model is None:
+            return
         await self.ensure_schema()
         async with open_db(str(self.path())) as db:
             await db.execute("BEGIN IMMEDIATE")
             row = await (
                 await db.execute(
-                    "SELECT provider_model FROM studio_operator_conversations WHERE id = ?",
+                    "SELECT provider, provider_model FROM studio_operator_conversations "
+                    "WHERE id = ?",
                     (conversation_id,),
                 )
             ).fetchone()
             if row is None:
                 await db.rollback()
                 raise OperatorNotFoundError(f"Operator conversation '{conversation_id}' not found")
-            changed = row["provider_model"] is not None and row["provider_model"] != model
+            changed = (provider is not None and row["provider"] not in (None, provider)) or (
+                model is not None and row["provider_model"] not in (None, model)
+            )
+            next_provider = provider if provider is not None else row["provider"]
+            next_model = model if model is not None else row["provider_model"]
             if changed:
                 await db.execute(
                     "UPDATE studio_operator_conversations "
-                    "SET provider_model = ?, provider_session_id = NULL, updated_at = ? "
-                    "WHERE id = ?",
-                    (model, time.time(), conversation_id),
+                    "SET provider = ?, provider_model = ?, provider_session_id = NULL, "
+                    "updated_at = ? WHERE id = ?",
+                    (next_provider, next_model, time.time(), conversation_id),
                 )
             else:
                 await db.execute(
                     "UPDATE studio_operator_conversations "
-                    "SET provider_model = ?, updated_at = ? WHERE id = ?",
-                    (model, time.time(), conversation_id),
+                    "SET provider = ?, provider_model = ?, updated_at = ? WHERE id = ?",
+                    (next_provider, next_model, time.time(), conversation_id),
                 )
             await db.commit()
 
@@ -584,6 +616,7 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
         instruction: str,
         context: dict[str, Any],
         expected_last_sequence: int,
+        effort: str | None = None,
     ) -> dict[str, Any]:
         await self.ensure_schema()
         request_id = str(uuid.uuid4())
@@ -626,8 +659,16 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
             await db.execute(
                 "INSERT INTO studio_operator_turns "
                 "(request_id, conversation_id, instruction, context_json, context_hash, "
-                "status, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?)",
-                (request_id, conversation_id, instruction, context_json, context_hash, now),
+                "status, effort, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)",
+                (
+                    request_id,
+                    conversation_id,
+                    instruction,
+                    context_json,
+                    context_hash,
+                    effort,
+                    now,
+                ),
             )
             await db.execute(
                 "UPDATE studio_operator_conversations SET active_request_id=?, "
@@ -689,6 +730,7 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
             "context": json.loads(row["context_json"]),
             "contextHash": row["context_hash"],
             "status": row["status"],
+            "effort": row["effort"],
             "errorCode": row["error_code"],
             "cancelRequestedAt": row["cancel_requested_at"],
         }

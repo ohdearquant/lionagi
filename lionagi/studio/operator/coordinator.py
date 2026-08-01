@@ -6,23 +6,25 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 import uuid
 from contextlib import suppress
 from typing import Any
 
+from .catalog import OperatorSelectionError, resolve_selection
 from .engine import (
     BranchOperatorEngine,
     OperatorProviderUnavailableError,
     build_operator_branch,
     compile_operator_history,
+    resolve_operator_provider_model,
     write_resumable_operator_snapshot,
 )
 from .store import (
     OperatorAuditUnavailableError,
     OperatorConflictError,
     OperatorStore,
+    OperatorValidationError,
 )
 from .types import (
     CommandExecutor,
@@ -186,16 +188,27 @@ class OperatorCoordinator:
         context: dict[str, Any],
         expected_last_sequence: int,
         model: str | None = None,
+        provider: str | None = None,
+        effort: str | None = None,
     ) -> dict[str, Any]:
         await self.ensure_started()
-        if model:
+        try:
+            resolved_provider, resolved_model, resolved_effort = resolve_selection(
+                provider=provider, model=model, effort=effort
+            )
+        except OperatorSelectionError as exc:
+            raise OperatorValidationError(str(exc)) from exc
+        if resolved_provider is not None or resolved_model is not None:
             # Before the turn is accepted, so the run it builds already sees it.
-            await self.store.select_provider_model(conversation_id, model)
+            await self.store.select_provider_model(
+                conversation_id, provider=resolved_provider, model=resolved_model
+            )
         accepted = await self.store.submit_turn(
             conversation_id,
             instruction=instruction,
             context=context,
             expected_last_sequence=expected_last_sequence,
+            effort=resolved_effort,
         )
         request_id = accepted["requestId"]
         ready = asyncio.Event()
@@ -273,7 +286,9 @@ class OperatorCoordinator:
 
             conversation_row = await self.store.get_conversation(conversation_id)
             resumed_session_id = conversation_row.get("providerSessionId")
+            selected_provider = conversation_row.get("provider")
             selected_model = conversation_row.get("providerModel")
+            selected_effort = turn_row.get("effort")
             engine_turn = OperatorEngineTurn(
                 conversation_id=conversation_id,
                 request_id=request_id,
@@ -285,7 +300,9 @@ class OperatorCoordinator:
                 provider_session_id=(
                     resumed_session_id if isinstance(resumed_session_id, str) else None
                 ),
+                provider=selected_provider if isinstance(selected_provider, str) else None,
                 model=selected_model if isinstance(selected_model, str) else None,
+                effort=selected_effort if isinstance(selected_effort, str) else None,
             )
             run_branch = build_operator_branch(engine_turn)
             engine_turn = OperatorEngineTurn(
@@ -298,7 +315,9 @@ class OperatorCoordinator:
                 runtime_branch=run_branch,
                 store_path=engine_turn.store_path,
                 provider_session_id=engine_turn.provider_session_id,
+                provider=engine_turn.provider,
                 model=engine_turn.model,
+                effort=engine_turn.effort,
             )
             from lionagi.cli import _runs as cli_runs
 
@@ -311,14 +330,17 @@ class OperatorCoordinator:
             run_dir.ensure_state_dirs()
             run_dir.ensure_artifact_root()
             started_at = time.time()
+            # Same resolution build_operator_branch already applied to the Branch
+            # itself, so the manifest and persisted run record never disagree with
+            # what actually ran.
+            resolved_provider, resolved_model = resolve_operator_provider_model(engine_turn)
             run_dir.write_manifest(
                 {
                     "kind": "agent",
                     "agent_name": "Operator",
                     "branch_id": str(run_branch.id),
-                    "provider": os.environ.get("LIONAGI_STUDIO_OPERATOR_PROVIDER", "claude_code"),
-                    "model": engine_turn.model
-                    or os.environ.get("LIONAGI_STUDIO_OPERATOR_MODEL", "sonnet"),
+                    "provider": resolved_provider,
+                    "model": resolved_model,
                     "status": "running",
                     "started_at": started_at,
                     "ended_at": None,
@@ -328,16 +350,12 @@ class OperatorCoordinator:
             # canonical snapshot still exists before the run link is emitted.
             await write_resumable_operator_snapshot(run_branch, run_dir.branches_dir)
 
-            provider = os.environ.get("LIONAGI_STUDIO_OPERATOR_PROVIDER", "claude_code")
-            model_name = engine_turn.model or os.environ.get(
-                "LIONAGI_STUDIO_OPERATOR_MODEL", "sonnet"
-            )
             live = await cli_runs.setup_agent_persist(
                 run_branch,
                 agent_name="Operator",
                 artifacts_path=str(run_dir.artifact_root),
-                model=model_name,
-                provider=provider,
+                model=resolved_model,
+                provider=resolved_provider,
                 project=turn_row["context"].get("project"),
                 run_id=run_dir.run_id,
                 share_db=False,
@@ -486,17 +504,15 @@ class OperatorCoordinator:
                     )
             if run_branch is not None and run_dir is not None:
                 with suppress(Exception):
+                    final_provider, final_model = resolve_operator_provider_model(engine_turn)
                     run_dir.write_manifest(
                         {
                             "kind": "agent",
                             "agent_name": "Operator",
                             "branch_id": str(run_branch.id),
                             "session_id": live["session_id"] if live is not None else None,
-                            "provider": os.environ.get(
-                                "LIONAGI_STUDIO_OPERATOR_PROVIDER", "claude_code"
-                            ),
-                            "model": engine_turn.model
-                            or os.environ.get("LIONAGI_STUDIO_OPERATOR_MODEL", "sonnet"),
+                            "provider": final_provider,
+                            "model": final_model,
                             "status": terminal_status,
                             "started_at": started_at or time.time(),
                             "ended_at": time.time(),
