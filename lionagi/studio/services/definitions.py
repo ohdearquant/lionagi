@@ -227,6 +227,22 @@ async def save_definition(
         disk_file = await anyio.to_thread.run_sync(partial(_find_definition_file, base, name))
         if not disk_file:
             disk_file = base / f"{name}{_DEFAULT_EXT.get(kind, '.md')}"
+        elif kind == "agent":
+            # This route upserts blindly by design (ADR-0077), so it's the other write
+            # path onto agent files besides PUT /agents/{name} -- the same "system
+            # agent is not editable" rule (lionagi/studio/services/agents.py) has to
+            # hold here too, or it's a bypass. Read straight off disk_file rather than
+            # calling into agents.py, since that module resolves its own _AGENTS_ROOT
+            # independently of this module's (test-patchable) AGENTS_DIR/KIND_DIRS.
+            from lionagi.libs.frontmatter import parse_frontmatter as _parse_fm
+
+            existing_text = await anyio.to_thread.run_sync(disk_file.read_text)
+            existing_fm, _ = _parse_fm(existing_text)
+            # Explicit-only: an absent key must not retroactively lock down every
+            # agent file that predates this protection (see agents.py's
+            # _is_protected_system for the full rationale -- kept in sync here).
+            if existing_fm.get("lion_system") is True:
+                raise PermissionError(f"Agent '{name}' is a system agent and cannot be edited")
 
         now = time.time()
 
@@ -405,6 +421,8 @@ async def save_definition_route(kind: str, name: str, body: SaveBody) -> dict[st
     # service layer; catch it and return 422 instead of propagating a 500.
     try:
         return await save_definition(kind, name, body.content, body.message)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
 
