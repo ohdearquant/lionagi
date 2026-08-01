@@ -57,6 +57,23 @@ class CreateConversationRequest(WireModel):
     title: str | None = Field(default=None, max_length=512)
 
 
+class UpdateConversationRequest(WireModel):
+    """Partial update: only fields present in the request body are applied.
+
+    ``status`` only accepts ``active``/``archived`` here -- deletion stays on
+    the dedicated DELETE route so it keeps its own, more final, semantics.
+    """
+
+    title: str | None = Field(default=None, max_length=512)
+    pinned: bool | None = None
+    status: Literal["active", "archived"] | None = None
+
+
+class ForkConversationRequest(WireModel):
+    up_to_sequence: int | None = Field(default=None, ge=1)
+    title: str | None = Field(default=None, max_length=512)
+
+
 class OperatorContextSnapshot(WireModel):
     project: str | None = Field(default=None, max_length=512)
     space: Literal["mission", "designer", "library", "history", "schedules", "system"]
