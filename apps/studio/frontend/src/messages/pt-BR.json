@@ -754,7 +754,17 @@
       "durationStatus": "ativo há {duration} · última atividade há {age}",
       "empty": "Nenhuma execução ou invocação ativa.",
       "emptyHint": "Inicie uma com a CLI li, ou pressione ⌘K para ir a qualquer lugar.",
-      "fleetLink": "Frota →"
+      "fleetLink": "Frota →",
+      "viewCards": "Cartões",
+      "viewTable": "Tabela",
+      "table": {
+        "colName": "Nome",
+        "colStatus": "Status",
+        "colUptime": "Tempo ativo",
+        "colLastActivity": "Última atividade",
+        "colKind": "Tipo",
+        "colId": "ID"
+      }
     },
     "recent": {
       "title": "Recentes",

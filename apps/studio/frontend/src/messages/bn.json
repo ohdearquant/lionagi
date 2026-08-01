@@ -754,7 +754,17 @@
       "durationStatus": "{duration} ধরে চলছে · সর্বশেষ কার্যকলাপ {age} আগে",
       "empty": "কোনো সক্রিয় রান বা ইনভোকেশন নেই।",
       "emptyHint": "li CLI দিয়ে একটি লঞ্চ করুন, বা যেকোনো জায়গায় যেতে ⌘K চাপুন।",
-      "fleetLink": "এজেন্ট ফ্লিট →"
+      "fleetLink": "এজেন্ট ফ্লিট →",
+      "viewCards": "কার্ড",
+      "viewTable": "টেবিল",
+      "table": {
+        "colName": "নাম",
+        "colStatus": "অবস্থা",
+        "colUptime": "আপটাইম",
+        "colLastActivity": "সর্বশেষ কার্যকলাপ",
+        "colKind": "ধরন",
+        "colId": "ID"
+      }
     },
     "recent": {
       "title": "সাম্প্রতিক",

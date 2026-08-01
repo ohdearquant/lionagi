@@ -754,7 +754,17 @@
       "durationStatus": "работает {duration} · последняя активность {age} назад",
       "empty": "Нет активных запусков или вызовов.",
       "emptyHint": "Запустите через li CLI или нажмите ⌘K, чтобы перейти куда угодно.",
-      "fleetLink": "Пул агентов →"
+      "fleetLink": "Пул агентов →",
+      "viewCards": "Карточки",
+      "viewTable": "Таблица",
+      "table": {
+        "colName": "Имя",
+        "colStatus": "Статус",
+        "colUptime": "Время работы",
+        "colLastActivity": "Последняя активность",
+        "colKind": "Тип",
+        "colId": "ID"
+      }
     },
     "recent": {
       "title": "Недавние",

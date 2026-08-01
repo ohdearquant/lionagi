@@ -754,7 +754,17 @@
       "durationStatus": "运行 {duration} · 最近活动 {age} 前",
       "empty": "当前无活跃运行或调用。",
       "emptyHint": "可用 li CLI 启动，或按 ⌘K 快速跳转。",
-      "fleetLink": "智能体监控 →"
+      "fleetLink": "智能体监控 →",
+      "viewCards": "卡片",
+      "viewTable": "表格",
+      "table": {
+        "colName": "名称",
+        "colStatus": "状态",
+        "colUptime": "运行时长",
+        "colLastActivity": "最近活动",
+        "colKind": "类型",
+        "colId": "ID"
+      }
     },
     "recent": {
       "title": "近期",

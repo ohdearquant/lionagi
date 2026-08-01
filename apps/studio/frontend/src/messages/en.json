@@ -754,7 +754,17 @@
       "durationStatus": "up {duration} · last activity {age} ago",
       "empty": "No active runs or invocations.",
       "emptyHint": "Launch one with the li CLI, or press ⌘K to jump anywhere.",
-      "fleetLink": "Fleet →"
+      "fleetLink": "Fleet →",
+      "viewCards": "Cards",
+      "viewTable": "Table",
+      "table": {
+        "colName": "Name",
+        "colStatus": "Status",
+        "colUptime": "Uptime",
+        "colLastActivity": "Last activity",
+        "colKind": "Kind",
+        "colId": "ID"
+      }
     },
     "recent": {
       "title": "Recent",

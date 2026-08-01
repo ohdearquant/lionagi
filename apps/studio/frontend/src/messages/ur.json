@@ -754,7 +754,17 @@
       "durationStatus": "{duration} سے چل رہا ہے · آخری سرگرمی {age} پہلے",
       "empty": "کوئی فعال رن یا انووکیشن نہیں۔",
       "emptyHint": "li CLI سے ایک لانچ کریں، یا کہیں بھی جانے کے لیے ⌘K دبائیں۔",
-      "fleetLink": "ایجنٹ فلیٹ →"
+      "fleetLink": "ایجنٹ فلیٹ →",
+      "viewCards": "کارڈز",
+      "viewTable": "جدول",
+      "table": {
+        "colName": "نام",
+        "colStatus": "حیثیت",
+        "colUptime": "اپ ٹائم",
+        "colLastActivity": "آخری سرگرمی",
+        "colKind": "قسم",
+        "colId": "آئی ڈی"
+      }
     },
     "recent": {
       "title": "حالیہ",

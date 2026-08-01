@@ -754,7 +754,17 @@
       "durationStatus": "{duration} süredir açık · son etkinlik {age} önce",
       "empty": "aktif çalıştırma veya çağrı yok.",
       "emptyHint": "li CLI ile bir tane başlat veya herhangi bir yere atlamak için ⌘K’ye bas.",
-      "fleetLink": "ajan filosu →"
+      "fleetLink": "ajan filosu →",
+      "viewCards": "Kartlar",
+      "viewTable": "Tablo",
+      "table": {
+        "colName": "Ad",
+        "colStatus": "Durum",
+        "colUptime": "Çalışma süresi",
+        "colLastActivity": "Son etkinlik",
+        "colKind": "Tür",
+        "colId": "Kimlik"
+      }
     },
     "recent": {
       "title": "son",

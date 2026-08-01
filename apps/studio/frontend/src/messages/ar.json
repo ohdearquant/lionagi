@@ -754,7 +754,17 @@
       "durationStatus": "قيد التشغيل منذ {duration} · آخر نشاط منذ {age}",
       "empty": "لا توجد تشغيلات أو استدعاءات نشطة.",
       "emptyHint": "شغّل واحدًا باستخدام li CLI، أو اضغط ⌘K للانتقال إلى أي مكان.",
-      "fleetLink": "أسطول الوكلاء ←"
+      "fleetLink": "أسطول الوكلاء ←",
+      "viewCards": "بطاقات",
+      "viewTable": "جدول",
+      "table": {
+        "colName": "الاسم",
+        "colStatus": "الحالة",
+        "colUptime": "مدة التشغيل",
+        "colLastActivity": "آخر نشاط",
+        "colKind": "النوع",
+        "colId": "المعرف"
+      }
     },
     "recent": {
       "title": "الأخيرة",

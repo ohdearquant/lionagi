@@ -754,7 +754,17 @@
       "durationStatus": "{duration} 동안 실행 중 · 마지막 활동 {age} 전",
       "empty": "활성 실행 또는 호출이 없습니다.",
       "emptyHint": "li CLI로 하나를 실행하거나 ⌘K를 눌러 어디로든 이동하세요.",
-      "fleetLink": "에이전트 플릿 →"
+      "fleetLink": "에이전트 플릿 →",
+      "viewCards": "카드",
+      "viewTable": "표",
+      "table": {
+        "colName": "이름",
+        "colStatus": "상태",
+        "colUptime": "가동 시간",
+        "colLastActivity": "마지막 활동",
+        "colKind": "종류",
+        "colId": "ID"
+      }
     },
     "recent": {
       "title": "최근",

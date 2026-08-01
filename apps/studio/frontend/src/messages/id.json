@@ -754,7 +754,17 @@
       "durationStatus": "aktif {duration} · aktivitas terakhir {age} lalu",
       "empty": "Tidak ada eksekusi atau invokasi aktif.",
       "emptyHint": "Luncurkan satu dengan CLI li, atau tekan ⌘K untuk lompat ke mana saja.",
-      "fleetLink": "Armada agen →"
+      "fleetLink": "Armada agen →",
+      "viewCards": "Kartu",
+      "viewTable": "Tabel",
+      "table": {
+        "colName": "Nama",
+        "colStatus": "Status",
+        "colUptime": "Waktu aktif",
+        "colLastActivity": "Aktivitas terakhir",
+        "colKind": "Jenis",
+        "colId": "ID"
+      }
     },
     "recent": {
       "title": "Terbaru",
