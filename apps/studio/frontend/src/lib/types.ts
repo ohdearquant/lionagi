@@ -410,6 +410,7 @@ export interface OperatorConversation {
   project?: string | null;
   title?: string | null;
   status: OperatorConversationStatus;
+  pinned: boolean;
   nextSequence?: number;
   activeRequestId?: string | null;
   providerModel?: string | null;

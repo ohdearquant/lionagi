@@ -10,10 +10,12 @@ const api = vi.hoisted(() => ({
   cancelOperatorRequest: vi.fn(),
   createOperatorConversation: vi.fn(),
   decideOperatorProposal: vi.fn(),
+  forkOperatorConversation: vi.fn(),
   getOperatorConversation: vi.fn(),
   listOperatorConversations: vi.fn(),
   streamOperatorConversation: vi.fn(() => vi.fn()),
   submitOperatorTurn: vi.fn(),
+  updateOperatorConversation: vi.fn(),
   getRunFile: vi.fn(),
 }));
 const router = vi.hoisted(() => ({ navigate: vi.fn() }));
@@ -197,9 +199,15 @@ describe("OperatorPanel", () => {
     expect(api.getOperatorConversation).toHaveBeenCalledWith("conversation-latest");
     expect(container.textContent).toContain("Recovered from the daemon.");
     expect(window.localStorage.getItem("studio:operator-conversation")).toBe("conversation-latest");
-    const switcher = container.querySelector('select[aria-label="Operator conversation"]');
-    expect(switcher?.querySelectorAll("option")).toHaveLength(3);
-    expect(switcher?.textContent).toContain("Older daemon history");
+    const toggle = container.querySelector(
+      'button[aria-label="Conversations"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const rows = container.querySelectorAll("ul li");
+    expect(rows).toHaveLength(2);
+    expect(container.textContent).toContain("Older daemon history");
   });
 
   it("falls back from a stale cached id and keeps earlier daemon history reachable", async () => {
@@ -240,12 +248,17 @@ describe("OperatorPanel", () => {
     expect(api.getOperatorConversation).toHaveBeenCalledWith("conversation-active");
     expect(window.localStorage.getItem("studio:operator-conversation")).toBe("conversation-active");
 
-    const switcher = container.querySelector(
-      'select[aria-label="Operator conversation"]',
-    ) as HTMLSelectElement;
+    const toggle = container.querySelector(
+      'button[aria-label="Conversations"]',
+    ) as HTMLButtonElement;
     await act(async () => {
-      switcher.value = "conversation-prior";
-      switcher.dispatchEvent(new Event("change", { bubbles: true }));
+      toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const priorRow = [...container.querySelectorAll("ul li button")].find((button) =>
+      button.textContent?.includes("Prior conversation"),
+    ) as HTMLButtonElement;
+    await act(async () => {
+      priorRow.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await Promise.resolve();
     });
 
@@ -558,5 +571,180 @@ describe("OperatorPanel", () => {
       rejectionCode: "client_error",
     });
     expect(api.acknowledgeOperatorEffect).toHaveBeenCalledTimes(1);
+  });
+
+  describe("conversation list: rename, pin/archive, fork", () => {
+    async function openList() {
+      const toggle = container.querySelector(
+        'button[aria-label="Conversations"]',
+      ) as HTMLButtonElement;
+      await act(async () => {
+        toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+    }
+
+    beforeEach(() => {
+      api.listOperatorConversations.mockResolvedValue([
+        {
+          id: "conversation-1",
+          title: "Scheduler check",
+          status: "active",
+          pinned: false,
+          activeRequestId: null,
+          updatedAt: 2,
+        },
+      ]);
+      api.getOperatorConversation.mockResolvedValue({
+        conversation: {
+          id: "conversation-1",
+          title: "Scheduler check",
+          status: "active",
+          pinned: false,
+          activeRequestId: null,
+        },
+        frames: [],
+      });
+    });
+
+    it("renames a conversation inline and reflects the new title", async () => {
+      window.localStorage.setItem("studio:operator-conversation", "conversation-1");
+      api.updateOperatorConversation.mockResolvedValue({
+        id: "conversation-1",
+        title: "Renamed check",
+        status: "active",
+        pinned: false,
+        activeRequestId: null,
+      });
+
+      await mount();
+      await openList();
+
+      const titleButton = [...container.querySelectorAll("ul li button")].find((button) =>
+        button.textContent?.includes("Scheduler check"),
+      ) as HTMLButtonElement;
+      await act(async () => {
+        titleButton.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      });
+      const input = container.querySelector("ul li input") as HTMLInputElement;
+      const setNativeValue = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value",
+      )!.set!;
+      await act(async () => {
+        setNativeValue.call(input, "Renamed check");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+        await Promise.resolve();
+      });
+
+      expect(api.updateOperatorConversation).toHaveBeenCalledWith("conversation-1", {
+        title: "Renamed check",
+      });
+      expect(container.textContent).toContain("Renamed check");
+    });
+
+    it("surfaces an error when renaming a conversation that no longer exists", async () => {
+      window.localStorage.setItem("studio:operator-conversation", "conversation-1");
+      api.updateOperatorConversation.mockRejectedValue(
+        new Error("Operator conversation 'conversation-1' not found"),
+      );
+
+      await mount();
+      await openList();
+
+      const titleButton = [...container.querySelectorAll("ul li button")].find((button) =>
+        button.textContent?.includes("Scheduler check"),
+      ) as HTMLButtonElement;
+      await act(async () => {
+        titleButton.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      });
+      const input = container.querySelector("ul li input") as HTMLInputElement;
+      const setNativeValue = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value",
+      )!.set!;
+      await act(async () => {
+        setNativeValue.call(input, "New title");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+        await Promise.resolve();
+      });
+
+      expect(container.textContent).toContain("not found");
+    });
+
+    it("pins a conversation to the top and archives it out of the active list", async () => {
+      window.localStorage.setItem("studio:operator-conversation", "conversation-1");
+      api.updateOperatorConversation.mockImplementation(
+        (_id: string, patch: Record<string, unknown>) =>
+          Promise.resolve({
+            id: "conversation-1",
+            title: "Scheduler check",
+            status: patch.status ?? "active",
+            pinned: patch.pinned ?? false,
+            activeRequestId: null,
+          }),
+      );
+
+      await mount();
+      await openList();
+
+      const pinButton = container.querySelector(
+        'ul li button[aria-label="Pin"]',
+      ) as HTMLButtonElement;
+      await act(async () => {
+        pinButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await Promise.resolve();
+      });
+      expect(api.updateOperatorConversation).toHaveBeenCalledWith("conversation-1", {
+        pinned: true,
+      });
+
+      const archiveButton = container.querySelector(
+        'ul li button[aria-label="Archive"]',
+      ) as HTMLButtonElement;
+      await act(async () => {
+        archiveButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await Promise.resolve();
+      });
+      expect(api.updateOperatorConversation).toHaveBeenCalledWith("conversation-1", {
+        status: "archived",
+      });
+      // The active filter is still selected, so an archived conversation drops out of the
+      // list rows (the header keeps showing the still-open conversation's own title).
+      expect(container.querySelector("ul")?.textContent).toContain("No conversations yet");
+      expect(container.querySelector("ul")?.textContent).not.toContain("Scheduler check");
+    });
+
+    it("forks a conversation and switches to the new one", async () => {
+      window.localStorage.setItem("studio:operator-conversation", "conversation-1");
+      api.forkOperatorConversation.mockResolvedValue({
+        conversation: {
+          id: "conversation-fork",
+          title: "Scheduler check (fork)",
+          status: "active",
+          pinned: false,
+          activeRequestId: null,
+        },
+        frames: [
+          { ...textFrame(1, "assistant", "Forked history"), conversationId: "conversation-fork" },
+        ],
+      });
+
+      await mount();
+      await openList();
+
+      const forkButton = container.querySelector(
+        'ul li button[aria-label="Fork"]',
+      ) as HTMLButtonElement;
+      await act(async () => {
+        forkButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await Promise.resolve();
+      });
+
+      expect(api.forkOperatorConversation).toHaveBeenCalledWith("conversation-1");
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe("conversation-fork");
+      expect(container.textContent).toContain("Forked history");
+    });
   });
 });

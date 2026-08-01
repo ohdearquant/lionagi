@@ -264,6 +264,7 @@ function normalizeOperatorConversation(value: unknown): OperatorConversation {
   return {
     id,
     status,
+    pinned: raw.pinned === true,
     project: typeof raw.project === "string" ? raw.project : null,
     title: typeof raw.title === "string" ? raw.title : null,
     nextSequence: readNumber("nextSequence", "next_sequence"),
@@ -303,13 +304,69 @@ export async function createOperatorConversation(input?: {
   return normalizeOperatorConversation(raw.conversation ?? raw);
 }
 
-export async function listOperatorConversations(): Promise<OperatorConversation[]> {
-  const response = await fetchJson<unknown>("/api/operator/conversations");
+export async function listOperatorConversations(options?: {
+  status?: "active" | "archived" | "all";
+}): Promise<OperatorConversation[]> {
+  const query = options?.status ? `?status=${encodeURIComponent(options.status)}` : "";
+  const response = await fetchJson<unknown>(`/api/operator/conversations${query}`);
   const raw = asRecord(response);
   if (!Array.isArray(raw.conversations)) {
     throw new Error("Operator conversation list response was invalid.");
   }
   return raw.conversations.map(normalizeOperatorConversation);
+}
+
+export interface OperatorConversationPatch {
+  title?: string | null;
+  pinned?: boolean;
+  status?: "active" | "archived";
+}
+
+export async function updateOperatorConversation(
+  conversationId: string,
+  patch: OperatorConversationPatch,
+): Promise<OperatorConversation> {
+  const body: Record<string, unknown> = {};
+  if ("title" in patch) body.title = patch.title;
+  if ("pinned" in patch) body.pinned = patch.pinned;
+  if ("status" in patch) body.status = patch.status;
+  const response = await fetchJson<unknown>(
+    `/api/operator/conversations/${encodeURIComponent(conversationId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  const raw = asRecord(response);
+  return normalizeOperatorConversation(raw.conversation ?? raw);
+}
+
+export async function forkOperatorConversation(
+  conversationId: string,
+  options?: { upToSequence?: number; title?: string },
+): Promise<OperatorConversationSnapshot> {
+  const body: Record<string, unknown> = {};
+  if (options?.upToSequence != null) body.upToSequence = options.upToSequence;
+  if (options?.title != null) body.title = options.title;
+  const response = await fetchJson<unknown>(
+    `/api/operator/conversations/${encodeURIComponent(conversationId)}/fork`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  const raw = asRecord(response);
+  const conversation = normalizeOperatorConversation(raw.conversation ?? raw);
+  const framesValue = raw.frames;
+  const page = Array.isArray(framesValue) ? framesValue : [];
+  for (const frame of page) {
+    if (!isOperatorFrame(frame)) {
+      throw new Error("Operator fork response contains an unsupported protocol frame.");
+    }
+  }
+  return { conversation, frames: page };
 }
 
 export async function getOperatorConversation(

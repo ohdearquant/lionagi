@@ -16,10 +16,12 @@ import {
   cancelOperatorRequest,
   createOperatorConversation,
   decideOperatorProposal,
+  forkOperatorConversation,
   getOperatorConversation,
   listOperatorConversations,
   streamOperatorConversation,
   submitOperatorTurn,
+  updateOperatorConversation,
 } from "@/lib/api";
 import type {
   OperatorContextSnapshot,
@@ -41,6 +43,7 @@ import {
   IconArrowRight,
   IconBan,
   IconCheck,
+  IconChevronDown,
   IconClose,
   IconCopy,
   IconError,
@@ -631,6 +634,12 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const [deciding, setDeciding] = useState<Set<string>>(() => new Set());
   const [decidedProposalIds, setDecidedProposalIds] = useState<Set<string>>(() => new Set());
   const [conversations, setConversations] = useState<OperatorConversation[]>([]);
+  const [listFilter, setListFilter] = useState<"active" | "archived">("active");
+  const [listPanelOpen, setListPanelOpen] = useState(false);
+  const [listActionError, setListActionError] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [conversationBusyId, setConversationBusyId] = useState<string | null>(null);
   const [panelWidth, setPanelWidth] = useState(DEFAULT_WIDTH);
   const [showJump, setShowJump] = useState(false);
   const [visibleCount, setVisibleCount] = useState(200);
@@ -643,6 +652,11 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const effectsInFlightRef = useRef<Set<string>>(new Set());
   const effectsAcknowledgedRef = useRef<Set<string>>(new Set());
   const effectOutcomesRef = useRef<Map<string, StoredEffectAcknowledgement>>(new Map());
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (renamingId) renameInputRef.current?.focus();
+  }, [renamingId]);
 
   const loadConversation = useCallback(
     async (conversationId: string) => {
@@ -1008,6 +1022,123 @@ export default function OperatorPanel({ open, onClose }: Props) {
     [loadConversation, resetConversation, state.conversation?.id],
   );
 
+  const refreshConversations = useCallback(
+    (status: "active" | "archived") => {
+      return listOperatorConversations({ status })
+        .then((available) => {
+          setConversations(available);
+        })
+        .catch((error) => {
+          setListActionError(error instanceof Error ? error.message : t("errors.load"));
+        });
+    },
+    [t],
+  );
+
+  const commitRename = useCallback(
+    async (conversationId: string, title: string) => {
+      const trimmed = title.trim();
+      setRenamingId(null);
+      const existing = conversations.find((item) => item.id === conversationId);
+      if (existing && (existing.title ?? "") === trimmed) return;
+      setListActionError(null);
+      try {
+        const updated = await updateOperatorConversation(conversationId, {
+          title: trimmed.length > 0 ? trimmed : null,
+        });
+        setConversations((current) =>
+          current.map((item) => (item.id === updated.id ? updated : item)),
+        );
+        if (state.conversation?.id === updated.id) {
+          dispatch({ type: "UPDATE_CONVERSATION", conversation: updated });
+        }
+      } catch (error) {
+        setListActionError(error instanceof Error ? error.message : t("errors.rename"));
+      }
+    },
+    [conversations, state.conversation, t],
+  );
+
+  const togglePin = useCallback(
+    async (conversation: OperatorConversation) => {
+      setConversationBusyId(conversation.id);
+      setListActionError(null);
+      try {
+        const updated = await updateOperatorConversation(conversation.id, {
+          pinned: !conversation.pinned,
+        });
+        setConversations((current) =>
+          current
+            .map((item) => (item.id === updated.id ? updated : item))
+            .sort(
+              (a, b) =>
+                Number(b.pinned) - Number(a.pinned) || (b.updatedAt ?? 0) - (a.updatedAt ?? 0),
+            ),
+        );
+        if (state.conversation?.id === updated.id) {
+          dispatch({ type: "UPDATE_CONVERSATION", conversation: updated });
+        }
+      } catch (error) {
+        setListActionError(error instanceof Error ? error.message : t("errors.pin"));
+      } finally {
+        setConversationBusyId(null);
+      }
+    },
+    [state.conversation, t],
+  );
+
+  const toggleArchive = useCallback(
+    async (conversation: OperatorConversation) => {
+      const nextStatus = conversation.status === "archived" ? "active" : "archived";
+      setConversationBusyId(conversation.id);
+      setListActionError(null);
+      try {
+        const updated = await updateOperatorConversation(conversation.id, {
+          status: nextStatus,
+        });
+        setConversations((current) =>
+          updated.status === listFilter
+            ? current.map((item) => (item.id === updated.id ? updated : item))
+            : current.filter((item) => item.id !== updated.id),
+        );
+        if (state.conversation?.id === updated.id) {
+          dispatch({ type: "UPDATE_CONVERSATION", conversation: updated });
+        }
+      } catch (error) {
+        setListActionError(error instanceof Error ? error.message : t("errors.archive"));
+      } finally {
+        setConversationBusyId(null);
+      }
+    },
+    [listFilter, state.conversation, t],
+  );
+
+  const forkConversationById = useCallback(
+    async (conversation: OperatorConversation) => {
+      setConversationBusyId(conversation.id);
+      setListActionError(null);
+      try {
+        const snapshot = await forkOperatorConversation(conversation.id);
+        setConversations((current) => [snapshot.conversation, ...current]);
+        resetConversation();
+        window.localStorage.setItem(STORAGE_KEY, snapshot.conversation.id);
+        setVisibleCount(200);
+        nearBottomRef.current = true;
+        dispatch({
+          type: "LOAD_SUCCESS",
+          conversation: snapshot.conversation,
+          frames: snapshot.frames,
+        });
+        setListPanelOpen(false);
+      } catch (error) {
+        setListActionError(error instanceof Error ? error.message : t("errors.fork"));
+      } finally {
+        setConversationBusyId(null);
+      }
+    },
+    [resetConversation, t],
+  );
+
   const clampWidth = useCallback(
     (value: number) => Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, value)),
     [],
@@ -1082,20 +1213,157 @@ export default function OperatorPanel({ open, onClose }: Props) {
             <h2 className="truncate text-label font-semibold text-content-primary">{t("title")}</h2>
             <div className="flex min-w-0 items-center gap-2">
               <ConnectionBadge state={state.connectionState} />
-              <select
-                aria-label={t("ariaLabel")}
-                title={t("newConversation")}
-                value={state.conversation?.id ?? ""}
-                onChange={(event) => selectConversation(event.target.value)}
-                className="min-w-0 max-w-36 flex-1 truncate border-0 bg-transparent py-0 font-data text-meta text-content-muted outline-none focus:text-content-primary"
-              >
-                <option value="">{t("newConversation")}</option>
-                {conversations.map((conversation) => (
-                  <option key={conversation.id} value={conversation.id}>
-                    {conversationLabel(conversation)}
-                  </option>
-                ))}
-              </select>
+              <div className="relative min-w-0 max-w-36 flex-1">
+                <button
+                  type="button"
+                  aria-label={t("list.ariaLabel")}
+                  aria-expanded={listPanelOpen}
+                  title={t("list.ariaLabel")}
+                  onClick={() => setListPanelOpen((open) => !open)}
+                  className="flex min-w-0 items-center gap-1 truncate border-0 bg-transparent py-0 font-data text-meta text-content-muted outline-none hover:text-content-primary focus:text-content-primary"
+                >
+                  <span className="min-w-0 truncate">
+                    {state.conversation
+                      ? conversationLabel(state.conversation)
+                      : t("newConversation")}
+                  </span>
+                  <IconChevronDown size={11} />
+                </button>
+                {listPanelOpen && (
+                  <div className="absolute start-0 top-full z-20 mt-1 w-80 rounded-lg border border-edge bg-surface-raised p-2 shadow-lg">
+                    <div className="flex items-center justify-between gap-2 pb-2">
+                      <div className="flex gap-1">
+                        <Button
+                          variant="toggle"
+                          size="sm"
+                          active={listFilter === "active"}
+                          onClick={() => {
+                            setListFilter("active");
+                            void refreshConversations("active");
+                          }}
+                        >
+                          {t("list.filter.active")}
+                        </Button>
+                        <Button
+                          variant="toggle"
+                          size="sm"
+                          active={listFilter === "archived"}
+                          onClick={() => {
+                            setListFilter("archived");
+                            void refreshConversations("archived");
+                          }}
+                        >
+                          {t("list.filter.archived")}
+                        </Button>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setListPanelOpen(false);
+                          resetConversation();
+                        }}
+                      >
+                        {t("newConversation")}
+                      </Button>
+                    </div>
+                    {listActionError && (
+                      <p className="pb-2 text-meta text-status-failure">{listActionError}</p>
+                    )}
+                    <ul className="max-h-72 space-y-1 overflow-y-auto">
+                      {conversations.length === 0 && (
+                        <li className="px-2 py-3 text-center text-meta text-content-muted">
+                          {t("list.empty")}
+                        </li>
+                      )}
+                      {conversations.map((conversation) => {
+                        const busy = conversationBusyId === conversation.id;
+                        const archived = conversation.status === "archived";
+                        return (
+                          <li
+                            key={conversation.id}
+                            className={[
+                              "flex items-center gap-1 rounded px-1.5 py-1",
+                              conversation.id === state.conversation?.id
+                                ? "bg-surface-overlay"
+                                : "hover:bg-surface-overlay",
+                            ].join(" ")}
+                          >
+                            {renamingId === conversation.id ? (
+                              <input
+                                ref={renameInputRef}
+                                value={renameDraft}
+                                maxLength={512}
+                                placeholder={t("list.renamePlaceholder")}
+                                onChange={(event) => setRenameDraft(event.target.value)}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter") {
+                                    event.currentTarget.blur();
+                                  } else if (event.key === "Escape") {
+                                    setRenamingId(null);
+                                  }
+                                }}
+                                onBlur={() => void commitRename(conversation.id, renameDraft)}
+                                className="min-w-0 flex-1 rounded border border-edge bg-surface-base px-1 py-0.5 text-meta text-content-primary outline-none focus:border-accent"
+                              />
+                            ) : (
+                              <button
+                                type="button"
+                                onDoubleClick={() => {
+                                  setRenamingId(conversation.id);
+                                  setRenameDraft(conversation.title ?? "");
+                                }}
+                                onClick={() => {
+                                  selectConversation(conversation.id);
+                                  setListPanelOpen(false);
+                                }}
+                                title={t("list.renamePlaceholder")}
+                                className="min-w-0 flex-1 truncate text-start text-meta text-content-primary outline-none"
+                              >
+                                {conversation.pinned ? "★ " : ""}
+                                {conversationLabel(conversation)}
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              disabled={busy}
+                              aria-label={conversation.pinned ? t("list.unpin") : t("list.pin")}
+                              title={conversation.pinned ? t("list.unpin") : t("list.pin")}
+                              onClick={() => void togglePin(conversation)}
+                              className={[
+                                "shrink-0 rounded px-1 py-0.5 text-meta hover:bg-surface-overlay disabled:opacity-50",
+                                conversation.pinned ? "text-accent" : "text-content-muted",
+                              ].join(" ")}
+                            >
+                              {t(conversation.pinned ? "list.unpin" : "list.pin")}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              aria-label={archived ? t("list.unarchive") : t("list.archive")}
+                              title={archived ? t("list.unarchive") : t("list.archive")}
+                              onClick={() => void toggleArchive(conversation)}
+                              className="shrink-0 rounded px-1 py-0.5 text-meta text-content-muted hover:bg-surface-overlay disabled:opacity-50"
+                            >
+                              {t(archived ? "list.unarchive" : "list.archive")}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              aria-label={t("list.fork")}
+                              title={t("list.fork")}
+                              onClick={() => void forkConversationById(conversation)}
+                              className="shrink-0 rounded px-1 py-0.5 text-meta text-content-muted hover:bg-surface-overlay disabled:opacity-50"
+                            >
+                              {busy ? t("list.forking") : t("list.fork")}
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                )}
+              </div>
               <select
                 aria-label={t("model.label")}
                 title={t("model.label")}

@@ -97,7 +97,11 @@
       "send": "Could not send this instruction.",
       "stop": "Could not stop the current turn.",
       "decision": "Could not record that decision.",
-      "effect": "Could not acknowledge this interface action."
+      "effect": "Could not acknowledge this interface action.",
+      "rename": "Could not rename this conversation.",
+      "pin": "Could not update this conversation.",
+      "archive": "Could not update this conversation.",
+      "fork": "Could not fork this conversation."
     },
     "composer": {
       "label": "Instruction",
@@ -157,6 +161,24 @@
     },
     "model": {
       "label": "Model"
+    },
+    "list": {
+      "toggle": "Conversations",
+      "ariaLabel": "Conversations",
+      "filter": {
+        "active": "Active",
+        "archived": "Archived",
+        "all": "All"
+      },
+      "pin": "Pin",
+      "unpin": "Unpin",
+      "archive": "Archive",
+      "unarchive": "Unarchive",
+      "fork": "Fork",
+      "forking": "Forking…",
+      "renamePlaceholder": "Conversation title",
+      "empty": "No conversations yet",
+      "untitled": "Untitled conversation"
     }
   },
   "playfield": {
