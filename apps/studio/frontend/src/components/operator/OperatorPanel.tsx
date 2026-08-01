@@ -682,10 +682,14 @@ export default function OperatorPanel({ open, onClose }: Props) {
       .then((catalog) => {
         if (!active) return;
         setModelCatalog(catalog.models);
+        // Leave an unrecognized selection to clear, but never replace "no
+        // selection" with the catalog's first entry: the composer still
+        // works with no model chosen -- the daemon falls back to its own
+        // env-var default for a turn that omits one, and picking one here
+        // on the caller's behalf would silently override that default the
+        // moment the catalog loads, before the human ever touched the menu.
         setModel((current) =>
-          current && catalog.models.some((entry) => entry.id === current)
-            ? current
-            : (catalog.models[0]?.id ?? ""),
+          current && catalog.models.some((entry) => entry.id === current) ? current : "",
         );
       })
       .catch(() => {
@@ -1145,6 +1149,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
                 }}
                 className="shrink-0 border-0 bg-transparent py-0 font-data text-meta text-content-muted outline-none focus:text-content-primary"
               >
+                <option value="">{t("model.default")}</option>
                 {modelCatalog.map((entry) => (
                   <option key={entry.id} value={entry.id}>
                     {entry.label}

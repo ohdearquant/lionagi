@@ -156,7 +156,8 @@
       "open": "Open run"
     },
     "model": {
-      "label": "Model"
+      "label": "Model",
+      "default": "기본값"
     },
     "effort": {
       "label": "노력",

@@ -156,7 +156,8 @@
       "open": "Open run"
     },
     "model": {
-      "label": "Model"
+      "label": "Model",
+      "default": "डिफ़ॉल्ट"
     },
     "effort": {
       "label": "प्रयास",

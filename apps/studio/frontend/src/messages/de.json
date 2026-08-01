@@ -156,7 +156,8 @@
       "open": "Open run"
     },
     "model": {
-      "label": "Model"
+      "label": "Model",
+      "default": "Standard"
     },
     "effort": {
       "label": "Aufwand",

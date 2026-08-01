@@ -156,7 +156,8 @@
       "open": "打开运行"
     },
     "model": {
-      "label": "模型"
+      "label": "模型",
+      "default": "默认"
     },
     "effort": {
       "label": "强度",
