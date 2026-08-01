@@ -150,6 +150,43 @@ def test_update_existing_server(tmp_path, monkeypatch):
     assert updated["url"] == "https://example.invalid/mcp"
 
 
+def test_update_without_env_preserves_existing_secret(tmp_path, monkeypatch):
+    """A save that only changes `args` (the client never sees env values, so
+    it cannot resend them) must not silently wipe the stored secret."""
+    registry_path, _ = _point_registry_at(tmp_path, monkeypatch)
+    mcp_mod.register_server("myserver", STDIO_CONFIG)
+
+    updated = mcp_mod.update_server("myserver", {"args": ["-m", "different_module"]})
+
+    assert updated is not None
+    assert updated["args"] == ["-m", "different_module"]
+
+    on_disk = json.loads(registry_path.read_text())
+    assert on_disk["servers"]["myserver"]["config"]["env"]["API_KEY"] == "sk-super-secret-value"
+
+
+def test_update_env_merges_rather_than_replaces(tmp_path, monkeypatch):
+    registry_path, _ = _point_registry_at(tmp_path, monkeypatch)
+    mcp_mod.register_server("myserver", STDIO_CONFIG)
+
+    mcp_mod.update_server("myserver", {"env": {"OTHER_VAR": "other-value"}})
+
+    on_disk = json.loads(registry_path.read_text())
+    env = on_disk["servers"]["myserver"]["config"]["env"]
+    assert env["API_KEY"] == "sk-super-secret-value"
+    assert env["OTHER_VAR"] == "other-value"
+
+
+def test_update_env_null_value_removes_key(tmp_path, monkeypatch):
+    registry_path, _ = _point_registry_at(tmp_path, monkeypatch)
+    mcp_mod.register_server("myserver", STDIO_CONFIG)
+
+    mcp_mod.update_server("myserver", {"env": {"API_KEY": None}})
+
+    on_disk = json.loads(registry_path.read_text())
+    assert "API_KEY" not in on_disk["servers"]["myserver"]["config"]["env"]
+
+
 def test_remove_nonexistent_returns_false(tmp_path, monkeypatch):
     _point_registry_at(tmp_path, monkeypatch)
     assert mcp_mod.remove_server("nope") is False

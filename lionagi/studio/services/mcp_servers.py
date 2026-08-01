@@ -279,17 +279,59 @@ def register_server(name: str, config: dict[str, Any], *, enabled: bool = True) 
     return _public_entry(name, servers[name])
 
 
+def _merge_config(existing: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    """Merge a partial config onto the stored one instead of replacing it.
+
+    A client never receives env *values* back (see ``_mask_config``), so a
+    save that only changed e.g. ``args`` and echoed nothing else back must
+    not wipe the env block it never saw. ``env`` merges key-by-key; a `None`
+    value for a key removes it (the client's explicit way to drop a secret
+    without knowing its value). Any other field replaces wholesale when
+    present, and a `None`/empty value removes it -- this is also how a
+    transport switch (stdio → http or back) drops the other transport's
+    fields, since the shape check requires exactly one.
+    """
+    merged = dict(existing)
+    for key in ("command", "args", "url", "timeout", "alwaysAllow"):
+        if key not in patch:
+            continue
+        value = patch[key]
+        if value in (None, ""):
+            merged.pop(key, None)
+        else:
+            merged[key] = value
+
+    if "env" in patch:
+        incoming_env = patch["env"] or {}
+        merged_env = dict(existing.get("env") or {})
+        for env_key, env_value in incoming_env.items():
+            if env_value is None:
+                merged_env.pop(env_key, None)
+            else:
+                merged_env[env_key] = env_value
+        merged["env"] = merged_env
+
+    if patch.get("url"):
+        merged.pop("command", None)
+    if patch.get("command"):
+        merged.pop("url", None)
+
+    return merged
+
+
 def update_server(name: str, config: dict[str, Any]) -> dict[str, Any] | None:
     servers = _load_registry()
     if name not in servers:
         return None
 
-    errors = _validate_shape(name, config)
+    entry = servers[name]
+    merged = _merge_config(entry.get("config") or {}, config)
+
+    errors = _validate_shape(name, merged)
     if errors:
         raise McpServerError("; ".join(errors))
 
-    entry = servers[name]
-    entry["config"] = config
+    entry["config"] = merged
     entry["updated_at"] = time.time()
     _save_registry(servers)
     return _public_entry(name, entry)
