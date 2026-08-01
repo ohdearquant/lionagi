@@ -374,7 +374,9 @@
       "statToolCallsRecent": "도구 호출(최근)",
       "statErrorsRecent": "오류(최근)",
       "noBranchErrorsPartial": "로드된 메시지에 오류가 없습니다.",
-      "noFilesPartial": "로드된 메시지에서 감지된 파일 작업이 없습니다."
+      "noFilesPartial": "로드된 메시지에서 감지된 파일 작업이 없습니다.",
+      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
+      "reloadConversation": "Reload conversation"
     },
     "masterAria": "기록 목록",
     "detailAria": "항목 세부 정보"
@@ -724,6 +726,14 @@
       "empty": "이 필터와 일치하는 과거 세션이 없습니다.",
       "loadMore": "더 로드",
       "loadingMore": "로드 중…"
+    },
+    "filters": {
+      "searchPlaceholder": "Search sessions…",
+      "searchAria": "Search sessions by name or agent",
+      "allProjects": "All projects",
+      "noProject": "No project",
+      "projectAria": "Filter by project",
+      "clear": "Clear filters"
     }
   },
   "mission": {

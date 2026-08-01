@@ -374,7 +374,9 @@
       "statToolCallsRecent": "टूल कॉल (हाल के)",
       "statErrorsRecent": "त्रुटियाँ (हाल की)",
       "noBranchErrorsPartial": "लोड किए गए मैसेज में कोई त्रुटि नहीं।",
-      "noFilesPartial": "लोड किए गए मैसेज में कोई फ़ाइल ऑपरेशन नहीं मिला।"
+      "noFilesPartial": "लोड किए गए मैसेज में कोई फ़ाइल ऑपरेशन नहीं मिला।",
+      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
+      "reloadConversation": "Reload conversation"
     },
     "masterAria": "इतिहास सूची",
     "detailAria": "आइटम विवरण"
@@ -724,6 +726,14 @@
       "empty": "कोई पिछला सेशन इस फ़िल्टर से मेल नहीं खाता।",
       "loadMore": "और लोड करें",
       "loadingMore": "लोड हो रहा है…"
+    },
+    "filters": {
+      "searchPlaceholder": "Search sessions…",
+      "searchAria": "Search sessions by name or agent",
+      "allProjects": "All projects",
+      "noProject": "No project",
+      "projectAria": "Filter by project",
+      "clear": "Clear filters"
     }
   },
   "mission": {

@@ -374,7 +374,9 @@
       "statToolCallsRecent": "lệnh gọi công cụ (gần đây)",
       "statErrorsRecent": "lỗi (gần đây)",
       "noBranchErrorsPartial": "không có lỗi trong các tin nhắn đã tải.",
-      "noFilesPartial": "không phát hiện thao tác tệp trong các tin nhắn đã tải."
+      "noFilesPartial": "không phát hiện thao tác tệp trong các tin nhắn đã tải.",
+      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
+      "reloadConversation": "Reload conversation"
     },
     "masterAria": "danh sách lịch sử",
     "detailAria": "chi tiết mục"
@@ -724,6 +726,14 @@
       "empty": "không có phiên cũ nào khớp với bộ lọc này.",
       "loadMore": "tải thêm",
       "loadingMore": "đang tải…"
+    },
+    "filters": {
+      "searchPlaceholder": "Search sessions…",
+      "searchAria": "Search sessions by name or agent",
+      "allProjects": "All projects",
+      "noProject": "No project",
+      "projectAria": "Filter by project",
+      "clear": "Clear filters"
     }
   },
   "mission": {

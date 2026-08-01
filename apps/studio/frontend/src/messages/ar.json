@@ -374,7 +374,9 @@
       "statToolCallsRecent": "استدعاءات الأدوات (الأخيرة)",
       "statErrorsRecent": "الأخطاء (الأخيرة)",
       "noBranchErrorsPartial": "لا توجد أخطاء في الرسائل المحمّلة.",
-      "noFilesPartial": "لم تُكتشف عمليات على الملفات في الرسائل المحمّلة."
+      "noFilesPartial": "لم تُكتشف عمليات على الملفات في الرسائل المحمّلة.",
+      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
+      "reloadConversation": "Reload conversation"
     },
     "masterAria": "قائمة السجل",
     "detailAria": "تفاصيل العنصر"
@@ -724,6 +726,14 @@
       "empty": "لا توجد جلسات سابقة تطابق هذا العامل.",
       "loadMore": "تحميل المزيد",
       "loadingMore": "جارٍ التحميل…"
+    },
+    "filters": {
+      "searchPlaceholder": "Search sessions…",
+      "searchAria": "Search sessions by name or agent",
+      "allProjects": "All projects",
+      "noProject": "No project",
+      "projectAria": "Filter by project",
+      "clear": "Clear filters"
     }
   },
   "mission": {

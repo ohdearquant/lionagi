@@ -374,7 +374,9 @@
       "statToolCallsRecent": "工具调用（近期）",
       "statErrorsRecent": "错误（近期）",
       "noBranchErrorsPartial": "已加载的消息中没有错误。",
-      "noFilesPartial": "已加载的消息中未检测到文件操作。"
+      "noFilesPartial": "已加载的消息中未检测到文件操作。",
+      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
+      "reloadConversation": "Reload conversation"
     },
     "masterAria": "历史列表",
     "detailAria": "条目详情"
@@ -724,6 +726,14 @@
       "empty": "没有符合该过滤条件的历史会话。",
       "loadMore": "加载更多",
       "loadingMore": "加载中…"
+    },
+    "filters": {
+      "searchPlaceholder": "Search sessions…",
+      "searchAria": "Search sessions by name or agent",
+      "allProjects": "All projects",
+      "noProject": "No project",
+      "projectAria": "Filter by project",
+      "clear": "Clear filters"
     }
   },
   "mission": {

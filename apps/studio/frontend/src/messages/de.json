@@ -374,7 +374,9 @@
       "statToolCallsRecent": "Toolaufrufe (aktuell)",
       "statErrorsRecent": "Fehler (aktuell)",
       "noBranchErrorsPartial": "Keine Fehler in den geladenen Nachrichten.",
-      "noFilesPartial": "Keine Dateioperationen in den geladenen Nachrichten erkannt."
+      "noFilesPartial": "Keine Dateioperationen in den geladenen Nachrichten erkannt.",
+      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
+      "reloadConversation": "Reload conversation"
     },
     "masterAria": "Verlaufsliste",
     "detailAria": "Elementdetails"
@@ -724,6 +726,14 @@
       "empty": "Keine vergangenen Sessions entsprechen diesem Filter.",
       "loadMore": "Mehr laden",
       "loadingMore": "Wird geladen…"
+    },
+    "filters": {
+      "searchPlaceholder": "Search sessions…",
+      "searchAria": "Search sessions by name or agent",
+      "allProjects": "All projects",
+      "noProject": "No project",
+      "projectAria": "Filter by project",
+      "clear": "Clear filters"
     }
   },
   "mission": {

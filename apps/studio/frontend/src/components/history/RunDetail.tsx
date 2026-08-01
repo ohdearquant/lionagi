@@ -15,13 +15,7 @@ import ExpectedArtifacts from "@/components/runs/ExpectedArtifacts";
 import ResumeRun from "@/components/history/ResumeRun";
 import RunStepCard, { extractFilePaths } from "@/components/RunStepCard";
 import { IconChevronDown, IconChevronRight } from "@/components/ui/icons";
-import {
-  getInvocation,
-  getSession,
-  streamSession,
-  streamSignals,
-  SESSION_MESSAGE_PAGE,
-} from "@/lib/api";
+import { ApiError, getInvocation, getSession, streamSession, streamSignals } from "@/lib/api";
 import type { SessionDetail, SessionBranch, SessionMessage, SignalEvent } from "@/lib/api";
 import { buildNodeStatusesByName, buildOperationGraph, laneFor } from "@/lib/operationGraph";
 import type { LaneSignal, OperationStatus } from "@/lib/operationGraph";
@@ -856,10 +850,17 @@ export default function RunDetail({ id }: RunDetailProps) {
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
   const [signalEvents, setSignalEvents] = useState<SignalEvent[]>([]);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  // Set when the server rejects the held anchor as no longer present in the
+  // branch's progression (HTTP 400 MessageCursorError) — the anchor points at
+  // a message id that aged out. Loading older history from this point on is
+  // unrecoverable for the current session load; the reader is offered a full
+  // reconversation reload instead of a dead retry loop.
+  const [olderLoadFailed, setOlderLoadFailed] = useState(false);
   const [resumeWatch, setResumeWatch] = useState<RunResumeResponse | null>(null);
-  const olderOffsetRef = useRef(SESSION_MESSAGE_PAGE);
+  const olderCursorRef = useRef<string | null>(null);
   const suppressAutoScrollRef = useRef(false);
   const initialScrollDoneRef = useRef(false);
+  const olderSentinelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -871,11 +872,13 @@ export default function RunDetail({ id }: RunDetailProps) {
     setError(null);
     setSignalEvents([]);
     setLoadingOlder(false);
-    olderOffsetRef.current = SESSION_MESSAGE_PAGE;
+    setOlderLoadFailed(false);
+    olderCursorRef.current = null;
     initialScrollDoneRef.current = false;
     getSession(id)
       .then((s) => {
         setSession(s);
+        olderCursorRef.current = s.message_next_cursor ?? null;
         const ss = (s.status ?? "").toLowerCase();
         if (
           ss === "completed" ||
@@ -896,9 +899,7 @@ export default function RunDetail({ id }: RunDetailProps) {
           }
         }
         const graph = (s as unknown as Record<string, unknown>).graph as
-          | { nodes: WorkerGraph["nodes"]; edges?: WorkerGraph["edges"] | null }
-          | null
-          | undefined;
+          { nodes: WorkerGraph["nodes"]; edges?: WorkerGraph["edges"] | null } | null | undefined;
         if (graph && graph.nodes && graph.nodes.length > 0) {
           setRunGraph({
             name: s.name || id,
@@ -1040,13 +1041,13 @@ export default function RunDetail({ id }: RunDetailProps) {
   }, [session]);
 
   const handleLoadOlder = useCallback(() => {
-    if (!id || loadingOlder) return;
+    const cursor = olderCursorRef.current;
+    if (!id || loadingOlder || olderLoadFailed || !cursor) return;
     setLoadingOlder(true);
     suppressAutoScrollRef.current = true;
-    const offset = olderOffsetRef.current;
-    getSession(id, { messageOffset: offset })
+    getSession(id, { messageCursor: cursor })
       .then((older) => {
-        olderOffsetRef.current = offset + SESSION_MESSAGE_PAGE;
+        olderCursorRef.current = older.message_next_cursor ?? null;
         setSession((prev) => {
           if (!prev) return prev;
           const olderById = new Map(older.branches.map((b) => [b.id, b]));
@@ -1067,9 +1068,45 @@ export default function RunDetail({ id }: RunDetailProps) {
           };
         });
       })
+      .catch((e: unknown) => {
+        // A stale anchor (HTTP 400) means the branch's progression moved on
+        // and this cursor no longer resolves — surface the dead-end instead
+        // of retrying the same broken request on every scroll-up tick.
+        if (e instanceof ApiError && e.status === 400) {
+          setOlderLoadFailed(true);
+          return;
+        }
+        setError(String(e));
+      })
+      .finally(() => setLoadingOlder(false));
+  }, [id, loadingOlder, olderLoadFailed]);
+
+  const handleReloadConversation = useCallback(() => {
+    if (!id) return;
+    suppressAutoScrollRef.current = true;
+    setOlderLoadFailed(false);
+    setLoadingOlder(true);
+    getSession(id)
+      .then((fresh) => {
+        olderCursorRef.current = fresh.message_next_cursor ?? null;
+        setSession(fresh);
+      })
       .catch((e: unknown) => setError(String(e)))
       .finally(() => setLoadingOlder(false));
-  }, [id, loadingOlder]);
+  }, [id]);
+
+  // Scroll-up trigger: an always-mounted sentinel just above the message
+  // list. handleLoadOlder no-ops without a cursor or mid-flight, so this can
+  // fire freely as the sentinel scrolls in and out of view.
+  useEffect(() => {
+    const el = olderSentinelRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) handleLoadOlder();
+    });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [handleLoadOlder]);
 
   const handleResumed = useCallback(
     async (result: RunResumeResponse) => {
@@ -1255,17 +1292,11 @@ export default function RunDetail({ id }: RunDetailProps) {
     toolCallCount,
     errorCount,
     showTopic: (session as unknown as Record<string, unknown>).show_topic as
-      | string
-      | null
-      | undefined,
+      string | null | undefined,
     showPlayName: (session as unknown as Record<string, unknown>).show_play_name as
-      | string
-      | null
-      | undefined,
+      string | null | undefined,
     playbookName: (session as unknown as Record<string, unknown>).playbook_name as
-      | string
-      | null
-      | undefined,
+      string | null | undefined,
   };
 
   const content = (
@@ -1324,17 +1355,34 @@ export default function RunDetail({ id }: RunDetailProps) {
           </div>
         )
       )}
-      {hiddenOlderCount > 0 && (
-        <button
-          type="button"
-          onClick={handleLoadOlder}
-          disabled={loadingOlder}
-          className="self-start rounded border border-edge bg-surface-raised px-3 py-1.5 font-mono text-[length:var(--t-xs)] text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary disabled:opacity-50"
-        >
-          {loadingOlder
-            ? "…"
-            : `${t("loadOlder")} · ${t("olderRemaining", { count: hiddenOlderCount })}`}
-        </button>
+      {/* Scroll-up trigger: reaching the top of the conversation loads the
+          next older page, same handler as the explicit button below. */}
+      <div ref={olderSentinelRef} aria-hidden="true" className="h-px" />
+      {olderLoadFailed ? (
+        <div className="flex items-center gap-2 self-start rounded border border-edge bg-surface-raised px-3 py-1.5 font-mono text-[length:var(--t-xs)] text-content-secondary">
+          <span>{t("olderUnavailable")}</span>
+          <button
+            type="button"
+            onClick={handleReloadConversation}
+            disabled={loadingOlder}
+            className="rounded border border-edge px-2 py-0.5 text-content-primary transition-colors hover:border-accent/50 disabled:opacity-50"
+          >
+            {t("reloadConversation")}
+          </button>
+        </div>
+      ) : (
+        hiddenOlderCount > 0 && (
+          <button
+            type="button"
+            onClick={handleLoadOlder}
+            disabled={loadingOlder}
+            className="self-start rounded border border-edge bg-surface-raised px-3 py-1.5 font-mono text-[length:var(--t-xs)] text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary disabled:opacity-50"
+          >
+            {loadingOlder
+              ? "…"
+              : `${t("loadOlder")} · ${t("olderRemaining", { count: hiddenOlderCount })}`}
+          </button>
+        )
       )}
       <BranchesSection
         steps={steps}
