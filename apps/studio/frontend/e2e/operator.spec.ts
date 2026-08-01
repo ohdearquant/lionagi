@@ -1,29 +1,29 @@
 import { expect, test, type Page } from "@playwright/test";
 
 async function selectFreshConversation(page: Page): Promise<void> {
-  const conversationId = await page.evaluate(async () => {
+  // The conversation switcher is a disclosure button ("Conversations") that
+  // reveals a list of conversation rows, each a labeled button rather than a
+  // <select>/<option> pair. The fixture conversation is created with a unique
+  // title so its row can be found by accessible name instead of relying on a
+  // DOM identifier the UI no longer exposes.
+  const title = await page.evaluate(() => crypto.randomUUID());
+  await page.evaluate(async (conversationTitle) => {
     const response = await fetch("/api/operator/conversations", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: "{}",
+      body: JSON.stringify({ title: conversationTitle }),
     });
     if (!response.ok) {
       throw new Error(`Failed to create an isolated conversation: ${response.status}`);
     }
-    const payload = (await response.json()) as { conversation?: { id?: unknown } };
-    if (typeof payload.conversation?.id !== "string") {
-      throw new Error("Conversation response did not include an id");
-    }
-    return payload.conversation.id;
-  });
+  }, title);
 
   await page.reload();
-  const switcher = page.getByRole("combobox", {
-    name: "Operator conversation",
-    exact: true,
-  });
-  await expect(switcher.locator(`option[value="${conversationId}"]`)).toHaveCount(1);
-  await switcher.selectOption(conversationId);
+  const toggle = page.getByRole("button", { name: "Conversations", exact: true });
+  await toggle.click();
+  const row = page.getByRole("button", { name: title, exact: true });
+  await expect(row).toHaveCount(1);
+  await row.click();
   await expect(page.getByLabel("Instruction")).toBeEnabled();
 }
 
