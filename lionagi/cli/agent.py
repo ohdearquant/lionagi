@@ -378,6 +378,62 @@ def _report_mcp_resolution(
     )
 
 
+async def _drain_pending_steers(
+    live: dict | None,
+    branch,
+    *,
+    operate_kwargs: dict,
+    deadline: float | None,
+) -> object | None:
+    """Consume queued `message` session controls as warm continuation turns.
+
+    Called after a successful operate() and before the run finalizes. Each
+    drain batch joins all pending steers (arrival order) into one continuation
+    turn on the same branch; steers enqueued during a continuation are caught
+    by the next iteration. Continuations spend the leg's original wall clock:
+    past *deadline* the loop stops without consuming (teardown tombstones the
+    remainder), so steering can never keep a leg alive past its budget.
+
+    Returns the last continuation result, or None if nothing was consumed.
+    """
+    if not live or not live.get("session_id"):
+        return None
+    import time as _time
+
+    from lionagi.cli._logging import hint
+
+    db = live["db"]
+    session_id = live["session_id"]
+    last_res = None
+    while True:
+        if deadline is not None and _time.monotonic() >= deadline:
+            break
+        pending = await db.list_pending_session_controls(session_id)
+        steers = [row for row in pending if row.get("verb") == "message"]
+        if not steers:
+            break
+        texts = []
+        for row in steers:
+            await db.mark_session_control_applying(row["id"])
+            payload = row.get("payload") or {}
+            texts.append(str(payload.get("text") or ""))
+        joined = "\n\n".join(t for t in texts if t.strip())
+        hint(f"[steer] applying {len(steers)} queued operator message(s) as a continuation turn")
+        kwargs = dict(operate_kwargs)
+        if deadline is not None:
+            kwargs["timeout"] = max(1.0, deadline - _time.monotonic())
+        last_res = await branch.operate(
+            instruction=(
+                "[OPERATOR STEER — mid-run redirect from your operator. This "
+                "supersedes conflicting parts of the original instruction.]\n" + joined
+            ),
+            **kwargs,
+        )
+        for row in steers:
+            await db.finalize_session_control(row["id"], result="applied")
+    return last_res
+
+
 async def _run_agent(
     model_str: str | None,
     prompt: str,
@@ -859,6 +915,7 @@ async def _run_agent(
         except RuntimeError:
             _heartbeat_task = None
 
+    _leg_deadline = (time.monotonic() + timeout) if timeout is not None else None
     try:
         res = await branch.operate(
             instruction=prompt,
@@ -869,6 +926,20 @@ async def _run_agent(
             **({"images": images} if images else {}),
             **({"repo": cwd} if cwd else {}),
         )
+        steer_res = await _drain_pending_steers(
+            live,
+            branch,
+            operate_kwargs={
+                "stream_persist": True,
+                "persist_dir": str(run.stream_dir),
+                "snapshot_dir": str(run.branches_dir),
+                "timeout": timeout,
+                **({"repo": cwd} if cwd else {}),
+            },
+            deadline=_leg_deadline,
+        )
+        if steer_res is not None:
+            res = steer_res
     except (TimeoutError, LionTimeoutError) as exc:
         _terminal_status = "timed_out"
         _terminal_exc = exc
@@ -916,6 +987,25 @@ async def _run_agent(
                 else None
             )
             telemetry_kw = {"extras": telemetry_extras} if telemetry_extras else {}
+            # Terminal-race tombstone: a steer enqueued while the run was
+            # live but never consumed must not sit pending forever — finalize
+            # it rejected so `li o ctl status` shows the operator the redirect
+            # did NOT land. Skipped when auto-resume keeps the run alive (the
+            # resumed leg's drain will consume it). Best-effort: a failure
+            # here logs loudly and leaves the row visibly pending.
+            if not will_auto_resume and live and live.get("session_id"):
+                try:
+                    _stale = await live["db"].list_pending_session_controls(live["session_id"])
+                    for _row in _stale:
+                        await live["db"].finalize_session_control(
+                            _row["id"],
+                            result=(
+                                "rejected: run reached terminal status before "
+                                "the steer could land — use `li agent -r`"
+                            ),
+                        )
+                except Exception as _tomb_exc:  # noqa: BLE001 — teardown must not raise
+                    log_error(f"steer tombstone write failed: {_tomb_exc!r}")
             effective_status = await teardown_agent_persist(
                 live,
                 status=_terminal_status,

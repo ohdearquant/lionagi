@@ -34,10 +34,18 @@ __all__ = (
 _DB_BUSY_TIMEOUT_S = 10.0
 
 
-# Only these session kinds ever run the control poller (`li o flow` sets
-# "flow", playbook runs set "play"); anything else has no consumer, so a
-# queued control would sit pending forever.
-_POLLER_KINDS = frozenset({"flow", "play"})
+# Session kinds with a live consumer for each control verb. Flow and playbook
+# runs ("flow", "play") run the control poller and consume all three verbs.
+# Agent runs ("agent") drain `message` controls at turn end — a steer lands as
+# a warm continuation turn — but have no pause seam inside a single operate()
+# call, so pause/resume stay refused for them. A kind with no consumer for the
+# requested verb is refused at enqueue: a queued control nobody reads would sit
+# pending forever.
+_CONSUMER_KINDS_BY_VERB: dict[str, frozenset[str]] = {
+    "pause": frozenset({"flow", "play"}),
+    "resume": frozenset({"flow", "play"}),
+    "message": frozenset({"flow", "play", "agent"}),
+}
 
 
 async def _resolve_session(db: Any, entity_id: str) -> dict[str, Any] | None:
@@ -75,11 +83,20 @@ async def _enqueue_control_inner(
                 EXIT_UNKNOWN,
             )
         kind = session.get("invocation_kind")
-        if kind not in _POLLER_KINDS:
+        allowed = _CONSUMER_KINDS_BY_VERB.get(verb, frozenset())
+        if kind not in allowed:
+            if kind == "agent":
+                # Reachable only for pause/resume: message is consumable.
+                return (
+                    f"session {session_id[:8]} is agent-kind — agent runs "
+                    f"consume `msg` steers at turn end but have no {verb} "
+                    "seam inside a running turn",
+                    EXIT_UNKNOWN,
+                )
             return (
                 f"session {session_id[:8]} is {kind or 'unknown'}-kind — "
-                "`li o ctl` targets `li o flow` / playbook runs (no control "
-                "poller runs for other session kinds)",
+                f"no consumer reads {verb} controls for this session kind, "
+                "so the control would sit pending forever",
                 EXIT_UNKNOWN,
             )
         control_id = await db.insert_session_control(
