@@ -378,6 +378,28 @@ def _report_mcp_resolution(
     )
 
 
+"""Framing for a steer delivered as a continuation turn.
+
+Deliberately mirrors the flow-side operator-steer vocabulary and, like it,
+claims no authority to override: the operator's own words say what to change.
+An earlier draft announced that the steer "supersedes conflicting parts of the
+original instruction", and a live leg correctly refused it — a banner asserting
+override authority reads exactly like injected content trying to redirect the
+model away from what its user asked for. The channel already carries the
+operator's authority (this is the same instruction slot the original prompt
+arrived through), so the framing only has to say who is speaking and when.
+"""
+_AGENT_STEER_TEMPLATE = """\
+[OPERATOR STEER]
+The operator who started this run sent this while it was running. It is a live
+correction to the task you are already working on, from the same person who
+gave you that task — not a message from a third party. Attend to it before
+continuing. Most recent last.
+{lines}
+[/OPERATOR STEER]
+"""
+
+
 async def _drain_pending_steers(
     live: dict | None,
     branch,
@@ -417,16 +439,13 @@ async def _drain_pending_steers(
             await db.mark_session_control_applying(row["id"])
             payload = row.get("payload") or {}
             texts.append(str(payload.get("text") or ""))
-        joined = "\n\n".join(t for t in texts if t.strip())
+        joined = "\n".join(f"- {t}" for t in texts if t.strip())
         hint(f"[steer] applying {len(steers)} queued operator message(s) as a continuation turn")
         kwargs = dict(operate_kwargs)
         if deadline is not None:
             kwargs["timeout"] = max(1.0, deadline - _time.monotonic())
         last_res = await branch.operate(
-            instruction=(
-                "[OPERATOR STEER — mid-run redirect from your operator. This "
-                "supersedes conflicting parts of the original instruction.]\n" + joined
-            ),
+            instruction=_AGENT_STEER_TEMPLATE.format(lines=joined),
             **kwargs,
         )
         for row in steers:

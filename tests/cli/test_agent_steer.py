@@ -153,7 +153,9 @@ async def test_drain_consumes_pending_steer_as_continuation(temp_db_path):
         assert res == "turn-1"
         assert len(branch.calls) == 1
         assert "batch mode now" in branch.calls[0]["instruction"]
-        assert "OPERATOR STEER" in branch.calls[0]["instruction"]
+        assert "[OPERATOR STEER]" in branch.calls[0]["instruction"]
+        # No override claim: a banner asserting authority reads as injection.
+        assert "supersede" not in branch.calls[0]["instruction"].lower()
         assert branch.calls[0]["stream_persist"] is True
         pending = await db.list_pending_session_controls(sid)
         assert pending == []
