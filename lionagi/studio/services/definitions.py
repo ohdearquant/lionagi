@@ -16,6 +16,7 @@ from lionagi.state.db import DEFAULT_DB_PATH
 from ..registry import studio_route
 from ._db import open_db as _open_db
 from ._path_safety import validate_name_component
+from .agents import _is_protected_system
 
 # Per-(kind, name) concurrency lock, shared across all requests in this process.
 # Spans both the DB write and the disk write so a crash between them cannot leave disk ahead of history.
@@ -238,10 +239,7 @@ async def save_definition(
 
             existing_text = await anyio.to_thread.run_sync(disk_file.read_text)
             existing_fm, _ = _parse_fm(existing_text)
-            # Explicit-only: an absent key must not retroactively lock down every
-            # agent file that predates this protection (see agents.py's
-            # _is_protected_system for the full rationale -- kept in sync here).
-            if existing_fm.get("lion_system") is True:
+            if _is_protected_system(existing_fm):
                 raise PermissionError(f"Agent '{name}' is a system agent and cannot be edited")
 
         now = time.time()

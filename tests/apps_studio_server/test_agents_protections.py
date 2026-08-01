@@ -198,6 +198,30 @@ def test_delete_explicit_system_agent_refused(tmp_path, monkeypatch):
         delete_agent("sysagent")
 
 
+def test_delete_quoted_truthy_lion_system_is_protected(tmp_path, monkeypatch):
+    """YAML permits ``lion_system: "true"`` (a quoted string) as well as the bare
+    boolean. The runtime (lionagi/cli/_providers.py) treats both as system-owned via
+    bool(...), so the delete guard must refuse both too, not just the unquoted form."""
+    from lionagi.studio.services.agents import AgentProtectedError, delete_agent
+
+    root = _make_agents_root(tmp_path, monkeypatch)
+    _write_agent_md(
+        root / "quotedsys.md",
+        """\
+        ---
+        provider: claude
+        model: claude-sonnet-4-6
+        lion_system: "true"
+        ---
+        System prompt.
+        """,
+    )
+
+    with pytest.raises(AgentProtectedError):
+        delete_agent("quotedsys")
+    assert (root / "quotedsys.md").exists()
+
+
 def test_delete_default_agent_refused_even_when_user_owned(tmp_path, monkeypatch):
     """The 'default' agent cannot be deleted even though it is otherwise a normal,
     editable (lion_system: false) agent -- name-based protection, not system-based."""
@@ -246,6 +270,53 @@ def test_edit_system_agent_refused(tmp_path, monkeypatch):
     # Untouched on disk.
     assert "Original prompt." in (root / "sysagent.md").read_text()
     assert "claude-opus-5" not in (root / "sysagent.md").read_text()
+
+
+def test_edit_quoted_truthy_lion_system_is_protected(tmp_path, monkeypatch):
+    """Same quoted-string case as the delete guard, for the update path."""
+    from lionagi.studio.services.agents import AgentProtectedError, update_agent
+
+    root = _make_agents_root(tmp_path, monkeypatch)
+    _write_agent_md(
+        root / "quotedsys.md",
+        """\
+        ---
+        provider: claude
+        model: claude-sonnet-4-6
+        lion_system: "true"
+        ---
+        Original prompt.
+        """,
+    )
+
+    with pytest.raises(AgentProtectedError):
+        update_agent("quotedsys", {"model": "claude-opus-5"})
+
+    assert "Original prompt." in (root / "quotedsys.md").read_text()
+    assert "claude-opus-5" not in (root / "quotedsys.md").read_text()
+
+
+def test_edit_agent_without_lion_system_key_is_not_protected(tmp_path, monkeypatch):
+    """Pins the deliberate exception on the update path: a profile with no
+    lion_system key at all is still editable (see the delete-path equivalent,
+    test_delete_agent_without_lion_system_key_is_not_protected, for the rationale)."""
+    from lionagi.studio.services.agents import update_agent
+
+    root = _make_agents_root(tmp_path, monkeypatch)
+    _write_agent_md(
+        root / "hand-authored.md",
+        """\
+        ---
+        provider: claude
+        model: claude-sonnet-4-6
+        ---
+        No lion_system key at all.
+        """,
+    )
+
+    updated = update_agent("hand-authored", {"effort": "high"})
+    assert updated is not None
+    assert updated["effort"] == "high"
 
 
 def test_edit_ordinary_agent_succeeds(tmp_path, monkeypatch):
@@ -391,6 +462,27 @@ def test_definitions_save_route_refuses_system_agent(tmp_path, monkeypatch):
     r = client.post("/api/definitions/agent/sysagent", json={"content": "# hijacked"})
     assert r.status_code == 403, r.text
     assert "Original prompt." in (agents_dir / "sysagent.md").read_text()
+
+
+def test_definitions_save_route_refuses_quoted_truthy_lion_system(tmp_path, monkeypatch):
+    """Same quoted-string case as the PUT/DELETE guards, for the generic definitions
+    save path -- it must resolve the same predicate, not a hand-rolled copy of it."""
+    client, agents_dir = _make_definitions_client(tmp_path, monkeypatch)
+    _write_agent_md(
+        agents_dir / "quotedsys.md",
+        """\
+        ---
+        provider: claude
+        model: claude-sonnet-4-6
+        lion_system: "true"
+        ---
+        Original prompt.
+        """,
+    )
+
+    r = client.post("/api/definitions/agent/quotedsys", json={"content": "# hijacked"})
+    assert r.status_code == 403, r.text
+    assert "Original prompt." in (agents_dir / "quotedsys.md").read_text()
 
 
 def test_definitions_save_route_allows_ordinary_agent(tmp_path, monkeypatch):

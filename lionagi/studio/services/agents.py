@@ -25,20 +25,30 @@ DEFAULT_AGENT_NAME = "default"
 
 
 def _is_protected_system(fm: dict[str, Any]) -> bool:
-    """True only when a file explicitly opts into ``lion_system: true``.
+    """True when a file's frontmatter carries a present, truthy ``lion_system``.
 
     ``lion_system`` already exists as a frontmatter flag (get_agent() has always
     surfaced it, defaulting True, for CLI parity -- see
     ``AgentProfile``/``AgentSpec.compose`` in ``lionagi/cli``). Write-protection
-    reuses that same flag rather than inventing a new one, but only the explicit
-    ``true`` value counts: treating an *absent* key as protected would silently
-    lock down every agent file that predates this feature (plain markdown with
-    no frontmatter at all is common -- see the generic definitions save path),
-    which is not what "the system agent cannot be edited" means. Agents created
-    through the Studio API stamp ``lion_system: false`` explicitly, so they are
-    unambiguously editable/deletable by their owner.
+    reuses that same flag rather than inventing a new one. Two things matter here:
+
+    - Present and truthy counts, whatever its YAML type -- ``true``, ``"true"``,
+      or any other value Python considers truthy -- so this agrees with the
+      runtime's own ``bool(frontmatter.get("lion_system", True))`` check in
+      ``lionagi/cli/_providers.py`` for every value that's actually there.
+    - An *absent* key does not count as protected: treating a missing key as
+      protected would silently lock down every agent file that predates this
+      feature (plain markdown with no frontmatter at all is common -- see the
+      generic definitions save path), which is not what "the system agent
+      cannot be edited" means. Agents created through the Studio API stamp
+      ``lion_system: false`` explicitly, so they are unambiguously
+      editable/deletable by their owner.
+
+    This is the single place both write-protection call sites (this module and
+    ``definitions.py``'s agent save path) resolve the predicate, so they cannot
+    drift apart from each other or from the runtime again.
     """
-    return fm.get("lion_system") is True
+    return "lion_system" in fm and bool(fm["lion_system"])
 
 
 def _read_frontmatter(path) -> dict[str, Any]:
