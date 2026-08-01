@@ -215,9 +215,12 @@ async def test_terminal_session_rejected_no_row_written(temp_db_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_non_poller_kind_rejected_no_row_written(temp_db_path: Path):
+async def test_no_consumer_kind_rejected_no_row_written(temp_db_path: Path):
+    # "fanout" sessions have no consumer for any control verb. Agent-kind
+    # sessions DO consume `message` (turn-end steer drain) — that acceptance
+    # and the agent pause/resume refusal live in tests/cli/test_agent_steer.py.
     async with StateDB() as db:
-        sid = await _make_session(db, invocation_kind="agent")
+        sid = await _make_session(db, invocation_kind="fanout")
 
     rc = run_ctl_msg(argparse.Namespace(id=sid, text="hello"))
     assert rc == EXIT_UNKNOWN

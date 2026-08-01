@@ -1064,3 +1064,28 @@ async def test_status_full_id_still_resolves_when_a_sibling_shares_a_prefix(
 
     assert exit_code != EXIT_UNKNOWN
     assert first in output
+
+
+@pytest.mark.asyncio
+async def test_view_pending_control_on_terminal_run_is_never_landed(temp_db_path: Path):
+    """Computed at read time: even when the teardown tombstone write failed,
+    a pending control on a terminal run must read as never-landed."""
+    async with StateDB() as db:
+        sid = await _make_session(db, status="completed")
+        await db.insert_session_control(session_id=sid, verb="message", payload={"text": "x"})
+        row = await db.get_session(sid)
+        view = await _build_view(db, command="ctl", entity_type="session", row=row)
+
+    assert view["terminal"] is True
+    assert [c["never_landed"] for c in view["pending_controls"]] == [True]
+
+
+@pytest.mark.asyncio
+async def test_view_pending_control_on_running_run_is_not_never_landed(temp_db_path: Path):
+    async with StateDB() as db:
+        sid = await _make_session(db)
+        await db.insert_session_control(session_id=sid, verb="message", payload={"text": "x"})
+        row = await db.get_session(sid)
+        view = await _build_view(db, command="ctl", entity_type="session", row=row)
+
+    assert [c["never_landed"] for c in view["pending_controls"]] == [False]

@@ -434,6 +434,31 @@ async def _drain_pending_steers(
     return last_res
 
 
+async def _tombstone_pending_steers(live: dict | None) -> None:
+    """Finalize never-consumed session controls as rejected at run teardown.
+
+    A steer enqueued while the run was live but never drained must not sit
+    pending forever. Best-effort: a failure here logs and leaves the row
+    visibly pending — the status surface independently renders a pending
+    control on a terminal run as never-landed, so the operator still sees
+    the truth.
+    """
+    if not live or not live.get("session_id"):
+        return
+    try:
+        stale = await live["db"].list_pending_session_controls(live["session_id"])
+        for row in stale:
+            await live["db"].finalize_session_control(
+                row["id"],
+                result=(
+                    "rejected: run reached terminal status before "
+                    "the steer could land — use `li agent -r`"
+                ),
+            )
+    except Exception as exc:  # noqa: BLE001 — teardown must not raise
+        log_error(f"steer tombstone write failed: {exc!r}")
+
+
 async def _run_agent(
     model_str: str | None,
     prompt: str,
@@ -908,7 +933,21 @@ async def _run_agent(
         async def _heartbeat_loop():
             while True:
                 await _asyncio.sleep(60)
-                hint(_hb_report.line(_hb_time.monotonic()))
+                line = _hb_report.line(_hb_time.monotonic())
+                # Steer receipt ack: a queued operator message cannot land
+                # mid-turn, so tell the operator it was received and when it
+                # will apply. Fail-safe — the heartbeat never crashes the leg.
+                if live and live.get("session_id"):
+                    try:
+                        _pending = await live["db"].list_pending_session_controls(
+                            live["session_id"]
+                        )
+                        _n = sum(1 for c in _pending if c.get("verb") == "message")
+                        if _n:
+                            line += f"  [steer queued x{_n} — lands at end of current turn]"
+                    except Exception:  # noqa: BLE001, S110 — ack is best-effort color
+                        pass
+                hint(line)
 
         try:
             _heartbeat_task = _asyncio.ensure_future(_heartbeat_loop())
@@ -987,25 +1026,10 @@ async def _run_agent(
                 else None
             )
             telemetry_kw = {"extras": telemetry_extras} if telemetry_extras else {}
-            # Terminal-race tombstone: a steer enqueued while the run was
-            # live but never consumed must not sit pending forever — finalize
-            # it rejected so `li o ctl status` shows the operator the redirect
-            # did NOT land. Skipped when auto-resume keeps the run alive (the
-            # resumed leg's drain will consume it). Best-effort: a failure
-            # here logs loudly and leaves the row visibly pending.
-            if not will_auto_resume and live and live.get("session_id"):
-                try:
-                    _stale = await live["db"].list_pending_session_controls(live["session_id"])
-                    for _row in _stale:
-                        await live["db"].finalize_session_control(
-                            _row["id"],
-                            result=(
-                                "rejected: run reached terminal status before "
-                                "the steer could land — use `li agent -r`"
-                            ),
-                        )
-                except Exception as _tomb_exc:  # noqa: BLE001 — teardown must not raise
-                    log_error(f"steer tombstone write failed: {_tomb_exc!r}")
+            # Terminal-race tombstone (skipped when auto-resume keeps the run
+            # alive — the resumed leg's drain will consume the steer).
+            if not will_auto_resume:
+                await _tombstone_pending_steers(live)
             effective_status = await teardown_agent_persist(
                 live,
                 status=_terminal_status,
