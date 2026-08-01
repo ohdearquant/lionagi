@@ -61,6 +61,7 @@ _DOCS_PATHS = frozenset({"/openapi.json", "/docs", "/redoc", "/docs/oauth2-redir
 _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("DELETE", "/api/agents/{name}"),
     ("DELETE", "/api/engine-defs/{def_id}"),
+    ("DELETE", "/api/mcp/servers/{name}"),
     ("DELETE", "/api/operator/conversations/{conversation_id}"),
     ("DELETE", "/api/playbooks/{name}"),
     ("DELETE", "/api/projects/{name}"),
@@ -87,6 +88,8 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/engine-runs/{run_id}"),
     ("GET", "/api/invocations/"),
     ("GET", "/api/invocations/{invocation_id}"),
+    ("GET", "/api/mcp/servers/"),
+    ("GET", "/api/mcp/servers/{name}"),
     ("GET", "/api/operator/conversations"),
     ("GET", "/api/operator/conversations/{conversation_id}"),
     ("GET", "/api/operator/conversations/{conversation_id}/stream"),
@@ -142,6 +145,11 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/api/engine-defs/"),
     ("POST", "/api/invocations/{invocation_id}/cancel"),
     ("POST", "/api/launches/"),
+    ("POST", "/api/mcp/servers/"),
+    ("POST", "/api/mcp/servers/{name}/check"),
+    ("POST", "/api/mcp/servers/{name}/disable"),
+    ("POST", "/api/mcp/servers/{name}/enable"),
+    ("POST", "/api/mcp/servers/{name}/validate"),
     ("POST", "/api/operator/conversations"),
     ("POST", "/api/operator/conversations/{conversation_id}/effects/{effect_id}/ack"),
     (
@@ -174,6 +182,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/api/workflow-defs/{def_id}/run"),
     ("PUT", "/api/agents/{name}"),
     ("PUT", "/api/engine-defs/{def_id}"),
+    ("PUT", "/api/mcp/servers/{name}"),
     ("PUT", "/api/playbooks/{name}"),
     ("PUT", "/api/projects/{name}"),
     ("PUT", "/api/workflow-defs/{def_id}"),
@@ -255,7 +264,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 109
+    assert len(_GOLDEN_ROUTES) == 118
 
 
 def _compiled_match_shape(path_template: str) -> str:
