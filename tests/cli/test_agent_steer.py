@@ -31,19 +31,31 @@ def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return db_path
 
 
-async def _make_agent_session(db: StateDB, *, status: str = "running") -> str:
+async def _make_agent_session(
+    db: StateDB,
+    *,
+    status: str = "running",
+    run_id: str | None = "20260801T000000-testrun",
+    cc_session_id: str | None = None,
+) -> str:
+    """A native `li agent` session carries a run_id (the runner stamps one);
+    a mirrored Claude Code / Codex session is also invocation_kind='agent'
+    but has no run_id and no runner to drain its controls."""
     sid = uuid.uuid4().hex[:12]
     pid = uuid.uuid4().hex
     await db.create_progression(pid)
-    await db.create_session(
-        {
-            "id": sid,
-            "progression_id": pid,
-            "status": status,
-            "invocation_kind": "agent",
-            "started_at": time.time(),
-        }
-    )
+    row = {
+        "id": sid,
+        "progression_id": pid,
+        "status": status,
+        "invocation_kind": "agent",
+        "started_at": time.time(),
+    }
+    if run_id is not None:
+        row["run_id"] = run_id
+    if cc_session_id is not None:
+        row["cc_session_id"] = cc_session_id
+    await db.create_session(row)
     return sid
 
 
@@ -93,6 +105,20 @@ async def test_pause_resume_refused_for_agent_kind(temp_db_path, caplog, runner)
         rc = runner(argparse.Namespace(id=sid))
     assert rc == EXIT_UNKNOWN
     assert "seam" in caplog.text
+    async with StateDB() as db:
+        assert await db.list_pending_session_controls(sid) == []
+
+
+@pytest.mark.anyio
+async def test_msg_refused_for_mirrored_agent_session(temp_db_path, caplog):
+    """A mirrored Claude Code session is agent-kind and can read as running,
+    but no lionagi runner owns it, so a steer could never be delivered."""
+    async with StateDB() as db:
+        sid = await _make_agent_session(db, run_id=None, cc_session_id=uuid.uuid4().hex)
+    with caplog.at_level("ERROR"):
+        rc = run_ctl_msg(argparse.Namespace(id=sid, text="redirect"))
+    assert rc == EXIT_UNKNOWN
+    assert "mirrored/imported" in caplog.text
     async with StateDB() as db:
         assert await db.list_pending_session_controls(sid) == []
 

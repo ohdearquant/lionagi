@@ -84,6 +84,20 @@ async def _enqueue_control_inner(
             )
         kind = session.get("invocation_kind")
         allowed = _CONSUMER_KINDS_BY_VERB.get(verb, frozenset())
+        # Mirrored/imported sessions are agent-kind and can sit at status
+        # "running" (claude_mirror and codex_mirror both write
+        # invocation_kind="agent"), but no lionagi runner owns them, so
+        # nothing would ever drain the steer. The agent runner always stamps
+        # run_id on the sessions it creates; an agent-kind row without one has
+        # no drain consumer. Fail closed — refusing beats a steer that can
+        # never land.
+        if kind == "agent" and not session.get("run_id"):
+            return (
+                f"session {session_id[:8]} is a mirrored/imported agent "
+                "session (no lionagi run owns it), so no runner would ever "
+                "deliver the steer",
+                EXIT_UNKNOWN,
+            )
         if kind not in allowed:
             if kind == "agent":
                 # Reachable only for pause/resume: message is consumable.

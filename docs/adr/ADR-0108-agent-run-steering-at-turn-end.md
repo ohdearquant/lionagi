@@ -40,7 +40,22 @@ steer landing as a warm continuation turn at the run's next turn boundary.
    for the requested verb are refused for the same reason as before: a queued control
    nobody reads would sit pending forever.
 
-3. **Turn-end drain in the agent runner.** When the in-flight `operate()` returns and
+3. **Agent-kind is not sufficient — the session must be owned by a run.**
+   `invocation_kind="agent"` does not imply a lionagi runner exists. Both
+   transcript mirrors write agent-kind sessions: `claude_mirror` stamps
+   `agent_name="claude-code"` and `codex_mirror` stamps `agent_name="codex"`,
+   and a mirrored session sits at `status="running"` for as long as the
+   external tool is live. Nothing drains those rows, so widening the gate on
+   kind alone would accept steers that can never be delivered — reintroducing,
+   at enqueue, exactly the never-lands outcome this design exists to prevent.
+   The discriminator is `run_id`: the agent runner stamps one on every session
+   it creates, and neither mirror does. Agent-kind `message` controls
+   therefore additionally require a non-null `run_id`, and fail closed without
+   one. This was found by an acceptance run whose steer was enqueued against a
+   mirrored session rather than the leg under test; the run is what turned an
+   invisible exposure into a refusal plus a regression test.
+
+4. **Turn-end drain in the agent runner.** When the in-flight `operate()` returns and
    the run would otherwise finalize, the runner drains pending `message` controls:
    each batch is stamped applying (same crash-recovery stamp order as the flow
    poller), joined in arrival order into one continuation `operate()` turn on the same
@@ -50,7 +65,7 @@ steer landing as a warm continuation turn at the run's next turn boundary.
    through the same stream/snapshot directories, so the run record remains one run
    with more turns.
 
-4. **Receipt visibility without mid-turn delivery.** The runner's 60-second heartbeat
+5. **Receipt visibility without mid-turn delivery.** The runner's 60-second heartbeat
    reports a queued steer ("lands at end of current turn") so the operator knows it
    was received while the turn is still executing. No attempt is made to deliver
    mid-turn; true mid-turn injection requires engine-level stdin support and is a
