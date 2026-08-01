@@ -325,7 +325,11 @@ async def _build_view(
         "status_reason_code": row.get("status_reason_code"),
         "status_reason_summary": row.get("status_reason_summary"),
         "status_evidence_refs": row.get("status_evidence_refs"),
-        "pending_controls": pending_controls,
+        # Computed at read time so the property holds even when the teardown
+        # tombstone write failed: a pending control on a terminal run can
+        # never be consumed, and this view is the surface an operator checks
+        # to learn whether their steer landed.
+        "pending_controls": [{**c, "never_landed": terminal} for c in pending_controls],
     }
 
 
@@ -365,9 +369,15 @@ def _render_human(view: dict[str, Any]) -> str:
 
     if view["pending_controls"]:
         lines.append("")
-        lines.append(_dim("  -- pending controls --"))
+        if view["terminal"]:
+            lines.append(_dim("  -- controls that never landed (run is terminal) --"))
+        else:
+            lines.append(_dim("  -- pending controls --"))
         for ctl in view["pending_controls"]:
-            lines.append(f"    {ctl['verb']:<8} {ctl['id']}  queued {_fmt_ts(ctl['created_at'])}")
+            line = f"    {ctl['verb']:<8} {ctl['id']}  queued {_fmt_ts(ctl['created_at'])}"
+            if ctl.get("never_landed"):
+                line += "  never landed — use `li agent -r`"
+            lines.append(line)
 
     if view["degraded"]:
         lines.append("")
