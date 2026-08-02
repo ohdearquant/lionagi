@@ -446,21 +446,44 @@ async def _drain_pending_steers(
         steers = [row for row in pending if row.get("verb") == "message"]
         if not steers:
             break
+        if steers[0].get("result") == "applying":
+            # A previous drain stamped this row and did not finish. Re-applying
+            # it could deliver the same operator message a second time, so it is
+            # left untouched, and the rows behind it wait rather than jumping
+            # it. This is the rule the flow poller already follows.
+            break
+        # The deadline was checked before the queue read above, and that read is
+        # I/O that can cross it. Rechecking here, before anything is claimed or
+        # sent, is what keeps the run inside the timeout the caller gave it.
+        remaining = None
+        if deadline is not None:
+            remaining = deadline - _time.monotonic()
+            if remaining <= 0:
+                break
         texts = []
+        claimed = []
         for row in steers:
-            await db.mark_session_control_applying(row["id"])
+            if not await db.mark_session_control_applying(row["id"]):
+                # Another consumer claimed it between the read and here.
+                continue
+            claimed.append(row)
             payload = row.get("payload") or {}
             texts.append(str(payload.get("text") or ""))
+        if not claimed:
+            break
         joined = "\n".join(f"- {t}" for t in texts if t.strip())
-        hint(f"[steer] applying {len(steers)} queued operator message(s) as a continuation turn")
+        hint(f"[steer] applying {len(claimed)} queued operator message(s) as a continuation turn")
         kwargs = dict(operate_kwargs)
-        if deadline is not None:
-            kwargs["timeout"] = max(1.0, deadline - _time.monotonic())
+        if remaining is not None:
+            # What is actually left, never a floor. Flooring the budget would
+            # hand the continuation a fresh second that the caller's deadline
+            # has already spent.
+            kwargs["timeout"] = remaining
         last_res = await branch.operate(
             instruction=_AGENT_STEER_TEMPLATE.format(lines=joined),
             **kwargs,
         )
-        for row in steers:
+        for row in claimed:
             await db.finalize_session_control(row["id"], result="applied")
     return last_res
 

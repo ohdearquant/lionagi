@@ -115,6 +115,23 @@ async def _resolve_session_by_run_id(db: Any, entity_id: str) -> dict[str, Any] 
     if exact:
         return max(exact, key=lambda s: s.get("updated_at") or 0)
 
+    run_ids = await _run_id_candidates(db, entity_id)
+    if not run_ids:
+        return None
+    if len(run_ids) > 1:
+        raise AmbiguousIdError(entity_id, "run", run_ids)
+
+    sessions = await db.get_sessions_for_run(run_ids[0])
+    return max(sessions, key=lambda s: s.get("updated_at") or 0) if sessions else None
+
+
+async def _run_id_candidates(db: Any, entity_id: str) -> list[str]:
+    """Distinct run ids *entity_id* matches as a prefix, capped for display.
+
+    Separate from the resolver above so a caller can ask whether a string also
+    lands in the run-id space without resolving it to a session and acting on
+    the result.
+    """
     rows = await db.fetch_all(
         "SELECT DISTINCT run_id FROM sessions WHERE run_id LIKE ? ESCAPE '\\' "
         "AND substr(run_id, 1, ?) = ? ORDER BY run_id LIMIT ?",
@@ -125,14 +142,7 @@ async def _resolve_session_by_run_id(db: Any, entity_id: str) -> dict[str, Any] 
             _CANDIDATES_SHOWN + 1,
         ),
     )
-    run_ids = [r["run_id"] for r in rows]
-    if not run_ids:
-        return None
-    if len(run_ids) > 1:
-        raise AmbiguousIdError(entity_id, "run", run_ids)
-
-    sessions = await db.get_sessions_for_run(run_ids[0])
-    return max(sessions, key=lambda s: s.get("updated_at") or 0) if sessions else None
+    return [r["run_id"] for r in rows]
 
 
 async def _resolve_agent_target(
@@ -188,10 +198,30 @@ async def _resolve_any_target(db: Any, entity_id: str) -> tuple[str, dict[str, A
     caller never identified. The branch and run_id fallbacks stay last and
     apply only when no entity matched at all — run ids are not part of the
     generic resolver's search space (see `_resolve_session_by_run_id`).
+
+    Searching the run-id space last orders it, which is not the same as keeping
+    it apart: a string that identifies both an entity and a run is ambiguous
+    however late the second space is consulted, so that case is refused rather
+    than resolved.
     """
     hit = await resolve_entity(db, entity_id, tables=("sessions", "invocations", "plays"))
     if hit is not None:
         _table, entity_type, row = hit
+        # Keeping run ids out of the generic search space orders the two spaces,
+        # it does not separate them: a run id opens with a date, whose digits are
+        # all valid hex, so a short prefix can fit a run id and a UUID at once.
+        # Taking the entity because it is searched first would let search order
+        # decide a question it cannot answer, and the commands built on this
+        # resolver act on the answer. Only a real double match refuses. A full id
+        # cannot reach here: a run id is shorter than a UUID and carries a `T`,
+        # which no UUID contains.
+        also_runs = await _run_id_candidates(db, entity_id)
+        if also_runs:
+            raise AmbiguousIdError(
+                entity_id,
+                None,
+                [f"{entity_type} {row.get('id')}", *(f"run {r}" for r in also_runs)],
+            )
         return entity_type, row
     row = await _resolve_session_by_branch_id(db, entity_id)
     if row is not None:

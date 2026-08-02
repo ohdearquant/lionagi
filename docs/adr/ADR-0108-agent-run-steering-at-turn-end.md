@@ -64,26 +64,35 @@ steer landing as a warm continuation turn at the run's next turn boundary.
    returns the most recently updated one rather than an arbitrary row.
 
    Because the fallback runs only after the generic sweep misses, the two id
-   spaces are not searched together, and that has a consequence worth stating
-   plainly rather than leaving for someone to discover. A prefix that matches
-   both an entity primary key and a `sessions.run_id` resolves to the primary
-   key, silently: the generic sweep finds it, returns, and the run-id fallback
-   is never reached, so no ambiguity is reported even though the prefix was
-   genuinely ambiguous across the two spaces. A full-length run id cannot hit
-   this, and the reason is the alphabet rather than the length: run ids are
-   `YYYYMMDDTHHMMSS-hex6` (`_new_run_id`, `cli/_runs.py`), so they carry a `T`
-   and a `-` at fixed positions that a hexadecimal primary key can never hold
-   there. Length alone would not be enough — a pure-hex string of the same
-   width could still prefix-match a longer hex key. Those non-hex characters
-   are therefore part of the contract this ordering depends on, and changing
-   the run-id format to pure hex would silently reintroduce the collision this
-   paragraph rules out. The reason to accept the asymmetry rather than merge
-   the two searches is that merging would change what a prefix collision means
-   for every existing caller of the generic resolver, including `monitor.py`,
-   `kill.py`, and `status.py`'s per-kind resolvers, which pass explicit
-   `tables=` and expect the current meaning. Ambiguity *within* the run-id
-   space is still refused rather than picked; it is only ambiguity *across* the
-   two spaces that resolves by precedence.
+   spaces are consulted in order rather than together. Ordering them is not the
+   same as keeping them apart. A prefix that matches both an entity primary key
+   and a `sessions.run_id` is genuinely ambiguous, and resolving it by
+   precedence answers a question the input does not settle. Callers of this
+   unscoped resolver act on that answer — `li o ctl` queues a control, `li wait`
+   blocks on a run, checkpointing writes against it — which is the
+   same reason sessions, invocations and plays are searched together rather than
+   one after another. So a cross-space collision is refused, naming both
+   candidates, instead of resolving to the primary key.
+
+   A full-length run id cannot collide, and the reason is the alphabet rather
+   than the length: run ids are `YYYYMMDDTHHMMSS-hex6` (`_new_run_id`,
+   `cli/_runs.py`), so they carry a `T` and a `-` at fixed positions that a
+   hexadecimal primary key can never hold there. Length alone would not be
+   enough — a pure-hex string of the same width could still prefix-match a
+   longer hex key. Those non-hex characters remain part of the contract, and
+   changing the run-id format to pure hex would widen the set of colliding
+   prefixes. What stays exposed is therefore the short prefix: a run id opens
+   with a date, and every digit of a date is valid hex, so a date-length prefix
+   can fit a UUID as well.
+
+   The refusal lives in `status._resolve_any_target`, the unscoped resolver, and
+   not inside the generic `resolve_entity`. That is deliberate: putting it in
+   the generic resolver would change what a prefix collision means for callers
+   that pass explicit `tables=` and never consult the run-id space at all,
+   including `monitor.py`, `kill.py`, and `status.py`'s per-kind resolvers.
+   Ambiguity *within* the run-id space was already refused rather than picked;
+   this makes ambiguity *across* the two spaces behave the same way, without
+   touching the callers that only ever search one.
 
 2. **Per-verb consumer gate.** The enqueue gate becomes verb-aware
    (`_CONSUMER_KINDS_BY_VERB`): `message` is consumable by `flow`, `play`, and `agent`

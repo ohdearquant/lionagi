@@ -5419,17 +5419,28 @@ class StateDB:
             result.append(d)
         return result
 
-    async def mark_session_control_applying(self, control_id: str) -> None:
-        """Stamp a non-idempotent (message) control as mid-apply, before attempting it.
+    async def mark_session_control_applying(self, control_id: str) -> bool:
+        """Claim a non-idempotent (message) control as mid-apply, before attempting it.
+
+        The stamp is a compare-and-set: only a row no consumer has claimed
+        (``result IS NULL``) moves to 'applying', and the return value says
+        whether this caller is the one that took it. Two consumers that read the
+        same pending row therefore cannot both apply it; the loser sees False and
+        leaves the row alone. A bool rather than an exception keeps the ordinary
+        "someone else got there first" case off the error path.
 
         applied_at stays NULL — the row remains "pending" until finalize_session_control()
         runs, so a poller crash right after this stamp is visible, not silently lost.
         """
         async with self._tx() as conn:
-            await conn.execute(
-                text("UPDATE session_controls SET result = 'applying' WHERE id = :id"),
+            result = await conn.execute(
+                text(
+                    "UPDATE session_controls SET result = 'applying' "
+                    "WHERE id = :id AND result IS NULL"
+                ),
                 {"id": control_id},
             )
+            return bool(result.rowcount)
 
     async def finalize_session_control(self, control_id: str, *, result: str) -> None:
         """Stamp applied_at + a terminal *result* ('applied' or 'rejected:<reason>')."""

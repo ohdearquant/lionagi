@@ -375,3 +375,168 @@ async def test_drain_returns_quietly_when_there_is_no_persistence_at_all(caplog)
 
     assert result is None
     assert "no database handle" not in caplog.text
+
+
+# ── at-most-once and the deadline boundary ───────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_claiming_a_control_twice_only_succeeds_once(temp_db_path):
+    """The claim is a compare-and-set, so it is the thing that makes the drain
+    at-most-once rather than the order the callers happen to run in."""
+    async with StateDB() as db:
+        sid = await _make_agent_session(db)
+        cid = await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "once"}
+        )
+        assert await db.mark_session_control_applying(cid) is True
+        assert await db.mark_session_control_applying(cid) is False, (
+            "a second consumer claimed a control that was already claimed"
+        )
+
+
+@pytest.mark.anyio
+async def test_drain_leaves_an_already_applying_row_untouched(temp_db_path):
+    """A row stamped `applying` is a drain that stopped between the stamp and
+    the apply. Re-running it would deliver the same operator message twice, so
+    it is left alone, which is the rule the flow poller already follows.
+
+    Two independent things produce the empty call list here: the claim refuses a
+    row it has already stamped, and the drain stops at an `applying` row. Either
+    alone passes this test, so the arm that separates them is the ordering case
+    below, not this one.
+    """
+    async with StateDB() as db:
+        sid = await _make_agent_session(db)
+        cid = await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "already going out"}
+        )
+        await db.mark_session_control_applying(cid)
+
+        branch = _RecordingBranch()
+        res = await _drain_pending_steers(
+            {"db": db, "session_id": sid}, branch, operate_kwargs={}, deadline=None
+        )
+
+        assert branch.calls == [], "an in-flight steer was applied a second time"
+        assert res is None
+        # Still pending and still claimed: visible to the tombstone and to
+        # status, not silently dropped.
+        pending = await db.list_pending_session_controls(sid)
+        assert [r["result"] for r in pending] == ["applying"]
+
+
+@pytest.mark.anyio
+async def test_drain_does_not_jump_a_stuck_row_to_apply_the_one_behind_it(temp_db_path):
+    """A steer stuck mid-apply holds the queue rather than being stepped over.
+
+    The claim alone is not enough here. It refuses the stuck row, but the drain
+    would then walk on to the next one and deliver a later instruction while an
+    earlier one is still in flight, which is the operator's messages arriving out
+    of order. Stopping at the stuck row is what preserves the order, and this is
+    the only arm that fails when that check is removed.
+    """
+    async with StateDB() as db:
+        sid = await _make_agent_session(db)
+        stuck = await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "first instruction"}
+        )
+        await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "second instruction"}
+        )
+        await db.mark_session_control_applying(stuck)
+
+        branch = _RecordingBranch()
+        await _drain_pending_steers(
+            {"db": db, "session_id": sid}, branch, operate_kwargs={}, deadline=None
+        )
+
+        assert branch.calls == [], (
+            "a later steer was delivered while an earlier one was still mid-apply"
+        )
+
+
+@pytest.mark.anyio
+async def test_a_second_drain_does_not_reapply_a_steer_the_first_is_mid_apply(temp_db_path):
+    """Two consumers on one session, held at the boundary that matters: the
+    first has claimed the row and is inside `operate`, the second drains then.
+
+    This is reachable when more than one resume leg attaches to a running
+    session, since attaching retains the session rather than taking a
+    single-consumer lease. Exactly one continuation may carry the message.
+    """
+    async with StateDB() as db:
+        sid = await _make_agent_session(db)
+        await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "deploy now"}
+        )
+
+        calls: list[str] = []
+        first_is_mid_apply = asyncio.Event()
+        release_first = asyncio.Event()
+
+        class _ParkingBranch:
+            async def operate(self, *, instruction: str, **kwargs):
+                calls.append(instruction)
+                first_is_mid_apply.set()
+                await release_first.wait()
+                return "turn-1"
+
+        class _SecondBranch:
+            async def operate(self, *, instruction: str, **kwargs):
+                calls.append(instruction)
+                return "turn-2"
+
+        async def second_consumer() -> None:
+            await first_is_mid_apply.wait()
+            await _drain_pending_steers(
+                {"db": db, "session_id": sid}, _SecondBranch(), operate_kwargs={}, deadline=None
+            )
+            release_first.set()
+
+        second = asyncio.create_task(second_consumer())
+        await _drain_pending_steers(
+            {"db": db, "session_id": sid}, _ParkingBranch(), operate_kwargs={}, deadline=None
+        )
+        await asyncio.wait_for(second, timeout=10)
+
+        assert len(calls) == 1, f"the steer was delivered {len(calls)} times, not once"
+
+
+@pytest.mark.anyio
+async def test_drain_does_not_start_a_continuation_after_the_deadline(temp_db_path):
+    """The deadline is checked before the queue read, and the read is I/O that
+    can cross it. A continuation started afterwards runs work the caller's
+    timeout already forbade, and flooring its budget hands it a fresh second to
+    do that work in.
+
+    The discriminating assertion is the empty call list. Without the recheck the
+    drain calls operate with `timeout=1.0` after the deadline has passed.
+    """
+    async with StateDB() as db:
+        sid = await _make_agent_session(db)
+        await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "too late"}
+        )
+
+        real_list = db.list_pending_session_controls
+
+        async def slow_list(session_id):
+            await asyncio.sleep(0.08)
+            return await real_list(session_id)
+
+        db.list_pending_session_controls = slow_list
+        branch = _RecordingBranch()
+        res = await _drain_pending_steers(
+            {"db": db, "session_id": sid},
+            branch,
+            operate_kwargs={},
+            deadline=time.monotonic() + 0.02,
+        )
+
+        assert branch.calls == [], "a continuation started after the run's deadline"
+        assert res is None
+        # Untouched, so the terminal tombstone reports it rather than a
+        # half-claimed row nobody finalizes.
+        pending = await real_list(sid)
+        assert [r["result"] for r in pending] == [None]

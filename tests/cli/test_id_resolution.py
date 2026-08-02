@@ -448,17 +448,16 @@ async def test_run_id_fallback_prefers_the_most_recently_updated_session(db_path
     assert hit[1]["id"] == SECOND
 
 
-async def test_a_prefix_matching_both_a_primary_key_and_a_run_id_resolves_to_the_primary_key(
-    db_path: Path,
-):
-    """The run-id lookup is a fallback, so it is reached only when the generic
-    sweep finds nothing. A prefix that matches an entity primary key AND a
-    run_id therefore resolves to the primary key, and no ambiguity is reported
-    even though the prefix is genuinely ambiguous across the two id spaces.
+async def test_a_prefix_matching_both_a_primary_key_and_a_run_id_is_refused(db_path: Path):
+    """A prefix that fits an entity primary key AND a run id is ambiguous, and
+    consulting the run-id space last does not make it less so.
 
-    This is the documented consequence of the ordering, not an accident, so it
-    is pinned here: a change that searched both spaces together would raise
-    AmbiguousIdError instead and fail this test.
+    This resolver searches sessions, invocations and plays together for one
+    reason: the commands built on it act, so letting search order pick between
+    two candidates queues a control against something the caller never named.
+    That reason does not stop at the entity kinds. Ordering the run-id space
+    after them decides the same question by the same means, so the cross-space
+    case is refused and the operator is told what to disambiguate.
     """
     from lionagi.cli import status
 
@@ -470,14 +469,43 @@ async def test_a_prefix_matching_both_a_primary_key_and_a_run_id_resolves_to_the
         await _seed_session(db, FIRST)
         await _seed_session_with_run_id(db, other_session, colliding_run_id)
 
-        hit = await status._resolve_any_target(db, shared_prefix)
+        with pytest.raises(AmbiguousIdError) as raised:
+            await status._resolve_any_target(db, shared_prefix)
+
+    # Both spaces are named, so the refusal is actionable rather than a bare no.
+    candidates = " ".join(raised.value.candidates)
+    assert FIRST in candidates
+    assert colliding_run_id in candidates
+
+
+async def test_a_date_length_run_prefix_that_also_fits_a_session_id_is_refused(db_path: Path):
+    """The realistic shape of that collision, with the values an operator types.
+
+    A run id opens with a date, and every digit of a date is valid hex, so a
+    date-length prefix can prefix a session UUID as well. Nothing longer can
+    collide: position nine of a run id is a `T`, which no UUID contains. The
+    short prefix is therefore the only case worth pinning, and it is the one a
+    synthetic prefix does not exercise.
+    """
+    from lionagi.cli import status
+
+    prefix = "20260802"
+    run_id = f"{prefix}T123456-abcdef"
+    colliding_session = f"{prefix}-0000-4000-8000-00000000000a"
+    run_owner = "ffffffff-0000-4000-8000-00000000000b"
+
+    async with StateDB(db_path) as db:
+        await _seed_session(db, colliding_session)
+        await _seed_session_with_run_id(db, run_owner, run_id)
+
+        with pytest.raises(AmbiguousIdError):
+            await status._resolve_any_target(db, prefix)
+
+        # The full run id carries the `T`, so it stays decisive.
+        hit = await status._resolve_any_target(db, run_id)
 
     assert hit is not None
-    assert hit[0] == "session"
-    # The primary key wins. The session the colliding run_id points at is NOT
-    # the answer, and nothing was raised.
-    assert hit[1]["id"] == FIRST
-    assert hit[1]["id"] != other_session
+    assert hit[1]["id"] == run_owner
 
 
 async def test_a_full_length_run_id_is_not_shadowed_by_any_primary_key(db_path: Path):
