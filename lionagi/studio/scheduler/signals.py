@@ -4,7 +4,7 @@
 
 Scheduler-local sibling of ``lionagi.session.signal``/``observer``, without
 their Flow/route/stream machinery (``schedule_runs`` is already the durable
-record). See docs/internals/studio.md#lionagi-studioschedulersignalspy for
+record). See docs/internals/studio.md#lionagistudioschedulersignalspy for
 the mint site and failure-propagation contract.
 """
 

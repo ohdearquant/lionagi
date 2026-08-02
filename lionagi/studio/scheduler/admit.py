@@ -4,7 +4,7 @@
 
 ``admit(row, worker, db) -> AdmissionDecision`` is the worker claim loop's
 admission predicate, extracted to one named, StateDB-backed, unit-testable
-function. See docs/internals/studio.md#lionagi-studioscheduleradmitpy for
+function. See docs/internals/studio.md#lionagistudioscheduleradmitpy for
 the conditions evaluated, the ``action_args["admission"]`` payload
 convention, and the terminal-rejection notify contract.
 """

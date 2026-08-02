@@ -862,7 +862,7 @@ async def teardown_persist(
 
             # BRANCH_END safety net for legs that never reached a terminal
             # signal; finalize_branch()'s own guard skips branches a per-op
-            # writer already finalized. See docs/internals/cli.md#_runs-py
+            # writer already finalized. See docs/internals/cli.md#_runspy-agent-session-setupteardown-adr-0035
             # for why final_status must stay a genuine terminal outcome here.
             from lionagi.state.db import SESSION_TERMINAL_STATUSES
 

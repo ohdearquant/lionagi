@@ -332,7 +332,7 @@ async def claim_and_execute(
     (capability match, concurrency-key block, per-key waiter cap, duration
     guard). A deferred decision is left ``queued`` for the next tick; a
     terminal decision transitions to ``skipped`` (see ``_reject_claim``). See
-    docs/internals/studio.md#lionagi-studioschedulerworkerpy for the paging,
+    docs/internals/studio.md#lionagistudioschedulerworkerpy for the paging,
     staleness, and return-count contract.
     """
     execute = execute if execute is not None else default_execute

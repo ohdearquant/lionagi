@@ -10,7 +10,7 @@ T = TypeVar("T")
 LION_CLASS_REGISTRY: dict[str, type[T]] = {}
 
 # Built-in modules that define Element/Node subclasses.
-# See docs/internals/support-libs.md#class-registry-builtin-modules
+# See docs/internals/support-libs.md#_class_registry-_builtin_modules
 _BUILTIN_MODULES = (
     "lionagi.protocols.generic.element",
     "lionagi.protocols.generic.event",

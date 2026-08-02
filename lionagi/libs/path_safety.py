@@ -113,7 +113,7 @@ def contain_relative_path(value: str | Path, root: Path, field_name: str = "path
     """Validate `value` is a safe, root-relative path and resolve it under `root`.
 
     The shared containment predicate for workspace-relative consumers —
-    see docs/internals/support-libs.md#path-safety-contain-relative-path.
+    see docs/internals/support-libs.md#libspath_safety-contain_relative_path.
     Raises ValueError on any violation.
     """
     check_path_safe(str(value), field_name)

@@ -415,7 +415,7 @@ class FieldModel(Params):
 
     def to_spec(self) -> Spec:
         # Metadata is forwarded as a Meta tuple, not **kwargs — see
-        # docs/internals/support-libs.md#field-model-to-spec
+        # docs/internals/support-libs.md#modelsfield_model-fieldmodelto_spec
         existing = () if self._is_sentinel(self.metadata) else self.metadata
         metas = [m for m in existing if m.key not in ("nullable", "listable")]
         metas.append(Meta("nullable", self.is_nullable))
