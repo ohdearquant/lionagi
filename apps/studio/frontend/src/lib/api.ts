@@ -1435,6 +1435,127 @@ export async function getPlugin(name: string): Promise<PluginDetail> {
   return fetchJson<PluginDetail>(`/api/plugins/${encodeURIComponent(name)}`);
 }
 
+// ─── MCP servers ────────────────────────────────────────────────────────────
+
+export type McpServerTransport = "stdio" | "http";
+
+export interface McpServerLastCheck {
+  ok: boolean;
+  error: string | null;
+  checked_at: number;
+}
+
+export interface McpServerSummary {
+  name: string;
+  transport: McpServerTransport;
+  command?: string;
+  args?: string[];
+  url?: string;
+  timeout?: number;
+  env_keys: string[];
+  enabled: boolean;
+  created_at: number;
+  updated_at: number;
+  last_check: McpServerLastCheck | null;
+}
+
+/** Fields a client may submit for register/update. `env` values are only
+ * ever sent up (to be stored), never returned by the server — see
+ * McpServerSummary, which carries `env_keys` instead. A `null` value for a
+ * key is the explicit way to remove it; the server never infers a deletion
+ * from a key's mere absence, since env merges key-by-key onto what's
+ * already stored. */
+export interface McpServerConfigInput {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string | null>;
+  url?: string;
+  /** `null` clears a stored timeout. Absent leaves it as it was, the same
+   * merge rule `env` follows. */
+  timeout?: number | null;
+  enabled?: boolean;
+}
+
+export interface McpServerValidationResult {
+  ok: boolean;
+  errors?: string[] | null;
+  connection_checked: boolean;
+  connection_ok: boolean | null;
+  connection_error: string | null;
+}
+
+export async function listMcpServers(): Promise<{ servers: McpServerSummary[] }> {
+  return fetchJson<{ servers: McpServerSummary[] }>("/api/mcp/servers/");
+}
+
+export async function getMcpServer(name: string): Promise<McpServerSummary> {
+  return fetchJson<McpServerSummary>(`/api/mcp/servers/${encodeURIComponent(name)}`);
+}
+
+export async function registerMcpServer(
+  name: string,
+  data: McpServerConfigInput,
+): Promise<McpServerSummary> {
+  return fetchJson<McpServerSummary>("/api/mcp/servers/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, ...data }),
+  });
+}
+
+export async function updateMcpServer(
+  name: string,
+  data: McpServerConfigInput,
+): Promise<McpServerSummary> {
+  return fetchJson<McpServerSummary>(`/api/mcp/servers/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+export async function setMcpServerEnabled(
+  name: string,
+  enabled: boolean,
+): Promise<McpServerSummary> {
+  return fetchJson<McpServerSummary>(
+    `/api/mcp/servers/${encodeURIComponent(name)}/${enabled ? "enable" : "disable"}`,
+    { method: "POST" },
+  );
+}
+
+export async function deleteMcpServer(name: string): Promise<{ ok: boolean }> {
+  return fetchJson<{ ok: boolean }>(`/api/mcp/servers/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+}
+
+/** Attempt a real connection to an already-registered server and persist
+ * the result (surfaced afterwards via `last_check` on the summary). */
+export async function checkMcpServer(name: string): Promise<McpServerSummary> {
+  return fetchJson<McpServerSummary>(`/api/mcp/servers/${encodeURIComponent(name)}/check`, {
+    method: "POST",
+  });
+}
+
+/** Validate a config before saving. Shape is always checked; pass
+ * `check_connection: true` to also attempt a real connection (the result
+ * distinguishes "not checked" from "checked and failed" via
+ * `connection_checked`). */
+export async function validateMcpServer(
+  name: string,
+  data: McpServerConfigInput & { check_connection?: boolean },
+): Promise<McpServerValidationResult> {
+  return fetchJson<McpServerValidationResult>(
+    `/api/mcp/servers/${encodeURIComponent(name || "new")}/validate`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, ...data }),
+    },
+  );
+}
+
 export async function getPluginSkill(
   pluginName: string,
   skillName: string,
