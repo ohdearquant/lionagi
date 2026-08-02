@@ -157,7 +157,8 @@
     },
     "model": {
       "label": "Model",
-      "default": "Mặc định"
+      "default": "Mặc định",
+      "unavailable": "{model} (unavailable)"
     },
     "effort": {
       "label": "Nỗ lực",

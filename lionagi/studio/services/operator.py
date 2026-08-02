@@ -125,6 +125,7 @@ async def submit_operator_turn(conversation_id: str, body: OperatorTurnRequest) 
             model=body.model,
             provider=body.provider,
             effort=body.effort,
+            clear_selection=body.clear_selection,
         )
     except OperatorStoreError as exc:
         raise _http_error(exc) from exc

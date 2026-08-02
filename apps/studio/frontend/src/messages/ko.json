@@ -157,7 +157,8 @@
     },
     "model": {
       "label": "Model",
-      "default": "기본값"
+      "default": "기본값",
+      "unavailable": "{model} (unavailable)"
     },
     "effort": {
       "label": "노력",

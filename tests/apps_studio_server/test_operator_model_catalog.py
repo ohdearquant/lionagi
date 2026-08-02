@@ -11,6 +11,7 @@ import pytest
 from lionagi.studio.operator.catalog import (
     OperatorSelectionError,
     catalog_entries,
+    model_effort_choices,
     resolve_selection,
 )
 from lionagi.studio.operator.coordinator import OperatorCoordinator
@@ -45,14 +46,20 @@ def test_catalog_entries_cover_claude_codex_and_gemini_with_a_fable_entry():
     assert by_id["claude-fable-5"]["provider"] == "claude_code"
     assert "codex" in {entry["provider"] for entry in entries}
     assert "gemini_code" in {entry["provider"] for entry in entries}
-    # Claude has no none/minimal/ultra tier.
-    assert set(by_id["sonnet"]["efforts"]) == {"low", "medium", "high", "xhigh", "max"}
-    # Codex additionally accepts none/minimal/ultra.
+    # Efforts are per model, not per provider: the catalog offers a level only
+    # when the request path will send that level unchanged. Claude has no
+    # none/minimal/ultra tier at all, and xhigh survives on Opus alone.
+    assert set(by_id["sonnet"]["efforts"]) == {"low", "medium", "high", "max"}
+    assert set(by_id["opus"]["efforts"]) == {"low", "medium", "high", "xhigh", "max"}
+    # Codex additionally accepts none/minimal; max and ultra clamp to xhigh on
+    # every Codex model this catalog lists, so they are not offered.
     codex_entry = next(e for e in entries if e["provider"] == "codex")
-    assert {"none", "minimal", "ultra"} <= set(codex_entry["efforts"])
-    # gemini-code folds effort into the model name -- only 3 tiers are meaningful.
-    gemini_entry = next(e for e in entries if e["provider"] == "gemini_code")
-    assert set(gemini_entry["efforts"]) == {"low", "medium", "high"}
+    assert {"none", "minimal"} <= set(codex_entry["efforts"])
+    assert {"max", "ultra"}.isdisjoint(codex_entry["efforts"])
+    # gemini-code folds effort into the model name -- only 3 tiers are
+    # meaningful, and Pro has no Medium tier.
+    assert set(by_id["gemini-3.5-flash"]["efforts"]) == {"low", "medium", "high"}
+    assert set(by_id["gemini-3.1-pro"]["efforts"]) == {"low", "high"}
 
 
 # ── resolve_selection() ─────────────────────────────────────────────────────
@@ -440,3 +447,238 @@ async def test_the_turn_handed_to_the_engine_keeps_the_selected_provider_and_eff
     # assertions above would pass on a turn that never went through it.
     assert turn.run_dir is not None
     await coordinator.shutdown()
+
+
+# ── per-model effort ceilings ───────────────────────────────────────────────
+
+
+def test_the_catalog_never_offers_an_effort_the_request_path_would_change():
+    """The whole point of the per-model list: every offered level must survive
+    the clamp that runs on the way to the provider. This walks the catalog
+    rather than spot-checking, so a model added later cannot quietly offer a
+    level that gets rewritten."""
+    from lionagi.service.providers import (
+        _GEMINI_EFFORT_CLAMP,
+        _clamp_claude_effort,
+        _clamp_codex_effort,
+        _clamp_gemini_effort,
+    )
+    from lionagi.studio.operator.catalog import OPERATOR_MODEL_CATALOG
+
+    checked = 0
+    for spec in OPERATOR_MODEL_CATALOG:
+        for effort in model_effort_choices(spec.id):
+            checked += 1
+            if spec.provider == "claude_code":
+                assert _clamp_claude_effort(effort, spec.id) == effort, (spec.id, effort)
+            elif spec.provider == "codex":
+                assert _clamp_codex_effort(effort, spec.id) == effort, (spec.id, effort)
+            else:
+                is_pro = "pro" in spec.id
+                assert _clamp_gemini_effort(effort, is_pro) == _GEMINI_EFFORT_CLAMP[effort], (
+                    spec.id,
+                    effort,
+                )
+    assert checked > 20, "sanity: the walk must actually have examined the catalog"
+
+
+def test_a_clamped_effort_is_rejected_rather_than_silently_downgraded():
+    """The three measured cases where the provider used to receive a level the
+    operator never chose."""
+    for model, effort in (("sonnet", "xhigh"), ("gpt-5.4", "ultra"), ("gemini-3.1-pro", "medium")):
+        with pytest.raises(OperatorSelectionError, match="does not accept effort"):
+            resolve_selection(provider=None, model=model, effort=effort)
+
+
+def test_a_model_that_does_honor_the_level_still_accepts_it():
+    """Rejecting must not become rejecting everything: each of the three above
+    has a sibling for which the same level is honored."""
+    assert resolve_selection(provider=None, model="opus", effort="xhigh") == (
+        "claude_code",
+        "opus",
+        "xhigh",
+    )
+    assert resolve_selection(provider=None, model="gpt-5.4", effort="xhigh") == (
+        "codex",
+        "gpt-5.4",
+        "xhigh",
+    )
+    assert resolve_selection(provider=None, model="gemini-3.5-flash", effort="medium") == (
+        "gemini_code",
+        "gemini-3.5-flash",
+        "medium",
+    )
+
+
+# ── availability preflight is per selected provider ─────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_codex_turn_is_not_refused_because_claude_is_the_env_default(tmp_path, monkeypatch):
+    """The availability check runs before the branch is built, so it has to ask
+    the turn which provider it selected. Reading the environment there refuses a
+    perfectly runnable Codex or Gemini turn whenever the machine happens to have
+    no Claude CLI installed.
+    """
+    import lionagi.providers.anthropic.claude_code as claude_mod
+    from lionagi.studio.operator.engine import (
+        BranchOperatorEngine,
+        OperatorProviderUnavailableError,
+    )
+    from lionagi.studio.operator.types import OperatorEngineTurn
+
+    monkeypatch.setenv("LIONAGI_STUDIO_OPERATOR_PROVIDER", "claude_code")
+    monkeypatch.setattr(claude_mod, "CLAUDE_CLI", None)
+
+    def _turn(provider: str | None, model: str | None) -> OperatorEngineTurn:
+        return OperatorEngineTurn(
+            conversation_id="c1",
+            request_id="r1",
+            instruction="do it",
+            context={"space": "mission", "route": "/", "filters": {}},
+            history=[],
+            request_permission=None,
+            store_path=str(tmp_path / "state.db"),
+            provider=provider,
+            model=model,
+        )
+
+    engine = BranchOperatorEngine()
+
+    # The control: a turn that selects nothing still falls back to the
+    # environment, so the missing Claude CLI is still reported. Without this the
+    # test would pass just as well against a preflight that never fires.
+    with pytest.raises(OperatorProviderUnavailableError):
+        stream = engine.stream(_turn(None, None))
+        await stream.__anext__()
+
+    # The regression: a selected Codex turn must get past the preflight. It
+    # fails later for an unrelated reason (no codex binary, no network) or
+    # succeeds; what matters is that it is not the Claude-unavailable refusal.
+    stream = engine.stream(_turn("codex", "gpt-5.3-codex"))
+    try:
+        await stream.__anext__()
+    except OperatorProviderUnavailableError as exc:  # pragma: no cover - the defect
+        raise AssertionError(f"a codex turn was refused for a Claude reason: {exc}") from exc
+    except StopAsyncIteration:
+        pass
+    except Exception:
+        pass
+    finally:
+        await stream.aclose()
+
+
+# ── clearing a conversation's pin ───────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_clearing_returns_a_pinned_conversation_to_the_default(tmp_path):
+    """Omitting a model means "keep the pin", so there has to be a separate way
+    to say "drop it" -- otherwise a conversation can never go back to the
+    daemon's own default once it has been pinned once.
+    """
+    store = OperatorStore(tmp_path / "state.db")
+    conversation_id = (await store.create_conversation())["id"]
+    await store.select_provider_model(conversation_id, provider="codex", model="gpt-5.4")
+    await store.set_provider_session_id(conversation_id, "session-1")
+
+    await store.clear_provider_model(conversation_id)
+    conversation = await store.get_conversation(conversation_id)
+    assert conversation["provider"] is None
+    assert conversation["providerModel"] is None
+    # The session belonged to the pair that is gone.
+    assert conversation["providerSessionId"] is None
+
+
+@pytest.mark.asyncio
+async def test_clearing_an_unpinned_conversation_keeps_its_session(tmp_path):
+    """A client that cannot see the store may repeat the clear. Dropping the
+    session is a consequence of a pin changing, so a repeat must not keep
+    discarding sessions that nothing is invalidating."""
+    store = OperatorStore(tmp_path / "state.db")
+    conversation_id = (await store.create_conversation())["id"]
+    await store.set_provider_session_id(conversation_id, "session-1")
+
+    await store.clear_provider_model(conversation_id)
+    conversation = await store.get_conversation(conversation_id)
+    assert conversation["providerSessionId"] == "session-1"
+
+
+@pytest.mark.asyncio
+async def test_a_cleared_turn_reaches_the_engine_with_no_selection(tmp_path, monkeypatch):
+    """End to end through the coordinator: the pin is dropped before the turn is
+    accepted, so this turn is the first one to run without it rather than the
+    last one to run with it."""
+    import asyncio
+
+    captured: list = []
+
+    class CapturingEngine:
+        async def _stream(self, turn):
+            captured.append(turn)
+            return
+            yield  # pragma: no cover - makes this an async generator
+
+        def stream(self, turn):
+            return self._stream(turn)
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=CapturingEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation(title="Clearing"))["conversation"]["id"]
+    await coordinator.submit(
+        cid,
+        instruction="pin it",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+        model="gpt-5.4",
+    )
+    for _ in range(200):
+        if captured:
+            break
+        await asyncio.sleep(0.02)
+    assert captured and captured[0].model == "gpt-5.4"
+    for _ in range(400):
+        conversation = await coordinator.store.get_conversation(cid)
+        if conversation["activeRequestId"] is None:
+            break
+        await asyncio.sleep(0.02)
+    assert conversation["activeRequestId"] is None, "the pinned turn never finished"
+    assert conversation["providerModel"] == "gpt-5.4"
+
+    captured.clear()
+    await coordinator.submit(
+        cid,
+        instruction="unpin it",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=int(conversation["nextSequence"]) - 1,
+        clear_selection=True,
+    )
+    for _ in range(200):
+        if captured:
+            break
+        await asyncio.sleep(0.02)
+    assert captured, "the engine was never handed the cleared turn"
+    assert captured[0].model is None
+    assert captured[0].provider is None
+    await coordinator.shutdown()
+
+
+def test_a_clear_request_cannot_also_carry_a_pin():
+    """Clearing and pinning in one turn is a contradiction, and silently
+    letting one win would make the wire ambiguous."""
+    import pydantic
+
+    from lionagi.studio.operator.types import OperatorTurnRequest
+
+    body = {
+        "instruction": "hi",
+        "context": {"space": "mission", "route": "/", "filters": {}},
+        "expectedLastSequence": 0,
+    }
+    # The control: the same body without a pin is accepted.
+    assert OperatorTurnRequest.model_validate({**body, "clearSelection": True}).clear_selection
+
+    with pytest.raises(pydantic.ValidationError, match="cannot be combined"):
+        OperatorTurnRequest.model_validate({**body, "clearSelection": True, "model": "sonnet"})

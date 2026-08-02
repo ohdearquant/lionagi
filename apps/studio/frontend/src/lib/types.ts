@@ -412,6 +412,10 @@ export interface OperatorConversation {
   status: OperatorConversationStatus;
   nextSequence?: number;
   activeRequestId?: string | null;
+  /** The provider and model this conversation is pinned to. The daemon keeps
+   * using them for a turn that names neither, so the composer has to show
+   * them rather than reporting "Default". */
+  provider?: string | null;
   providerModel?: string | null;
   createdAt?: number;
   updatedAt?: number;
@@ -616,6 +620,9 @@ export interface OperatorTurnRequest {
   model?: string;
   provider?: OperatorProvider;
   effort?: OperatorEffort;
+  // Omitting `model` keeps the conversation's stored pin, so it cannot also
+  // mean "drop it". This asks for the pin to be removed.
+  clearSelection?: boolean;
 }
 
 export interface OperatorTurnAccepted {

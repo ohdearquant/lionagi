@@ -157,7 +157,8 @@
     },
     "model": {
       "label": "Model",
-      "default": "डिफ़ॉल्ट"
+      "default": "डिफ़ॉल्ट",
+      "unavailable": "{model} (unavailable)"
     },
     "effort": {
       "label": "प्रयास",

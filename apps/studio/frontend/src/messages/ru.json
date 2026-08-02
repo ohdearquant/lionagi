@@ -157,7 +157,8 @@
     },
     "model": {
       "label": "Model",
-      "default": "По умолчанию"
+      "default": "По умолчанию",
+      "unavailable": "{model} (unavailable)"
     },
     "effort": {
       "label": "Усилие",

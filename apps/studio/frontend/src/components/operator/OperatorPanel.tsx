@@ -682,15 +682,18 @@ export default function OperatorPanel({ open, onClose }: Props) {
       .then((catalog) => {
         if (!active) return;
         setModelCatalog(catalog.models);
-        // Leave an unrecognized selection to clear, but never replace "no
-        // selection" with the catalog's first entry: the composer still
-        // works with no model chosen -- the daemon falls back to its own
-        // env-var default for a turn that omits one, and picking one here
-        // on the caller's behalf would silently override that default the
-        // moment the catalog loads, before the human ever touched the menu.
-        setModel((current) =>
-          current && catalog.models.some((entry) => entry.id === current) ? current : "",
-        );
+        // Never replace "no selection" with the catalog's first entry: the
+        // composer still works with no model chosen -- the daemon falls back
+        // to its own env-var default for a turn that omits one, and picking
+        // one here on the caller's behalf would silently override that
+        // default the moment the catalog loads, before the human ever
+        // touched the menu.
+        //
+        // A selection the catalog does not offer is not cleared either. It is
+        // usually the conversation's own stored pin, which the daemon will
+        // keep using; clearing it would show "Default" for a turn that runs
+        // on something else. The menu renders it as unavailable instead, so
+        // the operator can see what is in force and change it.
       })
       .catch(() => {
         // The composer still works with no model selected -- the daemon
@@ -700,6 +703,25 @@ export default function OperatorPanel({ open, onClose }: Props) {
       active = false;
     };
   }, []);
+
+  // A conversation remembers the provider and model it was pinned to, and the
+  // daemon keeps using that pin for a turn that names neither. Showing
+  // "Default" while a pin is in force tells the operator the opposite of what
+  // will happen, so the stored selection is hydrated whenever the conversation
+  // changes. Effort is per turn rather than per conversation, so it starts
+  // empty and the operator chooses it again.
+  const hydratedConversationRef = useRef<string | null>(null);
+  useEffect(() => {
+    const conversation = state.conversation;
+    if (!conversation) {
+      hydratedConversationRef.current = null;
+      return;
+    }
+    if (hydratedConversationRef.current === conversation.id) return;
+    hydratedConversationRef.current = conversation.id;
+    setModel(conversation.providerModel ?? "");
+    setEffort("");
+  }, [state.conversation]);
 
   const effortChoices = useMemo(
     () => modelCatalog.find((entry) => entry.id === model)?.efforts ?? [],
@@ -944,12 +966,18 @@ export default function OperatorPanel({ open, onClose }: Props) {
         location.pathname,
         location.search as Record<string, unknown>,
       );
+      // The menu is hydrated from the conversation's pin, so an empty
+      // selection here means the operator moved it back to Default. Sending
+      // nothing would leave the pin in force, which is the opposite of what
+      // the menu now says, so ask for it to be dropped.
+      const clearing = !model && Boolean(conversation.provider || conversation.providerModel);
       const accepted = await submitOperatorTurn(conversation.id, {
         instruction: trimmed,
         context,
         expectedLastSequence: state.lastSequence,
         ...(model ? { model } : {}),
         ...(effectiveEffort ? { effort: effectiveEffort } : {}),
+        ...(clearing ? { clearSelection: true } : {}),
       });
       dispatch({ type: "TURN_ACCEPTED", requestId: accepted.requestId });
       setInstruction("");
@@ -1150,6 +1178,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
                 className="shrink-0 border-0 bg-transparent py-0 font-data text-meta text-content-muted outline-none focus:text-content-primary"
               >
                 <option value="">{t("model.default")}</option>
+                {model && !modelCatalog.some((entry) => entry.id === model) && (
+                  <option value={model}>{t("model.unavailable", { model })}</option>
+                )}
                 {modelCatalog.map((entry) => (
                   <option key={entry.id} value={entry.id}>
                     {entry.label}

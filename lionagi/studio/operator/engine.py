@@ -353,7 +353,11 @@ class BranchOperatorEngine:
         return self._stream(turn)
 
     async def _stream(self, turn: OperatorEngineTurn):
-        provider = os.environ.get("LIONAGI_STUDIO_OPERATOR_PROVIDER", "claude_code")
+        # Preflight the provider this turn will actually run on, not the
+        # environment default. Once a turn can carry its own selection, reading
+        # the environment here refuses a valid Codex or Gemini turn because an
+        # unselected Claude installation is missing.
+        provider, _ = resolve_operator_provider_model(turn)
         if provider == "claude_code":
             from lionagi.providers.anthropic.claude_code import CLAUDE_CLI
 

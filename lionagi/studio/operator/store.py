@@ -487,6 +487,44 @@ class OperatorStore:
                 )
             await db.commit()
 
+    async def clear_provider_model(self, conversation_id: str) -> None:
+        """Drop this conversation's provider/model pin so it runs on the default again.
+
+        Omitting a model on a turn means "leave the pin alone", which is what
+        an unchanged composer sends, so it cannot also mean "remove the pin" --
+        without this there is no way back to the daemon's own default once a
+        conversation has been pinned. The provider session goes with it: a
+        session belongs to the pair that created it, and the next turn resolves
+        its provider from the environment rather than from that pair.
+
+        Clearing a conversation that has no pin does nothing at all. Dropping
+        the session is a consequence of the pin changing, so a repeated clear
+        must not keep discarding sessions that no pin is invalidating.
+        """
+        await self.ensure_schema()
+        async with open_db(str(self.path())) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute(
+                    "SELECT provider, provider_model FROM studio_operator_conversations "
+                    "WHERE id = ?",
+                    (conversation_id,),
+                )
+            ).fetchone()
+            if row is None:
+                await db.rollback()
+                raise OperatorNotFoundError(f"Operator conversation '{conversation_id}' not found")
+            if row["provider"] is None and row["provider_model"] is None:
+                await db.rollback()
+                return
+            await db.execute(
+                "UPDATE studio_operator_conversations "
+                "SET provider = NULL, provider_model = NULL, provider_session_id = NULL, "
+                "updated_at = ? WHERE id = ?",
+                (time.time(), conversation_id),
+            )
+            await db.commit()
+
     async def archive_or_delete(self, conversation_id: str) -> None:
         await self.ensure_schema()
         now = time.time()

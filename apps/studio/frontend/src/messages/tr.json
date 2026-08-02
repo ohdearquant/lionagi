@@ -157,7 +157,8 @@
     },
     "model": {
       "label": "Model",
-      "default": "Varsayılan"
+      "default": "Varsayılan",
+      "unavailable": "{model} (unavailable)"
     },
     "effort": {
       "label": "Çaba",

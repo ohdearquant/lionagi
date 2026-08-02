@@ -157,7 +157,8 @@
     },
     "model": {
       "label": "Model",
-      "default": "ডিফল্ট"
+      "default": "ডিফল্ট",
+      "unavailable": "{model} (unavailable)"
     },
     "effort": {
       "label": "প্রচেষ্টা",

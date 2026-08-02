@@ -157,7 +157,8 @@
     },
     "model": {
       "label": "Model",
-      "default": "Padrão"
+      "default": "Padrão",
+      "unavailable": "{model} (unavailable)"
     },
     "effort": {
       "label": "Esforço",

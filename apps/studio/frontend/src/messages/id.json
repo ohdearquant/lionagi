@@ -157,7 +157,8 @@
     },
     "model": {
       "label": "Model",
-      "default": "Default"
+      "default": "Default",
+      "unavailable": "{model} (unavailable)"
     },
     "effort": {
       "label": "Usaha",

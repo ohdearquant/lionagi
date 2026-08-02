@@ -370,6 +370,7 @@ export async function submitOperatorTurn(
         ...(request.model ? { model: request.model } : {}),
         ...(request.provider ? { provider: request.provider } : {}),
         ...(request.effort ? { effort: request.effort } : {}),
+        ...(request.clearSelection ? { clear_selection: true } : {}),
       }),
     },
   );

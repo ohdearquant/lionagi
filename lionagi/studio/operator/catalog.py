@@ -82,6 +82,50 @@ def effort_choices(provider: str) -> tuple[OperatorEffort, ...]:
     return _PROVIDER_EFFORTS.get(provider, ())  # type: ignore[arg-type]
 
 
+def model_effort_choices(model: str) -> tuple[OperatorEffort, ...]:
+    """The efforts a specific model actually honors, not the ones its provider
+    has a name for.
+
+    Effort ceilings are per model, and the request path enforces them by
+    silently clamping: a Claude model that is not Opus turns ``xhigh`` into
+    ``high``, most Codex models turn ``max`` and ``ultra`` into ``xhigh``, and
+    Gemini Pro has no Medium tier so ``medium`` becomes High. Offering a value
+    the request will change is worse than not offering it, because the operator
+    picks a level and the provider is asked for a different one with nothing
+    said.
+
+    So the choices are derived from the same clamp functions the request path
+    uses, rather than restated here: an effort is offered only when clamping it
+    for this model leaves it alone. Deriving rather than duplicating is the
+    point -- a new ceiling added to the provider tables narrows this catalog on
+    its own, and cannot drift away from what the request will do.
+    """
+    spec = _BY_ID.get(model)
+    if spec is None:
+        return ()
+    from lionagi.service.providers import (
+        _GEMINI_EFFORT_CLAMP,
+        _clamp_claude_effort,
+        _clamp_codex_effort,
+        _clamp_gemini_effort,
+    )
+
+    offered = _PROVIDER_EFFORTS[spec.provider]
+    if spec.provider == "claude_code":
+        return tuple(e for e in offered if _clamp_claude_effort(e, spec.id) == e)
+    if spec.provider == "codex":
+        return tuple(e for e in offered if _clamp_codex_effort(e, spec.id) == e)
+    if spec.provider == "gemini_code":
+        # Gemini has no effort kwarg: the level becomes part of the model name,
+        # so "honored" means the tier this effort names is the tier that gets
+        # requested.
+        is_pro = "pro" in spec.id
+        return tuple(
+            e for e in offered if _clamp_gemini_effort(e, is_pro) == _GEMINI_EFFORT_CLAMP.get(e)
+        )
+    return offered
+
+
 def catalog_entries() -> list[dict[str, object]]:
     """The wire-serializable catalog: id/label/provider/efforts per model."""
     return [
@@ -89,7 +133,7 @@ def catalog_entries() -> list[dict[str, object]]:
             "id": spec.id,
             "label": spec.label,
             "provider": spec.provider,
-            "efforts": list(_PROVIDER_EFFORTS[spec.provider]),
+            "efforts": list(model_effort_choices(spec.id)),
         }
         for spec in OPERATOR_MODEL_CATALOG
     ]
@@ -108,7 +152,11 @@ def resolve_selection(
     in ``build_operator_branch`` is unchanged for a turn that specifies none of
     them. Raises ``OperatorSelectionError`` for an unknown model, an unknown
     provider, a model that does not belong to an explicitly given provider, or
-    an effort the resolved provider cannot honor.
+    an effort the selection cannot honor. When a model is named, the effort is
+    checked against that model's own ceiling rather than its provider's whole
+    vocabulary: the catalog offers per-model choices, so accepting a value the
+    catalog does not offer would let a stale client pin an effort the request
+    path then quietly clamps.
     """
     resolved_provider = provider
     if model is not None:
@@ -126,10 +174,14 @@ def resolve_selection(
     if effort is not None:
         if resolved_provider is None:
             raise OperatorSelectionError("An effort selection requires a provider or model")
-        allowed = _PROVIDER_EFFORTS.get(resolved_provider)  # type: ignore[arg-type]
-        if allowed is None or effort not in allowed:
-            raise OperatorSelectionError(
-                f"Provider '{resolved_provider}' does not accept effort '{effort}'"
-            )
+        if model is not None:
+            if effort not in model_effort_choices(model):
+                raise OperatorSelectionError(f"Model '{model}' does not accept effort '{effort}'")
+        else:
+            allowed = _PROVIDER_EFFORTS.get(resolved_provider)  # type: ignore[arg-type]
+            if allowed is None or effort not in allowed:
+                raise OperatorSelectionError(
+                    f"Provider '{resolved_provider}' does not accept effort '{effort}'"
+                )
 
     return resolved_provider, model, effort

@@ -157,7 +157,8 @@
     },
     "model": {
       "label": "Model",
-      "default": "デフォルト"
+      "default": "デフォルト",
+      "unavailable": "{model} (unavailable)"
     },
     "effort": {
       "label": "労力",

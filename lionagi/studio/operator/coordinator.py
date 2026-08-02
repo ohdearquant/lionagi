@@ -191,6 +191,7 @@ class OperatorCoordinator:
         model: str | None = None,
         provider: str | None = None,
         effort: str | None = None,
+        clear_selection: bool = False,
     ) -> dict[str, Any]:
         await self.ensure_started()
         try:
@@ -199,7 +200,11 @@ class OperatorCoordinator:
             )
         except OperatorSelectionError as exc:
             raise OperatorValidationError(str(exc)) from exc
-        if resolved_provider is not None or resolved_model is not None:
+        if clear_selection:
+            # Also before the turn is accepted, so this turn is the first one
+            # to run without the pin rather than the last one to run with it.
+            await self.store.clear_provider_model(conversation_id)
+        elif resolved_provider is not None or resolved_model is not None:
             # Before the turn is accepted, so the run it builds already sees it.
             await self.store.select_provider_model(
                 conversation_id, provider=resolved_provider, model=resolved_model

@@ -157,7 +157,8 @@
     },
     "model": {
       "label": "模型",
-      "default": "默认"
+      "default": "默认",
+      "unavailable": "{model} (unavailable)"
     },
     "effort": {
       "label": "强度",

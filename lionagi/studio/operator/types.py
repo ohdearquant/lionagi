@@ -83,6 +83,18 @@ class OperatorTurnRequest(WireModel):
     # `model` (via the catalog) or falls back to the env-var default.
     provider: OperatorProvider | None = None
     effort: OperatorEffort | None = None
+    # Omitting `model` means "keep whatever this conversation is pinned to",
+    # so it cannot also mean "remove the pin". This asks for the pin to be
+    # dropped, returning the conversation to the daemon's own default.
+    clear_selection: bool = False
+
+    @model_validator(mode="after")
+    def _clear_is_not_also_a_pin(self) -> OperatorTurnRequest:
+        if self.clear_selection and (
+            self.model is not None or self.provider is not None or self.effort is not None
+        ):
+            raise ValueError("clearSelection cannot be combined with a provider, model, or effort")
+        return self
 
 
 class ConfirmProposalRequest(WireModel):

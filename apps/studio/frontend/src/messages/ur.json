@@ -157,7 +157,8 @@
     },
     "model": {
       "label": "Model",
-      "default": "پہلے سے طے شدہ"
+      "default": "پہلے سے طے شدہ",
+      "unavailable": "{model} (unavailable)"
     },
     "effort": {
       "label": "کوشش",
