@@ -1,8 +1,15 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslations } from "use-intl";
 import { IconArrowLeft } from "@/components/ui/icons";
-import { getDefinition, saveDefinition, rollbackDefinition, getDefinitionVersion } from "@/lib/api";
-import type { DefinitionDetail, DefinitionVersion } from "@/lib/api";
+import {
+  getDefinition,
+  saveDefinition,
+  rollbackDefinition,
+  getDefinitionVersion,
+  getCasts,
+  deleteAgent,
+} from "@/lib/api";
+import type { CastMode, DefinitionDetail, DefinitionVersion } from "@/lib/api";
 import type { AgentProfileSummary } from "@/lib/types";
 import SectionLabel from "@/components/ui/SectionLabel";
 import Button from "@/components/ui/Button";
@@ -53,9 +60,11 @@ interface Props {
   agent: AgentProfileSummary;
   /** Rendered in collapsed (narrow) mode — show a back affordance. */
   onBack?: () => void;
+  /** Called after a successful delete so the caller can drop the selection. */
+  onDeleted?: () => void;
 }
 
-export function AgentDetail({ agent, onBack }: Props) {
+export function AgentDetail({ agent, onBack, onDeleted }: Props) {
   const t = useTranslations("library.drawer");
   const [def, setDef] = useState<DefinitionDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -71,6 +80,46 @@ export function AgentDetail({ agent, onBack }: Props) {
 
   const [previewVer, setPreviewVer] = useState<DefinitionDetail | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const [modes, setModes] = useState<CastMode[]>([]);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    getCasts()
+      .then((catalog) => {
+        if (alive) setModes(catalog.modes);
+      })
+      .catch(() => {
+        /* Leaves the mode list empty, so the selector below offers only the
+           clear option. Deliberately not a free-text fallback: mode is looked
+           up by exact name, so a field that accepts anything would let a failed
+           catalog fetch produce a profile nothing can resolve. */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const isProtected = agent.protected === true;
+  const isDefault = agent.is_default === true;
+  const canDelete = !isProtected && !isDefault;
+
+  const handleDelete = useCallback(async () => {
+    if (!canDelete || deleting) return;
+    if (!window.confirm(`Delete agent "${agent.name}"? This cannot be undone.`)) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteAgent(agent.name);
+      onDeleted?.();
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : "Delete failed");
+    } finally {
+      setDeleting(false);
+    }
+  }, [agent.name, canDelete, deleting, onDeleted]);
 
   useEffect(() => {
     let alive = true;
@@ -279,8 +328,39 @@ export function AgentDetail({ agent, onBack }: Props) {
               <span className="font-data text-[length:var(--t-xs)] text-content-muted">
                 v{def.version}
               </span>
-              <Button size="sm" variant="secondary" onClick={startEdit}>
+              {isProtected && (
+                <span
+                  title="System agent — not editable or deletable"
+                  className="rounded border border-edge bg-surface-overlay px-1.5 py-0.5 text-[length:var(--t-xs)] uppercase tracking-[0.08em] text-content-muted"
+                >
+                  system
+                </span>
+              )}
+              {!isProtected && isDefault && (
+                <span
+                  title="Default agent — not deletable"
+                  className="rounded border border-edge bg-surface-overlay px-1.5 py-0.5 text-[length:var(--t-xs)] uppercase tracking-[0.08em] text-content-muted"
+                >
+                  default
+                </span>
+              )}
+              <Button size="sm" variant="secondary" onClick={startEdit} disabled={isProtected}>
                 {t("edit")}
+              </Button>
+              <Button
+                size="sm"
+                variant="danger"
+                onClick={() => void handleDelete()}
+                disabled={!canDelete || deleting}
+                title={
+                  isProtected
+                    ? "System agents cannot be deleted"
+                    : isDefault
+                      ? "The default agent cannot be deleted"
+                      : undefined
+                }
+              >
+                {deleting ? "Deleting…" : "Delete"}
               </Button>
             </>
           )}
@@ -290,6 +370,12 @@ export function AgentDetail({ agent, onBack }: Props) {
       {saveError && (
         <div className="shrink-0 border-b border-edge px-4 py-2 text-[length:var(--t-xs)] text-status-failure">
           {saveError}
+        </div>
+      )}
+
+      {deleteError && (
+        <div className="shrink-0 border-b border-edge px-4 py-2 text-[length:var(--t-xs)] text-status-failure">
+          {deleteError}
         </div>
       )}
 
@@ -335,6 +421,21 @@ export function AgentDetail({ agent, onBack }: Props) {
                 ))}
               </select>
             </label>
+            <label className="flex flex-col gap-1">
+              <SectionLabel>Mode</SectionLabel>
+              <select
+                value={typeof fm.mode === "string" ? fm.mode : ""}
+                onChange={(e) => setFmField("mode", e.target.value || undefined)}
+                className="rounded border border-edge bg-surface-overlay px-2 py-1 text-[length:var(--t-xs)] text-content-primary"
+              >
+                <option value="">—</option>
+                {modes.map((m) => (
+                  <option key={m.name} value={m.name}>
+                    {m.name}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label className="flex cursor-pointer select-none items-center gap-1.5">
               <input
                 type="checkbox"
@@ -366,6 +467,18 @@ export function AgentDetail({ agent, onBack }: Props) {
                 <span className="font-data text-content-primary">
                   {String(dispFm.permission_mode)}
                 </span>
+              </div>
+            )}
+            {dispFm.role && (
+              <div className="flex items-center gap-1.5 text-[length:var(--t-xs)]">
+                <span className="text-content-muted">role</span>
+                <span className="font-data text-content-primary">{String(dispFm.role)}</span>
+              </div>
+            )}
+            {dispFm.mode && (
+              <div className="flex items-center gap-1.5 text-[length:var(--t-xs)]">
+                <span className="text-content-muted">mode</span>
+                <span className="font-data text-content-primary">{String(dispFm.mode)}</span>
               </div>
             )}
             {dispFm.yolo === true && (

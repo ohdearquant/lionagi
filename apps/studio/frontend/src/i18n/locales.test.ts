@@ -195,8 +195,8 @@ describe("applyDocumentLocale — <html lang>/<html dir> wiring", () => {
 });
 
 describe("messages — leaf-key parity across all 16 locales", () => {
-  it("en.json has 807 leaves", () => {
-    expect(EN_LEAVES.size).toBe(807);
+  it("en.json has 840 leaves", () => {
+    expect(EN_LEAVES.size).toBe(840);
   });
 
   it.each(LOCALES.map((l) => l.code))(
