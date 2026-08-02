@@ -402,3 +402,199 @@ orchestrator decomposes the task into `TaskAssignment`s (the casts
 coordination emission); `assignee` names a role from the roster, `task` is
 the concrete objective. There is no bespoke plan model — a list of
 `TaskAssignment`s (with `depends_on`) *is* the plan (and the DAG).
+
+## protocols/ (additional entries)
+
+### Pile concurrency contract
+
+`Pile` has a two-lock concurrency contract. The sync API (`@synchronized`
+methods, subscripting, iteration snapshots) is thread-safe under `_lock`. The
+async API (`a`-prefixed `@async_synchronized` methods) is task-safe under
+`_async_lock` AND excludes sync callers in other threads: the async wrapper
+holds both locks (async lock first, then a non-blocking spin on the threading
+lock) for the duration of the call. Iteration (`__iter__` / `__aiter__`)
+captures a point-in-time snapshot of the *order* under the lock; item lookup
+stays live, so removing a not-yet-visited item raises `KeyError` at that step
+(fail-loud) instead of silently yielding a stale object. `keys` / `values` /
+`items` return fully materialized snapshots. A `Pile` is iterable but is NOT
+itself an iterator, matching `list` and `dict` — traversal position lives in
+the object `iter(pile)` returns, so concurrent readers each get their own
+cursor and a copied `Pile` never inherits a partially consumed one.
+
+The exclusion boundary is CROSS-THREAD, not cross-task. On the event loop's
+own thread, a sync call made by a different task while an async operation is
+mid-await re-enters the RLock (thread-owned) and proceeds — same-thread
+callers are cooperative by design; enforcing task-level exclusion for sync
+calls on the loop thread would deadlock the loop. Async-side critical regions
+(`async with pile`, `adump`, `adapt_to_async`, `__aiter__`) all use the
+ordered both-lock protocol, so they exclude sync callers running in other
+threads.
+
+### Message render-cache safety
+
+`Message._render_cached` caches a rendering keyed by content identity plus a
+tracked revision counter, bypassing the cache entirely when content holds a
+value the revision tracker cannot observe in-place mutation of.
+`_content_is_render_safe` memoizes the JSON-safety verdict per (content
+identity, tracked revision) so a warm JSON-safe content is walked at most once
+per revision instead of on every render — but only the *safe* verdict is ever
+cached. An untracked-mutable object can mutate without bumping the tracked
+revision (that's the whole reason the render cache must bypass for it), so a
+cached *unsafe* verdict has no revision to reliably invalidate on; recomputing
+it every call is the only way to keep it honest.
+
+`_has_untracked_mutable` walks a value looking for anything besides JSON-safe
+primitives and list/dict/tuple/frozenset nesting of them — `type` objects are
+exempt, since content only ever reads their class-level schema, never live
+instance state. It's iterative (explicit stack, not recursion) so deeply
+nested-but-safe input cannot raise `RecursionError`, and it fails safe
+(returns `True` without raising) for a self-referential (cyclic) container or
+once traversal exceeds a bounded depth, since neither can be proven safe to
+cache.
+
+### FunctionCalling schema revalidation
+
+`FunctionCalling._invoke` re-validates arguments after any pre-stage rewrite
+(hook layer or preprocessor) so a rewrite can never bypass the tool's declared
+schema. Keys outside the schema (e.g. an audit marker a preprocessor adds) are
+not covered by that validation — pydantic's default `extra="ignore"` would
+otherwise drop them from `model_dump`, so they are carried through untouched
+rather than silently discarded.
+
+"Outside the schema" is judged against the model's declared input names
+(field names + aliases), not against the *serialized* validated dump: a
+declared field that is aliased and left unset (e.g. `Field(default=0,
+validation_alias="a_alias")`) is absent from `model_dump(exclude_unset=True)`
+even though it is a real, schema-covered field. Classifying it as "extra"
+would let a preprocessor set it by name and forward the raw, unvalidated
+value straight to the callable — a schema bypass.
+
+### Graph adjacency cache
+
+`Graph.get_predecessors_cached` / `get_successors_cached` memoize plain-tuple
+adjacency lookups per node id until a mutator invalidates them
+(`add_edge`/`remove_edge`/`remove_node`/`replace_node`/`splice_after`). The
+existence check only runs on a cache miss — a cached entry is proof the node
+was valid when memoized, and `remove_node()` always clears its own cache
+entry in the same call that removes it from `internal_nodes`, so a stale hit
+past removal cannot occur.
+
+The result is a tuple, not a list: the memoized entry is the exact object
+handed back on every cache hit, so a mutable list would let one caller's
+in-place edit (append/clear/sort) corrupt what every other concurrent reader
+of the `Graph` sees — tuples make that aliasing hazard impossible rather than
+relying on callers to treat the result as read-only. This is also zero-copy
+on a cache hit. Cache snapshots are never modified after publication, so a
+hit only dereferences the current snapshot; misses take the graph lock and
+publish a copied snapshot after building the result, and mutators evict
+entries by the same copy-and-replace strategy under that lock, which prevents
+a concurrent miss from publishing stale adjacency.
+
+## service/
+
+### EndpointRegistry match
+
+`EndpointRegistry.match` finds and instantiates the best matching endpoint. A
+*registered* provider is never rejected: if `provider` names a canonical
+provider or provider-alias that some entry already claimed (via
+`register()`/`_claim_provider_identity`), a request for an endpoint that
+provider doesn't happen to expose falls through to the generic construction
+the same as an explicit opt-in would — the provider identity is not in
+question, only the specific endpoint name, so there is nothing to reject.
+`ProviderNotFoundError` is reserved for a `provider` string matching no
+registered provider or alias at all: the generic OpenAI-compatible fallback
+then only builds when `openai_compatible=True` is passed explicitly, or
+(deprecated migration path, warns) when a `base_url` kwarg is given — the
+same signal a caller already needs to point the fallback at a real custom
+host. Anything else raises `ProviderNotFoundError` naming the requested
+provider and every provider currently registered.
+
+### EndpointRegistry plugin revalidation
+
+`_revalidate_plugin_entry` keeps plugin entries available only while their
+declared target remains trusted. `PluginRegistry.activate_target()` rescans
+and rehashes every installed plugin on each call, not just this one — too
+expensive to pay on every `match()` hit against an endpoint that already
+activated cleanly. It only re-runs when the `PluginRegistry` snapshot
+generation has strictly advanced (a `reset()` happened), when this plugin's
+manifest, any declared path, or user settings source changed (see
+`_plugin_entry_stat`), or — when that stat signature still matches — when the
+entry's own content digest (see `_plugin_entry_digest`) no longer matches;
+otherwise it reuses the prior result.
+
+The stat signature alone is not a portable content-change guarantee:
+`os.utime()` restores a spoofed mtime after an edit, and on platforms where
+`st_ctime_ns` is not a metadata-change token (Windows CPython documents it as
+file *creation* time, which a content write or `os.utime()` never advances),
+a same-length in-place edit can leave the whole stat tuple looking unchanged.
+size and inode are free extra signal from the same `stat()` call and catch
+same-second same-mtime same-ctime edits and delete+recreate respectively, but
+a same-length in-place edit defeats size too. The content digest is only
+computed on that stat-stable path — the files plugins declare are small, so
+paying for the read there is cheap — and closes that hole on every platform:
+it always changes when the manifest or any declared capability file's bytes
+do. Whenever the stat tuple compares unchanged, revalidation confirms with
+the content digest before trusting it — that confirmation, not the stat
+tuple, is what makes the fast path safe to serve from cache.
+
+### MCPConnectionPool trust model
+
+`MCPConnectionPool` caches MCP clients keyed by transport identity AND the
+effective-security fingerprint (`security` if given, else the process-global
+policy set via `set_security_config()`, else the fail-closed default). This
+is the fix for cross-caller trust inheritance: a trusted call and a later
+omitted-policy call to the identical server can never resolve to the same
+cache entry, because their effective security differs and so does their key.
+A cache hit can then only ever return a client whose key already encodes the
+caller's own effective security — an omitted-policy call misses and goes
+through `_create_client`'s fail-closed validation instead of silently reusing
+another caller's connection.
+
+`get_client(security=None)` means the caller made no trust decision, and it
+never recovers a policy some other caller authorized for the same identity.
+Recovering a remembered policy is only reachable through
+`_get_reconnect_client`, which is capability-gated: it requires the exact
+`_MCPRecoveryCapability` instance minted for a proxy at authorization time
+(`MCPConnectionPool._mint_capability`) — not a config, not a server name, not
+an equal-content capability. A direct call, a stored bound method, a subclass
+alias, or a proxy rehydrated from persisted `mcp_config` all lack a live
+reference to that instance and fail closed with no recovery. This is
+deliberately not part of `get_client`'s public contract: `create_mcp_tool`'s
+stored callable is the only caller, re-entering a transport its own closure
+already holds the capability for.
+
+### HookedEvent stream teardown contract
+
+`HookedEvent._stream` runs the pre-hook, yields chunks from `_core_stream()`,
+then runs the post-hook. The post-hook runs however the stream ends —
+exhaustion, a source error, an early-stopping consumer, or cancellation — and
+`stream_terminal_state` says which of those it was. Whatever ended the stream
+still propagates unchanged; post-hook failures are logged, never raised.
+
+Guaranteed: the caller receives the very same exception object the stream
+ended with, not a replacement, no matter how the teardown fails. Deliberately
+not guaranteed: a cancellation actually delivered to the consuming task while
+teardown is running is not swallowed — it reaches the caller in place of
+whatever the stream ended with, because a task that was cancelled from
+outside must not come back believing it was not. On a stream that was itself
+ended by cancellation, the source is re-raised instead, since the consumer
+stays cancelled either way. Off asyncio the two kinds of cancellation cannot
+be told apart at all and both propagate.
+
+A consumer that stops early is responsible for closing the stream, with
+`aclose()` or `contextlib.aclosing`. A bare `break` does not close the
+generator it was iterating, so teardown is deferred to whenever the
+interpreter finalizes the abandoned generator — it still runs, and still
+reports the closed state, but not at a point the consumer picked, and during
+interpreter or loop shutdown the grace bound (`POST_STREAM_TEARDOWN_GRACE`)
+can cut it short.
+
+`_invoke_post_stream_hook_isolated` runs the post-hook in a child task that
+captures whatever ends it and returns it instead of raising, so that task can
+never end cancelled because of something the hook did — a cancellation
+surfacing at the await afterward then has exactly one possible origin
+(delivery to this task) and is honored: the hook's task is cancelled, given
+`POST_STREAM_HOOK_STOP_GRACE` seconds to stop, and the cancellation
+propagates. A hook that will not stop within that grace is abandoned:
+reported at WARNING and left running, held so it is not destroyed mid-await
+while the program is still going.

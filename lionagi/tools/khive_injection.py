@@ -250,14 +250,10 @@ class KhiveInjectionProvider:
         truncated = _truncate(text, cap)
         if not truncated:
             return None
-        # Recalled content originates from prior (possibly attacker-influenced)
-        # tool output and repo content; wrap it as clearly-labeled untrusted
-        # reference material so it cannot be mistaken for an instruction.
-        # Two layers keep the wrapper from being escaped: (1) any literal
-        # closing-tag substring inside the recalled text is neutralized so it
-        # can't terminate the block early, and (2) a per-call random nonce on
-        # both tags means even an attacker who knows this scheme can't guess
-        # the string that will actually close the block.
+        # Recalled content may be attacker-influenced, so it's wrapped as
+        # untrusted: the closing tag is neutralized inside the text and a
+        # per-call random nonce is required to actually close the block. See
+        # docs/internals/agent-runtime.md#untrusted-recall-wrapper.
         neutralized = _UNTRUSTED_CLOSE_RE.sub(r"<\\/untrusted-context", truncated)
         nonce = uuid.uuid4().hex[:16]
         return (

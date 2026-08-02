@@ -425,34 +425,22 @@ async def flush_run_telemetry(
 ) -> dict[str, Any] | None:
     """Compute and persist one run's coordination telemetry exactly once,
     riding the invocation's own terminal write (engine.py calls this only
-    after its own ``_guarded_terminal_status("invocation", ...)`` returns
-    True -- the same guard that makes that write itself land exactly once,
-    see the four `_fire_inner` terminal sites).
+    after its own terminal-status guard returns True).
 
-    Pulls the bus's accumulated signal counters for *run_id* (popping them
-    -- see ``SchedulerSignalBus.pop_run_counters``) and the invocation's
-    files-read overlap across its child sessions, then merges both under a
-    ``"coordination"`` key in ``invocations.node_metadata`` (a
-    read-modify-write, since ``update_invocation`` replaces node_metadata
-    wholesale rather than merging it). *bus* is typed ``Any`` to avoid a
-    scheduler.signals import here; it only needs ``pop_run_counters``.
+    Pulls the bus's accumulated signal counters for *run_id* (popping them,
+    see ``SchedulerSignalBus.pop_run_counters``) and the invocation's
+    files-read overlap, merging both under a ``"coordination"`` key in
+    ``invocations.node_metadata`` (read-modify-write, since
+    ``update_invocation`` replaces node_metadata wholesale).
 
-    Returns the telemetry dict that was persisted, or ``None`` when there
-    is nothing to report at all (no signal ever emitted for this run_id AND
-    no file overlap) -- a schedule action that never touches the signal bus
-    or the files-read pattern leaves node_metadata untouched, matching the
-    "measure-only" surfacing rule (the CLI/monitor summary lines only print
-    when non-zero).
+    Returns the persisted telemetry, or ``None`` when there's nothing to
+    report (no signal emitted and no file overlap) -- node_metadata is left
+    untouched to match the measure-only surfacing rule.
 
-    Best-effort: this rides an already-committed terminal write, so a
-    failure computing overlap or persisting node_metadata must never
-    propagate back into the caller and be mistaken for (or alter) that
-    run's actual outcome. Any such failure is logged and swallowed, and the
-    counters already popped above are lost with it rather than retried --
-    telemetry is measure-only, not authoritative state. Cancellation
-    (``asyncio.CancelledError`` and any other backend's cancellation
-    exception) is a ``BaseException``, not an ``Exception``, so it is never
-    caught here and always propagates.
+    Best-effort: rides an already-committed terminal write, so a failure
+    computing overlap or persisting node_metadata is logged and swallowed
+    rather than propagated or retried. Cancellation still propagates, since
+    it's a ``BaseException``, not an ``Exception``.
     """
     signals = bus.pop_run_counters(run_id)
     try:

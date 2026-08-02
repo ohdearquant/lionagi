@@ -39,11 +39,9 @@ class IssueFound(Finding):
 class DimensionClean(EngineEvent):
     """Reviewer's affirmative all-clear for one dimension; no casts twin.
 
-    A separate type rather than a sentinel IssueFound: IssueFound extends
-    Finding, so a severity="none" sentinel would surface as a phantom finding
-    to every by_type(Finding) consumer. With this event, a dimension that
-    emits nothing is a transport failure, never a verdict — silence and
-    "reviewed, clean" are distinguishable downstream.
+    A separate type rather than a sentinel IssueFound, so a "clean" dimension
+    never surfaces as a phantom finding to a by_type(Finding) consumer, and
+    silence stays distinguishable from an affirmed clean.
     """
 
     dimension: str = Field(description="The review lens that found no concrete problems.")
@@ -107,11 +105,8 @@ def _verify_key(issue: IssueFound) -> str:
 def _verify_ref(issue: IssueFound) -> str:
     """Short engine-assigned token the verifier echoes back (``ref='V-1a2b3c4d'``).
 
-    Arrival detection keys on this instead of a verbatim echo of the issue
-    description: the description is long free text the model routinely
-    paraphrases, and every paraphrase failed the old exact match and burned
-    repair rounds on emissions that had in fact arrived. A fixed short token
-    is echoable exactly — the same shape as the judge's ``subject='{eid}'``.
+    Arrival detection keys on this rather than a verbatim echo of the (long,
+    paraphrase-prone) issue description.
     """
     return f"V-{hashlib.sha256(_verify_key(issue).encode()).hexdigest()[:8]}"
 
@@ -197,19 +192,9 @@ class ReviewEngine(Engine):
     async def _partial_export(  # type: ignore[override]
         self, run: EngineRun, artifact: str, *, dimensions: tuple[str, ...] | None = None
     ) -> str:
-        """Return an already-computed verdict after budget/deadline exhaustion
-        instead of discarding it.
+        """Return an already-computed verdict after budget/deadline exhaustion instead of discarding it.
 
-        A synthesis agent's structured emission is captured onto the session
-        bus via the branch's async signal-emission side channel (on_message_
-        added -> fire-and-forget emit_message()) independently of whether the
-        ``synth.operate()`` call in ``_verdict`` itself ever returns — so a
-        ReviewVerdict can already exist in ``run.by_type(ReviewVerdict)`` even
-        though the deadline watchdog cancelled ``_run_task`` before ``_verdict``
-        reached its ``return`` statement (e.g. a CLI-backed worker still
-        retrying its emission). The base ``Engine._partial_export`` no-op
-        would silently drop that verdict; this surfaces it, flagged via the
-        normal EngineResult degrade signal.
+        See docs/internals/providers.md#review-engine-partial-export-on-deadline.
         """
         verdicts = run.by_type(ReviewVerdict)
         if not verdicts:

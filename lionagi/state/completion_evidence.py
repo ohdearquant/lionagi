@@ -74,8 +74,6 @@ def check_completion_evidence(
     if rc != 0:
         return _no_evidence("cwd is not a git working tree")
 
-    # A probe failure (transient error, timeout) must never read as "ran and found
-    # nothing" — any decisive failure bails out as unchecked, not false-empty.
     rc, status_out = _run_git(cwd, ["status", "--porcelain"])
     if rc != 0:
         return _no_evidence("git status probe failed")

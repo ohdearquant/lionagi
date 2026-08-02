@@ -20,6 +20,13 @@ now carries a 1-2 line pointer; this file carries the substance. Organized by mo
   rejects any write statement) are set. SQLite only — a genuinely read-only Postgres
   connection should use a read-only DB role instead; there is no equivalent "connect without
   side effects" mode to fake at this layer for Postgres.
+- `has_wal_reset_fix()` — SQLite documents a data race between a starting checkpoint and a
+  commit that resets the WAL file: the checkpoint misses the reset, mis-sets a WAL-index
+  header field, and a later checkpoint then skips part of the committed transaction,
+  corrupting the database. It reaches every WAL-mode release from 3.7.0 up to and including
+  3.51.2, fixed in 3.51.3 with backports on the 3.44 and 3.50 branches. Exposure needs two
+  connections writing or checkpointing at the same instant, which is exactly what this store
+  does — hence the startup warning when an unfixed SQLite is linked.
 
 ### `state/health.py`
 
@@ -228,6 +235,100 @@ StateDB/legacy-transition compatibility mapping (`adapters`).
   apply, then finalize — a crash surfaces as an unapplied `'applying'` row
   rather than risking a double injection). `'stop'` is schema-reserved and
   rejected by the current poller as unsupported; no CLI verb emits it yet.
+- `policy.py`'s `ImmutableEdgeMap` — deliberately not a `dict` subclass: dict's
+  C-level mutators reach the underlying storage without going through
+  Python-level overrides (`dict.__setitem__(m, ...)`, inherited `__ior__`,
+  re-invoking `__init__`), so a subclass can never actually guarantee
+  immutability. Wrapping a private dict behind the `Mapping` interface leaves
+  no inherited mutation surface at all — no `__setitem__`, `update`, or
+  `__ior__` to reach, and re-invoking `__init__` is refused — while
+  `pickle`/`copy.deepcopy` still round-trip via `__reduce__` (reconstructing
+  through the constructor) and `dataclasses.asdict()` deep-copies the map
+  rather than raising. `PolicyRegistry.register()` wraps every policy's edge
+  map this way before storing, so a caller holding a policy from `get()`
+  cannot mutate global transition behavior for the process.
+- `notify_settings.py` stderr/argv redaction contract — a `notify.on_terminal`
+  adapter's argv routinely carries secrets (webhook URLs, tokens passed as
+  args), and its stderr is adapter-controlled free text whose most common leak
+  shape is the adapter echoing its own invocation back on failure. No surface
+  (warn-channel line, persisted `notify_outcome.json`, or the log) carries raw
+  argument values or an unfiltered stderr line: adapters are identified by
+  `argv[0]`'s basename, and any argument value appearing verbatim in a stderr
+  or exception snippet is replaced (longest values first, so a substring never
+  leaves a partial value behind) before that snippet goes anywhere. This is
+  not a general secret scanner — a secret the adapter obtains elsewhere and
+  prints cannot be recognized. Argument values shorter than
+  `MIN_REDACTABLE_ARG_LEN` (4 chars) are never redacted, since replacing them
+  would corrupt unrelated text (a bare `-v` or `0` occurs everywhere). Raw
+  adapter stderr is captured to an owner-only file and referenced by path
+  instead of surfacing directly, for the same reason.
+- `notify_settings.py`'s `register_run_notify_outcome_scope()` — returning
+  `None` says only that nothing was registered; a notifier this run asked for
+  and could not have is recorded onto the run before returning (an
+  unsuccessful outcome carrying the reason). The two benign cases — nothing
+  configured, and this entity excluded by the configured filter — write
+  nothing, which is what tells them apart from a refusal. The scoped
+  registration is an override, so it dispatches on its own match rather than
+  deferring to the process-wide registration's filter, and therefore
+  re-applies the configured filter itself.
+
+### `state/artifact_verifier.py`
+
+- `_resolve_produced()` — an entry naming a directory is matched exactly. A
+  bare filename is matched at the root first, then in any immediate
+  subdirectory: in a multi-agent run each worker writes into its own
+  subdirectory, and which worker produces a given artifact is decided when the
+  plan is cast, so the author of a playbook contract cannot name that
+  directory in advance — requiring one would make a bare filename impossible
+  to satisfy. Declaring *what* is expected and knowing *who* produces it are
+  held by different parties; only the first belongs in the contract.
+  Subdirectories are searched in sorted order, so a filename produced by more
+  than one worker resolves to the same one on every run rather than to
+  whatever the filesystem happened to list first.
+
+### `state/reasons.py`
+
+- `ScheduleReasons` — the `schedule.skipped.` prefix is **not** the full set of
+  reasons a skipped `schedule_run` can carry. `DEFERRED_CAPACITY` and
+  `BUDGET_EXHAUSTED` land on skipped rows without that prefix, and a third
+  path — the task-admission path — stamps a `schedule_run` to `skipped` with
+  the admission decision's own code, falling back to
+  `RunReasons.SKIPPED_WAITER_CAP_EXCEEDED`. No enumeration here can be closed:
+  the admission writer takes its code from a decision object rather than a
+  literal, and the only bound anywhere in the system is `VALID_REASON_CODES`,
+  the union across every reason class in this module. A consumer filtering
+  skipped rows by the `schedule.skipped.` prefix silently drops capacity
+  deferrals, budget exhaustion, and admission rejections.
+  - `SKIPPED_OVERLAP` — stamped when a fire arrives while the previous run of
+    the same schedule is still going.
+  - `SKIPPED_MISSED_FIRE` — stamped for a fire whose due instant passed while
+    the scheduler was not running, on a schedule whose missed-fire policy is
+    not to run it late. Detection is once per process start, not continuous —
+    the missed-fire sweep runs in the tick loop's preamble, before the loop
+    begins, and never again for the life of the process. A scheduler that
+    stalls while still running records nothing at all. The row's timestamp is
+    therefore bounded by time-to-restart, not by tick interval — closer to a
+    restart timestamp than a detection latency, and not comparable to a fired
+    row's lateness.
+  - `SKIPPED_PRECONDITION` — no code path evaluates a precondition and stamps
+    this; it is the default reason attached to a `schedule_run` that moves to
+    `skipped` without an explicit code, so in practice it means "skipped, and
+    the writer gave no reason." Treating it as evidence a precondition was
+    checked and failed is reading a fallback as a finding.
+  - `DEFERRED_CAPACITY` — same kind of trap: these rows are sampled, not
+    one-per-event. The scheduler counts every deferral and records only the
+    first, then one every N deferrals after that (N is a scheduler-module
+    constant), so sustained saturation does not flood `schedule_runs`.
+    Counting these rows undercounts deferrals, and a row's timestamp is the
+    sampled deferral's rather than the first one's in that stretch.
+
+### `state/schema.sql` / `state/schema_migrations.py`
+
+- The `first_msg_id`/`last_msg_id`/`system_msg_id` message-pointer indexes —
+  measured on a 3.9 GB store, indexing these columns took a message delete
+  from 8.47 ms/row to 0.86 ms/row. Not partial indexes: the search SQLite runs
+  for a foreign key is not the query planner's, and only a plain index is
+  certain to serve it.
 
 ## lionagi/plugins/registry.py
 

@@ -123,12 +123,9 @@ async def _run_round_chat(
     chat_param: ChatParam,
 ) -> str:
     """Run one inner-chat turn, dispatching to communicate() (API) or run_and_collect() (CLI) — mirrors operate()'s own selection."""
-    # A model carried on the chat param overrides the branch default for this
-    # call, so transport must follow the effective model's CLI flag rather than
-    # the branch's — the same precedence chat() and operate() apply.
-    # Decided on sentinel status rather than truthiness: the parameter bag
-    # stores whatever the caller supplied, so a model object that defines
-    # __bool__ as False is still a supplied model and must win.
+    # Transport follows the effective model's CLI flag, same precedence as
+    # chat()/operate(). Sentinel status, not truthiness, decides "supplied" —
+    # a model whose __bool__ is False must still win over the branch default.
     effective_imodel = (
         branch.chat_model if chat_param._is_sentinel(chat_param.imodel) else chat_param.imodel
     )

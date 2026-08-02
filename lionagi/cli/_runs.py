@@ -860,25 +860,10 @@ async def teardown_persist(
             except Exception:  # noqa: BLE001, S110
                 pass
 
-            # BRANCH_END: finalize terminal status/ended_at for every branch
-            # this teardown owns. The single-branch agent path (ctx["branch"])
-            # never gets branches.status written anywhere else, so this is its
-            # only finalize. The multi-leg DAG path (ctx["hooks"]) already gets
-            # per-op status from flow.py's NodeCompleted/NodeFailed handlers;
-            # this is the safety net for legs that never reached a terminal
-            # signal (queued-but-never-started, or still "running" when the
-            # DAG itself raised) -- persist_branch_end()/finalize_branch()'s
-            # own guard skips any branch a per-op writer already finalized.
-            #
-            # final_status is only ever a genuine terminal outcome
-            # (SESSION_TERMINAL_STATUSES) EXCEPT for one case: the
-            # linked-engine reconciliation above suppresses a phantom
-            # "failed" back to "running" when the real engine session is
-            # still alive -- this teardown's own view of the branch is not
-            # actually done. Never emit BRANCH_END for that case; a branch
-            # must never be stamped "ended" with a non-terminal status.
-            # finalize_branch() also rejects a non-terminal status outright,
-            # so this is belt-and-suspenders, not the only guard.
+            # BRANCH_END safety net for legs that never reached a terminal
+            # signal; finalize_branch()'s own guard skips branches a per-op
+            # writer already finalized. See docs/internals/cli.md#_runspy-agent-session-setupteardown-adr-0035
+            # for why final_status must stay a genuine terminal outcome here.
             from lionagi.state.db import SESSION_TERMINAL_STATUSES
 
             if final_status in SESSION_TERMINAL_STATUSES:
@@ -1066,18 +1051,11 @@ async def _reopen_session_for_resume(db, session_id: str, existing_session: dict
         # already describes the session correctly, so there is nothing to reopen.
         return False
 
-    # Liveness is judged from the process markers on the row, and a reopened
-    # session used to carry the markers of the leg that already exited. A
-    # terminal session is never checked for liveness, so those markers were
-    # harmless while it was terminal; a running one is checked, so leaving them
-    # would describe this live leg by a dead process. They move in the same
-    # transaction as the status: the sweeps select on status and then answer
-    # "is it alive" from these markers, so a row that is running for even an
-    # instant with the previous leg's markers is a row they can cancel.
-    # Anything that is not a JSON object is dropped rather than raised on: every
-    # reader of this column already ignores what it cannot read as one, and a
-    # resume must not fail on its own bookkeeping. The markers are the part that
-    # has to be right.
+    # Process-liveness markers move in the same transaction as the status
+    # update below: a running row must never carry the previous (exited)
+    # leg's markers, or a liveness sweep could cancel this live leg.
+    # node_metadata is dropped rather than raised on if unreadable — a resume
+    # must not fail on its own bookkeeping.
     node_metadata = existing_session.get("node_metadata")
     if isinstance(node_metadata, str):
         try:

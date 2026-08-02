@@ -2,31 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Typed schedule_run outcome signals and a handler registry for the scheduler daemon.
 
-Mint site: ``SchedulerEngine._fire_inner()``, immediately after each of the
-three ``_guarded_terminal_status("schedule_run", ...)`` calls returns
-``True`` — the one choke point every scheduled run's terminal write already
-passes through (in-process, synchronous with the commit, no polling
-latency). This module stays agnostic about *where* that mint happens: the
-signal classes and :class:`SchedulerSignalBus` only need the same
-status/reason_code/entity_id fields a generic post-commit hook on
-``LifecycleService.transition()`` would eventually carry, so promoting the
-mint site later is a call-site move, not a redesign of this module.
-
-``LifecycleService`` and ``StateDB`` schema are untouched by this module —
-it is scheduler-local, imitating the shape of the existing in-run DAG
-signal bus (``lionagi.session.signal`` / ``lionagi.session.observer``)
-without reusing its Flow/route/stream machinery, none of which a scheduler
-daemon process needs (``schedule_runs`` is already the durable record).
-
-Failure semantics: :meth:`SchedulerSignalBus.emit` never swallows a handler
-exception. Handlers run concurrently with ``return_exceptions=True``; any
-failures are raised together as an :class:`ExceptionGroup` after every
-handler has had a chance to run. A handler-raised ``CancelledError`` cannot be
-nested in ``ExceptionGroup``, so it is surfaced as the distinct
-``SchedulerHandlerCancelled`` marker. The mint call site (``engine.py``)
-records either form. Cancellation of the emitter task remains a plain
-``CancelledError`` and propagates, so a broken handler is visible without
-stopping unrelated schedules or swallowing scheduler shutdown.
+Scheduler-local sibling of ``lionagi.session.signal``/``observer``, without
+their Flow/route/stream machinery (``schedule_runs`` is already the durable
+record). See docs/internals/studio.md#lionagistudioschedulersignalspy for
+the mint site and failure-propagation contract.
 """
 
 from __future__ import annotations
@@ -119,15 +98,7 @@ def build_schedule_run_signal(
     trigger_context: dict | None = None,
     error_detail: str = "",
 ) -> Signal:
-    """Mint the ``ScheduleRun*`` signal matching *new_status*.
-
-    ``entity_id``, ``new_status``, and ``reason_code`` are exactly the
-    fields every ``_guarded_terminal_status()`` caller already has in hand
-    (the same fields a generic transition post-commit hook would receive);
-    ``schedule_id``/``action_kind``/``chain_depth``/``trigger_context`` are
-    scheduler-local enrichment the call site supplies today from its own
-    locals, not from the transition outcome itself.
-    """
+    """Mint the ``ScheduleRun*`` signal matching *new_status*."""
     cls = _SIGNAL_BY_STATUS.get(new_status)
     if cls is None:
         raise ValueError(f"no schedule_run signal registered for status {new_status!r}")
@@ -146,20 +117,13 @@ def build_schedule_run_signal(
 
 @dataclass
 class _RunSignalCounters:
-    """Per-``run_id`` coordination counters, accumulated across every signal
+    """Per-``run_id`` coordination counters accumulated across every signal
     :meth:`SchedulerSignalBus.emit` dispatches for that run.
 
-    ``emitted`` is a signal-type-name histogram: today's mint site fires
-    exactly one terminal ``ScheduleRun*`` signal per run (see
-    ``engine.py._fire_inner``), so in practice every value is 1, but the
-    histogram shape survives a future run minting more than one signal
-    without a counter-shape change. ``received`` counts deliveries where a
-    subscription's types AND predicates both matched (regardless of what
-    the handler returned or whether it raised); ``acted_on`` counts only
-    the subset where the handler additionally returned a truthy "acted"
-    marker — the opt-in convention that keeps this measure-only (no
-    handler is required to participate; a non-participating handler simply
-    contributes to ``received``, never to ``acted_on``).
+    ``received`` counts deliveries where type and predicates both matched;
+    ``acted_on`` counts the subset where the handler additionally returned a
+    truthy "acted" marker (opt-in; non-participating handlers stay
+    received-only).
     """
 
     emitted: dict[str, int] = field(default_factory=dict)
@@ -178,19 +142,12 @@ class SchedulerSignalBus:
     """Stripped-down sibling of :class:`~lionagi.session.observer.SessionObserver`.
 
     Only ``observe``/``unobserve``/``emit`` — no ``Flow``/``Progression``
-    storage, no ``route()``/``stream()``, no DB auto-persistence; the
-    ``schedule_runs`` table is already the durable record for what these
-    signals describe. Matching is ``isinstance``-based against any ``type``
-    key, AND-composed with any callable predicate keys (e.g. filtering on
-    ``reason_code``) — no topic/pattern machinery.
-
-    Also accumulates per-``run_id`` coordination counters (signals
-    emitted/received/acted-on — see :class:`_RunSignalCounters`) so a
-    caller can report them at that run's finalize via
-    :meth:`pop_run_counters`. The bus itself is the least invasive place to
-    keep them: it already sees every signal and every handler dispatch, and
-    it requires no change to the handler API (``observe``/the ``Handler``
-    signature are untouched).
+    storage, no ``route()``/``stream()``, no DB auto-persistence (the
+    ``schedule_runs`` table is already the durable record). Matching is
+    ``isinstance`` against any ``type`` key, AND-composed with any callable
+    predicate keys — no topic/pattern machinery. Also accumulates
+    per-``run_id`` coordination counters (see :class:`_RunSignalCounters`),
+    read back via :meth:`pop_run_counters`.
     """
 
     def __init__(self) -> None:
@@ -201,12 +158,9 @@ class SchedulerSignalBus:
         """Remove and return *run_id*'s accumulated signal counters as a
         plain dict, or ``None`` if no signal was ever emitted for it.
 
-        Pop, not peek: the bus is a long-lived per-daemon singleton (one
-        per :class:`SchedulerEngine`, spanning every schedule it ever
-        fires), so counters must not accumulate for the process's whole
-        lifetime past the one terminal flush each run_id gets (see
-        ``lionagi.studio.services.scheduler_state.flush_run_telemetry``,
-        the intended sole caller).
+        Pop, not peek: the bus is a long-lived per-daemon singleton, so
+        counters must not accumulate past the one terminal flush each
+        run_id gets (see ``services.scheduler_state.flush_run_telemetry``).
         """
         counters = self._counters.pop(run_id, None)
         return counters.to_dict() if counters is not None else None
@@ -227,29 +181,20 @@ class SchedulerSignalBus:
     async def emit(self, signal: Signal) -> list[Any]:
         """Dispatch *signal* to every matching handler.
 
-        Type matching (``isinstance`` against a subscription's registered
-        types) happens up front to select candidate subscriptions — it is
-        cheap and cannot raise. Predicate matching happens *inside* the same
-        protected region as handler invocation, gathered concurrently with
-        ``return_exceptions=True``: a predicate that raises becomes a
-        collected dispatch failure exactly like a handler exception, rather
-        than aborting ``emit()`` before sibling subscriptions ever run. Any
-        failures are raised together as one :class:`ExceptionGroup` once
-        every candidate has had a chance to run — never a blanket
-        ``except Exception: pass``.
-
-        ``asyncio.CancelledError`` (and any other non-``Exception``
-        ``BaseException``) is excluded from that group — the stdlib
-        ``ExceptionGroup`` cannot nest a bare ``BaseException``. A handler
-        cancellation is therefore re-raised as ``SchedulerHandlerCancelled``
-        so the mint site can record it without confusing it with cancellation
-        of the task that is running ``emit``.
+        Type matching happens up front to select candidates; predicate
+        matching happens inside the same protected region as handler
+        invocation, gathered concurrently with ``return_exceptions=True`` so
+        one raising predicate/handler doesn't abort dispatch to the rest.
+        Failures raise together as one :class:`ExceptionGroup` once every
+        candidate has run. ``CancelledError`` can't nest in an
+        ``ExceptionGroup``, so a handler cancellation is re-raised as
+        ``SchedulerHandlerCancelled`` instead, distinct from cancellation of
+        the task running ``emit`` itself.
         """
         candidates = [entry for entry in self._subs if not entry[0] or isinstance(signal, entry[0])]
 
-        # Emitted counts regardless of whether any handler is even
-        # listening -- it describes what the mint site dispatched, not
-        # what got delivered (that's `received`, below).
+        # Counts regardless of whether any handler is listening -- describes
+        # what was dispatched, not what got delivered (`received`, below).
         run_id = getattr(signal, "run_id", "") or ""
         if run_id:
             counters = self._counters.setdefault(run_id, _RunSignalCounters())
@@ -265,17 +210,13 @@ class SchedulerSignalBus:
             _types, predicates, handler = entry
             if not all(pred(signal) for pred in predicates):
                 return _NO_MATCH
-            # Received: candidate matched (isinstance, above) AND every
-            # predicate passed -- counted before invocation so a handler
-            # that raises still counts as delivered, just not acted-on.
+            # Counted before invocation so a raising handler still counts as
+            # delivered, just not acted-on.
             if run_id:
                 self._counters[run_id].received += 1
             out = handler(signal)
             if inspect.isawaitable(out):
                 out = await out
-            # Acted-on: the opt-in truthy-return convention (see
-            # _RunSignalCounters docstring) -- a non-participating handler
-            # returning None/falsy stays received-only.
             if run_id and out:
                 self._counters[run_id].acted_on += 1
             return out
@@ -318,10 +259,8 @@ def _log_schedule_run_failed(signal: ScheduleRunFailed) -> None:
 def register_default_handlers(bus: SchedulerSignalBus) -> None:
     """Register the scheduler daemon's default signal handlers on *bus*.
 
-    Production wiring calls this once at daemon startup (see the module-level
-    ``scheduler`` singleton in ``engine.py``). The one registered handler
-    today is a log-only proof of the API, not a product feature — this
-    function is the single place future default handlers get added.
+    Called once at daemon startup. The one handler today is a log-only proof
+    of the API, not a product feature.
     """
     bus.observe(ScheduleRunFailed, handler=_log_schedule_run_failed)
 
@@ -329,14 +268,10 @@ def register_default_handlers(bus: SchedulerSignalBus) -> None:
 async def record_handler_failure(exc_group: BaseException, signal: Signal) -> None:
     """Write a durable ``admin_events`` row describing a handler-dispatch failure.
 
-    Called by the mint call site after :meth:`SchedulerSignalBus.emit` raises
-    an :class:`ExceptionGroup` or handler-originated cancellation — the schedule_run/invocation row is already
-    committed by the time this runs, so a failure here never corrupts that
-    write; it only means the diagnostic record itself couldn't be persisted,
-    which is logged and swallowed the same way ``bind_db_persistence``'s
-    best-effort persistence is (session/observer.py) — a narrow, deliberate
-    exception for exactly this one built-in recorder, not the general
-    handler-dispatch contract above.
+    Called after :meth:`SchedulerSignalBus.emit` raises. The schedule_run
+    row is already committed by the time this runs, so a failure here only
+    means the diagnostic itself couldn't be persisted -- logged and
+    swallowed, same as ``bind_db_persistence``'s best-effort write.
     """
     from lionagi.state.db import StateDB  # noqa: PLC0415
 

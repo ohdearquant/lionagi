@@ -43,25 +43,17 @@ LI_BIN_ENV_VAR = "LIONAGI_MCP_LI_BIN"
 def li_command() -> list[str]:
     """Return the argv prefix that invokes the ``li`` CLI.
 
-    The server runs inside lionagi's own environment, so the CLI it spawns is
-    the one installed alongside the running interpreter — no working-tree
-    hunting, no dependency resync on spawn. Resolution order:
-
-      1. ``LIONAGI_MCP_LI_BIN`` (explicit override, split on whitespace). Used
-         verbatim, so a value that is not an absolute path is resolved by the
-         OS through ``PATH`` like any other bare command.
-      2. The ``li`` console script next to ``sys.executable`` (same venv/bin),
-         invoked by absolute path so it never depends on ``PATH``.
-      3. ``<this-interpreter> -m lionagi.cli`` as a last resort.
+    Resolution order: 1) ``LIONAGI_MCP_LI_BIN`` override, split on whitespace;
+    2) the ``li`` console script next to ``sys.executable``, by absolute path;
+    3) ``<this-interpreter> -m lionagi.cli`` as a last resort.
     """
     override = os.environ.get(LI_BIN_ENV_VAR)
     if override:
         return override.split()
 
-    # A venv's bin/python is a symlink to the base interpreter, so resolving it
-    # before looking for the sibling script searches the base installation's
-    # bin and misses the `li` the venv itself installed. Try the interpreter's
-    # own directory first, and the resolved one only as a fallback.
+    # A venv's bin/python symlinks to the base interpreter, so try the
+    # interpreter's own directory before the resolved (base install) one, or
+    # this would miss the `li` the venv itself installed.
     interpreter = Path(sys.executable)
     for bindir in (interpreter.parent, interpreter.resolve().parent):
         bin_li = bindir / "li"

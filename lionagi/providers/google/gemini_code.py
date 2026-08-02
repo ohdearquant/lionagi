@@ -269,15 +269,12 @@ def _validate_print_timeout(value: str) -> str:
 
 
 def format_print_timeout(seconds: int | float) -> str:
-    """Format a seconds value as a Go duration `agy` will parse."""
-    # Whole seconds only, and bounded at both ends of what Go can represent.
-    # General float formatting reaches scientific notation for large values
-    # ("1e+06"), an unbounded value overflows Go's int64 nanoseconds, and a
-    # non-finite one cannot be converted to an integer at all. Every one of
-    # those ends the same way: a cap agy cannot parse, so the run fails with
-    # agy's own uninformative timeout error, which is the failure this whole
-    # path exists to stop producing. Asking for longer than Go can express is
-    # asking for as long as possible, so it clamps rather than raising.
+    """Format a seconds value as a Go duration `agy` will parse.
+
+    Clamps rather than raising: scientific notation, an unbounded value, or a
+    non-finite one would all produce a cap agy can't parse and fails on with
+    its own uninformative timeout error.
+    """
     if math.isnan(seconds) or seconds == math.inf or seconds >= _MAX_GO_DURATION_SECONDS:
         return f"{_MAX_GO_DURATION_SECONDS}s"
     if seconds == -math.inf:
@@ -516,18 +513,15 @@ async def stream_gemini_cli(
                     session.duration_ms = int(float(duration) * 1000)
                 session.is_error = status not in ("SUCCESS", "")
 
-                # A success carrying no content cannot be distinguished from a
-                # turn whose tool calls were all denied: headless print mode has
-                # no way to prompt for a tool permission, so it auto-denies and
-                # still reports SUCCESS. Passing that through as an empty answer
-                # fails open, which is the worst direction here — a caller using
-                # this engine for verification reads silence as assent.
+                # A success with no content is indistinguishable from a turn whose
+                # tool calls were all auto-denied (headless mode can't prompt for
+                # permission), so treat it as an error rather than fail open.
                 empty_success = not session.is_error and not response
                 if empty_success:
                     session.is_error = True
 
-                # Session id must be captured before the error branch — a failed
-                # turn can still report a live conversation id to resume into.
+                # Captured before the error branch: a failed turn can still report
+                # a live conversation id to resume into.
                 if session.session_id:
                     sys_sc = StreamChunk(
                         type="system",
@@ -549,10 +543,8 @@ async def stream_gemini_cli(
                             msg = f"{msg} CLI error: {cli_error}"
                         session.result = msg
                     else:
-                        # Error chunk leads with status, not delivered content — a degraded
-                        # termination after a complete response would otherwise impersonate it.
-                        # `error` is preferred over `response`: agy reports the cause there
-                        # and commonly leaves `response` empty on a failed turn.
+                        # Leads with status, not delivered content, so a degraded
+                        # termination doesn't impersonate a complete response.
                         detail = cli_error or response[:500]
                         msg = f"agy returned status={status or 'UNKNOWN'}"
                         if detail:

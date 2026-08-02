@@ -2,60 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """ADR-0071 D3: the ``admit()`` admission seam.
 
-Extracts the worker claim loop's admission predicate into one named,
-StateDB-backed, unit-testable function: ``admit(row, worker, db) ->
-AdmissionDecision``. This borrows ``Processor.handle_denied``'s
-terminal-vs-deferred return *shape* only (``lionagi/protocols/generic/
-processor.py``: ``True`` means terminal, ``False`` means deferred/re-enqueue),
-never the ``Processor`` class itself -- ``Processor`` is ``asyncio.Queue``-backed
-and in-process only, which would only ever see jobs submitted inside its own
-process and is useless for a fleet of independent CLI processes claiming from
-a shared ``schedule_runs`` table.
-
-Conditions evaluated (ADR-0071 D3):
-
-1. Capability match (``capabilities.worker_can_serve``) -- a mismatch defers
-   (the row is left ``queued``, never faked; unchanged D4 behavior).
-2. Concurrency-key block -- a matching key currently ``running`` (this pass
-   or a prior one) defers the row to the next tick; unchanged D4 behavior.
-3. Waiter cap (D-Cap) -- per ``concurrency_key``, at most
-   ``key_concurrency * waiter_cap_multiplier`` rows may sit ``queued`` /
-   ``retry_wait`` behind a running holder. Over cap is a terminal rejection
-   unless the submission opted into deferred/parked semantics (D-Reject).
-4. Duration guard (D6) -- a job declaring a ``max_duration_seconds`` at or
-   above the worker's lease TTL is terminal-rejected: lease renewal is not
-   yet shipped (ADR-0071 delta #5), so an admitted long-runner would just
-   lose its lease mid-flight.
-
-GPU/bench-window locks are never consulted here: ``admit()`` only ever reads
-StateDB. Machine-local lock acquisition and arbitration stay a worker-side
-execution responsibility (ADR-0071 D5's own stated limit, reaffirmed by D3).
-
-``action_args["admission"]`` payload convention (documented shape inside the
-existing free-form ``args``/``action_args`` dict, no schema change -- the
-same style as D5's ``SeatSpec`` convention):
-
-    {
-        "max_duration_seconds": <float>,       # duration guard input
-        "allow_deferred_over_cap": <bool>,     # opt out of terminal rejection
-                                                # when the waiter cap is hit
-        "notify": {
-            "deliver_to": <str>,                # required, non-empty
-            "kind": <str>,                      # optional, default "terminal_notify"
-            "dedup_key": <str | None>,          # optional
-        },
-    }
-
-A ``notify`` payload with a field of the wrong type (e.g. ``deliver_to`` as
-an int) is dropped by ``notify_request()`` rather than surfaced -- it must
-never crash the claim loop for a row that is already correctly skipped.
-
-A claim-time
-terminal rejection must surface observably even though the submitter is no
-longer on the wire by then. ``worker.py``'s claim loop, on a terminal
-``AdmissionDecision``, transitions the row ``queued -> skipped`` carrying the
-reason and -- whenever ``notify_request()`` finds a notify payload -- emits a
-``dispatch_outbox`` row via ``lionagi.dispatch.outbox.enqueue_dispatch``.
+``admit(row, worker, db) -> AdmissionDecision`` is the worker claim loop's
+admission predicate, extracted to one named, StateDB-backed, unit-testable
+function. See docs/internals/studio.md#lionagistudioscheduleradmitpy for
+the conditions evaluated, the ``action_args["admission"]`` payload
+convention, and the terminal-rejection notify contract.
 """
 
 from __future__ import annotations
@@ -223,15 +174,10 @@ def allows_deferred_over_cap(action_args: Mapping[str, Any]) -> bool:
 
 def notify_request(action_args: Mapping[str, Any]) -> dict[str, Any] | None:
     """The job's ``admission.notify`` payload if present and well-formed,
-    else ``None``.
-
-    ``deliver_to`` must be a non-empty ``str``; the optional ``kind`` and
-    ``dedup_key`` fields, when the key is present at all, must be a
-    non-empty ``str`` -- an explicit ``null`` is rejected the same as any
-    other wrong type, it is not treated as "absent". A malformed payload
-    (e.g. ``deliver_to`` as an ``int``, or an explicit ``kind: null``) is
-    treated as no notify request -- it must never surface later as a
-    claim-time crash in ``DispatchSignal``/``enqueue_dispatch``."""
+    else ``None``. ``deliver_to`` must be a non-empty ``str``; present
+    ``kind``/``dedup_key`` must be too (an explicit ``null`` doesn't count as
+    absent). Malformed input degrades to "no notify request" rather than
+    crashing the claim loop."""
     notify = _admission_opts(action_args).get("notify")
     if not isinstance(notify, dict):
         return None
@@ -266,14 +212,9 @@ async def waiter_ahead_count(
     """Count of rows sharing *concurrency_key* in ``queued``/``retry_wait``
     that are "ahead" of a row queued at *before_queued_at*.
 
-    With *exclude_id* (the claim-time case: the row already exists), "ahead"
-    means strictly earlier by the same ``(queued_at, id)`` order the claim
-    loop pages candidates by -- rows queued later never count against an
-    earlier one, so the outcome is independent of processing order.
-
-    Without *exclude_id* (the submit-time case: the row doesn't exist yet),
-    every current waiter for the key counts, since a not-yet-inserted row
-    would land after all of them.
+    With *exclude_id* (claim-time: row already exists), ahead means strictly
+    earlier by the claim loop's own ``(queued_at, id)`` paging order. Without
+    it (submit-time: row doesn't exist yet), every current waiter counts.
     """
     if exclude_id is not None:
         async with db._read() as conn:

@@ -1,7 +1,10 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Adapter protocol stack: Adaptable/AsyncAdaptable mixins and registry."""
+"""Adapter protocol stack: Adaptable/AsyncAdaptable mixins and registry.
+
+Ported from pydapter's core/async_core/types/exceptions modules.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +15,7 @@ from typing import Any, ClassVar, Protocol, TypeVar, runtime_checkable
 T = TypeVar("T")
 
 # ---------------------------------------------------------------------------
-# URL / credential sanitization (ported from pydapter.types)
+# URL / credential sanitization
 # ---------------------------------------------------------------------------
 
 _CREDENTIAL_SCHEMES = frozenset(
@@ -156,7 +159,7 @@ def _redact_details(details: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Exception hierarchy (ported from pydapter.exceptions)
+# Exception hierarchy
 # ---------------------------------------------------------------------------
 
 _ADAPTER_PYTHON_ERRORS = (KeyError, ImportError, AttributeError, ValueError)
@@ -311,7 +314,7 @@ class AdapterQueryError(AdapterError):
 
 
 # ---------------------------------------------------------------------------
-# dispatch_adapt_meth (ported from pydapter.core / pydapter.async_core)
+# dispatch_adapt_meth
 # ---------------------------------------------------------------------------
 
 
@@ -329,7 +332,7 @@ def dispatch_adapt_meth(
 
 
 # ---------------------------------------------------------------------------
-# Adapter protocol (ported from pydapter.core)
+# Adapter protocol
 # ---------------------------------------------------------------------------
 
 
@@ -367,7 +370,7 @@ class Adapter(Protocol[T]):
 
 
 # ---------------------------------------------------------------------------
-# AdapterBase helper (ported from pydapter.core.AdapterBase)
+# AdapterBase helper
 # ---------------------------------------------------------------------------
 
 
@@ -417,7 +420,7 @@ class AdapterBase:
 
 
 # ---------------------------------------------------------------------------
-# AdapterRegistry (ported from pydapter.core.AdapterRegistry)
+# AdapterRegistry
 # ---------------------------------------------------------------------------
 
 
@@ -481,7 +484,7 @@ class AdapterRegistry:
 
 
 # ---------------------------------------------------------------------------
-# Adaptable mixin (ported from pydapter.core.Adaptable)
+# Adaptable mixin
 # ---------------------------------------------------------------------------
 
 
@@ -526,7 +529,7 @@ class Adaptable:
 
 
 # ---------------------------------------------------------------------------
-# AsyncAdapter protocol (ported from pydapter.async_core)
+# AsyncAdapter protocol
 # ---------------------------------------------------------------------------
 
 
@@ -561,7 +564,7 @@ class AsyncAdapter(Protocol[T]):
 
 
 # ---------------------------------------------------------------------------
-# AsyncAdapterRegistry (ported from pydapter.async_core)
+# AsyncAdapterRegistry
 # ---------------------------------------------------------------------------
 
 
@@ -629,7 +632,7 @@ class AsyncAdapterRegistry:
 
 
 # ---------------------------------------------------------------------------
-# AsyncAdaptable mixin (ported from pydapter.async_core.AsyncAdaptable)
+# AsyncAdaptable mixin
 # ---------------------------------------------------------------------------
 
 
