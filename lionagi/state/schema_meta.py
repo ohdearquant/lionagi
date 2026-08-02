@@ -985,7 +985,11 @@ session_controls = Table(
     Column("created_at", Float, nullable=False),
     # NULL until the poller consumes the row.
     Column("applied_at", Float),
-    # 'applying' (message verb, mid-apply) | 'applied' | 'rejected:<reason>'.
+    # NULL until a consumer claims the row; written with the 'applying:<owner>'
+    # result so a wedged claim can be judged where it is seen.
+    Column("claimed_at", Float),
+    # 'applying[:<owner>]' (message verb, mid-apply) | 'applied' |
+    # 'rejected:<reason>'.
     Column("result", Text),
 )
 

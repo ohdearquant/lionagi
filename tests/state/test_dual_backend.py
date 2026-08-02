@@ -712,6 +712,208 @@ async def test_postgres_wrapper_parity_cas_conflict_and_same_status_append(pg_ur
         await db.close()
 
 
+# ── session-control admission takes the session row lock on PostgreSQL ───────
+#
+# SQLite serialises writers, so evaluating the running-session condition inside
+# the insert statement is decisive there. PostgreSQL runs two clients at once
+# and evaluates that condition against a READ COMMITTED snapshot, so an
+# admission can pass while another transaction is terminalizing the same
+# session and commit after that run's teardown sweep has already looked. The
+# row then exists, is pending, and has no consumer. The admission therefore
+# locks the session row, which makes a concurrent terminal transition wait for
+# it rather than pass it.
+
+
+async def _seed_running_agent_session(db) -> str:
+    sid = uuid.uuid4().hex[:12]
+    pid = uuid.uuid4().hex
+    await db.create_progression(pid)
+    await db.create_session(
+        {
+            "id": sid,
+            "progression_id": pid,
+            "status": "running",
+            "invocation_kind": "agent",
+            "run_id": "20260802T000000-lockprobe",
+            "started_at": time.time(),
+        }
+    )
+    return sid
+
+
+@pytest.mark.asyncio
+async def test_postgres_control_admission_waits_on_a_locked_session_row(pg_url):
+    """A terminalizing transaction's lock on the session row must block the admission.
+
+    That ordering is the mechanism. Without it the admission reads its own
+    snapshot, passes, and can commit after the terminalizing run's sweep has
+    already looked, leaving a committed pending row with no consumer.
+
+    The holder takes FOR NO KEY UPDATE because that is what a plain status
+    UPDATE takes, and because it is the mode that discriminates: the control's
+    foreign key already takes FOR KEY SHARE on the same row, and FOR KEY SHARE
+    conflicts with FOR UPDATE but not with FOR NO KEY UPDATE. A holder taking
+    FOR UPDATE would block the insert through the foreign key alone and would
+    pass against the defect. Two arms: the unheld admission must succeed, or a
+    blocked insert would prove nothing; the held one must not complete.
+    """
+    import asyncio
+
+    from sqlalchemy import text as _text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    db = StateDB(url=pg_url)
+    async with db:
+        sid = await _seed_running_agent_session(db)
+
+        # Control arm: nothing holds the row, so admission works normally.
+        unlocked = await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "unblocked"}
+        )
+        assert unlocked is not None, "the admission failed for a reason unrelated to locking"
+
+        engine = create_async_engine(pg_url)
+        try:
+            async with engine.connect() as holder:
+                async with holder.begin():
+                    # FOR NO KEY UPDATE is exactly the lock a plain
+                    # `UPDATE sessions SET status = ...` takes, so this holder
+                    # stands in for a run terminalizing underneath the
+                    # admission. The lock mode is the whole test: FOR NO KEY
+                    # UPDATE does NOT conflict with the FOR KEY SHARE the
+                    # control's foreign key takes on the same row, so an
+                    # admission that only reads the session sails past it and
+                    # the wrong lock mode here would pass against the defect.
+                    await holder.execute(
+                        _text("SELECT 1 FROM sessions WHERE id = :sid FOR NO KEY UPDATE"),
+                        {"sid": sid},
+                    )
+                    with pytest.raises(asyncio.TimeoutError):
+                        await asyncio.wait_for(
+                            db.insert_session_control(
+                                session_id=sid, verb="message", payload={"text": "blocked"}
+                            ),
+                            timeout=3,
+                        )
+        finally:
+            await engine.dispose()
+
+        # Released: the same admission now goes through, so the block above was
+        # the lock and not a dead connection.
+        after = await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "after release"}
+        )
+        assert after is not None
+
+
+# ── a hand resolution that loses its race reports nothing ────────────────
+#
+# `resolve_claimed_session_control` reads the current claim, decides from it,
+# then writes under a compare-and-set. On PostgreSQL the claimant can commit its
+# own outcome between those two statements. The CAS correctly refuses; what the
+# operator must not get is a receipt for the write that did not happen.
+#
+# The interleave is injected rather than raced for. An earlier version of this
+# test held the row from a second connection and waited for the resolver to be
+# observably blocked, which passed alone and timed out inside the full module:
+# waiting on a lock is a property of the whole cluster, not of this call, so the
+# arrangement was a timing dependency wearing a synchronisation primitive. Here
+# the competing finalize is committed by a proxy sitting between the resolver's
+# two statements, so the ordering the test is about is the only ordering it can
+# produce.
+
+
+@pytest.mark.asyncio
+async def test_postgres_resolve_reports_nothing_when_its_write_lost_the_race(pg_url):
+    """A refused compare-and-set must not read back as a successful resolution."""
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy import text as _text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    db = StateDB(url=pg_url)
+    async with db:
+        sid = await _seed_running_agent_session(db)
+
+        # Control arm: with no competing writer the resolve succeeds and keeps
+        # the claim, so the None below means the race and not a broken call.
+        free = await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "uncontended"}
+        )
+        await db.mark_session_control_applying(free, owner="leg-free")
+        uncontended = await db.resolve_claimed_session_control(
+            free, outcome="abandoned", actor="operator"
+        )
+        assert uncontended is not None and "applying:leg-free" in uncontended
+
+        contested = await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "contested"}
+        )
+        await db.mark_session_control_applying(contested, owner="leg-slow")
+
+        engine = create_async_engine(pg_url)
+        try:
+
+            class _ClaimantReportsBackAfterTheRead:
+                """Commits the claimant's own outcome once the resolver has read.
+
+                One connection, one interposition: the first execute is the
+                resolver's SELECT, and the competing write lands on a separate
+                connection immediately after it. The resolver's transaction has
+                taken no lock on the row at that point, so the outside write
+                commits without waiting and the CAS that follows is evaluated
+                against a row that has moved.
+                """
+
+                def __init__(self, conn) -> None:
+                    self._conn = conn
+                    self._interposed = False
+
+                def __getattr__(self, name):
+                    return getattr(self._conn, name)
+
+                async def execute(self, *args, **kwargs):
+                    result = await self._conn.execute(*args, **kwargs)
+                    if not self._interposed:
+                        self._interposed = True
+                        async with engine.connect() as claimant:
+                            async with claimant.begin():
+                                await claimant.execute(
+                                    _text(
+                                        "UPDATE session_controls SET applied_at = 1.0, "
+                                        "result = 'applied' WHERE id = :cid"
+                                    ),
+                                    {"cid": contested},
+                                )
+                    return result
+
+            real_tx = db._tx
+
+            @asynccontextmanager
+            async def _interposing_tx():
+                async with real_tx() as conn:
+                    yield _ClaimantReportsBackAfterTheRead(conn)
+
+            db._tx = _interposing_tx
+            try:
+                stored = await db.resolve_claimed_session_control(
+                    contested, outcome="abandoned", actor="operator"
+                )
+            finally:
+                db._tx = real_tx
+        finally:
+            await engine.dispose()
+
+        assert stored is None, (
+            "the resolve returned a receipt after its conditional write matched "
+            f"no rows: {stored!r}"
+        )
+        row = await db.get_session_control(contested)
+        assert row["result"] == "applied", (
+            "the claimant's own outcome was overwritten by a resolution that lost the race"
+        )
+
+
 # ── Postgres leg: the delete/writer race on delete_imported_session ───────────
 # Lives in this module for the reason stated above: it needs the session-scoped
 # `pg_url` fixture, and a second module requesting it in the same run breaks

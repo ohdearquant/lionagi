@@ -270,6 +270,11 @@ def _form_to_context_block(form) -> str:
     return "\n".join(lines)
 
 
+# Heartbeat tick interval. Module-level so a test can shrink it rather than
+# waiting out a real 60s tick.
+_HEARTBEAT_INTERVAL_S = 60
+
+
 class _ProgressReport:
     """Heartbeat text that distinguishes a working agent from a merely live one.
 
@@ -373,6 +378,189 @@ def _report_mcp_resolution(
         "a checkout silently loses them. Pass --mcp-config PATH, or --no-mcp-config "
         "to state that this is intended."
     )
+
+
+"""Framing for a steer delivered as a continuation turn.
+
+Deliberately mirrors the flow-side operator-steer vocabulary and, like it,
+claims no authority to override: the operator's own words say what to change.
+An earlier draft announced that the steer "supersedes conflicting parts of the
+original instruction", and a live leg correctly refused it — a banner asserting
+override authority reads exactly like injected content trying to redirect the
+model away from what its user asked for. The channel already carries the
+operator's authority (this is the same instruction slot the original prompt
+arrived through), so the framing only has to say who is speaking and when.
+"""
+_AGENT_STEER_TEMPLATE = """\
+[OPERATOR STEER]
+The operator who started this run sent this while it was running. It is a live
+correction to the task you are already working on, from the same person who
+gave you that task — not a message from a third party. Attend to it before
+continuing. Most recent last.
+{lines}
+[/OPERATOR STEER]
+"""
+
+
+async def _drain_pending_steers(
+    live: dict | None,
+    branch,
+    *,
+    operate_kwargs: dict,
+    deadline: float | None,
+    owner: str | None = None,
+) -> object | None:
+    """Consume queued `message` session controls as warm continuation turns.
+
+    Called after a successful operate() and before the run finalizes. Each
+    drain batch joins all pending steers (arrival order) into one continuation
+    turn on the same branch; steers enqueued during a continuation are caught
+    by the next iteration. Continuations spend the leg's original wall clock:
+    past *deadline* the loop stops without consuming (teardown tombstones the
+    remainder), so steering can never keep a leg alive past its budget.
+
+    *owner* names this leg on the rows it claims, so a concurrent leg and the
+    teardown can both tell this leg's in-flight work from their own.
+
+    Returns the last continuation result, or None if nothing was consumed.
+    """
+    if not live or not live.get("session_id"):
+        return None
+    import time as _time
+
+    from lionagi.cli._logging import hint, log_error
+
+    db = live.get("db")
+    if db is None:
+        # A persistence context carrying a session but no handle to read it
+        # with. Nothing can be drained, and returning quietly would make that
+        # indistinguishable from "no steers were queued" -- so say which one
+        # this is. setup_agent_persist always supplies both.
+        log_error("steer: session is persisted but no database handle came with it; not draining")
+        return None
+    session_id = live["session_id"]
+    last_res = None
+    while True:
+        if deadline is not None and _time.monotonic() >= deadline:
+            break
+        pending = await db.list_pending_session_controls(session_id)
+        steers = [row for row in pending if row.get("verb") == "message"]
+        if not steers:
+            break
+        if str(steers[0].get("result") or "").startswith("applying"):
+            # A consumer stamped this row and did not finish. Re-applying it
+            # could deliver the same operator message a second time, so it is
+            # left untouched, and the rows behind it wait rather than jumping
+            # it. This is the rule the flow poller already follows. It holds
+            # whoever the claimant is, including this leg on a later pass:
+            # a claim that outlived its apply is exactly the case where nobody
+            # can say whether the message landed.
+            break
+        # The deadline was checked before the queue read above, and that read is
+        # I/O that can cross it. Rechecking here, before anything is claimed or
+        # sent, is what keeps the run inside the timeout the caller gave it.
+        remaining = None
+        if deadline is not None:
+            remaining = deadline - _time.monotonic()
+            if remaining <= 0:
+                break
+        texts = []
+        claimed = []
+        claim_token = f"applying:{owner}" if owner else "applying"
+        for row in steers:
+            if not await db.mark_session_control_applying(row["id"], owner=owner):
+                # Another consumer claimed it between the read and here.
+                continue
+            claimed.append(row)
+            payload = row.get("payload") or {}
+            texts.append(str(payload.get("text") or ""))
+        if not claimed:
+            break
+        joined = "\n".join(f"- {t}" for t in texts if t.strip())
+        hint(f"[steer] applying {len(claimed)} queued operator message(s) as a continuation turn")
+        kwargs = dict(operate_kwargs)
+        if remaining is not None:
+            # What is actually left, never a floor. Flooring the budget would
+            # hand the continuation a fresh second that the caller's deadline
+            # has already spent.
+            kwargs["timeout"] = remaining
+        last_res = await branch.operate(
+            instruction=_AGENT_STEER_TEMPLATE.format(lines=joined),
+            **kwargs,
+        )
+        for row in claimed:
+            # Unconditional on the clock, deliberately. The deadline gates when
+            # new provider work may start, which the recheck above enforces;
+            # recording the outcome of work already performed is exempt, because
+            # a skipped finalize would leave a delivered message on record as
+            # undelivered. The claim token is the guard here instead: this write
+            # lands only while the row still carries this leg's claim.
+            await db.finalize_session_control(row["id"], result="applied", expect_claim=claim_token)
+    return last_res
+
+
+async def _tombstone_pending_steers(live: dict | None) -> None:
+    """Finalize never-claimed session controls as rejected at run teardown.
+
+    A steer enqueued while the run was live but never drained must not sit
+    pending forever. Best-effort: a failure here logs and leaves the row
+    visibly pending — the status surface independently renders a pending
+    control on a terminal run as never-landed, so the operator still sees
+    the truth.
+
+    Only rows no consumer ever claimed are tombstoned, and that is enforced at
+    the write rather than read off the snapshot. A claimed row belongs to the
+    leg that took it, which may be another leg still inside its provider call,
+    or one that died between the claim and the apply. Rejecting either would
+    assert that the message was not delivered, which nothing here knows; the row
+    stays visible as claimed, carrying its owner and its age, for an operator to
+    resolve. Called after the run's teardown, so a control admitted against a
+    still-running session is normally already committed and visible to the read
+    below, and one arriving later is refused at the writer; the terminal check
+    at the top of this function is what makes that hold when teardown failed to
+    persist the transition it was asked for.
+    """
+    if not live or not live.get("session_id"):
+        return
+    try:
+        from lionagi.state.db import SESSION_TERMINAL_STATUSES
+
+        session = await live["db"].get_session(live["session_id"])
+        if (session or {}).get("status") not in SESSION_TERMINAL_STATUSES:
+            # The precondition this sweep's correctness rests on, asserted
+            # rather than assumed. Rejecting a control on a session that is
+            # still running would destroy a steer a live consumer was about to
+            # take, and the sweep only closes the terminal race at all because
+            # the transition it follows is what stops new controls being
+            # admitted. Refusing here rather than sweeping keeps a call-site
+            # ordering mistake from turning into a deleted operator message.
+            log_error(
+                "steer tombstone skipped: session "
+                f"{str(live['session_id'])[:8]} is not terminal, so a pending "
+                "control may still have a consumer"
+            )
+            return
+        stale = await live["db"].list_pending_session_controls(live["session_id"])
+        for row in stale:
+            if row.get("result") is not None:
+                continue
+            # The snapshot above says the row was unclaimed when it was read,
+            # which is not the same as unclaimed when this writes. Another leg
+            # that read the row at its own turn boundary can claim it and hand
+            # the steer to the model in between, so the guard has to travel with
+            # the write: only_if_unclaimed makes the database re-check, and a
+            # row that got claimed in the window is left alone rather than
+            # recorded as never delivered.
+            await live["db"].finalize_session_control(
+                row["id"],
+                result=(
+                    "rejected: run reached terminal status before "
+                    "the steer could land — use `li agent -r`"
+                ),
+                only_if_unclaimed=True,
+            )
+    except Exception as exc:  # noqa: BLE001 — teardown must not raise
+        log_error(f"steer tombstone write failed: {exc!r}")
 
 
 async def _run_agent(
@@ -831,23 +1019,41 @@ async def _run_agent(
     _terminal_status = "completed"
     _terminal_exc: BaseException | None = None
 
+    # Armed unconditionally, not only when --timeout is set: the steer receipt
+    # ack below is the operator's only signal that a queued message was
+    # received (vs. lost) before the turn ends, and a leg spawned without a
+    # timeout is exactly the case where a turn can run long enough for that
+    # distinction to matter. The extra task is one sleeping coroutine per leg,
+    # negligible next to the provider call it watches.
     _heartbeat_task = None
-    if timeout is not None:
-        import asyncio as _asyncio
-        import time as _hb_time
+    import asyncio as _asyncio
+    import time as _hb_time
 
-        _hb_report = _ProgressReport(branch, _hb_time.monotonic())
+    _hb_report = _ProgressReport(branch, _hb_time.monotonic())
 
-        async def _heartbeat_loop():
-            while True:
-                await _asyncio.sleep(60)
-                hint(_hb_report.line(_hb_time.monotonic()))
+    async def _heartbeat_loop():
+        while True:
+            await _asyncio.sleep(_HEARTBEAT_INTERVAL_S)
+            line = _hb_report.line(_hb_time.monotonic())
+            # Steer receipt ack: a queued operator message cannot land
+            # mid-turn, so tell the operator it was received and when it
+            # will apply. Fail-safe — the heartbeat never crashes the leg.
+            if live and live.get("session_id"):
+                try:
+                    _pending = await live["db"].list_pending_session_controls(live["session_id"])
+                    _n = sum(1 for c in _pending if c.get("verb") == "message")
+                    if _n:
+                        line += f"  [steer queued x{_n} — lands at end of current turn]"
+                except Exception:  # noqa: BLE001, S110 — ack is best-effort color
+                    pass
+            hint(line)
 
-        try:
-            _heartbeat_task = _asyncio.ensure_future(_heartbeat_loop())
-        except RuntimeError:
-            _heartbeat_task = None
+    try:
+        _heartbeat_task = _asyncio.ensure_future(_heartbeat_loop())
+    except RuntimeError:
+        _heartbeat_task = None
 
+    _leg_deadline = (time.monotonic() + timeout) if timeout is not None else None
     try:
         res = await branch.operate(
             instruction=prompt,
@@ -858,6 +1064,25 @@ async def _run_agent(
             **({"images": images} if images else {}),
             **({"repo": cwd} if cwd else {}),
         )
+        steer_res = await _drain_pending_steers(
+            live,
+            branch,
+            operate_kwargs={
+                "stream_persist": True,
+                "persist_dir": str(run.stream_dir),
+                "snapshot_dir": str(run.branches_dir),
+                "timeout": timeout,
+                **({"repo": cwd} if cwd else {}),
+            },
+            deadline=_leg_deadline,
+            # The run id, because it is what identifies THIS leg. The branch is
+            # shared with every leg that resumes it, so a branch-keyed claim
+            # could not tell two legs apart, which is the whole point of naming
+            # the claimant.
+            owner=run.run_id,
+        )
+        if steer_res is not None:
+            res = steer_res
     except (TimeoutError, LionTimeoutError) as exc:
         _terminal_status = "timed_out"
         _terminal_exc = exc
@@ -914,6 +1139,21 @@ async def _run_agent(
                 defer_terminal=will_auto_resume,
                 **telemetry_kw,
             )
+            # Terminal-race tombstone, ordered after the teardown above rather
+            # than before it (skipped when auto-resume keeps the run alive — the
+            # resumed leg's drain will consume the steer). When that teardown
+            # does persist the terminal transition, this ordering is what leaves
+            # no gap for a control to slip through: the writer admits one only
+            # while the session reads 'running', so a control that got in is
+            # committed before the transition and is therefore visible to the
+            # sweep below, and one arriving after it is refused at the writer
+            # instead of landing on a terminal run with nobody left to consume
+            # it. Teardown can also fail and return the requested status without
+            # having written it, which is why the sweep re-reads the stored
+            # session and declines a non-terminal one rather than trusting the
+            # call order.
+            if not will_auto_resume:
+                await _tombstone_pending_steers(live)
             if effective_status != _terminal_status:
                 _terminal_status = effective_status
             from lionagi.state.db import SESSION_TERMINAL_STATUSES

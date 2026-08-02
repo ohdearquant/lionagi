@@ -172,11 +172,19 @@ async def _apply_session_control(db, executor, row: dict) -> str | None:
             return await _finalize_applied(db, control_id)
 
         if verb == "message":
-            if row.get("result") == "applying":
-                # Prior poller crashed between stamp and apply; leave it
+            if str(row.get("result") or "").startswith("applying"):
+                # A consumer stamped this row and did not finish; leave it
                 # untouched — re-attempting could double-inject the message.
+                # Prefix rather than equality because a claim may name its
+                # owner ('applying:<run id>'), and an equality check would stop
+                # recognising exactly the claims that identify who holds them.
                 return None
-            await db.mark_session_control_applying(control_id)
+            if not await db.mark_session_control_applying(control_id):
+                # The row above said unclaimed; this says it is claimed now.
+                # Only the stamp that actually wrote may go on to inject, since
+                # the losing side proceeding is the double-injection the check
+                # above exists to prevent, arrived at by a different route.
+                return None
 
             from lionagi.operations.node import Operation as _Operation  # noqa: PLC0415
             from lionagi.protocols.types import EventStatus as _EventStatus  # noqa: PLC0415

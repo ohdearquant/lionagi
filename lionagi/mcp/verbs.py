@@ -877,6 +877,22 @@ ABSENT: tuple[AbsentVerb, ...] = (
         cli_path="orchestrate ctl status",
     ),
     AbsentVerb(
+        name="orchestrate.ctl.resolve",
+        summary="Close a control whose consumer claimed it and never reported back.",
+        # Not a missing seam. This command exists because whether a claimed
+        # message reached the model is not recoverable from anything the system
+        # kept, so the row waits for a person who went and found out. A machine
+        # caller has exactly the knowledge the row is missing, which is none, so
+        # exposing it here would turn a human's finding into an automated guess
+        # -- the same guess the design already refuses to make on a timer.
+        reason=(
+            "it records what a human established about a delivery the system "
+            "cannot determine; a machine caller would be asserting the fact the "
+            "row is waiting for rather than reporting one"
+        ),
+        cli_path="orchestrate ctl resolve",
+    ),
+    AbsentVerb(
         name="casts",
         summary="The built-in roles and modes an agent can be composed from.",
         reason=_NO_MACHINE_SEAM,

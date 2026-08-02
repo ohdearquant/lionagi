@@ -869,7 +869,11 @@ CREATE TABLE IF NOT EXISTS session_controls (
   payload     JSON,                        -- verb-specific; NULL for pause/resume
   created_at  REAL    NOT NULL,
   applied_at  REAL,                        -- NULL until the poller consumes it
-  result      TEXT                         -- 'applying' | 'applied' | 'rejected:<reason>'
+  -- NULL until a consumer claims the row; set beside the 'applying:<owner>'
+  -- result so an operator looking at a wedged queue can tell a slow owner from
+  -- a dead one without going through the run's history.
+  claimed_at  REAL,
+  result      TEXT                         -- 'applying[:<owner>]' | 'applied' | 'rejected:<reason>'
 );
 
 CREATE INDEX IF NOT EXISTS idx_session_controls_pending
