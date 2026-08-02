@@ -70,6 +70,9 @@ export function useFleet(filters?: FleetFilters): FleetState {
             runs: runsResp.runs,
             runsHasNext: runsResp.has_next,
             nowSec,
+            project,
+            projectNull,
+            search,
           });
         }
       } catch (err) {
