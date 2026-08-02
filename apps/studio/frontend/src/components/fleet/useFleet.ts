@@ -16,11 +16,20 @@ const POLL_INTERVAL_MS = 3_000;
 const STALE_THRESHOLD_MS = 5_000;
 const STABLE_RESUMPTION_COUNT = 2;
 
-export function useFleet(): FleetState {
+export interface FleetFilters {
+  project?: string;
+  projectNull?: boolean;
+  search?: string;
+}
+
+export function useFleet(filters?: FleetFilters): FleetState {
   const [state, dispatch] = useReducer(fleetReducer, undefined, initialFleetState);
 
   const successStreak = useRef(0);
   const wasStaleRef = useRef(false);
+  const project = filters?.project;
+  const projectNull = filters?.projectNull ?? false;
+  const search = filters?.search;
 
   useEffect(() => {
     let active = true;
@@ -46,7 +55,7 @@ export function useFleet(): FleetState {
         const nowSec = Math.floor(Date.now() / 1000);
         const [invsResp, runsResp] = await Promise.all([
           listInvocations({ limit: 200 }),
-          listRuns({ per_page: 200 }),
+          listRuns({ per_page: 200, project, project_null: projectNull, search }),
         ]);
         if (!active) return;
 
@@ -61,6 +70,9 @@ export function useFleet(): FleetState {
             runs: runsResp.runs,
             runsHasNext: runsResp.has_next,
             nowSec,
+            project,
+            projectNull,
+            search,
           });
         }
       } catch (err) {
@@ -82,7 +94,10 @@ export function useFleet(): FleetState {
       clearInterval(ticker);
       clearInterval(poller);
     };
-  }, []);
+    // Changing a filter restarts polling immediately (via the effect's own
+    // teardown/setup) rather than waiting up to POLL_INTERVAL_MS for the next
+    // tick to pick up the new scope.
+  }, [project, projectNull, search]);
 
   return state;
 }

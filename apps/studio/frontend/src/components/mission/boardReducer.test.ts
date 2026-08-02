@@ -338,6 +338,104 @@ describe("boardReducer — active/recent derivation", () => {
   });
 });
 
+// ─── Live board ordering — creation order, oldest first, never recency ───────
+//
+// The bug this closes: the board reordered every few seconds because it
+// inherited the API's `ORDER BY updated_at DESC`, and updated_at bumps on
+// every message. These tests assert the properties the fix must hold, not
+// just "sorted ascending" (a recency sort would also pass an ascending
+// check on already-sorted input — it only fails once the same runs arrive
+// in a *different* API order, or one of them gets a message in between).
+
+describe("boardReducer — active board creation order", () => {
+  it("orders active runs by started_at ascending, oldest first", () => {
+    const s = dispatchOk(initialBoardState(), [
+      makeRun({ run_id: "newest", status: "running", started_at: 300 }),
+      makeRun({ run_id: "oldest", status: "running", started_at: 100 }),
+      makeRun({ run_id: "middle", status: "running", started_at: 200 }),
+    ]);
+    expect(s.activeRuns.map((r) => r.run_id)).toEqual(["oldest", "middle", "newest"]);
+  });
+
+  it("derives an identical order from the same runs fed in a different API order — order is not inherited array position", () => {
+    const runs = [
+      makeRun({ run_id: "a", status: "running", started_at: 300 }),
+      makeRun({ run_id: "b", status: "running", started_at: 100 }),
+      makeRun({ run_id: "c", status: "running", started_at: 200 }),
+    ];
+    const forward = dispatchOk(initialBoardState(), runs);
+    const shuffled = dispatchOk(initialBoardState(), [runs[2], runs[0], runs[1]]);
+    const reversed = dispatchOk(initialBoardState(), [...runs].reverse());
+    const order = forward.activeRuns.map((r) => r.run_id);
+    expect(order).toEqual(["b", "c", "a"]);
+    expect(shuffled.activeRuns.map((r) => r.run_id)).toEqual(order);
+    expect(reversed.activeRuns.map((r) => r.run_id)).toEqual(order);
+  });
+
+  it("a run's position does not move when it receives a message (updated_at/last_message_at churn only)", () => {
+    const runs = [
+      makeRun({ run_id: "a", status: "running", started_at: 100, last_message_at: 100 }),
+      makeRun({ run_id: "b", status: "running", started_at: 200, last_message_at: 200 }),
+    ];
+    const before = dispatchOk(initialBoardState(), runs);
+    // "b" just talked — a recency sort would now put it first.
+    const chatty = runs.map((r) => (r.run_id === "b" ? { ...r, last_message_at: 9_999_999 } : r));
+    const after = dispatchOk(before, chatty);
+    expect(before.activeRuns.map((r) => r.run_id)).toEqual(["a", "b"]);
+    expect(after.activeRuns.map((r) => r.run_id)).toEqual(["a", "b"]);
+  });
+
+  it("breaks a tied started_at deterministically by run_id, not array order", () => {
+    const tied = [
+      makeRun({ run_id: "z-run", status: "running", started_at: 500 }),
+      makeRun({ run_id: "a-run", status: "running", started_at: 500 }),
+    ];
+    const forward = dispatchOk(initialBoardState(), tied);
+    const reversed = dispatchOk(initialBoardState(), [...tied].reverse());
+    expect(forward.activeRuns.map((r) => r.run_id)).toEqual(["a-run", "z-run"]);
+    expect(reversed.activeRuns.map((r) => r.run_id)).toEqual(["a-run", "z-run"]);
+  });
+
+  it("a run with no started_at yet falls back to created_at rather than losing its place", () => {
+    const s = dispatchOk(initialBoardState(), [
+      makeRun({ run_id: "has-started", status: "running", started_at: 200 }),
+      makeRun({ run_id: "not-started-yet", status: "running", started_at: null, created_at: 50 }),
+    ]);
+    // created_at (50) predates the started run's started_at (200) — the
+    // undated-by-started_at run sorts first, not last-by-default and not
+    // wherever the API happened to place it.
+    expect(s.activeRuns.map((r) => r.run_id)).toEqual(["not-started-yet", "has-started"]);
+  });
+
+  it("runs with neither started_at nor created_at still produce a total, stable order (tiebreak by id)", () => {
+    const s = dispatchOk(initialBoardState(), [
+      makeRun({ run_id: "z", status: "running", started_at: null }),
+      makeRun({ run_id: "a", status: "running", started_at: null }),
+      makeRun({ run_id: "m", status: "running", started_at: 10 }),
+    ]);
+    // Dated run sorts before the undated pair; the undated pair is ordered
+    // by id, not left to whatever position the API returned them in.
+    expect(s.activeRuns.map((r) => r.run_id)).toEqual(["m", "a", "z"]);
+  });
+
+  it("orders active invocations by started_at ascending, oldest first, independent of API order", () => {
+    const invs = [
+      makeInvocation({ id: "i-new", status: "running", skill: "s", started_at: 300 }),
+      makeInvocation({ id: "i-old", status: "running", skill: "s", started_at: 100 }),
+    ];
+    const forward = dispatchOk(initialBoardState(), [], invs);
+    const reversed = dispatchOk(initialBoardState(), [], [...invs].reverse());
+    expect(forward.activeInvocations.map((i) => i.id)).toEqual(["i-old", "i-new"]);
+    expect(reversed.activeInvocations.map((i) => i.id)).toEqual(["i-old", "i-new"]);
+  });
+
+  it("empty board: no runs or invocations produces empty, stable arrays", () => {
+    const s = dispatchOk(initialBoardState(), [], []);
+    expect(s.activeRuns).toEqual([]);
+    expect(s.activeInvocations).toEqual([]);
+  });
+});
+
 // ─── TICK action ─────────────────────────────────────────────────────────────
 
 describe("boardReducer — TICK", () => {
