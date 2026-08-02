@@ -165,6 +165,7 @@
     "list": {
       "toggle": "Conversations",
       "ariaLabel": "Conversations",
+      "ariaLabelSelected": "Conversations: {title}",
       "filter": {
         "active": "Active",
         "archived": "Archived",
@@ -176,6 +177,8 @@
       "unarchive": "Unarchive",
       "fork": "Fork",
       "forking": "Forking…",
+      "rename": "Rename",
+      "renameAriaLabel": "Rename {title}",
       "renamePlaceholder": "Conversation title",
       "empty": "No conversations yet",
       "untitled": "Untitled conversation"

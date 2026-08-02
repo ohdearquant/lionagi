@@ -200,7 +200,7 @@ describe("OperatorPanel", () => {
     expect(container.textContent).toContain("Recovered from the daemon.");
     expect(window.localStorage.getItem("studio:operator-conversation")).toBe("conversation-latest");
     const toggle = container.querySelector(
-      'button[aria-label="Conversations"]',
+      'button[aria-label^="Conversations"]',
     ) as HTMLButtonElement;
     await act(async () => {
       toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -208,6 +208,42 @@ describe("OperatorPanel", () => {
     const rows = container.querySelectorAll("ul li");
     expect(rows).toHaveLength(2);
     expect(container.textContent).toContain("Older daemon history");
+  });
+
+  it("announces the selected conversation on the trigger, before and after opening the list", async () => {
+    api.listOperatorConversations.mockResolvedValue([
+      {
+        id: "conversation-latest",
+        title: "Latest daemon history",
+        status: "active",
+        activeRequestId: null,
+        updatedAt: 20,
+      },
+    ]);
+    api.getOperatorConversation.mockResolvedValue({
+      conversation: {
+        id: "conversation-latest",
+        title: "Latest daemon history",
+        status: "active",
+        activeRequestId: null,
+      },
+      frames: [],
+    });
+
+    await mount();
+
+    const toggle = container.querySelector(
+      'button[aria-label^="Conversations"]',
+    ) as HTMLButtonElement;
+    expect(toggle.getAttribute("aria-label")).toBe("Conversations: Latest daemon history");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+
+    await act(async () => {
+      toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(toggle.getAttribute("aria-label")).toBe("Conversations: Latest daemon history");
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
   });
 
   it("falls back from a stale cached id and keeps earlier daemon history reachable", async () => {
@@ -249,7 +285,7 @@ describe("OperatorPanel", () => {
     expect(window.localStorage.getItem("studio:operator-conversation")).toBe("conversation-active");
 
     const toggle = container.querySelector(
-      'button[aria-label="Conversations"]',
+      'button[aria-label^="Conversations"]',
     ) as HTMLButtonElement;
     await act(async () => {
       toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -576,7 +612,7 @@ describe("OperatorPanel", () => {
   describe("conversation list: rename, pin/archive, fork", () => {
     async function openList() {
       const toggle = container.querySelector(
-        'button[aria-label="Conversations"]',
+        'button[aria-label^="Conversations"]',
       ) as HTMLButtonElement;
       await act(async () => {
         toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));

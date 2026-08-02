@@ -653,9 +653,16 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const effectsAcknowledgedRef = useRef<Set<string>>(new Set());
   const effectOutcomesRef = useRef<Map<string, StoredEffectAcknowledgement>>(new Map());
   const renameInputRef = useRef<HTMLInputElement>(null);
+  const renameButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+  const previousRenamingIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (renamingId) renameInputRef.current?.focus();
+    if (renamingId) {
+      renameInputRef.current?.focus();
+    } else if (previousRenamingIdRef.current) {
+      renameButtonRefs.current.get(previousRenamingIdRef.current)?.focus();
+    }
+    previousRenamingIdRef.current = renamingId;
   }, [renamingId]);
 
   const loadConversation = useCallback(
@@ -1148,6 +1155,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
 
   const empty = state.frames.length === 0 && state.loadState !== "loading";
   const fatalError = state.loadState === "error";
+  const conversationListLabel = state.conversation
+    ? t("list.ariaLabelSelected", { title: conversationLabel(state.conversation) })
+    : t("list.ariaLabel");
 
   return (
     <>
@@ -1216,9 +1226,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
               <div className="relative min-w-0 max-w-36 flex-1">
                 <button
                   type="button"
-                  aria-label={t("list.ariaLabel")}
+                  aria-label={conversationListLabel}
                   aria-expanded={listPanelOpen}
-                  title={t("list.ariaLabel")}
+                  title={conversationListLabel}
                   onClick={() => setListPanelOpen((open) => !open)}
                   className="flex min-w-0 items-center gap-1 truncate border-0 bg-transparent py-0 font-data text-meta text-content-muted outline-none hover:text-content-primary focus:text-content-primary"
                 >
@@ -1298,7 +1308,14 @@ export default function OperatorPanel({ open, onClose }: Props) {
                                 onChange={(event) => setRenameDraft(event.target.value)}
                                 onKeyDown={(event) => {
                                   if (event.key === "Enter") {
-                                    event.currentTarget.blur();
+                                    // Deferred past this keydown/keyup pair: blurring
+                                    // synchronously here can hand focus to the row's
+                                    // Rename button before the browser delivers the
+                                    // matching keyup, which then replays as a second
+                                    // Enter activation on that button.
+                                    event.preventDefault();
+                                    const input = event.currentTarget;
+                                    requestAnimationFrame(() => input.blur());
                                   } else if (event.key === "Escape") {
                                     setRenamingId(null);
                                   }
@@ -1322,6 +1339,29 @@ export default function OperatorPanel({ open, onClose }: Props) {
                               >
                                 {conversation.pinned ? "★ " : ""}
                                 {conversationLabel(conversation)}
+                              </button>
+                            )}
+                            {renamingId !== conversation.id && (
+                              <button
+                                type="button"
+                                ref={(node) => {
+                                  if (node) renameButtonRefs.current.set(conversation.id, node);
+                                  else renameButtonRefs.current.delete(conversation.id);
+                                }}
+                                disabled={busy}
+                                aria-label={t("list.renameAriaLabel", {
+                                  title: conversationLabel(conversation),
+                                })}
+                                title={t("list.renameAriaLabel", {
+                                  title: conversationLabel(conversation),
+                                })}
+                                onClick={() => {
+                                  setRenamingId(conversation.id);
+                                  setRenameDraft(conversation.title ?? "");
+                                }}
+                                className="shrink-0 rounded px-1 py-0.5 text-meta text-content-muted hover:bg-surface-overlay disabled:opacity-50"
+                              >
+                                {t("list.rename")}
                               </button>
                             )}
                             <button

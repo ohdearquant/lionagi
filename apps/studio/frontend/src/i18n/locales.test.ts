@@ -121,6 +121,7 @@ const SAMPLE_VALUES = {
   status: "ok",
   target: "n2",
   time: "18:00",
+  title: "Fleet readiness review",
   total: 5,
   version: "2",
 };
@@ -194,8 +195,8 @@ describe("applyDocumentLocale — <html lang>/<html dir> wiring", () => {
 });
 
 describe("messages — leaf-key parity across all 16 locales", () => {
-  it("en.json has 804 leaves", () => {
-    expect(EN_LEAVES.size).toBe(804);
+  it("en.json has 807 leaves", () => {
+    expect(EN_LEAVES.size).toBe(807);
   });
 
   it.each(LOCALES.map((l) => l.code))(
