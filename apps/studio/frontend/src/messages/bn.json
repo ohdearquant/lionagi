@@ -434,7 +434,9 @@
       "statToolCallsRecent": "টুল কল (সাম্প্রতিক)",
       "statErrorsRecent": "ত্রুটি (সাম্প্রতিক)",
       "noBranchErrorsPartial": "লোড করা মেসেজে কোনো ত্রুটি নেই।",
-      "noFilesPartial": "লোড করা মেসেজে কোনো ফাইল অপারেশন শনাক্ত হয়নি।"
+      "noFilesPartial": "লোড করা মেসেজে কোনো ফাইল অপারেশন শনাক্ত হয়নি।",
+      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
+      "reloadConversation": "Reload conversation"
     },
     "masterAria": "হিস্ট্রি তালিকা",
     "detailAria": "আইটেমের বিস্তারিত"
@@ -784,6 +786,14 @@
       "empty": "এই ফিল্টারের সঙ্গে কোনো পুরনো সেশন মেলে না।",
       "loadMore": "আরও লোড করুন",
       "loadingMore": "লোড হচ্ছে…"
+    },
+    "filters": {
+      "searchPlaceholder": "Search sessions…",
+      "searchAria": "Search sessions by name or agent",
+      "allProjects": "All projects",
+      "noProject": "No project",
+      "projectAria": "Filter by project",
+      "clear": "Clear filters"
     }
   },
   "mission": {

@@ -434,7 +434,9 @@
       "statToolCallsRecent": "ٹول کالز (حالیہ)",
       "statErrorsRecent": "خرابیاں (حالیہ)",
       "noBranchErrorsPartial": "لوڈ شدہ پیغامات میں کوئی خرابی نہیں۔",
-      "noFilesPartial": "لوڈ شدہ پیغامات میں کوئی فائل آپریشن نہیں ملا۔"
+      "noFilesPartial": "لوڈ شدہ پیغامات میں کوئی فائل آپریشن نہیں ملا۔",
+      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
+      "reloadConversation": "Reload conversation"
     },
     "masterAria": "ہسٹری فہرست",
     "detailAria": "آئٹم تفصیل"
@@ -784,6 +786,14 @@
       "empty": "کوئی پچھلا سیشن اس فلٹر سے میل نہیں کھاتا۔",
       "loadMore": "مزید لوڈ کریں",
       "loadingMore": "لوڈ ہو رہا ہے…"
+    },
+    "filters": {
+      "searchPlaceholder": "Search sessions…",
+      "searchAria": "Search sessions by name or agent",
+      "allProjects": "All projects",
+      "noProject": "No project",
+      "projectAria": "Filter by project",
+      "clear": "Clear filters"
     }
   },
   "mission": {

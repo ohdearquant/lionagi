@@ -275,8 +275,48 @@ describe("selectedRunId validation", () => {
 
 // ─── Formatter helpers ────────────────────────────────────────────────────────
 
-import { formatElapsed, formatCompactCount } from "./FleetView";
+import { formatElapsed, formatCompactCount, patchSearch } from "./FleetView";
 import { resetDetailScrollPosition } from "./SessionDetail";
+
+// ─── patchSearch — URL search patching without smuggling `undefined` in ──────
+// FleetSearch's index signature is RetiredSearchValue (no `undefined`), so a
+// naive `{...search, key: undefined}` spread would type- and shape-mismatch;
+// patchSearch must delete the key instead.
+
+describe("patchSearch", () => {
+  it("adds a new key", () => {
+    expect(patchSearch({ s: "run-1" }, { project: "org/alpha" })).toEqual({
+      s: "run-1",
+      project: "org/alpha",
+    });
+  });
+
+  it("deletes a key when the patch value is undefined, rather than keeping it as literal undefined", () => {
+    const result = patchSearch({ s: "run-1", project: "org/alpha" }, { project: undefined });
+    expect(result).toEqual({ s: "run-1" });
+    expect("project" in result).toBe(false);
+  });
+
+  it("overwrites an existing key", () => {
+    expect(patchSearch({ project: "org/alpha" }, { project: "org/beta" })).toEqual({
+      project: "org/beta",
+    });
+  });
+
+  it("clearing project and project_null together removes both, keeping the rest", () => {
+    const result = patchSearch(
+      { s: "run-1", project: "org/alpha", project_null: true, q: "flaky" },
+      { project: undefined, project_null: undefined },
+    );
+    expect(result).toEqual({ s: "run-1", q: "flaky" });
+  });
+
+  it("does not mutate the base object", () => {
+    const base = { s: "run-1" };
+    patchSearch(base, { project: "org/alpha" });
+    expect(base).toEqual({ s: "run-1" });
+  });
+});
 
 describe("formatElapsed", () => {
   it("renders — for null, NaN, Infinity, and negative input", () => {

@@ -434,7 +434,9 @@
       "statToolCallsRecent": "araç çağrıları (son)",
       "statErrorsRecent": "hatalar (son)",
       "noBranchErrorsPartial": "yüklenen mesajlarda hata yok.",
-      "noFilesPartial": "yüklenen mesajlarda dosya işlemi algılanmadı."
+      "noFilesPartial": "yüklenen mesajlarda dosya işlemi algılanmadı.",
+      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
+      "reloadConversation": "Reload conversation"
     },
     "masterAria": "geçmiş listesi",
     "detailAria": "öğe ayrıntısı"
@@ -784,6 +786,14 @@
       "empty": "bu filtreyle eşleşen geçmiş oturum yok.",
       "loadMore": "daha fazla yükle",
       "loadingMore": "yükleniyor…"
+    },
+    "filters": {
+      "searchPlaceholder": "Search sessions…",
+      "searchAria": "Search sessions by name or agent",
+      "allProjects": "All projects",
+      "noProject": "No project",
+      "projectAria": "Filter by project",
+      "clear": "Clear filters"
     }
   },
   "mission": {

@@ -14,7 +14,12 @@ export type FleetSearch = RetiredSearch & {
   s?: string;
   status?: RetiredSearchValue;
   playbook?: RetiredSearchValue;
-  project?: RetiredSearchValue;
+  // `project`/`project_null`/`q` are actively read by FleetView to scope and
+  // search the session list — unlike the other retired-route leftovers below,
+  // these are load-bearing, not just preserved for old bookmarks.
+  project?: string;
+  project_null?: boolean;
+  q?: string;
   page?: RetiredSearchValue;
   skill?: RetiredSearchValue;
   sessions?: RetiredSearchValue;
@@ -26,9 +31,23 @@ export function validateFleetSearch(search: Record<string, unknown>): FleetSearc
   const s = firstSearchString(search.s);
   if (!s) {
     delete preserved.s;
-    return preserved;
+  } else {
+    preserved.s = s;
   }
-  return { ...preserved, s };
+
+  // project/project_null/q are parsed to clean scalar types (not the raw
+  // RetiredSearchValue passthrough) since the view reads them directly.
+  delete preserved.project;
+  delete preserved.project_null;
+  delete preserved.q;
+  const out: FleetSearch = preserved;
+  const project = firstSearchString(search.project);
+  if (project) out.project = project;
+  if (search.project_null === true || search.project_null === "true") out.project_null = true;
+  const q = firstSearchString(search.q);
+  if (q) out.q = q;
+
+  return out;
 }
 
 export const Route = createFileRoute("/fleet")({

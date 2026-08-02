@@ -434,7 +434,9 @@
       "statToolCallsRecent": "Вызовы инструментов (последние)",
       "statErrorsRecent": "Ошибки (последние)",
       "noBranchErrorsPartial": "В загруженных сообщениях ошибок нет.",
-      "noFilesPartial": "В загруженных сообщениях операции с файлами не обнаружены."
+      "noFilesPartial": "В загруженных сообщениях операции с файлами не обнаружены.",
+      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
+      "reloadConversation": "Reload conversation"
     },
     "masterAria": "Список истории",
     "detailAria": "Сведения об элементе"
@@ -784,6 +786,14 @@
       "empty": "Нет прошлых сессий, соответствующих фильтру.",
       "loadMore": "Загрузить еще",
       "loadingMore": "Загрузка…"
+    },
+    "filters": {
+      "searchPlaceholder": "Search sessions…",
+      "searchAria": "Search sessions by name or agent",
+      "allProjects": "All projects",
+      "noProject": "No project",
+      "projectAria": "Filter by project",
+      "clear": "Clear filters"
     }
   },
   "mission": {

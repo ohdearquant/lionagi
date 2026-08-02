@@ -434,7 +434,9 @@
       "statToolCallsRecent": "Llamadas a herramienta (recientes)",
       "statErrorsRecent": "Errores (recientes)",
       "noBranchErrorsPartial": "No hay errores en los mensajes cargados.",
-      "noFilesPartial": "No se detectaron operaciones de archivo en los mensajes cargados."
+      "noFilesPartial": "No se detectaron operaciones de archivo en los mensajes cargados.",
+      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
+      "reloadConversation": "Reload conversation"
     },
     "masterAria": "Lista de historial",
     "detailAria": "Detalle del elemento"
@@ -784,6 +786,14 @@
       "empty": "Ninguna sesión anterior coincide con este filtro.",
       "loadMore": "Cargar más",
       "loadingMore": "Cargando…"
+    },
+    "filters": {
+      "searchPlaceholder": "Search sessions…",
+      "searchAria": "Search sessions by name or agent",
+      "allProjects": "All projects",
+      "noProject": "No project",
+      "projectAria": "Filter by project",
+      "clear": "Clear filters"
     }
   },
   "mission": {

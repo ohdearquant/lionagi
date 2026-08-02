@@ -434,7 +434,9 @@
       "statToolCallsRecent": "Pemanggilan alat (terbaru)",
       "statErrorsRecent": "Kesalahan (terbaru)",
       "noBranchErrorsPartial": "Tidak ada kesalahan dalam pesan yang dimuat.",
-      "noFilesPartial": "Tidak ada operasi file terdeteksi dalam pesan yang dimuat."
+      "noFilesPartial": "Tidak ada operasi file terdeteksi dalam pesan yang dimuat.",
+      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
+      "reloadConversation": "Reload conversation"
     },
     "masterAria": "Daftar riwayat",
     "detailAria": "Detail item"
@@ -784,6 +786,14 @@
       "empty": "Tidak ada sesi lampau yang cocok dengan filter ini.",
       "loadMore": "Muat lebih banyak",
       "loadingMore": "Memuat…"
+    },
+    "filters": {
+      "searchPlaceholder": "Search sessions…",
+      "searchAria": "Search sessions by name or agent",
+      "allProjects": "All projects",
+      "noProject": "No project",
+      "projectAria": "Filter by project",
+      "clear": "Clear filters"
     }
   },
   "mission": {

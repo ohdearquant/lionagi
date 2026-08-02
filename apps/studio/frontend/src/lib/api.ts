@@ -668,6 +668,8 @@ export interface RunListParams {
   status?: string[];
   playbook?: string;
   project?: string;
+  project_null?: boolean;
+  search?: string;
 }
 
 export interface RunListResponse {
@@ -685,7 +687,12 @@ export async function listRuns(params?: RunListParams): Promise<RunListResponse>
   if (params?.page != null) query.set("page", String(params.page));
   if (params?.per_page != null) query.set("per_page", String(params.per_page));
   if (params?.playbook) query.set("playbook", params.playbook);
-  if (params?.project) query.set("project", params.project);
+  if (params?.project_null) {
+    query.set("project_null", "true");
+  } else if (params?.project) {
+    query.set("project", params.project);
+  }
+  if (params?.search) query.set("search", params.search);
   for (const value of params?.status ?? []) query.append("status", value);
   const suffix = query.toString() ? `?${query.toString()}` : "";
   // The daemon registers this list route with a trailing slash (unlike
@@ -693,6 +700,23 @@ export async function listRuns(params?: RunListParams): Promise<RunListResponse>
   // absolute-Location, which the browser then blocks as cross-origin
   // whenever the frontend is served from a different origin than the daemon.
   return fetchJson<RunListResponse>(`/api/runs/${suffix}`);
+}
+
+export interface RunProjectCount {
+  project: string | null;
+  count: number;
+  last_activity: number | null;
+}
+
+export interface RunProjectsResponse {
+  projects: RunProjectCount[];
+  total: number;
+}
+
+/** Per-project run counts, sorted by last activity — feeds the fleet project
+ * filter's option list without requiring a full unfiltered run scan. */
+export async function listRunProjects(): Promise<RunProjectsResponse> {
+  return fetchJson<RunProjectsResponse>("/api/runs/projects");
 }
 
 export async function getRun(runId: string): Promise<RunDetail> {
@@ -1099,6 +1123,10 @@ export interface SessionBranch {
   /** Full progression length; messages is a tail window of it. */
   message_total?: number;
   message_offset?: number;
+  /** Whether this branch has messages older than the current window — the
+   * server's own signal, independent of the message_total/messages.length
+   * diff the client also computes. */
+  message_has_older?: boolean;
   model?: string | null;
   provider?: string | null;
   agent_name?: string | null;
@@ -1113,6 +1141,10 @@ export interface SessionDetail {
   started_at?: number | null;
   ended_at?: number | null;
   branches: SessionBranch[];
+  // Opaque anchor cursor for the "load older" page, one page further back
+  // than what `branches[].messages` currently carries. Absent/null once every
+  // branch's progression has been fully paged.
+  message_next_cursor?: string | null;
   // ADR-0022: provenance disclosure — mirrors what list_sessions() exposes.
   model?: string | null;
   provider?: string | null;
@@ -1148,13 +1180,18 @@ export async function listSessions(): Promise<{ sessions: SessionSummary[] }> {
 
 export const SESSION_MESSAGE_PAGE = 200;
 
+// message_cursor pages backward from the tail (server: services/sessions.py
+// _window_message_ids) — each older page's anchor is stable against new
+// messages landing at the tail, unlike a fixed offset that shifts under a
+// live session. The offset param still exists server-side for legacy callers
+// but this client only ever asks for a page by cursor.
 export async function getSession(
   id: string,
-  params?: { messageLimit?: number; messageOffset?: number },
+  params?: { messageLimit?: number; messageCursor?: string },
 ): Promise<SessionDetail> {
   const query = new URLSearchParams();
   if (params?.messageLimit != null) query.set("message_limit", String(params.messageLimit));
-  if (params?.messageOffset != null) query.set("message_offset", String(params.messageOffset));
+  if (params?.messageCursor != null) query.set("message_cursor", params.messageCursor);
   const qs = query.toString();
   return fetchJson<SessionDetail>(`/api/sessions/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`);
 }

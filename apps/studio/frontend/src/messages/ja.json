@@ -434,7 +434,9 @@
       "statToolCallsRecent": "直近のツール呼び出し",
       "statErrorsRecent": "エラー (最近)",
       "noBranchErrorsPartial": "読み込まれたメッセージにエラーはありません。",
-      "noFilesPartial": "読み込まれたメッセージにファイル操作は検出されていません。"
+      "noFilesPartial": "読み込まれたメッセージにファイル操作は検出されていません。",
+      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
+      "reloadConversation": "Reload conversation"
     },
     "masterAria": "履歴一覧",
     "detailAria": "項目の詳細"
@@ -784,6 +786,14 @@
       "empty": "このフィルターに一致する過去のセッションはありません。",
       "loadMore": "さらに読み込む",
       "loadingMore": "読み込み中…"
+    },
+    "filters": {
+      "searchPlaceholder": "Search sessions…",
+      "searchAria": "Search sessions by name or agent",
+      "allProjects": "All projects",
+      "noProject": "No project",
+      "projectAria": "Filter by project",
+      "clear": "Clear filters"
     }
   },
   "mission": {
