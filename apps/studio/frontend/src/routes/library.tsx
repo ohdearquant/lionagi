@@ -2,6 +2,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useTranslations } from "use-intl";
 import { AgentDetail } from "@/components/library/AgentDetail";
+import { CreateAgentPanel } from "@/components/library/CreateAgentPanel";
 import { WorkflowDetail, CreateWorkflowPanel } from "@/components/library/WorkflowDetail";
 import { PlaybookTemplateDetail } from "@/components/library/PlaybookTemplateDetail";
 import { KindBadge } from "@/components/library/KindBadge";
@@ -421,7 +422,7 @@ function LibraryPage() {
             });
           }}
         >
-          + {t("newWorkflow")}
+          + {kindFilter === "agent" ? "New Agent" : t("newWorkflow")}
         </Button>
       </div>
 
@@ -546,7 +547,24 @@ function LibraryPage() {
 
   let detailPane: ReactNode;
 
-  if (showCreate) {
+  if (showCreate && kindFilter === "agent") {
+    detailPane = (
+      <CreateAgentPanel
+        onCreated={(name) => {
+          setShowCreate(false);
+          void reload();
+          void navigate({
+            search: (prev) => ({ ...prev, sel: encodeSel("agent", name) }),
+            replace: false,
+          });
+        }}
+        onCancel={() => {
+          setShowCreate(false);
+          setDetailActive(false);
+        }}
+      />
+    );
+  } else if (showCreate) {
     detailPane = (
       <div className="flex h-full flex-col overflow-hidden">
         <CreateWorkflowPanel
@@ -566,7 +584,24 @@ function LibraryPage() {
       </div>
     );
   } else if (parsed?.kind === "agent" && selectedAgent) {
-    detailPane = <AgentDetail agent={selectedAgent} onBack={handleBack} />;
+    detailPane = (
+      <AgentDetail
+        agent={selectedAgent}
+        onBack={handleBack}
+        onDeleted={() => {
+          setDetailActive(false);
+          void reload();
+          void navigate({
+            search: (prev) => {
+              const next = { ...prev };
+              delete next.sel;
+              return next;
+            },
+            replace: false,
+          });
+        }}
+      />
+    );
   } else if (parsed?.kind === "workflow" && selectedWorkflowId) {
     detailPane = <WorkflowDetail id={selectedWorkflowId} onBack={handleBack} />;
   } else if (parsed?.kind === "playbook") {

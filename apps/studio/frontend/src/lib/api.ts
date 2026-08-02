@@ -977,6 +977,12 @@ export async function updateAgent(name: string, data: AgentProfile): Promise<unk
   });
 }
 
+export async function deleteAgent(name: string): Promise<{ deleted: boolean; name: string }> {
+  return fetchJson<{ deleted: boolean; name: string }>(`/api/agents/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+}
+
 // ─── Shows ────────────────────────────────────────────────────────────────────
 
 export async function listShows(): Promise<ShowSummary[]> {

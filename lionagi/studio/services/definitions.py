@@ -16,6 +16,7 @@ from lionagi.state.db import DEFAULT_DB_PATH
 from ..registry import studio_route
 from ._db import open_db as _open_db
 from ._path_safety import validate_name_component
+from .agents import _is_protected_system
 
 # Per-(kind, name) concurrency lock, shared across all requests in this process.
 # Spans both the DB write and the disk write so a crash between them cannot leave disk ahead of history.
@@ -227,6 +228,19 @@ async def save_definition(
         disk_file = await anyio.to_thread.run_sync(partial(_find_definition_file, base, name))
         if not disk_file:
             disk_file = base / f"{name}{_DEFAULT_EXT.get(kind, '.md')}"
+        elif kind == "agent":
+            # This route upserts blindly by design (ADR-0077), so it's the other write
+            # path onto agent files besides PUT /agents/{name} -- the same "system
+            # agent is not editable" rule (lionagi/studio/services/agents.py) has to
+            # hold here too, or it's a bypass. Read straight off disk_file rather than
+            # calling into agents.py, since that module resolves its own _AGENTS_ROOT
+            # independently of this module's (test-patchable) AGENTS_DIR/KIND_DIRS.
+            from lionagi.libs.frontmatter import parse_frontmatter as _parse_fm
+
+            existing_text = await anyio.to_thread.run_sync(disk_file.read_text)
+            existing_fm, _ = _parse_fm(existing_text)
+            if _is_protected_system(existing_fm):
+                raise PermissionError(f"Agent '{name}' is a system agent and cannot be edited")
 
         now = time.time()
 
@@ -405,6 +419,8 @@ async def save_definition_route(kind: str, name: str, body: SaveBody) -> dict[st
     # service layer; catch it and return 422 instead of propagating a 500.
     try:
         return await save_definition(kind, name, body.content, body.message)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
 
