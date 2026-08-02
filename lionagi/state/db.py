@@ -2329,11 +2329,12 @@ class StateDB:
         also runs under a bounded lock_timeout, so a teardown that cannot hold
         what it needs gives up rather than queueing behind live writers; both
         callers treat that as a row to revisit on a later sweep. Bounding the
-        waits is what keeps this transaction from sitting in a deadlock cycle
-        with a writer that reaches the same tables in another order. It does not
-        make one impossible: the guarantee is that no wait here lasts long
-        enough to become a detected cycle on a server using PostgreSQL's default
-        deadlock_timeout.
+        lock waits is what keeps this transaction from sitting in a deadlock
+        cycle with a writer that reaches the same tables in another order. It
+        does not make one impossible, and it is not a deadline for the whole
+        teardown: the guarantee is only that no single lock-acquisition wait
+        lasts long enough to become a detected cycle on a server using
+        PostgreSQL's default deadlock_timeout.
         """
         if not require_source_kind.startswith("imported_"):
             return False
@@ -2351,19 +2352,25 @@ class StateDB:
                 #
                 # Two separate guards, because they cover different waits.
                 #
-                # lock_timeout bounds every wait this transaction can make,
-                # including the ones after the table locks are already held --
-                # the soft-FK nulling below updates artifacts and four other
-                # tables, and those rows can be held by someone else. A wait
-                # while holding is what a deadlock cycle is made of, so bounding
-                # it is what keeps the teardown from sitting in one. 250ms is
-                # chosen against PostgreSQL's deadlock_timeout, whose default is
-                # 1s: a wait here gives up well before the detector runs, while
-                # still being far longer than the row-lock holds of the ordinary
-                # writers, so everyday contention resolves instead of aborting a
-                # teardown. A server configured with a deadlock_timeout below
-                # this bound can still detect a cycle first; the teardown then
-                # aborts with a deadlock error rather than a lock timeout, which
+                # lock_timeout bounds each LOCK-ACQUISITION wait, including the
+                # ones after the table locks are already held -- the soft-FK
+                # nulling below updates artifacts and four other tables, and
+                # those rows can be held by someone else. A wait while holding is
+                # what a deadlock cycle is made of, so bounding it is what keeps
+                # the teardown from sitting in one. It is not a deadline for the
+                # transaction: it caps no single statement's execution, no sum of
+                # successive lock waits, and nothing about commit or connection
+                # checkout. A long statement can still hold all three EXCLUSIVE
+                # locks, and nothing here bounds that. 250ms is chosen against
+                # PostgreSQL's deadlock_timeout, whose default is 1s, so one lock
+                # wait gives up well before the detector runs. It is also meant
+                # to sit above the row-lock holds of the ordinary writers so
+                # everyday contention resolves instead of aborting a teardown;
+                # that second half is the design intent behind the number and is
+                # not something this change measures. A server configured with a
+                # deadlock_timeout below this bound can still detect a cycle
+                # first; the teardown then aborts with a deadlock error rather
+                # than a lock timeout, which
                 # the callers treat identically.
                 #
                 # NOWAIT covers the acquisition itself, where waiting is

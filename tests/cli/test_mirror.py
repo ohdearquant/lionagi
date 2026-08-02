@@ -1512,3 +1512,53 @@ async def test_a_failed_absorption_does_not_retire_the_file(tmp_path, monkeypatc
         assert state.orchestrated
 
     assert len(attempts) == 2, f"absorption was attempted {len(attempts)} time(s), not 2"
+
+
+async def test_a_failed_prior_stem_absorption_also_leaves_the_file_eligible(tmp_path, monkeypatch):
+    """The orchestrated branch absorbs under two ids when the file was keyed by a
+    stem before its header arrived. Failure-atomicity has to cover the second
+    call as well as the first.
+
+    The arm that matters is the id list on the retry. If any field were committed
+    between the two calls, the retry would resolve `prior_uid` differently and the
+    stem-keyed row would never be absorbed at all — a row nobody tears down, from
+    a failure that looked like it had been retried.
+    """
+    from lionagi.cli import mirror as mirror_mod
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+
+    uid = "0199bbbb-0000-0000-0000-000000000010"
+    path = tmp_path / "rollout-exec-prior.jsonl"
+    path.write_text(_codex_rollout_lines(uid, "codex_exec"))
+    # A pre-header pass keyed this file by its stem.
+    stem = path.stem
+    state = _FileState(session_uid=stem)
+
+    calls: list[str] = []
+
+    async def flaky_absorb(db, rollout_uid):
+        calls.append(rollout_uid)
+        # Fail the SECOND call of the first pass, the prior-stem one.
+        if len(calls) == 2:
+            raise RuntimeError("lock not available")
+        return True
+
+    monkeypatch.setattr(mirror_mod, "absorb_orchestrated_session", flaky_absorb, raising=False)
+    monkeypatch.setattr(
+        "lionagi.state.codex_mirror.absorb_orchestrated_session", flaky_absorb, raising=False
+    )
+
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        with pytest.raises(RuntimeError):
+            await _mirror_one_codex(db, path, state, {})
+        assert not state.orchestrated
+        assert not state.head_checked
+        assert state.session_uid == stem, (
+            "session_uid was overwritten before both absorptions returned, so the "
+            "retry can no longer tell which prior id this file was keyed by"
+        )
+
+        assert await _mirror_one_codex(db, path, state, {}) == 0
+        assert state.orchestrated
+
+    assert calls == [uid, stem, uid, stem], f"absorption ids across both passes: {calls}"
