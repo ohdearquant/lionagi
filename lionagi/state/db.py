@@ -5760,7 +5760,12 @@ class StateDB:
             return bool(result.rowcount)
 
     async def finalize_session_control(
-        self, control_id: str, *, result: str, expect_claim: str | None = None
+        self,
+        control_id: str,
+        *,
+        result: str,
+        expect_claim: str | None = None,
+        only_if_unclaimed: bool = False,
     ) -> bool:
         """Stamp applied_at + a terminal *result* ('applied' or 'rejected:<reason>').
 
@@ -5771,6 +5776,14 @@ class StateDB:
         it. Without it the write is unconditional, which is what the idempotent
         (pause/resume) path wants.
 
+        With *only_if_unclaimed*, the write applies only while the row is still
+        pending. This is what a sweep wants: reading the pending rows and then
+        deciding from that snapshot is a check against a value that can change
+        before the write, and the window is exactly wide enough for a consumer
+        to claim the row and deliver it, after which an unconditional write
+        records a delivered message as never delivered. The two guards are
+        alternatives, not a pair; asking for both is a caller bug.
+
         This is a compare-and-set between cooperating consumers and NOT an
         authorization boundary. The claim string is stored in a column every
         reader can see, so any caller that can reach this method can also pass
@@ -5779,6 +5792,12 @@ class StateDB:
         reachable from a shared database can do better than that, since a caller
         able to call this method is equally able to write the row directly.
         """
+        if expect_claim is not None and only_if_unclaimed:
+            raise ValueError(
+                "finalize_session_control takes expect_claim or only_if_unclaimed, "
+                "not both: a row cannot be simultaneously claimed by a given "
+                "consumer and unclaimed"
+            )
         params: dict[str, Any] = {
             "applied_at": time.time(),
             "result": result,
@@ -5790,6 +5809,8 @@ class StateDB:
         if expect_claim is not None:
             sql += " AND result = :expect_claim"
             params["expect_claim"] = expect_claim
+        elif only_if_unclaimed:
+            sql += " AND result IS NULL"
         async with self._tx() as conn:
             written = await conn.execute(text(sql), params)
             return bool(written.rowcount)
@@ -5809,10 +5830,18 @@ class StateDB:
         outcome the consumer itself recorded, or to skip a row that the ordinary
         teardown sweep should be rejecting instead.
 
-        The claim it replaces is preserved in the stored result, because the
+        The claim it replaces is kept verbatim in the stored result, because the
         record of who held a message and what a human then decided about it is
         the whole value of leaving the row standing in the first place.
         """
+        # The read decides and the write checks that the decision still holds.
+        # On PostgreSQL the claimant can commit its own outcome between the two
+        # statements, so the compare-and-set below is what refuses to overwrite
+        # it -- and the row count is what stops this returning a receipt for a
+        # write that never happened. Locking the row on the read instead was
+        # tried and removed: the UPDATE takes the same row lock a moment later,
+        # so the lock changed no outcome and only made the refusal arrive by a
+        # different route. SQLite serialises writers, so neither applies there.
         async with self._tx() as conn:
             row = (
                 (
@@ -5827,12 +5856,11 @@ class StateDB:
             prior = (row or {}).get("result")
             if not str(prior or "").startswith("applying"):
                 return None
-            held_by = str(prior).partition(":")[2] or "an unnamed consumer"
             stored = (
-                f"{outcome}: resolved by {actor or 'an operator'} after "
-                f"{held_by} claimed it and never reported back"
+                f"{outcome}: resolved by {actor or 'an unnamed operator'} after "
+                f"the claim {prior!r} was taken and never reported back"
             )
-            await conn.execute(
+            written = await conn.execute(
                 text(
                     "UPDATE session_controls SET applied_at = :applied_at, result = :result "
                     "WHERE id = :id AND result = :prior"
@@ -5844,6 +5872,8 @@ class StateDB:
                     "prior": prior,
                 },
             )
+            if not written.rowcount:
+                return None
         return stored
 
     async def get_session_control(self, control_id: str) -> dict[str, Any] | None:

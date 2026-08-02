@@ -990,3 +990,118 @@ async def test_the_terminal_header_does_not_say_never_landed_over_a_claimed_row(
     )
     assert "outcome unknown" in rendered
     assert "claimed by leg-a" in rendered
+
+
+@pytest.mark.anyio
+async def test_the_tombstone_cannot_reject_a_row_claimed_after_it_read_the_queue(temp_db_path):
+    """The snapshot the sweep decides from is not the state it writes against.
+
+    Reading the pending rows and then rejecting the ones that looked unclaimed
+    is a check against a value that changes: another leg sitting at its own turn
+    boundary can claim the row and hand the steer to the model inside that
+    window. The unconditional write then records a delivered message as never
+    delivered, and the claimant's own guarded finalize correctly refuses, so the
+    false outcome is what survives. The guard has to travel with the write.
+    """
+
+    class _ClaimsDuringTheRead:
+        """Real DB, except the pending-row read leaves a claim behind it.
+
+        This is the interleave stated as a sequence rather than raced for: the
+        claim lands after the sweep has its snapshot and before the sweep
+        writes, which is the whole window.
+        """
+
+        def __init__(self, db, control_id: str) -> None:
+            self._db = db
+            self._control_id = control_id
+
+        def __getattr__(self, name):
+            return getattr(self._db, name)
+
+        async def list_pending_session_controls(self, session_id):
+            rows = await self._db.list_pending_session_controls(session_id)
+            await self._db.mark_session_control_applying(self._control_id, owner="leg-a")
+            return rows
+
+    async with StateDB() as db:
+        sid = await _make_agent_session(db)
+        cid = await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "go check the logs"}
+        )
+        await _terminalize(db, sid)
+
+        wrapped = _ClaimsDuringTheRead(db, cid)
+        await _tombstone_pending_steers({"db": wrapped, "session_id": sid})
+
+        row = await db.get_session_control(cid)
+        assert row["result"] == "applying:leg-a", (
+            "the sweep overwrote a claim taken after its snapshot, so a steer the "
+            f"claimant may already have delivered now reads as {row['result']!r}"
+        )
+        assert row["applied_at"] is None
+
+        # The claimant can still report its own outcome, which is the point:
+        # an overwrite would have made its guarded finalize a no-op forever.
+        assert await db.finalize_session_control(
+            cid, result="applied", expect_claim="applying:leg-a"
+        )
+        assert (await db.get_session_control(cid))["result"] == "applied"
+
+
+@pytest.mark.anyio
+async def test_a_hand_resolution_records_who_resolved_it(temp_db_path):
+    """An operator action that records no operator is the wedge one level up.
+
+    The row exists so a reader can find out who held the message and who then
+    decided about it. A constant standing in for the second half leaves the
+    record saying a human decided and not which one, which is the same dead end
+    the verb was built to end.
+    """
+    from lionagi.cli.orchestrate._control import run_ctl_resolve
+
+    async with StateDB() as db:
+        sid = await _make_agent_session(db)
+        cid = await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "did this go out?"}
+        )
+        await db.mark_session_control_applying(cid, owner="20260802T120000-deadleg")
+        await _terminalize(db, sid)
+
+    rc = run_ctl_resolve(argparse.Namespace(control_id=cid, outcome="applied", actor="leo@console"))
+    assert rc == 0
+
+    async with StateDB() as db:
+        stored = (await db.get_session_control(cid))["result"]
+    assert "leo@console" in stored, f"the resolver is not in the record: {stored!r}"
+    assert "applying:20260802T120000-deadleg" in stored, (
+        f"the claim was not preserved verbatim: {stored!r}"
+    )
+
+
+@pytest.mark.anyio
+async def test_a_hand_resolution_falls_back_to_the_os_account_not_a_placeholder(temp_db_path):
+    """Without --by the record still names somebody real.
+
+    Defaulting to a placeholder would make the identity optional in practice,
+    since nothing prompts for it; the account running the command is already a
+    real answer.
+    """
+    import getpass
+
+    from lionagi.cli.orchestrate._control import run_ctl_resolve
+
+    async with StateDB() as db:
+        sid = await _make_agent_session(db)
+        cid = await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "no --by given"}
+        )
+        await db.mark_session_control_applying(cid, owner="leg-a")
+        await _terminalize(db, sid)
+
+    rc = run_ctl_resolve(argparse.Namespace(control_id=cid, outcome="abandoned", actor=None))
+    assert rc == 0
+
+    async with StateDB() as db:
+        stored = (await db.get_session_control(cid))["result"]
+    assert getpass.getuser() in stored, f"no real identity was recorded: {stored!r}"

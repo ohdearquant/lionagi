@@ -184,27 +184,43 @@ steer landing as a warm continuation turn at the run's next turn boundary.
   session that no consumer ever claimed as `rejected: run reached terminal status
   before the steer could land — use \`li agent -r\`` (claimed rows are the bullet
   below). Teardown already runs on every terminal path. The
-  tombstone runs after the terminal transition, not before it, which is what leaves the
+  tombstone runs after that teardown, not before it, which is what normally leaves the
   two ends with no gap between them: a control that got in was admitted while the
-  session still read running and is therefore committed before that transition and
-  visible to the sweep, and a control arriving after it is refused at the writer. The
-  tombstone is skipped when auto-resume keeps the run alive, because the resumed leg's
-  own drain will consume the steer.
+  session still read running and is therefore committed before the terminal transition
+  and visible to the sweep, and a control arriving after it is refused at the writer.
+  Teardown can also fail and return the status it was asked for without having written
+  it, so the sweep re-reads the stored session and declines a non-terminal one rather
+  than trusting the call order. The tombstone is skipped when auto-resume keeps the run
+  alive, because the resumed leg's own drain will consume the steer.
 - **A claimed row is never resolved by anything but its claimant.** The tombstone
-  finalizes only rows no consumer ever claimed. A claimed row belongs to the leg named
+  finalizes only rows no consumer ever claimed, and that condition rides the write
+  rather than being read off the pending-row snapshot. The distinction is the whole
+  guarantee: another leg sitting at its own turn boundary can claim a row and hand the
+  steer to the model between the sweep's read and its write, and an unconditional write
+  would then record a delivered message as never delivered while the claimant's own
+  guarded finalize correctly refused, leaving the false outcome as the one that
+  survived. A claimed row belongs to the leg named
   in its claim, which may be another leg still inside its provider call or one that died
   between the claim and the apply, and `rejected` would assert that the message was not
   delivered, which nothing at teardown knows. The row stays visible as claimed. Nothing
   auto-resolves it on a timer either, because a timer would record the same guess with a
   delay. The status surface renders the owner and the claim's age so the operator who
   finds the wedge can decide dead-versus-slow there, and `li o ctl resolve <control-id>
-  --as applied|abandoned` is how they then close it. That verb exists because the design
-  requires a human to end this state, and a state nothing in the product can end is not
-  a degraded state but an abandoned row: it refuses anything that is not a claimed row,
-  so it can neither overwrite an outcome a consumer recorded itself nor stand in for the
-  teardown sweep, and it preserves the claim it replaces in the stored result, since the
-  record of who held a message and what a human then decided about it is the reason the
-  row was kept standing at all.
+  --as applied|abandoned [--by <who>]` is how they then close it. That verb exists because
+  the design requires a human to end this state, and a state nothing in the product can
+  end is not a degraded state but an abandoned row. It refuses anything that is not a
+  claimed row, so it can neither overwrite an outcome a consumer recorded itself nor
+  stand in for the teardown sweep. It records who resolved it, defaulting to the account
+  running the command rather than to a placeholder, because an operator action that
+  leaves no operator identity recreates one level up the dead end it is closing. It keeps
+  the claim it replaces verbatim, since the record of who held a message and who then
+  decided about it is the reason the row was kept standing at all. And it reports nothing
+  when its own conditional write matches no rows, which is what happens on PostgreSQL if
+  the claimant reports back between the resolver's read and its write: the compare-and-set
+  refuses correctly, and returning the composed result anyway would hand the operator a
+  receipt for a write that never landed. Locking the row on that read instead was tried
+  and removed, because the UPDATE takes the same row lock a moment later and the lock
+  therefore changed no outcome.
 - **Forced-consumer honesty.** The tombstone's failure path logs, but that log has no
   forced consumer and is not the guarantee. The guarantee is state-shaped and computed
   at read time: the status surface renders an unclaimed pending control on a terminal

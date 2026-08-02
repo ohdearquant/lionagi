@@ -1011,6 +1011,16 @@ def add_orchestrate_subparser(
             "reached the run, 'abandoned' if it did not and will not."
         ),
     )
+    ctl_resolve.add_argument(
+        "--by",
+        dest="actor",
+        default=None,
+        help=(
+            "Who resolved it, recorded beside the claim. Defaults to the OS "
+            "account running the command; pass this when that is not the person "
+            "who found out."
+        ),
+    )
 
     return {"fanout": fo, "flow": fl, "ctl": ctl}
 

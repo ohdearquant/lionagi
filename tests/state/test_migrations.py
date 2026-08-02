@@ -40,6 +40,26 @@ def _create_pre_cc_session_db(db_path: Path) -> None:
         conn.execute("ALTER TABLE sessions RENAME COLUMN cc_session_id TO legacy_cc_session_id")
 
 
+def _create_pre_claim_controls_db(db_path: Path) -> None:
+    """Create a current schema whose session_controls table predates claimed_at."""
+    from lionagi.state.db import _SCHEMA_PATH
+
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(_SCHEMA_PATH.read_text())
+        conn.execute("ALTER TABLE session_controls DROP COLUMN claimed_at")
+        conn.execute("INSERT INTO progressions (id, created_at) VALUES ('prog-1', 1.0)")
+        conn.execute(
+            "INSERT INTO sessions (id, created_at, updated_at, progression_id) "
+            "VALUES ('sess-1', 1.0, 1.0, 'prog-1')"
+        )
+        conn.execute(
+            "INSERT INTO session_controls "
+            "(id, session_id, verb, payload, created_at, applied_at, result) "
+            "VALUES ('ctl-1', 'sess-1', 'message', '{\"text\": \"queued before\"}', "
+            "1.0, NULL, NULL)"
+        )
+
+
 def _open_state_db_worker(
     db_path: str,
     start_barrier,
@@ -168,6 +188,27 @@ async def old_schema_db():
                 schedule_id TEXT NOT NULL
             )
         """)
+        # session_controls as it stood before the claim protocol: no claimed_at.
+        # Present here so the migration that adds that column is exercised
+        # against a table that actually exists — the reconcile test skips absent
+        # tables, so a controls table missing from this fixture would let an
+        # empty migration list pass as though it had been checked.
+        await db.execute("""
+            CREATE TABLE session_controls (
+                id         TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                verb       TEXT NOT NULL,
+                payload    TEXT,
+                created_at REAL NOT NULL,
+                applied_at REAL,
+                result     TEXT
+            )
+        """)
+        await db.execute(
+            "INSERT INTO session_controls "
+            "(id, session_id, verb, payload, created_at, applied_at, result) "
+            "VALUES ('ctl-old', 'sess-old', 'message', '{\"text\": \"before\"}', 1.0, NULL, NULL)"
+        )
         await db.commit()
         yield db
 
@@ -192,6 +233,55 @@ async def test_migration_columns_constant_is_importable():
         "dispatch_outbox",  # ADR-0092 — new table registered for future migrations
     }
     assert set(MIGRATION_COLUMNS.keys()) == expected_tables
+
+
+async def test_an_existing_controls_table_gains_claimed_at_without_losing_its_rows(tmp_path):
+    """The claimed_at migration runs against a controls table that already exists.
+
+    The generic reconcile test skips tables the old-schema fixture does not
+    create, so it cannot tell an applied migration from an empty migration list.
+    This drives the real StateDB open path against a store whose
+    session_controls predates the column and still holds a pending row.
+    """
+    from sqlalchemy import text
+
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "pre-claim-controls.db"
+    _create_pre_claim_controls_db(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        before = {row[1] for row in conn.execute("PRAGMA table_info(session_controls)")}
+    assert "claimed_at" not in before, "fixture did not actually predate the column"
+
+    state = StateDB(db_path)
+    await state.open()
+    try:
+        async with state._read() as conn:
+            columns = (
+                (await conn.execute(text("PRAGMA table_info(session_controls)"))).mappings().all()
+            )
+            row = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT id, verb, result, claimed_at FROM session_controls "
+                            "WHERE id = 'ctl-1'"
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+    finally:
+        await state.close()
+
+    claimed_at = next(c for c in columns if c["name"] == "claimed_at")
+    assert claimed_at["notnull"] == 0, "claimed_at must stay nullable for pre-existing rows"
+    assert row is not None, "the pre-migration control row did not survive the upgrade"
+    assert row["verb"] == "message"
+    assert row["result"] is None
+    assert row["claimed_at"] is None
 
 
 async def test_migration_columns_no_duplicates():

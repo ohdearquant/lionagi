@@ -192,20 +192,44 @@ def run_ctl_msg(args: argparse.Namespace) -> int:
     return _dispatch_control(entity_id=args.id, verb="message", payload={"text": args.text})
 
 
-async def _resolve_control_inner(*, control_id: str, outcome: str) -> tuple[str, int]:
+def _resolving_actor(explicit: str | None = None) -> str:
+    """Who is recorded as having resolved a claim.
+
+    An operator action that leaves no operator identity recreates the problem
+    it is closing one level up: the row would say a human decided, and not
+    which one. The OS account is a real identity and is available without
+    asking, so it is the default rather than a placeholder; --by overrides it
+    for the case where the person running the command is not the account.
+    """
+    if explicit and explicit.strip():
+        return explicit.strip()
+    import getpass
+
+    try:
+        return getpass.getuser()
+    except Exception:  # noqa: BLE001 — no controlling user (daemon, odd container)
+        return "an unnamed operator"
+
+
+async def _resolve_control_inner(
+    *, control_id: str, outcome: str, actor: str | None = None
+) -> tuple[str, int]:
     from lionagi.state.db import StateDB, state_db_known_absent
 
     if state_db_known_absent():
         return "state.db not found — no runs recorded yet", EXIT_UNKNOWN
 
     async with StateDB() as db:
-        stored = await db.resolve_claimed_session_control(control_id.strip(), outcome=outcome)
+        stored = await db.resolve_claimed_session_control(
+            control_id.strip(), outcome=outcome, actor=_resolving_actor(actor)
+        )
     if stored is None:
-        # One message rather than a guess between the three ways to get here,
+        # One message rather than a guess between the four ways to get here,
         # because the remedy differs and this command must not invent which one
         # applies: the id may not exist, the row may already carry a terminal
-        # result, or it may be pending but unclaimed, which the run's own
-        # teardown sweep is what closes.
+        # result, it may be pending but unclaimed (which the run's own teardown
+        # sweep is what closes), or its consumer may have reported back between
+        # this command's read and its write.
         return (
             f"control {control_id[:8]} is not a claimed row — `li o ctl status` "
             "shows which controls are claimed and by whom; only those can be "
@@ -227,7 +251,11 @@ def run_ctl_resolve(args: argparse.Namespace) -> int:
 
     output, exit_code = run_async(
         asyncio.wait_for(
-            _resolve_control_inner(control_id=args.control_id, outcome=args.outcome),
+            _resolve_control_inner(
+                control_id=args.control_id,
+                outcome=args.outcome,
+                actor=getattr(args, "actor", None),
+            ),
             timeout=_DB_BUSY_TIMEOUT_S,
         )
     )

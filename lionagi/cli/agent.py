@@ -508,14 +508,17 @@ async def _tombstone_pending_steers(live: dict | None) -> None:
     control on a terminal run as never-landed, so the operator still sees
     the truth.
 
-    Only rows no consumer ever claimed are tombstoned. A claimed row belongs to
-    the leg that took it, which may be another leg still inside its provider
-    call, or one that died between the claim and the apply. Rejecting either
-    would assert that the message was not delivered, which nothing here knows;
-    the row stays visible as claimed, carrying its owner and its age, for an
-    operator to resolve. Called after the run's terminal transition, so a
-    control admitted against the still-running session is already committed and
-    visible to the read below, and one arriving later is refused at the writer.
+    Only rows no consumer ever claimed are tombstoned, and that is enforced at
+    the write rather than read off the snapshot. A claimed row belongs to the
+    leg that took it, which may be another leg still inside its provider call,
+    or one that died between the claim and the apply. Rejecting either would
+    assert that the message was not delivered, which nothing here knows; the row
+    stays visible as claimed, carrying its owner and its age, for an operator to
+    resolve. Called after the run's teardown, so a control admitted against a
+    still-running session is normally already committed and visible to the read
+    below, and one arriving later is refused at the writer; the terminal check
+    at the top of this function is what makes that hold when teardown failed to
+    persist the transition it was asked for.
     """
     if not live or not live.get("session_id"):
         return
@@ -541,12 +544,20 @@ async def _tombstone_pending_steers(live: dict | None) -> None:
         for row in stale:
             if row.get("result") is not None:
                 continue
+            # The snapshot above says the row was unclaimed when it was read,
+            # which is not the same as unclaimed when this writes. Another leg
+            # that read the row at its own turn boundary can claim it and hand
+            # the steer to the model in between, so the guard has to travel with
+            # the write: only_if_unclaimed makes the database re-check, and a
+            # row that got claimed in the window is left alone rather than
+            # recorded as never delivered.
             await live["db"].finalize_session_control(
                 row["id"],
                 result=(
                     "rejected: run reached terminal status before "
                     "the steer could land — use `li agent -r`"
                 ),
+                only_if_unclaimed=True,
             )
     except Exception as exc:  # noqa: BLE001 — teardown must not raise
         log_error(f"steer tombstone write failed: {exc!r}")
@@ -1128,15 +1139,19 @@ async def _run_agent(
                 defer_terminal=will_auto_resume,
                 **telemetry_kw,
             )
-            # Terminal-race tombstone, after the terminal transition rather than
-            # before it (skipped when auto-resume keeps the run alive — the
-            # resumed leg's drain will consume the steer). Ordering it this way
-            # is what leaves no gap for a control to slip through: the writer
-            # admits one only while the session reads 'running', so a control
-            # that got in is committed before the transition above and is
-            # therefore visible to the sweep below, and a control that arrives
-            # after the transition is refused at the writer instead of landing
-            # on a terminal run with nobody left to consume it.
+            # Terminal-race tombstone, ordered after the teardown above rather
+            # than before it (skipped when auto-resume keeps the run alive — the
+            # resumed leg's drain will consume the steer). When that teardown
+            # does persist the terminal transition, this ordering is what leaves
+            # no gap for a control to slip through: the writer admits one only
+            # while the session reads 'running', so a control that got in is
+            # committed before the transition and is therefore visible to the
+            # sweep below, and one arriving after it is refused at the writer
+            # instead of landing on a terminal run with nobody left to consume
+            # it. Teardown can also fail and return the requested status without
+            # having written it, which is why the sweep re-reads the stored
+            # session and declines a non-terminal one rather than trusting the
+            # call order.
             if not will_auto_resume:
                 await _tombstone_pending_steers(live)
             if effective_status != _terminal_status:
