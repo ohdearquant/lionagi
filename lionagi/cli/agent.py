@@ -270,6 +270,11 @@ def _form_to_context_block(form) -> str:
     return "\n".join(lines)
 
 
+# Heartbeat tick interval. Module-level so a test can shrink it rather than
+# waiting out a real 60s tick.
+_HEARTBEAT_INTERVAL_S = 60
+
+
 class _ProgressReport:
     """Heartbeat text that distinguishes a working agent from a merely live one.
 
@@ -942,36 +947,39 @@ async def _run_agent(
     _terminal_status = "completed"
     _terminal_exc: BaseException | None = None
 
+    # Armed unconditionally, not only when --timeout is set: the steer receipt
+    # ack below is the operator's only signal that a queued message was
+    # received (vs. lost) before the turn ends, and a leg spawned without a
+    # timeout is exactly the case where a turn can run long enough for that
+    # distinction to matter. The extra task is one sleeping coroutine per leg,
+    # negligible next to the provider call it watches.
     _heartbeat_task = None
-    if timeout is not None:
-        import asyncio as _asyncio
-        import time as _hb_time
+    import asyncio as _asyncio
+    import time as _hb_time
 
-        _hb_report = _ProgressReport(branch, _hb_time.monotonic())
+    _hb_report = _ProgressReport(branch, _hb_time.monotonic())
 
-        async def _heartbeat_loop():
-            while True:
-                await _asyncio.sleep(60)
-                line = _hb_report.line(_hb_time.monotonic())
-                # Steer receipt ack: a queued operator message cannot land
-                # mid-turn, so tell the operator it was received and when it
-                # will apply. Fail-safe — the heartbeat never crashes the leg.
-                if live and live.get("session_id"):
-                    try:
-                        _pending = await live["db"].list_pending_session_controls(
-                            live["session_id"]
-                        )
-                        _n = sum(1 for c in _pending if c.get("verb") == "message")
-                        if _n:
-                            line += f"  [steer queued x{_n} — lands at end of current turn]"
-                    except Exception:  # noqa: BLE001, S110 — ack is best-effort color
-                        pass
-                hint(line)
+    async def _heartbeat_loop():
+        while True:
+            await _asyncio.sleep(_HEARTBEAT_INTERVAL_S)
+            line = _hb_report.line(_hb_time.monotonic())
+            # Steer receipt ack: a queued operator message cannot land
+            # mid-turn, so tell the operator it was received and when it
+            # will apply. Fail-safe — the heartbeat never crashes the leg.
+            if live and live.get("session_id"):
+                try:
+                    _pending = await live["db"].list_pending_session_controls(live["session_id"])
+                    _n = sum(1 for c in _pending if c.get("verb") == "message")
+                    if _n:
+                        line += f"  [steer queued x{_n} — lands at end of current turn]"
+                except Exception:  # noqa: BLE001, S110 — ack is best-effort color
+                    pass
+            hint(line)
 
-        try:
-            _heartbeat_task = _asyncio.ensure_future(_heartbeat_loop())
-        except RuntimeError:
-            _heartbeat_task = None
+    try:
+        _heartbeat_task = _asyncio.ensure_future(_heartbeat_loop())
+    except RuntimeError:
+        _heartbeat_task = None
 
     _leg_deadline = (time.monotonic() + timeout) if timeout is not None else None
     try:

@@ -514,8 +514,13 @@ async def test_run_agent_heartbeat_started_when_timeout_set(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_run_agent_no_heartbeat_when_timeout_none(monkeypatch, tmp_path):
-    """When timeout is None, no heartbeat task is created."""
+async def test_run_agent_heartbeat_created_when_timeout_none(monkeypatch, tmp_path):
+    """A heartbeat task is created even when timeout is None.
+
+    The heartbeat carries the only receipt an operator gets that a queued
+    steer was received before the turn ends (see ADR-0108), so it is armed
+    regardless of --timeout, not just when a deadline happens to be set.
+    """
 
     import lionagi.cli.agent as agent_mod
     from lionagi import Branch
@@ -581,6 +586,7 @@ async def test_run_agent_no_heartbeat_when_timeout_none(monkeypatch, tmp_path):
 
     await _run_agent("codex/gpt-5.3-codex-spark", "do stuff", timeout=None, bypass=True)
 
-    assert not heartbeat_tasks_created, (
-        f"Expected no heartbeat task when timeout=None, got {len(heartbeat_tasks_created)}"
+    assert heartbeat_tasks_created, (
+        "Expected a heartbeat task even when timeout=None — the steer receipt "
+        "ack must not silently depend on --timeout being set"
     )
