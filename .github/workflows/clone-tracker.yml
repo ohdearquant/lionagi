@@ -94,6 +94,15 @@ jobs:
           num /tmp/views.json .uniques
           num /tmp/repo.json .stargazers_count
           num /tmp/repo.json .forks_count
+          # Type and sign are not enough on their own. A unique cloner clones at
+          # least once, so `uniques` can never exceed `count`, and a pair that
+          # breaks that is not a small measurement error, it is a response this
+          # code does not understand. Storing it would put an impossible
+          # measurement in a ledger whose whole purpose is being the only
+          # surviving copy.
+          rel() { jq -e '(.uniques|type)=="number" and (.count|type)=="number" and .uniques <= .count' "$1" > /dev/null; }
+          rel /tmp/clones.json
+          rel /tmp/views.json
           jq -n \
             --slurpfile clones /tmp/clones.json \
             --slurpfile views /tmp/views.json \
