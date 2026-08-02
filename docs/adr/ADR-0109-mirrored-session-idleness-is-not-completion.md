@@ -110,11 +110,19 @@ status meaning both "quiet" and "finished" no matter how the window is tuned.
 window to decide the second one. The window stops being a disguise for a missing
 distinction and becomes an ordinary threshold on a distinction that now exists.
 
-**Recommendation: (B), amended.** It is the only option that makes the stored
-value true, and it addresses all three consequences rather than relocating them:
-no false terminal for stream and view consumers, override events reduced from one
-per five-minute lull to one per genuine post-`ended_window` resume, and nothing
-entering the terminal-delivery ledger for a session that merely went quiet. Its
+**Recommendation: (B), amended.** Stated precisely, because an earlier draft
+claimed more than this design delivers and the overclaim is the sentence an
+implementer would quote: `idle` is *true*, in that it asserts only short-window
+silence, which is exactly what was observed. `completed` after `ended_window`
+remains an *inference* that the transcript ended, and a reversible one; the
+amendment below is explicit that the error decays rather than disappears. What
+(B) buys is that the two claims stop sharing one value, so the false-terminal
+window shrinks from five minutes to a day and each consumer can tell which of
+the two it is looking at. Against the three consequences: no terminal status at
+all for a five-minute lull, so stream and view consumers stop being misled on the
+common path; override events drop from one per lull to one per genuine
+post-`ended_window` resume; and nothing enters the terminal-delivery ledger for a
+session that merely went quiet. Its
 cost is a one-time policy and consumer change, which is bounded and enumerable,
 against (A)'s open-ended obligation on every future sweep author.
 
@@ -225,14 +233,53 @@ sweep, `li kill --all-stale` and `li state doctor` all at once. A status whose
 purpose is to exempt rows from sweeps is a status that must not be reachable by
 accident.
 
-Mechanism, so this is enforceable rather than documented: `idle` transitions
-carry a reason code under a dedicated prefix (`session.idle.*`) registered in
-`lionagi/state/reasons.py`, and the transition service rejects any transition
-targeting `idle` whose actor is not one of the mirror reconcile actors. The
-actor is already carried on every transition, so this needs no new field. A
-declared edge alone would not be enough: edges say what transitions exist, not
-who may perform them, which is the same distinction ADR-0105 relied on when it
-chose an override over a declared `terminal → running` edge.
+Mechanism. An earlier draft of this section said the restriction was enforceable
+today by registering a `session.idle.*` reason prefix and having the transition
+service reject a non-mirror actor. **That is wrong, and the way it is wrong is
+worth recording, because it would have handed an implementer a false premise.**
+Three things block it, each read at the source:
+
+- `EdgePolicy` (`lionagi/state/lifecycle/models.py:69-73`) carries
+  `actor_types`, not an allow-list of actor identities. Both reconcilers write
+  as `system`, so an actor-type rule admits every system writer and restricts
+  nothing that matters here.
+- The mirror does not write through the edge-enforcing path at all. It calls
+  `StateDB.update_status` (`lionagi/state/_mirror_common.py:46-68`), which the
+  compatibility adapter routes to `service._transition`
+  (`lionagi/state/lifecycle/adapters.py:98-99`) without passing
+  `enforce_edges`. That parameter defaults to `False`
+  (`lionagi/state/lifecycle/service.py:225`), and at
+  `service.py:293` the declared edges are read as an empty tuple when it is
+  false. So the declared-edge policy, `actor_types` included, is never
+  inspected on the only path that writes a mirrored session's status.
+- A reason prefix is not an authorization: `lionagi/state/reasons.py:282-304`
+  validates exact registered codes, and the session policy admits the whole
+  `session` prefix (`lionagi/state/lifecycle/policy.py:205-216`). Registering
+  `session.idle.*` binds no code to either reconciler.
+
+So the restriction is a requirement this ADR states and a capability the
+lifecycle layer does not yet have. Implementing `idle` means implementing the
+restriction with it, in this order:
+
+1. Give the edge contract an identity-level rule, an explicit actor allow-list,
+   alongside the existing `actor_types`. Type is the wrong granularity for a
+   status whose whole purpose is to exempt rows from sweeps.
+2. Move the mirror's status write onto an edge-enforcing call, or give the
+   compatibility adapter an enforcing variant, so that policy is consulted at
+   all on that path. Without this step, step 1 is dead code.
+3. Register the exact reason codes and bind them to the reconcile actors, rather
+   than relying on a prefix.
+
+Verification arms for the restriction are listed with the others below, and they
+must include a negative: a non-mirror actor attempting `running → idle` is
+rejected, checked on the same write path the mirror actually uses rather than on
+an edge-enforcing path the mirror never takes. A test that passes only because
+it called the enforcing path would certify a rule the production path skips.
+
+A declared edge alone would not be enough even after those three steps: edges say
+what transitions exist, not who may perform them, which is the same distinction
+ADR-0105 relied on when it chose an override over a declared `terminal → running`
+edge.
 
 ## Consumers keying on session terminal status
 
@@ -252,12 +299,33 @@ status this note is about. That leaves the 11 consumer files enumerated below.
 | `studio/services/run_resume_worker.py:66` | Unverified | not driven |
 | `cli/monitor.py:1089,1101,1155` | Unverified | not driven |
 | `cli/machine.py:529` | Unverified, display flag | not driven |
-| `cli/_runs.py:557,707,884,1064` | Probably not: operates on the run's own session | not driven; the ADR-0105 reopen path at 1064 is keyed by a branch id, and a mirror branch id is deterministic, so a hand-typed resume against one is an open edge case |
-| `cli/agent.py:933`, `cli/orchestrate/_orchestration.py:1654`, `hooks/builtins.py:55,114` | Probably not: own run's session | not driven |
+| `cli/_runs.py:557,707,884,1064` | **Yes, by construction, and this row was wrong in an earlier draft** | read at the source: `_linked_engine_session` (`:436-461`) resolves `session_db_id(engine_session_uid)`, which *is* the claude/codex-mirror row, and `:557` branches on that row's terminal status while `:576` handles it being `running`. Adding `idle` gives a linked row a third value that matches neither branch, so a session that is merely quiet falls through to the phantom `failed` the `running` branch exists to suppress. See the obligation below. Separately, and unchanged from the earlier draft: the ADR-0105 reopen path at `:1064` is keyed by a branch id, and a mirror branch id is deterministic, so a hand-typed resume against one remains an open edge case. |
+| `cli/agent.py:933` | Probably not: own run's session | not driven |
+| `cli/orchestrate/_orchestration.py:1654` | Probably not: own run's session | not driven |
+| `hooks/builtins.py:55,114` | Probably not: own run's session | not driven |
 
 The unverified rows are not a claim that they are safe. Each must be driven
 before this lands, because the entire point of the change is that these
 consumers have been reading a value that did not mean what they took it to mean.
+
+**Obligation from the `cli/_runs.py` row, since a wrong disposition there is what
+this section exists to prevent.** Introducing `idle` is not additive for a
+consumer written as a terminal branch plus a `running` branch: the new value is
+in neither set, so it takes the fall-through. `_teardown_common` must decide
+explicitly what a linked mirror row in `idle` means, and the answer is almost
+certainly the same as `running`, since an idle transcript is a live session that
+is quiet and suppressing the phantom `failed` is exactly as correct there. That
+decision needs a regression driving a linked mirror row in `idle` through the
+provider-error path, and it is the first arm to write, because it is the one
+place where an ADR about statuses changes behavior in code that never mentions
+the mirror.
+
+The general form is worth stating once, because it applies to every row above
+that this note marked unverified: **a status vocabulary change is a change to
+every consumer that partitions statuses into two sets.** Adding a third value
+does not preserve either branch; it silently creates a third path that nobody
+wrote. Driving a consumer therefore means driving it with the new value, not
+confirming that it still compiles.
 
 ## Migration of existing rows
 
@@ -319,7 +387,17 @@ mirror reconciler**, because those are real completions and rewriting one to
   mirror reconciler is **rejected**, paired in the same run with a mirror actor
   performing the same transition successfully. Asserting only the rejection
   would pass against a policy that refuses `idle` from everyone, which would
-  disable the feature while looking enforced.
+  disable the feature while looking enforced. Both arms must go through the
+  entry point the mirror actually uses, `StateDB.update_status`, and not through
+  an edge-enforcing call: as the mechanism section records, the compatibility
+  path does not enforce declared edges, so a test written against the enforcing
+  path would certify a rule the production path skips.
+- A regression that a linked mirror session in `idle` is treated as live by
+  `cli/_runs.py`'s provider-error reconciliation, not left to the fall-through
+  that yields a phantom `failed`. Drive it with three linked rows in one
+  fixture, terminal, `running` and `idle`, since an implementation that folds
+  `idle` into the terminal branch also passes a test that only checks `idle`
+  alone did not crash.
 - A regression that `idle → running` produces no override event and no row in
   the terminal-delivery ledger, driven by reading `reconcile_unacknowledged`
   before and after. This is the only check that covers consequence 3, which has
