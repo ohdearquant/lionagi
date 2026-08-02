@@ -10,15 +10,21 @@ in-source essay. Source points here with `# See docs/internals/support-libs.md#<
 
 ## _spec_limits: MAX_SPEC_PROMPT_CHARS
 
-`MAX_SPEC_PROMPT_CHARS` is one number, read by every surface that validates
-an orchestration spec: the CLI spec validator and two Studio services. It used
-to be written out three times, which meant three chances for the copies to
-disagree and no single place to raise the bound.
+`MAX_SPEC_PROMPT_CHARS` is one number, read by every surface that validates an
+orchestration spec. The readers are named rather than counted, because a count
+goes stale silently when a reader is added while a missing name is visible:
 
-The module deliberately imports nothing — two of its three readers are
-request-path services whose import cost is paid on startup, and a constant
-that arrives with a module graph behind it charges every one of them for a
-number.
+- `lionagi/cli/orchestrate/__init__.py`
+- `lionagi/studio/services/schedules.py`
+- `lionagi/studio/services/run_resume.py`
+- `lionagi/studio/services/playbooks.py`
+
+It was written out separately in each of them, which meant that many chances for
+the copies to disagree and no single place to raise the bound.
+
+The module deliberately imports nothing. Most of its readers are Studio services
+whose import cost is paid on startup, and a constant that arrives with a module
+graph behind it charges every one of them for a number.
 
 The bound exists for the pathological file, not for the long prompt. An
 orchestration prompt carries the whole task — the brief, the constraints, the

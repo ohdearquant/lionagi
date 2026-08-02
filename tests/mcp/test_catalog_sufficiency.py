@@ -162,3 +162,36 @@ def test_a_catalog_built_call_to_an_ordinary_read_verb_succeeds(tmp_path) -> Non
         result = client.op("job.list", {})
 
     assert result["ok"] is True, json.dumps(result)
+
+
+async def test_the_advertised_tool_description_still_carries_the_call_gates():
+    """The tool's docstring is published metadata, so trimming it changes what
+    every client is told.
+
+    The rest of this module checks that the CATALOG is enough to write the call.
+    This checks the step before it: that the description a client reads at all
+    still says a catalog exists, that fingerprint-gated verbs need the
+    ``schema_fingerprint`` it returns, and that help and ops go in separate
+    calls. A caller that is never told about the fingerprint cannot be rescued
+    by a catalog it has no reason to fetch.
+
+    Asserted against the REGISTERED tool rather than the function's ``__doc__``,
+    because what a client receives is whatever the decorator published, and those
+    are only the same thing for as long as nobody passes an explicit description.
+    """
+    from lionagi.mcp.server import mcp
+
+    tool = await mcp.get_tool("request")
+    described = tool.description or ""
+
+    # Must be present: without these a caller cannot form a gated op.
+    for required in ("schema_fingerprint", "second round-trip", "help=true"):
+        assert required in described, (
+            f"the advertised description no longer mentions {required!r}; "
+            "clients are told less than the server requires"
+        )
+
+    # Must NOT be present: guards the assertion above against passing on a
+    # description that merely got longer. If this ever legitimately appears,
+    # the arm above is the one to re-derive, not this one.
+    assert "TODO" not in described
