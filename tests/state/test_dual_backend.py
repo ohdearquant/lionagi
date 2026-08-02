@@ -736,12 +736,12 @@ async def test_postgres_delete_imported_session_waits_for_an_open_writer(pg_url)
     go. Asserting only the first cannot tell a correct delete from one that
     retains everything.
 
-    The discriminating step is the "still blocked" assertion. Without the table
-    lock the delete does not wait for the open writer at all: it reads a snapshot
-    that predates the uncommitted reference, concludes the message is an orphan,
-    and removes it, so the delete task is already finished at that point and the
-    assertion fails. With the lock the delete cannot even begin reading until the
-    writer commits.
+    The discriminating step is what happens during the writer's open
+    transaction. Without the table lock the delete does not notice the writer at
+    all: it reads a snapshot that predates the uncommitted reference, concludes
+    the message is an orphan, and removes it. With the lock the delete cannot
+    begin reading, so the claimed message is still there for the writer to
+    commit its reference against.
     """
     import asyncio
 
@@ -806,19 +806,43 @@ async def test_postgres_delete_imported_session_waits_for_an_open_writer(pg_url)
         writer_task = asyncio.create_task(writer())
         await asyncio.wait_for(writer_holds_the_row.wait(), timeout=10)
 
-        delete_task = asyncio.create_task(
-            db.delete_imported_session(imported_sid, require_source_kind="imported_codex")
+        # The lock is taken NOWAIT, so the contended attempt refuses instead of
+        # queueing. What matters is the outcome, not which of the two shapes
+        # produced it: while another transaction can still commit a new
+        # reference, this delete must not run at all. Asserting the refusal
+        # alone would be asserting the mechanism, so the retention arms below
+        # are the real evidence — with no lock statement the delete completes
+        # here and destroys the message the writer is about to claim.
+        contended_error: Exception | None = None
+        try:
+            await db.delete_imported_session(imported_sid, require_source_kind="imported_codex")
+        except Exception as exc:  # noqa: BLE001 — classified below
+            contended_error = exc
+
+        # The outcome is the evidence, so it is asserted before the shape of the
+        # refusal: while another transaction can still commit a new reference,
+        # this delete must not have run at all.
+        assert await db.get_session(imported_sid) is not None, (
+            "the delete ran while a writer held an uncommitted reference, so its "
+            "retention check read a snapshot the writer was about to invalidate"
         )
-        # Give the delete every chance to finish if nothing is holding it back.
-        await asyncio.sleep(1.0)
-        assert not delete_task.done(), (
-            "the delete did not wait for the open writer, so its retention check "
-            "is reading a snapshot the writer is about to invalidate"
+        assert await db.get_message(msg_claimed) is not None, (
+            "the message the open writer is in the middle of claiming was destroyed"
+        )
+        # Having established that, the refusal must come from the table lock and
+        # not from something unrelated that would fake this result.
+        assert contended_error is not None, "the contended attempt neither ran nor failed"
+        assert getattr(contended_error.orig, "sqlstate", None) == "55P03", (
+            "the delete failed for some reason other than the unavailable table "
+            f"lock, so this test is no longer exercising the race: {contended_error!r}"
         )
 
         writer_may_commit.set()
         await asyncio.wait_for(writer_task, timeout=10)
-        assert await asyncio.wait_for(delete_task, timeout=30) is True
+        # Uncontended now, so the same call must go through.
+        assert (
+            await db.delete_imported_session(imported_sid, require_source_kind="imported_codex")
+        ) is True
 
         assert await db.get_session(imported_sid) is None
         assert await db.get_session(survivor_sid) is not None
@@ -828,5 +852,126 @@ async def test_postgres_delete_imported_session_waits_for_an_open_writer(pg_url)
         # Direction two: claimed by nobody, so gone. Without this arm a
         # delete that retained every message would pass the assertion above.
         assert await db.get_message(msg_orphan) is None
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_postgres_teardown_does_not_deadlock_the_maintenance_writer(pg_url):
+    """The teardown and ``prune_old_data`` reach the same tables in opposite
+    orders, which is the shape a lock cycle needs.
+
+    ``prune_old_data`` updates ``sessions`` and then deletes from
+    ``progressions``; the teardown's lock statement names ``branches`` and
+    ``progressions`` before ``sessions``. A comma-separated ``LOCK TABLE`` takes
+    those one at a time rather than atomically, so a blocking form holds the
+    first two while waiting for the third and deadlocks against a maintenance
+    pass already holding a ``sessions`` row. This drives that exact interleaving
+    with the maintenance writer's real statement order.
+
+    The discriminating assertion is that the maintenance transaction's second
+    statement completes. Restore the blocking lock and PostgreSQL detects the
+    cycle and aborts one of the two transactions with ``40P01``, which is a
+    whole pass lost rather than a slow one.
+    """
+    import asyncio
+
+    from sqlalchemy import text
+
+    db = StateDB(url=pg_url)
+    await db.open()
+    try:
+        assert db.dialect == "postgresql"
+
+        now = time.time()
+        msg = _uid()
+        await db.insert_message(
+            {"id": msg, "created_at": now, "content": {"text": "x"}, "role": "user"}
+        )
+        imported_prog, imported_sid = _uid(), _uid()
+        await db.create_progression(imported_prog, [msg])
+        await db.create_session(
+            {
+                "id": imported_sid,
+                "progression_id": imported_prog,
+                "status": "completed",
+                "created_at": now,
+                "updated_at": now,
+                "source_kind": "imported_codex",
+            }
+        )
+        # What the maintenance pass touches: a session row it locks first, and
+        # an unrelated progression it deletes second.
+        maint_prog, maint_sid = _uid(), _uid()
+        maint_own_prog = _uid()
+        await db.create_progression(maint_prog, [])
+        await db.create_progression(maint_own_prog, [])
+        await db.create_session(
+            {
+                "id": maint_sid,
+                "progression_id": maint_own_prog,
+                "status": "completed",
+                "created_at": now,
+                "updated_at": now,
+                "source_kind": "live",
+            }
+        )
+
+        holds_the_session_row = asyncio.Event()
+        may_issue_second = asyncio.Event()
+        outcome: dict[str, object] = {}
+
+        async def maintenance() -> None:
+            """prune_old_data's order: sessions first, then progressions."""
+            async with db._tx() as conn:
+                await conn.execute(
+                    text("UPDATE sessions SET updated_at = updated_at WHERE id = :id"),
+                    {"id": maint_sid},
+                )
+                holds_the_session_row.set()
+                await may_issue_second.wait()
+                try:
+                    await conn.execute(
+                        text("DELETE FROM progressions WHERE id = :p"), {"p": maint_prog}
+                    )
+                    outcome["second"] = "ok"
+                except Exception as exc:  # noqa: BLE001 — the point of the test
+                    outcome["second"] = exc
+
+        maint_task = asyncio.create_task(maintenance())
+        await asyncio.wait_for(holds_the_session_row.wait(), timeout=10)
+
+        delete_task = asyncio.create_task(
+            db.delete_imported_session(imported_sid, require_source_kind="imported_codex")
+        )
+        # Long enough for the teardown to reach its lock statement and either
+        # refuse (NOWAIT) or settle into waiting (blocking).
+        await asyncio.sleep(1.0)
+        may_issue_second.set()
+        await asyncio.wait_for(maint_task, timeout=30)
+
+        second = outcome.get("second")
+        assert second == "ok", (
+            "the maintenance writer's second statement did not complete, so the "
+            f"teardown's table lock is deadlocking a shipped writer: {second!r}"
+        )
+
+        delete_error = None
+        try:
+            await asyncio.wait_for(delete_task, timeout=30)
+        except Exception as exc:  # noqa: BLE001 — inspected below
+            delete_error = exc
+        # Refusing the lock is fine and expected; being chosen as a deadlock
+        # victim is the failure this test exists to catch, on either side.
+        assert getattr(getattr(delete_error, "orig", None), "sqlstate", None) != "40P01", (
+            f"the teardown was aborted as a deadlock victim: {delete_error!r}"
+        )
+
+        # The teardown is retried on a later sweep, and nothing above left the
+        # row in a state that stops it going through.
+        assert (
+            await db.delete_imported_session(imported_sid, require_source_kind="imported_codex")
+        ) is True
+        assert await db.get_session(imported_sid) is None
     finally:
         await db.close()

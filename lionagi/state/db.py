@@ -2307,10 +2307,12 @@ class StateDB:
 
         Fails closed on ownership twice over: the row's ``source_kind`` must equal
         ``require_source_kind`` exactly AND that value must start with
-        ``imported_`` — a live run's session is never eligible, and an importer
-        can only reconcile rows of its own kind (an fs-import, which records
-        first/last message pointers this teardown does not manage, is refused
-        rather than half-deleted). Anything a survivor still references is
+        ``imported_``. A live run's session is never eligible, and an importer
+        naming its own kind cannot reach a different importer's rows. The kind is
+        a mismatch guard rather than an authorization boundary: a caller that
+        names a valid imported kind tears down rows of that kind, so every
+        importer reconciles its own imports through this one method. Anything a
+        survivor still references is
         retained, not deleted: messages held by an outside progression or
         pointed at by a surviving session/branch, and target progressions a
         survivor's progression_id names (together with their messages) — a
@@ -2323,7 +2325,11 @@ class StateDB:
         alone does not: at READ COMMITTED the check reads a snapshot, a
         concurrent writer can commit a new reference after it, and the delete
         would then proceed against a set that is no longer accurate. The table
-        lock below closes that window.
+        lock below closes that window. It is taken NOWAIT, so a teardown that
+        cannot hold every relevant table at once raises instead of waiting; both
+        callers treat that as a row to revisit on a later sweep. Refusing to
+        wait is what keeps this transaction out of any deadlock cycle with a
+        writer that touches the same tables in another order.
         """
         if not require_source_kind.startswith("imported_"):
             return False
@@ -2337,11 +2343,24 @@ class StateDB:
                 # message pointers at rows this teardown would otherwise remove.
                 # EXCLUSIVE conflicts with the ROW EXCLUSIVE that ordinary INSERT
                 # and UPDATE already take, so the writers need no changes and pay
-                # nothing on their own path; only this rare teardown waits.
-                # One statement, fixed order, so it cannot deadlock against
-                # itself.
+                # nothing on their own path.
+                #
+                # NOWAIT is load-bearing, not an optimisation. A comma-separated
+                # LOCK TABLE takes the three locks one at a time in the written
+                # order rather than atomically, so a blocking form holds one
+                # table while waiting for the next, and that closes a cycle with
+                # any writer touching the same tables in a different order.
+                # prune_old_data is exactly such a writer: it updates sessions
+                # before deleting from progressions, the reverse of the order
+                # here. Refusing to wait takes this transaction out of every
+                # possible cycle, because a deadlock needs it to wait while
+                # holding something and it now never waits at all. That holds
+                # for writers added later too, which a chosen lock order would
+                # not. The cost falls entirely on this rare teardown: a
+                # conflicting lock aborts the attempt, and both callers already
+                # log the failure and retry on a later sweep.
                 await conn.execute(
-                    text("LOCK TABLE branches, progressions, sessions IN EXCLUSIVE MODE")
+                    text("LOCK TABLE branches, progressions, sessions IN EXCLUSIVE MODE NOWAIT")
                 )
             row = (
                 (

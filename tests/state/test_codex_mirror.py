@@ -744,3 +744,73 @@ async def test_detached_artifact_suffix_allocation_is_collision_free(db):
     assert rows["art-inv-att"]["name"] == f"verdict (detached {sid})"
     for aid in ("art-att", "art-att2", "art-inv-att"):
         assert rows[aid]["session_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_delete_refuses_a_mismatched_kind_and_still_honours_survivor_pointers(db):
+    """``require_source_kind`` is a mismatch guard, and the teardown honours a
+    survivor's first/last message pointers whichever importer owns the row.
+
+    The fs importer is the other writer of an ``imported_`` kind, and it sets
+    ``first_msg_id``/``last_msg_id`` where the codex mirror does not. This pins
+    both halves of what that means: the codex mirror cannot reach an fs row by
+    naming its own kind, and a caller that does name the fs kind still gets the
+    retention rule, because a message a surviving session points at is not the
+    deleted session's to destroy.
+
+    Both directions are here on purpose. The retained message alone cannot tell
+    a correct rule from one that retains everything, so the unpointed sibling is
+    what makes it evidence.
+    """
+    msg_pointed = _det("fs-case", "pointed")
+    msg_own = _det("fs-case", "own")
+    for mid in (msg_pointed, msg_own):
+        await db.insert_message(
+            {"id": mid, "created_at": 1.0, "content": {"text": "x"}, "role": "user"}
+        )
+
+    fs_prog, fs_sid = _det("fs-case", "prog"), _det("fs-case", "sid")
+    await db.create_progression(fs_prog, [msg_pointed, msg_own])
+    await db.create_session(
+        {
+            "id": fs_sid,
+            "progression_id": fs_prog,
+            "status": "completed",
+            "created_at": 1.0,
+            "updated_at": 1.0,
+            "source_kind": "imported_fs",
+        }
+    )
+
+    # A live survivor whose last_msg_id is the only thing pointing at
+    # msg_pointed: no progression carries it once the fs row goes.
+    survivor_sid = _det("fs-case", "survivor")
+    survivor_prog = _det("fs-case", "survivor-prog")
+    await db.create_progression(survivor_prog, [])
+    await db.create_session(
+        {
+            "id": survivor_sid,
+            "progression_id": survivor_prog,
+            "last_msg_id": msg_pointed,
+            "status": "running",
+            "created_at": 1.0,
+            "updated_at": 1.0,
+            "source_kind": "live",
+        }
+    )
+
+    # The codex mirror names its own kind, so an fs row is not reachable.
+    assert await db.delete_imported_session(fs_sid, require_source_kind=SOURCE_KIND) is False
+    assert await db.get_session(fs_sid) is not None
+
+    # Naming the fs kind does tear the fs row down, and the retention rule
+    # applies to it exactly as it does to a codex row.
+    assert await db.delete_imported_session(fs_sid, require_source_kind="imported_fs") is True
+    assert await db.get_session(fs_sid) is None
+    assert await db.get_session(survivor_sid) is not None
+    assert await db.get_message(msg_pointed) is not None, (
+        "a message a surviving session's last_msg_id points at was deleted"
+    )
+    assert await db.get_message(msg_own) is None, (
+        "the message nobody points at survived, so the arm above proves nothing"
+    )
