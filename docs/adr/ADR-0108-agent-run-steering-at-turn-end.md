@@ -133,8 +133,17 @@ steer landing as a warm continuation turn at the run's next turn boundary.
    stamp is a compare-and-set on an unclaimed row, so two drains reading the same
    pending row cannot both send it; the loser leaves it alone. `claimed_at` is stamped
    with it. The terminal write back to `applied` carries the same claim string as a
-   condition, so it lands only while this leg still holds the row and cannot record an
-   outcome for work another leg performed.
+   condition, so it lands only while this leg still holds the row.
+
+   That condition is a compare-and-set between cooperating consumers and **not an
+   authorization boundary**, and the difference is worth stating because the two read
+   alike. What it rules out is a consumer writing an outcome onto a row whose state it
+   has not re-read: a claim that has moved on since the write was decided causes the
+   write to land nowhere instead of overwriting. What it cannot rule out is a consumer
+   that means to, since the claim lives in a column every reader can see and anything
+   able to call the method is equally able to write the row directly. Nothing reachable
+   from a shared database can do better, and the honest scope of the guarantee is the
+   accidental case rather than the adversarial one.
 
 5. **Receipt visibility without mid-turn delivery.** The runner's 60-second heartbeat
    reports a queued steer ("lands at end of current turn") so the operator knows it
@@ -158,6 +167,18 @@ steer landing as a warm continuation turn at the run's next turn boundary.
   admits a control only against a session that is still running at the moment the row
   is written, and a control aimed at a run that has already stopped inserts nothing and
   is refused, pointing at `li agent -r`.
+- **On PostgreSQL the condition additionally locks the session row, because evaluating
+  it is not on its own enough there.** SQLite serialises writers, so a condition in the
+  statement is decisive. PostgreSQL runs two clients at once and evaluates the condition
+  against a READ COMMITTED snapshot, so an admission can pass while another transaction
+  is terminalizing the same session and commit after that run's sweep has already looked
+  — leaving a committed, pending, consumerless row, which is the outcome the condition
+  exists to prevent. Measured on PostgreSQL 16 through this method: the unlocked form
+  admits, the terminalizing transaction's sweep sees zero rows, and one row is pending
+  once the admission commits. Taking `FOR UPDATE` on the session row in the insert's
+  source makes a concurrent terminal transition wait for the admission instead of
+  passing it, which restores the property the SQLite path has by construction. The wait
+  is bounded by a single-statement insert.
 - The remaining window (enqueued while running, run reaches terminal before the drain
   sees it) is closed consumer-side: run teardown finalizes the pending controls for its
   session that no consumer ever claimed as `rejected: run reached terminal status
@@ -176,7 +197,14 @@ steer landing as a warm continuation turn at the run's next turn boundary.
   delivered, which nothing at teardown knows. The row stays visible as claimed. Nothing
   auto-resolves it on a timer either, because a timer would record the same guess with a
   delay. The status surface renders the owner and the claim's age so the operator who
-  finds the wedge can decide dead-versus-slow there and clear it.
+  finds the wedge can decide dead-versus-slow there, and `li o ctl resolve <control-id>
+  --as applied|abandoned` is how they then close it. That verb exists because the design
+  requires a human to end this state, and a state nothing in the product can end is not
+  a degraded state but an abandoned row: it refuses anything that is not a claimed row,
+  so it can neither overwrite an outcome a consumer recorded itself nor stand in for the
+  teardown sweep, and it preserves the claim it replaces in the stored result, since the
+  record of who held a message and what a human then decided about it is the reason the
+  row was kept standing at all.
 - **Forced-consumer honesty.** The tombstone's failure path logs, but that log has no
   forced consumer and is not the guarantee. The guarantee is state-shaped and computed
   at read time: the status surface renders an unclaimed pending control on a terminal
@@ -204,10 +232,12 @@ it, and the reason is the same one that governs the claim protocol above: a fina
 skipped to honour the clock would leave a message that was delivered on record as
 undelivered, which is a worse artifact than a write that lands a moment late. The write
 is not unguarded for being unclocked — it carries this leg's claim as its condition, so
-a late finalize can only close the row this leg still holds, and it cannot reach a row
-some other consumer has since taken. What the deadline therefore bounds is the leg's
-provider work, not its bookkeeping; a run that ends a fraction past its budget having
-written one terminal row is the intended behaviour, not a violation of it.
+a late finalize closes the row this leg still holds and lands nowhere if the claim has
+moved on. That is the cooperative bound described above and not a stronger one; what it
+buys here is that a write decided before the deadline cannot be applied to a row whose
+state changed after it. What the deadline therefore bounds is the leg's provider work,
+not its bookkeeping; a run that ends a fraction past its budget having written one
+terminal row is the intended behaviour, not a violation of it.
 
 ## Considered and rejected
 
@@ -232,9 +262,11 @@ written one terminal row is the intended behaviour, not a violation of it.
   rejected by tombstone, pending-on-terminal rendered as never-landed, or claimed by a
   named leg that never reported back. The last one is the honest name for the case the
   other four cannot cover, and it is deliberately not resolved for the operator: it
-  carries the owner and the claim's age so they can resolve it, which is the whole of
-  what this design can truthfully offer when the consumer of a non-idempotent message
-  disappeared mid-apply.
+  carries the owner and the claim's age so they can find out which it was, and
+  `li o ctl resolve --as applied|abandoned` puts their answer on the record. That is the
+  whole of what this design can truthfully offer when the consumer of a non-idempotent
+  message disappeared mid-apply, and the operator verb is the part that keeps it a
+  degraded state rather than an abandoned one.
 - Agent-kind `message` semantics ("continuation at next boundary") differ from flow
   semantics ("context render before next op"). The gate refusals and the enqueue
   acknowledgment text ("lands as a continuation turn" vs. "applies within ~2s while

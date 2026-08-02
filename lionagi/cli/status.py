@@ -472,10 +472,19 @@ def _render_human(view: dict[str, Any]) -> str:
 
     if view["pending_controls"]:
         lines.append("")
-        if view["terminal"]:
-            lines.append(_dim("  -- controls that never landed (run is terminal) --"))
-        else:
+        if not view["terminal"]:
             lines.append(_dim("  -- pending controls --"))
+        elif any(
+            str(c.get("result") or "").startswith("applying") for c in view["pending_controls"]
+        ):
+            # The header speaks for every row under it, so it cannot say
+            # "never landed" while one of those rows says the outcome is
+            # unknown. A reader who takes the header at its word resends a
+            # message that may already have been delivered, which is the
+            # fabricated negative this whole path is built to avoid.
+            lines.append(_dim("  -- unresolved controls (run is terminal) --"))
+        else:
+            lines.append(_dim("  -- controls that never landed (run is terminal) --"))
         for ctl in view["pending_controls"]:
             line = f"    {ctl['verb']:<8} {ctl['id']}  queued {_fmt_ts(ctl['created_at'])}"
             result = ctl.get("result") or ""

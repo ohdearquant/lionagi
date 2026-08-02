@@ -28,6 +28,7 @@ __all__ = (
     "run_ctl_pause",
     "run_ctl_resume",
     "run_ctl_msg",
+    "run_ctl_resolve",
 )
 
 # Mirrors status.py's _DB_BUSY_TIMEOUT_S — bounds a single enqueue's total DB
@@ -189,3 +190,49 @@ def run_ctl_resume(args: argparse.Namespace) -> int:
 def run_ctl_msg(args: argparse.Namespace) -> int:
     """`li o ctl msg <id> "text"` — queue a context-mode operator message (ADR-0069 D3)."""
     return _dispatch_control(entity_id=args.id, verb="message", payload={"text": args.text})
+
+
+async def _resolve_control_inner(*, control_id: str, outcome: str) -> tuple[str, int]:
+    from lionagi.state.db import StateDB, state_db_known_absent
+
+    if state_db_known_absent():
+        return "state.db not found — no runs recorded yet", EXIT_UNKNOWN
+
+    async with StateDB() as db:
+        stored = await db.resolve_claimed_session_control(control_id.strip(), outcome=outcome)
+    if stored is None:
+        # One message rather than a guess between the three ways to get here,
+        # because the remedy differs and this command must not invent which one
+        # applies: the id may not exist, the row may already carry a terminal
+        # result, or it may be pending but unclaimed, which the run's own
+        # teardown sweep is what closes.
+        return (
+            f"control {control_id[:8]} is not a claimed row — `li o ctl status` "
+            "shows which controls are claimed and by whom; only those can be "
+            "resolved by hand",
+            EXIT_UNKNOWN,
+        )
+    return f"resolved control {control_id[:8]} as {outcome}: {stored}", 0
+
+
+def run_ctl_resolve(args: argparse.Namespace) -> int:
+    """`li o ctl resolve <control-id> --as applied|abandoned` — close a wedged claim.
+
+    A control whose consumer claimed it and then died leaves a row nothing can
+    honestly finalize, because whether the message reached the model is not
+    recoverable from anything the system kept. This is how a human who has found
+    out puts the answer on the record.
+    """
+    from lionagi.ln.concurrency import run_async
+
+    output, exit_code = run_async(
+        asyncio.wait_for(
+            _resolve_control_inner(control_id=args.control_id, outcome=args.outcome),
+            timeout=_DB_BUSY_TIMEOUT_S,
+        )
+    )
+    if exit_code == EXIT_UNKNOWN:
+        log_error(output)
+    else:
+        print(output)
+    return exit_code

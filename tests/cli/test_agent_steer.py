@@ -873,3 +873,120 @@ async def test_the_runner_sweeps_after_it_terminalizes_not_before(
         assert row["applied_at"] is not None
     finally:
         await db.__aexit__(None, None, None)
+
+
+# ── operator resolution of a wedged claim ────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_an_operator_can_close_a_wedged_claim_and_the_claim_survives_in_the_record(
+    temp_db_path, capsys
+):
+    """The verb the design requires a human to have.
+
+    A claimed row on a terminal run is deliberately not resolved by anything
+    automatic, which only makes it a degraded state rather than an abandoned one
+    if something in the product can end it. This is that something, and what it
+    writes has to keep the claim: the value of leaving the row standing is the
+    record of who held the message and what a human then decided about it.
+    """
+    from lionagi.cli.orchestrate._control import run_ctl_resolve
+
+    async with StateDB() as db:
+        sid = await _make_agent_session(db)
+        cid = await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "did this go out?"}
+        )
+        await db.mark_session_control_applying(cid, owner="20260802T120000-deadleg")
+        await _terminalize(db, sid)
+        await _tombstone_pending_steers({"db": db, "session_id": sid})
+
+    rc = run_ctl_resolve(argparse.Namespace(control_id=cid, outcome="abandoned"))
+    assert rc == 0
+
+    async with StateDB() as db:
+        row = await db.get_session_control(cid)
+        assert row["applied_at"] is not None, "the row is still pending after being resolved"
+        assert row["result"].startswith("abandoned:")
+        assert "20260802T120000-deadleg" in row["result"], (
+            "the claim it replaced was not preserved, so the record no longer says "
+            "who held the message"
+        )
+        assert await db.list_pending_session_controls(sid) == []
+
+
+@pytest.mark.anyio
+async def test_resolve_refuses_a_row_no_consumer_claimed(temp_db_path, caplog):
+    """Refusing here is what keeps the verb from standing in for the teardown
+    sweep. An unclaimed pending row has a truthful automatic outcome, and a
+    hand-written one would replace a fact with an opinion."""
+    from lionagi.cli.orchestrate._control import run_ctl_resolve
+
+    async with StateDB() as db:
+        sid = await _make_agent_session(db)
+        cid = await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "never claimed"}
+        )
+
+    with caplog.at_level("ERROR"):
+        rc = run_ctl_resolve(argparse.Namespace(control_id=cid, outcome="applied"))
+    assert rc == EXIT_UNKNOWN
+    assert "not a claimed row" in caplog.text
+
+    async with StateDB() as db:
+        row = await db.get_session_control(cid)
+        assert row["result"] is None
+        assert row["applied_at"] is None
+
+
+@pytest.mark.anyio
+async def test_resolve_refuses_a_row_its_consumer_already_finalized(temp_db_path, caplog):
+    """The consumer's own record outranks a later hand-written one: it was
+    written by the only party that knew."""
+    from lionagi.cli.orchestrate._control import run_ctl_resolve
+
+    async with StateDB() as db:
+        sid = await _make_agent_session(db)
+        cid = await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "delivered"}
+        )
+        await db.mark_session_control_applying(cid, owner="leg-a")
+        await db.finalize_session_control(cid, result="applied", expect_claim="applying:leg-a")
+
+    with caplog.at_level("ERROR"):
+        rc = run_ctl_resolve(argparse.Namespace(control_id=cid, outcome="abandoned"))
+    assert rc == EXIT_UNKNOWN
+
+    async with StateDB() as db:
+        assert (await db.get_session_control(cid))["result"] == "applied"
+
+
+@pytest.mark.anyio
+async def test_the_terminal_header_does_not_say_never_landed_over_a_claimed_row(temp_db_path):
+    """The header speaks for every row beneath it.
+
+    Saying "never landed" above a row that says "outcome unknown" tells the
+    operator a message was not delivered where the protocol says delivery is
+    unknowable, and a reader who believes the header resends. The per-row text
+    was already right; the section title was the assertion nobody had checked.
+    """
+    from lionagi.cli.status import _build_view, _render_human
+
+    async with StateDB() as db:
+        sid = await _make_agent_session(db)
+        cid = await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "unknown"}
+        )
+        await db.mark_session_control_applying(cid, owner="leg-a")
+        await _terminalize(db, sid)
+
+        view = await _build_view(
+            db, command="ctl", entity_type="session", row=await db.get_session(sid)
+        )
+        rendered = _render_human(view)
+
+    assert "never landed" not in rendered, (
+        "the section header asserted a non-delivery over a row whose outcome is unknown"
+    )
+    assert "outcome unknown" in rendered
+    assert "claimed by leg-a" in rendered

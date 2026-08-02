@@ -710,3 +710,97 @@ async def test_postgres_wrapper_parity_cas_conflict_and_same_status_append(pg_ur
         assert row["status"] == "running"
     finally:
         await db.close()
+
+
+# ── session-control admission takes the session row lock on PostgreSQL ───────
+#
+# SQLite serialises writers, so evaluating the running-session condition inside
+# the insert statement is decisive there. PostgreSQL runs two clients at once
+# and evaluates that condition against a READ COMMITTED snapshot, so an
+# admission can pass while another transaction is terminalizing the same
+# session and commit after that run's teardown sweep has already looked. The
+# row then exists, is pending, and has no consumer. The admission therefore
+# locks the session row, which makes a concurrent terminal transition wait for
+# it rather than pass it.
+
+
+async def _seed_running_agent_session(db) -> str:
+    sid = uuid.uuid4().hex[:12]
+    pid = uuid.uuid4().hex
+    await db.create_progression(pid)
+    await db.create_session(
+        {
+            "id": sid,
+            "progression_id": pid,
+            "status": "running",
+            "invocation_kind": "agent",
+            "run_id": "20260802T000000-lockprobe",
+            "started_at": time.time(),
+        }
+    )
+    return sid
+
+
+@pytest.mark.asyncio
+async def test_postgres_control_admission_waits_on_a_locked_session_row(pg_url):
+    """A terminalizing transaction's lock on the session row must block the admission.
+
+    That ordering is the mechanism. Without it the admission reads its own
+    snapshot, passes, and can commit after the terminalizing run's sweep has
+    already looked, leaving a committed pending row with no consumer.
+
+    The holder takes FOR NO KEY UPDATE because that is what a plain status
+    UPDATE takes, and because it is the mode that discriminates: the control's
+    foreign key already takes FOR KEY SHARE on the same row, and FOR KEY SHARE
+    conflicts with FOR UPDATE but not with FOR NO KEY UPDATE. A holder taking
+    FOR UPDATE would block the insert through the foreign key alone and would
+    pass against the defect. Two arms: the unheld admission must succeed, or a
+    blocked insert would prove nothing; the held one must not complete.
+    """
+    import asyncio
+
+    from sqlalchemy import text as _text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    db = StateDB(url=pg_url)
+    async with db:
+        sid = await _seed_running_agent_session(db)
+
+        # Control arm: nothing holds the row, so admission works normally.
+        unlocked = await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "unblocked"}
+        )
+        assert unlocked is not None, "the admission failed for a reason unrelated to locking"
+
+        engine = create_async_engine(pg_url)
+        try:
+            async with engine.connect() as holder:
+                async with holder.begin():
+                    # FOR NO KEY UPDATE is exactly the lock a plain
+                    # `UPDATE sessions SET status = ...` takes, so this holder
+                    # stands in for a run terminalizing underneath the
+                    # admission. The lock mode is the whole test: FOR NO KEY
+                    # UPDATE does NOT conflict with the FOR KEY SHARE the
+                    # control's foreign key takes on the same row, so an
+                    # admission that only reads the session sails past it and
+                    # the wrong lock mode here would pass against the defect.
+                    await holder.execute(
+                        _text("SELECT 1 FROM sessions WHERE id = :sid FOR NO KEY UPDATE"),
+                        {"sid": sid},
+                    )
+                    with pytest.raises(asyncio.TimeoutError):
+                        await asyncio.wait_for(
+                            db.insert_session_control(
+                                session_id=sid, verb="message", payload={"text": "blocked"}
+                            ),
+                            timeout=3,
+                        )
+        finally:
+            await engine.dispose()
+
+        # Released: the same admission now goes through, so the block above was
+        # the lock and not a dead connection.
+        after = await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "after release"}
+        )
+        assert after is not None

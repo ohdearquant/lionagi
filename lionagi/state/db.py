@@ -5382,9 +5382,32 @@ class StateDB:
         that arrives after terminalization inserts nothing and returns None for
         the caller to refuse.
 
+        Evaluating the condition in the statement is enough on SQLite, whose
+        writers are serialised, and is NOT enough on PostgreSQL, where two
+        clients run concurrently: under READ COMMITTED the EXISTS clause reads a
+        snapshot, so an admission can pass against a session another transaction
+        is terminalizing, and commit after that run's sweep has already looked.
+        The row then exists, is pending, and has no consumer, which is exactly
+        the outcome the condition is here to prevent. Measured on PostgreSQL 16:
+        the plain form admits, the terminalizing transaction's sweep sees zero
+        rows, and one row is pending once the admission commits.
+
+        So on PostgreSQL the source of the insert takes a row lock on the
+        session. A concurrent terminal transition then waits for the admission
+        to finish rather than passing it, which orders the two and restores the
+        SQLite property: whatever was admitted is committed before the status
+        moves, and anything after it fails the condition. The wait is bounded by
+        a single-statement insert.
+
         Serialised through _tx() like the other append-only session logs.
         """
         control_id = uuid.uuid4().hex
+        admit_source = (
+            "WHERE EXISTS (SELECT 1 FROM sessions WHERE id = :sid AND status = 'running')"
+            if self.dialect == "sqlite"
+            else "FROM (SELECT 1 FROM sessions WHERE id = :sid AND status = 'running' "
+            "FOR UPDATE) _admitted"
+        )
         async with self._tx() as conn:
             result = await conn.execute(
                 text(
@@ -5392,8 +5415,7 @@ class StateDB:
                     "(id, session_id, verb, payload, created_at, applied_at, "
                     "claimed_at, result) "
                     "SELECT :id, :sid, :verb, :payload, :created_at, NULL, NULL, NULL "
-                    "WHERE EXISTS ("
-                    "SELECT 1 FROM sessions WHERE id = :sid AND status = 'running')"
+                    f"{admit_source}"  # noqa: S608 — dialect-selected literal, no caller input
                 ).bindparams(bindparam("payload", type_=JSON)),
                 {
                     "id": control_id,
@@ -5487,10 +5509,18 @@ class StateDB:
 
         With *expect_claim*, the write applies only while the row still carries
         that exact claim string, and the return value says whether it did. A
-        consumer that claimed a row passes its own claim here so that a second
-        consumer, or a teardown running in another leg, cannot stamp an outcome
-        onto work it did not perform. Without it the write is unconditional,
-        which is what the idempotent (pause/resume) path wants.
+        consumer that claimed a row passes its own claim here, so a write aimed
+        at a row whose claim has moved on lands nowhere instead of overwriting
+        it. Without it the write is unconditional, which is what the idempotent
+        (pause/resume) path wants.
+
+        This is a compare-and-set between cooperating consumers and NOT an
+        authorization boundary. The claim string is stored in a column every
+        reader can see, so any caller that can reach this method can also pass
+        it; what the check rules out is a consumer writing an outcome onto a row
+        whose state it has not re-read, not a consumer that means to. Nothing
+        reachable from a shared database can do better than that, since a caller
+        able to call this method is equally able to write the row directly.
         """
         params: dict[str, Any] = {
             "applied_at": time.time(),
@@ -5506,6 +5536,58 @@ class StateDB:
         async with self._tx() as conn:
             written = await conn.execute(text(sql), params)
             return bool(written.rowcount)
+
+    async def resolve_claimed_session_control(
+        self, control_id: str, *, outcome: str, actor: str | None = None
+    ) -> str | None:
+        """Close a control whose claimant never reported back; returns the stored result.
+
+        The one thing that can end a claimed row, and it is deliberately not
+        automatic. Nothing in the system can tell a consumer that died before
+        delivering a message from one that died after, so the row waits for
+        someone who can find out. This method is that person's write.
+
+        Returns None when the row is not claimed, which covers both "already
+        terminal" and "never taken", so a caller cannot use it to overwrite an
+        outcome the consumer itself recorded, or to skip a row that the ordinary
+        teardown sweep should be rejecting instead.
+
+        The claim it replaces is preserved in the stored result, because the
+        record of who held a message and what a human then decided about it is
+        the whole value of leaving the row standing in the first place.
+        """
+        async with self._tx() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text("SELECT result FROM session_controls WHERE id = :id"),
+                        {"id": control_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            prior = (row or {}).get("result")
+            if not str(prior or "").startswith("applying"):
+                return None
+            held_by = str(prior).partition(":")[2] or "an unnamed consumer"
+            stored = (
+                f"{outcome}: resolved by {actor or 'an operator'} after "
+                f"{held_by} claimed it and never reported back"
+            )
+            await conn.execute(
+                text(
+                    "UPDATE session_controls SET applied_at = :applied_at, result = :result "
+                    "WHERE id = :id AND result = :prior"
+                ),
+                {
+                    "applied_at": time.time(),
+                    "result": stored,
+                    "id": control_id,
+                    "prior": prior,
+                },
+            )
+        return stored
 
     async def get_session_control(self, control_id: str) -> dict[str, Any] | None:
         async with self._read() as conn:

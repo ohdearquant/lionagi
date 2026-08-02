@@ -985,6 +985,33 @@ def add_orchestrate_subparser(
         ),
     )
 
+    ctl_resolve = ctl_sub.add_parser(
+        "resolve",
+        help="Close a control whose consumer claimed it and never reported back.",
+        description=(
+            "A `msg` control is delivered at most once, so a consumer claims it "
+            "before attempting the delivery. If that consumer dies in between, "
+            "nothing left behind can say whether the message reached the model, "
+            "and the row is deliberately left standing rather than guessed at. "
+            "`li o ctl status` shows who claimed it and when. Use this once you "
+            "have found out which it was; the claim is preserved in the record."
+        ),
+    )
+    ctl_resolve.add_argument(
+        "control_id",
+        help="The control id shown by `li o ctl status` (full, no prefix matching).",
+    )
+    ctl_resolve.add_argument(
+        "--as",
+        dest="outcome",
+        required=True,
+        choices=("applied", "abandoned"),
+        help=(
+            "What you established actually happened: 'applied' if the message "
+            "reached the run, 'abandoned' if it did not and will not."
+        ),
+    )
+
     return {"fanout": fo, "flow": fl, "ctl": ctl}
 
 
@@ -1344,6 +1371,10 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             from ._control import run_ctl_msg
 
             return run_ctl_msg(args)
+        if args.ctl_command == "resolve":
+            from ._control import run_ctl_resolve
+
+            return run_ctl_resolve(args)
         log_error(f"Unknown ctl command: {args.ctl_command}")
         return 1
 
