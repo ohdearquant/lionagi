@@ -428,7 +428,7 @@ async def _drain_pending_steers(
         return None
     import time as _time
 
-    from lionagi.cli._logging import hint, log_error
+    from lionagi.cli._logging import hint, log_error, warn
 
     db = live.get("db")
     if db is None:
@@ -498,7 +498,21 @@ async def _drain_pending_steers(
             # a skipped finalize would leave a delivered message on record as
             # undelivered. The claim token is the guard here instead: this write
             # lands only while the row still carries this leg's claim.
-            await db.finalize_session_control(row["id"], result="applied", expect_claim=claim_token)
+            stamped = await db.finalize_session_control(
+                row["id"], result="applied", expect_claim=claim_token
+            )
+            if not stamped:
+                # Somebody resolved the row while the continuation was running.
+                # Their outcome stands, which is the point of the guard, but the
+                # message was already delivered to the branch by then, so the
+                # record now disagrees with what happened. Say so: the delivery
+                # cannot be taken back, and a silent refusal here is the same
+                # defect as the overwrite, one level up.
+                warn(
+                    f"operator message {row['id']} was delivered, but the control row "
+                    f"was resolved by someone else first and now records their outcome "
+                    f"instead of 'applied'. The message reached the agent."
+                )
     return last_res
 
 

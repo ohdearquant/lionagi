@@ -60,7 +60,7 @@ Out of scope:
 
 ### D1 — Ordered session-control rows are the live transport
 
-The public writers are:
+The public writers that create rows are:
 
 ```python
 # lionagi/cli/orchestrate/_control.py
@@ -72,6 +72,18 @@ async def _enqueue_control_inner(
     *, entity_id: str, verb: str, payload: dict[str, Any] | None
 ) -> tuple[str, int]: ...
 ```
+
+One further public writer does not create rows but closes them, and a reader who takes the
+list above as the whole set will not find it:
+
+```python
+# lionagi/cli/orchestrate/_control.py
+def run_ctl_resolve(args: argparse.Namespace) -> int: ...
+```
+
+It is how a person records the outcome of a control whose claimant never came back. It is
+covered in the result-vocabulary table below and in ADR-0108; it is named here because this
+is the section a reader consults for the set of writers.
 
 Their persisted contract is:
 
@@ -121,7 +133,9 @@ Exact addressing and queue semantics:
 - If a successful effect cannot be terminally stamped, the poller stops that tick so a later
   control cannot overtake the unstamped row.
 
-Terminal `result` values are `applied`, `applying`, or `rejected:<reason>`. The poller records a
+Terminal `result` values are `applied` or `rejected:<reason>`. `applying` is not one of them:
+it is a claim, written to say a consumer has taken the row and not yet reported an outcome, and
+a row still carrying it is a row whose result nobody knows. The poller records a
 compact control log in session `node_metadata`, but `session_controls` remains the authoritative
 request/application row.
 

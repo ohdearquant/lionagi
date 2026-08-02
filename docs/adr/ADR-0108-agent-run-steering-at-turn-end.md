@@ -161,10 +161,27 @@ steer landing as a warm continuation turn at the run's next turn boundary.
    Two things follow, and both are now the design. **The claim is returned by the code
    that writes it** rather than rebuilt by callers: a guard only guards while the
    expression that produces it and the expression that stored it agree, and two copies
-   of a string are what stop agreeing. **A guarded write that lands nowhere says so**,
-   and its caller reports the row as untouched rather than returning the outcome it
-   failed to record — a receipt for a write that did not happen is the same defect as
-   the overwrite, one level up.
+   of a string are what stop agreeing. **A guarded write that lands nowhere says so**:
+   the drain reports the refusal instead of discarding it, because a receipt for a
+   write that did not happen is the same defect as the overwrite, one level up.
+
+   **What this guarantees, and what it does not.** The guarantee is about the record
+   only: a row's outcome is written by whoever still holds the claim, and no writer
+   silently replaces an outcome it does not own. It is not a guarantee about the
+   effect. The effect and the record are not written together, and on the agent drain
+   the effect comes first: the operator message is handed to the branch, the
+   continuation turn runs, and the finalize happens after it returns. A hand
+   resolution landing inside that window is refused nothing — it owns the row, so it
+   wins — and the result is a row reading `abandoned` for a message that was already
+   delivered to the model. The drain reports that disagreement rather than hiding it,
+   which is all it can do from where it stands; the delivery cannot be recalled. The
+   flow poller has the same shape, with the delivery written into executor context
+   before its own finalize.
+
+   Closing that gap means fencing the effect against the claim, so a delivery whose
+   claim has been revoked cannot land. That is a larger change than this decision
+   makes, it belongs to the transport rather than to either consumer, and it is
+   deliberately out of scope here rather than absent by oversight.
 
 5. **Receipt visibility without mid-turn delivery.** The runner's 60-second heartbeat
    reports a queued steer ("lands at end of current turn") so the operator knows it

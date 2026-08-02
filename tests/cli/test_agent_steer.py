@@ -1126,3 +1126,62 @@ async def test_a_hand_resolution_falls_back_to_the_os_account_not_a_placeholder(
     async with StateDB() as db:
         stored = (await db.get_session_control(cid))["result"]
     assert getpass.getuser() in stored, f"no real identity was recorded: {stored!r}"
+
+
+@pytest.mark.anyio
+async def test_a_refused_finalize_after_delivery_is_reported_not_swallowed(temp_db_path, caplog):
+    """Somebody resolves the row while the continuation turn is running.
+
+    The guard is doing its job: the other writer's outcome stands and the drain
+    does not overwrite it. But the message was already handed to the branch
+    before that happened, so the row now records an outcome that disagrees with
+    what the run did. That disagreement is the whole reason to look at the
+    record, and it is invisible if the refusal returns quietly, since the drain
+    hands its caller the continuation's result either way.
+    """
+
+    class _ResolvingBranch:
+        """Resolves the control by hand during the continuation turn, which is
+        the exact window the claim guard exists to cover."""
+
+        def __init__(self, db, control_id):
+            self._db = db
+            self._control_id = control_id
+            self.calls: list[str] = []
+
+        async def operate(self, *, instruction: str, **kwargs):
+            self.calls.append(instruction)
+            await self._db.finalize_session_control(
+                self._control_id, result="abandoned:ops@example.com"
+            )
+            return "turn-1"
+
+    async with StateDB() as db:
+        sid = await _make_agent_session(db)
+        cid = await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "still relevant?"}
+        )
+
+        branch = _ResolvingBranch(db, cid)
+        res = await _drain_pending_steers(
+            {"db": db, "session_id": sid}, branch, operate_kwargs={}, deadline=None
+        )
+
+        # Delivery happened. The drain cannot take it back and does not pretend
+        # otherwise: the continuation's result is still what it returns.
+        assert len(branch.calls) == 1, "the operator message was never delivered"
+        assert res == "turn-1"
+
+        # The other writer's outcome stands. This is the guard working.
+        stored = (await db.get_session_control(cid))["result"]
+        assert stored == "abandoned:ops@example.com", (
+            f"the drain overwrote a resolution it did not own: {stored!r}"
+        )
+
+    # And the disagreement reached somebody. Without this the caller has no way
+    # to tell a landed finalize from a refused one.
+    reported = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any(cid in m for m in reported), f"the refused finalize named no control: {reported!r}"
+    assert any("delivered" in m for m in reported), (
+        f"the report does not say the message went out anyway: {reported!r}"
+    )
