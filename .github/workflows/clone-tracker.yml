@@ -1,0 +1,175 @@
+name: Clone Tracker (14-day rolling)
+
+# GitHub's traffic API retains only 14 days of clone/view data, so anything not
+# captured inside that window is gone. This appends a snapshot to
+# data/traffic/ledger.json on the `traffic-ledger` branch, which is the only
+# durable history of that data.
+#
+# The ledger lives on its own branch, not on main. main requires a reviewed pull
+# request and passing checks, which a scheduled job cannot satisfy, so a job that
+# pushed there would collect a snapshot every cycle and fail before storing any
+# of it.
+
+on:
+  schedule:
+    # Day-of-month 1, 14 and 27. A `*/13` day-of-month field means those three
+    # days rather than a true 13-day period, which is fine here: the largest gap
+    # is 13 days (1 to 14, and 14 to 27) and the month boundary gap is shorter,
+    # so consecutive snapshots always overlap the API's 14-day window.
+    - cron: '29 5 */13 * *'
+  workflow_dispatch:
+    # Manual runs are for capturing a spike (e.g. right after a release
+    # announcement) without waiting out the cycle.
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/clone-tracker.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: clone-tracker
+  cancel-in-progress: false
+
+jobs:
+  track:
+    name: Snapshot traffic
+    runs-on: ubuntu-latest
+    steps:
+      # Pinned to a commit, unlike the rest of this repository's workflows, which
+      # track the v7 tag. This is one of only two workflows that ask for
+      # `contents: write`, and a mutable tag here would run whatever the tag
+      # points at that day with a token that can write to the repository. The
+      # SHA is v7 as resolved from actions/checkout. Do not "fix" the
+      # inconsistency by dropping it back to the tag.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Fetch enough history to push the ledger branch back; the branch may
+          # not exist yet on a first run, which the ledger step handles.
+          fetch-depth: 0
+
+      - name: Fetch traffic snapshot
+        id: fetch
+        env:
+          # NOT the built-in GITHUB_TOKEN. The traffic endpoints require the
+          # repository "Administration: read" permission, and that scope does
+          # not exist in the Actions permissions vocabulary at all, so the
+          # built-in token cannot be granted it under any `permissions:` block
+          # and both reads would 403 on every run. This needs a fine-grained
+          # token carrying only Administration: read, stored as TRAFFIC_READ_TOKEN.
+          GH_TOKEN: ${{ secrets.TRAFFIC_READ_TOKEN }}
+        # Each read is validated before anything is written: a failed API read
+        # must abort the run, never append an empty-looking snapshot that later
+        # reads as "traffic went to zero".
+        #
+        # Referrer domains are deliberately not captured. This repository is
+        # public and so is the ledger, and a referrer is a hostname belonging to
+        # whoever linked here, which may be a private dashboard. The counts
+        # carry the value we actually use.
+        run: |
+          set -euo pipefail
+          # Until the token exists, skip loudly instead of failing. A scheduled
+          # workflow that is red on every run is one nobody reads by the second
+          # week, and the thing it would eventually be red ABOUT is a missing
+          # measurement. Skipping writes no ledger entry, so a gap in the data
+          # stays a visible gap rather than becoming a recorded zero.
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning::TRAFFIC_READ_TOKEN is not set, so no traffic was read and nothing was appended. The ledger has a gap for this run, not a zero."
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/traffic/clones" > /tmp/clones.json
+          gh api "repos/${GITHUB_REPOSITORY}/traffic/views" > /tmp/views.json
+          gh api "repos/${GITHUB_REPOSITORY}" > /tmp/repo.json
+          # Every field that gets PERSISTED is checked, and checked for type as
+          # well as sign. `>= 0` alone is not a numeric guard in jq: strings sort
+          # above numbers, so `"error" >= 0` is true and a string count would be
+          # written into the ledger as if it were a measurement. A missing key
+          # yields null, which is why the type test comes first.
+          num() { jq -e "($2|type)==\"number\" and $2 >= 0 and ($2|floor) == $2" "$1" > /dev/null; }
+          num /tmp/clones.json .count
+          num /tmp/clones.json .uniques
+          num /tmp/views.json .count
+          num /tmp/views.json .uniques
+          num /tmp/repo.json .stargazers_count
+          num /tmp/repo.json .forks_count
+          # Type and sign are not enough on their own. A unique cloner clones at
+          # least once, so `uniques` can never exceed `count`, and a pair that
+          # breaks that is not a small measurement error, it is a response this
+          # code does not understand. Storing it would put an impossible
+          # measurement in a ledger whose whole purpose is being the only
+          # surviving copy.
+          rel() { jq -e '(.uniques|type)=="number" and (.count|type)=="number" and .uniques <= .count' "$1" > /dev/null; }
+          rel /tmp/clones.json
+          rel /tmp/views.json
+          jq -n \
+            --slurpfile clones /tmp/clones.json \
+            --slurpfile views /tmp/views.json \
+            --slurpfile repo /tmp/repo.json \
+            '{
+              captured_at: (now | todate),
+              clones_14d: { count: $clones[0].count, uniques: $clones[0].uniques },
+              views_14d: { count: $views[0].count, uniques: $views[0].uniques },
+              stargazers: $repo[0].stargazers_count,
+              forks: $repo[0].forks_count
+            }' > /tmp/snapshot.json
+          num /tmp/snapshot.json .clones_14d.count
+          cat /tmp/snapshot.json
+
+      - name: Append to ledger and push
+        # Nothing was fetched, so there is nothing to append. Without this the
+        # step would run against a missing snapshot and fail for a reason that
+        # has nothing to do with the actual cause.
+        if: steps.fetch.outputs.skipped != 'true'
+        env:
+          LEDGER_BRANCH: traffic-ledger
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Start from the existing ledger branch, or from an empty history if
+          # this is the first run. An orphan keeps the ledger's log to itself
+          # rather than carrying main's. Clearing the index is what keeps the
+          # checked-out source tree out of the ledger branch; the files stay on
+          # disk as untracked and only the ledger is staged below, so nothing
+          # needs deleting.
+          # `--exit-code` reports 2 for "ref not there" and other codes for "could
+          # not ask", so the two must not share a branch. Treating an unreachable
+          # remote as an absent branch would start a fresh orphan history on top
+          # of a ledger that still exists, and the run would only fail later at
+          # the push with the original error already discarded.
+          set +e
+          git ls-remote --exit-code --heads origin "${LEDGER_BRANCH}" > /dev/null
+          lsr=$?
+          set -e
+          if [ "$lsr" -eq 0 ]; then
+            git fetch origin "${LEDGER_BRANCH}"
+            git checkout -B "${LEDGER_BRANCH}" "origin/${LEDGER_BRANCH}"
+          elif [ "$lsr" -eq 2 ]; then
+            git checkout --orphan "${LEDGER_BRANCH}"
+            git rm -rq --cached .
+          else
+            echo "::error::could not reach the remote to look up ${LEDGER_BRANCH} (git ls-remote exit ${lsr}); refusing to guess that the branch is absent"
+            exit "$lsr"
+          fi
+
+          mkdir -p data/traffic
+          if [ ! -f data/traffic/ledger.json ]; then
+            echo '[]' > data/traffic/ledger.json
+          fi
+          jq -e 'type == "array"' data/traffic/ledger.json > /dev/null
+          jq --slurpfile snap /tmp/snapshot.json '. + $snap' data/traffic/ledger.json > /tmp/ledger.json
+          mv /tmp/ledger.json data/traffic/ledger.json
+
+          git add data/traffic/ledger.json
+          if git diff --cached --quiet; then
+            echo "No change to commit"
+            exit 0
+          fi
+          COUNT=$(jq 'length' data/traffic/ledger.json)
+          CLONES=$(jq '.[-1].clones_14d.count' data/traffic/ledger.json)
+          git commit -m "chore(data): traffic snapshot #${COUNT} — ${CLONES} clones (14d)"
+          git push origin "HEAD:${LEDGER_BRANCH}"
+          echo "ledger snapshots: ${COUNT}"
