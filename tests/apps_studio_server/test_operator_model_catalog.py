@@ -841,3 +841,98 @@ async def test_a_refused_submit_does_not_move_the_pin_through_the_coordinator(
     assert conversation["provider"] == "codex"
     assert conversation["providerModel"] == "gpt-5.4"
     assert conversation["providerSessionId"] == "session-1"
+
+
+@pytest.mark.asyncio
+async def test_a_first_explicit_selection_drops_the_default_providers_session(tmp_path):
+    """A NULL pin does not mean "no session was created under a pair".
+
+    An unpinned conversation runs on whatever the environment resolves to, and
+    the session it gets belongs to that pair. Pinning a different pair for the
+    first time therefore invalidates the session exactly as changing an existing
+    pin does. Treating NULL as "unset, so nothing to invalidate" hands the new
+    provider a session id that another provider created, which the engine passes
+    straight through as its resume argument.
+    """
+    store = OperatorStore(tmp_path / "state.db")
+    conversation_id = (await store.create_conversation())["id"]
+    await store.set_provider_session_id(conversation_id, "default-provider-session")
+
+    await store.submit_turn(
+        conversation_id,
+        instruction="first explicit selection",
+        context={},
+        expected_last_sequence=0,
+        select_provider="gemini_code",
+        select_model="gemini-3.5-flash",
+    )
+
+    conversation = await store.get_conversation(conversation_id)
+    assert conversation["provider"] == "gemini_code"
+    assert conversation["providerModel"] == "gemini-3.5-flash"
+    assert conversation["providerSessionId"] is None
+
+
+@pytest.mark.asyncio
+async def test_resending_the_pin_already_stored_keeps_the_session(tmp_path):
+    """The control for the invalidation rule above.
+
+    A composer submits its selection on every turn, so the common case is the
+    stored pair being sent back unchanged. If that counted as a change, every
+    turn would discard the provider session and the conversation would never
+    resume anything. An invalidation rule that clears on NULL must still not
+    clear on equal.
+    """
+    store = OperatorStore(tmp_path / "state.db")
+    conversation_id = (await store.create_conversation())["id"]
+    await store.select_provider_model(conversation_id, provider="codex", model="gpt-5.4")
+    await store.set_provider_session_id(conversation_id, "session-1")
+
+    await store.submit_turn(
+        conversation_id,
+        instruction="same selection again",
+        context={},
+        expected_last_sequence=0,
+        select_provider="codex",
+        select_model="gpt-5.4",
+    )
+
+    conversation = await store.get_conversation(conversation_id)
+    assert conversation["provider"] == "codex"
+    assert conversation["providerModel"] == "gpt-5.4"
+    assert conversation["providerSessionId"] == "session-1"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_selection_does_not_move_the_pin_through_the_coordinator(
+    tmp_path, monkeypatch
+):
+    """The clear path and the select path both have to survive a refusal.
+
+    A regression covering only ``clearSelection`` passes against an
+    implementation that moved just the clear inside the accepting transaction
+    and left an ordinary model selection written ahead of it.
+    """
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store, engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation(title="Pinned"))["conversation"]["id"]
+    await store.select_provider_model(cid, provider="codex", model="gpt-5.4")
+    await store.set_provider_session_id(cid, "session-1")
+    await store.submit_turn(cid, instruction="running", context={}, expected_last_sequence=0)
+
+    with pytest.raises(OperatorConflictError):
+        await coordinator.submit(
+            cid,
+            instruction="switch model while a turn is running",
+            context={},
+            expected_last_sequence=1,
+            model="sonnet",
+        )
+
+    conversation = await store.get_conversation(cid)
+    assert conversation["provider"] == "codex"
+    assert conversation["providerModel"] == "gpt-5.4"
+    assert conversation["providerSessionId"] == "session-1"

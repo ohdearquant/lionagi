@@ -463,10 +463,17 @@ class OperatorStore:
         else:
             next_provider = provider if provider is not None else row_provider
             next_model = model if model is not None else row_model
-            # A provider session belongs to the pair that created it, so it is
-            # only invalidated when the pair actually moves off a set value.
-            changed = (provider is not None and row_provider not in (None, provider)) or (
-                model is not None and row_model not in (None, model)
+            # A provider session belongs to the pair that created it, so any
+            # explicitly supplied value that differs from the stored one
+            # invalidates it. A stored NULL counts as a difference rather than
+            # as "nothing to invalidate": an unpinned conversation still ran on
+            # whatever the environment resolved to, and the session it holds
+            # belongs to that pair, so the first explicit pin is a change of
+            # pair like any other. Re-sending the value already stored is not a
+            # change, which is what keeps a session alive across the turns of a
+            # conversation whose composer submits its pin every time.
+            changed = (provider is not None and row_provider != provider) or (
+                model is not None and row_model != model
             )
         if changed:
             await db.execute(
