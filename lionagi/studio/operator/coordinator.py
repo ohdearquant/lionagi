@@ -200,21 +200,19 @@ class OperatorCoordinator:
             )
         except OperatorSelectionError as exc:
             raise OperatorValidationError(str(exc)) from exc
-        if clear_selection:
-            # Also before the turn is accepted, so this turn is the first one
-            # to run without the pin rather than the last one to run with it.
-            await self.store.clear_provider_model(conversation_id)
-        elif resolved_provider is not None or resolved_model is not None:
-            # Before the turn is accepted, so the run it builds already sees it.
-            await self.store.select_provider_model(
-                conversation_id, provider=resolved_provider, model=resolved_model
-            )
+        # The selection travels with the turn rather than being written first:
+        # a turn that is refused for an active turn or a stale cursor must
+        # leave the conversation exactly as it found it. It still applies to
+        # this turn, because the store commits it before the turn is readable.
         accepted = await self.store.submit_turn(
             conversation_id,
             instruction=instruction,
             context=context,
             expected_last_sequence=expected_last_sequence,
             effort=resolved_effort,
+            select_provider=resolved_provider,
+            select_model=resolved_model,
+            clear_selection=clear_selection,
         )
         request_id = accepted["requestId"]
         ready = asyncio.Event()

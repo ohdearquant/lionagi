@@ -436,6 +436,52 @@ class OperatorStore:
             )
             await db.commit()
 
+    @staticmethod
+    async def _write_selection(
+        db: Any,
+        conversation_id: str,
+        *,
+        row_provider: str | None,
+        row_model: str | None,
+        provider: str | None,
+        model: str | None,
+    ) -> None:
+        """Apply a provider/model pin inside the caller's open transaction.
+
+        Takes the row's current values rather than re-reading them, so the
+        decision to drop the session is made against the same snapshot the
+        caller validated. Both ``provider`` and ``model`` as ``None`` means
+        clear the pin; otherwise a ``None`` leaves that column untouched.
+        """
+        clearing = provider is None and model is None
+        if clearing:
+            if row_provider is None and row_model is None:
+                return
+            next_provider: str | None = None
+            next_model: str | None = None
+            changed = True
+        else:
+            next_provider = provider if provider is not None else row_provider
+            next_model = model if model is not None else row_model
+            # A provider session belongs to the pair that created it, so it is
+            # only invalidated when the pair actually moves off a set value.
+            changed = (provider is not None and row_provider not in (None, provider)) or (
+                model is not None and row_model not in (None, model)
+            )
+        if changed:
+            await db.execute(
+                "UPDATE studio_operator_conversations "
+                "SET provider = ?, provider_model = ?, provider_session_id = NULL, "
+                "updated_at = ? WHERE id = ?",
+                (next_provider, next_model, time.time(), conversation_id),
+            )
+        else:
+            await db.execute(
+                "UPDATE studio_operator_conversations "
+                "SET provider = ?, provider_model = ?, updated_at = ? WHERE id = ?",
+                (next_provider, next_model, time.time(), conversation_id),
+            )
+
     async def select_provider_model(
         self,
         conversation_id: str,
@@ -467,24 +513,14 @@ class OperatorStore:
             if row is None:
                 await db.rollback()
                 raise OperatorNotFoundError(f"Operator conversation '{conversation_id}' not found")
-            changed = (provider is not None and row["provider"] not in (None, provider)) or (
-                model is not None and row["provider_model"] not in (None, model)
+            await self._write_selection(
+                db,
+                conversation_id,
+                row_provider=row["provider"],
+                row_model=row["provider_model"],
+                provider=provider,
+                model=model,
             )
-            next_provider = provider if provider is not None else row["provider"]
-            next_model = model if model is not None else row["provider_model"]
-            if changed:
-                await db.execute(
-                    "UPDATE studio_operator_conversations "
-                    "SET provider = ?, provider_model = ?, provider_session_id = NULL, "
-                    "updated_at = ? WHERE id = ?",
-                    (next_provider, next_model, time.time(), conversation_id),
-                )
-            else:
-                await db.execute(
-                    "UPDATE studio_operator_conversations "
-                    "SET provider = ?, provider_model = ?, updated_at = ? WHERE id = ?",
-                    (next_provider, next_model, time.time(), conversation_id),
-                )
             await db.commit()
 
     async def clear_provider_model(self, conversation_id: str) -> None:
@@ -517,11 +553,13 @@ class OperatorStore:
             if row["provider"] is None and row["provider_model"] is None:
                 await db.rollback()
                 return
-            await db.execute(
-                "UPDATE studio_operator_conversations "
-                "SET provider = NULL, provider_model = NULL, provider_session_id = NULL, "
-                "updated_at = ? WHERE id = ?",
-                (time.time(), conversation_id),
+            await self._write_selection(
+                db,
+                conversation_id,
+                row_provider=row["provider"],
+                row_model=row["provider_model"],
+                provider=None,
+                model=None,
             )
             await db.commit()
 
@@ -655,7 +693,19 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
         context: dict[str, Any],
         expected_last_sequence: int,
         effort: str | None = None,
+        select_provider: str | None = None,
+        select_model: str | None = None,
+        clear_selection: bool = False,
     ) -> dict[str, Any]:
+        """Accept a turn, applying any provider/model change in the same transaction.
+
+        The selection rides here rather than being written before the call
+        because a turn that is refused must not leave the conversation
+        changed. Reserving the turn and moving the pin are decided against one
+        snapshot of the row: either both land or neither does. The pin still
+        applies to this turn, since it is committed before the turn is
+        readable.
+        """
         await self.ensure_schema()
         request_id = str(uuid.uuid4())
         now = time.time()
@@ -665,7 +715,7 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
             await db.execute("BEGIN IMMEDIATE")
             row = await (
                 await db.execute(
-                    "SELECT status, next_sequence, active_request_id "
+                    "SELECT status, next_sequence, active_request_id, provider, provider_model "
                     "FROM studio_operator_conversations WHERE id=?",
                     (conversation_id,),
                 )
@@ -692,6 +742,17 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                         "expectedLastSequence": expected_last_sequence,
                         "actualLastSequence": actual_last,
                     },
+                )
+            # Past every rejection, so nothing below can refuse the turn after
+            # the pin has moved.
+            if clear_selection or select_provider is not None or select_model is not None:
+                await self._write_selection(
+                    db,
+                    conversation_id,
+                    row_provider=row["provider"],
+                    row_model=row["provider_model"],
+                    provider=None if clear_selection else select_provider,
+                    model=None if clear_selection else select_model,
                 )
             sequence = int(row["next_sequence"])
             await db.execute(

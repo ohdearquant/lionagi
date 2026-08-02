@@ -15,7 +15,11 @@ from lionagi.studio.operator.catalog import (
     resolve_selection,
 )
 from lionagi.studio.operator.coordinator import OperatorCoordinator
-from lionagi.studio.operator.store import OperatorStore, OperatorValidationError
+from lionagi.studio.operator.store import (
+    OperatorConflictError,
+    OperatorStore,
+    OperatorValidationError,
+)
 
 
 class ScriptedEngine:
@@ -682,3 +686,158 @@ def test_a_clear_request_cannot_also_carry_a_pin():
 
     with pytest.raises(pydantic.ValidationError, match="cannot be combined"):
         OperatorTurnRequest.model_validate({**body, "clearSelection": True, "model": "sonnet"})
+
+
+# ── a refused turn must not move the pin ────────────────────────────────────
+
+
+async def _pin_and_reserve(store, *, provider="codex", model="gpt-5.4"):
+    """A conversation pinned to a pair, with a session, and a turn already running."""
+    conversation_id = (await store.create_conversation())["id"]
+    await store.select_provider_model(conversation_id, provider=provider, model=model)
+    await store.set_provider_session_id(conversation_id, "session-1")
+    await store.submit_turn(
+        conversation_id,
+        instruction="the turn already running",
+        context={},
+        expected_last_sequence=0,
+    )
+    return conversation_id
+
+
+@pytest.mark.asyncio
+async def test_a_clear_refused_for_an_active_turn_leaves_the_pin_alone(tmp_path):
+    """The 409 and the pin change are decided against one snapshot of the row.
+
+    A second client reversing a selection it cannot see gets refused, and the
+    conversation it did not get to run must be exactly as it was: a rejected
+    request that still drops the pin and the resumable session hands the
+    already-accepted turn a different provider than the one it was accepted
+    under.
+    """
+    store = OperatorStore(tmp_path / "state.db")
+    conversation_id = await _pin_and_reserve(store)
+
+    with pytest.raises(OperatorConflictError):
+        await store.submit_turn(
+            conversation_id,
+            instruction="reverse it",
+            context={},
+            expected_last_sequence=1,
+            clear_selection=True,
+        )
+
+    conversation = await store.get_conversation(conversation_id)
+    assert conversation["provider"] == "codex"
+    assert conversation["providerModel"] == "gpt-5.4"
+    assert conversation["providerSessionId"] == "session-1"
+
+
+@pytest.mark.asyncio
+async def test_a_selection_refused_for_an_active_turn_leaves_the_pin_alone(tmp_path):
+    """Same row state, the other direction: a changed pin is refused whole."""
+    store = OperatorStore(tmp_path / "state.db")
+    conversation_id = await _pin_and_reserve(store)
+
+    with pytest.raises(OperatorConflictError):
+        await store.submit_turn(
+            conversation_id,
+            instruction="switch provider",
+            context={},
+            expected_last_sequence=1,
+            select_provider="claude_code",
+            select_model="sonnet",
+        )
+
+    conversation = await store.get_conversation(conversation_id)
+    assert conversation["provider"] == "codex"
+    assert conversation["providerModel"] == "gpt-5.4"
+    assert conversation["providerSessionId"] == "session-1"
+
+
+@pytest.mark.asyncio
+async def test_a_selection_refused_for_a_stale_cursor_leaves_the_pin_alone(tmp_path):
+    """The cursor check rejects after the active-turn check, so it needs its own
+    case: a guard placed between the two would pass the tests above and still
+    let a stale-context rejection move the pin."""
+    store = OperatorStore(tmp_path / "state.db")
+    conversation_id = (await store.create_conversation())["id"]
+    await store.select_provider_model(conversation_id, provider="codex", model="gpt-5.4")
+    await store.set_provider_session_id(conversation_id, "session-1")
+
+    with pytest.raises(OperatorConflictError):
+        await store.submit_turn(
+            conversation_id,
+            instruction="submitted against an old cursor",
+            context={},
+            expected_last_sequence=41,
+            clear_selection=True,
+        )
+
+    conversation = await store.get_conversation(conversation_id)
+    assert conversation["provider"] == "codex"
+    assert conversation["providerModel"] == "gpt-5.4"
+    assert conversation["providerSessionId"] == "session-1"
+
+
+@pytest.mark.asyncio
+async def test_an_accepted_turn_still_applies_the_selection(tmp_path):
+    """The control for all three above: moving the write inside the transaction
+    must not stop it happening. A guard that simply never applied the pin would
+    pass every rejection case."""
+    store = OperatorStore(tmp_path / "state.db")
+    conversation_id = (await store.create_conversation())["id"]
+    await store.select_provider_model(conversation_id, provider="codex", model="gpt-5.4")
+    await store.set_provider_session_id(conversation_id, "session-1")
+
+    await store.submit_turn(
+        conversation_id,
+        instruction="accepted",
+        context={},
+        expected_last_sequence=0,
+        clear_selection=True,
+    )
+
+    conversation = await store.get_conversation(conversation_id)
+    assert conversation["provider"] is None
+    assert conversation["providerModel"] is None
+    assert conversation["providerSessionId"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_refused_submit_does_not_move_the_pin_through_the_coordinator(
+    tmp_path, monkeypatch
+):
+    """The discriminating case for the whole selection-with-turn contract.
+
+    The store-level cases above cannot catch the defect this replaces: inside
+    ``submit_turn`` every rejection rolls its transaction back, so ordering
+    within it is not observable. The defect was that the coordinator committed
+    the pin through a separate store call before asking whether the turn was
+    acceptable at all, so the rejection could not undo it. Only a test that
+    goes through the coordinator sees that.
+    """
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store, engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation(title="Pinned"))["conversation"]["id"]
+    await store.select_provider_model(cid, provider="codex", model="gpt-5.4")
+    await store.set_provider_session_id(cid, "session-1")
+    # Reserve the turn directly: the conversation now has one in flight.
+    await store.submit_turn(cid, instruction="running", context={}, expected_last_sequence=0)
+
+    with pytest.raises(OperatorConflictError):
+        await coordinator.submit(
+            cid,
+            instruction="reverse the pin while a turn is running",
+            context={},
+            expected_last_sequence=1,
+            clear_selection=True,
+        )
+
+    conversation = await store.get_conversation(cid)
+    assert conversation["provider"] == "codex"
+    assert conversation["providerModel"] == "gpt-5.4"
+    assert conversation["providerSessionId"] == "session-1"
