@@ -918,8 +918,8 @@ def add_orchestrate_subparser(
     ctl_status.add_argument(
         "id",
         help=(
-            "Session, invocation or play id to report on — full, or an unambiguous prefix. "
-            "Required here: this command has no 'latest run' default."
+            "Session, invocation, play, or run id to report on — full, or an unambiguous "
+            "prefix. Required here: this command has no 'latest run' default."
         ),
     )
     ctl_status.add_argument(
@@ -940,8 +940,8 @@ def add_orchestrate_subparser(
     ctl_pause.add_argument(
         "id",
         help=(
-            "Running flow to pause, by session, invocation or play id (full, or an unambiguous "
-            "prefix). The pause lands at the next op boundary, not mid-op."
+            "Running flow to pause, by session, invocation, play, or run id (full, or an "
+            "unambiguous prefix). The pause lands at the next op boundary, not mid-op."
         ),
     )
 
@@ -953,25 +953,28 @@ def add_orchestrate_subparser(
     ctl_resume.add_argument(
         "id",
         help=(
-            "Paused flow to release, by session, invocation or play id (full, or an unambiguous "
-            "prefix)."
+            "Paused flow to release, by session, invocation, play, or run id (full, or an "
+            "unambiguous prefix)."
         ),
     )
 
     ctl_msg = ctl_sub.add_parser(
         "msg",
-        help="Queue an operator message for a running flow (context mode only).",
+        help="Queue an operator message for a running flow, playbook run, or agent leg.",
         description=(
-            "Queues a message control row; the control poller deep-merges it into "
-            "the flow's workspace context, visible to any op not yet started. "
-            "Op-mode injection (--as-op) is not supported by this command yet."
+            "Queues a message control row. A flow or playbook run's control poller "
+            "deep-merges it into the workspace context, visible to any op not yet "
+            "started (context mode only; --as-op is not supported by this command "
+            "yet). A running `li agent` leg instead drains it at its next turn "
+            "boundary, landing as a warm continuation turn rather than a context "
+            "merge — check `li o ctl status` for which happened."
         ),
     )
     ctl_msg.add_argument(
         "id",
         help=(
-            "Running flow to message, by session, invocation or play id (full, or an unambiguous "
-            "prefix)."
+            "Running flow, playbook run, or agent leg to message, by session, "
+            "invocation, play, or run id (full, or an unambiguous prefix)."
         ),
     )
     ctl_msg.add_argument(

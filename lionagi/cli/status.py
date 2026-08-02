@@ -16,7 +16,13 @@ from typing import Any
 
 from ._logging import log_error
 from ._project import detect_project
-from ._util import AmbiguousIdError, fetch_unique_row, resolve_entity
+from ._util import (
+    _CANDIDATES_SHOWN,
+    AmbiguousIdError,
+    _like_prefix_pattern,
+    fetch_unique_row,
+    resolve_entity,
+)
 
 __all__ = (
     "run_agent_status",
@@ -83,6 +89,52 @@ async def _resolve_session_by_branch_id(db: Any, entity_id: str) -> dict[str, An
     return await db.get_session(branch["session_id"])
 
 
+async def _resolve_session_by_run_id(db: Any, entity_id: str) -> dict[str, Any] | None:
+    """Fallback: resolve *entity_id* as a CLI run id to its most-recent session.
+
+    Run ids are not primary keys `_util.resolve_entity` searches — they live
+    in a separate id space (one directory per run under `LIONAGI_HOME/runs/`,
+    allocated in `cli/_runs.py`) and are only mirrored onto sessions through
+    the nullable `sessions.run_id` column. A run id is the handle an operator
+    actually holds for an agent leg, so this fallback exists for the same
+    reason `_resolve_session_by_branch_id` does: the generic resolver has
+    nothing to look up.
+
+    Exact id wins outright, same as every other resolver here. `run_id` carries
+    no uniqueness constraint (`get_sessions_for_run` already documents that
+    one run can persist more than one session), so the most recently updated
+    one is returned rather than assuming a 1:1 mapping. A prefix that fits
+    more than one *distinct* run id raises `AmbiguousIdError`, for the same
+    reason a colliding table prefix does: there is no correct row to prefer.
+    """
+    entity_id = entity_id.strip()
+    if not entity_id:
+        return None
+
+    exact = await db.get_sessions_for_run(entity_id)
+    if exact:
+        return max(exact, key=lambda s: s.get("updated_at") or 0)
+
+    rows = await db.fetch_all(
+        "SELECT DISTINCT run_id FROM sessions WHERE run_id LIKE ? ESCAPE '\\' "
+        "AND substr(run_id, 1, ?) = ? ORDER BY run_id LIMIT ?",
+        (
+            _like_prefix_pattern(entity_id),
+            len(entity_id),
+            entity_id,
+            _CANDIDATES_SHOWN + 1,
+        ),
+    )
+    run_ids = [r["run_id"] for r in rows]
+    if not run_ids:
+        return None
+    if len(run_ids) > 1:
+        raise AmbiguousIdError(entity_id, "run", run_ids)
+
+    sessions = await db.get_sessions_for_run(run_ids[0])
+    return max(sessions, key=lambda s: s.get("updated_at") or 0) if sessions else None
+
+
 async def _resolve_agent_target(
     db: Any, entity_id: str | None, project: str | None
 ) -> tuple[str, dict[str, Any]] | None:
@@ -127,20 +179,24 @@ async def _resolve_play_target(
 
 async def _resolve_any_target(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | None:
     """`li o ctl status <id>` resolution: no kind scoping, id required (no
-    latest). Falls back to branch_id last, after sessions/invocations/plays.
+    latest). Falls back to branch_id, then run_id, after sessions/invocations/plays.
 
     The kinds are searched together rather than one after another. Trying each
     in turn and keeping the first hit resolves a prefix that fits a session and
     an invocation to whichever is looked at first, and the commands built on
     this resolver act: `li o ctl pause` would queue a control for a flow the
-    caller never identified. The branch fallback stays last and applies only
-    when no entity matched at all.
+    caller never identified. The branch and run_id fallbacks stay last and
+    apply only when no entity matched at all — run ids are not part of the
+    generic resolver's search space (see `_resolve_session_by_run_id`).
     """
     hit = await resolve_entity(db, entity_id, tables=("sessions", "invocations", "plays"))
     if hit is not None:
         _table, entity_type, row = hit
         return entity_type, row
     row = await _resolve_session_by_branch_id(db, entity_id)
+    if row is not None:
+        return "session", row
+    row = await _resolve_session_by_run_id(db, entity_id)
     if row is not None:
         return "session", row
     return None

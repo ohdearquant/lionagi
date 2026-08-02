@@ -12,6 +12,7 @@ pending control on a terminal run as never-landed regardless.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import time
 import uuid
 from pathlib import Path
@@ -131,6 +132,93 @@ async def test_msg_refused_for_terminal_agent_session(temp_db_path, capsys):
     assert rc == EXIT_UNKNOWN
     async with StateDB() as db:
         assert await db.list_pending_session_controls(sid) == []
+
+
+# ── run-id addressing (the operator's actual handle for an agent leg) ──────
+
+
+@pytest.mark.anyio
+async def test_msg_enqueues_by_run_id(temp_db_path):
+    """The run id is what `li agent` prints back to the operator — it must
+    resolve to the session it was stamped on, not just the session id."""
+    run_id = "20260801T010101-steerrun"
+    async with StateDB() as db:
+        sid = await _make_agent_session(db, run_id=run_id)
+    rc = run_ctl_msg(argparse.Namespace(id=run_id, text="redirect by run id"))
+    assert rc == 0
+    async with StateDB() as db:
+        pending = await db.list_pending_session_controls(sid)
+    assert [row["verb"] for row in pending] == ["message"]
+    assert pending[0]["payload"] == {"text": "redirect by run id"}
+
+
+@pytest.mark.anyio
+async def test_msg_enqueues_by_run_id_prefix(temp_db_path):
+    run_id = "20260801T020202-steerrun"
+    async with StateDB() as db:
+        sid = await _make_agent_session(db, run_id=run_id)
+    rc = run_ctl_msg(argparse.Namespace(id=run_id[:12], text="prefix redirect"))
+    assert rc == 0
+    async with StateDB() as db:
+        pending = await db.list_pending_session_controls(sid)
+    assert [row["verb"] for row in pending] == ["message"]
+
+
+@pytest.mark.anyio
+async def test_msg_by_run_id_picks_the_most_recently_updated_session(temp_db_path):
+    """`run_id` carries no uniqueness constraint — `get_sessions_for_run`
+    already documents that one run can persist more than one session. The
+    fallback must not pick whichever session happens to sort first; it must
+    pick the live one."""
+    run_id = "20260801T030303-steerrun"
+    async with StateDB() as db:
+        stale_sid = await _make_agent_session(db, run_id=run_id)
+        await db.update_session(stale_sid, status="timed_out")
+        await asyncio.sleep(0.01)
+        live_sid = await _make_agent_session(db, run_id=run_id)
+        await db.update_session(live_sid, status="running")
+    rc = run_ctl_msg(argparse.Namespace(id=run_id, text="redirect the live leg"))
+    assert rc == 0
+    async with StateDB() as db:
+        assert len(await db.list_pending_session_controls(live_sid)) == 1
+        assert await db.list_pending_session_controls(stale_sid) == []
+
+
+@pytest.mark.anyio
+async def test_msg_by_unmatched_run_id_fails_cleanly(temp_db_path, caplog):
+    """An id that resolves nowhere — not a session, invocation, play, branch,
+    or run — must fail with a clean refusal, not raise or silently pick."""
+    async with StateDB() as db:
+        await _make_agent_session(db, run_id="20260801T040404-steerrun")
+    with caplog.at_level("ERROR"):
+        rc = run_ctl_msg(argparse.Namespace(id="20260801T999999-nomatch", text="hello"))
+    assert rc == EXIT_UNKNOWN
+    assert "no session/invocation/play found" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_msg_by_ambiguous_run_id_prefix_raises(temp_db_path, caplog):
+    """Two distinct run ids sharing a prefix must refuse, not silently pick
+    one — the same guarantee `fetch_unique_row` gives every other id kind."""
+    async with StateDB() as db:
+        await _make_agent_session(db, run_id="20260801T050505-runA")
+        await _make_agent_session(db, run_id="20260801T050505-runB")
+    with caplog.at_level("ERROR"):
+        rc = run_ctl_msg(argparse.Namespace(id="20260801T050505-run", text="hello"))
+    assert rc == EXIT_UNKNOWN
+    assert "ambiguous id prefix" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_msg_by_full_session_id_unaffected_by_run_id_fallback(temp_db_path):
+    """Control: resolving by the full session id (the pre-existing path) must
+    keep working unchanged — this passes on both sides of the run-id fix."""
+    async with StateDB() as db:
+        sid = await _make_agent_session(db)
+    rc = run_ctl_msg(argparse.Namespace(id=sid, text="unchanged path"))
+    assert rc == 0
+    async with StateDB() as db:
+        assert len(await db.list_pending_session_controls(sid)) == 1
 
 
 # ── turn-end drain ───────────────────────────────────────────────────────────

@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """`li o ctl pause|resume|msg` — enqueue session_controls rows for a running flow.
 
-Pure writers: resolve the target session (id/invocation id/play id, same
-shapes `li o ctl status` accepts) and insert one row into session_controls.
-They do not wait for the control to apply — the poller in
-cli/orchestrate/flow.py `_execute_dag` is the only consumer; use
-`li o ctl status <id>` to check whether it landed.
+Pure writers: resolve the target session (id/invocation id/play id/run id,
+same shapes `li o ctl status` accepts) and insert one row into
+session_controls. They do not wait for the control to apply — the poller in
+cli/orchestrate/flow.py `_execute_dag` (flow/play) and the turn-end drain in
+cli/agent.py (agent) are the consumers; use `li o ctl status <id>` to check
+whether it landed.
 
 Only context-mode `msg` is currently supported: the poller appends the message
 to shared flow context for operations not yet rendered. Operation-mode messages
@@ -117,10 +118,19 @@ async def _enqueue_control_inner(
             session_id=session_id, verb=verb, payload=payload
         )
 
+    # Landing time is a property of the consumer, not the verb: a flow/play
+    # poller renders context before the next op (~2s poll interval), an agent
+    # leg drains at its next turn boundary — which can be much later than 2s
+    # into a long provider call. Stating the flow-poller number for an agent
+    # steer would tell the operator to expect delivery well before it lands.
+    landing = (
+        "lands as a continuation turn once the run's current turn ends"
+        if kind == "agent"
+        else f"applies within ~{2:.0f}s while the flow is live"
+    )
     return (
         f"queued {verb} (control {control_id[:8]}) for session {session_id[:8]} — "
-        f"applies within ~{2:.0f}s while the flow is live; "
-        f"check `li o ctl status {session_id[:8]}`",
+        f"{landing}; check `li o ctl status {session_id[:8]}`",
         0,
     )
 
