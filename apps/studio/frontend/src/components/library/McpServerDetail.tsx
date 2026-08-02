@@ -77,6 +77,7 @@ function parseEnvText(
 function formToConfig(
   form: FormState,
   originalEnvKeys: readonly string[] = [],
+  forUpdate = false,
 ): McpServerConfigInput {
   const config: McpServerConfigInput = {};
   if (form.transport === "stdio") {
@@ -85,7 +86,12 @@ function formToConfig(
       .split("\n")
       .map((a) => a.trim())
       .filter(Boolean);
-    if (args.length) config.args = args;
+    // On update, an emptied editor has to be sent as an explicit empty list.
+    // The server merges a patch onto what it stored and never infers a removal
+    // from an absent key, so omitting args here would silently restore the old
+    // ones and the operator would watch their deletion undo itself on reload.
+    // On create there is nothing to clear, so an empty list is just noise.
+    if (args.length || forUpdate) config.args = args;
     const env = parseEnvText(form.envText, originalEnvKeys);
     if (Object.keys(env).length) config.env = env;
   } else {
@@ -94,6 +100,9 @@ function formToConfig(
   if (form.timeout.trim()) {
     const n = Number(form.timeout);
     if (!Number.isNaN(n)) config.timeout = n;
+  } else if (forUpdate) {
+    // Same reasoning as args: null is the server's removal signal.
+    config.timeout = null;
   }
   return config;
 }
@@ -267,18 +276,21 @@ export function McpServerDetail({ name, onBack, onDeleted }: DetailProps) {
   const handleValidate = useCallback(async () => {
     setValidation(null);
     try {
-      const result = await validateMcpServer(name, formToConfig(form));
+      const result = await validateMcpServer(
+        name,
+        formToConfig(form, server?.env_keys ?? [], true),
+      );
       setValidation(result);
     } catch (e) {
       setValidation({ ok: false, errors: [e instanceof Error ? e.message : "Validation failed"] });
     }
-  }, [name, form]);
+  }, [name, form, server]);
 
   const handleSave = useCallback(async () => {
     setSaving(true);
     setSaveError(null);
     try {
-      const updated = await updateMcpServer(name, formToConfig(form, server?.env_keys ?? []));
+      const updated = await updateMcpServer(name, formToConfig(form, server?.env_keys ?? [], true));
       setServer(updated);
       setForm(formFromServer(updated));
       setEditing(false);

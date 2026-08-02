@@ -156,4 +156,77 @@ describe("McpServerDetail — env deletion", () => {
     expect(patch.env).toBeUndefined();
     expect(patch.command).toBe("python3.11");
   });
+
+  it("clearing the args editor sends an explicit empty list, not an omission", async () => {
+    await mount(server({ args: ["-m", "some_mcp_server"], timeout: 30 }));
+
+    const editButton = [...container.querySelectorAll("button")].find(
+      (b) => b.textContent === "Edit",
+    )!;
+    await act(async () => {
+      editButton.click();
+    });
+
+    const argsArea = [...container.querySelectorAll("textarea")].find((t) =>
+      t.value.includes("some_mcp_server"),
+    )!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(
+        argsArea,
+        "",
+      );
+      argsArea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    api.updateMcpServer.mockResolvedValue(server({ args: [], timeout: 30 }));
+
+    const saveButton = [...container.querySelectorAll("button")].find(
+      (b) => b.textContent === "Save",
+    )!;
+    await act(async () => {
+      saveButton.click();
+    });
+    await flush();
+
+    const [, patch] = api.updateMcpServer.mock.calls[0];
+    // Omitting args would leave the old ones in place: the server preserves
+    // every key a patch does not mention.
+    expect(patch.args).toEqual([]);
+  });
+
+  it("clearing the timeout sends an explicit null, not an omission", async () => {
+    await mount(server({ timeout: 30 }));
+
+    const editButton = [...container.querySelectorAll("button")].find(
+      (b) => b.textContent === "Edit",
+    )!;
+    await act(async () => {
+      editButton.click();
+    });
+
+    const timeoutInput = [...container.querySelectorAll("input")].find(
+      (i) => i.value === "30",
+    ) as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+        timeoutInput,
+        "",
+      );
+      timeoutInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    // The backend omits an absent timeout rather than returning null.
+    api.updateMcpServer.mockResolvedValue(server());
+
+    const saveButton = [...container.querySelectorAll("button")].find(
+      (b) => b.textContent === "Save",
+    )!;
+    await act(async () => {
+      saveButton.click();
+    });
+    await flush();
+
+    const [, patch] = api.updateMcpServer.mock.calls[0];
+    expect(patch.timeout).toBeNull();
+  });
 });

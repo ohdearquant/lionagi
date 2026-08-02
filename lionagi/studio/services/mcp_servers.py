@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import time
 from copy import deepcopy
 from functools import partial
@@ -64,6 +65,19 @@ class DuplicateServerError(McpServerError):
 # ---------------------------------------------------------------------------
 # Registry storage
 # ---------------------------------------------------------------------------
+
+
+# Every mutation is a read-modify-write over the whole registry file, so two
+# of them interleaving loses one wholesale: the second writes back a dict it
+# read before the first landed. The routes run these in worker threads, so the
+# boundary that has to hold is a thread lock, and it has to span the load and
+# the save rather than either alone. Reads outside it are fine -- os.replace
+# makes each save atomic, so a reader sees one whole registry or the other.
+#
+# It is reentrant because a mutation may call another one, and it is never
+# held across a network probe: a connection attempt can run for seconds, and
+# blocking every save behind it would trade a lost write for a frozen UI.
+_REGISTRY_WRITE_LOCK = threading.RLock()
 
 
 def _load_registry() -> dict[str, dict[str, Any]]:
@@ -292,20 +306,21 @@ def register_server(name: str, config: dict[str, Any], *, enabled: bool = True) 
     if errors:
         raise McpServerError("; ".join(errors))
 
-    servers = _load_registry()
-    if name in servers:
-        raise DuplicateServerError(f"MCP server {name!r} already exists")
+    with _REGISTRY_WRITE_LOCK:
+        servers = _load_registry()
+        if name in servers:
+            raise DuplicateServerError(f"MCP server {name!r} already exists")
 
-    now = time.time()
-    servers[name] = {
-        "config": config,
-        "enabled": enabled,
-        "created_at": now,
-        "updated_at": now,
-        "last_check": None,
-    }
-    _save_registry(servers)
-    return _public_entry(name, servers[name])
+        now = time.time()
+        servers[name] = {
+            "config": config,
+            "enabled": enabled,
+            "created_at": now,
+            "updated_at": now,
+            "last_check": None,
+        }
+        _save_registry(servers)
+        return _public_entry(name, servers[name])
 
 
 def _merge_config(existing: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
@@ -349,41 +364,51 @@ def _merge_config(existing: dict[str, Any], patch: dict[str, Any]) -> dict[str, 
 
 
 def update_server(name: str, config: dict[str, Any]) -> dict[str, Any] | None:
-    servers = _load_registry()
-    if name not in servers:
-        return None
+    with _REGISTRY_WRITE_LOCK:
+        servers = _load_registry()
+        if name not in servers:
+            return None
 
-    entry = servers[name]
-    merged = _merge_config(entry.get("config") or {}, config)
+        entry = servers[name]
+        existing = entry.get("config") or {}
+        merged = _merge_config(existing, config)
 
-    errors = _validate_shape(name, merged)
-    if errors:
-        raise McpServerError("; ".join(errors))
+        errors = _validate_shape(name, merged)
+        if errors:
+            raise McpServerError("; ".join(errors))
 
-    entry["config"] = merged
-    entry["updated_at"] = time.time()
-    _save_registry(servers)
-    return _public_entry(name, entry)
+        if merged != existing:
+            # The stored status was obtained for the configuration being
+            # replaced. Keeping it would report a connection result for a
+            # command or URL that was never probed, which is the same lie the
+            # connection check refuses to write, arriving by a slower route.
+            entry["last_check"] = None
+        entry["config"] = merged
+        entry["updated_at"] = time.time()
+        _save_registry(servers)
+        return _public_entry(name, entry)
 
 
 def set_enabled(name: str, enabled: bool) -> dict[str, Any] | None:
-    servers = _load_registry()
-    entry = servers.get(name)
-    if entry is None:
-        return None
-    entry["enabled"] = enabled
-    entry["updated_at"] = time.time()
-    _save_registry(servers)
-    return _public_entry(name, entry)
+    with _REGISTRY_WRITE_LOCK:
+        servers = _load_registry()
+        entry = servers.get(name)
+        if entry is None:
+            return None
+        entry["enabled"] = enabled
+        entry["updated_at"] = time.time()
+        _save_registry(servers)
+        return _public_entry(name, entry)
 
 
 def remove_server(name: str) -> bool:
-    servers = _load_registry()
-    if name not in servers:
-        return False
-    del servers[name]
-    _save_registry(servers)
-    return True
+    with _REGISTRY_WRITE_LOCK:
+        servers = _load_registry()
+        if name not in servers:
+            return False
+        del servers[name]
+        _save_registry(servers)
+        return True
 
 
 async def check_server_connection(name: str) -> dict[str, Any] | None:
@@ -404,6 +429,10 @@ async def check_server_connection(name: str) -> dict[str, Any] | None:
     A result that no longer describes the current configuration is discarded
     rather than persisted, so the stored status is always one that was
     obtained for the configuration it sits on.
+
+    Only the final reload-compare-save runs under the registry write lock. The
+    probe itself must not hold it: it can take seconds, and a save blocked
+    behind a network attempt is a worse failure than the one the lock prevents.
     """
     servers = _load_registry()
     entry = servers.get(name)
@@ -418,15 +447,16 @@ async def check_server_connection(name: str) -> dict[str, Any] | None:
         "checked_at": time.time(),
     }
 
-    servers = _load_registry()
-    entry = servers.get(name)
-    if entry is None:
-        return None
-    if entry.get("config") != probed_config:
+    with _REGISTRY_WRITE_LOCK:
+        servers = _load_registry()
+        entry = servers.get(name)
+        if entry is None:
+            return None
+        if entry.get("config") != probed_config:
+            return _public_entry(name, entry)
+        entry["last_check"] = last_check
+        _save_registry(servers)
         return _public_entry(name, entry)
-    entry["last_check"] = last_check
-    _save_registry(servers)
-    return _public_entry(name, entry)
 
 
 async def validate_config(

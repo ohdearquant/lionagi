@@ -10,6 +10,7 @@ import json
 import os
 import stat
 import tempfile
+import time
 
 import pytest
 
@@ -602,3 +603,106 @@ def test_route_validate_malformed(mcp_client):
     body = resp.json()
     assert body["ok"] is False
     assert body["errors"]
+
+
+# ---------------------------------------------------------------------------
+# A stored status belongs to the configuration it sits on -- the connection
+# check refuses to write one for a configuration it never probed, and an
+# ordinary edit must not leave one behind for a configuration it replaced.
+# ---------------------------------------------------------------------------
+
+
+def test_update_server_clears_a_status_obtained_for_the_replaced_config(tmp_path, monkeypatch):
+    _point_registry_at(tmp_path, monkeypatch)
+    mcp_mod.register_server("myserver", {"command": "/no/such/binary-xyz", "args": [], "env": {}})
+
+    asyncio.run(mcp_mod.check_server_connection("myserver"))
+    assert mcp_mod.get_server("myserver")["last_check"] is not None, (
+        "precondition: the server must carry a status before the edit"
+    )
+
+    updated = mcp_mod.update_server("myserver", {"command": "/some/other/binary"})
+
+    assert updated["command"] == "/some/other/binary"
+    assert updated["last_check"] is None
+    assert mcp_mod.get_server("myserver")["last_check"] is None, (
+        "a status obtained for the old command must not survive onto the new one"
+    )
+
+
+def test_update_server_keeps_a_status_when_the_config_is_unchanged(tmp_path, monkeypatch):
+    """Clearing on edit must not become clearing on every save. A request that
+    leaves the configuration identical has not invalidated anything."""
+    _point_registry_at(tmp_path, monkeypatch)
+    mcp_mod.register_server("myserver", {"command": "/no/such/binary-xyz", "args": [], "env": {}})
+
+    asyncio.run(mcp_mod.check_server_connection("myserver"))
+    assert mcp_mod.get_server("myserver")["last_check"] is not None
+
+    updated = mcp_mod.update_server("myserver", {"command": "/no/such/binary-xyz"})
+
+    assert updated["last_check"] is not None
+    assert mcp_mod.get_server("myserver")["last_check"] is not None
+
+
+def test_update_server_can_clear_args_and_timeout(tmp_path, monkeypatch):
+    """An explicit empty list and an explicit null are the wire's removal
+    signals; the merge preserves omitted keys, so these are the only way an
+    editor can take a value away."""
+    _point_registry_at(tmp_path, monkeypatch)
+    mcp_mod.register_server(
+        "myserver", {"command": "python3", "args": ["-m", "thing"], "timeout": 30}
+    )
+
+    updated = mcp_mod.update_server("myserver", {"args": [], "timeout": None})
+
+    assert updated["args"] == []
+    assert updated.get("timeout") is None
+    fetched = mcp_mod.get_server("myserver")
+    assert fetched["args"] == []
+    assert fetched.get("timeout") is None
+
+
+def test_concurrent_updates_are_not_lost(tmp_path, monkeypatch):
+    """Every mutation is a read-modify-write over the whole registry file, so
+    two that interleave lose one wholesale. The write is slowed deliberately so
+    the overlap is guaranteed rather than lucky: without a boundary spanning
+    load and save, most of these updates disappear."""
+    import threading
+
+    _point_registry_at(tmp_path, monkeypatch)
+
+    names = [f"server{i}" for i in range(8)]
+    for name in names:
+        mcp_mod.register_server(name, {"command": "python3", "args": []})
+
+    real_write = mcp_mod._write_private
+
+    def _slow_write(path, content):
+        time.sleep(0.005)
+        real_write(path, content)
+
+    monkeypatch.setattr(mcp_mod, "_write_private", _slow_write)
+
+    start = threading.Barrier(len(names))
+    errors: list[BaseException] = []
+
+    def _update(name):
+        try:
+            start.wait()
+            mcp_mod.update_server(name, {"args": [name]})
+        except BaseException as exc:  # noqa: BLE001 — reported, not swallowed
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_update, args=(name,)) for name in names]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"update threads raised: {errors!r}"
+    landed = {s["name"]: s["args"] for s in mcp_mod.list_servers()}
+    assert landed == {name: [name] for name in names}, (
+        "every concurrent update must survive; a missing one was overwritten "
+        "by another thread's stale snapshot"
+    )

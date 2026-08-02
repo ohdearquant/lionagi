@@ -1470,7 +1470,9 @@ export interface McpServerConfigInput {
   args?: string[];
   env?: Record<string, string | null>;
   url?: string;
-  timeout?: number;
+  /** `null` clears a stored timeout. Absent leaves it as it was, the same
+   * merge rule `env` follows. */
+  timeout?: number | null;
   enabled?: boolean;
 }
 
