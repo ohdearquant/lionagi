@@ -1068,12 +1068,14 @@ async def test_a_hand_resolution_records_who_resolved_it(temp_db_path):
         await db.mark_session_control_applying(cid, owner="20260802T120000-deadleg")
         await _terminalize(db, sid)
 
-    rc = run_ctl_resolve(argparse.Namespace(control_id=cid, outcome="applied", actor="leo@console"))
+    rc = run_ctl_resolve(
+        argparse.Namespace(control_id=cid, outcome="applied", actor="ops@example.com")
+    )
     assert rc == 0
 
     async with StateDB() as db:
         stored = (await db.get_session_control(cid))["result"]
-    assert "leo@console" in stored, f"the resolver is not in the record: {stored!r}"
+    assert "ops@example.com" in stored, f"the resolver is not in the record: {stored!r}"
     assert "applying:20260802T120000-deadleg" in stored, (
         f"the claim was not preserved verbatim: {stored!r}"
     )
