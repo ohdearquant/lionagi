@@ -122,13 +122,84 @@ def test_create_two_versions_of_the_same_role(tmp_path, monkeypatch):
 def test_every_cast_role_can_become_an_agent_template(tmp_path, monkeypatch):
     """Every built-in role name is accepted by create_agent's role validation."""
     from lionagi.casts.pattern import list_roles
-    from lionagi.studio.services.agents import _validate_role
+    from lionagi.studio.services.agents import _canonical_role
 
     _make_agents_root(tmp_path, monkeypatch)
     roles = list_roles()
     assert len(roles) > 5, "sanity: the built-in role catalog should not be near-empty"
     for role in roles:
-        _validate_role(role)  # must not raise
+        assert _canonical_role(role) == role  # must not raise, must not alter
+
+
+def test_create_agent_stores_the_role_it_validated(tmp_path, monkeypatch):
+    """Padded input must be stored stripped: the runtime's role lookup is exact, so
+    persisting ' critic ' after validating 'critic' writes a profile that passes the
+    API and then fails to launch."""
+    from lionagi.casts.pattern import list_roles
+    from lionagi.studio.services.agents import create_agent
+
+    root = _make_agents_root(tmp_path, monkeypatch)
+    roles = list_roles()
+    assert "critic" in roles, "sanity: this test's padded value must wrap a real role"
+
+    created = create_agent("padded-role", {"role": "  critic  "})
+
+    assert created["role"] == "critic"
+    assert created["role"] in roles
+    assert "role: critic\n" in (root / "padded-role.md").read_text()
+
+
+def test_create_agent_stores_the_mode_it_validated(tmp_path, monkeypatch):
+    from lionagi.casts.pattern import list_modes
+    from lionagi.studio.services.agents import create_agent
+
+    root = _make_agents_root(tmp_path, monkeypatch)
+    modes = list_modes()
+    assert modes, "sanity: the built-in mode catalog should not be empty"
+    mode = modes[0]
+
+    created = create_agent("padded-mode", {"mode": f"  {mode}  "})
+
+    assert created["mode"] == mode
+    assert created["mode"] in modes
+    assert f"mode: {mode}\n" in (root / "padded-mode.md").read_text()
+
+
+def test_update_agent_stores_the_role_and_mode_it_validated(tmp_path, monkeypatch):
+    """The PUT path canonicalises for the same reason the create path does."""
+    from lionagi.casts.pattern import list_modes, list_roles
+    from lionagi.studio.services.agents import create_agent, get_agent, update_agent
+
+    root = _make_agents_root(tmp_path, monkeypatch)
+    roles = list_roles()
+    modes = list_modes()
+    assert "critic" in roles and modes
+    mode = modes[0]
+
+    create_agent("edited", {"provider": "claude", "model": "claude-sonnet-4-6"})
+    updated = update_agent("edited", {"role": "\tcritic ", "mode": f" {mode}\n"})
+
+    assert updated is not None
+    assert updated["role"] == "critic"
+    assert updated["mode"] == mode
+
+    text = (root / "edited.md").read_text()
+    assert "role: critic\n" in text
+    assert f"mode: {mode}\n" in text
+
+    fresh = get_agent("edited")
+    assert fresh["role"] in roles
+    assert fresh["mode"] in modes
+
+
+def test_padded_unknown_role_is_still_rejected(tmp_path, monkeypatch):
+    """Canonicalising must not become a way to smuggle an unknown role past the check."""
+    from lionagi.studio.services.agents import create_agent
+
+    _make_agents_root(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="Unknown cast role"):
+        create_agent("padded-bogus-role", {"role": "  not-a-real-role  "})
 
 
 # ---------------------------------------------------------------------------

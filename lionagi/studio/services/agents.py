@@ -178,16 +178,37 @@ class AgentProtectedError(Exception):
     """Raised when a write targets the system agent or the default agent's delete guard."""
 
 
-def _validate_role(role: Any) -> None:
+def _canonical_role(role: Any) -> str:
+    """Validate a role and return the exact value that should be stored.
+
+    The stored value is what the runtime looks up, and that lookup is exact
+    (``AgentSpec.coding()``). Validating a stripped copy while writing the
+    original back would accept ``" critic "`` here and fail to launch it later,
+    so the canonical form is what both the check and the write use.
+    """
     role_s = str(role or "").strip()
     if role_s and role_s not in _list_roles():
         raise ValueError(f"Unknown cast role: {role_s!r}")
+    return role_s
 
 
-def _validate_mode(mode: Any) -> None:
+def _canonical_mode(mode: Any) -> str:
+    """Validate a mode and return the exact value that should be stored. Same
+    reasoning as ``_canonical_role``."""
     mode_s = str(mode or "").strip()
     if mode_s and mode_s not in _list_modes():
         raise ValueError(f"Unknown cast mode: {mode_s!r}")
+    return mode_s
+
+
+def _canonicalize_casts(incoming: dict[str, Any]) -> None:
+    """Validate role and mode in place, so every write path stores the same
+    form it validated. Absent keys stay absent -- an omitted role is not the
+    same request as an empty one."""
+    if "role" in incoming:
+        incoming["role"] = _canonical_role(incoming.get("role"))
+    if "mode" in incoming:
+        incoming["mode"] = _canonical_mode(incoming.get("mode"))
 
 
 def create_agent(name: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -203,8 +224,7 @@ def create_agent(name: str, data: dict[str, Any]) -> dict[str, Any]:
         raise AgentExistsError(f"Agent '{stem}' already exists")
 
     incoming = _normalize_frontmatter(data)
-    _validate_role(incoming.get("role"))
-    _validate_mode(incoming.get("mode"))
+    _canonicalize_casts(incoming)
 
     fm: dict[str, Any] = {}
     for key in _KNOWN_FRONTMATTER_KEYS:
@@ -277,8 +297,7 @@ def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
 
     fm: dict[str, Any] = dict(existing_fm)
     incoming = _normalize_frontmatter(data)
-    _validate_role(incoming.get("role"))
-    _validate_mode(incoming.get("mode"))
+    _canonicalize_casts(incoming)
     for key in _KNOWN_FRONTMATTER_KEYS:
         if key not in incoming:
             continue
