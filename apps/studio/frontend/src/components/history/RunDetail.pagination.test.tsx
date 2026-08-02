@@ -233,6 +233,57 @@ describe("RunDetail — cursor-based backward pagination", () => {
     expect(container.textContent).not.toContain("older messages");
   });
 
+  it("asks for a cursor page once when the scroll sentinel reports twice in the same turn", async () => {
+    // The sentinel above the message list fires whenever it scrolls into view,
+    // and two intersections can be delivered in a single turn. React state
+    // does not update between them, so an in-flight test that reads render
+    // state sees both callbacks as idle and sends the same cursor twice.
+    let notify: (() => void) | undefined;
+    class TwoShotObserver {
+      constructor(cb: (entries: { isIntersecting: boolean }[]) => void) {
+        notify = () => cb([{ isIntersecting: true }]);
+      }
+      observe() {}
+      disconnect() {}
+      unobserve() {}
+    }
+    vi.stubGlobal("IntersectionObserver", TwoShotObserver);
+
+    getSessionMock.mockResolvedValueOnce(
+      baseSession({
+        message_next_cursor: "cursor-1",
+        branches: [
+          {
+            id: "b1",
+            name: "main",
+            created_at: 1,
+            message_total: 5,
+            message_has_older: true,
+            messages: [msg("m3", "three", 3), msg("m4", "four", 4), msg("m5", "five", 5)],
+          },
+        ],
+      }),
+    );
+    await mount();
+    expect(getSessionMock).toHaveBeenCalledTimes(1);
+
+    // The page never resolves during the two intersections, so the only thing
+    // that can suppress the second request is a synchronous guard.
+    getSessionMock.mockReturnValueOnce(new Promise(() => {}));
+
+    await act(async () => {
+      notify?.();
+      notify?.();
+      await Promise.resolve();
+    });
+
+    expect(
+      getSessionMock,
+      "a second intersection in the same turn must not re-send the cursor already in flight",
+    ).toHaveBeenCalledTimes(2);
+    expect(getSessionMock).toHaveBeenNthCalledWith(2, "s1", { messageCursor: "cursor-1" });
+  });
+
   it("shows a visible recovery, not a dead control, when the held anchor is rejected as stale", async () => {
     getSessionMock.mockResolvedValueOnce(
       baseSession({

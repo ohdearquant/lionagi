@@ -850,6 +850,7 @@ export default function RunDetail({ id }: RunDetailProps) {
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
   const [signalEvents, setSignalEvents] = useState<SignalEvent[]>([]);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const loadingOlderRef = useRef(false);
   // Set when the server rejects the held anchor as no longer present in the
   // branch's progression (HTTP 400 MessageCursorError) — the anchor points at
   // a message id that aged out. Loading older history from this point on is
@@ -875,6 +876,7 @@ export default function RunDetail({ id }: RunDetailProps) {
     setError(null);
     setSignalEvents([]);
     setLoadingOlder(false);
+    loadingOlderRef.current = false;
     setOlderLoadFailed(false);
     setOlderCursor(null);
     initialScrollDoneRef.current = false;
@@ -1054,7 +1056,14 @@ export default function RunDetail({ id }: RunDetailProps) {
 
   const handleLoadOlder = useCallback(() => {
     const cursor = olderCursor;
-    if (!id || loadingOlder || olderLoadFailed || !cursor) return;
+    // The in-flight test reads a ref, not the `loadingOlder` state beside it.
+    // The scroll sentinel can deliver two intersections within a single turn,
+    // and React state does not update between them, so both callbacks would
+    // see this handler as idle and issue the same cursor request twice. The
+    // state is still what the UI renders from; only the exclusion has to be
+    // synchronous.
+    if (!id || loadingOlderRef.current || olderLoadFailed || !cursor) return;
+    loadingOlderRef.current = true;
     setLoadingOlder(true);
     suppressAutoScrollRef.current = true;
     getSession(id, { messageCursor: cursor })
@@ -1090,8 +1099,11 @@ export default function RunDetail({ id }: RunDetailProps) {
         }
         setError(String(e));
       })
-      .finally(() => setLoadingOlder(false));
-  }, [id, loadingOlder, olderLoadFailed, olderCursor]);
+      .finally(() => {
+        loadingOlderRef.current = false;
+        setLoadingOlder(false);
+      });
+  }, [id, olderLoadFailed, olderCursor]);
 
   const handleReloadConversation = useCallback(() => {
     if (!id) return;
