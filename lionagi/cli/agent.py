@@ -428,7 +428,7 @@ async def _drain_pending_steers(
         return None
     import time as _time
 
-    from lionagi.cli._logging import hint, log_error
+    from lionagi.cli._logging import hint, log_error, warn
 
     db = live.get("db")
     if db is None:
@@ -466,12 +466,15 @@ async def _drain_pending_steers(
                 break
         texts = []
         claimed = []
-        claim_token = f"applying:{owner}" if owner else "applying"
         for row in steers:
-            if not await db.mark_session_control_applying(row["id"], owner=owner):
+            # Carry the claim the database actually wrote rather than rebuilding
+            # it here: the finalize below is only guarded if the two agree, and
+            # two copies of the same expression are what stop agreeing.
+            claim_token = await db.mark_session_control_applying(row["id"], owner=owner)
+            if claim_token is None:
                 # Another consumer claimed it between the read and here.
                 continue
-            claimed.append(row)
+            claimed.append((row, claim_token))
             payload = row.get("payload") or {}
             texts.append(str(payload.get("text") or ""))
         if not claimed:
@@ -488,14 +491,28 @@ async def _drain_pending_steers(
             instruction=_AGENT_STEER_TEMPLATE.format(lines=joined),
             **kwargs,
         )
-        for row in claimed:
+        for row, claim_token in claimed:
             # Unconditional on the clock, deliberately. The deadline gates when
             # new provider work may start, which the recheck above enforces;
             # recording the outcome of work already performed is exempt, because
             # a skipped finalize would leave a delivered message on record as
             # undelivered. The claim token is the guard here instead: this write
             # lands only while the row still carries this leg's claim.
-            await db.finalize_session_control(row["id"], result="applied", expect_claim=claim_token)
+            stamped = await db.finalize_session_control(
+                row["id"], result="applied", expect_claim=claim_token
+            )
+            if not stamped:
+                # Somebody resolved the row while the continuation was running.
+                # Their outcome stands, which is the point of the guard, but the
+                # message was already delivered to the branch by then, so the
+                # record now disagrees with what happened. Say so: the delivery
+                # cannot be taken back, and a silent refusal here is the same
+                # defect as the overwrite, one level up.
+                warn(
+                    f"operator message {row['id']} was delivered, but the control row "
+                    f"was resolved by someone else first and now records their outcome "
+                    f"instead of 'applied'. The message reached the agent."
+                )
     return last_res
 
 

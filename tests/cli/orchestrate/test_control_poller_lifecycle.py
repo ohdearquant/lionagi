@@ -81,10 +81,15 @@ async def test_ctl_task_applies_a_queued_control_during_a_live_run(tmp_path, mon
         control_finalized = asyncio.Event()
         finalize_session_control = StateDB.finalize_session_control
 
-        async def finalize_and_signal(self, control_id, *, result):
-            await finalize_session_control(self, control_id, result=result)
+        async def finalize_and_signal(self, control_id, **kwargs):
+            # Forward whatever the caller passes rather than naming the
+            # arguments here: this double only exists to observe the call, so
+            # pinning a signature to it turns any change to the real one into
+            # a timeout in a test that is not about signatures.
+            stamped = await finalize_session_control(self, control_id, **kwargs)
             if control_id == control["id"]:
                 control_finalized.set()
+            return stamped
 
         monkeypatch.setattr(StateDB, "finalize_session_control", finalize_and_signal)
 
