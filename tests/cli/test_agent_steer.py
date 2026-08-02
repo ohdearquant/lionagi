@@ -1507,6 +1507,82 @@ async def test_a_resumed_session_takes_the_declaration_of_the_leg_running_it_now
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("declared_by_the_first_leg", "declared_by_the_resumer", "admits"),
+    [
+        # The row outlives the leg that wrote it. If that leg declared a drain
+        # and then died without terminalizing, the row still says so, and a
+        # control is admitted for a drain that is gone. This is what the status
+        # column costs: a row reading running is the only evidence available,
+        # and a dead leg leaves exactly that evidence behind. Unchanged by the
+        # capability predicate — the previous rule admitted this row too, on the
+        # run_id every agent leg stamps — so it is pinned here as a known gap
+        # rather than claimed as solved.
+        (True, False, True),
+        # The other direction costs availability instead of safety: the row
+        # keeps the first leg's False and refuses controls the resuming leg
+        # would have drained. This one IS a change; the previous rule admitted
+        # it. Refusing is the side to be wrong on.
+        (False, True, False),
+    ],
+    ids=["stale-true-still-admits", "stale-false-now-refuses"],
+)
+async def test_a_resume_that_does_not_reopen_keeps_the_declaration_already_on_the_row(
+    temp_db_path, monkeypatch, declared_by_the_first_leg, declared_by_the_resumer, admits
+):
+    """A resume only rewrites the declaration when it reopens a terminal row.
+
+    Adopting a row that still reads running leaves it alone, deliberately: a
+    write here is a read-modify-write against a row a live leg may be updating,
+    which is how an exited leg's process markers were restored over a live one's
+    once already. Both consequences are pinned so neither can be lost to a
+    comment.
+    """
+    import lionagi.cli._runs as runs_mod
+    from lionagi import Branch
+    from lionagi.cli._runs import setup_agent_persist
+
+    monkeypatch.setattr(runs_mod, "active_run_id", lambda: "20260802T000000-noreopen")
+
+    branch = Branch(name="not-reopened")
+    first = await setup_agent_persist(
+        branch,
+        agent_name="claude",
+        share_db=False,
+        drains_controls=declared_by_the_first_leg,
+    )
+    assert first is not None
+    session_id = first["session_id"]
+    await first["db"].close()
+
+    # Deliberately NOT terminalized: the row still reads running, which is both
+    # what a live leg looks like and what a leg that died leaves behind.
+    async with StateDB() as db:
+        assert (await db.get_session(session_id))["status"] == "running"
+
+    second = await setup_agent_persist(
+        Branch.from_dict(branch.to_dict()),
+        agent_name="claude",
+        share_db=False,
+        drains_controls=declared_by_the_resumer,
+    )
+    assert second is not None
+    assert second["session_id"] == session_id, "this did not adopt the row, so it proves nothing"
+    await second["db"].close()
+
+    async with StateDB() as db:
+        row = await db.get_session(session_id)
+    assert _runner_drains_controls(row) is declared_by_the_first_leg, (
+        "the row was rewritten; this path is supposed to leave it alone"
+    )
+
+    _message, exit_code = await _enqueue_control_inner(
+        entity_id=session_id, verb="message", payload={"text": "steer"}
+    )
+    assert (exit_code == 0) is admits, _message
+
+
+@pytest.mark.asyncio
 async def test_a_run_still_finishes_when_the_sweep_cannot_get_a_connection(
     temp_db_path, tmp_path, monkeypatch, caplog
 ):

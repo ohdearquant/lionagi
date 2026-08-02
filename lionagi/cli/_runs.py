@@ -1202,10 +1202,26 @@ async def setup_agent_persist(
 
             # The adopted row's drain declaration is rewritten by the reopen
             # above, in the same statement that installs this leg's process
-            # markers. Nothing to do here. A resume that did not reopen — one
-            # racing a live leg on the same branch, which leaves the row running
-            # and untouched — keeps the running leg's declaration, which is the
-            # correct answer: that leg is the one a control would reach.
+            # markers. Nothing to do here for a row that was terminal.
+            #
+            # A resume that did NOT reopen adopts a row still reading running,
+            # and that row keeps whatever the earlier leg declared. Two cases,
+            # and only one of them is benign. If that leg is genuinely alive,
+            # its declaration is the right answer: it is the one a control would
+            # reach. If it died without terminalizing, the row outlives it, and
+            # a declaration of True then admits a control for a drain that is
+            # gone. Nothing here can tell those apart — a row reading running is
+            # the only evidence available, and it is exactly the evidence a dead
+            # leg leaves behind. The stale-session doctor is what resolves it,
+            # after the fact.
+            #
+            # So this path is not made correct by leaving it alone; it is left
+            # alone because the alternative is worse. Writing the declaration
+            # here would mean a read-modify-write against a row a live leg may
+            # be updating, which is how the exited leg's process markers got
+            # restored over the live leg's once already. The narrower cost is
+            # the other direction: a row reading False keeps refusing controls
+            # even though this leg would drain them.
         else:
             session_prog_id = str(uuid.uuid4())
             branch_prog_id = str(uuid.uuid4())
