@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import time
 import uuid
 from pathlib import Path
@@ -1281,4 +1282,113 @@ async def test_the_sweep_survives_the_teardown_closing_the_handle_it_was_given(
         assert row["applied_at"] is not None
     finally:
         if not closed:
+            await db.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_a_run_still_finishes_when_the_sweep_cannot_get_a_connection(
+    temp_db_path, tmp_path, monkeypatch, caplog
+):
+    """Acquiring the sweep's connection is bookkeeping, and bookkeeping does not
+    get to fail a run that completed.
+
+    The sweep swallows its own errors deliberately, but the connection is opened
+    before the sweep is entered, so an open that raises would sail past that
+    catch and out of the teardown block. StateDB re-raises out of __aenter__,
+    and the reasons it does so are the ones the sweep already tolerates: another
+    writer holding the lock, a busy timeout, a migration. The run must still end
+    normally, and the row must stay visibly pending rather than being recorded
+    as anything.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import lionagi.cli.agent as agent_mod
+    import lionagi.state.db as db_mod
+    from lionagi import Branch
+    from lionagi.cli.agent import _run_agent
+    from lionagi.service.manager import iModelManager
+
+    db = StateDB()
+    await db.__aenter__()
+    try:
+        sid = await _make_agent_session(db)
+        cid = await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "never swept"}
+        )
+
+        real_aenter = db_mod.StateDB.__aenter__
+        opened_after_teardown = False
+
+        async def refusing_aenter(self):
+            # Only the sweep's own acquisition is refused; the run's setup
+            # handle above was opened before this patch went in.
+            if opened_after_teardown:
+                raise RuntimeError("database is locked")
+            return await real_aenter(self)
+
+        async def fake_operate(self, instruction=None, **kw):
+            return "done"
+
+        async def fake_setup(*a, **kw):
+            return {"db": db, "session_id": sid}
+
+        async def fake_teardown(ctx, *, status="completed", **kw):
+            nonlocal opened_after_teardown
+            await _terminalize(db, sid)
+            await db.close()
+            opened_after_teardown = True
+            return status
+
+        async def no_drain(*a, **kw):
+            return None
+
+        monkeypatch.setattr(db_mod.StateDB, "__aenter__", refusing_aenter)
+        monkeypatch.setattr(Branch, "operate", fake_operate)
+        monkeypatch.setattr(iModelManager, "shutdown", AsyncMock())
+        monkeypatch.setattr(agent_mod, "resolve_persisted_effort", lambda *a, **kw: None)
+        monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
+        monkeypatch.setattr(agent_mod, "teardown_agent_persist", fake_teardown)
+        monkeypatch.setattr(agent_mod, "_drain_pending_steers", no_drain)
+        monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
+        monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
+        monkeypatch.setattr(
+            agent_mod,
+            "_provenance",
+            SimpleNamespace(
+                resolve_model_spec=lambda p, m: f"{p}/{m}",
+                agent_definition_hash=lambda n: "abc",
+            ),
+        )
+        monkeypatch.setattr(
+            agent_mod,
+            "allocate_run",
+            lambda: SimpleNamespace(
+                run_id="20260802T000000-lockedrun",
+                artifact_root=tmp_path / "artifacts",
+                stream_dir=tmp_path / "stream",
+                branches_dir=tmp_path / "branches",
+            ),
+        )
+
+        with caplog.at_level("ERROR"):
+            # The assertion is that this returns at all.
+            await _run_agent("claude", "do the thing")
+
+        assert opened_after_teardown, "the refusal never armed, so this proves nothing"
+        assert "tombstone write failed" in caplog.text, (
+            f"the refused acquisition was not reported: {caplog.text!r}"
+        )
+        assert "database is locked" in caplog.text, (
+            f"the log does not say why it failed: {caplog.text!r}"
+        )
+
+        monkeypatch.setattr(db_mod.StateDB, "__aenter__", real_aenter)
+        async with StateDB() as check:
+            row = await check.get_session_control(cid)
+        assert row["result"] is None, (
+            f"a row was recorded by a sweep that never ran: {row['result']!r}"
+        )
+    finally:
+        with contextlib.suppress(Exception):
             await db.__aexit__(None, None, None)

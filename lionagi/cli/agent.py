@@ -1177,11 +1177,22 @@ async def _run_agent(
             # rows it exists to close stay pending forever. The connection is
             # opened here rather than inside the sweep so callers that hand it a
             # handle of their own, including the tests, keep doing so.
+            # Opening it is inside the same best-effort boundary as the sweep,
+            # not outside it. The sweep swallows its own failures on purpose so
+            # a finished run is not turned into an error by bookkeeping, and
+            # acquiring the connection can fail for exactly the reasons the
+            # sweep already tolerates: another writer holding the lock, a busy
+            # timeout, a migration. StateDB re-raises out of __aenter__, so an
+            # unguarded `async with` here would escape this teardown and report
+            # an infrastructure exception for a run that actually completed.
             if not will_auto_resume and live:
                 from lionagi.state.db import StateDB
 
-                async with StateDB() as _sweep_db:
-                    await _tombstone_pending_steers({**live, "db": _sweep_db})
+                try:
+                    async with StateDB() as _sweep_db:
+                        await _tombstone_pending_steers({**live, "db": _sweep_db})
+                except Exception as _sweep_exc:  # noqa: BLE001 — teardown must not raise
+                    log_error(f"steer tombstone write failed: {_sweep_exc!r}")
             if effective_status != _terminal_status:
                 _terminal_status = effective_status
             from lionagi.state.db import SESSION_TERMINAL_STATUSES
