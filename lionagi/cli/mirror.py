@@ -307,7 +307,7 @@ def _read_new_events(path: Path, state: _FileState) -> tuple[list[dict[str, Any]
             continue
         try:
             obj = json.loads(raw)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             unreadable += 1
             continue
         if isinstance(obj, dict):
@@ -495,20 +495,34 @@ async def _one_pass(db, root: Path, states, offsets, *, since, live_window, line
     return total
 
 
-def _peek_codex_meta(path: Path) -> dict[str, Any] | None:
-    """Read a rollout's session_meta (its first line) without consuming the tail."""
+def _peek_codex_head(path: Path) -> tuple[str, dict[str, Any] | None]:
+    """Classify a rollout's first line without consuming the tail.
+
+    Returns ``("meta", meta)`` for a parsed session_meta header,
+    ``("headerless", None)`` for a complete first line that is not one, and
+    ``("torn", None)`` when the line is still being written or unreadable.
+    Completeness is decided by the trailing newline BEFORE any parse attempt:
+    rollouts are append-only JSONL, so a line without its newline is still
+    arriving and defers even when the bytes so far happen to parse — later
+    appends can extend or corrupt it. A newline-terminated line that cannot
+    parse is permanently corrupt and settles as headerless; the normal reader
+    accounts for the bad line.
+    """
     from lionagi.state.codex_mirror import session_meta
 
     try:
         with path.open("rb") as fh:
             line = fh.readline()
     except OSError:
-        return None
+        return "torn", None
+    if not line.endswith(b"\n"):
+        return "torn", None
     try:
         rec = json.loads(line)
-    except json.JSONDecodeError:
-        return None
-    return session_meta(rec) if isinstance(rec, dict) else None
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return "headerless", None
+    meta = session_meta(rec) if isinstance(rec, dict) else None
+    return ("meta", meta) if meta else ("headerless", None)
 
 
 def _derive_codex_metadata(state: _FileState, records: list[dict[str, Any]]) -> None:
@@ -553,18 +567,43 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
 
     meta: dict[str, Any] | None = None
     if not state.head_checked:
+        head_status, meta = _peek_codex_head(path)
+        if head_status == "torn":
+            # The first line is still being written (or unreadable), so the
+            # rollout's identity is unknown. Mirroring waits along with the
+            # classification: writing records now would key them under the path
+            # stem while the header's real UID arrives next pass, splitting one
+            # rollout into two sessions — and committing head_checked would let
+            # an orchestrated rollout slip past the skip forever.
+            return 0
+        if meta and meta.get("originator") in SKIPPED_ORIGINATORS:
+            # An orchestrator's own run (e.g. a lionagi agent leg) — its
+            # session already exists under the agent's name; importing the
+            # rollout too is the double entry. Absorb what an older version
+            # may have imported (under either id this file was ever keyed
+            # by), then never read this file again.
+            prior_uid = state.session_uid  # a stem fallback from a pre-header pass
+            resolved_uid = meta["rollout_uid"] or path.stem
+            await absorb_orchestrated_session(db, resolved_uid)
+            if prior_uid and prior_uid != resolved_uid:
+                await absorb_orchestrated_session(db, prior_uid)
+            # Nothing is committed to the state until both absorptions return,
+            # so a failed attempt leaves exactly what the next one needs to
+            # repeat it. Committing head_checked would stop the header being
+            # re-read, and the rollout would then be mirrored after all —
+            # the same failure the torn-header branch above declines to cause.
+            # Committing orchestrated would retire the file with a row nobody
+            # ever tore down. Overwriting session_uid would lose the stem the
+            # second absorption call needs. Absorption fails for an ordinary
+            # reason now that a contended teardown gives up rather than waiting,
+            # so this path carries real traffic.
+            state.session_uid = resolved_uid
+            state.head_checked = True
+            state.orchestrated = True
+            return 0
         state.head_checked = True
-        meta = _peek_codex_meta(path)
         if meta:
             state.session_uid = meta["rollout_uid"] or path.stem
-            if meta.get("originator") in SKIPPED_ORIGINATORS:
-                # An orchestrator's own run (e.g. a lionagi agent leg) — its
-                # session already exists under the agent's name; importing the
-                # rollout too is the double entry. Absorb what an older version
-                # may have imported, then never read this file again.
-                state.orchestrated = True
-                await absorb_orchestrated_session(db, state.session_uid)
-                return 0
             if meta.get("cwd"):
                 state.project, state.project_source = _resolve_project_for_mirror(meta["cwd"])
     if not state.session_uid:
@@ -654,23 +693,30 @@ async def _codex_pass(db, root: Path, states, offsets, *, since, live_window, th
     return total
 
 
-async def _absorb_backfill(db) -> None:
+async def _absorb_backfill(db) -> bool:
     """Remove previously-imported rows for orchestrator-spawned rollouts.
 
-    Runs once per mirror process. It reads recorded provenance rather than the
-    rollout tree, so it also reaches rows whose files fall outside the sweep
-    window; per-file absorption in ``_mirror_one_codex`` covers the rest. Errors
-    are logged and swallowed — reconciliation must never keep the mirror down.
+    It reads recorded provenance rather than the rollout tree, so it also
+    reaches rows whose files fall outside the sweep window; per-file absorption
+    in ``_mirror_one_codex`` covers the rest. Returns whether the sweep
+    completed cleanly — a caller that runs this once per process must only
+    stand down on True, else one bad pass would retire the backfill for the
+    process lifetime. Errors are logged, never raised: reconciliation must not
+    keep the mirror down.
     """
     from lionagi.state.codex_mirror import absorb_orchestrated_backfill
 
     try:
-        removed = await absorb_orchestrated_backfill(db)
+        removed, failed = await absorb_orchestrated_backfill(db)
     except Exception:
         _log.exception("codex mirror orchestrated-session backfill failed")
-        return
+        return False
     if removed:
         progress(f"  mirror: absorbed {removed} orchestrator-spawned codex session(s)")
+    if failed:
+        warn(f"codex mirror backfill: {failed} row(s) failed to reconcile; will retry")
+        return False
+    return True
 
 
 async def mirror_forever(
@@ -715,11 +761,10 @@ async def mirror_forever(
     while not stop.is_set():
         try:
             async with StateDB() as db:
-                if want_codex and not backfilled:
-                    backfilled = True
-                    await _absorb_backfill(db)
                 while not stop.is_set():
                     try:
+                        if want_codex and not backfilled:
+                            backfilled = await _absorb_backfill(db)
                         if want_claude and root.exists():
                             await _one_pass(
                                 db,
@@ -793,9 +838,13 @@ async def _run(args: argparse.Namespace) -> int:
     hint(f"li mirror: {mode} over {trees}")
 
     async with StateDB() as db:
-        if want_codex:
-            await _absorb_backfill(db)
+        # Retried every pass until one sweep completes cleanly, same as the
+        # studio's mirror_forever — a transient failure on the first attempt
+        # must not retire the backfill for the process lifetime.
+        backfilled = not want_codex
         while True:
+            if not backfilled:
+                backfilled = await _absorb_backfill(db)
             n = 0
             if want_claude:
                 n += await _one_pass(

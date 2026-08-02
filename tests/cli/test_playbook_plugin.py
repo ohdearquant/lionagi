@@ -148,9 +148,7 @@ def test_local_playbook_shadows_global_playbook_and_warns(tmp_path, monkeypatch,
 
     assert err is None
     assert path.read_text() == "prompt: from-local\n"
-    assert any(
-        "deploy" in rec.message and "global" in rec.message for rec in caplog.records
-    )
+    assert any("deploy" in rec.message and "global" in rec.message for rec in caplog.records)
 
 
 def test_local_playbook_without_global_collision_does_not_warn(tmp_path, monkeypatch, caplog):
