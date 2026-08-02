@@ -155,6 +155,40 @@ def test_update_existing_server(tmp_path, monkeypatch):
     assert updated["url"] == "https://example.invalid/mcp"
 
 
+def test_switching_to_http_drops_the_stdio_arguments_and_secrets(tmp_path, monkeypatch):
+    """A server moved from stdio to http keeps no stdio fields. The shape check
+    only requires exactly one of command/url, so leftover args and env still
+    validate -- and the generated .mcp.json would hand every reader a set of
+    arguments and secrets the chosen transport never uses.
+    """
+    registry_path, synced_path = _point_registry_at(tmp_path, monkeypatch)
+    mcp_mod.register_server("myserver", {**STDIO_CONFIG, "timeout": 30})
+
+    mcp_mod.update_server("myserver", URL_CONFIG)
+
+    stored = json.loads(registry_path.read_text())["servers"]["myserver"]["config"]
+    assert stored == {"url": URL_CONFIG["url"], "timeout": 30}
+    # The file other tools actually read, not just the public response.
+    synced = json.loads(synced_path.read_text())["mcpServers"]["myserver"]
+    assert "args" not in synced
+    assert "env" not in synced
+    assert "sk-super-secret-value" not in synced_path.read_text()
+
+
+def test_switching_back_to_stdio_drops_the_url(tmp_path, monkeypatch):
+    """The same rule in the other direction, so the switch is not one-way."""
+    registry_path, _ = _point_registry_at(tmp_path, monkeypatch)
+    mcp_mod.register_server("myserver", {**URL_CONFIG, "timeout": 30})
+
+    mcp_mod.update_server("myserver", {"command": "python3", "args": ["-m", "srv"]})
+
+    stored = json.loads(registry_path.read_text())["servers"]["myserver"]["config"]
+    assert "url" not in stored
+    assert stored["command"] == "python3"
+    # Transport-neutral fields survive either switch.
+    assert stored["timeout"] == 30
+
+
 def test_update_without_env_preserves_existing_secret(tmp_path, monkeypatch):
     """A save that only changes `args` (the client never sees env values, so
     it cannot resend them) must not silently wipe the stored secret."""

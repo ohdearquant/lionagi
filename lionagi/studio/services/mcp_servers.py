@@ -139,6 +139,15 @@ def _sync_mcp_json(servers: dict[str, dict[str, Any]]) -> None:
 # ---------------------------------------------------------------------------
 
 
+# Which fields belong to which transport. The shape check below reads a
+# config's stdio fields only when it has a command and its http fields only
+# when it has a url, so these are the sets a transport switch has to clear --
+# keep them in step with the two branches of _validate_shape. `timeout` and
+# `alwaysAllow` are deliberately in neither: they apply to both transports.
+_STDIO_ONLY_FIELDS = ("command", "args", "env")
+_HTTP_ONLY_FIELDS = ("url",)
+
+
 def _validate_shape(name: str, config: dict[str, Any]) -> list[str]:
     """Check a config's shape only -- never attempts a connection. Returns a
     list of human-readable error strings, empty when the shape is usable."""
@@ -331,9 +340,14 @@ def _merge_config(existing: dict[str, Any], patch: dict[str, Any]) -> dict[str, 
     not wipe the env block it never saw. ``env`` merges key-by-key; a `None`
     value for a key removes it (the client's explicit way to drop a secret
     without knowing its value). Any other field replaces wholesale when
-    present, and a `None`/empty value removes it -- this is also how a
-    transport switch (stdio → http or back) drops the other transport's
-    fields, since the shape check requires exactly one.
+    present, and a `None`/empty value removes it.
+
+    A transport switch drops every field belonging to the transport being
+    left, not just the one that names it. The shape check only requires
+    exactly one of ``command``/``url``, so an http entry that kept the old
+    ``args`` and ``env`` would still validate -- and the derived ``.mcp.json``
+    would then hand every reader a set of stdio arguments and secrets that
+    the chosen transport never uses.
     """
     merged = dict(existing)
     for key in ("command", "args", "url", "timeout", "alwaysAllow"):
@@ -356,9 +370,11 @@ def _merge_config(existing: dict[str, Any], patch: dict[str, Any]) -> dict[str, 
         merged["env"] = merged_env
 
     if patch.get("url"):
-        merged.pop("command", None)
+        for key in _STDIO_ONLY_FIELDS:
+            merged.pop(key, None)
     if patch.get("command"):
-        merged.pop("url", None)
+        for key in _HTTP_ONLY_FIELDS:
+            merged.pop(key, None)
 
     return merged
 
