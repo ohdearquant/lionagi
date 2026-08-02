@@ -9,13 +9,8 @@ from lionagi.ln._utils import import_module
 T = TypeVar("T")
 LION_CLASS_REGISTRY: dict[str, type[T]] = {}
 
-# Built-in modules that define Element/Node subclasses. Persisted `lion_class`
-# metadata written before the full-qualified-name convention was adopted
-# stores a bare class name (e.g. "Instruction") instead of a dotted path.
-# Importing these modules on a short-name lookup miss (a) triggers
-# Node.__pydantic_init_subclass__ registration into LION_CLASS_REGISTRY for
-# Node subclasses, and (b) makes every built-in class directly attribute-
-# lookupable on its module, without scanning the filesystem.
+# Built-in modules that define Element/Node subclasses.
+# See docs/internals/support-libs.md#_class_registry-_builtin_modules
 _BUILTIN_MODULES = (
     "lionagi.protocols.generic.element",
     "lionagi.protocols.generic.event",
@@ -46,11 +41,8 @@ def get_class(class_name: str) -> type:
     built-in modules. Raises ValueError if not found.
     """
     if not class_name:
-        # An empty name can never be a legitimate class name; the short-name
-        # suffix-match fallback below (``key.endswith(f".{name}")``) would
-        # otherwise match ANY registry key ending in a bare ".", including
-        # keys accidentally left by a Node subclass created with an empty
-        # name (e.g. a dynamic factory called with name="").
+        # Reject empty names here: the suffix-match fallback below would
+        # otherwise match any registry key ending in a bare ".".
         raise ValueError(f"Unable to find class {class_name!r}")
 
     if class_name in LION_CLASS_REGISTRY:

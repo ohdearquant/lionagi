@@ -2,13 +2,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import type { WorkflowSpec, WorkflowNode, WorkflowEdge, WorkflowNodeKind } from "@/lib/api";
 
-const NODE_KINDS: readonly WorkflowNodeKind[] = [
-  "input",
-  "chat",
-  "parse",
-  "fanout",
-  "engine",
-];
+const NODE_KINDS: readonly WorkflowNodeKind[] = ["input", "chat", "parse", "fanout", "engine"];
 
 export interface ParseResult {
   spec: WorkflowSpec | null;

@@ -2,29 +2,21 @@
 # SPDX-License-Identifier: Apache-2.0
 """Project the CLI's own argparse parsers into JSON Schema at runtime.
 
-The MCP dispatch surface advertises one tool, so a caller discovers a verb's
-parameters by asking for them rather than by reading a schema shipped in the
-tool list. This module answers that ask by building the *same* parser the
-CLI builds for a real invocation and translating it, so the schema cannot
-drift from the command it describes.
+Builds the *same* parser the CLI builds for a real invocation and translates
+it, so a verb's schema cannot drift from the command it describes.
 
-Translation is deliberately bounded: scalar ``str``/``int``/``float``,
-``store_true``/``store_false``, ``choices`` as enums, ``nargs`` and repeated
-values as arrays, requiredness, defaults, aliases, positionals in parser
-order, and mutually exclusive groups. Anything outside that — an unknown
-``Action`` subclass, a ``type=`` callable with no JSON counterpart, a parser
-that still has an unresolved subcommand — raises
-:class:`SchemaProjectionError` naming the offending action. A verb that
-cannot be described exactly is better absent than described wrongly; a
-caller trusts a schema, so coercing an unmodelable parameter to ``string``
-would be worse than having no schema at all.
+Translation is deliberately bounded (scalars, store_true/false, choices as
+enums, nargs/repeats as arrays, requiredness, defaults, aliases, positional
+order, mutually-exclusive groups); anything outside that raises
+:class:`SchemaProjectionError` naming the offending action — a verb better
+absent than described wrongly, since coercing an unmodelable parameter to
+``string`` would betray a caller's trust in the schema.
 
-``li play`` has no parser of its own: it rewrites into ``li o flow -p NAME``,
-and the playbook's declared arguments reach the parser only once NAME is
-known. So ``orchestrate flow`` projects in two stages — without a playbook
-it advertises the playbook parameter and the common flow flags; with one it
-performs the same injection the CLI performs and returns a fingerprint of
-the playbook it resolved.
+``li play`` has no parser of its own (it rewrites into ``li o flow -p NAME``,
+and the playbook's args reach the parser only once NAME is known), so
+``orchestrate flow`` projects in two stages: without a playbook it advertises
+the playbook parameter and common flow flags; with one it performs the same
+injection the CLI performs and returns a fingerprint of what it resolved.
 """
 
 from __future__ import annotations
@@ -72,12 +64,9 @@ class PlaybookResolutionError(SchemaProjectionError):
 def _cli_main() -> ModuleType:
     """The ``lionagi.cli.main`` module object.
 
-    ``import lionagi.cli.main as m`` and ``from lionagi.cli import main`` both
-    hand back the ``main()`` *function*: the package ``__init__`` resolves the
-    name lazily and pins the callable into its globals, which shadows the
-    submodule the import machinery would otherwise bind. Going through
-    ``import_module`` reads ``sys.modules`` and returns the module, which is
-    where ``_COMMAND_REGISTRY`` and ``_build_parser`` live.
+    Plain imports of it resolve to the ``main()`` function instead (the
+    package `__init__` shadows the submodule), so this goes through
+    ``import_module`` to reach ``_COMMAND_REGISTRY``/``_build_parser``.
     """
     return import_module("lionagi.cli.main")
 
@@ -91,9 +80,8 @@ def _canonical_choices(
 ) -> list[tuple[str, tuple[str, ...], argparse.ArgumentParser]]:
     """(canonical name, aliases, parser) per registered subcommand.
 
-    ``choices`` maps every alias to the same parser object and preserves
-    registration order, so the first name seen for a given parser is the one
-    it was declared under.
+    The first name seen for a given parser object is its canonical name;
+    ``choices`` maps every alias to that same object in registration order.
     """
     ordered: dict[int, list[str]] = {}
     for name, sub in action.choices.items():
@@ -122,13 +110,10 @@ def _command_tree(spec: Any) -> _Tree:
     """Every parser path under one top-level command, freshly built.
 
     Each entry says whether the path spells every level with its canonical
-    name; alias spellings resolve to the same parser but are not listed as
-    separate commands.
-
-    The per-command ``parser_factory`` return values are not uniform —
-    ``orchestrate`` hands back a dict of its sub-parsers where the others hand
-    back a parser — so this walks the root parser's registered subparsers
-    action instead of whatever the factory returned.
+    name; alias spellings resolve to the same parser, not a separate command.
+    Walks the root parser's registered subparsers action rather than the
+    factory's own return value, since ``orchestrate`` returns a dict of
+    sub-parsers where the others return a single parser.
     """
     main = _cli_main()
     root, _selected = main._build_parser(spec)
@@ -161,9 +146,8 @@ def _spec_for(head: str) -> Any:
 def available_paths() -> tuple[str, ...]:
     """Every command path the projector can reach, canonical names only.
 
-    Building this constructs every command's real parser, which imports every
-    command module. Reachability here is not authorization: what the projector
-    can read is strictly wider than what the dispatch surface allows.
+    Reachability here is not authorization — what the projector can read is
+    strictly wider than what the dispatch surface allows.
     """
     main = _cli_main()
     paths: list[str] = []
@@ -175,10 +159,10 @@ def available_paths() -> tuple[str, ...]:
 
 
 def build_parser_for(path: str) -> argparse.ArgumentParser:
-    """The real parser the CLI would build for *path*, freshly constructed.
+    """The real parser the CLI would build for *path*.
 
-    Fresh on every call because projecting a playbook-bearing path mutates the
-    parser it reads.
+    Freshly constructed on every call — projecting a playbook-bearing path
+    mutates the parser it reads.
     """
     parts = _split(path)
     spec = _spec_for(parts[0])
@@ -351,10 +335,9 @@ def _project_json_action(
 ) -> dict[str, Any]:
     """A flag whose value the parser decodes from JSON, described as it decodes.
 
-    The advertised type is the *decoded* shape, because that is the shape the
-    argument accepts; ``x-json-encoded`` tells a renderer that the one argv
-    token this becomes has to be the encoding of it. Advertising ``string``
-    instead would name a type that no plain string satisfies.
+    Advertised type is the *decoded* shape, since that's what the argument
+    accepts; ``x-json-encoded`` tells a renderer the one argv token has to be
+    the JSON encoding of it.
     """
     schema = dict(kind.json_schema)
     schema["x-json-encoded"] = True
@@ -364,21 +347,8 @@ def _project_json_action(
 def _accepts_no_values(action: argparse.Action) -> bool:
     """A positional that parses happily with nothing supplied for it.
 
-    ``nargs="*"`` consumes zero or more values, so the command runs without it,
-    but argparse marks the action required all the same and then never enforces
-    it. Carrying that flag into the schema would tell a caller a parameter is
-    mandatory when the parser itself does not think so, and the caller has no
-    way to check. Such an action is still reported, under
-    ``x-required-unenforced``: the command is declared as being about this value,
-    and a caller told only ``required: []`` reads that as "a call with no
-    arguments is valid", which is a different and wronger claim than the one
-    ``required`` was dropped to avoid.
-
-    The rule is stated about the action rather than read off
-    ``required``, because ``required`` is what is wrong here: Python 3.14 stopped
-    setting it for exactly these actions, so trusting it makes the schema — and
-    every golden pinned to it — say different things on different interpreters
-    about one unchanged command.
+    See docs/internals/mcp.md#accepts-no-values-required-unenforced for why
+    this is checked structurally rather than by trusting `action.required`.
     """
     return not action.option_strings and action.nargs == "*"
 
@@ -457,10 +427,9 @@ def _has_playbook_parameter(parser: argparse.ArgumentParser) -> bool:
 def playbook_fingerprint(name: str) -> tuple[str, str]:
     """``(fingerprint, resolved path)`` for a playbook name.
 
-    The fingerprint covers the whole playbook file, not only its declared
-    arguments, because the body is what runs. A caller that validated against
-    one fingerprint and executed against another ran something it never
-    checked, and that is what the fingerprint exists to make visible.
+    Covers the whole playbook file, not just its declared arguments, since
+    the body is what runs — a caller validating against one fingerprint and
+    executing against another should be detectable.
     """
     path_obj, err = _orchestrate()._resolve_playbook_path(name)
     if err is not None or path_obj is None:

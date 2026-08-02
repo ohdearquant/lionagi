@@ -308,13 +308,10 @@ class _ProgressReport:
     def line(self, now: float) -> str:
         elapsed = int(now - self._start)
         current = self._counts()
-        # Two different unreadable states, kept apart because they license
-        # different claims. The baseline is taken once and never retried, so a
-        # baseline that failed to read means no delta is computable for the rest
-        # of this run; a single unreadable snapshot may be one bad tick, and
-        # widening it past this tick claims more than was measured. Neither
-        # falls back to the previous reading, which would present a stale count
-        # as current.
+        # An unreadable baseline (never retried) means no delta for the rest
+        # of this run; a single unreadable snapshot is only this tick's own
+        # gap. Neither falls back to the previous reading — that would
+        # present a stale count as current.
         if self._base is None:
             return (
                 f"[progress] {elapsed}s elapsed — progress is not observable for "
@@ -828,13 +825,10 @@ async def _run_agent(
 
                 register_profile_injection(branch, agent_name, profile)
 
-        # Fail fast: `li agent` only drives CLI-backed providers. The `run` op
-        # raises this same error deep inside once streaming — catching it here,
-        # before allocate_run/setup_agent_persist, keeps a bad provider prefix
-        # (e.g. 'gpt-5.3-codex-spark' vs 'codex/gpt-5.3-codex-spark') from
-        # persisting a run/session that would be recorded as a failed reliability
-        # event. New-branch only: a resume model override swaps only the model
-        # under the branch's existing (already-CLI) provider, never the provider.
+        # Fail fast, before allocate_run/setup_agent_persist: a bad provider
+        # prefix (e.g. 'gpt-5.3-codex-spark' vs 'codex/gpt-5.3-codex-spark')
+        # must not persist a run/session recorded as a failed reliability event.
+        # New-branch only — a resume model override never swaps the provider.
         if not branch.chat_model.is_cli:
             cli_provider = getattr(branch.chat_model.endpoint.config, "provider", provider)
             raise ConfigurationError(
@@ -904,15 +898,13 @@ async def _run_agent(
             forwarded=request_kwargs_carry_forwarded_mcp(cfg),
         )
 
-    # Add the profile system prompt for every leg EXCEPT one whose branch carries
-    # (or, on a brand-new leg, would carry) a create_agent-composed system message
-    # (role header + policy block) — full rationale in docs/internals/cli.md.
-    # Brand-new branch: `took_create_agent_path` is authoritative (preset can't
-    # combine with resume). Resumed branch: only the immutable
-    # CREATE_AGENT_BRANCH_ORIGIN_KEY marker counts as create_agent provenance —
-    # never re-derive it from persisted system-message content (Markdown
-    # headings are user-authored prompt text, not proof of origin, and a
-    # markerless branch with an explicitly requested role must get that role's
+    # Skip the profile system prompt for a branch that carries (or would carry)
+    # a create_agent-composed system message — full rationale in
+    # docs/internals/cli.md. Brand-new branch: `took_create_agent_path` is
+    # authoritative. Resumed branch: only the immutable
+    # CREATE_AGENT_BRANCH_ORIGIN_KEY marker counts as provenance — never
+    # re-derived from persisted content (a markerless branch with an
+    # explicitly requested role must get that role's
     # system prompt rather than have it silently dropped).
     if is_resumed_branch:
         from lionagi.agent.factory import CREATE_AGENT_BRANCH_ORIGIN_KEY
@@ -996,12 +988,9 @@ async def _run_agent(
             on_rejection=_notify_override_refused,
         )
 
-    # notify.on_terminal (settings-driven, independent of --notify) outcome
-    # attribution: bind this run into the handler at registration time so a
-    # late-arriving outcome for this session lands here or nowhere -- never
-    # on a different run this process later allocates. Skipped when --notify
-    # already owns this same entity as an exclusive override (registering a
-    # second override for the same entity would fire the adapter twice).
+    # Bind this run into the notify.on_terminal handler at registration time so
+    # a late outcome lands here or nowhere, never on a later run. Skipped when
+    # --notify already owns this entity (a second override would double-fire).
     _notify_outcome_scope_name: str | None = None
     if not notify and _notify_session_id is not None:
         from lionagi.state.lifecycle.notify_settings import (

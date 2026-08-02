@@ -139,12 +139,10 @@ def build_chat_model(
     if mcp_servers is not None:
         from lionagi.agent.factory import apply_forwarded_mcp_servers
 
-        # Whether this provider can be given a set at all is one question with
-        # one answer, and applying it is that answer's implementation — a lane
-        # that carries a set over a different transport (codex, via config
-        # overrides) is a lane this caller must not decide about itself.
-        # An empty set is the caller stating the whole set; a non-empty one is
-        # added to whatever the provider finds for itself.
+        # Whether/how this provider accepts a server set (e.g. codex via config
+        # overrides) is decided by apply_forwarded_mcp_servers, not here. An
+        # empty set means the caller states the whole set; non-empty adds to
+        # whatever the provider finds for itself.
         apply_forwarded_mcp_servers(
             extra, mcp_servers, provider=provider, exclusive=not mcp_servers
         )

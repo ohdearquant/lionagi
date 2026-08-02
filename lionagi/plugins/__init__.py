@@ -3,16 +3,12 @@
 """LionAGI runtime plugin system: directory-bundle manifest with lazy activation.
 
 A plugin is a ``.lionagi/plugins/<name>/`` directory bundle carrying a
-``plugin.yaml`` manifest (see ``manifest.py``). Discovery (``discovery.py``)
-and the registry (``registry.py``) are data-only until a specific declared
-capability is actually used — importing this package does not scan, parse,
-or import anything; every module here is inert until a consumer (the ``li
-plugin`` CLI, or a capability-resolution miss in another subsystem) calls
-into it.
+``plugin.yaml`` manifest (see ``manifest.py``). Discovery and the registry
+are data-only until a declared capability is actually used — importing this
+package does not scan, parse, or import anything.
 
-This is unrelated to ``lionagi.studio.services.plugins``, which reads
-Claude-Code-format plugin bundles for the Studio marketplace viewer — the two
-are separate concepts that happen to share a directory-bundle idiom.
+Unrelated to ``lionagi.studio.services.plugins``, which reads
+Claude-Code-format plugin bundles for the Studio marketplace viewer.
 """
 
 from __future__ import annotations

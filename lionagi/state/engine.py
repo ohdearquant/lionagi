@@ -17,22 +17,15 @@ from lionagi._paths import LIONAGI_HOME
 
 _log = logging.getLogger(__name__)
 
-# sqlite busy_timeout (ms) applied to every connection. Tunable so tests that
+# sqlite busy_timeout (ms) applied to every connection; kept low so tests that
 # deliberately hold a write lock fail fast instead of waiting the full default.
 _SQLITE_BUSY_TIMEOUT_MS = 5000
 
 
 def has_wal_reset_fix(version_info: tuple[int, ...]) -> bool:
-    """Whether a linked SQLite carries the fix for the WAL-reset corruption race.
-
-    SQLite documents a data race between a starting checkpoint and a commit that
-    resets the WAL file: the checkpoint misses the reset, mis-sets a WAL-index
-    header field, and a later checkpoint then skips part of the committed
-    transaction, corrupting the database. It reaches every WAL-mode release from
-    3.7.0 up to and including 3.51.2, and is fixed in 3.51.3, with backports on
-    the 3.44 and 3.50 branches. Exposure needs two connections writing or
-    checkpointing at the same instant, which is exactly what this store does.
-    """
+    """Whether a linked SQLite carries the fix for the WAL-reset corruption race
+    (all WAL-mode releases 3.7.0-3.51.2; fixed in 3.51.3, backported to 3.44.6
+    and 3.50.7). See docs/internals/runtime.md."""
     v = tuple(version_info[:3])
     if v >= (3, 51, 3):
         return True
@@ -90,23 +83,18 @@ def normalize_state_db_url(value: str | Path | None) -> str:
 
     s = str(value)
 
-    # Special-case SQLite in-memory shorthand.
     if s == ":memory:":
         return "sqlite+aiosqlite:///:memory:"
 
-    # Bare filesystem path — no scheme detected.
     if "://" not in s:
         return f"sqlite+aiosqlite:///{Path(s).resolve()}"
 
-    # Already fully-qualified async variants — leave unchanged.
     if s.startswith("sqlite+aiosqlite://") or s.startswith("postgresql+asyncpg://"):
         return s
 
-    # sqlite:/// → sqlite+aiosqlite:/// (preserve original slash count)
     if s.startswith("sqlite:///"):
         return "sqlite+aiosqlite:" + s[len("sqlite:") :]
 
-    # postgres:// or postgresql:// → postgresql+asyncpg://
     if s.startswith("postgres://") or s.startswith("postgresql://"):
         parsed = urlparse(s)
         replaced = parsed._replace(scheme="postgresql+asyncpg")
@@ -122,10 +110,8 @@ def mask_db_url(url: str) -> str:
         if not parsed.password:
             return url
         pw = parsed.password
-        # first-6 prefix only when ≥6 chars stay hidden (never expose short secrets)
         prefix = pw[:6] if len(pw) >= 12 else ""
         masked = f"{prefix}…[{len(pw)} chars]"
-        # Rebuild netloc without exposing the raw password.
         user_info = f"{parsed.username}:{masked}"
         host_part = parsed.hostname or ""
         if parsed.port:
@@ -143,7 +129,6 @@ def dialect_of(url: str) -> str:
         return "sqlite"
     if url.startswith("postgresql") or url.startswith("postgres"):
         return "postgresql"
-    # Fall back to scheme prefix.
     scheme = url.split("+")[0].split(":")[0].lower()
     return scheme
 

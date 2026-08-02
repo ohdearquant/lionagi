@@ -2,23 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tri-state turn-origin disposition threaded through the chat/run operation context.
 
-A model-submission turn is either genuinely user-originated (a public ingress
-called with no upstream instruction) or purely internal (a repair retry, a
-ReAct extension round, ...). Distinguishing the two lets a single blocking
-hook point fire exactly once per user turn, no matter how many internal calls
-that turn triggers underneath it.
-
-Three explicit states, carried as a field on the operation context (never
-ambient/task-local, since concurrent branch operations must not leak state
-into each other):
-
-- ``unset`` — the default a genuine outside caller produces. The model-
-  submission boundary mints a fresh token and fires.
-- ``forwarded`` — an already-minted token, carried through unchanged. Never
-  re-originated; a caller that receives a forwarded disposition must pass it
-  on as-is, not re-mint.
-- ``no-origin`` — the call traverses without ever holding a token. The
-  boundary stays silent.
+See docs/internals/providers.md#turn-origin-disposition for the design rationale.
 """
 
 from __future__ import annotations

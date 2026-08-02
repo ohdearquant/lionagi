@@ -2,24 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """The machine-result contract: one envelope, one JSON object on stdout.
 
-Every `li <command> --machine` call that reaches the dispatcher here answers with
-exactly one JSON object on stdout and nothing else; every human-facing byte goes
-to stderr. A consumer of this surface is a subprocess caller in another language
-that cannot read this file, so the shape is fixed here and the version it carries
-is the only thing it has to negotiate.
-
-The pieces:
-
-- `CONTRACT_VERSION` — the single place the current version number lives.
-- `ok` / `failure` — the two envelope constructors; `ERROR_KINDS` is closed.
-- `available` / `unavailable` and the readers below — the availability wrapper,
-  so "there are none" and "could not establish whether there are any" never
-  share an encoding.
-- `reserve_stdout` — takes stdout away from everything except the envelope, at
-  the file-descriptor level, so a stray `print` (or a child process that
-  inherited the descriptor) lands on stderr instead of corrupting the result.
-- `dispatch_machine` — runs one machine command and emits its envelope, turning
-  any failure into an envelope rather than a traceback.
+Every `li <command> --machine` call answers with exactly one JSON object on
+stdout, nothing else; every human-facing byte goes to stderr. See
+docs/internals/cli.md for the module's pieces (envelope constructors,
+availability wrapper, fd-level stdout reservation, dispatch).
 """
 
 from __future__ import annotations
@@ -393,15 +379,9 @@ def reserve_stdout() -> Iterator[MachineChannel]:
         saved_fd = os.dup(1)
         os.dup2(2, 1)
     except OSError:
-        # No usable descriptor (an embedding with a non-file stdout, say). The
-        # Python-level rebinding below still holds, so the envelope is still the
-        # only thing written to the stream the caller gave us.
-        #
-        # The duplicate is closed here rather than left to the exit path, because
-        # the two calls fail independently: `dup` can succeed and `dup2` fail on
-        # the very next line, and the exit path only closes a descriptor it was
-        # told to restore. A long-lived process running machine commands with no
-        # usable stderr would otherwise leak one descriptor per call.
+        # dup/dup2 fail independently, so close here rather than at the exit
+        # path (which only closes a descriptor it was told to restore) or a
+        # long-lived process leaks one descriptor per call.
         if saved_fd is not None:
             try:
                 os.close(saved_fd)
@@ -605,26 +585,17 @@ def lifecycle_data(run_id: str) -> dict[str, Any]:
     from lionagi.state.db import StateDB, state_db_file, state_db_known_absent
 
     if state_db_known_absent():
-        # No store at all is not evidence about one run: it is the absence of
-        # every record, including the ones that would answer this question.
-        #
-        # Asked of the store this read will actually open, not of the default
-        # path. `LIONAGI_STATE_DB_URL` moves the store, and a check against the
-        # default would then report every run in a configured store as
-        # unreadable while the reader beside it opens that store and finds them.
+        # No store at all is absence of every record, not evidence about this
+        # run. Checked against the store this read will actually open (which
+        # moves under LIONAGI_STATE_DB_URL), not the default path.
         return {
             "run_id": run_id,
             "lifecycle": unavailable(REASON_NOT_FOUND, f"{state_db_file()} does not exist"),
         }
 
     async def _read() -> list[dict[str, Any]]:
-        # Read-only at the connection, not by intention. The ordinary open
-        # reconciles the schema — `create_all`, index reconciliation, seed
-        # inserts — so a reporting command that used it would write to the store
-        # it is reporting on, and against a store opened read-only elsewhere it
-        # fails on an `INSERT INTO schema_meta` while claiming to be a read.
-        # This function's own docstring says it changes nothing; that is only
-        # true of this connection.
+        # readonly=True: the ordinary open reconciles the schema (create_all,
+        # seed inserts), which would write to the store this is reporting on.
         async with StateDB(readonly=True) as db:
             return await db.get_sessions_for_run(run_id)
 
@@ -704,12 +675,9 @@ _MACHINE_COMMANDS: dict[str, Callable[[list[str]], dict[str, Any]]] = {
     "lifecycle": _machine_lifecycle,
 }
 
-# Commands whose machine result is defined beside the command it mirrors rather
-# than here, because a payload that lives in another file drifts from the
-# printout it is supposed to be the machine form of. Each module exposes
-# ``machine_result(argv)`` and routes its own subcommands. The alias spellings
-# are registered too: `li mon --machine` reaches the same parser `li mon` does,
-# so it must reach the same result.
+# Commands whose machine result lives beside the command it mirrors (each
+# module exposes machine_result(argv)); alias spellings map to the same
+# module so e.g. `li mon --machine` reaches the same result as `li monitor`.
 _MACHINE_MODULES: dict[str, str] = {
     "monitor": ".monitor",
     "mon": ".monitor",

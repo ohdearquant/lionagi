@@ -43,18 +43,12 @@ _log = logging.getLogger(__name__)
 
 _MAX_CHAIN_DEPTH = 10
 _TICK_INTERVAL = 30  # seconds
-# Deferred-capacity skipped-run records are throttled to one per schedule per
-# this many deferrals (the first deferral always emits), so sustained
-# saturation doesn't spam schedule_runs.
+# Throttles deferred-capacity skipped-run records to one per schedule per this
+# many deferrals, so sustained saturation doesn't spam schedule_runs.
 _DEFERRED_RECORD_EVERY = 10
-# How many consecutive times one github_poll event may refuse before dispatch
-# while still holding github_cursor back for it. A pre-dispatch refusal is not
-# necessarily a property of the schedule: the action's prompt and command
-# arguments are rendered per event, so one PR's title or author can fail argv
-# construction where the next PR's would not. Retrying loudly a few times keeps
-# a genuinely fixable misconfiguration re-offered; at this count the refusal is
-# recorded as terminal for that event and the cursor moves past it, so one
-# poison event cannot block the queue behind it forever.
+# Consecutive pre-dispatch refusals allowed for one github_poll event before
+# it's recorded terminal and the cursor moves past it, so one poison event
+# can't block the queue forever.
 _MAX_PREDISPATCH_REFUSALS = 3
 
 
@@ -62,17 +56,13 @@ def _register_schedule_notify(
     inv_id: str, notify_on: list[str] | None, notify_command: str | None
 ) -> str | None:
     """Register the declared ``notify`` command on the invocation this fire
-    spawns, scoped to *inv_id* and filtered to *notify_on* -- reuses the
-    existing terminal-callback registry (the same machinery `li agent
-    --notify` registers on its own session), never a second callback path.
+    spawns, scoped to *inv_id* and filtered to *notify_on*, reusing the
+    terminal-callback registry `li agent --notify` also registers through.
     Returns the registration name to pass to ``_unregister_schedule_notify``
     in a ``finally``, or ``None`` if this schedule has no notify declared.
     """
     if not notify_on or not notify_command:
         return None
-    # A rejected command is already reported through the resolver's warning; this
-    # registration has no run record to carry a reason onto, so it only needs to
-    # know whether there is something to launch.
     resolved = resolve_notify_config(override=notify_command).handler
     if resolved is None:
         return None
@@ -100,14 +90,10 @@ def _unregister_schedule_notify(name: str | None) -> None:
 class _MaxRunsClaim:
     """One-shot handle for an in-process max_runs reservation.
 
-    Returned by ``_reserve_max_runs_budget()`` when a top-level fire is
-    allowed to proceed. The holder (``_fire()``) must call ``release()``
-    exactly once, from a ``finally`` block that covers every exit path —
-    normal completion, a caught exception, an uncaught exception raised out
-    of bookkeeping code, or cancellation — so the claim never survives past
-    the fire it was reserved for. ``release()`` is itself idempotent (a
-    second call is a no-op) as a defense-in-depth measure, not because any
-    call site is expected to invoke it twice.
+    Returned by ``_reserve_max_runs_budget()``. ``_fire()`` must call
+    ``release()`` exactly once, from a ``finally`` covering every exit path,
+    so the claim never outlives the fire it was reserved for. ``release()``
+    is idempotent as defense-in-depth.
     """
 
     __slots__ = ("_engine", "_schedule_id", "_released")
@@ -127,12 +113,8 @@ class _MaxRunsClaim:
 class _GlobalSlotClaim:
     """One-shot handle for an in-process global concurrent-fire slot.
 
-    Returned by ``_reserve_global_slot()`` when a top-level fire is allowed
-    to proceed under the daemon-wide concurrency ceiling. The holder
-    (``_fire()``) must call ``release()`` exactly once, from a ``finally``
-    block that covers every exit path, so the slot never survives past the
-    fire it was reserved for. ``release()`` is itself idempotent (a second
-    call is a no-op), same defense-in-depth rationale as ``_MaxRunsClaim``.
+    Same release-once-in-a-finally lifecycle as ``_MaxRunsClaim``, scoped to
+    the daemon-wide concurrency ceiling instead of one schedule's budget.
     """
 
     __slots__ = ("_engine", "_released")
@@ -169,22 +151,13 @@ class _RateLimitClaim:
 class _ThresholdCooldownClaim:
     """One-shot handle for an in-process threshold-alert cooldown reservation.
 
-    ``_maybe_fire()`` reserves a schedule's cooldown SYNCHRONOUSLY -- adding
-    its id to ``_threshold_pending`` with no ``await`` between the
-    ``last_alert_at`` gate check and the add -- before ``_tracked_fire()``
-    launches. Without this in-process gate, two ticks separated by
-    ``_TICK_INTERVAL`` could both read the same stale (not-yet-durably-
-    stamped) ``last_alert_at``, both pass the cooldown check, and both fire
-    before either fire's background task reaches the durable stamp --
-    duplicate alerts inside the cooldown window, the exact dedup this
-    feature promises to prevent.
-
-    Held for the full ``_fire_inner()`` duration and released in ``_fire()``
-    's wrapping ``try/finally`` -- same lifecycle as ``_MaxRunsClaim``/
-    ``_GlobalSlotClaim`` -- so it is guaranteed to be released on every exit
-    path, including a failure before the durable stamp is ever written. A
-    leaked reservation would permanently mute the alert, which is worse
-    than the duplicate it exists to prevent.
+    ``_maybe_fire()`` adds the schedule id to ``_threshold_pending``
+    synchronously (no ``await`` between the ``last_alert_at`` check and the
+    add), closing the race where two ticks both read the same stale,
+    not-yet-durably-stamped ``last_alert_at`` and both fire inside the
+    cooldown window. Same release-once-in-a-finally lifecycle as
+    ``_MaxRunsClaim``/``_GlobalSlotClaim``; a leaked reservation would
+    permanently mute the alert, worse than the duplicate it prevents.
     """
 
     __slots__ = ("_engine", "_schedule_id", "_released")
@@ -205,11 +178,9 @@ class _ThresholdCooldownClaim:
 class ScheduleTimezone:
     """The zone one schedule's cron fields are interpreted in, plus its provenance.
 
-    ``name`` alone is not diagnostic. A UTC an operator asked for and a UTC
-    that is all the resolver could produce are the same three letters, and
-    only the second one means every cron row is firing on an hour nobody
-    chose. ``source`` is what tells them apart -- see the ``TZ_SOURCE_*``
-    vocabulary in ``lionagi.studio.config``.
+    ``source`` distinguishes a UTC an operator asked for from a UTC that is
+    all the resolver could produce (see ``TZ_SOURCE_*`` in
+    ``lionagi.studio.config``) — ``name`` alone can't tell them apart.
     """
 
     name: str
@@ -220,18 +191,12 @@ class ScheduleTimezone:
 def resolve_schedule_timezone(schedule: dict) -> ScheduleTimezone:
     """Resolve the zone *schedule*'s cron expression is interpreted in.
 
-    A row that names its own zone (``resolved_timezone``, set by the
-    declarative apply path) is resolved in that zone; a row that names none
-    falls back to the process-wide configured default, whose own provenance
-    (``SCHEDULER_TZ_SOURCE``) is carried through unchanged rather than
-    flattened into "configured". Either requested name that this host cannot
-    load resolves to UTC with a warning -- an unloadable name must never
-    crash cron resolution -- and that UTC is reported under its own source so
-    it stays distinguishable from a UTC that was actually requested.
-
-    Resolution is a pure read: nothing here consults or is influenced by the
-    ``effective_timezone``/``effective_timezone_source`` columns that record
-    its outcome, so recording the outcome cannot change it.
+    A row naming its own zone (``resolved_timezone``) resolves in that zone;
+    otherwise falls back to the process-wide default, carrying its
+    ``SCHEDULER_TZ_SOURCE`` provenance through unchanged. A name this host
+    can't load resolves to UTC with a warning, tagged with its own source so
+    it isn't confused with a UTC actually requested. Pure read: never
+    consults the ``effective_timezone*`` columns that record its outcome.
     """
     from lionagi.studio.config import (
         SCHEDULER_TZ,
@@ -263,15 +228,7 @@ def resolve_schedule_timezone(schedule: dict) -> ScheduleTimezone:
 class SchedulerCwdInheritRefusedError(RuntimeError):
     """A schedule carrying an explicit execution root could not resolve any of
     its configured directories, so the resolver refused to inherit the
-    daemon's own working directory instead.
-
-    A subprocess started without an explicit ``cwd`` inherits the daemon's
-    working directory. For a schedule that configured its own execution root,
-    silently running there executes the action somewhere it never asked to
-    run, and any environment a tool derives from the working directory becomes
-    the daemon's rather than the schedule's. Failing closed keeps the action
-    from running under a substituted working directory in place of its
-    configured root.
+    daemon's own working directory instead of silently substituting it.
     """
 
     def __init__(
@@ -298,20 +255,11 @@ class SchedulerCwdInheritRefusedError(RuntimeError):
 def _is_usable_execution_root(root: str | None) -> bool:
     """A usable execution root is an existing **absolute** directory.
 
-    Absoluteness is part of the test, not a stylistic preference. A relative
-    path is interpreted against the daemon's own working directory, so
-    honoring one substitutes the daemon's cwd for the root the schedule
-    configured -- the exact substitution this module refuses. ``"."`` is the
-    case that always succeeds, and ``""`` is the same bug wearing a different
-    hat, since ``Path("")`` is ``Path(".")``.
-
-    Defining it once, here, is deliberate: every site that has to decide
-    whether a root is usable asks this function, so the resolver, the refusal
-    and the persistence boundary cannot drift into disagreeing about what a
-    root means. The persistence boundary already requires an existing absolute
-    directory when a schedule is written; this is the same rule applied on the
-    read side, where legacy rows and registered project paths arrive without
-    having passed that check.
+    Absoluteness is required, not stylistic: a relative path resolves against
+    the daemon's own cwd, substituting it for the schedule's configured root.
+    ``""`` is ``Path(".")`` and would otherwise pass. Every site deciding
+    whether a root is usable calls this one function, so the resolver, the
+    refusal, and the persistence boundary can't drift out of agreement.
     """
     if not root:
         return False
@@ -322,48 +270,22 @@ def _is_usable_execution_root(root: str | None) -> bool:
 async def _resolve_action_cwd(schedule: dict) -> str | None:
     """Resolve the working directory for a scheduled subprocess spawn.
 
-    Layered resolution (first hit wins):
-      1. ``action_cwd`` — the schedule's own persisted execution root
-         (ADR-0070 delta 1), snapshotted once at creation time, if it still
-         exists on disk.
-      2. ``action_project`` — the registered project's stored path, if it
-         exists on disk.
-      3. Fall-through — neither configured directory resolved to one that
-         exists. The behavior here depends on whether the schedule carries an
-         explicit execution root:
+    Layered resolution (first hit wins): ``action_cwd`` (the schedule's own
+    persisted execution root, ADR-0070 delta 1) -> ``action_project``'s
+    stored path -> fall-through. On fall-through, a schedule that carries an
+    explicit ``action_cwd``/``action_project`` fails closed
+    (``SchedulerCwdInheritRefusedError``) rather than silently inheriting the
+    daemon's cwd, which can itself resolve to a project and run the action in
+    the wrong place with no visible failure; ``LIONAGI_SCHEDULER_CWD`` is
+    consulted only for ownerless (pre-migration) rows, else ``None`` inherits
+    the daemon cwd with a deprecation warning.
 
-           * If ``action_cwd`` or ``action_project`` is set (the schedule
-             configured its own execution root), the resolver **fails closed**
-             and raises ``SchedulerCwdInheritRefusedError``. Inheriting the
-             daemon's own cwd here is not merely a spawn-failure risk: at a
-             directory that *does* resolve to a project (e.g. the repo root the
-             daemon was started from) the spawn does not fail — it succeeds and
-             runs the action in the daemon's directory rather than the
-             schedule's configured root, silently substituting the working
-             directory (and whatever a tool derives from it) for the one the
-             schedule asked for. That substitution is refused rather than
-             performed.
-             That refusal deliberately precedes ``LIONAGI_SCHEDULER_CWD``:
-             an operator-set default is no more this schedule's configured
-             root than the daemon's cwd is, so honoring it here would perform
-             exactly the silent substitution described above.
-           * Only if the schedule carries no execution root at all (a
-             pre-migration row: both ``action_cwd`` and ``action_project`` are
-             ``None``) is ``LIONAGI_SCHEDULER_CWD`` consulted, and failing
-             that, ``None`` is returned to inherit the daemon's cwd with a loud
-             deprecation warning. Such rows configured no execution
-             root to honor and are expected to be backfilled on daemon restart.
+    Returns the resolved cwd, or ``None`` for the ownerless fall-through.
+    Raises ``SchedulerCwdInheritRefusedError`` for the owner-carrying
+    fall-through.
 
-    Returns the resolved cwd (str) for tiers 1-2 and for an ownerless row with
-    ``LIONAGI_SCHEDULER_CWD`` set, or ``None`` for the ownerless
-    fall-through. Raises
-    ``SchedulerCwdInheritRefusedError`` for the owner-carrying fall-through.
-
-    Imports ``lionagi.studio.services.projects`` lazily so this module (and
-    ``lionagi.studio.scheduler.subprocess``) stay importable without the
-    ``studio`` extra (fastapi) — the scheduler engine only actually reaches
-    this branch when ``action_project`` is set, i.e. inside a running studio
-    daemon where fastapi is already a hard dependency.
+    Imports ``lionagi.studio.services.projects`` lazily so this module stays
+    importable without the ``studio`` (fastapi) extra.
     """
     action_cwd = schedule.get("action_cwd")
     if action_cwd:
@@ -380,14 +302,8 @@ async def _resolve_action_cwd(schedule: dict) -> str | None:
             action_cwd,
         )
     elif action_cwd is not None:
-        # A present-but-empty execution root. It must never reach the
-        # ``is_dir()`` check above, because ``Path("")`` is ``Path(".")``,
-        # which *is* a directory -- honoring it would return "" and spawn the
-        # action in the daemon's own cwd, the silent substitution this
-        # resolver exists to refuse. So the truthiness test above is
-        # deliberate, not an oversight. Warn on the way past: an empty root is
-        # malformed state, and without this it would be the one unusable root
-        # that falls through to ``action_project`` with no diagnostic at all.
+        # Present-but-empty root: the truthiness check above is deliberate,
+        # since Path("") is Path(".") and would otherwise pass as usable.
         _log.warning(
             "Schedule %s: persisted execution root is empty, which is not a "
             "usable directory; trying action_project, then refusing rather "
@@ -420,28 +336,16 @@ async def _resolve_action_cwd(schedule: dict) -> str | None:
                 )
 
     if action_cwd is not None or action_project is not None:
-        # The schedule carries an explicit execution root (any supplied value,
-        # not just a truthy one) but none of its configured directories
-        # resolved. Gate on ``is not None`` rather than truthiness so a
-        # present-but-empty root (``""``) fails closed too instead of slipping
-        # into the ownerless branch below. Running anywhere else would run the
-        # action in a directory the schedule did not configure, so fail closed
-        # rather than substitute it. This precedes the environment fallback:
-        # LIONAGI_SCHEDULER_CWD is no more this schedule's configured root than
-        # the daemon's own cwd is, and a substitution that happens to resolve
-        # to a project succeeds silently -- the exact failure this refuses.
+        # Gate on `is not None`, not truthiness, so a present-but-empty root
+        # ("") fails closed here too instead of falling into the ownerless
+        # branch below.
         raise SchedulerCwdInheritRefusedError(
             schedule_id=schedule.get("id"),
-            # ``is not None``, matching the gate above and the backfill guard:
-            # a truthiness fallback reports an empty action_cwd as whatever
-            # action_project holds, so the row that failed closed is named
-            # incorrectly in the very diagnostic meant to explain the refusal.
             configured_root=action_cwd if action_cwd is not None else action_project,
             daemon_cwd=str(Path.cwd()),
         )
 
-    # Ownerless pre-migration rows only: with no configured root to honor,
-    # an operator-set directory is a better default than the daemon's own.
+    # Ownerless (pre-migration) rows only: fall back to an operator-set default.
     env_cwd = os.environ.get("LIONAGI_SCHEDULER_CWD")
     if _is_usable_execution_root(env_cwd):
         return env_cwd
@@ -901,9 +805,8 @@ class SchedulerEngine:
         if written:
             _log.info("Undispatched schedule_run %s tombstoned: %s", run_id, log_note)
         else:
-            # Raced with something else finalizing this row between the
-            # scan and here (e.g. the stale-run reaper); nothing left to
-            # recover -- it already resolved through some other path.
+            # Raced with something else finalizing this row (e.g. the
+            # stale-run reaper) between the scan and here; already resolved.
             pass
 
     async def _check_missed_fires(self) -> None:
@@ -914,22 +817,10 @@ class SchedulerEngine:
                 next_fire_at = s.get("next_fire_at")
                 if next_fire_at is None or next_fire_at > now:
                     continue
-                # Recovery scan before recompute: with occurrence-insert +
-                # cursor-advance atomic (create_schedule_run_and_advance),
-                # a schedule_run row can only exist here for one of two
-                # reasons -- (a) the atomic transaction committed and then
-                # the process died before spawn_and_wait/its terminal write
-                # (next_fire_at should already be in the future in that
-                # case, so this branch shouldn't normally see it due at
-                # all), or (b) a pre-existing row from before this fix
-                # shipped, or some other write path, left an occurrence
-                # recorded without the cursor having moved. Either way,
-                # firing again here would double-execute the external
-                # action for an occurrence that already has a durable row
-                # -- so treat "already recorded" as evidence the slot was
-                # handled and just advance the cursor past it, the same
-                # bookkeeping _record_missed_fire_skip does, without
-                # queuing a second fire.
+                # A schedule_run already recorded for this occurrence means
+                # the slot was handled (or a pre-fix row left it that way);
+                # firing again would double-execute the action, so just
+                # advance the cursor past it instead of queuing a fire.
                 if await self._svc.schedule_run_exists_since(s["id"], next_fire_at):
                     next_at = self._compute_next_fire(s, now)
                     fields = self._next_fire_field(s, next_at)
@@ -955,40 +846,20 @@ class SchedulerEngine:
         """Queue exactly one recovery fire for a past-due run_once schedule,
         reserving its admission claims and next_fire_at synchronously first.
 
-        _tick_loop() calls _check_missed_fires() and then _tick() back to
-        back with nothing awaited in between (the tick loop only sleeps
-        *between* iterations, not before its first one). The recovery fire
-        itself is queued as a background task via _tracked_fire() — it does
-        the real work (spawns the action) and, once it runs, persists its
-        own next_fire_at through the same _compute_next_fire() path every
-        other fire uses. But that write may not have happened yet by the
-        time the very next _tick() reloads schedules from storage: without
-        a synchronous reserve here, _tick() would see the same past-due
-        next_fire_at and queue a second, duplicate fire for it.
-
-        Reserving next_fire_at here (before returning to _tick_loop) closes
-        that window: _fire() recomputes and persists next_fire_at again
-        once it actually runs, so this reserve only has to survive long
-        enough for the immediately-following _tick() to reload schedules —
-        it is a stopgap, not a duplicate of the fire path's own bookkeeping.
-        If the process crashes between this reserve and the recovery fire
-        landing, the recovery run is lost for this cycle, but the schedule
-        is not stuck: it already holds a legitimate future next_fire_at and
-        resumes firing normally next time, equivalent to one skipped run
-        rather than indefinite starvation. For an 'at' trigger the reserve
-        clears next_fire_at, so that same crash window loses its single run
-        permanently -- accepted for now over the alternative (fire before
-        reserve), which reopens the duplicate-fire window; the max-runs
-        claim gate remains the second defense against duplicates.
+        _tick_loop() runs _check_missed_fires() then _tick() with nothing
+        awaited in between, so next_fire_at must be reserved here — before
+        the recovery fire's own background task persists it — or the very
+        next _tick() sees the same past-due value and double-fires. If the
+        process crashes between this reserve and the recovery fire landing,
+        the run is lost for this cycle but the schedule is not stuck (one
+        skipped run, not starvation) — except for an 'at' trigger, where the
+        reserve clears next_fire_at and that crash window loses the run
+        permanently; accepted over reopening the duplicate-fire window.
         """
-        # Admission claims FIRST (same sequence as a normal tick fire --
-        # without the max_runs reservation, a concurrent fire_now() or
-        # re-apply racing this queued recovery could observe zero durable
-        # runs, take the sole claim, and admit a second execution), and only
-        # THEN the next_fire_at reserve: a rate/slot refusal must leave the
-        # row untouched and still due for a later cycle -- clearing an 'at'
-        # trigger's next_fire_at before a refusal would strand its single
-        # run permanently.
+        # Admission claims first, then the next_fire_at reserve: a rate/slot
+        # refusal must leave the row untouched and still due later, so
+        # clearing an 'at' trigger's next_fire_at before a refusal would
+        # strand its single run permanently.
         rate_claim: _RateLimitClaim | None = None
         claim: _MaxRunsClaim | None = None
         slot_claim: _GlobalSlotClaim | None = None
@@ -1007,22 +878,15 @@ class SchedulerEngine:
 
             next_at = self._compute_next_fire(schedule, now)
             # _next_fire_field, not a bare not-None check: an 'at' trigger's
-            # terminal None must be reserved too (persisted as a cleared
-            # next_fire_at), or the immediately-following _tick() still sees
-            # the past-due instant and queues a duplicate fire.
+            # terminal None must be reserved too, or the next _tick() still
+            # sees the past-due instant and queues a duplicate fire.
             fields = self._next_fire_field(schedule, next_at)
             if fields:
                 try:
                     await self._svc.update_schedule(schedule["id"], **fields)
                 except Exception:
-                    # The reserve did not land, so storage still holds the
-                    # past-due next_fire_at and the immediately-following
-                    # _tick() will queue its own normal fire for it. Queuing
-                    # a recovery fire on top of that would run the external
-                    # action twice, so skip recovery entirely (releasing the
-                    # claims below) and let the normal tick own this cycle's
-                    # single fire (or, if storage stays unavailable, a later
-                    # missed-fire check retries).
+                    # Reserve didn't land: skip recovery and let the normal
+                    # tick own this cycle's fire instead of double-running it.
                     _log.exception(
                         "Failed to reserve next_fire_at ahead of missed-fire recovery for "
                         "schedule %s; skipping recovery this cycle",
@@ -1307,40 +1171,25 @@ class SchedulerEngine:
                         rate_limit_claim=rate_claim,
                         max_runs_claim=max_runs_claim,
                         global_slot_claim=slot_claim,
-                        # Advances github_cursor to this event's own
-                        # updated_at INSIDE the same atomic transaction as
-                        # this event's occurrence insert (_fire_inner ->
-                        # create_schedule_run_and_advance), durably before
-                        # spawn_and_wait() runs the actual action. This is
-                        # what closes the double-fire hazard: batching the
-                        # cursor write until after the whole loop (the old
-                        # shape, still mirrored below for trailing
-                        # non-dispatched items) left a window where 1..N
-                        # events could be fully fired and executed while the
-                        # persisted cursor still pointed before all of them,
-                        # so a crash mid-poll made the next poll re-fetch
-                        # and re-fire every already-executed event.
+                        # Advances github_cursor to this event's updated_at
+                        # inside the same atomic transaction as its
+                        # occurrence insert, durably before spawn_and_wait()
+                        # runs the action -- closes the double-fire hazard of
+                        # batching the cursor write until after the loop.
                         extra_schedule_fields={"github_cursor": item.updated_at},
                     )
                     if not fired:
-                        # The fire refused before it started a process, so
-                        # its cursor advance was never committed. Nothing
-                        # ran, so re-offering this event next poll is not a
-                        # re-execution -- but only up to a bound. A refusal
-                        # can be a property of the schedule (an unresolvable
-                        # execution root) OR of this one event's rendered
-                        # values (a PR title that cannot be turned into a
-                        # command argument), and holding the cursor forever
-                        # for the second kind blocks every later event
-                        # behind it. So: retry the same event loudly up to
-                        # _MAX_PREDISPATCH_REFUSALS, then take the refusal
-                        # as terminal for that event and step past it.
+                        # Refusal before a process started means nothing ran,
+                        # so re-offering the event isn't a re-execution -- but
+                        # bounded, since a refusal can be a property of this
+                        # one event (unrenderable command args) rather than
+                        # the schedule, and holding the cursor forever for
+                        # that would block every later event behind it.
                         refusals = await self._record_predispatch_refusal(schedule, item.updated_at)
                         if refusals < _MAX_PREDISPATCH_REFUSALS:
                             # Stop rather than trying the rest: if the cause
-                            # is the schedule, the remaining events refuse
-                            # identically and each burns a rate-limit and
-                            # max_runs unit doing it.
+                            # is the schedule, later events refuse identically
+                            # and each burns a rate-limit/max_runs unit doing so.
                             drop_reason = (
                                 f"an earlier event refused before dispatch "
                                 f"({refusals}/{_MAX_PREDISPATCH_REFUSALS} attempts)"
@@ -1362,20 +1211,15 @@ class SchedulerEngine:
                         )
                         cursor = item.updated_at
                         await self._clear_predispatch_refusals(schedule)
-                        # The refusing fire already wrote its failed run row
-                        # without the cursor advance, so the advance rides
-                        # the trailing batched write below rather than that
-                        # transaction. A crash in between simply re-offers
-                        # the event, which is what every earlier attempt
-                        # already did.
+                        # Advance rides the trailing batched write below,
+                        # since the refusing fire wrote its failed run row
+                        # without a cursor advance; a crash here just
+                        # re-offers the event like every earlier attempt did.
                         continue
                     await self._clear_predispatch_refusals(schedule)
-                    # Track locally too, for the batched trailing-write
-                    # safety net below (covers only non-dispatched/filtered
-                    # items after the last fire, or an all-filtered poll
-                    # with no fire at all -- harmless/idempotent to re-write
-                    # the same value this event's own fire already
-                    # persisted).
+                    # Tracked locally for the batched trailing-write safety
+                    # net below; idempotent if this event's own fire already
+                    # persisted the same cursor value.
                     cursor = item.updated_at
                 finally:
                     if not admission_handed_off:

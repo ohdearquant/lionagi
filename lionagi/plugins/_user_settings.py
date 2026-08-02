@@ -2,21 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Read/write helper for the plugin-related blocks of ``~/.lionagi/settings.yaml``.
 
-Trust records (D5) and the enable/disable flag (D7) are both user-level, never
+Trust records and the enable/disable flag are both user-level, never
 project-level: a repository must not be able to self-trust a plugin it
 carries by committing a settings line — the human on the machine approves.
-This mirrors ``lionagi.agent.settings.load_settings`` (which merges global
-and project settings for *reading* hooks/config) but is scoped to writing the
-one file a plugin operator actually controls.
 
 Every mutator in this package (GC, trust, enable/disable) goes through
-``locked_user_settings()`` — a single exclusive-``flock`` critical section
-held across the whole read-modify-write. Two independent read-then-write
-calls (the old shape: ``read_user_settings()`` ... mutate ... ``write_user_
-settings()``) leave a window where a concurrent CLI invocation's write can
-land in between and get silently clobbered by the first process's stale
-snapshot; holding one lock across the full cycle closes that window (mirrors
-``lionagi.cli.team._locked_team``).
+``locked_user_settings()``, a single exclusive-``flock`` critical section
+held across the whole read-modify-write, so a concurrent writer's stale
+snapshot can never silently clobber another's write.
 """
 
 from __future__ import annotations
@@ -127,20 +120,16 @@ def write_user_settings(data: dict[str, Any]) -> None:
 def locked_user_settings():
     """Read-modify-write ``~/.lionagi/settings.yaml`` under one exclusive
     POSIX lock held for the whole critical section — the choke point every
-    settings mutator (GC, trust, enable/disable) must go through so a
-    concurrent pair of these can never interleave and drop one's write.
+    settings mutator must go through so a concurrent pair can never
+    interleave and drop one's write.
 
     Yields the parsed settings dict; mutate it in place. Written back only
-    if it changed (compared against a snapshot taken before the yield), so a
-    no-op pass (e.g. GC finding nothing stale) touches neither the file's
-    mtime nor a concurrent reader.
+    if it changed, so a no-op pass touches neither the file's mtime nor a
+    concurrent reader.
 
-    Opens with ``O_CREAT`` but never ``O_TRUNC``: on first creation, two
-    concurrent callers racing to create the file must not truncate it before
-    either holds the lock, or the loser's truncate can blow away content the
-    winner already committed and unlocked. Truncation only happens below,
-    after the lock is held and the (possibly just-written) content has been
-    read.
+    Opens with ``O_CREAT`` but never ``O_TRUNC``, since truncating before
+    the lock is held could blow away content a racing creator already
+    committed; truncation only happens below, after the lock is held.
     """
     path = user_settings_path()
     ensure_lionagi_dir(path.parent)

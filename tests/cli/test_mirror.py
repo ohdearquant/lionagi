@@ -1250,3 +1250,315 @@ async def test_interactive_rollout_still_mirrors(tmp_path):
         row = await db.get_session(codex_sid(uid))
         assert row is not None
         assert row["source_kind"] == CODEX_SOURCE_KIND
+
+
+async def test_partial_header_defers_classification_instead_of_bypassing_it(tmp_path):
+    """A rollout whose first line is still being written must not settle its
+    classification: committing the head check on an unreadable header would let
+    an orchestrated rollout mirror forever once the header completed."""
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    uid = "0199bbbb-0000-0000-0000-000000000004"
+    full = _codex_rollout_lines(uid, "codex_exec")
+    header_line = full.splitlines(keepends=True)[0]
+    path = tmp_path / "rollout-partial.jsonl"
+    path.write_text(header_line[: len(header_line) // 2])  # torn mid-JSON, no newline
+
+    state = _FileState(session_uid="")
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        assert await _mirror_one_codex(db, path, state, {}) == 0
+        assert not state.head_checked  # classification deferred, not spent
+        assert not state.orchestrated
+
+        path.write_text(full)  # the writer finished the file
+        assert await _mirror_one_codex(db, path, state, {}) == 0
+        assert state.orchestrated
+        assert await db.get_session(codex_sid(uid)) is None
+
+
+async def test_reclassification_absorbs_a_row_keyed_by_the_stem_fallback(tmp_path):
+    """An earlier version that failed the header peek imported the file under
+    its path stem. When classification finally lands, that stem-keyed row is
+    absorbed too, not just the rollout-uid one."""
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+    from lionagi.state.codex_mirror import mirror_session as codex_mirror_session
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    uid = "0199bbbb-0000-0000-0000-000000000005"
+    path = tmp_path / "rollout-stem-import.jsonl"
+    path.write_text(_codex_rollout_lines(uid, "codex_exec"))
+    stem = path.stem
+
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        await codex_mirror_session(
+            db,
+            rollout_uid=stem,  # what the old fallback keyed the row by
+            records=[json.loads(line) for line in path.read_text().splitlines()],
+            tool_names={},
+            source_path=str(path),
+        )
+        assert await db.get_session(codex_sid(stem)) is not None
+
+        # Restart shape: the persisted state still carries the stem uid.
+        state = _FileState(session_uid=stem)
+        assert await _mirror_one_codex(db, path, state, {}) == 0
+        assert state.orchestrated
+        assert await db.get_session(codex_sid(stem)) is None
+        assert await db.get_session(codex_sid(uid)) is None
+
+
+async def test_torn_header_defers_mirroring_so_one_rollout_stays_one_session(tmp_path):
+    """When the header is torn the whole file waits: writing records under the
+    path stem while the real UID arrives next pass would split one interactive
+    rollout into two sessions."""
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    uid = "0199bbbb-0000-0000-0000-000000000006"
+    full = _codex_rollout_lines(uid, "Codex Desktop")
+    header_line = full.splitlines(keepends=True)[0]
+    path = tmp_path / "rollout-torn-interactive.jsonl"
+    path.write_text(header_line[: len(header_line) // 2])  # torn mid-JSON, no newline
+
+    state = _FileState(session_uid="")
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        assert await _mirror_one_codex(db, path, state, {}) == 0
+        assert not state.head_checked
+        assert not state.session_uid  # nothing was keyed under the stem
+        assert await db.get_session(codex_sid(path.stem)) is None
+
+        path.write_text(full)  # the writer finished the file
+        assert await _mirror_one_codex(db, path, state, {}) == 2
+        assert state.session_uid == uid
+        assert await db.get_session(codex_sid(uid)) is not None
+        assert await db.get_session(codex_sid(path.stem)) is None
+
+
+async def test_headerless_rollout_still_mirrors_under_the_stem(tmp_path):
+    """A complete first line that is not a session_meta settles classification:
+    an append-only file never gains a header later, so the stem fallback is
+    correct and the file keeps mirroring."""
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    full = _codex_rollout_lines("ignored-uid", "x")
+    body = "".join(full.splitlines(keepends=True)[1:])  # drop the meta line
+    path = tmp_path / "rollout-headerless.jsonl"
+    path.write_text(body)
+
+    state = _FileState(session_uid="")
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        assert await _mirror_one_codex(db, path, state, {}) == 2
+        assert state.head_checked
+        assert state.session_uid == path.stem
+        assert await db.get_session(codex_sid(path.stem)) is not None
+
+
+async def test_cli_tail_loop_retries_a_failed_backfill(tmp_path, monkeypatch):
+    """The plain `li mirror` tail loop keeps retrying an unclean backfill sweep
+    instead of retiring it after one failed attempt (parity with the studio's
+    mirror_forever)."""
+    import argparse
+
+    from lionagi.cli import mirror as mirror_mod
+
+    attempts: list[bool] = []
+
+    async def fake_backfill(db):
+        attempts.append(True)
+        return len(attempts) >= 2  # first sweep fails, second is clean
+
+    async def fake_codex_pass(db, root, states, offsets, *, since, live_window, threads):
+        return 0
+
+    class _Stop(Exception):
+        pass
+
+    sleeps: list[int] = []
+
+    async def fake_sleep(_):
+        sleeps.append(1)
+        if len(sleeps) >= 3:
+            raise _Stop
+
+    class FakeDB:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(mirror_mod, "_absorb_backfill", fake_backfill)
+    monkeypatch.setattr(mirror_mod, "_codex_pass", fake_codex_pass)
+    monkeypatch.setattr(mirror_mod, "_load_states", lambda: {})
+    monkeypatch.setattr(mirror_mod, "_save_states", lambda states: None)
+    monkeypatch.setattr("lionagi.state.db.StateDB", lambda: FakeDB())
+    monkeypatch.setattr("anyio.sleep", fake_sleep)
+
+    args = argparse.Namespace(
+        root=None,
+        codex_root=str(tmp_path),
+        source="codex",
+        since=None,
+        once=False,
+        interval=0.01,
+        live_window=300.0,
+    )
+    with pytest.raises(_Stop):
+        await mirror_mod._run(args)
+    # Iteration 1 attempted and failed, iteration 2 retried and succeeded,
+    # iteration 3 stood down: exactly two attempts across three passes.
+    assert len(attempts) == 2
+
+
+async def test_complete_corrupt_header_settles_headerless_and_mirrors_the_body(tmp_path):
+    """A newline-terminated first line that cannot parse is permanently corrupt
+    (append-only file), not torn: the file settles as headerless and its valid
+    body records still mirror instead of being suppressed forever."""
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    full = _codex_rollout_lines("ignored-uid", "x")
+    body = "".join(full.splitlines(keepends=True)[1:])  # the two valid records
+
+    corrupt = tmp_path / "rollout-corrupt-header.jsonl"
+    corrupt.write_text('{"broken":\n' + body)  # complete but unparseable first line
+
+    bad_utf8 = tmp_path / "rollout-bad-utf8-header.jsonl"
+    bad_utf8.write_bytes(b"\xff\xfe garbage\n" + body.encode())
+
+    # A BOM-shaped prefix surfaces as JSONDecodeError; a bare invalid byte
+    # surfaces as UnicodeDecodeError — the body reader must survive both.
+    bad_byte = tmp_path / "rollout-bad-byte-header.jsonl"
+    bad_byte.write_bytes(b"\x80 invalid utf8\n" + body.encode())
+
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        for path in (corrupt, bad_utf8, bad_byte):
+            state = _FileState(session_uid="")
+            assert await _mirror_one_codex(db, path, state, {}) == 2
+            assert state.head_checked
+            assert state.session_uid == path.stem
+            assert await db.get_session(codex_sid(path.stem)) is not None
+
+
+async def test_valid_but_unterminated_header_stays_torn_until_the_newline(tmp_path):
+    """A first line that parses as session_meta but has no trailing newline is
+    still being written — appended bytes could extend or corrupt it — so the
+    file defers instead of spending the identity fence on a provisional parse."""
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex, _peek_codex_head
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    uid = "0199bbbb-0000-0000-0000-000000000007"
+    full = _codex_rollout_lines(uid, "Codex Desktop")
+    header_line = full.splitlines(keepends=True)[0]
+    path = tmp_path / "rollout-unterminated-meta.jsonl"
+    path.write_text(header_line.rstrip("\n"))  # valid JSON, newline not yet written
+
+    assert _peek_codex_head(path) == ("torn", None)
+
+    state = _FileState(session_uid="")
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        assert await _mirror_one_codex(db, path, state, {}) == 0
+        assert not state.head_checked
+        assert await db.get_session(codex_sid(path.stem)) is None
+
+        path.write_text(full)  # the writer finished the header and the body
+        assert await _mirror_one_codex(db, path, state, {}) == 2
+        assert state.session_uid == uid
+        assert await db.get_session(codex_sid(uid)) is not None
+
+
+async def test_a_failed_absorption_does_not_retire_the_file(tmp_path, monkeypatch):
+    """A contended teardown gives up rather than waiting, so absorption can fail
+    for an ordinary reason. The file must stay eligible when it does.
+
+    Marking the rollout absorbed before the absorption returns retires it on the
+    early guard, and no later pass ever attempts the deletion again: a row nobody
+    tears down, recorded as done. The discriminating assertion is the second
+    attempt — with the flag set first, the observed attempt count is one.
+    """
+    from lionagi.cli import mirror as mirror_mod
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+
+    uid = "0199bbbb-0000-0000-0000-00000000000f"
+    path = tmp_path / "rollout-exec-contended.jsonl"
+    path.write_text(_codex_rollout_lines(uid, "codex_exec"))
+    state = _FileState(session_uid="")
+
+    attempts = []
+
+    async def flaky_absorb(db, rollout_uid):
+        attempts.append(rollout_uid)
+        if len(attempts) == 1:
+            raise RuntimeError("lock not available")
+        return True
+
+    monkeypatch.setattr(mirror_mod, "absorb_orchestrated_session", flaky_absorb, raising=False)
+    monkeypatch.setattr(
+        "lionagi.state.codex_mirror.absorb_orchestrated_session", flaky_absorb, raising=False
+    )
+
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        with pytest.raises(RuntimeError):
+            await _mirror_one_codex(db, path, state, {})
+        assert not state.orchestrated, (
+            "the rollout was marked absorbed even though absorption failed, so no "
+            "later pass will retry the teardown"
+        )
+
+        # The next sweep reaches absorption again and completes.
+        assert await _mirror_one_codex(db, path, state, {}) == 0
+        assert state.orchestrated
+
+    assert len(attempts) == 2, f"absorption was attempted {len(attempts)} time(s), not 2"
+
+
+async def test_a_failed_prior_stem_absorption_also_leaves_the_file_eligible(tmp_path, monkeypatch):
+    """The orchestrated branch absorbs under two ids when the file was keyed by a
+    stem before its header arrived. Failure-atomicity has to cover the second
+    call as well as the first.
+
+    The arm that matters is the id list on the retry. If any field were committed
+    between the two calls, the retry would resolve `prior_uid` differently and the
+    stem-keyed row would never be absorbed at all — a row nobody tears down, from
+    a failure that looked like it had been retried.
+    """
+    from lionagi.cli import mirror as mirror_mod
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+
+    uid = "0199bbbb-0000-0000-0000-000000000010"
+    path = tmp_path / "rollout-exec-prior.jsonl"
+    path.write_text(_codex_rollout_lines(uid, "codex_exec"))
+    # A pre-header pass keyed this file by its stem.
+    stem = path.stem
+    state = _FileState(session_uid=stem)
+
+    calls: list[str] = []
+
+    async def flaky_absorb(db, rollout_uid):
+        calls.append(rollout_uid)
+        # Fail the SECOND call of the first pass, the prior-stem one.
+        if len(calls) == 2:
+            raise RuntimeError("lock not available")
+        return True
+
+    monkeypatch.setattr(mirror_mod, "absorb_orchestrated_session", flaky_absorb, raising=False)
+    monkeypatch.setattr(
+        "lionagi.state.codex_mirror.absorb_orchestrated_session", flaky_absorb, raising=False
+    )
+
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        with pytest.raises(RuntimeError):
+            await _mirror_one_codex(db, path, state, {})
+        assert not state.orchestrated
+        assert not state.head_checked
+        assert state.session_uid == stem, (
+            "session_uid was overwritten before both absorptions returned, so the "
+            "retry can no longer tell which prior id this file was keyed by"
+        )
+
+        assert await _mirror_one_codex(db, path, state, {}) == 0
+        assert state.orchestrated
+
+    assert calls == [uid, stem, uid, stem], f"absorption ids across both passes: {calls}"

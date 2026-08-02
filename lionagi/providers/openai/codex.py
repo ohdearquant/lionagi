@@ -76,14 +76,9 @@ __all__ = ("CodexCodeRequest", "stream_codex_cli", "CodexCLIEndpoint")
 
 
 # --------------------------------------------------------------------------- -c value serialization
-# codex's `-c key=value` parses `value` as TOML, falling back to a raw string
-# literal only when TOML parsing fails (see `codex exec --help`). A
-# JSON-style dump of a dict/list is NOT valid TOML (`:` instead of `=`,
-# unquoted-key rules differ) — it either mis-parses into the fallback literal
-# string (breaking any override whose target field expects a table, e.g.
-# `mcp_servers.<name>.env`) or, worse, coincidentally parses into a
-# different-than-intended TOML value. Every override value must therefore be
-# emitted as syntactically valid TOML instead.
+# codex's `-c key=value` parses `value` as TOML; a JSON-style dump is not
+# valid TOML and either mis-parses or silently produces the wrong value. See
+# docs/internals/providers.md#codex-c-override-toml-serialization.
 _TOML_BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -263,14 +258,12 @@ class CodexCodeRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _clamp_effort(cls, values):
-        """Clamp max/ultra down to the target model's supported ceiling (model-dependent: the gpt-5.6 family accepts max, sol/terra also ultra; earlier models top out at xhigh).
+        """Clamp max/ultra down to the target model's supported ceiling (model-dependent).
 
-        `values` is the raw constructor input — a caller who omits `model=`
-        (relying on the field default) leaves the key absent here, since
-        Pydantic v2 applies field defaults after `mode="before"` validators
-        run. Falling back to the field's own default keeps the clamp
-        consistent between an omitted `model` and that same default passed
-        explicitly.
+        `values` is the raw constructor input, which omits `model` when the
+        caller relies on the field default (Pydantic v2 applies defaults
+        after `mode="before"` validators) — fall back to the field's own
+        default so the clamp is consistent either way.
         """
         from lionagi.service.providers import _clamp_codex_effort
 
@@ -409,12 +402,9 @@ class CodexCodeRequest(BaseModel):
         # Working directory (always emit)
         args.extend(["-C", str(self.cwd())])
 
-        # The prompt goes to the child's stdin, not the command line: a whole
-        # conversation easily exceeds the OS limit on total argument length,
-        # and the spawn then fails with "Argument list too long" instead of
-        # running. `-` is codex's documented way to say "read the
-        # instructions from stdin"; it stays after `--` so it is parsed as
-        # the prompt argument and never as a flag.
+        # Prompt goes to stdin, not argv (a whole conversation can exceed the
+        # OS arg-length limit). `-` is codex's stdin marker; it stays after
+        # `--` so it's parsed as the prompt argument, never as a flag.
         args.extend(["--", "-"])
 
         return args
@@ -508,13 +498,9 @@ async def stream_codex_cli(
     _start_monotonic = asyncio.get_running_loop().time()
 
     # turn.completed reports usage/cost as a running total-to-date, not a
-    # per-turn delta. run.py stamps each "result" chunk's metadata onto
-    # whichever AssistantResponse it next flushes, and _collect_branch_usage
-    # SUMS that metadata across every message on the branch -- if a tool call
-    # flushes a message between two turn.completed events, each cumulative
-    # snapshot lands on a different message and earlier turns get counted
-    # again. Track the last-seen cumulative values here so only the marginal
-    # (this-turn-only) delta is ever exposed per event.
+    # per-turn delta; track the last-seen cumulative values so only the
+    # marginal delta is ever exposed per event. See
+    # docs/internals/providers.md#codex-turn-completed-usage-delta.
     _prev_input_tokens = 0
     _prev_output_tokens = 0
     _prev_cost: float = 0.0
@@ -699,17 +685,8 @@ async def stream_codex_cli(
                 session.total_cost_usd = turn_cost
                 session.num_turns = (session.num_turns or 0) + 1
 
-                # Terminal usage/cost/turns -- the only channel run.py reads
-                # provider-reported usage from (persisted onto model_response,
-                # see run.py's "result" chunk handling; mirrors claude_code's
-                # "result" event). turn.completed can fire more than once per
-                # run() call for multi-turn codex sessions, and each event's
-                # usage/cost is cumulative-to-date, not a per-turn delta --
-                # emit only the marginal contribution since the previous
-                # event (clamped at 0 in case a provider quirk ever reports a
-                # lower running total) so summing across every flushed
-                # message reconstructs the true total exactly once, not N
-                # times over.
+                # Emit only the marginal delta since the previous event, clamped
+                # at 0 — see docs/internals/providers.md#codex-turn-completed-usage-delta.
                 cur_input = int(
                     turn_usage.get("input_tokens", turn_usage.get("prompt_tokens", 0)) or 0
                 )
@@ -732,10 +709,8 @@ async def stream_codex_cli(
                     _prev_cost = float(turn_cost)
                     _seen_cost = True
                     result_meta["total_cost_usd"] = max(delta_cost, 0.0)
-                # Each turn.completed occurrence is exactly one new turn --
-                # unlike usage/cost this is already a delta, never a running
-                # total (num_turns is incremented locally above, not read off
-                # the event), so it is always safe to emit as 1.
+                # Unlike usage/cost, num_turns is already a per-event delta (incremented
+                # locally above, not read off the event) — always safe to emit as 1.
                 result_meta["num_turns"] = 1
                 rsc = StreamChunk(type="result", metadata=result_meta)
                 session.chunks.append(rsc)

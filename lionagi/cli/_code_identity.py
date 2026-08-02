@@ -64,11 +64,9 @@ __all__ = (
 # otherwise hang the answer instead of failing it.
 GIT_TIMEOUT_SECONDS = 5.0
 
-# One allowance for the whole computation, not one per call: half a dozen git
-# calls each free to take the per-call timeout is a worst case measured in tens
-# of seconds, which is longer than the handshake it sits inside is worth waiting.
-# When the allowance runs out the answer is `unknown` with the reason, which is
-# the honest reading — a check that could not finish has not passed.
+# One allowance for the whole computation, not per call — several git calls
+# each free to hit the per-call timeout would outlast the handshake. Once
+# exhausted the answer is `unknown` with the reason, not a false pass.
 IDENTITY_BUDGET_SECONDS = 6.0
 
 _SHORT_SHA = 12
@@ -201,64 +199,11 @@ def _worktree_fingerprint(
 ) -> tuple[str | None, str | None]:
     """A digest of what is uncommitted in *tree*, or why one could not be taken.
 
-    Enough to tell whether the uncommitted state changed between two readings,
-    and deliberately not enough to reconstruct it: the digest is over the status
-    listing, the diff against HEAD, and the size and modification time of every
-    path the listing names. No file is read, so a large file costs the same as a
-    small one and the digest never carries content.
-
-    The size and mtime are what make an ordinary edit visible when the other two
-    inputs cannot see it. Neither the listing nor the diff carries the contents of
-    an untracked file or of a file git renders as a modified binary, so for those
-    a rewrite in place leaves both byte-identical; the file's own metadata is the
-    only thing that moves. Untracked entries are enumerated as files rather than
-    collapsed directories for the same reason — otherwise a whole tree of code
-    hides behind one unchanging line. ``.gitignore`` still applies, so build
-    output and virtualenvs stay out and the listing stays bounded.
-
-    A path that is absent has been measured, not missed: git lists deletions, and
-    a deletion is exactly a path that is not there. Absence is recorded as such.
-    A path that exists and still cannot be read is a different matter and yields
-    no digest at all, so the caller reports "cannot tell" rather than "unchanged".
-
-    A clean tree needs no diff — an empty status listing is already the whole
-    answer, and skipping the call keeps the common case off the allowance.
-
-    The per-path measurement sits inside the same allowance as the git calls,
-    because a tree with a large unignored untracked directory is exactly the case
-    the allowance exists for. Running out of it yields no digest and a reason, not
-    the digest built so far: a partial digest compares unequal to a full one taken
-    at another moment, which would report an edit to a tree nobody touched. A
-    timeout is a thing that could not be measured, and the honest report of it is
-    "cannot tell", not a manufactured difference.
-
-    What this cannot see is a list, and it is worth keeping as a list because
-    "only one case" is the shape of claim that goes stale without anyone noticing:
-
-    - a rewrite that leaves the size, the modification time, the mode and the
-      inode all as they were — the deliberate residual of measuring metadata
-      instead of content, and the price of a cost that does not grow with the
-      size of the tree;
-    - any change beneath ``.gitignore``, which git never names here, so nothing
-      stats it;
-    - ownership and extended attributes, which are not in the mark.
-
-    The inode is in the mark so that replacing a file by renaming another over it
-    stays visible even when the replacement matches on every other field. The cost
-    is real and is not bounded by anything this module controls: on a filesystem
-    that hands back a fresh synthetic inode for an unchanged path, which some
-    network and userspace filesystems do, two readings of a tree nobody touched
-    disagree, and the answer is an edit that did not happen. Staying inside one
-    process and one tree does not constrain that, because it says nothing about
-    what the filesystem returns from two separate stats.
-
-    That direction of error is the deliberate one. This surface exists so an
-    operator asking "is the code I am running the code I think I am running"
-    cannot be told a reassuring falsehood, and between an edit reported that did
-    not happen and an edit missed that did, only the second defeats the purpose.
-    An operator who looks and finds nothing has lost a minute; one who was told
-    nothing moved is left with the exact wrong belief this module was written to
-    prevent.
+    Metadata-only (status listing + diff against HEAD + each named path's
+    size/mtime/inode, never file content), so a timeout yields no digest at all
+    rather than a partial one that would compare unequal to a full digest taken
+    later. See docs/internals/cli.md for known blind spots and why a false
+    "unchanged" is the error this guards against harder than a false "changed".
     """
     digest = hashlib.sha256(porcelain.encode(errors="replace"))
     if porcelain:
@@ -386,9 +331,9 @@ def loaded_package_path() -> str | None:
     return str(Path(module_file).resolve().parent) if module_file else None
 
 
-# The position of the tree this process loaded from, read once and kept. `None`
-# until something asks for it; a process that wants an honest answer later takes
-# it at startup, before anything can move the tree underneath it.
+# The tree position this process loaded from, read once and kept `None` until
+# asked for — take it at startup for an honest answer later, before anything
+# can move the tree underneath it.
 _SNAPSHOT: dict[str, Any] | None = None
 
 

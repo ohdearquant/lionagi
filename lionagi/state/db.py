@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import shutil
 import sqlite3
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import JSON, MetaData, bindparam, event, inspect, text
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.schema import CreateTable
 
 from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
@@ -572,6 +573,9 @@ async def _restore_foreign_keys(conn, driver) -> None:
 
     if not confirmed:
         await shield(conn.invalidate)
+
+
+_log = logging.getLogger(__name__)
 
 
 class StateDB:
@@ -2295,18 +2299,97 @@ class StateDB:
             )
         return [self._row_to_dict(row) for row in rows]
 
-    async def delete_imported_session(self, session_id: str) -> bool:
+    async def delete_imported_session(self, session_id: str, *, require_source_kind: str) -> bool:
         """Delete a mirror-imported session and everything the mirror wrote for it:
-        the session row, its branches, their progressions, and the messages those
-        progressions hold. Returns True only when a row was actually deleted.
+        the session row, its branches, their progressions, the messages those
+        progressions hold, and the session's status-transition history. Returns
+        True only when a row was actually deleted.
 
-        Fails closed on ownership: rows whose ``source_kind`` does not start with
-        ``imported_`` are refused, so a live run's session can never be deleted by
-        an importer reconciling its own output. Mirror-written message ids are
-        derived per-rollout (uuid5 under the mirror's namespace), so the messages
-        deleted here cannot be shared with any other session.
+        Fails closed on ownership twice over: the row's ``source_kind`` must equal
+        ``require_source_kind`` exactly AND that value must start with
+        ``imported_``. A live run's session is never eligible, and an importer
+        naming its own kind cannot reach a different importer's rows. The kind is
+        a mismatch guard rather than an authorization boundary: a caller that
+        names a valid imported kind tears down rows of that kind, so every
+        importer reconciles its own imports through this one method. Anything a
+        survivor still references is
+        retained, not deleted: messages held by an outside progression or
+        pointed at by a surviving session/branch, and target progressions a
+        survivor's progression_id names (together with their messages) — a
+        reference someone else holds is not this session's to destroy.
+
+        Concurrency: the retention checks and the deletes they authorise are
+        serialised against every writer that could create a new reference, so a
+        reference that appears after the check cannot be destroyed by the delete.
+        On SQLite the process write lock does this. On PostgreSQL a transaction
+        alone does not: at READ COMMITTED the check reads a snapshot, a
+        concurrent writer can commit a new reference after it, and the delete
+        would then proceed against a set that is no longer accurate. The table
+        lock below closes that window. It is taken NOWAIT, and the transaction
+        also runs under a bounded lock_timeout, so a teardown that cannot hold
+        what it needs gives up rather than queueing behind live writers; both
+        callers treat that as a row to revisit on a later sweep. Bounding the
+        lock waits is what keeps this transaction from sitting in a deadlock
+        cycle with a writer that reaches the same tables in another order. It
+        does not make one impossible, and it is not a deadline for the whole
+        teardown: the guarantee is only that no single lock-acquisition wait
+        lasts long enough to become a detected cycle on a server using
+        PostgreSQL's default deadlock_timeout.
         """
+        if not require_source_kind.startswith("imported_"):
+            return False
         async with self._tx() as conn:
+            if self.dialect != "sqlite":
+                # Taken before the first read, so everything read afterwards
+                # stays true for the rest of the transaction and no re-check is
+                # needed. These three tables are exactly the ones a survivor's
+                # reference can live in: a progression's collection holds message
+                # ids, and sessions and branches point progression_id and their
+                # message pointers at rows this teardown would otherwise remove.
+                # EXCLUSIVE conflicts with the ROW EXCLUSIVE that ordinary INSERT
+                # and UPDATE already take, so the writers need no changes and pay
+                # nothing on their own path.
+                #
+                # Two separate guards, because they cover different waits.
+                #
+                # lock_timeout bounds each LOCK-ACQUISITION wait, including the
+                # ones after the table locks are already held -- the soft-FK
+                # nulling below updates artifacts and four other tables, and
+                # those rows can be held by someone else. A wait while holding is
+                # what a deadlock cycle is made of, so bounding it is what keeps
+                # the teardown from sitting in one. It is not a deadline for the
+                # transaction: it caps no single statement's execution, no sum of
+                # successive lock waits, and nothing about commit or connection
+                # checkout. A long statement can still hold all three EXCLUSIVE
+                # locks, and nothing here bounds that. 250ms is chosen against
+                # PostgreSQL's deadlock_timeout, whose default is 1s, so one lock
+                # wait gives up well before the detector runs. It is also meant
+                # to sit above the row-lock holds of the ordinary writers so
+                # everyday contention resolves instead of aborting a teardown;
+                # that second half is the design intent behind the number and is
+                # not something this change measures. A server configured with a
+                # deadlock_timeout below this bound can still detect a cycle
+                # first; the teardown then aborts with a deadlock error rather
+                # than a lock timeout, which
+                # the callers treat identically.
+                #
+                # NOWAIT covers the acquisition itself, where waiting is
+                # pointless rather than merely bounded. A comma-separated LOCK
+                # TABLE takes the three locks one at a time in the written order
+                # rather than atomically, so a blocking form holds one table
+                # while waiting for the next, which closes a cycle with any
+                # writer touching the same tables in a different order.
+                # prune_old_data is exactly such a writer: it updates sessions
+                # before deleting from progressions, the reverse of the order
+                # here.
+                #
+                # The cost falls entirely on this rare teardown: a conflicting
+                # lock aborts the attempt, and both callers log the failure and
+                # retry on a later sweep.
+                await conn.execute(text("SET LOCAL lock_timeout = '250ms'"))
+                await conn.execute(
+                    text("LOCK TABLE branches, progressions, sessions IN EXCLUSIVE MODE NOWAIT")
+                )
             row = (
                 (
                     await conn.execute(
@@ -2319,7 +2402,7 @@ class StateDB:
             )
             if row is None:
                 return False
-            if not str(row["source_kind"] or "").startswith("imported_"):
+            if str(row["source_kind"] or "") != require_source_kind:
                 return False
 
             prog_ids: list[str] = [row["progression_id"]] if row["progression_id"] else []
@@ -2335,8 +2418,36 @@ class StateDB:
             )
             prog_ids.extend(b["progression_id"] for b in branch_rows if b["progression_id"])
 
+            # Chunked IN-lists keep each statement under SQLite's bound-variable cap.
+            def _chunks(values: list[str], size: int = 400):
+                for i in range(0, len(values), size):
+                    yield values[i : i + size]
+
+            # A survivor session or branch may point its progression_id FK at one
+            # of these progressions — such a progression, and the messages it
+            # holds, are not ours to delete.
+            kept_progs: set[str] = set()
+            for chunk in _chunks(prog_ids):
+                params = {f"p{i}": pid for i, pid in enumerate(chunk)}
+                ph = ", ".join(f":{k}" for k in params)
+                rows = (
+                    (
+                        await conn.execute(
+                            text(
+                                f"SELECT progression_id AS pid FROM sessions WHERE id != :sid AND progression_id IN ({ph}) "  # noqa: S608, E501
+                                f"UNION SELECT progression_id FROM branches WHERE session_id != :sid AND progression_id IN ({ph})"  # noqa: S608, E501
+                            ),
+                            {"sid": session_id, **params},
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                kept_progs.update(str(r["pid"]) for r in rows)
+            deletable_progs = [p for p in prog_ids if p not in kept_progs]
+
             msg_ids: set[str] = set()
-            for pid in prog_ids:
+            for pid in deletable_progs:
                 prow = (
                     (
                         await conn.execute(
@@ -2358,31 +2469,177 @@ class StateDB:
                 if isinstance(collection, list):
                     msg_ids.update(str(m) for m in collection)
 
-            # Chunked IN-lists keep each statement under SQLite's bound-variable cap.
-            def _chunks(values: list[str], size: int = 400):
-                for i in range(0, len(values), size):
-                    yield values[i : i + size]
-
+            # A message referenced by any progression OUTSIDE the deletable set is
+            # not ours to delete — a retained target progression counts as an
+            # outside holder here, so its shared messages survive with it.
+            prog_params = {f"pp{i}": pid for i, pid in enumerate(deletable_progs)}
+            prog_ph = ", ".join(f":{k}" for k in prog_params) or "''"
+            unnest = (
+                "json_each(p.collection) je"
+                if self.dialect == "sqlite"
+                else "LATERAL json_array_elements_text(p.collection::json) je(value)"
+            )
+            # A malformed collection on some UNRELATED progression must not sink
+            # the whole absorb: SQLite filters those rows out; on other dialects
+            # the savepoint below catches the cast error and fails toward
+            # retention for that chunk.
+            valid_guard = " AND json_valid(p.collection)" if self.dialect == "sqlite" else ""
+            # Interpolations are bound-param placeholder names, never values.
+            shared_sql = f"SELECT DISTINCT je.value AS mid FROM progressions p, {unnest} WHERE p.id NOT IN ({prog_ph}){valid_guard} AND je.value IN ({{msg_ph}})"  # noqa: S608, E501
+            shared: set[str] = set()
             for chunk in _chunks(sorted(msg_ids)):
                 params = {f"m{i}": mid for i, mid in enumerate(chunk)}
-                placeholders = ", ".join(f":{k}" for k in params)
-                await conn.execute(
-                    text(f"DELETE FROM messages WHERE id IN ({placeholders})"),  # noqa: S608
-                    params,
+                msg_ph = ", ".join(f":{k}" for k in params)
+                try:
+                    async with conn.begin_nested():
+                        rows = (
+                            (
+                                await conn.execute(
+                                    text(shared_sql.format(msg_ph=msg_ph)),  # noqa: S608
+                                    {**prog_params, **params},
+                                )
+                            )
+                            .mappings()
+                            .all()
+                        )
+                except SQLAlchemyError:
+                    # Retaining is the safe direction: an over-retained message is
+                    # a stray row a later maintenance pass can orphan-collect; an
+                    # over-deleted one breaks a live session.
+                    _log.warning(
+                        "delete_imported_session: shared-reference check failed for a "
+                        "chunk of %d message(s); retaining them",
+                        len(chunk),
+                        exc_info=True,
+                    )
+                    shared.update(chunk)
+                    continue
+                shared.update(str(r["mid"]) for r in rows)
+
+            # Detaching an artifact moves it into another partial unique-index
+            # domain (schema.sql idx_artifacts_natural_key_*), where its
+            # (kind, name) slot may already be taken by an unattached row or one
+            # under the same invocation. Deterministic policy: a colliding row
+            # keeps its data and takes a suffixed name recording the session it
+            # came from; non-colliding rows keep their names. The suffixed name
+            # is allocated against BOTH the destination domain and this
+            # session's own soon-to-detach rows — a fixed suffix can itself be
+            # occupied, and a UNIQUE failure here rolls back the whole
+            # absorption.
+            srows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT id, kind, name, invocation_id FROM artifacts "
+                            "WHERE session_id = :id ORDER BY id"
+                        ),
+                        {"id": session_id},
+                    )
                 )
-            # Rows that reference the progressions go first (branches, then the
-            # session), else the progression deletes trip their FKs.
+                .mappings()
+                .all()
+            )
+            if srows:
+                kinds = sorted({str(r["kind"]) for r in srows})
+                external: dict[tuple[Any, str], set[str]] = {}
+                for chunk in _chunks(kinds):
+                    ph = ", ".join(f":k{i}" for i in range(len(chunk)))
+                    rows = (
+                        (
+                            await conn.execute(
+                                text(
+                                    f"SELECT kind, name, invocation_id FROM artifacts "  # noqa: S608
+                                    f"WHERE session_id IS NULL AND kind IN ({ph})"
+                                ),
+                                {f"k{i}": k for i, k in enumerate(chunk)},
+                            )
+                        )
+                        .mappings()
+                        .all()
+                    )
+                    for r in rows:
+                        external.setdefault((r["invocation_id"], str(r["kind"])), set()).add(
+                            str(r["name"])
+                        )
+                taken = {dom: set(names) for dom, names in external.items()}
+                for r in srows:
+                    dom = (r["invocation_id"], str(r["kind"]))
+                    taken.setdefault(dom, set()).add(str(r["name"]))
+                for r in srows:
+                    dom = (r["invocation_id"], str(r["kind"]))
+                    if str(r["name"]) not in external.get(dom, set()):
+                        continue
+                    final = f"{r['name']} (detached {session_id})"
+                    n = 2
+                    while final in taken[dom]:
+                        final = f"{r['name']} (detached {session_id} {n})"
+                        n += 1
+                    taken[dom].add(final)
+                    await conn.execute(
+                        text("UPDATE artifacts SET name = :nm WHERE id = :aid"),
+                        {"nm": final, "aid": r["id"]},
+                    )
+            # Soft session FKs (no CASCADE) are someone else's rows pointing at
+            # this one — nullify the pointer, keep the row, same as the studio
+            # prune path (db_maintenance.py). Only artifacts carry unique indexes
+            # over session_id (handled above); the other four tables do not.
+            for table in ("artifacts", "plays", "team_messages", "dispatch_outbox", "approvals"):
+                await conn.execute(
+                    text(
+                        f"UPDATE {table} SET session_id = NULL WHERE session_id = :id"  # noqa: S608
+                    ),
+                    {"id": session_id},
+                )
+
+            # Referencing rows go before what they reference: branches (their
+            # system_msg_id points at messages), then the session (first/last
+            # message pointers and the progression FK), then the now-unreferenced
+            # messages, then the progressions.
             await conn.execute(
                 text("DELETE FROM branches WHERE session_id = :id"), {"id": session_id}
             )
             await conn.execute(text("DELETE FROM sessions WHERE id = :id"), {"id": session_id})
-            for chunk in _chunks(prog_ids):
+            # This session's own rows are already gone, so any first/last/system
+            # pointer the subquery still sees belongs to a survivor — such a
+            # message is retained even when no progression carries it.
+            retain_refs = (
+                " AND id NOT IN ("
+                "SELECT first_msg_id FROM sessions WHERE first_msg_id IS NOT NULL"
+                " UNION SELECT last_msg_id FROM sessions WHERE last_msg_id IS NOT NULL"
+                " UNION SELECT system_msg_id FROM branches WHERE system_msg_id IS NOT NULL)"
+            )
+            for chunk in _chunks(sorted(msg_ids - shared)):
+                params = {f"m{i}": mid for i, mid in enumerate(chunk)}
+                placeholders = ", ".join(f":{k}" for k in params)
+                await conn.execute(
+                    text(
+                        f"DELETE FROM messages WHERE id IN ({placeholders}){retain_refs}"  # noqa: S608, E501
+                    ),
+                    params,
+                )
+            for chunk in _chunks(deletable_progs):
                 params = {f"p{i}": pid for i, pid in enumerate(chunk)}
                 placeholders = ", ".join(f":{k}" for k in params)
                 await conn.execute(
                     text(f"DELETE FROM progressions WHERE id IN ({placeholders})"),  # noqa: S608
                     params,
                 )
+            # terminal_deliveries holds an FK into status_transitions: children first.
+            await conn.execute(
+                text(
+                    "DELETE FROM terminal_deliveries WHERE transition_id IN ("
+                    "SELECT id FROM status_transitions "
+                    "WHERE entity_type = 'session' AND entity_id = :id)"
+                ),
+                {"id": session_id},
+            )
+            await conn.execute(
+                text(
+                    "DELETE FROM status_transitions "
+                    "WHERE entity_type = 'session' AND entity_id = :id"
+                ),
+                {"id": session_id},
+            )
         return True
 
     @staticmethod

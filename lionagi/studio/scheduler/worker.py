@@ -3,28 +3,20 @@
 """ADR-0071 D4/D5: the local (host-only) worker/claim loop with capability
 matching.
 
-v1 ships ONE worker — the Studio daemon engine itself. A claim is one guarded
-CAS through ``lionagi.state.transitions.transition()`` (``queued -> running``)
-that also sets ``leased_by``/``lease_expires_at``/``lease_attempts`` in the
-same UPDATE — no second write, no parallel CAS path (ADR-0071 scope fence).
-Execution resolves through ``lionagi.studio.scheduler.subprocess``; this
-module never spawns a process itself.
+v1 ships ONE worker (the Studio daemon engine itself). A claim is one
+guarded CAS via ``lionagi.state.transitions.transition()`` (``queued ->
+running``) that also sets ``leased_by``/``lease_expires_at``/
+``lease_attempts`` in the same UPDATE. Execution resolves through
+``lionagi.studio.scheduler.subprocess``; this module never spawns a process
+itself.
 
-D4 adds the ``workers`` registry: ``worker_tick`` upserts this worker's
-heartbeat before every claim pass, and the claim predicate matches a queued
-row's ``required_capabilities``/``execution_target`` against the calling
-worker's advertised capabilities/execution targets. A row this worker cannot
-serve is left ``queued``, never faked. Remote execution targets and
-workflow-registry resolution remain later slices (ADR-0073, remote worker
-binding).
-
-ADR-0071 D3 extracts the per-row admission predicate (capability match,
-concurrency-key block, the waiter cap, and the duration guard) into
-``lionagi.studio.scheduler.admit.admit()``. A terminal ``AdmissionDecision``
-transitions the row ``queued -> skipped`` (never faked as "running") and, when
-the submission carried a notify request, emits a ``dispatch_outbox``
-notification -- a claim-time rejection
-must surface observably even though the submitter is no longer on the wire.
+D4's ``workers`` registry heartbeats before every claim pass and matches a
+queued row's ``required_capabilities``/``execution_target`` against this
+worker's advertised ones; a row this worker can't serve is left ``queued``.
+D3's per-row admission predicate lives in
+``lionagi.studio.scheduler.admit.admit()`` -- a terminal
+``AdmissionDecision`` transitions ``queued -> skipped`` and, if a notify
+request was declared, emits a ``dispatch_outbox`` notification.
 """
 
 from __future__ import annotations
@@ -336,39 +328,12 @@ async def claim_and_execute(
 ) -> int:
     """Claim every eligible queued row this worker can serve, then execute each.
 
-    D4 match rule: row R is claimable iff its capability tokens are a subset
-    of *advertised_capabilities* AND its execution_target is in
-    *execution_targets* (NULL/empty target = claimable by anyone). Candidates
-    Static duration rejections are handled first, then remaining candidates
-    are ordered by affinity match, ties broken by ``queued_at``.
-
-    ADR-0071 D3: each candidate is routed through
-    ``lionagi.studio.scheduler.admit.admit()``, which folds in the
-    capability match above, the concurrency-key block (a matching key
-    currently ``running`` -- this pass or a prior one -- defers the row),
-    the per-key waiter cap (*waiter_cap_multiplier* x *key_concurrency*,
-    D-Cap), and the duration guard (D6). A deferred decision is skipped
-    (left ``queued``, retried next tick) -- advisory admission only; the
-    worker-side host lock stays authoritative. A terminal decision
-    transitions the row to ``skipped`` and surfaces the reason (see
-    ``_reject_claim``).
-
-    Candidates are paged oldest-first through a ``(queued_at, id)`` keyset
-    cursor until *limit* eligible candidates are found or the queue is
-    exhausted, bounded by ``_MAX_CLAIM_SCAN_ROWS`` (a fairness/latency cap,
-    not a correctness cap -- a later pass resumes the same order). A long
-    prefix of unservable rows never permanently hides an eligible row behind
-    it, unlike a fixed-size prefetch window.
-
-    If *worker_id*'s heartbeat is older than *heartbeat_ttl*, this pass
-    claims nothing (in-flight leases still recover via
-    ``reap_expired_leases``). A worker with no heartbeat history yet is not
-    treated as stale.
-
-    Returns the number of rows claimed (regardless of execution outcome).
-    Each claim is one guarded CAS (``queued -> running``); a lost race or a
-    row another caller already moved is skipped, not retried within this pass.
-    A terminal admission rejection never counts toward the returned total.
+    Each candidate routes through ``lionagi.studio.scheduler.admit.admit()``
+    (capability match, concurrency-key block, per-key waiter cap, duration
+    guard). A deferred decision is left ``queued`` for the next tick; a
+    terminal decision transitions to ``skipped`` (see ``_reject_claim``). See
+    docs/internals/studio.md#lionagistudioschedulerworkerpy for the paging,
+    staleness, and return-count contract.
     """
     execute = execute if execute is not None else default_execute
     now = now if now is not None else time.time()
@@ -483,22 +448,17 @@ async def claim_and_execute(
 
 
 async def _reject_claim(db: StateDB, row: Any, decision: AdmissionDecision) -> None:
-    """Surface a terminal admission rejection observably: the row moves ``queued -> skipped`` carrying
-    the rejection reason on the schedule_runs row itself (status_reason_code
-    / status_reason_summary), and -- whenever the original submission carried
-    a notify request (``admit.notify_request``) -- a ``dispatch_outbox``
-    notification is emitted, since the submitter already received a success
-    at submit time and is no longer on the wire by claim time.
+    """Surface a terminal admission rejection: ``queued -> skipped`` carrying
+    the reason on the row's own status_reason_code/status_reason_summary
+    columns, plus a ``dispatch_outbox`` notification if the submission
+    declared a notify request (the submitter is no longer on the wire by
+    claim time).
 
-    Goes through ``StateDB.update_status()`` rather than
-    ``lionagi.state.transitions.transition()`` (used by every other
-    schedule_run transition in this module): the legacy transition surface
-    hardcodes ``write_reason_columns=False`` and only appends to the
-    status_transitions audit table, which satisfies every other caller here
-    but not this one -- the row's own reason columns must carry it. ``update_status()`` writes those columns by default
-    for schedule_run (nothing overrides the schedule_run lifecycle policy's
-    ``reason_columns=True``), so this is a one-call, no-side-channel fix that
-    leaves claim/complete/fail's own transitions unchanged."""
+    Uses ``StateDB.update_status()`` rather than
+    ``lionagi.state.transitions.transition()`` (every other transition in
+    this module): the legacy surface hardcodes ``write_reason_columns=False``,
+    but this rejection needs the row's own reason columns written.
+    """
     run_id = row["id"]
     reason_code = decision.reason_code or RunReasons.SKIPPED_WAITER_CAP_EXCEEDED
     applied = await db.update_status(

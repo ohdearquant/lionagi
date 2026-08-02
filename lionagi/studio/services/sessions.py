@@ -104,6 +104,22 @@ def _format_message(row: aiosqlite.Row | dict[str, Any]) -> dict[str, Any]:
 MAX_SESSION_PAGE = 500
 
 
+# SQLite LIKE's own wildcards, '%' and '_', are otherwise live inside a
+# contains-filter value: a search for "50%" would match every row instead of
+# rows containing the literal substring "50%". Escaping is applied to every
+# LIKE operand this module builds, not just search — a stray '%'/'_' in a
+# playbook-name filter has the same bug.
+_LIKE_ESCAPE_CHAR = "\\"
+
+
+def _escape_like(value: str) -> str:
+    return (
+        value.replace(_LIKE_ESCAPE_CHAR, _LIKE_ESCAPE_CHAR * 2)
+        .replace("%", f"{_LIKE_ESCAPE_CHAR}%")
+        .replace("_", f"{_LIKE_ESCAPE_CHAR}_")
+    )
+
+
 class SessionFilter:
     """Filters the runs/sessions listings share, pushed into SQL so they select
     the page rather than discard rows after the whole store has been read."""
@@ -116,19 +132,33 @@ class SessionFilter:
         project: str | None = None,
         project_null: bool = False,
         tags: list[str] | None = None,
+        search: str | None = None,
     ) -> None:
         self.playbook = playbook
         self.statuses = statuses
         self.project = project
         self.project_null = project_null
         self.tags = list(dict.fromkeys(tags)) if tags else None
+        self.search = search
 
     def where(self) -> tuple[str, list[Any]]:
         clauses: list[str] = []
         params: list[Any] = []
         if self.playbook:
-            clauses.append("LOWER(COALESCE(s.playbook_name, '')) LIKE '%' || LOWER(?) || '%'")
-            params.append(self.playbook)
+            clauses.append(
+                "LOWER(COALESCE(s.playbook_name, '')) LIKE '%' || LOWER(?) || '%' "
+                f"ESCAPE '{_LIKE_ESCAPE_CHAR}'"
+            )
+            params.append(_escape_like(self.playbook))
+        if self.search:
+            escaped = _escape_like(self.search)
+            clauses.append(
+                "(LOWER(COALESCE(s.name, '')) LIKE '%' || LOWER(?) || '%' "
+                f"ESCAPE '{_LIKE_ESCAPE_CHAR}' "
+                "OR LOWER(COALESCE(s.agent_name, '')) LIKE '%' || LOWER(?) || '%' "
+                f"ESCAPE '{_LIKE_ESCAPE_CHAR}')"
+            )
+            params.extend([escaped, escaped])
         if self.statuses:
             ordered = sorted(self.statuses)
             placeholders = ",".join("?" for _ in ordered)

@@ -6,9 +6,10 @@ import {
   IconSkill,
   IconPlugin,
   IconEngine,
+  IconPort,
 } from "@/components/ui/icons";
 
-export type LibraryKind = "agent" | "workflow" | "playbook" | "skill" | "plugin" | "engine";
+export type LibraryKind = "agent" | "workflow" | "playbook" | "skill" | "plugin" | "engine" | "mcp";
 
 const KIND_COLORS: Record<LibraryKind, string> = {
   agent: "var(--status-running)",
@@ -17,6 +18,7 @@ const KIND_COLORS: Record<LibraryKind, string> = {
   skill: "var(--status-success)",
   plugin: "#9B8AF5",
   engine: "var(--content-muted)",
+  mcp: "#E8A03C",
 };
 
 const KIND_ICONS: Record<LibraryKind, React.ComponentType<{ className?: string }>> = {
@@ -26,6 +28,7 @@ const KIND_ICONS: Record<LibraryKind, React.ComponentType<{ className?: string }
   skill: IconSkill,
   plugin: IconPlugin,
   engine: IconEngine,
+  mcp: IconPort,
 };
 
 export function KindBadge({ kind }: { kind: LibraryKind }) {

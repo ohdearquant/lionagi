@@ -481,36 +481,18 @@ async def reap_stale_schedule_runs(*, stale_hours: float | None = None) -> int:
     """Transition ``schedule_runs`` rows stuck at ``status="running"`` to
     ``timed_out``.
 
-    A schedule_run row is created and its owning schedule's cursor
-    (``next_fire_at``/``github_cursor``) advanced atomically in the same
-    transaction (``StateDB.create_schedule_run_and_advance``), so by the
-    time this row is durable the scheduler has already committed to firing
-    it -- but the process can still die anywhere between that commit and
-    the run's own terminal write (mid-spawn, or before
-    ``update_schedule_run``'s exit-code write lands), leaving the row
-    orphaned at ``running`` forever. ``count_schedule_runs()`` already
-    excludes ``running`` from budget bookkeeping, so these rows are
-    harmless for max_runs, but they are audit-trail zombies that (unlike
-    stale sessions/plays) have no process-liveness signal to check against
-    -- the "process" here is the scheduler daemon itself, and its own
-    restart is what triggers reaping. This is a pure wall-clock deadline
-    against the row's own ``updated_at`` (falling back to ``fired_at`` for
-    a row that was never otherwise touched), mirroring
-    ``reap_stale_invocations``'s deadline condition, with the version guard
-    (``expected_updated_at``) revalidating the row hasn't moved between the
-    scan and the write -- the same optimistic-lock pattern
-    ``reap_stale_plays`` uses.
+    The scheduler process can die between committing a schedule_run row and
+    its own terminal write, orphaning the row at ``running`` forever with no
+    process-liveness signal to check (unlike stale sessions/plays -- the
+    "process" here is the scheduler daemon, and its restart triggers
+    reaping). Pure wall-clock deadline against ``updated_at`` (falling back
+    to ``fired_at``), with the same optimistic-lock ``expected_updated_at``
+    guard as ``reap_stale_plays``.
 
-    Scoped to ``schedule_id IS NOT NULL`` -- scheduler-fired occurrence
-    rows only. schedule_runs also backs the ad-hoc task queue (schedule_id
-    IS NULL, claimed via a lease: ``leased_by``/``lease_expires_at``/
-    ``lease_attempts``), which has its own recovery loop and policy
-    (``worker.reap_expired_leases``, run every ``worker_tick``): a task
-    whose lease is still live but has been running longer than this
-    reaper's stale window would otherwise get marked ``timed_out`` here
-    before the lease even expires, bypassing the lease's own
-    requeue/retry-budget semantics entirely. Excluding those rows leaves
-    them exclusively to the lease reaper.
+    Scoped to ``schedule_id IS NOT NULL``: the ad-hoc task queue
+    (``schedule_id IS NULL``) has its own lease-based recovery
+    (``worker.reap_expired_leases``) and is excluded so a live-leased task
+    isn't marked ``timed_out`` here before its lease even expires.
     """
     from lionagi.studio.config import SCHEDULE_RUN_STALE_HOURS
 

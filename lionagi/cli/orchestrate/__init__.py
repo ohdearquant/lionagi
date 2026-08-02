@@ -1065,10 +1065,8 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             return 1
         args.model, args.prompt = resolved
 
-        # Naming neither a model nor an agent is not an incomplete command here:
-        # setup_orchestration reads it as a request to orchestrate and resolves
-        # the default orchestrator profile. A prompt is still required, because
-        # nothing downstream can supply one.
+        # Naming neither model nor agent defaults to the orchestrator profile
+        # (setup_orchestration); a prompt is still required regardless.
         if not args.prompt:
             log_error("prompt is required")
             return 1
@@ -1237,10 +1235,8 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             args.prompt = args.model
             args.model = None
 
-        # Naming neither a model nor an agent is not an incomplete command here:
-        # setup_orchestration reads it as a request to orchestrate and resolves
-        # the default orchestrator profile. A prompt is still required, because
-        # nothing downstream can supply one.
+        # Naming neither model nor agent defaults to the orchestrator profile
+        # (setup_orchestration); a prompt is still required regardless.
         if not args.prompt:
             log_error("prompt is required (positional or via -f spec file)")
             return 1

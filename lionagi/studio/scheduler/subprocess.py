@@ -398,24 +398,18 @@ def build_argv(
     argv = list(executable_prefix) if executable_prefix is not None else list(_DEFAULT_LI_PREFIX)
     tmp_path: str | None = None
 
-    # CWE-88 hardening: named flags first, then the '--' end-of-options
-    # sentinel, then positionals (model, prompt) — makes action_prompt
-    # injection-proof (e.g. '--bypass' parses as prompt text, not a flag).
-    # flow_yaml omits the prompt positional (CLI reads it from -f instead)
-    # to avoid a second injection surface.
-
+    # CWE-88 hardening: named flags, then '--', then positionals -- makes
+    # action_prompt injection-proof ('--bypass' parses as text, not a flag).
     if kind == "agent":
         flags: list[str] = []
         if agent:
             flags += ["--agent", agent]
         if project:
             flags += ["--project", project]
-        # Omit the model positional when unset -- `li agent` then falls
-        # through to the profile's default model instead of an explicit
-        # blank spec that would crash Branch init. But with model omitted, a
-        # single extra-args token brings positional arity back to 2 (matching
-        # [model, prompt]), which would silently misroute the real prompt as
-        # MODEL -- reject that combination instead of corrupting positions.
+        # Omitting the model positional when unset lets `li agent` fall
+        # through to the profile default. But with model omitted, a single
+        # extra-args token brings arity back to [model, prompt] and would
+        # silently misroute the prompt as MODEL -- reject that combination.
         if not model and isinstance(extra, list) and extra:
             raise ValueError(
                 "action_extra_args is not supported together with an empty "
@@ -449,23 +443,19 @@ def build_argv(
             argv.append(playbook)
 
     elif kind == "flow_yaml":
-        # No positionals at all here (spec file carries prompt/model), so
-        # extra tokens would soak into flow's optional model/prompt slots
-        # and silently override the merged model below; fail at build time.
+        # No positionals here (spec file carries prompt/model), so extra
+        # tokens would soak into flow's optional slots; fail at build time.
         if isinstance(extra, list) and extra:
             raise ValueError(
                 "flow_yaml launches do not accept action_extra_args; "
                 "set model/prompt inside the flow spec instead"
             )
-        # Write the inline YAML spec to a temp file for `li o flow -f <path>`.
         # Caller deletes tmp_path after the subprocess exits.
         yaml_text = schedule.get("action_flow_yaml") or ""
         if model:
-            # Merge action_model into the spec rather than pass it as a
-            # positional: when the file has its own model/agent, `li o flow
-            # -f` reclassifies a lone model positional as prompt text, so a
-            # positional can't reliably override it. Unparseable/non-mapping
-            # specs are written unchanged -- `li o flow` reports its own error.
+            # Merge into the spec rather than pass as a positional: when the
+            # file has its own model/agent, a lone model positional gets
+            # reclassified as prompt text by `li o flow -f`.
             import yaml
 
             try:
@@ -595,42 +585,28 @@ async def spawn_and_wait(
 ) -> tuple[int, str]:
     """Spawn subprocess and wait for completion. Returns (exit_code, output_tail).
 
-    Both streams are captured. A scheduled command that reports its failure on
-    stdout and exits non-zero used to leave a bare exit code on the record,
-    because stdout went to ``DEVNULL`` and only stderr reached ``error_detail``:
-    a failure the dashboard showed with nothing to act on. They are drained
-    concurrently and bounded rather than buffered whole, since a single
-    ``communicate()`` on both pipes holds an entire streaming leg's output in
-    memory, and draining one at a time deadlocks the moment the other fills.
+    Both streams are captured and drained concurrently, bounded rather than
+    buffered whole -- a single ``communicate()`` on both pipes holds an
+    entire streaming leg's output in memory, and draining one at a time
+    deadlocks once the other fills.
 
-    If *tmp_path* is given it is deleted after the subprocess exits — used by
-    the ``flow_yaml`` action kind which writes a temp spec file before spawning.
+    If *tmp_path* is given it is deleted after the subprocess exits (used by
+    the ``flow_yaml`` action kind's temp spec file). *cwd* pins the
+    subprocess working directory; ``None`` inherits the daemon's own cwd, so
+    callers should resolve a concrete path first (see
+    SchedulerEngine._resolve_action_cwd).
 
-    *cwd* pins the subprocess working directory. ``None`` inherits the
-    caller's own cwd (the daemon's launch directory) — callers should resolve
-    a concrete path (e.g. from ``action_project``) before spawning so `uv run
-    li` doesn't fail with "No such file or directory" when the daemon was
-    started somewhere with no project (see SchedulerEngine._resolve_action_cwd).
+    *action_kind* re-runs the command allow-list check here, immediately
+    before spawn, when ``"command"`` -- closes the window where an awaited
+    DB call between ``build_argv`` and this function gives a revoked
+    allow-list env var a scheduling point to land in.
 
-    *action_kind* re-runs the command allow-list check right here, immediately
-    before the process is spawned, when it is ``"command"``. ``build_argv``
-    already re-checks the allow-list at argv-construction time, but callers
-    (the scheduler engine, the worker, on-demand launches) perform awaited DB
-    work between building argv and calling this function -- an await is a
-    scheduling point, so revoking the allow-list env var during that window
-    does not stop a spawn checked only at build_argv time. Passing
-    *action_kind* here closes that gap: the check runs with no intervening
-    await before ``create_subprocess_exec``.
-
-    *on_launched*, if given, is awaited immediately after
-    ``create_subprocess_exec`` returns -- i.e. once the OS process genuinely
-    exists -- and before waiting on its completion. The scheduler engine uses
-    this to durably mark a schedule_run "dispatched" the moment launch is
-    confirmed, closing the window a delivery-contract recovery scan would
-    otherwise treat as "committed but never launched" (see
-    SchedulerEngine._fire_inner). A failing callback is logged and swallowed,
-    never allowed to fail (or duplicate-spawn) the process that already
-    launched.
+    *on_launched*, if given, is awaited right after ``create_subprocess_exec``
+    confirms the OS process exists, before waiting on completion -- the
+    scheduler engine uses this to mark a schedule_run "dispatched" durably,
+    closing the recovery scan's committed-but-never-launched window. A
+    failing callback is logged and swallowed, never allowed to fail the
+    process that already launched.
     """
     if action_kind == "command":
         command = argv[0] if argv else ""

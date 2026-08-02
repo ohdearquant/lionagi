@@ -571,11 +571,9 @@ async def stream_claude_code_cli(  # noqa: C901
         session = CLISession()
     theme = request.cli_display_theme or "light"
     seen_system_ids: set[str] = set()
-    # ``--include-partial-messages`` emits ``stream_event`` envelopes before
-    # the ordinary, complete ``assistant`` message.  Track the message ids for
-    # which text/thinking deltas were forwarded so the complete envelope can
-    # still populate ``session.messages`` without duplicating its content in
-    # the provider-neutral StreamChunk stream.
+    # Tracks ids whose partial deltas were already forwarded, so the later
+    # complete ``assistant`` envelope can populate session.messages without
+    # duplicating content into the StreamChunk stream.
     partial_message_ids: set[str] = set()
     current_partial_message_id: str | None = None
     partial_without_message_id = False
@@ -770,9 +768,8 @@ async def stream_claude_code_cli(  # noqa: C901
                 session.duration_api_ms = obj.get("duration_api_ms")
                 session.is_error = obj.get("is_error", False)
 
-                # Terminal usage/cost/turns/duration -- the only channel run.py
-                # reads provider-reported usage from (persisted onto
-                # model_response, see run.py's "result" chunk handling).
+                # Terminal usage/cost/turns/duration — the only channel run.py
+                # reads provider-reported usage from.
                 result_meta: dict[str, Any] = {}
                 if session.usage:
                     result_meta["usage"] = session.usage

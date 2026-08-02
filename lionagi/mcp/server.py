@@ -2,15 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """lionagi MCP server — one advertised tool, every operation a verb behind it.
 
-An advertised tool schema is not free: it is sent to the model on every request,
-in every session, by every caller, for as long as the server is registered. So
-this server advertises exactly one tool, whose schema describes ``ops`` and
-``help`` and nothing else, and a verb's parameters are fetched by asking for them
-rather than carried in the tool list.
-
-The verbs live in :mod:`lionagi.mcp.verbs` and dispatch in
-:mod:`lionagi.mcp.dispatch`. Adding a command to the CLI does not add a verb
-here; a verb exists because someone registered it.
+An advertised tool schema is sent to the model on every request in every
+session, so this server advertises exactly one tool (``ops`` and ``help``) and
+a verb's parameters are fetched by asking rather than carried in the tool
+list. Verbs live in :mod:`lionagi.mcp.verbs`, dispatch in
+:mod:`lionagi.mcp.dispatch`; a CLI command doesn't become a verb automatically.
 """
 
 from __future__ import annotations
@@ -22,13 +18,10 @@ from pydantic import Field
 
 from . import dispatch
 
-# The advertised server name. It moved from "lionagi" to "lion" when this surface
-# became the machine contract a peer system drives; the previous name is kept as a
-# readable constant because it is what older registrations and logs show. fastmcp
-# carries exactly one name in the initialize response and offers no alias for it,
-# so nothing here can make a client that asks for "lionagi" by name resolve — but
-# nothing needs to: a client addresses this server by its own local config entry
-# (the command it launches), not by this string.
+# Renamed from "lionagi" to "lion" when this became a peer-driven machine
+# contract; kept as a readable constant since older registrations/logs show it.
+# fastmcp carries one name with no alias — a client addresses this server by
+# its own config entry (the launch command), not by this string.
 SERVER_NAME = "lion"
 PREVIOUS_SERVER_NAME = "lionagi"
 
@@ -52,6 +45,11 @@ _HELP_DESCRIPTION = (
 )
 
 
+# The docstring below is not a comment. `@mcp.tool` publishes it as this tool's
+# advertised description, so every MCP client and model sees it and calls the
+# server based on it. Shortening it changes what callers are told, which is a
+# contract change and not an editing decision. A test asserts the call-critical
+# parts are still advertised.
 @mcp.tool
 async def request(
     ops: Annotated[list[dict[str, Any]] | None, Field(description=_OPS_DESCRIPTION)] = None,
@@ -86,10 +84,9 @@ def main() -> None:
     """Console entrypoint: run the server over stdio."""
     from lionagi.cli._code_identity import snapshot_git_position
 
-    # Read where this server's code came from before serving anything. The
-    # process keeps the modules it imported for its whole life, so a checkout
-    # that moves later is divergence to report, not a new answer to give — and
-    # only a reading taken now can tell the two apart.
+    # Taken now, before serving anything: the process keeps its imported
+    # modules for its whole life, so a checkout that moves later is divergence
+    # to report, not a new answer — only this snapshot can tell the two apart.
     snapshot_git_position()
     mcp.run()
 

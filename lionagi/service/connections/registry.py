@@ -185,17 +185,9 @@ class EndpointRegistry:
 
     @classmethod
     def _claim_provider_identity(cls, provider: str, provider_aliases: tuple[str, ...]) -> None:
-        """Reject a provider/alias string already owned by a *different* canonical provider.
-
-        Re-registering the same canonical provider (e.g. openai's chat, embed,
-        batch, ... endpoints) is expected and always allowed. A collision is
-        two different canonical providers claiming the same string, either as
-        one's canonical name or as either one's alias.
-
-        Callers must hold ``cls._lock`` -- this is check-then-claim and is
-        only atomic across concurrent registrations when the lock spans both
-        the check and the claim (and, in ``register()``, entry publication).
-        """
+        """Reject a provider/alias string already owned by a *different* canonical
+        provider; re-registering the same provider's own endpoints is always allowed.
+        Callers must hold ``cls._lock`` — check-then-claim, atomic only under the lock."""
         for key in (provider, *provider_aliases):
             owner = cls._alias_owners.get(key)
             if owner is not None and owner != provider:
@@ -208,12 +200,8 @@ class EndpointRegistry:
 
     @classmethod
     def _remove_entries(cls, entries: list[_RegistryEntry]) -> None:
-        """Drop ``entries`` from ``_entries`` and rebuild ``_alias_owners``.
-
-        Must run under ``cls._lock``. Every entry-removal caller (plugin
-        revalidation failure, built-in-collision rejection) goes through
-        this one path, so the alias ledger can never drift from ``_entries``.
-        """
+        """Drop ``entries`` from ``_entries`` and rebuild ``_alias_owners``. Must run
+        under ``cls._lock``; the sole removal path, so the alias ledger never drifts."""
         if not entries:
             return
         drop = {id(e) for e in entries}
@@ -222,15 +210,9 @@ class EndpointRegistry:
 
     @classmethod
     def _rebuild_alias_owners(cls) -> None:
-        """Recompute ``_alias_owners`` from the surviving ``_entries``.
-
-        Must run under ``cls._lock``, after any entry removal (e.g. a plugin
-        entry failing revalidation). ``_alias_owners`` is otherwise tracked
-        independently of ``_entries``, so a removed entry's alias would keep
-        naming an owner with no remaining registration -- rejecting a
-        legitimate replacement registration for an alias nothing owns
-        anymore. First-registration-wins, same as ``_claim_provider_identity``.
-        """
+        """Recompute ``_alias_owners`` from the surviving ``_entries``. Must run under
+        ``cls._lock`` after any entry removal, else a removed entry's alias keeps
+        naming an owner with no remaining registration. First-registration-wins."""
         owners: dict[str, str] = {}
         for entry in cls._entries:
             for key in (entry.meta.provider, *entry.meta.provider_aliases):
@@ -246,27 +228,10 @@ class EndpointRegistry:
         openai_compatible: bool = False,
         **kwargs,
     ) -> Any:
-        """Find and instantiate the best matching endpoint. On a registry
-        miss, consults the plugin registry (ADR-0088 D3) before falling back
-        to the generic OpenAI-compatible endpoint; see docs/internals/runtime.md.
-
-        A *registered* provider is never rejected: if ``provider`` names a
-        canonical provider or provider-alias that some entry already claimed
-        (via ``register()``/``_claim_provider_identity``), a request for an
-        endpoint that provider doesn't happen to expose falls through to the
-        generic construction below same as an explicit opt-in would -- the
-        provider identity is not in question, only the specific endpoint
-        name, so there is nothing to reject. ``ProviderNotFoundError`` is
-        reserved for a ``provider`` string matching no registered provider or
-        alias at all: the generic OpenAI-compatible fallback then only builds
-        when ``openai_compatible=True`` is passed explicitly, or (deprecated
-        migration path, warns) when a ``base_url`` kwarg is given -- the same
-        signal a caller already needs to point the fallback at a real custom
-        host. Anything else raises ``ProviderNotFoundError`` naming the
-        requested provider and every provider currently registered -- a
-        provider that error names as unregistered is, by construction, never
-        also in the registered list it prints.
-        """
+        """Find and instantiate the best matching endpoint. On a registry miss,
+        consults the plugin registry before falling back to the generic
+        OpenAI-compatible endpoint. See docs/internals/core.md#endpointregistry-match
+        for the provider-vs-endpoint rejection contract."""
         cls._ensure_loaded()
 
         matched = cls._match_registered(provider, endpoint, kwargs)
@@ -361,29 +326,10 @@ class EndpointRegistry:
 
     @classmethod
     def _revalidate_plugin_entry(cls, entry: _RegistryEntry) -> bool:
-        """Keep plugin entries available only while their declared target
-        remains trusted. ``PluginRegistry.activate_target()`` rescans and
-        rehashes every installed plugin on each call, not just this one --
-        too expensive to pay on every ``match()`` hit against an endpoint
-        that already activated cleanly. Only re-runs it when the
-        ``PluginRegistry`` snapshot generation has strictly advanced (a
-        ``reset()`` happened), when this plugin's manifest, any declared
-        path, or user settings source changed (see ``_plugin_entry_stat``),
-        or -- when that stat signature still matches -- when the entry's own
-        content digest (see ``_plugin_entry_digest``) no longer matches;
-        otherwise reuses that prior result.
-
-        The stat signature alone is not a portable content-change
-        guarantee: ``os.utime()`` restores a spoofed mtime after an edit,
-        and on platforms where ``st_ctime_ns`` is not a metadata-change
-        token (Windows CPython documents it as file *creation* time, which
-        a content write or ``os.utime()`` never advances), a same-length
-        in-place edit can leave the whole stat tuple looking unchanged. The
-        content digest is only computed on that stat-stable path -- the
-        files plugins declare are small, so paying for the read there is
-        cheap -- and closes that hole on every platform: it always changes
-        when the manifest or any declared capability file's bytes do.
-        """
+        """Keep a plugin entry available only while its declared target remains
+        trusted, caching the expensive `PluginRegistry.activate_target()` rescan
+        behind a stat+digest fast path. See
+        docs/internals/core.md#endpointregistry-plugin-revalidation."""
         if entry.plugin_name is None or entry.plugin_target is None:
             return True
 
@@ -415,33 +361,10 @@ class EndpointRegistry:
 
     @classmethod
     def _plugin_entry_stat(cls, plugin_name: str, target: str) -> _PluginStatSignature | None:
-        """Metadata for the manifest, every declared path, and user settings.
-
-        This is the cheap ``has anything relevant changed`` first gate for
-        ``_revalidate_plugin_entry``. It is a *probabilistic* signal, not a
-        correctness guarantee; see ``_plugin_entry_digest`` for the content
-        guarantee this gate feeds into for every declared capability file.
-
-        Each file metadata value is ``(mtime_ns, ctime_ns, size, inode)``.
-        mtime ALONE is not a valid content-pinning signal: ``os.utime()`` lets
-        a caller edit a file's bytes and then restore its original mtime.
-        ctime narrows that hole on filesystems where it tracks inode metadata
-        changes, but it is not portable: current CPython documents ``st_ctime``/
-        ``st_ctime_ns`` as file *creation* time on Windows, so neither a
-        content write nor ``os.utime()`` advances it there, and timestamp
-        resolution is filesystem-dependent in general. size and inode are
-        free extra signal from the same ``stat()`` call (no additional
-        syscall) and catch same-second same-mtime same-ctime edits and
-        delete+recreate respectively, but a same-length in-place edit
-        defeats size too. Whenever this whole tuple compares unchanged,
-        ``_revalidate_plugin_entry`` confirms with ``_plugin_entry_digest``
-        before trusting it -- that confirmation, not this stat tuple, is
-        what makes the fast path safe to serve from cache.
-
-        ``None`` (unknown plugin, invalid manifest, unresolvable path, or a
-        declared file missing) always forces the caller back onto the full
-        ``activate_target()`` path.
-        """
+        """Cheap ``(mtime_ns, ctime_ns, size, inode)`` first-gate signature for the
+        manifest, every declared path, and user settings -- probabilistic, not a
+        correctness guarantee (see docs/internals/core.md#endpointregistry-plugin-revalidation).
+        ``None`` forces the caller back onto the full ``activate_target()`` path."""
         from lionagi.plugins import PluginRegistry
         from lionagi.plugins._user_settings import user_settings_path
         from lionagi.plugins.discovery import _collect_declared_paths
@@ -491,17 +414,10 @@ class EndpointRegistry:
 
     @classmethod
     def _plugin_entry_digest(cls, plugin_name: str, target: str) -> _ContentDigest | None:
-        """Content hashes for an entry's manifest and every declared path.
-
-        Unlike any timestamp/size/inode signature, these hashes always
-        change when any file covered by the plugin's trust record changes.
-        They are only computed on ``_plugin_entry_stat``'s stat-stable path;
-        a signature that already looks different skips straight to
-        ``activate_target()``.
-
+        """Content hashes for an entry's manifest and every declared path -- the
+        correctness guarantee `_plugin_entry_stat`'s cheap signature feeds into.
         ``None`` means the plugin is unknown, the target is undeclared, or a
-        covered file could not be read.
-        """
+        covered file could not be read."""
         from lionagi.plugins import PluginRegistry
         from lionagi.plugins.discovery import _collect_declared_paths
 
@@ -530,12 +446,10 @@ class EndpointRegistry:
 
     @classmethod
     def _consult_plugin_providers(cls) -> bool:
-        """Import every ACTIVE plugin's declared provider module (ADR-0088
-        D3), lazily, only from ``match()`` after a registered-entry miss —
-        never at import time. The reentrant lock keeps activation atomic
-        across threads while allowing activated code to perform a nested
-        endpoint lookup. Returns whether any import succeeded.
-        """
+        """Import every ACTIVE plugin's declared provider module, lazily, only
+        from ``match()`` after a registered-entry miss -- never at import time.
+        The reentrant lock keeps activation atomic while allowing nested lookups.
+        Returns whether any import succeeded."""
         try:
             from lionagi.plugins import PluginActivationError, PluginRegistry
         except ImportError:
@@ -569,10 +483,8 @@ class EndpointRegistry:
                 except PluginActivationError:
                     continue
                 except ProviderAliasCollisionError as exc:
-                    # A plugin claiming a provider/alias another provider already
-                    # owns must not crash resolution -- reject just this plugin's
-                    # contribution, the same fail-soft posture as a built-in
-                    # collision (_reject_builtin_collisions) or a broken import.
+                    # Fail-soft, same as a built-in collision: reject only this
+                    # plugin's contribution, don't crash resolution.
                     logger.warning(
                         "plugin %r provider module %r rejected: %s",
                         plugin_name,
@@ -589,18 +501,12 @@ class EndpointRegistry:
 
     @classmethod
     def _reject_builtin_collisions(cls, plugin_name: str, module: str) -> None:
-        """ADR-0088 D6: a plugin provider must never silently take over a
-        provider name a built-in already serves. Drop (and log) any entry
-        this activation just added whose provider name (or provider alias)
-        matches an already-registered built-in entry -- the built-in stays
-        authoritative and the plugin entry is rejected.
-
-        Activation entries are identified by the provenance ``register``
-        already recorded, not by where the endpoint class was defined: a
-        provider module may register a class supplied by a helper or
-        generated module, and such an entry carries the same provenance
-        while its ``__module__`` differs.
-        """
+        """A plugin provider must never silently take over a provider name a
+        built-in already serves. Drop (and log) any entry this activation just
+        added whose provider name/alias matches an already-registered built-in;
+        the built-in stays authoritative. Entries are identified by recorded
+        provenance, not by ``__module__`` (a provider module may register a
+        class defined in a helper module)."""
         builtin_names: set[str] = set()
         for entry in cls._entries:
             if entry.plugin_name is None:
@@ -682,27 +588,16 @@ def register_endpoint(
 
 # Declared, not inferred: the optional third-party dependency each fixed
 # provider module needs, keyed by dotted module path. A module with no entry
-# here has none. Verified against each module's own top-level imports -- keep
-# an entry's dependency tuple in sync if that module's imports change.
-# Every module currently in _import_all_providers' fixed list defers its
-# optional third-party imports past module scope (see e.g. ollama/chat.py,
-# ag2/agent.py, ag2/groupchat.py, ag2/nlip.py), so none need an entry yet;
-# add one here the day a provider module imports its optional dependency at
-# module scope again.
+# here has none; add one the day a provider module imports its optional
+# dependency at module scope (all current ones defer past module scope).
 _PROVIDER_OPTIONAL_DEPENDENCIES: dict[str, tuple[str, ...]] = {}
 
 
 def _import_provider_module(mod: str) -> None:
     """Preflight-check ``mod``'s declared optional dependencies, then import.
-
-    A declared dependency that fails to resolve skips the import entirely
-    (debug log, module body never runs) -- so a buggy module never gets the
-    chance to raise a misleading exception. Once every declared dependency
-    resolves (or none are declared), any ``ImportError`` raised while
-    importing ``mod`` is unconditionally a provider-load failure (warning) --
-    no exception-metadata inspection at all, since that metadata is fully
-    controlled by whatever code raised it.
-    """
+    A missing dependency skips the import entirely (debug log, module body
+    never runs); once dependencies resolve, any ``ImportError`` is
+    unconditionally a provider-load failure (warning)."""
     import importlib
     import importlib.util
 

@@ -92,35 +92,20 @@ def _bundle_dir_present(bundle_path: str) -> bool:
 
 
 def gc_trust_records(discovered: list[DiscoveredPlugin]) -> list[str]:
-    """Prune ``trusted_plugins`` entries whose bundle directory is confirmed gone (D7).
+    """Prune ``trusted_plugins`` entries whose bundle directory is confirmed gone.
 
-    Pruning is directory-presence, not manifest-parse-success: ``trust_plugin()``
-    pins the bundle's absolute directory alongside the content hashes, and this
-    only treats an entry as stale once that exact directory no longer exists on
-    disk (D7's stated uninstall step is ``rm -r`` the bundle). A plugin whose
-    ``plugin.yaml`` merely fails to parse right now — malformed edit in
-    progress, a transient read error, a declared path escaping the bundle — is
-    NOT the same thing as an uninstalled plugin; ``discover_plugins()`` still
-    reports it (as a manifest-less ``DiscoveredPlugin``) as long as its
-    directory is there, and its trust record must survive that untouched, per
-    the ADR's stated "bundle directory has been removed" pruning condition.
+    Pruning is directory-presence, not manifest-parse-success: a plugin
+    whose ``plugin.yaml`` merely fails to parse right now (malformed edit in
+    progress, transient read error) is not the same as uninstalled, and its
+    trust record must survive untouched. Legacy records with no
+    ``bundle_path`` key fall back to a parsed-manifest-name check instead.
 
-    Trust records written before this bundle-path pin (legacy shape, no
-    ``bundle_path`` key) fall back to the old parsed-manifest-name check —
-    conservative in the opposite direction (it can still false-evict a legacy
-    record on a transient parse failure), but every record trust_plugin()
-    writes from here on carries the precise check, so this fallback is a
-    migration window, not the steady-state behavior.
+    Not just tidiness: a lingering record for a genuinely-removed bundle
+    would silently trust a different bundle that later reappears under the
+    same name with content that happens to hash the same — the exact
+    resurrection content-pinning is meant to prevent.
 
-    Not just tidiness: if a genuinely-removed record were left in place and a
-    *different* bundle later reappeared under the same name with content that
-    happens to hash the same as what was pinned before (a stale checkout, a
-    re-cloned repo), that lingering record would trust it silently — the exact
-    resurrection D5's content-pinning is meant to prevent.
-
-    Returns the pruned names, sorted, so the caller can report exactly what
-    happened and why — this must never prune silently. Idempotent: a second
-    call with nothing newly absent returns an empty list and writes nothing.
+    Returns the pruned names, sorted; never prunes silently. Idempotent.
     """
     live_names = {d.manifest.name for d in discovered if d.manifest is not None}
     with locked_user_settings() as settings:
@@ -151,13 +136,9 @@ def trust_state(discovered: DiscoveredPlugin) -> TrustState:
     if record is None:
         return TrustState.UNTRUSTED
     if not isinstance(record, dict):
-        # A hand-edited settings.yaml can put anything under a plugin's key
-        # (e.g. `trusted_plugins: {p1: true}`) — the well-formed shape this
-        # module ever writes is always a dict (see trust_plugin() below), so
-        # anything else can't be the record it looks like and must not be
-        # dereferenced with .get() below. Treat it the same as "recorded
-        # hashes don't match the current ones" rather than raising and
-        # taking down every caller (discovery, `li plugin list`) with it.
+        # A hand-edited settings.yaml can put anything under a plugin's key;
+        # treat a non-dict the same as "hashes don't match" rather than
+        # raising and taking down every caller.
         return TrustState.CHANGED
     current = compute_trust_hashes(discovered)
     if record.get("manifest") != current.get("manifest"):
