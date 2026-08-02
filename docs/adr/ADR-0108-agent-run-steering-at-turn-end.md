@@ -1,6 +1,6 @@
 # ADR-0108: Agent-run steering at the turn-end boundary
 
-- **Status**: Accepted
+- **Status**: Accepted (2026-08-02, PR #2773)
 - **Kind**: Aspirational
 - **Area**: scheduling-control-plane
 - **Date**: 2026-08-01

@@ -4,7 +4,10 @@
 - **Kind**: Retrospective
 - **Area**: scheduling-control-plane
 - **Date**: 2026-07-09
-- **Relations**: supersedes v0-0085, v0-0088
+- **Relations**: supersedes v0-0085, v0-0088; amended by ADR-0108, which widens the
+  `message` verb's consumer set to the `agent` invocation kind, so this document's
+  rule that an invocation kind outside `{"flow", "play"}` fails without inserting a
+  row no longer holds for that verb
 
 ## Context
 
