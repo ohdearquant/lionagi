@@ -272,6 +272,14 @@ export interface AgentProfileSummary {
   description?: string;
   provider: string;
   model: string;
+  /** Cast role this agent wraps (e.g. "critic"), if any -- see /api/casts/. */
+  role?: string;
+  /** Cognitive mode overlay (e.g. "terse"), if any -- see /api/casts/. */
+  mode?: string;
+  /** True for a catalog-sourced/hand-marked agent: not editable or deletable. */
+  protected?: boolean;
+  /** True for the single always-present fallback agent: not deletable. */
+  is_default?: boolean;
 }
 
 export interface AgentProfile {
@@ -284,6 +292,10 @@ export interface AgentProfile {
   permission_mode?: string;
   reasoning_effort?: string;
   description?: string;
+  role?: string;
+  mode?: string;
+  protected?: boolean;
+  is_default?: boolean;
 }
 
 // ─── Model config ─────────────────────────────────────────────────────────────
