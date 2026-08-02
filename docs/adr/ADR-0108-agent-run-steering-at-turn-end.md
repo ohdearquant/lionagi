@@ -23,6 +23,24 @@ is one long provider conversation. There is no interior boundary at this layer, 
 pretending otherwise (injecting into a running subprocess conversation) would be
 engine-specific and fragile.
 
+The cost of that missing lever was measured during this ADR's own authoring. A leg was
+already running when a new constraint arrived for it. Nothing could deliver the
+constraint to the running turn, so the only available response was to let the turn
+finish, check its output against a requirement it had never been told about, and spend a
+second full run correcting the difference. A one-sentence redirect cost an entire
+additional leg.
+
+That is the shape of the problem generally. The information that would change a leg's
+course usually arrives while the leg is running, because that is when someone is
+watching it. An operator holding new information and a running agent has three options
+today: interrupt and lose the turn's accumulated work, wait and pay for a second run, or
+say nothing. Steering at the turn-end boundary adds the fourth, and it is the one an
+operator reaches for first.
+
+It also explains why the receipt matters more than it looks. An operator who cannot tell
+"queued, will apply when this turn ends" from "lost" will not use the feature, because
+waiting in silence is indistinguishable from the option they already had.
+
 ## Decision
 
 Extend the ADR-0069 transport — not a new mechanism — to agent-kind sessions, with the
@@ -44,6 +62,22 @@ steer landing as a warm continuation turn at the run's next turn boundary.
    `StateDB.get_sessions_for_run` already documents why: "one run can persist
    more than one session." The fallback follows that existing contract and
    returns the most recently updated one rather than an arbitrary row.
+
+   Because the fallback runs only after the generic sweep misses, the two id
+   spaces are not searched together, and that has a consequence worth stating
+   plainly rather than leaving for someone to discover. A prefix that matches
+   both an entity primary key and a `sessions.run_id` resolves to the primary
+   key, silently: the generic sweep finds it, returns, and the run-id fallback
+   is never reached, so no ambiguity is reported even though the prefix was
+   genuinely ambiguous across the two spaces. A full-length run id cannot hit
+   this, because it is long enough that no primary key matches it. The reason
+   to accept the asymmetry rather than merge the two searches is that merging
+   would change what a prefix collision means for every existing caller of the
+   generic resolver, including `monitor.py`, `kill.py`, and `status.py`'s
+   per-kind resolvers, which pass explicit `tables=` and expect the current
+   meaning. Ambiguity *within* the run-id space is still refused rather than
+   picked; it is only ambiguity *across* the two spaces that resolves by
+   precedence.
 
 2. **Per-verb consumer gate.** The enqueue gate becomes verb-aware
    (`_CONSUMER_KINDS_BY_VERB`): `message` is consumable by `flow`, `play`, and `agent`

@@ -446,3 +446,58 @@ async def test_run_id_fallback_prefers_the_most_recently_updated_session(db_path
 
     assert hit[0] == "session"
     assert hit[1]["id"] == SECOND
+
+
+async def test_a_prefix_matching_both_a_primary_key_and_a_run_id_resolves_to_the_primary_key(
+    db_path: Path,
+):
+    """The run-id lookup is a fallback, so it is reached only when the generic
+    sweep finds nothing. A prefix that matches an entity primary key AND a
+    run_id therefore resolves to the primary key, and no ambiguity is reported
+    even though the prefix is genuinely ambiguous across the two id spaces.
+
+    This is the documented consequence of the ordering, not an accident, so it
+    is pinned here: a change that searched both spaces together would raise
+    AmbiguousIdError instead and fail this test.
+    """
+    from lionagi.cli import status
+
+    shared_prefix = FIRST[:8]
+    colliding_run_id = f"{shared_prefix}-run-for-a-different-session"
+    other_session = "dddddddd-0000-4000-8000-000000000004"
+
+    async with StateDB(db_path) as db:
+        await _seed_session(db, FIRST)
+        await _seed_session_with_run_id(db, other_session, colliding_run_id)
+
+        hit = await status._resolve_any_target(db, shared_prefix)
+
+    assert hit is not None
+    assert hit[0] == "session"
+    # The primary key wins. The session the colliding run_id points at is NOT
+    # the answer, and nothing was raised.
+    assert hit[1]["id"] == FIRST
+    assert hit[1]["id"] != other_session
+
+
+async def test_a_full_length_run_id_is_not_shadowed_by_any_primary_key(db_path: Path):
+    """The other half of the same contract: a full-length run id is long enough
+    that no primary key matches it, so the precedence above cannot shadow it.
+    Seeded alongside a session whose id shares the run id's leading characters,
+    which is the only way a primary key could plausibly intercept it.
+    """
+    from lionagi.cli import status
+
+    run_id = "20260801T121212-fullrun"
+    decoy_session = f"{run_id[:8]}-0000-4000-8000-000000000005"
+    owning_session = "eeeeeeee-0000-4000-8000-000000000006"
+
+    async with StateDB(db_path) as db:
+        await _seed_session(db, decoy_session)
+        await _seed_session_with_run_id(db, owning_session, run_id)
+
+        hit = await status._resolve_any_target(db, run_id)
+
+    assert hit is not None
+    assert hit[0] == "session"
+    assert hit[1]["id"] == owning_session

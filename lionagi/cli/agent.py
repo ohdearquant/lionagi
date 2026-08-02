@@ -427,9 +427,16 @@ async def _drain_pending_steers(
         return None
     import time as _time
 
-    from lionagi.cli._logging import hint
+    from lionagi.cli._logging import hint, log_error
 
-    db = live["db"]
+    db = live.get("db")
+    if db is None:
+        # A persistence context carrying a session but no handle to read it
+        # with. Nothing can be drained, and returning quietly would make that
+        # indistinguishable from "no steers were queued" -- so say which one
+        # this is. setup_agent_persist always supplies both.
+        log_error("steer: session is persisted but no database handle came with it; not draining")
+        return None
     session_id = live["session_id"]
     last_res = None
     while True:

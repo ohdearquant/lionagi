@@ -343,3 +343,35 @@ async def test_tombstone_failure_logs_and_does_not_raise(temp_db_path, caplog):
     with caplog.at_level("ERROR"):
         await _tombstone_pending_steers({"db": _BrokenDB(), "session_id": "s1"})
     assert "tombstone write failed" in caplog.text
+
+
+async def test_drain_says_so_when_a_persisted_session_arrives_without_a_db(caplog):
+    """setup_agent_persist always supplies both a session id and the database
+    handle to read it with. If only one arrives, nothing can be drained -- but
+    returning quietly would make that indistinguishable from "no steers were
+    queued", which is the answer a caller would act on. The failure path names
+    itself instead.
+    """
+    with caplog.at_level("ERROR"):
+        result = await _drain_pending_steers(
+            {"session_id": "s1"},
+            None,
+            operate_kwargs={},
+            deadline=None,
+        )
+
+    assert result is None
+    assert "no database handle" in caplog.text
+
+
+async def test_drain_returns_quietly_when_there_is_no_persistence_at_all(caplog):
+    """The control for the above: no session id either means the leg simply is
+    not persisted, which is ordinary and must not log an error. This passes
+    both before and after the missing-handle guard, so it distinguishes "not
+    persisted" from "persisted but unreadable" rather than testing the guard.
+    """
+    with caplog.at_level("ERROR"):
+        result = await _drain_pending_steers({}, None, operate_kwargs={}, deadline=None)
+
+    assert result is None
+    assert "no database handle" not in caplog.text
