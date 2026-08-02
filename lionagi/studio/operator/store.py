@@ -539,9 +539,23 @@ class OperatorStore:
 
             await db.execute(
                 "INSERT INTO studio_operator_conversations "
-                "(id, project, title, status, next_sequence, provider_model, "
-                "created_at, updated_at) VALUES (?, ?, ?, 'active', 1, ?, ?, ?)",
-                (new_id, source["project"], new_title, source["providerModel"], now, now),
+                "(id, project, title, status, next_sequence, provider, provider_model, "
+                "created_at, updated_at) VALUES (?, ?, ?, 'active', 1, ?, ?, ?, ?)",
+                (
+                    new_id,
+                    source["project"],
+                    new_title,
+                    # A pin is the provider and the model together. Copying the
+                    # model alone would leave the fork resolving its provider
+                    # from the environment, so a conversation pinned to one
+                    # provider's model would fork into a conversation that runs
+                    # that model name against whatever provider the environment
+                    # names.
+                    source["provider"],
+                    source["providerModel"],
+                    now,
+                    now,
+                ),
             )
             next_sequence = 1
             if ordered_request_ids:
