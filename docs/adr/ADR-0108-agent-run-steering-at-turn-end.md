@@ -1,6 +1,6 @@
 # ADR-0108: Agent-run steering at the turn-end boundary
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Aspirational
 - **Area**: scheduling-control-plane
 - **Date**: 2026-08-01
@@ -70,14 +70,20 @@ steer landing as a warm continuation turn at the run's next turn boundary.
    key, silently: the generic sweep finds it, returns, and the run-id fallback
    is never reached, so no ambiguity is reported even though the prefix was
    genuinely ambiguous across the two spaces. A full-length run id cannot hit
-   this, because it is long enough that no primary key matches it. The reason
-   to accept the asymmetry rather than merge the two searches is that merging
-   would change what a prefix collision means for every existing caller of the
-   generic resolver, including `monitor.py`, `kill.py`, and `status.py`'s
-   per-kind resolvers, which pass explicit `tables=` and expect the current
-   meaning. Ambiguity *within* the run-id space is still refused rather than
-   picked; it is only ambiguity *across* the two spaces that resolves by
-   precedence.
+   this, and the reason is the alphabet rather than the length: run ids are
+   `YYYYMMDDTHHMMSS-hex6` (`_new_run_id`, `cli/_runs.py`), so they carry a `T`
+   and a `-` at fixed positions that a hexadecimal primary key can never hold
+   there. Length alone would not be enough — a pure-hex string of the same
+   width could still prefix-match a longer hex key. Those non-hex characters
+   are therefore part of the contract this ordering depends on, and changing
+   the run-id format to pure hex would silently reintroduce the collision this
+   paragraph rules out. The reason to accept the asymmetry rather than merge
+   the two searches is that merging would change what a prefix collision means
+   for every existing caller of the generic resolver, including `monitor.py`,
+   `kill.py`, and `status.py`'s per-kind resolvers, which pass explicit
+   `tables=` and expect the current meaning. Ambiguity *within* the run-id
+   space is still refused rather than picked; it is only ambiguity *across* the
+   two spaces that resolves by precedence.
 
 2. **Per-verb consumer gate.** The enqueue gate becomes verb-aware
    (`_CONSUMER_KINDS_BY_VERB`): `message` is consumable by `flow`, `play`, and `agent`
