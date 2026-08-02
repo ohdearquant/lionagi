@@ -129,6 +129,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/workflow-defs/"),
     ("GET", "/api/workflow-defs/{def_id}"),
     ("GET", "/health"),
+    ("PATCH", "/api/operator/conversations/{conversation_id}"),
     ("PATCH", "/api/schedules/{schedule_id}"),
     ("POST", "/api/admin/maintenance"),
     ("POST", "/api/admin/prune"),
@@ -152,6 +153,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/api/mcp/servers/{name}/validate"),
     ("POST", "/api/operator/conversations"),
     ("POST", "/api/operator/conversations/{conversation_id}/effects/{effect_id}/ack"),
+    ("POST", "/api/operator/conversations/{conversation_id}/fork"),
     (
         "POST",
         "/api/operator/conversations/{conversation_id}/proposals/{proposal_id}/confirm",
@@ -264,7 +266,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 118
+    assert len(_GOLDEN_ROUTES) == 120
 
 
 def _compiled_match_shape(path_template: str) -> str:
