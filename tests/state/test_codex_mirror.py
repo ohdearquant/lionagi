@@ -323,3 +323,86 @@ async def test_harness_injected_user_turns_are_not_mirrored_as_prompts(db, openi
 
     messages = await db.get_branch_messages(_det(ROLLOUT_UID, "branch"))
     assert [m["content"]["instruction"] for m in messages] == ["the actual question"]
+
+
+# ── Orchestrated-rollout absorption ──────────────────────────────────────────
+
+
+async def test_delete_imported_session_removes_the_whole_graph(db):
+    """Deleting an imported session takes its branch, progressions and messages
+    with it, and reports that it actually deleted something."""
+    written, _ = await _mirror(db, _records())
+    assert written == 4
+    sid = session_db_id(ROLLOUT_UID)
+    sprog = _det(ROLLOUT_UID, "sprog")
+    msg_ids = await db.get_progression(sprog)
+    assert msg_ids  # the graph exists before the delete
+
+    assert await db.delete_imported_session(sid) is True
+
+    assert await db.get_session(sid) is None
+    assert await db.get_progression(sprog) == []
+    for mid in msg_ids:
+        assert await db.get_message(mid) is None
+    # Idempotent: a second delete finds nothing and says so.
+    assert await db.delete_imported_session(sid) is False
+
+
+async def test_delete_imported_session_refuses_live_rows(db):
+    """The delete is owned by importers: a live run's session is never eligible,
+    so a reconciliation sweep can never destroy real run history."""
+    prog = "live-prog-1"
+    await db.create_progression(prog)
+    await db.create_session(
+        {
+            "id": "live-session-1",
+            "created_at": 1.0,
+            "progression_id": prog,
+            "name": "agent",
+            "status": "running",
+            "source_kind": "live",
+        }
+    )
+    assert await db.delete_imported_session("live-session-1") is False
+    assert await db.get_session("live-session-1") is not None
+
+
+async def test_backfill_absorbs_only_orchestrated_imports(db):
+    """The backfill removes imported rows whose recorded originator marks them as
+    orchestrator-spawned, and leaves interactive and unattributed rows alone."""
+    from lionagi.state.codex_mirror import absorb_orchestrated_backfill
+
+    def rollout(uid: str) -> list[dict]:
+        return [
+            _rec("session_meta", {"id": uid, "cwd": "/x"}),
+            _rec(
+                "response_item",
+                {"type": "message", "role": "user", "id": "m1", "content": [{"text": "q"}]},
+            ),
+        ]
+
+    uid_exec = "0199aaaa-0000-0000-0000-000000000001"
+    uid_desktop = "0199aaaa-0000-0000-0000-000000000002"
+    uid_bare = "0199aaaa-0000-0000-0000-000000000003"
+    for uid, meta in (
+        (uid_exec, {"codex": {"originator": "codex_exec"}}),
+        (uid_desktop, {"codex": {"originator": "Codex Desktop"}}),
+        (uid_bare, None),
+    ):
+        await mirror_session(
+            db,
+            rollout_uid=uid,
+            records=rollout(uid),
+            tool_names={},
+            node_metadata=meta,
+            source_path=f"/tmp/rollout-{uid}.jsonl",
+        )
+
+    removed = await absorb_orchestrated_backfill(db)
+
+    assert removed == 1
+    assert await db.get_session(session_db_id(uid_exec)) is None
+    # Interactive history stays; a row with no recorded originator is not treated
+    # as orchestrated, because absent provenance is not evidence.
+    assert await db.get_session(session_db_id(uid_desktop)) is not None
+    assert await db.get_session(session_db_id(uid_bare)) is not None

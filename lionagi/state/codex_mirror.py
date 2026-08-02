@@ -38,14 +38,25 @@ __all__ = (
     "mirror_session",
     "reconcile_session_status",
     "link_session_lineage",
+    "absorb_orchestrated_session",
+    "absorb_orchestrated_backfill",
     "RecordTally",
     "turn_context",
     "SOURCE_KIND",
     "ID_FIELD",
+    "SKIPPED_ORIGINATORS",
 )
 
 # Provenance value for a session this mirror wrote, as opposed to one lionagi ran.
 SOURCE_KIND = "imported_codex"
+
+# Rollout originators this mirror does NOT import. A headless ``codex exec``
+# rollout is some orchestrator's run — lionagi's own agent legs foremost — and
+# that run already persists a first-class session under its own name; importing
+# the rollout as well puts a second "codex" session beside the agent's for the
+# same piece of work. This mirror exists for the interactive Codex surfaces
+# (desktop app, TUI, IDE), whose rollouts have no other representation here.
+SKIPPED_ORIGINATORS = frozenset({"codex_exec"})
 
 # Which of a rollout's identifiers ``cc_session_id`` holds. A rollout carries three,
 # and the column that stores one of them says nothing about which — so the name is
@@ -530,6 +541,44 @@ async def reconcile_session_status(
         live_window=live_window,
         actor="codex-mirror-reconcile",
     )
+
+
+async def absorb_orchestrated_session(db: StateDB, rollout_uid: str) -> bool:
+    """Remove the row a previous version imported for a now-skipped rollout.
+
+    Only rows this mirror wrote are deletable (``delete_imported_session`` refuses
+    anything whose source_kind is not imported), so absorbing an id that a live
+    run happens to own is a no-op rather than a data loss.
+    """
+    return await db.delete_imported_session(session_db_id(rollout_uid))
+
+
+async def absorb_orchestrated_backfill(db: StateDB) -> int:
+    """One sweep over already-imported rows, deleting those whose recorded
+    originator is in ``SKIPPED_ORIGINATORS``; returns how many were removed.
+
+    The originator is read from the provenance each import wrote on its own row
+    (``node_metadata.codex.originator``), so this reaches rows whose rollout
+    files are older than the mirror's sweep window and would otherwise never be
+    revisited. Rows with no recorded originator are left alone: absence of
+    provenance is not evidence of orchestration.
+    """
+    removed = 0
+    for row in await db.sessions_by_source_kind(SOURCE_KIND):
+        meta = row.get("node_metadata")
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except (TypeError, ValueError):
+                continue
+        if not isinstance(meta, dict):
+            continue
+        codex_block = meta.get("codex")
+        originator = codex_block.get("originator") if isinstance(codex_block, dict) else None
+        if originator in SKIPPED_ORIGINATORS:
+            if await db.delete_imported_session(row["id"]):
+                removed += 1
+    return removed
 
 
 async def link_session_lineage(

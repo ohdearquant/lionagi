@@ -132,28 +132,66 @@ def test_scoping_the_claude_root_does_not_reach_the_real_codex_tree(tmp_path, mo
     monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", tmp_path / "offsets.json")
 
     visited: list[str] = []
+    claude_passes = 0
 
     async def _spy_codex_pass(db, root, states, offsets, **kw):
         visited.append(str(root))
         return 0
 
+    async def _spy_claude_pass(db, root, states, offsets, **kw):
+        nonlocal claude_passes
+        claude_passes += 1
+        return 0
+
     monkeypatch.setattr(mirror_mod, "_codex_pass", _spy_codex_pass)
+    monkeypatch.setattr(mirror_mod, "_one_pass", _spy_claude_pass)
 
     root = tmp_path / "claude_projects"
     _write_transcript(
         root, "aaaaaaaa-2222-3333-4444-555555555555", cwd=str(tmp_path), base_ts=time.time()
     )
 
-    async def _run_once(**kwargs) -> None:
+    async def _run_until(predicate, what: str, **kwargs) -> None:
+        """Run the tail until *predicate* holds, rather than for a fixed span.
+
+        A wall-clock window says nothing about how many polls happened inside
+        it: on a loaded machine the loop can complete none, and then an
+        assertion that the codex root was never reached passes because nothing
+        ran at all. Waiting on the thing being measured makes the loop's own
+        progress the precondition instead of an assumption about timing.
+        """
         stop = asyncio.Event()
         task = asyncio.create_task(
             mirror_mod.mirror_forever(stop, root=root, since=None, interval=0.02, **kwargs)
         )
-        await asyncio.sleep(0.15)
-        stop.set()
-        await asyncio.wait_for(task, timeout=5)
+        failure: str | None = None
+        try:
+            for _ in range(500):
+                if predicate():
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                failure = f"tail never {what} within the wait budget"
+        finally:
+            stop.set()
+            try:
+                await asyncio.wait_for(task, timeout=5)
+            except asyncio.TimeoutError:
+                task.cancel()
+                # A tail that will not stop is usually the same tail that never
+                # made progress, so raising from here would replace the useful
+                # diagnosis with a generic cleanup timeout. The first failure
+                # observed is the one worth reporting.
+                if failure is None:
+                    failure = "tail did not stop within the cleanup budget"
+        if failure is not None:
+            raise AssertionError(failure)
 
-    run_async(_run_once())
+    # The precondition for the negative assertion below: the loop demonstrably
+    # ran a pass, so an empty `visited` means the codex root was not reached
+    # rather than that nothing was polled.
+    run_async(_run_until(lambda: claude_passes > 0, "completed a claude pass"))
+    assert claude_passes > 0
     assert visited == [], f"default source reached codex roots: {visited}"
 
     # The codex tree is read only when the caller asks for it, and then it is the
@@ -161,8 +199,14 @@ def test_scoping_the_claude_root_does_not_reach_the_real_codex_tree(tmp_path, mo
     # the window, so it is the set of roots that is under test, not the count.
     codex_root = tmp_path / "codex_sessions"
     codex_root.mkdir()
-    run_async(_run_once(source="both", codex_root=codex_root))
-    assert visited, "explicit source=both never ran a codex pass"
+    run_async(
+        _run_until(
+            lambda: bool(visited),
+            "ran a codex pass under source=both",
+            source="both",
+            codex_root=codex_root,
+        )
+    )
     assert set(visited) == {str(codex_root)}
 
 

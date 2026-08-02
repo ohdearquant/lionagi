@@ -34,6 +34,7 @@ export type OperatorAction =
   | { type: "APPEND_FRAMES"; frames: OperatorFrame[] }
   | { type: "TURN_ACCEPTED"; requestId: string }
   | { type: "CONNECTION"; state: OperatorConnectionState; error?: string }
+  | { type: "UPDATE_CONVERSATION"; conversation: OperatorConversation }
   | { type: "RESET" };
 
 /**
@@ -150,6 +151,11 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
         connectionState: action.state,
         error: action.error ?? (action.state === "open" ? null : state.error),
       };
+    case "UPDATE_CONVERSATION":
+      // A rename/pin/archive elsewhere (the conversation list) should not
+      // resurrect a conversation the operator has since navigated away from.
+      if (!state.conversation || state.conversation.id !== action.conversation.id) return state;
+      return { ...state, conversation: action.conversation };
     case "RESET":
       return initialOperatorState;
   }

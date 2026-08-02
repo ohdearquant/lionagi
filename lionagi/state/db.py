@@ -2273,6 +2273,118 @@ class StateDB:
             )
         return self._row_to_dict(row) if row else None
 
+    async def sessions_by_source_kind(self, source_kind: str) -> list[dict[str, Any]]:
+        """Minimal rows (id, node_metadata) for every session of one source_kind.
+
+        Deliberately thin — this exists for importer reconciliation sweeps, which
+        need provenance and identity but none of the joined message/branch cost.
+        """
+        async with self._read() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT id, node_metadata FROM sessions "
+                            "WHERE source_kind = :source_kind"
+                        ),
+                        {"source_kind": source_kind},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [self._row_to_dict(row) for row in rows]
+
+    async def delete_imported_session(self, session_id: str) -> bool:
+        """Delete a mirror-imported session and everything the mirror wrote for it:
+        the session row, its branches, their progressions, and the messages those
+        progressions hold. Returns True only when a row was actually deleted.
+
+        Fails closed on ownership: rows whose ``source_kind`` does not start with
+        ``imported_`` are refused, so a live run's session can never be deleted by
+        an importer reconciling its own output. Mirror-written message ids are
+        derived per-rollout (uuid5 under the mirror's namespace), so the messages
+        deleted here cannot be shared with any other session.
+        """
+        async with self._tx() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text("SELECT source_kind, progression_id FROM sessions WHERE id = :id"),
+                        {"id": session_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                return False
+            if not str(row["source_kind"] or "").startswith("imported_"):
+                return False
+
+            prog_ids: list[str] = [row["progression_id"]] if row["progression_id"] else []
+            branch_rows = (
+                (
+                    await conn.execute(
+                        text("SELECT progression_id FROM branches WHERE session_id = :id"),
+                        {"id": session_id},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            prog_ids.extend(b["progression_id"] for b in branch_rows if b["progression_id"])
+
+            msg_ids: set[str] = set()
+            for pid in prog_ids:
+                prow = (
+                    (
+                        await conn.execute(
+                            text("SELECT collection FROM progressions WHERE id = :id"),
+                            {"id": pid},
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                if prow is None:
+                    continue
+                collection = prow["collection"]
+                if isinstance(collection, str):
+                    try:
+                        collection = json.loads(collection)
+                    except (TypeError, ValueError):
+                        collection = []
+                if isinstance(collection, list):
+                    msg_ids.update(str(m) for m in collection)
+
+            # Chunked IN-lists keep each statement under SQLite's bound-variable cap.
+            def _chunks(values: list[str], size: int = 400):
+                for i in range(0, len(values), size):
+                    yield values[i : i + size]
+
+            for chunk in _chunks(sorted(msg_ids)):
+                params = {f"m{i}": mid for i, mid in enumerate(chunk)}
+                placeholders = ", ".join(f":{k}" for k in params)
+                await conn.execute(
+                    text(f"DELETE FROM messages WHERE id IN ({placeholders})"),  # noqa: S608
+                    params,
+                )
+            # Rows that reference the progressions go first (branches, then the
+            # session), else the progression deletes trip their FKs.
+            await conn.execute(
+                text("DELETE FROM branches WHERE session_id = :id"), {"id": session_id}
+            )
+            await conn.execute(text("DELETE FROM sessions WHERE id = :id"), {"id": session_id})
+            for chunk in _chunks(prog_ids):
+                params = {f"p{i}": pid for i, pid in enumerate(chunk)}
+                placeholders = ", ".join(f":{k}" for k in params)
+                await conn.execute(
+                    text(f"DELETE FROM progressions WHERE id IN ({placeholders})"),  # noqa: S608
+                    params,
+                )
+        return True
+
     @staticmethod
     def _touch_activity_sql(dialect: str) -> str:
         # SQLite MAX(a,b) is a scalar greatest; Postgres MAX() is an aggregate,
