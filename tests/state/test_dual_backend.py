@@ -710,3 +710,123 @@ async def test_postgres_wrapper_parity_cas_conflict_and_same_status_append(pg_ur
         assert row["status"] == "running"
     finally:
         await db.close()
+
+
+# ── Postgres leg: the delete/writer race on delete_imported_session ───────────
+# Lives in this module for the reason stated above: it needs the session-scoped
+# `pg_url` fixture, and a second module requesting it in the same run breaks
+# asyncpg's loop-bound connections.
+#
+# The race this pins is not hypothetical. At READ COMMITTED a transaction's
+# retention check reads a snapshot, so a reference committed after that check is
+# invisible to it while the delete authorised by it still proceeds — the delete
+# destroys a message a survivor is by then pointing at. SQLite never had the
+# exposure because `_tx()` holds a process write lock there; Postgres took a bare
+# `engine.begin()`. The fix is a table lock taken as the transaction's first
+# statement, which works because ordinary INSERT and UPDATE already hold ROW
+# EXCLUSIVE and that conflicts with EXCLUSIVE.
+
+
+async def test_postgres_delete_imported_session_waits_for_an_open_writer(pg_url):
+    """A writer holding an uncommitted reference blocks the delete, and the
+    reference it commits is then honoured.
+
+    Both directions are forced in one fixture, per the retention contract: the
+    message the writer claims must survive, and the message nobody claims must
+    go. Asserting only the first cannot tell a correct delete from one that
+    retains everything.
+
+    The discriminating step is the "still blocked" assertion. Without the table
+    lock the delete does not wait for the open writer at all: it reads a snapshot
+    that predates the uncommitted reference, concludes the message is an orphan,
+    and removes it, so the delete task is already finished at that point and the
+    assertion fails. With the lock the delete cannot even begin reading until the
+    writer commits.
+    """
+    import asyncio
+
+    from sqlalchemy import text
+
+    from lionagi.state.db import _to_json_column
+
+    db = StateDB(url=pg_url)
+    await db.open()
+    try:
+        assert db.dialect == "postgresql"
+
+        now = time.time()
+        msg_claimed, msg_orphan = _uid(), _uid()
+        for mid in (msg_claimed, msg_orphan):
+            await db.insert_message(
+                {"id": mid, "created_at": now, "content": {"text": "x"}, "role": "user"}
+            )
+
+        # The imported session holds both messages and is the delete's target.
+        imported_prog, imported_sid = _uid(), _uid()
+        await db.create_progression(imported_prog, [msg_claimed, msg_orphan])
+        await db.create_session(
+            {
+                "id": imported_sid,
+                "progression_id": imported_prog,
+                "status": "completed",
+                "created_at": now,
+                "updated_at": now,
+                "source_kind": "imported_codex",
+            }
+        )
+
+        # The survivor starts out referencing neither message.
+        survivor_prog, survivor_sid = _uid(), _uid()
+        await db.create_progression(survivor_prog, [])
+        await db.create_session(
+            {
+                "id": survivor_sid,
+                "progression_id": survivor_prog,
+                "status": "running",
+                "created_at": now,
+                "updated_at": now,
+                "source_kind": "live",
+            }
+        )
+
+        writer_holds_the_row = asyncio.Event()
+        writer_may_commit = asyncio.Event()
+
+        async def writer() -> None:
+            """Claim msg_claimed for the survivor, then hold the transaction open."""
+            async with db._tx() as conn:
+                await conn.execute(
+                    text("UPDATE progressions SET collection = :col WHERE id = :id"),
+                    {"col": _to_json_column([msg_claimed]), "id": survivor_prog},
+                )
+                writer_holds_the_row.set()
+                await writer_may_commit.wait()
+            # commit happens on context exit
+
+        writer_task = asyncio.create_task(writer())
+        await asyncio.wait_for(writer_holds_the_row.wait(), timeout=10)
+
+        delete_task = asyncio.create_task(
+            db.delete_imported_session(imported_sid, require_source_kind="imported_codex")
+        )
+        # Give the delete every chance to finish if nothing is holding it back.
+        await asyncio.sleep(1.0)
+        assert not delete_task.done(), (
+            "the delete did not wait for the open writer, so its retention check "
+            "is reading a snapshot the writer is about to invalidate"
+        )
+
+        writer_may_commit.set()
+        await asyncio.wait_for(writer_task, timeout=10)
+        assert await asyncio.wait_for(delete_task, timeout=30) is True
+
+        assert await db.get_session(imported_sid) is None
+        assert await db.get_session(survivor_sid) is not None
+        # Direction one: claimed by a survivor, so retained.
+        assert await db.get_progression(survivor_prog) == [msg_claimed]
+        assert await db.get_message(msg_claimed) is not None
+        # Direction two: claimed by nobody, so gone. Without this arm a
+        # delete that retained every message would pass the assertion above.
+        assert await db.get_message(msg_orphan) is None
+    finally:
+        await db.close()

@@ -583,7 +583,13 @@ async def test_delete_tolerates_a_malformed_unrelated_progression(db):
 async def test_delete_retains_a_progression_a_survivor_references(db):
     """A survivor session whose progression_id names one of the imported
     session's progressions keeps that progression and its messages; the absorb
-    still completes instead of aborting on the FK."""
+    still completes instead of aborting on the FK.
+
+    Both directions live in this one fixture on purpose. Asserting only that the
+    referenced progression survives cannot distinguish a correct retention rule
+    from one that retains every progression, so the unreferenced sibling below is
+    the arm that makes the retained one mean something.
+    """
     from sqlalchemy import text
 
     written, _ = await _mirror(db, _records())
@@ -592,6 +598,25 @@ async def test_delete_retains_a_progression_a_survivor_references(db):
     sprog = _det(ROLLOUT_UID, "sprog")
     msgs_in_sprog = await db.get_progression(sprog)
     assert msgs_in_sprog
+
+    # The sibling nobody will reference: same imported session, must be deleted.
+    async with db._tx() as conn:
+        unreferenced = [
+            r["progression_id"]
+            for r in (
+                await conn.execute(
+                    text(
+                        "SELECT progression_id FROM branches "
+                        "WHERE session_id = :sid AND progression_id IS NOT NULL"
+                    ),
+                    {"sid": sid},
+                )
+            ).mappings()
+            if r["progression_id"] != sprog
+        ]
+    assert unreferenced, "fixture must contain a progression no survivor references"
+    msgs_unreferenced = await db.get_progression(unreferenced[0])
+    assert msgs_unreferenced
 
     await db.create_progression("survivor-own-prog")
     await db.create_session(
@@ -616,6 +641,18 @@ async def test_delete_retains_a_progression_a_survivor_references(db):
     assert await db.get_progression(sprog) == msgs_in_sprog  # progression + messages kept
     for mid in msgs_in_sprog:
         assert await db.get_message(mid) is not None
+
+    # The opposite direction, same fixture: no survivor names this progression,
+    # so it and its messages go. Without this arm a retain-everything bug passes.
+    async with db._tx() as conn:
+        assert (
+            await conn.execute(
+                text("SELECT 1 FROM progressions WHERE id = :p"), {"p": unreferenced[0]}
+            )
+        ).first() is None
+    for mid in msgs_unreferenced:
+        if mid not in msgs_in_sprog:  # a message both progressions hold is retained
+            assert await db.get_message(mid) is None
 
 
 async def test_detached_artifact_renames_instead_of_colliding(db):

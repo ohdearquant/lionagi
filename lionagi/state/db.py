@@ -2316,14 +2316,33 @@ class StateDB:
         survivor's progression_id names (together with their messages) — a
         reference someone else holds is not this session's to destroy.
 
-        Concurrency: on SQLite the process write lock serialises this with the
-        mirror's own writes. On PostgreSQL the orphan check runs in the same
-        transaction as the deletes; quiesce concurrent importers of the same
-        rollout tree before bulk reconciliation.
+        Concurrency: the retention checks and the deletes they authorise are
+        serialised against every writer that could create a new reference, so a
+        reference that appears after the check cannot be destroyed by the delete.
+        On SQLite the process write lock does this. On PostgreSQL a transaction
+        alone does not: at READ COMMITTED the check reads a snapshot, a
+        concurrent writer can commit a new reference after it, and the delete
+        would then proceed against a set that is no longer accurate. The table
+        lock below closes that window.
         """
         if not require_source_kind.startswith("imported_"):
             return False
         async with self._tx() as conn:
+            if self.dialect != "sqlite":
+                # Taken before the first read, so everything read afterwards
+                # stays true for the rest of the transaction and no re-check is
+                # needed. These three tables are exactly the ones a survivor's
+                # reference can live in: a progression's collection holds message
+                # ids, and sessions and branches point progression_id and their
+                # message pointers at rows this teardown would otherwise remove.
+                # EXCLUSIVE conflicts with the ROW EXCLUSIVE that ordinary INSERT
+                # and UPDATE already take, so the writers need no changes and pay
+                # nothing on their own path; only this rare teardown waits.
+                # One statement, fixed order, so it cannot deadlock against
+                # itself.
+                await conn.execute(
+                    text("LOCK TABLE branches, progressions, sessions IN EXCLUSIVE MODE")
+                )
             row = (
                 (
                     await conn.execute(
