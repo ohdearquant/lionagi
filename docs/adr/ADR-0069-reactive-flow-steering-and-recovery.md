@@ -103,6 +103,10 @@ Exact addressing and queue semantics:
   check.
 - A missing state database, unknown id, non-`running` session, or invocation kind outside
   `{"flow", "play"}` fails without inserting a row.
+  **Amended by ADR-0108:** the `message` verb also accepts the `agent` kind, so the
+  invocation-kind half of this rule no longer holds for it. `pause` and `resume` are
+  unchanged. This marker is here rather than only in the header because a reader who
+  reaches this rule by search or cross-reference never passes the header.
 - The insert is bounded by `_DB_BUSY_TIMEOUT_S = 10.0`; timeout reports a busy database. The value
   mirrors the status surface and prevents an unbounded CLI hang; no empirical rationale for ten
   seconds is recorded in source.
