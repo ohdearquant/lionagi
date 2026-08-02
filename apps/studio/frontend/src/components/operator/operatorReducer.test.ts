@@ -11,6 +11,7 @@ import {
 const conversation: OperatorConversation = {
   id: "conversation-1",
   status: "active",
+  pinned: false,
   activeRequestId: "request-1",
 };
 
@@ -214,4 +215,32 @@ describe("operatorReducer", () => {
       expect(pendingOperatorProposals([proposal, confirmation])[0]?.resolved).toBe(true);
     },
   );
+
+  it("applies UPDATE_CONVERSATION to the open conversation", () => {
+    const loaded = operatorReducer(initialOperatorState, {
+      type: "LOAD_SUCCESS",
+      conversation,
+      frames: [],
+    });
+    const renamed = { ...conversation, title: "Renamed", pinned: true };
+    const updated = operatorReducer(loaded, {
+      type: "UPDATE_CONVERSATION",
+      conversation: renamed,
+    });
+    expect(updated.conversation).toEqual(renamed);
+    expect(updated.frames).toBe(loaded.frames);
+  });
+
+  it("ignores UPDATE_CONVERSATION for a conversation that is not the open one", () => {
+    const loaded = operatorReducer(initialOperatorState, {
+      type: "LOAD_SUCCESS",
+      conversation,
+      frames: [],
+    });
+    const other = operatorReducer(loaded, {
+      type: "UPDATE_CONVERSATION",
+      conversation: { ...conversation, id: "conversation-2", title: "Someone else" },
+    });
+    expect(other).toBe(loaded);
+  });
 });

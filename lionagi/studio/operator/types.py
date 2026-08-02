@@ -57,6 +57,31 @@ class CreateConversationRequest(WireModel):
     title: str | None = Field(default=None, max_length=512)
 
 
+class UpdateConversationRequest(WireModel):
+    """Partial update: only fields present in the request body are applied.
+
+    ``status`` only accepts ``active``/``archived`` here -- deletion stays on
+    the dedicated DELETE route so it keeps its own, more final, semantics.
+    """
+
+    # Only presence matters here: the route reads ``model_fields_set`` and
+    # forwards a field only when the body carried it, so these defaults are
+    # never applied to a conversation. That is also why ``pinned`` and
+    # ``status`` are NOT nullable while ``title`` is. A null title clears the
+    # title, which is a real thing to ask for; a null pinned or status has no
+    # meaning, and accepting one would silently unpin (falsey reaches the
+    # store's ``1 if pinned else 0``) or reach the store with a status it has
+    # to reject as a conflict rather than as the malformed request it is.
+    title: str | None = Field(default=None, max_length=512)
+    pinned: bool = False
+    status: Literal["active", "archived"] = "active"
+
+
+class ForkConversationRequest(WireModel):
+    up_to_sequence: int | None = Field(default=None, ge=1)
+    title: str | None = Field(default=None, max_length=512)
+
+
 class OperatorContextSnapshot(WireModel):
     project: str | None = Field(default=None, max_length=512)
     space: Literal["mission", "designer", "library", "history", "schedules", "system"]
