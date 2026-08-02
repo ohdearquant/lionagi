@@ -351,6 +351,11 @@ jobs:
         cache-dependency-path: apps/studio/frontend/package-lock.json
     - name: Install dependencies
       run: npm ci
+    - name: Format check
+      # The pre-commit formatter only sees files staged in a commit that ran
+      # it, so drift survives whenever that does not happen. This checks the
+      # tree as it stands.
+      run: npm run format:check
     - name: Lint + typecheck
       run: |
         npm run lint

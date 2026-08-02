@@ -107,9 +107,7 @@ describe("laneFor — status projection", () => {
 // "escalated" forever even after a later NodeCompleted.
 describe("laneFor — NodeEscalated route handling", () => {
   it("route=notify (soft help signal) does not move the lane off running", () => {
-    expect(
-      laneFor(["NodeStarted", { kind: "NodeEscalated", route: "notify" }]),
-    ).toBe("running");
+    expect(laneFor(["NodeStarted", { kind: "NodeEscalated", route: "notify" }])).toBe("running");
   });
 
   it("route=notify does not block a later NodeCompleted from landing", () => {
@@ -119,15 +117,13 @@ describe("laneFor — NodeEscalated route handling", () => {
   });
 
   it("route=higher_tier (blocked urgency) still escalates", () => {
-    expect(
-      laneFor(["NodeStarted", { kind: "NodeEscalated", route: "higher_tier" }]),
-    ).toBe("escalated");
+    expect(laneFor(["NodeStarted", { kind: "NodeEscalated", route: "higher_tier" }])).toBe(
+      "escalated",
+    );
   });
 
   it("route=give_up (blocked urgency) still escalates", () => {
-    expect(laneFor(["NodeStarted", { kind: "NodeEscalated", route: "give_up" }])).toBe(
-      "escalated",
-    );
+    expect(laneFor(["NodeStarted", { kind: "NodeEscalated", route: "give_up" }])).toBe("escalated");
   });
 
   it("a bare NodeEscalated string (no route) still escalates — back-compat", () => {

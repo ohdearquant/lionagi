@@ -48,7 +48,7 @@ repos:
         name: studio-frontend-prettier
         language: system
         entry: apps/studio/frontend/scripts/precommit-prettier.sh
-        files: ^apps/studio/frontend/.*\.(ts|tsx|js|jsx|mjs|cjs|json|css|md)$
+        files: ^apps/studio/frontend/.*\.(ts|tsx|js|jsx|mjs|cjs|mts|json|css|md|html)$
         exclude: ^apps/studio/frontend/(node_modules|\.next|out|dist)/
         pass_filenames: true
       - id: marketplace-lint
