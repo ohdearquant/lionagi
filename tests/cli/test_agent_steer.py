@@ -1369,23 +1369,23 @@ async def test_the_cli_runner_declares_its_drain_so_its_own_runs_stay_steerable(
     run_id = "20260802T000000-steerablerun"
     admitted: list[tuple[str, int]] = []
 
-    async def fake_operate(self, instruction=None, **kw):
-        # Mid-turn: the session row the real setup just wrote is live, and this
-        # is the same call `li o ctl msg` makes.
-        admitted.append(
-            await _enqueue_control_inner(entity_id=run_id, verb="message", payload={"text": "hi"})
-        )
-        return "done"
+    turns: list[str] = []
 
-    async def no_drain(*a, **kw):
-        # The drain would consume the row and end the turn loop; this test is
-        # about admission, not delivery.
-        return None
+    async def fake_operate(self, instruction=None, **kw):
+        turns.append(str(instruction))
+        # Enqueued once, on the first turn only. The real drain runs after this
+        # returns, so a second enqueue here would feed itself forever.
+        if len(turns) == 1:
+            admitted.append(
+                await _enqueue_control_inner(
+                    entity_id=run_id, verb="message", payload={"text": "hi"}
+                )
+            )
+        return "done"
 
     monkeypatch.setattr(Branch, "operate", fake_operate)
     monkeypatch.setattr(iModelManager, "shutdown", AsyncMock())
     monkeypatch.setattr(agent_mod, "resolve_persisted_effort", lambda *a, **kw: None)
-    monkeypatch.setattr(agent_mod, "_drain_pending_steers", no_drain)
     monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
     monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
     monkeypatch.setattr(
@@ -1421,6 +1421,16 @@ async def test_the_cli_runner_declares_its_drain_so_its_own_runs_stay_steerable(
     assert exit_code == 0, f"a live `li agent` run refused its own steer: {message}"
     assert "queued message" in message
 
+    # The declaration is a claim about this runner, so the test has to check the
+    # claim and not just that it was written down. The real drain runs here: the
+    # steer came back as a second turn carrying its text, and the control row it
+    # came from is closed rather than left pending.
+    assert len(turns) == 2, f"the steer did not come back as a continuation turn: {turns}"
+    assert "hi" in turns[1]
+    async with StateDB() as db:
+        sid = (await db.get_sessions_for_run(run_id))[0]["id"]
+        assert await db.list_pending_session_controls(sid) == []
+
 
 @pytest.mark.asyncio
 async def test_a_resumed_session_takes_the_declaration_of_the_leg_running_it_now(
@@ -1433,13 +1443,25 @@ async def test_a_resumed_session_takes_the_declaration_of_the_leg_running_it_now
     drain, would keep saying so while a leg that does drain is the one actually
     executing, and every steer aimed at that live leg would be refused. The
     declaration describes whoever is running now, which means the resuming
-    caller's value replaces the adopted one rather than merging with it.
+    caller's value replaces the adopted one.
+
+    It has to replace it in the *same* write that installs this leg's process
+    markers. The two legs get different markers here for that reason: a
+    declaration written separately afterwards would carry the row as it was read
+    before the reopen, restoring the exited leg's pid and pid_create_time over
+    the live leg's. The stale-session doctor reads exactly those two fields to
+    decide whether a row belongs to a process that is gone.
     """
     import lionagi.cli._runs as runs_mod
     from lionagi import Branch
     from lionagi.cli._runs import setup_agent_persist
 
     monkeypatch.setattr(runs_mod, "active_run_id", lambda: "20260802T000000-resumedrun")
+
+    exited_leg = {"pid": 101, "pid_create_time": 1.0}
+    live_leg = {"pid": 202, "pid_create_time": 2.0}
+    monkeypatch.setattr(runs_mod, "current_pid_markers", lambda: dict(exited_leg), raising=False)
+    monkeypatch.setattr("lionagi.cli.kill.current_pid_markers", lambda: dict(exited_leg))
 
     branch = Branch(name="resumed")
     first = await setup_agent_persist(branch, agent_name="claude", share_db=False)
@@ -1449,13 +1471,17 @@ async def test_a_resumed_session_takes_the_declaration_of_the_leg_running_it_now
 
     async with StateDB() as db:
         await _terminalize(db, session_id)
-        assert not _runner_drains_controls(await db.get_session(session_id))
+        row = await db.get_session(session_id)
+        assert not _runner_drains_controls(row)
+        assert row["node_metadata"]["pid"] == 101, "the first leg's markers did not land"
 
     # A resume rebuilds the branch from its snapshot rather than reusing the
     # object, which is why the second call is a resume at all: same branch id,
     # new instance, and not still owned by the first session.
     resumed_branch = Branch.from_dict(branch.to_dict())
     assert str(resumed_branch.id) == str(branch.id)
+
+    monkeypatch.setattr("lionagi.cli.kill.current_pid_markers", lambda: dict(live_leg))
 
     second = await setup_agent_persist(
         resumed_branch, agent_name="claude", share_db=False, drains_controls=True
@@ -1465,63 +1491,19 @@ async def test_a_resumed_session_takes_the_declaration_of_the_leg_running_it_now
     await second["db"].close()
 
     async with StateDB() as db:
-        assert _runner_drains_controls(await db.get_session(session_id))
+        row = await db.get_session(session_id)
+        assert _runner_drains_controls(row)
         # And the row the resume adopted is admissible again, which is the point.
-        assert (await db.get_session(session_id))["status"] == "running"
+        assert row["status"] == "running"
+        # The live leg's identity survived the declaration. If these read 101,
+        # the declaration was written over a pre-reopen copy of the row and the
+        # doctor would be judging this live leg by a dead process's pid.
+        assert row["node_metadata"]["pid"] == 202
+        assert row["node_metadata"]["pid_create_time"] == 2.0
     message, exit_code = await _enqueue_control_inner(
         entity_id=session_id, verb="message", payload={"text": "steer the resumed leg"}
     )
     assert exit_code == 0, message
-
-
-@pytest.mark.asyncio
-async def test_a_resume_keeps_its_persistence_when_the_declaration_write_fails(
-    temp_db_path, monkeypatch, caplog
-):
-    """Re-declaring the drain is bookkeeping, and everything around it in that
-    block is persistence itself. A failure here must not take the run's records
-    down with it, and must not pass unremarked either: the leg goes on running
-    normally while its steers are refused, which is invisible from outside."""
-    import lionagi.cli._runs as runs_mod
-    from lionagi import Branch
-    from lionagi.cli._runs import setup_agent_persist
-
-    monkeypatch.setattr(runs_mod, "active_run_id", lambda: "20260802T000000-declfail")
-
-    branch = Branch(name="decl-fail")
-    first = await setup_agent_persist(branch, agent_name="claude", share_db=False)
-    assert first is not None
-    session_id = first["session_id"]
-    await first["db"].close()
-
-    async with StateDB() as db:
-        await _terminalize(db, session_id)
-
-    from lionagi.state.db import StateDB as _StateDB
-
-    real_update = _StateDB.update_session
-
-    async def refusing_update(self, sid, **fields):
-        if "node_metadata" in fields:
-            raise RuntimeError("database is locked")
-        return await real_update(self, sid, **fields)
-
-    monkeypatch.setattr(_StateDB, "update_session", refusing_update)
-
-    with caplog.at_level("WARNING"):
-        second = await setup_agent_persist(
-            Branch.from_dict(branch.to_dict()),
-            agent_name="claude",
-            share_db=False,
-            drains_controls=True,
-        )
-
-    assert second is not None, "a failed declaration write disabled persistence for the run"
-    assert second["session_id"] == session_id
-    await second["db"].close()
-
-    assert "control-drain declaration" in caplog.text
-    assert "database is locked" in caplog.text
 
 
 @pytest.mark.asyncio

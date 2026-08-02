@@ -1024,7 +1024,9 @@ async def _flush_pending_message_events(ctx: dict) -> None:
         await retry_queue.flush()
 
 
-async def _reopen_session_for_resume(db, session_id: str, existing_session: dict | None) -> bool:
+async def _reopen_session_for_resume(
+    db, session_id: str, existing_session: dict | None, *, drains_controls: bool = False
+) -> bool:
     """Return a resumed session to ``running`` so its next close is a real change.
 
     A session's closing transition only announces itself when the status
@@ -1077,7 +1079,21 @@ async def _reopen_session_for_resume(db, session_id: str, existing_session: dict
             expected_statuses=SESSION_TERMINAL_STATUSES,
             extra_fields={
                 "ended_at": None,
-                "node_metadata": json.dumps({**node_metadata, **current_pid_markers()}),
+                # The control-drain declaration rides this same write. It has to:
+                # it describes the leg that is executing now, and so do the
+                # process markers beside it. Written separately afterwards, it
+                # would be a read-modify-write over the row as it was read
+                # *before* this transition, which restores the exited leg's pid
+                # and pid_create_time and hands the stale-session doctor grounds
+                # to terminalize a live leg. One statement, one set of facts
+                # about one leg.
+                "node_metadata": json.dumps(
+                    {
+                        **node_metadata,
+                        **current_pid_markers(),
+                        "drains_controls": bool(drains_controls),
+                    }
+                ),
             },
             override=True,
             override_actor="cli.resume",
@@ -1147,7 +1163,10 @@ async def setup_agent_persist(
         if existing_branch:
             existing_session = await db.get_session(existing_branch["session_id"])
             if existing_session is not None and not await _reopen_session_for_resume(
-                db, existing_branch["session_id"], existing_session
+                db,
+                existing_branch["session_id"],
+                existing_session,
+                drains_controls=drains_controls,
             ):
                 # The reopen declines for three reasons and one of them is that
                 # the session is no longer there — maintenance removes old
@@ -1181,46 +1200,12 @@ async def setup_agent_persist(
 
             existing_msg_ids = set(await db.get_progression(branch_prog_id))
 
-            # Re-declare the drain on the adopted row. The declaration below is
-            # written when a session is created, so a session started before
-            # this existed, or started by a different runner, does not carry
-            # one — and the row would then refuse steers aimed at a leg that
-            # does drain them. It describes whoever is executing now, so the
-            # current caller's value wins in both directions rather than being
-            # merged with the previous leg's. Read-modify-write like every other
-            # node_metadata update on this path; a resume racing a live leg on
-            # the same branch can lose the other leg's concurrent marker write,
-            # which is bookkeeping rather than state the run depends on.
-            _adopted_meta = existing_session.get("node_metadata") or {}
-            if isinstance(_adopted_meta, str):
-                try:
-                    _adopted_meta = json.loads(_adopted_meta)
-                except (TypeError, ValueError):
-                    _adopted_meta = {}
-            if not isinstance(_adopted_meta, dict):
-                _adopted_meta = {}
-            if _adopted_meta.get("drains_controls") != bool(drains_controls):
-                # Held inside its own boundary rather than the enclosing one:
-                # everything else in this block is what persistence is made of,
-                # and failing it correctly disables persistence for the run. This
-                # is a steerability flag, and losing the run's entire record over
-                # it is the larger loss. Logged rather than swallowed, because
-                # the consequence is invisible from the outside — the leg runs
-                # normally and its steers are refused.
-                try:
-                    await db.update_session(
-                        session_id,
-                        node_metadata=json.dumps(
-                            {**_adopted_meta, "drains_controls": bool(drains_controls)}
-                        ),
-                    )
-                except Exception as _decl_exc:  # noqa: BLE001 — bookkeeping, not the run
-                    _log.warning(
-                        "session %s kept the previous leg's control-drain declaration "
-                        "(%r): operator steers aimed at this leg may be refused",
-                        session_id,
-                        _decl_exc,
-                    )
+            # The adopted row's drain declaration is rewritten by the reopen
+            # above, in the same statement that installs this leg's process
+            # markers. Nothing to do here. A resume that did not reopen — one
+            # racing a live leg on the same branch, which leaves the row running
+            # and untouched — keeps the running leg's declaration, which is the
+            # correct answer: that leg is the one a control would reach.
         else:
             session_prog_id = str(uuid.uuid4())
             branch_prog_id = str(uuid.uuid4())
