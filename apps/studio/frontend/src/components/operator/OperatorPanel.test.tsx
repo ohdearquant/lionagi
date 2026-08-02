@@ -679,6 +679,44 @@ describe("OperatorPanel", () => {
       expect(container.textContent).toContain("Renamed check");
     });
 
+    it("keeps focus somewhere reachable when the row being renamed is archived away", async () => {
+      window.localStorage.setItem("studio:operator-conversation", "conversation-1");
+      // Archiving the row under an active-only filter removes it while its
+      // rename input still holds focus. Removing a focused element moves focus
+      // to the body and fires no blur, so nothing hands it back on its own.
+      api.updateOperatorConversation.mockResolvedValue({
+        id: "conversation-1",
+        title: "Scheduler check",
+        status: "archived",
+        pinned: false,
+        activeRequestId: null,
+      });
+
+      await mount();
+      await openList();
+
+      const titleButton = [...container.querySelectorAll("ul li button")].find((button) =>
+        button.textContent?.includes("Scheduler check"),
+      ) as HTMLButtonElement;
+      await act(async () => {
+        titleButton.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      });
+      expect(container.querySelector("ul li input")).not.toBeNull();
+
+      const archiveButton = [...container.querySelectorAll("ul li button")].find(
+        (button) => button.getAttribute("aria-label") === "Archive",
+      ) as HTMLButtonElement;
+      await act(async () => {
+        archiveButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(container.querySelector("ul li input")).toBeNull();
+      expect(document.activeElement).not.toBe(document.body);
+      expect(document.activeElement?.getAttribute("aria-label")).toMatch(/^Conversations/);
+    });
+
     it("surfaces an error when renaming a conversation that no longer exists", async () => {
       window.localStorage.setItem("studio:operator-conversation", "conversation-1");
       api.updateOperatorConversation.mockRejectedValue(

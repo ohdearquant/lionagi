@@ -104,6 +104,59 @@ async def test_rename_over_long_title_is_rejected_at_the_wire_boundary(tmp_path,
     await coordinator.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_a_null_pinned_or_status_is_rejected_rather_than_acted_on(tmp_path, monkeypatch):
+    """Only ``title`` is nullable. A null pin has no meaning, and accepting one
+    would silently unpin, because a falsey value reaches the store's
+    ``1 if pinned else 0``. A null status reaches a store that has to refuse it
+    as a conflict rather than as the malformed request it is.
+    """
+    httpx = pytest.importorskip("httpx")
+    from lionagi.studio.app import create_app
+    from lionagi.studio.operator.coordinator import reset_operator_coordinator_for_testing
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+    app = create_app()
+    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=_ScriptedEngine)
+    await reset_operator_coordinator_for_testing(coordinator)
+    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 54321))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8765") as client:
+        created = await client.post("/api/operator/conversations", json={"title": "pinned one"})
+        cid = created.json()["conversation"]["id"]
+        assert (
+            await client.patch(f"/api/operator/conversations/{cid}", json={"pinned": True})
+        ).status_code == 200
+
+        assert (
+            await client.patch(f"/api/operator/conversations/{cid}", json={"pinned": None})
+        ).status_code == 422
+        assert (
+            await client.patch(f"/api/operator/conversations/{cid}", json={"status": None})
+        ).status_code == 422
+
+        # The rejection did not act on the conversation on its way out.
+        listed = await client.get("/api/operator/conversations")
+        row = next(r for r in listed.json()["conversations"] if r["id"] == cid)
+        assert row["pinned"] is True
+        assert row["status"] == "active"
+
+        # Controls: the shapes that DO mean something are still accepted, so
+        # this is not a rule that rejects everything.
+        assert (
+            await client.patch(f"/api/operator/conversations/{cid}", json={"pinned": False})
+        ).status_code == 200
+        assert (
+            await client.patch(f"/api/operator/conversations/{cid}", json={"title": None})
+        ).status_code == 200
+        listed = await client.get("/api/operator/conversations")
+        row = next(r for r in listed.json()["conversations"] if r["id"] == cid)
+        assert row["pinned"] is False
+        assert row["title"] is None
+    await coordinator.shutdown()
+
+
 # ─── Organize: pin + archive ────────────────────────────────────────────
 
 

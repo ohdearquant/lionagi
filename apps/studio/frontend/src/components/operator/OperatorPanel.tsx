@@ -655,15 +655,36 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const renameInputRef = useRef<HTMLInputElement>(null);
   const renameButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const previousRenamingIdRef = useRef<string | null>(null);
+  const conversationListButtonRef = useRef<HTMLButtonElement>(null);
+
+  // Derived rather than synced through an effect: archiving the row being
+  // renamed, or switching the filter away from it, removes the row and its
+  // input while that input still holds focus. Removing a focused element moves
+  // focus to the document body silently and fires no blur, so a stored id would
+  // just go stale -- pointing at a row nobody can see, and reopening rename on
+  // it if the row ever comes back. Reading the rename as "the row is here and
+  // it is the one being renamed" makes the disappearance a state change the
+  // focus effect below can act on.
+  const activeRenamingId =
+    renamingId && conversations.some((item) => item.id === renamingId) ? renamingId : null;
 
   useEffect(() => {
-    if (renamingId) {
+    if (activeRenamingId) {
       renameInputRef.current?.focus();
-    } else if (previousRenamingIdRef.current) {
-      renameButtonRefs.current.get(previousRenamingIdRef.current)?.focus();
+      previousRenamingIdRef.current = activeRenamingId;
+      return;
     }
-    previousRenamingIdRef.current = renamingId;
-  }, [renamingId]);
+    if (previousRenamingIdRef.current) {
+      // The row this focus was meant to return to may be the one that just
+      // disappeared, and its ref entry goes with it. Without a fallback the
+      // input is removed with focus on nothing, which strands a keyboard user
+      // on document.body. The disclosure trigger outlives every row, so it is
+      // the target that is always still there.
+      const button = renameButtonRefs.current.get(previousRenamingIdRef.current);
+      (button ?? conversationListButtonRef.current)?.focus();
+    }
+    previousRenamingIdRef.current = activeRenamingId;
+  }, [activeRenamingId]);
 
   const loadConversation = useCallback(
     async (conversationId: string) => {
@@ -1226,6 +1247,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
               <div className="relative min-w-0 max-w-36 flex-1">
                 <button
                   type="button"
+                  ref={conversationListButtonRef}
                   aria-label={conversationListLabel}
                   aria-expanded={listPanelOpen}
                   title={conversationListLabel}
@@ -1299,7 +1321,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
                                 : "hover:bg-surface-overlay",
                             ].join(" ")}
                           >
-                            {renamingId === conversation.id ? (
+                            {activeRenamingId === conversation.id ? (
                               <input
                                 ref={renameInputRef}
                                 value={renameDraft}
@@ -1341,7 +1363,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
                                 {conversationLabel(conversation)}
                               </button>
                             )}
-                            {renamingId !== conversation.id && (
+                            {activeRenamingId !== conversation.id && (
                               <button
                                 type="button"
                                 ref={(node) => {
