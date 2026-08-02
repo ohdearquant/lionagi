@@ -95,7 +95,8 @@ describe("RunDetail — cursor-based backward pagination", () => {
 
   function findButton(text: string): HTMLButtonElement | undefined {
     return [...container.querySelectorAll("button")].find((b) => b.textContent?.includes(text)) as
-      HTMLButtonElement | undefined;
+      | HTMLButtonElement
+      | undefined;
   }
 
   it("pages older messages by cursor (not offset), merging with no skip and no duplicate even as the tail grows between fetches", async () => {
@@ -171,6 +172,65 @@ describe("RunDetail — cursor-based backward pagination", () => {
     expect(container.textContent).not.toContain("/4");
     expect(container.textContent).not.toContain("/6");
     expect(container.textContent).not.toContain("/7");
+  });
+
+  it("retires the load-older control when the last page arrives, even though tail growth leaves messages unloaded", async () => {
+    // Same shape as the merge test above, isolated on what the control says
+    // afterwards. The final older page carries message_next_cursor: null, so
+    // there is no older history left to ask for, while message_total has
+    // grown to 7 against 5 loaded messages because two newer ones landed at
+    // the tail. Counting those two as older history renders a control that
+    // is enabled and returns without doing anything, every time it is
+    // pressed, for the rest of the session.
+    getSessionMock.mockResolvedValueOnce(
+      baseSession({
+        message_next_cursor: "cursor-1",
+        branches: [
+          {
+            id: "b1",
+            name: "main",
+            created_at: 1,
+            message_total: 5,
+            message_has_older: true,
+            messages: [msg("m3", "three", 3), msg("m4", "four", 4), msg("m5", "five", 5)],
+          },
+        ],
+      }),
+    );
+    await mount();
+
+    const loadOlder = findButton("Load older messages");
+    expect(loadOlder).not.toBeUndefined();
+
+    getSessionMock.mockResolvedValueOnce(
+      baseSession({
+        message_next_cursor: null,
+        branches: [
+          {
+            id: "b1",
+            name: "main",
+            created_at: 1,
+            message_total: 7,
+            message_has_older: false,
+            messages: [msg("m1", "one", 1), msg("m2", "two", 2)],
+          },
+        ],
+      }),
+    );
+    await act(async () => {
+      loadOlder?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The unloaded count is still positive here (7 total, 5 loaded), which is
+    // what made the old arithmetic keep the control alive.
+    expect(container.textContent).toContain("/5");
+    expect(
+      findButton("Load older messages"),
+      "no cursor means nothing older to fetch, so the control must not be offered",
+    ).toBeUndefined();
+    expect(container.textContent).not.toContain("older messages");
   });
 
   it("shows a visible recovery, not a dead control, when the held anchor is rejected as stale", async () => {

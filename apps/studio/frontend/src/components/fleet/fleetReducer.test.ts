@@ -55,12 +55,13 @@ function dispatchOk(
   runs: RunSummary[],
   nowSec = 1_000_000,
   scope?: { project?: string; projectNull?: boolean; search?: string },
+  runsHasNext = false,
 ): FleetState {
   return fleetReducer(state, {
     type: "DATA_OK",
     invocations,
     runs,
-    runsHasNext: false,
+    runsHasNext,
     nowSec,
     ...scope,
   });
@@ -266,7 +267,10 @@ describe("fleetReducer — invocation groups respect runs scope", () => {
     const unit = s.orgUnits.find((u) => u.id === "inv1");
     expect(unit).toBeDefined();
     expect(unit?.agents).toHaveLength(1);
-    expect(unit?.session_count).toBe(2);
+    // The scoped count, not the invocation's global session_count of 2: a
+    // filtered child list under a total that counts unfiltered children states
+    // a number belonging to a different question.
+    expect(unit?.session_count).toBe(1);
   });
 
   it("still shows a matching invocation under a search filter", () => {
@@ -280,6 +284,46 @@ describe("fleetReducer — invocation groups respect runs scope", () => {
     const unit = s.orgUnits.find((u) => u.id === "inv1");
     expect(unit).toBeDefined();
     expect(unit?.agents).toHaveLength(1);
+  });
+
+  it("keeps a childless invocation when the runs page is not the whole scoped set", () => {
+    // The runs page is bounded. With more scoped rows behind it, "no child
+    // here" is not "no child in scope": the matching child can be on a page
+    // nobody asked for. Suppressing an empty heading is cosmetic; hiding a
+    // running orchestration from the view that is supposed to include it is
+    // not, so the suppression only applies where the page is the whole set.
+    const s = dispatchOk(
+      initialFleetState(),
+      [makeInvocation({ id: "inv1", status: "running", skill: "review", session_count: 5 })],
+      [],
+      1_000_000,
+      { project: "alpha" },
+      true,
+    );
+    expect(s.orgUnits.find((u) => u.id === "inv1")).toBeDefined();
+  });
+
+  it("reports the scoped child count, not the global one, on a surviving group", () => {
+    const s = dispatchOk(
+      initialFleetState(),
+      [makeInvocation({ id: "inv1", status: "running", skill: "review", session_count: 5 })],
+      [makeRun({ run_id: "r1", status: "running", invocation_id: "inv1", project: "alpha" })],
+      1_000_000,
+      { project: "alpha" },
+    );
+    expect(s.orgUnits.find((u) => u.id === "inv1")?.session_count).toBe(1);
+  });
+
+  it("reports the invocation's own count when nothing is scoped", () => {
+    // Control: the scoped count must not become the count everywhere. With no
+    // filter, the group's total is the invocation's own, children beyond this
+    // page included.
+    const s = dispatchOk(
+      initialFleetState(),
+      [makeInvocation({ id: "inv1", status: "running", skill: "review", session_count: 5 })],
+      [makeRun({ run_id: "r1", status: "running", invocation_id: "inv1" })],
+    );
+    expect(s.orgUnits.find((u) => u.id === "inv1")?.session_count).toBe(5);
   });
 });
 

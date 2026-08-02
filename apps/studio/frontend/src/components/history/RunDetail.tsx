@@ -857,7 +857,10 @@ export default function RunDetail({ id }: RunDetailProps) {
   // reconversation reload instead of a dead retry loop.
   const [olderLoadFailed, setOlderLoadFailed] = useState(false);
   const [resumeWatch, setResumeWatch] = useState<RunResumeResponse | null>(null);
-  const olderCursorRef = useRef<string | null>(null);
+  // State rather than a ref because the affordance for loading older history
+  // is rendered from it: a cursor the server stopped handing back means there
+  // is nothing older left to ask for, and the reader has to see that.
+  const [olderCursor, setOlderCursor] = useState<string | null>(null);
   const suppressAutoScrollRef = useRef(false);
   const initialScrollDoneRef = useRef(false);
   const olderSentinelRef = useRef<HTMLDivElement>(null);
@@ -873,12 +876,12 @@ export default function RunDetail({ id }: RunDetailProps) {
     setSignalEvents([]);
     setLoadingOlder(false);
     setOlderLoadFailed(false);
-    olderCursorRef.current = null;
+    setOlderCursor(null);
     initialScrollDoneRef.current = false;
     getSession(id)
       .then((s) => {
         setSession(s);
-        olderCursorRef.current = s.message_next_cursor ?? null;
+        setOlderCursor(s.message_next_cursor ?? null);
         const ss = (s.status ?? "").toLowerCase();
         if (
           ss === "completed" ||
@@ -899,7 +902,9 @@ export default function RunDetail({ id }: RunDetailProps) {
           }
         }
         const graph = (s as unknown as Record<string, unknown>).graph as
-          { nodes: WorkerGraph["nodes"]; edges?: WorkerGraph["edges"] | null } | null | undefined;
+          | { nodes: WorkerGraph["nodes"]; edges?: WorkerGraph["edges"] | null }
+          | null
+          | undefined;
         if (graph && graph.nodes && graph.nodes.length > 0) {
           setRunGraph({
             name: s.name || id,
@@ -1033,21 +1038,28 @@ export default function RunDetail({ id }: RunDetailProps) {
   }, []);
 
   const hiddenOlderCount = useMemo(() => {
-    if (!session) return 0;
+    // The cursor gates the arithmetic instead of sitting beside it. The
+    // per-branch subtraction counts every message not loaded, which is older
+    // history only until the tail grows: after that it also counts newer
+    // messages, which arrive on their own and are not reachable through this
+    // cursor at all. Offering those as older history renders a control that
+    // is enabled and can never do anything, so once the server stops handing
+    // back a cursor there is nothing older to load and the count is zero.
+    if (!session || olderCursor === null) return 0;
     return session.branches.reduce((n, b) => {
       const total = b.message_total ?? b.messages.length;
       return n + Math.max(0, total - b.messages.length);
     }, 0);
-  }, [session]);
+  }, [session, olderCursor]);
 
   const handleLoadOlder = useCallback(() => {
-    const cursor = olderCursorRef.current;
+    const cursor = olderCursor;
     if (!id || loadingOlder || olderLoadFailed || !cursor) return;
     setLoadingOlder(true);
     suppressAutoScrollRef.current = true;
     getSession(id, { messageCursor: cursor })
       .then((older) => {
-        olderCursorRef.current = older.message_next_cursor ?? null;
+        setOlderCursor(older.message_next_cursor ?? null);
         setSession((prev) => {
           if (!prev) return prev;
           const olderById = new Map(older.branches.map((b) => [b.id, b]));
@@ -1079,7 +1091,7 @@ export default function RunDetail({ id }: RunDetailProps) {
         setError(String(e));
       })
       .finally(() => setLoadingOlder(false));
-  }, [id, loadingOlder, olderLoadFailed]);
+  }, [id, loadingOlder, olderLoadFailed, olderCursor]);
 
   const handleReloadConversation = useCallback(() => {
     if (!id) return;
@@ -1088,7 +1100,7 @@ export default function RunDetail({ id }: RunDetailProps) {
     setLoadingOlder(true);
     getSession(id)
       .then((fresh) => {
-        olderCursorRef.current = fresh.message_next_cursor ?? null;
+        setOlderCursor(fresh.message_next_cursor ?? null);
         setSession(fresh);
       })
       .catch((e: unknown) => setError(String(e)))
@@ -1292,11 +1304,17 @@ export default function RunDetail({ id }: RunDetailProps) {
     toolCallCount,
     errorCount,
     showTopic: (session as unknown as Record<string, unknown>).show_topic as
-      string | null | undefined,
+      | string
+      | null
+      | undefined,
     showPlayName: (session as unknown as Record<string, unknown>).show_play_name as
-      string | null | undefined,
+      | string
+      | null
+      | undefined,
     playbookName: (session as unknown as Record<string, unknown>).playbook_name as
-      string | null | undefined,
+      | string
+      | null
+      | undefined,
   };
 
   const content = (

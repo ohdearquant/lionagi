@@ -159,6 +159,7 @@ function buildOrgUnits(
   runs: RunSummary[],
   nowSec: number,
   scoped: boolean,
+  runsHasNext: boolean,
 ): OrgUnit[] {
   const activeInvocations = invocations.filter((inv) => isActive(inv));
 
@@ -205,11 +206,20 @@ function buildOrgUnits(
 
   const units: OrgUnit[] = [];
 
+  // Absence from the runs page is only evidence of absence when the page is the
+  // whole scoped set. The invocations request carries no scope of its own, so
+  // an invocation with no child here has either genuinely nothing in scope, or
+  // a matching child on a page we did not ask for -- and dropping it in the
+  // second case hides live work the filter was supposed to include. Suppressing
+  // an empty heading is a cosmetic win; hiding a running orchestration is not,
+  // so the cure only applies where the evidence actually supports it.
+  const runsAreExhaustive = !runsHasNext;
   for (const unit of invMap.values()) {
-    // No child in the scoped runs page: the scope promised nothing unrelated
-    // would render, and the invocation has no scope of its own to fall back
-    // on — drop the group instead of showing a heading over a "no agents" row.
-    if (scoped && unit.agents.length === 0) continue;
+    if (scoped && runsAreExhaustive && unit.agents.length === 0) continue;
+    // A scoped view reports the children it is showing. The invocation's own
+    // session_count is global, so rendering it beside a filtered child list
+    // states a total that belongs to a different question.
+    if (scoped) unit.session_count = unit.agents.length;
     unit.needsAttention =
       ATTENTION_STATUSES.has(unit.status.toLowerCase()) ||
       unit.agents.some((a) => needsAttention(a));
@@ -338,7 +348,7 @@ export function fleetReducer(state: FleetState, action: FleetAction): FleetState
     case "DATA_OK": {
       const { invocations, runs, runsHasNext, nowSec, project, projectNull, search } = action;
       const scoped = isScopeActive(project, projectNull, search);
-      const orgUnits = buildOrgUnits(invocations, runs, nowSec, scoped);
+      const orgUnits = buildOrgUnits(invocations, runs, nowSec, scoped, runsHasNext);
       const counts = deriveCounts(orgUnits);
       return {
         ...state,

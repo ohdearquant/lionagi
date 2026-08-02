@@ -708,8 +708,12 @@ export default function FleetView() {
     if (urlRunId) return; // URL already has a selection
     if (autoSelectedRef.current === first) return;
     autoSelectedRef.current = first;
-    void navigate({ search: { s: first }, replace: true });
-  }, [state.orgUnits, historyRows, urlRunId, navigate]);
+    // Patched onto the current search, not written over it: the router takes an
+    // object-valued search as the whole next search, so selecting a row with a
+    // bare `{ s }` would drop the project and text filters that produced the
+    // row in the first place, and the next poll would come back unscoped.
+    void navigate({ search: patchSearch(search, { s: first }), replace: true });
+  }, [state.orgUnits, historyRows, urlRunId, navigate, search]);
 
   // Resolved selected id: validated URL param, fallback to first (pre-auto-select)
   const selectedRunId: string | null = urlIdValid ? requestedRunId : null;
@@ -717,9 +721,9 @@ export default function FleetView() {
   const handleSelectAgent = useCallback(
     (id: string) => {
       setNarrowExplicit(true);
-      void navigate({ search: { s: id } });
+      void navigate({ search: patchSearch(search, { s: id }) });
     },
-    [navigate],
+    [navigate, search],
   );
 
   const handleBack = useCallback(() => {
