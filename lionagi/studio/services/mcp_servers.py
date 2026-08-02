@@ -28,6 +28,7 @@ import logging
 import os
 import tempfile
 import time
+from copy import deepcopy
 from functools import partial
 from pathlib import Path
 from typing import Annotated, Any
@@ -394,13 +395,23 @@ async def check_server_connection(name: str) -> dict[str, Any] | None:
     pre-await snapshot: ``_attempt_connection`` can run for seconds, and
     writing back a stale full ``servers`` dict would silently revert any
     save that landed while the probe was in flight.
+
+    The reloaded entry is matched against the configuration that was actually
+    probed before the outcome is kept. A name is mutable and reusable: an
+    operator can edit a server, or delete it and register a different one
+    under the same name, while the probe is still running. Matching on name
+    alone would stamp "connected" onto a server this attempt never reached.
+    A result that no longer describes the current configuration is discarded
+    rather than persisted, so the stored status is always one that was
+    obtained for the configuration it sits on.
     """
     servers = _load_registry()
     entry = servers.get(name)
     if entry is None:
         return None
 
-    outcome = await _attempt_connection(entry["config"])
+    probed_config = deepcopy(entry["config"])
+    outcome = await _attempt_connection(probed_config)
     last_check = {
         "ok": outcome["ok"],
         "error": outcome["error"],
@@ -411,6 +422,8 @@ async def check_server_connection(name: str) -> dict[str, Any] | None:
     entry = servers.get(name)
     if entry is None:
         return None
+    if entry.get("config") != probed_config:
+        return _public_entry(name, entry)
     entry["last_check"] = last_check
     _save_registry(servers)
     return _public_entry(name, entry)

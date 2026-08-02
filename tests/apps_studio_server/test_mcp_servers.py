@@ -320,7 +320,11 @@ async def test_check_server_connection_nonexistent_returns_none(tmp_path, monkey
 async def test_check_server_connection_does_not_clobber_concurrent_edit(tmp_path, monkeypatch):
     """A save landing while a connection probe is in flight must survive --
     the probe must not write back the servers dict it read before the
-    (possibly multi-second) await."""
+    (possibly multi-second) await.
+
+    The probe's own result is dropped in this case rather than stamped, because
+    it describes the configuration that was replaced. A status obtained for one
+    command is not evidence about a different one."""
     _point_registry_at(tmp_path, monkeypatch)
     mcp_mod.register_server("myserver", STDIO_CONFIG)
 
@@ -344,13 +348,85 @@ async def test_check_server_connection_does_not_clobber_concurrent_edit(tmp_path
     result = await check_task
 
     assert result is not None
-    assert result["last_check"]["ok"] is True
+    assert result["last_check"] is None
 
     fetched = mcp_mod.get_server("myserver")
     assert fetched["args"] == ["-m", "different_module"], (
         "the concurrent edit must survive the connection check's write-back"
     )
-    assert fetched["last_check"]["ok"] is True
+    assert fetched["last_check"] is None, (
+        "the probe ran against the previous command, so its result must not "
+        "become the status of the edited server"
+    )
+
+
+@pytest.mark.asyncio
+async def test_check_server_connection_still_records_an_unchanged_server(tmp_path, monkeypatch):
+    """The identity match must not become "never persist anything". A save that
+    leaves the probed server's configuration alone still gets its result."""
+    _point_registry_at(tmp_path, monkeypatch)
+    mcp_mod.register_server("myserver", STDIO_CONFIG)
+    mcp_mod.register_server("other", STDIO_CONFIG)
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _blocking_attempt(config):
+        entered.set()
+        await release.wait()
+        return {"ok": True, "error": None}
+
+    monkeypatch.setattr(mcp_mod, "_attempt_connection", _blocking_attempt)
+
+    check_task = asyncio.create_task(mcp_mod.check_server_connection("myserver"))
+    await entered.wait()
+
+    # Touches a different server, so the probed configuration is untouched.
+    mcp_mod.update_server("other", {"args": ["-m", "different_module"]})
+
+    release.set()
+    result = await check_task
+
+    assert result is not None
+    assert result["last_check"]["ok"] is True
+    assert mcp_mod.get_server("myserver")["last_check"]["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_check_server_connection_does_not_credit_a_same_named_replacement(
+    tmp_path, monkeypatch
+):
+    """A name is reusable. Deleting a server and registering a different one
+    under the same name while a probe is in flight must not hand the newcomer
+    the outgoing server's connection status."""
+    _point_registry_at(tmp_path, monkeypatch)
+    mcp_mod.register_server("myserver", STDIO_CONFIG)
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _blocking_attempt(config):
+        entered.set()
+        await release.wait()
+        return {"ok": True, "error": None}
+
+    monkeypatch.setattr(mcp_mod, "_attempt_connection", _blocking_attempt)
+
+    check_task = asyncio.create_task(mcp_mod.check_server_connection("myserver"))
+    await entered.wait()
+
+    mcp_mod.remove_server("myserver")
+    mcp_mod.register_server("myserver", {"command": "/no/such/binary-xyz", "args": [], "env": {}})
+
+    release.set()
+    result = await check_task
+
+    assert result is not None
+    assert result["command"] == "/no/such/binary-xyz", "the replacement must not be overwritten"
+    assert result["last_check"] is None
+    assert mcp_mod.get_server("myserver")["last_check"] is None, (
+        "the replacement was never probed, so it must not report a connection result"
+    )
 
 
 @pytest.mark.asyncio
