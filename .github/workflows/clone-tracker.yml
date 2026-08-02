@@ -37,15 +37,28 @@ jobs:
     name: Snapshot traffic
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      # Pinned to a commit, unlike the rest of this repository's workflows, which
+      # track the v7 tag. This is one of only two workflows that ask for
+      # `contents: write`, and a mutable tag here would run whatever the tag
+      # points at that day with a token that can write to the repository. The
+      # SHA is v7 as resolved from actions/checkout. Do not "fix" the
+      # inconsistency by dropping it back to the tag.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Fetch enough history to push the ledger branch back; the branch may
           # not exist yet on a first run, which the ledger step handles.
           fetch-depth: 0
 
       - name: Fetch traffic snapshot
+        id: fetch
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # NOT the built-in GITHUB_TOKEN. The traffic endpoints require the
+          # repository "Administration: read" permission, and that scope does
+          # not exist in the Actions permissions vocabulary at all, so the
+          # built-in token cannot be granted it under any `permissions:` block
+          # and both reads would 403 on every run. This needs a fine-grained
+          # token carrying only Administration: read, stored as TRAFFIC_READ_TOKEN.
+          GH_TOKEN: ${{ secrets.TRAFFIC_READ_TOKEN }}
         # Each read is validated before anything is written: a failed API read
         # must abort the run, never append an empty-looking snapshot that later
         # reads as "traffic went to zero".
@@ -56,12 +69,31 @@ jobs:
         # carry the value we actually use.
         run: |
           set -euo pipefail
+          # Until the token exists, skip loudly instead of failing. A scheduled
+          # workflow that is red on every run is one nobody reads by the second
+          # week, and the thing it would eventually be red ABOUT is a missing
+          # measurement. Skipping writes no ledger entry, so a gap in the data
+          # stays a visible gap rather than becoming a recorded zero.
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning::TRAFFIC_READ_TOKEN is not set, so no traffic was read and nothing was appended. The ledger has a gap for this run, not a zero."
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           gh api "repos/${GITHUB_REPOSITORY}/traffic/clones" > /tmp/clones.json
           gh api "repos/${GITHUB_REPOSITORY}/traffic/views" > /tmp/views.json
           gh api "repos/${GITHUB_REPOSITORY}" > /tmp/repo.json
-          jq -e '.count >= 0 and .uniques >= 0' /tmp/clones.json > /dev/null
-          jq -e '.count >= 0' /tmp/views.json > /dev/null
-          jq -e '.stargazers_count >= 0' /tmp/repo.json > /dev/null
+          # Every field that gets PERSISTED is checked, and checked for type as
+          # well as sign. `>= 0` alone is not a numeric guard in jq: strings sort
+          # above numbers, so `"error" >= 0` is true and a string count would be
+          # written into the ledger as if it were a measurement. A missing key
+          # yields null, which is why the type test comes first.
+          num() { jq -e "($2|type)==\"number\" and $2 >= 0 and ($2|floor) == $2" "$1" > /dev/null; }
+          num /tmp/clones.json .count
+          num /tmp/clones.json .uniques
+          num /tmp/views.json .count
+          num /tmp/views.json .uniques
+          num /tmp/repo.json .stargazers_count
+          num /tmp/repo.json .forks_count
           jq -n \
             --slurpfile clones /tmp/clones.json \
             --slurpfile views /tmp/views.json \
@@ -73,10 +105,14 @@ jobs:
               stargazers: $repo[0].stargazers_count,
               forks: $repo[0].forks_count
             }' > /tmp/snapshot.json
-          jq -e '.clones_14d.count >= 0' /tmp/snapshot.json > /dev/null
+          num /tmp/snapshot.json .clones_14d.count
           cat /tmp/snapshot.json
 
       - name: Append to ledger and push
+        # Nothing was fetched, so there is nothing to append. Without this the
+        # step would run against a missing snapshot and fail for a reason that
+        # has nothing to do with the actual cause.
+        if: steps.fetch.outputs.skipped != 'true'
         env:
           LEDGER_BRANCH: traffic-ledger
         run: |
@@ -90,12 +126,24 @@ jobs:
           # checked-out source tree out of the ledger branch; the files stay on
           # disk as untracked and only the ledger is staged below, so nothing
           # needs deleting.
-          if git ls-remote --exit-code --heads origin "${LEDGER_BRANCH}" > /dev/null 2>&1; then
+          # `--exit-code` reports 2 for "ref not there" and other codes for "could
+          # not ask", so the two must not share a branch. Treating an unreachable
+          # remote as an absent branch would start a fresh orphan history on top
+          # of a ledger that still exists, and the run would only fail later at
+          # the push with the original error already discarded.
+          set +e
+          git ls-remote --exit-code --heads origin "${LEDGER_BRANCH}" > /dev/null
+          lsr=$?
+          set -e
+          if [ "$lsr" -eq 0 ]; then
             git fetch origin "${LEDGER_BRANCH}"
             git checkout -B "${LEDGER_BRANCH}" "origin/${LEDGER_BRANCH}"
-          else
+          elif [ "$lsr" -eq 2 ]; then
             git checkout --orphan "${LEDGER_BRANCH}"
             git rm -rq --cached .
+          else
+            echo "::error::could not reach the remote to look up ${LEDGER_BRANCH} (git ls-remote exit ${lsr}); refusing to guess that the branch is absent"
+            exit "$lsr"
           fi
 
           mkdir -p data/traffic
