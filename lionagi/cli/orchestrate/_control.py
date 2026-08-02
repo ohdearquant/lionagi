@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 from typing import Any
 
 from .._logging import log_error
@@ -60,6 +61,23 @@ async def _resolve_session(db: Any, entity_id: str) -> dict[str, Any] | None:
     return await _resolve_primary_session(db, entity_type, row)
 
 
+def _runner_drains_controls(session: dict[str, Any]) -> bool:
+    """Whether this session's runner declared that it consumes operator controls.
+
+    The declaration is written into node_metadata when the run starts. Absence
+    reads as False on purpose: a runner that never said it drains is exactly the
+    case this exists to catch, and a control admitted for it would be delivered
+    by nobody.
+    """
+    meta = session.get("node_metadata") or {}
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except (ValueError, TypeError):
+            return False
+    return bool(meta.get("drains_controls")) if isinstance(meta, dict) else False
+
+
 async def _enqueue_control_inner(
     *, entity_id: str, verb: str, payload: dict[str, Any] | None
 ) -> tuple[str, int]:
@@ -98,6 +116,21 @@ async def _enqueue_control_inner(
                 f"session {session_id[:8]} is a mirrored/imported agent "
                 "session (no lionagi run owns it), so no runner would ever "
                 "deliver the steer",
+                EXIT_UNKNOWN,
+            )
+        # Owning a run is not the same as consuming controls. The check above
+        # uses run_id as a proxy for "a lionagi runner owns this", and that
+        # proxy held only while the CLI agent runner was the sole caller that
+        # stamped one. Other callers persist through the same path, write the
+        # same kind, and supply their own run_id, so they pass that check while
+        # having no drain at all — the control would be admitted, never
+        # delivered, and never closed. Ask about the capability instead, and
+        # let the runner declare it when it starts the session.
+        if kind == "agent" and not _runner_drains_controls(session):
+            return (
+                f"session {session_id[:8]} is run by something that does not "
+                "consume operator controls, so the control would sit pending "
+                "forever with nobody to deliver or close it",
                 EXIT_UNKNOWN,
             )
         if kind not in allowed:

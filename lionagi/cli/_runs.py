@@ -1126,6 +1126,7 @@ async def setup_agent_persist(
     project: str | None = None,
     run_id: str | None = None,
     share_db: bool = True,
+    drains_controls: bool = False,
 ) -> dict | None:
     from lionagi.session.session import Session
     from lionagi.state import provenance as _provenance
@@ -1179,6 +1180,47 @@ async def setup_agent_persist(
                 branch_prog_id = effective or candidate
 
             existing_msg_ids = set(await db.get_progression(branch_prog_id))
+
+            # Re-declare the drain on the adopted row. The declaration below is
+            # written when a session is created, so a session started before
+            # this existed, or started by a different runner, does not carry
+            # one — and the row would then refuse steers aimed at a leg that
+            # does drain them. It describes whoever is executing now, so the
+            # current caller's value wins in both directions rather than being
+            # merged with the previous leg's. Read-modify-write like every other
+            # node_metadata update on this path; a resume racing a live leg on
+            # the same branch can lose the other leg's concurrent marker write,
+            # which is bookkeeping rather than state the run depends on.
+            _adopted_meta = existing_session.get("node_metadata") or {}
+            if isinstance(_adopted_meta, str):
+                try:
+                    _adopted_meta = json.loads(_adopted_meta)
+                except (TypeError, ValueError):
+                    _adopted_meta = {}
+            if not isinstance(_adopted_meta, dict):
+                _adopted_meta = {}
+            if _adopted_meta.get("drains_controls") != bool(drains_controls):
+                # Held inside its own boundary rather than the enclosing one:
+                # everything else in this block is what persistence is made of,
+                # and failing it correctly disables persistence for the run. This
+                # is a steerability flag, and losing the run's entire record over
+                # it is the larger loss. Logged rather than swallowed, because
+                # the consequence is invisible from the outside — the leg runs
+                # normally and its steers are refused.
+                try:
+                    await db.update_session(
+                        session_id,
+                        node_metadata=json.dumps(
+                            {**_adopted_meta, "drains_controls": bool(drains_controls)}
+                        ),
+                    )
+                except Exception as _decl_exc:  # noqa: BLE001 — bookkeeping, not the run
+                    _log.warning(
+                        "session %s kept the previous leg's control-drain declaration "
+                        "(%r): operator steers aimed at this leg may be refused",
+                        session_id,
+                        _decl_exc,
+                    )
         else:
             session_prog_id = str(uuid.uuid4())
             branch_prog_id = str(uuid.uuid4())
@@ -1191,7 +1233,20 @@ async def setup_agent_persist(
             _proj, _proj_src = _resolve_project(project)
             from lionagi.cli.kill import current_pid_markers
 
-            _node_meta = {**(session_dict.get("node_metadata") or {}), **current_pid_markers()}
+            # Whether this session's runner consumes operator controls, declared
+            # by the caller that starts the run rather than inferred. The
+            # control writer refuses a session whose runner has no drain, and it
+            # has no other way to tell one agent-kind session from another:
+            # every runner that persists through here writes the same kind and
+            # a run_id, so run_id presence stopped distinguishing them the
+            # moment a second caller began supplying one. Default False so a
+            # new runner that forgets to declare it gets a visible refusal
+            # rather than a control nobody will ever read.
+            _node_meta = {
+                **(session_dict.get("node_metadata") or {}),
+                **current_pid_markers(),
+                "drains_controls": bool(drains_controls),
+            }
             await db.create_session(
                 {
                     "id": session_id,

@@ -23,7 +23,13 @@ from pathlib import Path
 import pytest
 
 from lionagi.cli.agent import _drain_pending_steers, _tombstone_pending_steers
-from lionagi.cli.orchestrate._control import run_ctl_msg, run_ctl_pause, run_ctl_resume
+from lionagi.cli.orchestrate._control import (
+    _enqueue_control_inner,
+    _runner_drains_controls,
+    run_ctl_msg,
+    run_ctl_pause,
+    run_ctl_resume,
+)
 from lionagi.cli.status import EXIT_UNKNOWN
 from lionagi.state.db import StateDB
 
@@ -41,10 +47,14 @@ async def _make_agent_session(
     status: str = "running",
     run_id: str | None = "20260801T000000-testrun",
     cc_session_id: str | None = None,
+    drains_controls: bool = True,
 ) -> str:
-    """A native `li agent` session carries a run_id (the runner stamps one);
-    a mirrored Claude Code / Codex session is also invocation_kind='agent'
-    but has no run_id and no runner to drain its controls."""
+    """A native `li agent` session carries a run_id (the runner stamps one)
+    and declares that it drains operator controls; a mirrored Claude Code /
+    Codex session is also invocation_kind='agent' but has neither. Other
+    embedded runners persist through the same path and do stamp a run_id, so
+    the declaration is what separates them: `drains_controls=False` here is a
+    session whose runner never reads the controls queued against it."""
     sid = uuid.uuid4().hex[:12]
     pid = uuid.uuid4().hex
     await db.create_progression(pid)
@@ -54,6 +64,7 @@ async def _make_agent_session(
         "status": status,
         "invocation_kind": "agent",
         "started_at": time.time(),
+        "node_metadata": {"drains_controls": drains_controls},
     }
     if run_id is not None:
         row["run_id"] = run_id
@@ -133,6 +144,53 @@ async def test_msg_refused_for_mirrored_agent_session(temp_db_path, caplog):
         rc = run_ctl_msg(argparse.Namespace(id=sid, text="redirect"))
     assert rc == EXIT_UNKNOWN
     assert "mirrored/imported" in caplog.text
+    async with StateDB() as db:
+        assert await db.list_pending_session_controls(sid) == []
+
+
+@pytest.mark.anyio
+async def test_msg_refused_when_the_runner_does_not_drain_controls(temp_db_path, caplog):
+    """An embedded runner persists through the same path as `li agent`: same
+    invocation kind, same running status, and a run_id of its own. It has no
+    turn-end drain, so a steer queued against it is delivered by nobody and
+    closed by nobody. Owning a run and consuming controls are different
+    properties, and only the second one answers this question."""
+    async with StateDB() as db:
+        sid = await _make_agent_session(
+            db, run_id="20260801T060606-embedded", drains_controls=False
+        )
+    with caplog.at_level("ERROR"):
+        rc = run_ctl_msg(argparse.Namespace(id=sid, text="redirect"))
+    assert rc == EXIT_UNKNOWN
+    assert "does not consume operator controls" in caplog.text
+    async with StateDB() as db:
+        assert await db.list_pending_session_controls(sid) == []
+
+
+@pytest.mark.anyio
+async def test_msg_refused_when_the_session_never_declared_a_drain(temp_db_path, caplog):
+    """Absence is a refusal, not a pass. A session row written before the
+    declaration existed, or by a runner that forgot to make one, says nothing
+    about whether anything will read its controls — and admitting on silence
+    is how the queue fills with rows nobody closes."""
+    async with StateDB() as db:
+        sid = uuid.uuid4().hex[:12]
+        pid = uuid.uuid4().hex
+        await db.create_progression(pid)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": pid,
+                "status": "running",
+                "invocation_kind": "agent",
+                "started_at": time.time(),
+                "run_id": "20260801T070707-undeclared",
+            }
+        )
+    with caplog.at_level("ERROR"):
+        rc = run_ctl_msg(argparse.Namespace(id=sid, text="redirect"))
+    assert rc == EXIT_UNKNOWN
+    assert "does not consume operator controls" in caplog.text
     async with StateDB() as db:
         assert await db.list_pending_session_controls(sid) == []
 
@@ -1283,6 +1341,187 @@ async def test_the_sweep_survives_the_teardown_closing_the_handle_it_was_given(
     finally:
         if not closed:
             await db.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_the_cli_runner_declares_its_drain_so_its_own_runs_stay_steerable(
+    temp_db_path, tmp_path, monkeypatch
+):
+    """The writer now refuses any agent session that has not declared a drain,
+    and the runner that has one has to say so or it locks itself out.
+
+    Wired through the real `setup_agent_persist` and the real admission
+    predicate rather than a recorded keyword, because the keyword is not what
+    matters: what matters is that a control aimed at a live `li agent` run is
+    still accepted. The enqueue runs inside the turn, which is when an operator
+    would actually issue it and the only point at which the session reads
+    running.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import lionagi.cli._runs as runs_mod
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.cli.agent import _run_agent
+    from lionagi.service.manager import iModelManager
+
+    run_id = "20260802T000000-steerablerun"
+    admitted: list[tuple[str, int]] = []
+
+    async def fake_operate(self, instruction=None, **kw):
+        # Mid-turn: the session row the real setup just wrote is live, and this
+        # is the same call `li o ctl msg` makes.
+        admitted.append(
+            await _enqueue_control_inner(entity_id=run_id, verb="message", payload={"text": "hi"})
+        )
+        return "done"
+
+    async def no_drain(*a, **kw):
+        # The drain would consume the row and end the turn loop; this test is
+        # about admission, not delivery.
+        return None
+
+    monkeypatch.setattr(Branch, "operate", fake_operate)
+    monkeypatch.setattr(iModelManager, "shutdown", AsyncMock())
+    monkeypatch.setattr(agent_mod, "resolve_persisted_effort", lambda *a, **kw: None)
+    monkeypatch.setattr(agent_mod, "_drain_pending_steers", no_drain)
+    monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
+    monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
+    monkeypatch.setattr(
+        agent_mod,
+        "_provenance",
+        SimpleNamespace(
+            resolve_model_spec=lambda p, m: f"{p}/{m}",
+            agent_definition_hash=lambda n: "abc",
+        ),
+    )
+    monkeypatch.setattr(
+        agent_mod,
+        "allocate_run",
+        lambda: SimpleNamespace(
+            run_id=run_id,
+            artifact_root=tmp_path / "artifacts",
+            stream_dir=tmp_path / "stream",
+            branches_dir=tmp_path / "branches",
+        ),
+    )
+    # The real allocator sets the process-wide run pointer as a side effect, and
+    # that pointer is what stamps run_id onto the session row. The stand-in above
+    # writes nothing outside tmp_path, so the pointer is set here instead; without
+    # it the persisted session carries no run_id and would be refused as a
+    # mirrored session, which is a property of the stand-in rather than of the
+    # runner under test.
+    monkeypatch.setattr(runs_mod, "active_run_id", lambda: run_id)
+
+    await _run_agent("claude", "do the thing")
+
+    assert admitted, "the turn never ran, so nothing was admitted or refused"
+    message, exit_code = admitted[0]
+    assert exit_code == 0, f"a live `li agent` run refused its own steer: {message}"
+    assert "queued message" in message
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_session_takes_the_declaration_of_the_leg_running_it_now(
+    temp_db_path, monkeypatch
+):
+    """The declaration is written when a session is created, and a resume does
+    not create one — it adopts a row another leg wrote.
+
+    So a session started before this existed, or started by a runner without a
+    drain, would keep saying so while a leg that does drain is the one actually
+    executing, and every steer aimed at that live leg would be refused. The
+    declaration describes whoever is running now, which means the resuming
+    caller's value replaces the adopted one rather than merging with it.
+    """
+    import lionagi.cli._runs as runs_mod
+    from lionagi import Branch
+    from lionagi.cli._runs import setup_agent_persist
+
+    monkeypatch.setattr(runs_mod, "active_run_id", lambda: "20260802T000000-resumedrun")
+
+    branch = Branch(name="resumed")
+    first = await setup_agent_persist(branch, agent_name="claude", share_db=False)
+    assert first is not None, "the first persist failed, so there is nothing to resume into"
+    session_id = first["session_id"]
+    await first["db"].close()
+
+    async with StateDB() as db:
+        await _terminalize(db, session_id)
+        assert not _runner_drains_controls(await db.get_session(session_id))
+
+    # A resume rebuilds the branch from its snapshot rather than reusing the
+    # object, which is why the second call is a resume at all: same branch id,
+    # new instance, and not still owned by the first session.
+    resumed_branch = Branch.from_dict(branch.to_dict())
+    assert str(resumed_branch.id) == str(branch.id)
+
+    second = await setup_agent_persist(
+        resumed_branch, agent_name="claude", share_db=False, drains_controls=True
+    )
+    assert second is not None
+    assert second["session_id"] == session_id, "this did not resume, so it proves nothing"
+    await second["db"].close()
+
+    async with StateDB() as db:
+        assert _runner_drains_controls(await db.get_session(session_id))
+        # And the row the resume adopted is admissible again, which is the point.
+        assert (await db.get_session(session_id))["status"] == "running"
+    message, exit_code = await _enqueue_control_inner(
+        entity_id=session_id, verb="message", payload={"text": "steer the resumed leg"}
+    )
+    assert exit_code == 0, message
+
+
+@pytest.mark.asyncio
+async def test_a_resume_keeps_its_persistence_when_the_declaration_write_fails(
+    temp_db_path, monkeypatch, caplog
+):
+    """Re-declaring the drain is bookkeeping, and everything around it in that
+    block is persistence itself. A failure here must not take the run's records
+    down with it, and must not pass unremarked either: the leg goes on running
+    normally while its steers are refused, which is invisible from outside."""
+    import lionagi.cli._runs as runs_mod
+    from lionagi import Branch
+    from lionagi.cli._runs import setup_agent_persist
+
+    monkeypatch.setattr(runs_mod, "active_run_id", lambda: "20260802T000000-declfail")
+
+    branch = Branch(name="decl-fail")
+    first = await setup_agent_persist(branch, agent_name="claude", share_db=False)
+    assert first is not None
+    session_id = first["session_id"]
+    await first["db"].close()
+
+    async with StateDB() as db:
+        await _terminalize(db, session_id)
+
+    from lionagi.state.db import StateDB as _StateDB
+
+    real_update = _StateDB.update_session
+
+    async def refusing_update(self, sid, **fields):
+        if "node_metadata" in fields:
+            raise RuntimeError("database is locked")
+        return await real_update(self, sid, **fields)
+
+    monkeypatch.setattr(_StateDB, "update_session", refusing_update)
+
+    with caplog.at_level("WARNING"):
+        second = await setup_agent_persist(
+            Branch.from_dict(branch.to_dict()),
+            agent_name="claude",
+            share_db=False,
+            drains_controls=True,
+        )
+
+    assert second is not None, "a failed declaration write disabled persistence for the run"
+    assert second["session_id"] == session_id
+    await second["db"].close()
+
+    assert "control-drain declaration" in caplog.text
+    assert "database is locked" in caplog.text
 
 
 @pytest.mark.asyncio
