@@ -1,6 +1,7 @@
 # ADR-0108: Agent-run steering at the turn-end boundary
 
-- **Status**: Accepted (2026-08-02, PR #2773)
+- **Status**: Accepted (2026-08-02, PR #2773); amended 2026-08-02 — the claim
+  condition binds every consumer of a claimed row, not only the agent drain
 - **Kind**: Aspirational
 - **Area**: scheduling-control-plane
 - **Date**: 2026-08-01
@@ -145,6 +146,26 @@ steer landing as a warm continuation turn at the run's next turn boundary.
    from a shared database can do better, and the honest scope of the guarantee is the
    accidental case rather than the adversarial one.
 
+   **The condition binds every consumer of a claimed row, and originally it did not.**
+   The paragraph above describes the protocol the agent drain follows; the flow poller
+   did not follow it. Its finalize calls on the already-claimed path carried no
+   condition, which is `WHERE id = :id` with no predicate on the outcome, so a poller
+   returning late overwrote whatever the row had come to hold. The ordering that
+   exposes this is the one `ctl resolve` is built for rather than an exotic race: the
+   verb exists for a claimant that has not reported back, so the case it serves is a
+   slow claimant, which is exactly the state a person resolves by hand. Claim, resolve,
+   claimant wakes and stamps over the resolution. The reject paths were the worse half,
+   turning a delivery a person recorded as applied into one the record says never
+   arrived.
+
+   Two things follow, and both are now the design. **The claim is returned by the code
+   that writes it** rather than rebuilt by callers: a guard only guards while the
+   expression that produces it and the expression that stored it agree, and two copies
+   of a string are what stop agreeing. **A guarded write that lands nowhere says so**,
+   and its caller reports the row as untouched rather than returning the outcome it
+   failed to record — a receipt for a write that did not happen is the same defect as
+   the overwrite, one level up.
+
 5. **Receipt visibility without mid-turn delivery.** The runner's 60-second heartbeat
    reports a queued steer ("lands at end of current turn") so the operator knows it
    was received while the turn is still executing. The heartbeat is armed
@@ -221,6 +242,20 @@ steer landing as a warm continuation turn at the run's next turn boundary.
   receipt for a write that never landed. Locking the row on that read instead was tried
   and removed, because the UPDATE takes the same row lock a moment later and the lock
   therefore changed no outcome.
+
+  **Why the verb is not on the MCP surface**, where it is catalogued as unavailable with
+  a reason rather than simply omitted. Every other control verb reports something the
+  system can observe: a queue read, a status, an enqueue. This one records a finding
+  about a delivery the system explicitly cannot determine — that is the whole reason the
+  row was left standing. A machine caller reaching for it would not be reporting that
+  finding, it would be manufacturing it, because it holds exactly the knowledge the row
+  is waiting for, which is none. The verb would still write, the row would still close,
+  and the resulting record would read the same as one a person stood behind. The cost of
+  the omission is that an agent noticing a wedged control must surface it to a person
+  instead of clearing it, which is the intended cost: an operator's judgement is the
+  input, and a surface that accepts a substitute for it produces confident rows nobody
+  checked. It is catalogued rather than hidden so a caller that goes looking finds the
+  reason instead of an absence it has to interpret.
 - **Forced-consumer honesty.** The tombstone's failure path logs, but that log has no
   forced consumer and is not the guarantee. The guarantee is state-shaped and computed
   at read time: the status surface renders an unclaimed pending control on a terminal
