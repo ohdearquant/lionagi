@@ -1392,3 +1392,82 @@ async def test_a_run_still_finishes_when_the_sweep_cannot_get_a_connection(
     finally:
         with contextlib.suppress(Exception):
             await db.__aexit__(None, None, None)
+
+
+@pytest.mark.anyio
+async def test_the_resolver_refuses_when_the_claim_changed_under_it(temp_db_path):
+    """Only the compare-and-set can answer this one.
+
+    The resolver reads the current claim, decides, and then writes with
+    `WHERE result = :prior`. Its other guard, that the row must still read
+    `applying`, cannot refuse here: the row is claimed before and after, just by
+    a different owner. So a resolver that kept the write and lost the WHERE
+    clause would pass every other test in this file, including the
+    already-finalized refusal, which is answered by the startswith check on a
+    terminal row before the compare-and-set is ever consulted.
+
+    The interleave is stated as a sequence rather than raced for. It has to
+    happen on the resolver's own connection, because both statements live in one
+    transaction and SQLite serialises writers, so an outside connection could
+    not get between them.
+    """
+    import contextlib as _contextlib
+
+    from sqlalchemy import text as _text
+
+    class _ClaimChangesMidTransaction:
+        """The real connection, except the claim is replaced after the read."""
+
+        def __init__(self, conn, control_id: str, new_claim: str) -> None:
+            self._conn = conn
+            self._control_id = control_id
+            self._new_claim = new_claim
+            self._armed = True
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+        async def execute(self, statement, *args, **kwargs):
+            result = await self._conn.execute(statement, *args, **kwargs)
+            if self._armed and "SELECT result FROM session_controls" in str(statement):
+                # Fires exactly once, between the resolver's read and its write.
+                self._armed = False
+                await self._conn.execute(
+                    _text("UPDATE session_controls SET result = :r WHERE id = :id"),
+                    {"r": self._new_claim, "id": self._control_id},
+                )
+            return result
+
+    async with StateDB() as db:
+        sid = await _make_agent_session(db)
+        cid = await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "who has this?"}
+        )
+        await db.mark_session_control_applying(cid, owner="leg-a")
+
+        real_tx = db._tx
+
+        @_contextlib.asynccontextmanager
+        async def intercepting_tx():
+            async with real_tx() as conn:
+                yield _ClaimChangesMidTransaction(conn, cid, "applying:leg-b")
+
+        db._tx = intercepting_tx
+        try:
+            stored = await db.resolve_claimed_session_control(
+                cid, outcome="abandoned", actor="ops@example.com"
+            )
+        finally:
+            db._tx = real_tx
+
+        assert stored is None, (
+            f"the resolver returned a receipt for a write it did not land: {stored!r}"
+        )
+
+        # leg-b's claim survives untouched. Nothing recorded an outcome for a
+        # message whose current holder was never consulted.
+        row = await db.get_session_control(cid)
+        assert row["result"] == "applying:leg-b", (
+            f"the resolver overwrote a claim it never read: {row['result']!r}"
+        )
+        assert row["applied_at"] is None, "a refused resolution still stamped the row"
