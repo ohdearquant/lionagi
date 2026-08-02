@@ -1,6 +1,6 @@
 # ADR-0109: A mirrored session's idleness is not its completion
 
-- **Status**: Accepted (2026-08-02, PR #NNNN)
+- **Status**: Accepted (2026-08-02, PR #2776)
 - **Kind**: Aspirational (records the target state)
 - **Area**: persistence-state
 - **Date**: 2026-08-02
