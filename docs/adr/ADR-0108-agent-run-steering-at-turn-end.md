@@ -28,9 +28,22 @@ engine-specific and fragile.
 Extend the ADR-0069 transport — not a new mechanism — to agent-kind sessions, with the
 steer landing as a warm continuation turn at the run's next turn boundary.
 
-1. **Transport unchanged.** `li o ctl msg <id> "text"` enqueues a `session_controls`
-   row with verb `message`. Id resolution (session, invocation, run, prefix) is the
-   generic resolver ADR-0069 already uses. No schema change.
+1. **Transport unchanged; run-id addressing is new.** `li o ctl msg <id> "text"`
+   enqueues a `session_controls` row with verb `message`. No schema change. Id
+   resolution for session, invocation, play, and their prefixes is the generic
+   resolver ADR-0069 already uses — that resolver has no `runs` table and never
+   did. A run id (`LIONAGI_HOME/runs/{run_id}/`, allocated in `cli/_runs.py`) is
+   a separate id space, mirrored onto a session only through the nullable
+   `sessions.run_id` column. It is also the handle an operator is most likely to
+   hold for an agent leg — `li agent` prints it back, and the job surface this
+   gate serves takes `run_ids` — so this work adds a run-id fallback consulted
+   after the generic sweep comes up empty, the same shape as the pre-existing
+   branch-id fallback (`status._resolve_session_by_branch_id`): exact id first,
+   then an unambiguous prefix, with a colliding prefix refused rather than
+   picked. `sessions.run_id` carries no uniqueness constraint and
+   `StateDB.get_sessions_for_run` already documents why: "one run can persist
+   more than one session." The fallback follows that existing contract and
+   returns the most recently updated one rather than an arbitrary row.
 
 2. **Per-verb consumer gate.** The enqueue gate becomes verb-aware
    (`_CONSUMER_KINDS_BY_VERB`): `message` is consumable by `flow`, `play`, and `agent`
@@ -59,17 +72,24 @@ steer landing as a warm continuation turn at the run's next turn boundary.
    the run would otherwise finalize, the runner drains pending `message` controls:
    each batch is stamped applying (same crash-recovery stamp order as the flow
    poller), joined in arrival order into one continuation `operate()` turn on the same
-   warm branch — prefixed as an operator redirect that supersedes conflicting parts of
-   the original instruction — then stamped applied. Steers enqueued during a
+   warm branch — framed as a live correction from the operator who started the run,
+   not a claim of override authority over the original instruction — then stamped
+   applied. Steers enqueued during a
    continuation are caught by the next drain iteration. Continuation turns persist
    through the same stream/snapshot directories, so the run record remains one run
    with more turns.
 
 5. **Receipt visibility without mid-turn delivery.** The runner's 60-second heartbeat
    reports a queued steer ("lands at end of current turn") so the operator knows it
-   was received while the turn is still executing. No attempt is made to deliver
-   mid-turn; true mid-turn injection requires engine-level stdin support and is a
-   separate future decision.
+   was received while the turn is still executing. The heartbeat is armed
+   unconditionally, not only when `--timeout` is set: a leg spawned without a
+   timeout is exactly the case where a turn can run long enough for the receipt
+   to matter, and a receipt that silently depended on an unrelated flag would
+   read as "received" everywhere it fires and as nothing at all — not "lost",
+   just absent — everywhere it doesn't. The added cost is one sleeping
+   coroutine per leg, negligible next to the provider call it watches. No
+   attempt is made to deliver mid-turn; true mid-turn injection requires
+   engine-level stdin support and is a separate future decision.
 
 ## Pinned edge semantics
 
@@ -116,11 +136,17 @@ the attempt is visible.
 ## Consequences
 
 - Operators steer running agent legs with the same verb and id resolution they use for
-  flows; the redirect lands with context intact instead of after a kill.
+  flows, addressed by session, invocation, play, branch, or run id; the redirect lands
+  with context intact instead of after a kill.
 - A steer's fate is always observable as exactly one of: refused at enqueue, applied,
   rejected by tombstone, or pending-on-terminal rendered as never-landed.
 - Agent-kind `message` semantics ("continuation at next boundary") differ from flow
-  semantics ("context render before next op"). The gate refusals and status output
-  carry the distinction; documentation of `li o ctl` must state both.
+  semantics ("context render before next op"). The gate refusals and the enqueue
+  acknowledgment text ("lands as a continuation turn" vs. "applies within ~2s while
+  the flow is live") both carry the distinction; `li o ctl status`'s pending/applied/
+  rejected/never-landed rendering does not restate it and does not need to, since it
+  reports outcome, not delivery mechanism. Documentation of `li o ctl` must state the
+  distinction too.
 - The drain adds up to one `list_pending_session_controls` read per turn boundary and
-  one per heartbeat tick — negligible against a provider call.
+  one per heartbeat tick — negligible against a provider call. The heartbeat itself
+  now runs for the life of every leg, timeout or not, for the same reason.
