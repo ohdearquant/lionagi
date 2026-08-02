@@ -975,3 +975,115 @@ async def test_postgres_teardown_does_not_deadlock_the_maintenance_writer(pg_url
         assert await db.get_session(imported_sid) is None
     finally:
         await db.close()
+
+
+@pytest.mark.asyncio
+async def test_postgres_teardown_gives_up_rather_than_deadlocking_after_it_holds_the_locks(
+    pg_url,
+):
+    """The table locks are not the only place this transaction can wait.
+
+    Once the three EXCLUSIVE locks are held, the teardown still nulls the soft
+    session FKs, and those rows can be held by someone else. A wait there is a
+    wait while holding, which is what a deadlock cycle is made of, so NOWAIT on
+    the acquisition does not by itself keep the teardown out of one. The bounded
+    lock_timeout does: the wait gives up well inside PostgreSQL's default
+    deadlock_timeout, so the cycle breaks before the detector runs.
+
+    The discriminating assertion is the SQLSTATE. Remove the lock_timeout and
+    this interleaving returns 40P01, a detected deadlock, instead of the
+    retryable 55P03 both callers already handle.
+    """
+    import asyncio
+
+    from sqlalchemy import text
+
+    db = StateDB(url=pg_url)
+    await db.open()
+    try:
+        assert db.dialect == "postgresql"
+
+        now = time.time()
+        msg = _uid()
+        await db.insert_message(
+            {"id": msg, "created_at": now, "content": {"text": "x"}, "role": "user"}
+        )
+        prog, sid = _uid(), _uid()
+        await db.create_progression(prog, [msg])
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": prog,
+                "status": "completed",
+                "created_at": now,
+                "updated_at": now,
+                "source_kind": "imported_codex",
+            }
+        )
+        artifact_id = _uid()
+        async with db._tx() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO artifacts (id, session_id, created_at, updated_at, "
+                    "kind, name, content) VALUES (:i, :s, :c, :c, 'log', 'a', '{}')"
+                ),
+                {"i": artifact_id, "s": sid, "c": now},
+            )
+
+        holds_the_artifact = asyncio.Event()
+        teardown_is_waiting = asyncio.Event()
+        other_outcome: dict[str, object] = {}
+
+        async def other_writer() -> None:
+            """artifacts then sessions: the reverse of the teardown's order."""
+            async with db._tx() as conn:
+                await conn.execute(
+                    text("UPDATE artifacts SET name = 'held' WHERE id = :i"),
+                    {"i": artifact_id},
+                )
+                holds_the_artifact.set()
+                await teardown_is_waiting.wait()
+                try:
+                    await conn.execute(
+                        text("UPDATE sessions SET updated_at = updated_at WHERE id = :s"),
+                        {"s": sid},
+                    )
+                    other_outcome["second"] = "ok"
+                except Exception as exc:  # noqa: BLE001 — inspected below
+                    other_outcome["second"] = exc
+
+        writer_task = asyncio.create_task(other_writer())
+        await asyncio.wait_for(holds_the_artifact.wait(), timeout=10)
+
+        teardown = asyncio.create_task(
+            db.delete_imported_session(sid, require_source_kind="imported_codex")
+        )
+        # Long enough for the teardown to take its three table locks and settle
+        # into the artifacts wait, and short enough to be inside the 250ms bound.
+        await asyncio.sleep(0.1)
+        teardown_is_waiting.set()
+
+        teardown_error = None
+        try:
+            await asyncio.wait_for(teardown, timeout=30)
+        except Exception as exc:  # noqa: BLE001 — classified below
+            teardown_error = exc
+        await asyncio.wait_for(writer_task, timeout=30)
+
+        sqlstate = getattr(getattr(teardown_error, "orig", None), "sqlstate", None)
+        assert sqlstate != "40P01", (
+            "the teardown was a deadlock participant after taking its table "
+            f"locks, so bounding its later waits is not working: {teardown_error!r}"
+        )
+        assert sqlstate == "55P03", (
+            "expected the teardown to give up on the contended soft-FK write; "
+            f"got {teardown_error!r}"
+        )
+        assert other_outcome.get("second") == "ok", (
+            f"the ordinary writer did not complete: {other_outcome.get('second')!r}"
+        )
+        # Nothing was half-torn-down: the whole transaction rolled back.
+        assert await db.get_session(sid) is not None
+        assert await db.get_message(msg) is not None
+    finally:
+        await db.close()

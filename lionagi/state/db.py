@@ -2325,11 +2325,15 @@ class StateDB:
         alone does not: at READ COMMITTED the check reads a snapshot, a
         concurrent writer can commit a new reference after it, and the delete
         would then proceed against a set that is no longer accurate. The table
-        lock below closes that window. It is taken NOWAIT, so a teardown that
-        cannot hold every relevant table at once raises instead of waiting; both
-        callers treat that as a row to revisit on a later sweep. Refusing to
-        wait is what keeps this transaction out of any deadlock cycle with a
-        writer that touches the same tables in another order.
+        lock below closes that window. It is taken NOWAIT, and the transaction
+        also runs under a bounded lock_timeout, so a teardown that cannot hold
+        what it needs gives up rather than queueing behind live writers; both
+        callers treat that as a row to revisit on a later sweep. Bounding the
+        waits is what keeps this transaction from sitting in a deadlock cycle
+        with a writer that reaches the same tables in another order. It does not
+        make one impossible: the guarantee is that no wait here lasts long
+        enough to become a detected cycle on a server using PostgreSQL's default
+        deadlock_timeout.
         """
         if not require_source_kind.startswith("imported_"):
             return False
@@ -2345,20 +2349,37 @@ class StateDB:
                 # and UPDATE already take, so the writers need no changes and pay
                 # nothing on their own path.
                 #
-                # NOWAIT is load-bearing, not an optimisation. A comma-separated
-                # LOCK TABLE takes the three locks one at a time in the written
-                # order rather than atomically, so a blocking form holds one
-                # table while waiting for the next, and that closes a cycle with
-                # any writer touching the same tables in a different order.
+                # Two separate guards, because they cover different waits.
+                #
+                # lock_timeout bounds every wait this transaction can make,
+                # including the ones after the table locks are already held --
+                # the soft-FK nulling below updates artifacts and four other
+                # tables, and those rows can be held by someone else. A wait
+                # while holding is what a deadlock cycle is made of, so bounding
+                # it is what keeps the teardown from sitting in one. 250ms is
+                # chosen against PostgreSQL's deadlock_timeout, whose default is
+                # 1s: a wait here gives up well before the detector runs, while
+                # still being far longer than the row-lock holds of the ordinary
+                # writers, so everyday contention resolves instead of aborting a
+                # teardown. A server configured with a deadlock_timeout below
+                # this bound can still detect a cycle first; the teardown then
+                # aborts with a deadlock error rather than a lock timeout, which
+                # the callers treat identically.
+                #
+                # NOWAIT covers the acquisition itself, where waiting is
+                # pointless rather than merely bounded. A comma-separated LOCK
+                # TABLE takes the three locks one at a time in the written order
+                # rather than atomically, so a blocking form holds one table
+                # while waiting for the next, which closes a cycle with any
+                # writer touching the same tables in a different order.
                 # prune_old_data is exactly such a writer: it updates sessions
                 # before deleting from progressions, the reverse of the order
-                # here. Refusing to wait takes this transaction out of every
-                # possible cycle, because a deadlock needs it to wait while
-                # holding something and it now never waits at all. That holds
-                # for writers added later too, which a chosen lock order would
-                # not. The cost falls entirely on this rare teardown: a
-                # conflicting lock aborts the attempt, and both callers already
-                # log the failure and retry on a later sweep.
+                # here.
+                #
+                # The cost falls entirely on this rare teardown: a conflicting
+                # lock aborts the attempt, and both callers log the failure and
+                # retry on a later sweep.
+                await conn.execute(text("SET LOCAL lock_timeout = '250ms'"))
                 await conn.execute(
                     text("LOCK TABLE branches, progressions, sessions IN EXCLUSIVE MODE NOWAIT")
                 )

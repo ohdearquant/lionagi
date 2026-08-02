@@ -14,6 +14,7 @@ a row is what there is to subtract against.
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -46,6 +47,8 @@ __all__ = (
     "ID_FIELD",
     "SKIPPED_ORIGINATORS",
 )
+
+_log = logging.getLogger(__name__)
 
 # Provenance value for a session this mirror wrote, as opposed to one lionagi ran.
 SOURCE_KIND = "imported_codex"
@@ -582,6 +585,11 @@ async def absorb_orchestrated_backfill(db: StateDB) -> tuple[int, int]:
                 if await db.delete_imported_session(row["id"], require_source_kind=SOURCE_KIND):
                     removed += 1
         except Exception:
+            # The count alone says a row did not reconcile, never why. A
+            # contended teardown gives up rather than waiting, so this path now
+            # carries an ordinary, recurring cause that an operator watching the
+            # retry warning has no other way to see.
+            _log.exception("codex mirror: absorbing imported session %s failed", row.get("id"))
             failed += 1
     return removed, failed
 

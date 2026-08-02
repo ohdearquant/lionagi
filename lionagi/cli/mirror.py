@@ -576,21 +576,34 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
             # rollout into two sessions — and committing head_checked would let
             # an orchestrated rollout slip past the skip forever.
             return 0
+        if meta and meta.get("originator") in SKIPPED_ORIGINATORS:
+            # An orchestrator's own run (e.g. a lionagi agent leg) — its
+            # session already exists under the agent's name; importing the
+            # rollout too is the double entry. Absorb what an older version
+            # may have imported (under either id this file was ever keyed
+            # by), then never read this file again.
+            prior_uid = state.session_uid  # a stem fallback from a pre-header pass
+            resolved_uid = meta["rollout_uid"] or path.stem
+            await absorb_orchestrated_session(db, resolved_uid)
+            if prior_uid and prior_uid != resolved_uid:
+                await absorb_orchestrated_session(db, prior_uid)
+            # Nothing is committed to the state until both absorptions return,
+            # so a failed attempt leaves exactly what the next one needs to
+            # repeat it. Committing head_checked would stop the header being
+            # re-read, and the rollout would then be mirrored after all —
+            # the same failure the torn-header branch above declines to cause.
+            # Committing orchestrated would retire the file with a row nobody
+            # ever tore down. Overwriting session_uid would lose the stem the
+            # second absorption call needs. Absorption fails for an ordinary
+            # reason now that a contended teardown gives up rather than waiting,
+            # so this path carries real traffic.
+            state.session_uid = resolved_uid
+            state.head_checked = True
+            state.orchestrated = True
+            return 0
         state.head_checked = True
         if meta:
-            prior_uid = state.session_uid  # a stem fallback from a pre-header pass
             state.session_uid = meta["rollout_uid"] or path.stem
-            if meta.get("originator") in SKIPPED_ORIGINATORS:
-                # An orchestrator's own run (e.g. a lionagi agent leg) — its
-                # session already exists under the agent's name; importing the
-                # rollout too is the double entry. Absorb what an older version
-                # may have imported (under either id this file was ever keyed
-                # by), then never read this file again.
-                state.orchestrated = True
-                await absorb_orchestrated_session(db, state.session_uid)
-                if prior_uid and prior_uid != state.session_uid:
-                    await absorb_orchestrated_session(db, prior_uid)
-                return 0
             if meta.get("cwd"):
                 state.project, state.project_source = _resolve_project_for_mirror(meta["cwd"])
     if not state.session_uid:

@@ -1467,3 +1467,48 @@ async def test_valid_but_unterminated_header_stays_torn_until_the_newline(tmp_pa
         assert await _mirror_one_codex(db, path, state, {}) == 2
         assert state.session_uid == uid
         assert await db.get_session(codex_sid(uid)) is not None
+
+
+async def test_a_failed_absorption_does_not_retire_the_file(tmp_path, monkeypatch):
+    """A contended teardown gives up rather than waiting, so absorption can fail
+    for an ordinary reason. The file must stay eligible when it does.
+
+    Marking the rollout absorbed before the absorption returns retires it on the
+    early guard, and no later pass ever attempts the deletion again: a row nobody
+    tears down, recorded as done. The discriminating assertion is the second
+    attempt — with the flag set first, the observed attempt count is one.
+    """
+    from lionagi.cli import mirror as mirror_mod
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+
+    uid = "0199bbbb-0000-0000-0000-00000000000f"
+    path = tmp_path / "rollout-exec-contended.jsonl"
+    path.write_text(_codex_rollout_lines(uid, "codex_exec"))
+    state = _FileState(session_uid="")
+
+    attempts = []
+
+    async def flaky_absorb(db, rollout_uid):
+        attempts.append(rollout_uid)
+        if len(attempts) == 1:
+            raise RuntimeError("lock not available")
+        return True
+
+    monkeypatch.setattr(mirror_mod, "absorb_orchestrated_session", flaky_absorb, raising=False)
+    monkeypatch.setattr(
+        "lionagi.state.codex_mirror.absorb_orchestrated_session", flaky_absorb, raising=False
+    )
+
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        with pytest.raises(RuntimeError):
+            await _mirror_one_codex(db, path, state, {})
+        assert not state.orchestrated, (
+            "the rollout was marked absorbed even though absorption failed, so no "
+            "later pass will retry the teardown"
+        )
+
+        # The next sweep reaches absorption again and completes.
+        assert await _mirror_one_codex(db, path, state, {}) == 0
+        assert state.orchestrated
+
+    assert len(attempts) == 2, f"absorption was attempted {len(attempts)} time(s), not 2"
