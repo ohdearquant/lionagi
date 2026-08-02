@@ -50,8 +50,22 @@ joins the population `reconcile_unacknowledged` returns
 (`lionagi/state/lifecycle/deliveries.py:43-80`), which is the durable
 cross-process ledger rather than the in-process fire-and-forget registry.
 
-This one is **latent, not live**, and was checked rather than assumed. Nothing
-registers terminal callbacks in the mirror process, so `emit` is a no-op there.
+This one is **latent under the default configuration, and live under a
+configured one**. An earlier revision said flatly that nothing registers
+terminal callbacks in the mirror process, and attached "checked rather than
+assumed" to it, which made a claim that is only conditionally true read as
+settled. What is actually true: both processes that host a mirror install a
+process-wide terminal callback if, and only if, `notify.on_terminal` resolves
+to a handler. The CLI entry point calls `register_settings_terminal_callback`
+before dispatching any subcommand, `li mirror` included
+(`lionagi/cli/main.py:674-678`, inside `_run` and ahead of argparse dispatch),
+and Studio service startup calls it as well (`lionagi/studio/app.py:190-192`,
+the same module that starts the in-process mirror); the
+function registers when the setting resolves and unregisters when it does not
+(`lionagi/state/lifecycle/notify_settings.py:648-662`). So with no
+`notify.on_terminal` configured, `emit` is a no-op and this consequence is
+latent; with one configured that permits sessions, an `idle → completed` write
+reaches a live handler.
 And no production code calls `reconcile_unacknowledged`: the only callers are
 `tests/state/lifecycle/test_terminal_callbacks.py`, checked against the
 definition site in the same search. It is a trap for the next consumer of that
@@ -320,9 +334,15 @@ edge.
 This section enumerates rather than assumes, and states what was driven and what
 was not. Population: 548 Python files under `lionagi/` (instrument armed by
 confirming `_mirror_common.py` is inside it). Files naming
-`SESSION_TERMINAL_STATUSES`: 13. Two of those are not consumers: `state/db.py`
-defines it, and `state/_mirror_common.py:41` is the reconciler that writes the
-status this note is about. That leaves the 11 consumer files enumerated below.
+`SESSION_TERMINAL_STATUSES`: 13. Two of those are excluded from the table
+below, and the reason is not that they fail to read the constant. `state/db.py`
+defines it. `state/_mirror_common.py:41` reads it, to decide whether a terminal
+status may be left, but it is the reconciler doing the writing this note is
+about, so it is the subject of the change rather than a downstream reader of
+it. That leaves the **11 downstream consumer files** enumerated below. Read
+"11" as a description of the table and not as a count of everything in the tree
+that reads the constant: the reconciler reads it, and `state/db.py` derives a
+second name from it at `lionagi/state/db.py:371`.
 
 | Site | Reachable from a mirrored row? | Basis |
 | --- | --- | --- |
@@ -333,7 +353,7 @@ status this note is about. That leaves the 11 consumer files enumerated below.
 | `studio/services/run_resume_worker.py:66` | Unverified | not driven |
 | `cli/monitor.py:1089,1101,1155` | Unverified | not driven |
 | `cli/machine.py:529` | Unverified, display flag | not driven |
-| `cli/_runs.py:557,707,884,1064` | **Yes, by construction, and this row was wrong in an earlier draft** | read at the source: `_linked_engine_session` (`:436-461`) resolves `session_db_id(engine_session_uid)`, which *is* the claude/codex-mirror row, and `:557` branches on that row's terminal status while `:576` handles it being `running`. Adding `idle` gives a linked row a third value that matches neither branch, so a session that is merely quiet falls through to the phantom `failed` the `running` branch exists to suppress. See the obligation below. Separately, and unchanged from the earlier draft: the ADR-0105 reopen path at `:1064` is keyed by a branch id, and a mirror branch id is deterministic, so a hand-typed resume against one remains an open edge case. |
+| `cli/_runs.py:557,707,884,1064` | **Yes, by construction, and this row was wrong in an earlier draft** | read at the source: `_linked_engine_session` (`:436-461`) resolves `session_db_id(engine_session_uid)`, which is the **Claude**-mirror row and only that one, and `:557` branches on that row's terminal status while `:576` handles it being `running`. An earlier draft wrote "the claude/codex-mirror row" and that is wrong: the resolver imports `session_db_id` from `lionagi.state.claude_mirror` (`lionagi/cli/_runs.py:451`), and the Codex mirror derives its ids from a deliberately different namespace so that the two can never collide (`lionagi/state/codex_mirror.py:69-71`, which says so in a comment). A Codex-mirrored session is therefore not reachable through this consumer at all, which is a **separate gap and not a covered case**: whatever `idle` does to a linked Claude row, the equivalent Codex row is not linked here in the first place. Adding `idle` gives a linked row a third value that matches neither branch, so a session that is merely quiet falls through to the phantom `failed` the `running` branch exists to suppress. See the obligation below. Separately, and unchanged from the earlier draft: the ADR-0105 reopen path at `:1064` is keyed by a branch id, and a mirror branch id is deterministic, so a hand-typed resume against one remains an open edge case. |
 | `cli/agent.py:933` | Probably not: own run's session | not driven |
 | `cli/orchestrate/_orchestration.py:1654` | Probably not: own run's session | not driven |
 | `hooks/builtins.py:55,114` | Probably not: own run's session | not driven |
@@ -429,12 +449,15 @@ mirror reconciler**, because those are real completions and rewriting one to
   they claim to be. A third arm on the legacy path is worth keeping, asserting the
   opposite: that the permissive surface stays permissive for its existing
   callers.
-- A regression that a linked mirror session in `idle` is treated as live by
-  `cli/_runs.py`'s provider-error reconciliation, not left to the fall-through
-  that yields a phantom `failed`. Drive it with three linked rows in one
-  fixture, terminal, `running` and `idle`, since an implementation that folds
-  `idle` into the terminal branch also passes a test that only checks `idle`
-  alone did not crash.
+- A regression that a linked **Claude**-mirror session in `idle` is treated as
+  live by `cli/_runs.py`'s provider-error reconciliation, not left to the
+  fall-through that yields a phantom `failed`. Drive it with three linked rows
+  in one fixture, terminal, `running` and `idle`, since an implementation that
+  folds `idle` into the terminal branch also passes a test that only checks
+  `idle` alone did not crash. The arm says Claude because the resolver reaches
+  only Claude rows; do not write it as a mirror-agnostic arm, because a passing
+  mirror-agnostic name over a Claude-only fixture is how the Codex gap above
+  would come to look covered.
 - A regression that `idle → running` produces no override event and no row in
   the terminal-delivery ledger, driven by reading `reconcile_unacknowledged`
   before and after. This is the only check that covers consequence 3, which has
