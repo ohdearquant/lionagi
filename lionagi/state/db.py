@@ -5350,8 +5350,16 @@ class StateDB:
     # executor, finalize_session_control() directly (idempotent — safe to
     # re-apply on a poller crash). message calls mark_session_control_applying()
     # before attempting the (non-idempotent) apply, then finalize_session_control()
-    # (a crash between the two leaves a visible 'applying' row instead of a
-    # silent double-injection risk).
+    # carrying the claim it took (a crash between the two leaves a visible
+    # 'applying:<owner>' row instead of a silent double-injection risk).
+    #
+    # A claimed row is never resolved by anything but its own claimant. A
+    # teardown that finds one leaves it standing, because the alternative is
+    # writing a guess: a message whose consumer died between the claim and the
+    # apply may or may not have been delivered, and 'rejected' asserts it was
+    # not. A visibly wedged queue carrying the owner and the claim's age is an
+    # honest degraded state that an operator can resolve; a fabricated terminal
+    # result is not.
 
     async def insert_session_control(
         self,
@@ -5360,18 +5368,32 @@ class StateDB:
         verb: str,
         payload: dict[str, Any] | None = None,
         created_at: float | None = None,
-    ) -> str:
-        """Queue a control verb for *session_id*; returns the new control id.
+    ) -> str | None:
+        """Queue a control verb for *session_id*; returns the new control id, or None.
+
+        The insert is conditional on the session still being 'running', and the
+        condition is evaluated by the insert statement itself rather than by a
+        caller that read the status a moment earlier. That is what closes the
+        race against a run tearing down: a caller-side status check and the
+        insert are two statements, and a run can terminalize between them,
+        leaving a control nobody will ever consume. Here the two outcomes are
+        the only ones: an insert that commits was admitted against a running
+        session and is therefore visible to that run's terminal sweep, and one
+        that arrives after terminalization inserts nothing and returns None for
+        the caller to refuse.
 
         Serialised through _tx() like the other append-only session logs.
         """
         control_id = uuid.uuid4().hex
         async with self._tx() as conn:
-            await conn.execute(
+            result = await conn.execute(
                 text(
                     "INSERT INTO session_controls "
-                    "(id, session_id, verb, payload, created_at, applied_at, result) "
-                    "VALUES (:id, :sid, :verb, :payload, :created_at, NULL, NULL)"
+                    "(id, session_id, verb, payload, created_at, applied_at, "
+                    "claimed_at, result) "
+                    "SELECT :id, :sid, :verb, :payload, :created_at, NULL, NULL, NULL "
+                    "WHERE EXISTS ("
+                    "SELECT 1 FROM sessions WHERE id = :sid AND status = 'running')"
                 ).bindparams(bindparam("payload", type_=JSON)),
                 {
                     "id": control_id,
@@ -5381,21 +5403,25 @@ class StateDB:
                     "created_at": created_at if created_at is not None else time.time(),
                 },
             )
+            if not result.rowcount:
+                return None
         return control_id
 
     async def list_pending_session_controls(self, session_id: str) -> list[dict[str, Any]]:
         """Unapplied controls (applied_at IS NULL) for *session_id*, oldest first.
 
-        Includes rows mid-apply (result='applying') — the poller/status surface
-        distinguish "never touched" (result IS NULL) from "a prior poller crashed
-        mid-apply" (result='applying') by inspecting that field.
+        Includes rows mid-apply (result='applying[:<owner>]') — the poller/status
+        surface distinguish "never touched" (result IS NULL) from "a consumer is
+        or was mid-apply" by inspecting that field, and read claimed_at beside it
+        for how long the claim has stood.
         """
         async with self._read() as conn:
             rows = (
                 (
                     await conn.execute(
                         text(
-                            "SELECT id, session_id, verb, payload, created_at, applied_at, result "
+                            "SELECT id, session_id, verb, payload, created_at, applied_at, "
+                            "claimed_at, result "
                             "FROM session_controls "
                             "WHERE session_id = :sid AND applied_at IS NULL "
                             # id tiebreak: identical created_at floats (rapid
@@ -5419,7 +5445,9 @@ class StateDB:
             result.append(d)
         return result
 
-    async def mark_session_control_applying(self, control_id: str) -> bool:
+    async def mark_session_control_applying(
+        self, control_id: str, *, owner: str | None = None
+    ) -> bool:
         """Claim a non-idempotent (message) control as mid-apply, before attempting it.
 
         The stamp is a compare-and-set: only a row no consumer has claimed
@@ -5429,29 +5457,55 @@ class StateDB:
         leaves the row alone. A bool rather than an exception keeps the ordinary
         "someone else got there first" case off the error path.
 
+        *owner* names the claimant, and the claim is stored as ``applying:<owner>``.
+        Naming it is what lets a second consumer tell "someone else is mid-apply"
+        from "I am mid-apply", which a bare 'applying' cannot express; a caller
+        that has no meaningful identity omits it and gets the bare form.
+        claimed_at is stamped either way, so a wedged claim carries its own age.
+
         applied_at stays NULL — the row remains "pending" until finalize_session_control()
         runs, so a poller crash right after this stamp is visible, not silently lost.
         """
         async with self._tx() as conn:
             result = await conn.execute(
                 text(
-                    "UPDATE session_controls SET result = 'applying' "
+                    "UPDATE session_controls SET result = :claim, claimed_at = :now "
                     "WHERE id = :id AND result IS NULL"
                 ),
-                {"id": control_id},
+                {
+                    "claim": f"applying:{owner}" if owner else "applying",
+                    "now": time.time(),
+                    "id": control_id,
+                },
             )
             return bool(result.rowcount)
 
-    async def finalize_session_control(self, control_id: str, *, result: str) -> None:
-        """Stamp applied_at + a terminal *result* ('applied' or 'rejected:<reason>')."""
+    async def finalize_session_control(
+        self, control_id: str, *, result: str, expect_claim: str | None = None
+    ) -> bool:
+        """Stamp applied_at + a terminal *result* ('applied' or 'rejected:<reason>').
+
+        With *expect_claim*, the write applies only while the row still carries
+        that exact claim string, and the return value says whether it did. A
+        consumer that claimed a row passes its own claim here so that a second
+        consumer, or a teardown running in another leg, cannot stamp an outcome
+        onto work it did not perform. Without it the write is unconditional,
+        which is what the idempotent (pause/resume) path wants.
+        """
+        params: dict[str, Any] = {
+            "applied_at": time.time(),
+            "result": result,
+            "id": control_id,
+        }
+        sql = (
+            "UPDATE session_controls SET applied_at = :applied_at, result = :result WHERE id = :id"
+        )
+        if expect_claim is not None:
+            sql += " AND result = :expect_claim"
+            params["expect_claim"] = expect_claim
         async with self._tx() as conn:
-            await conn.execute(
-                text(
-                    "UPDATE session_controls SET applied_at = :applied_at, result = :result "
-                    "WHERE id = :id"
-                ),
-                {"applied_at": time.time(), "result": result, "id": control_id},
-            )
+            written = await conn.execute(text(sql), params)
+            return bool(written.rowcount)
 
     async def get_session_control(self, control_id: str) -> dict[str, Any] | None:
         async with self._read() as conn:

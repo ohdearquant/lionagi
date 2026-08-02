@@ -187,6 +187,7 @@ async def test_migration_columns_constant_is_importable():
         "artifacts",
         "schedules",
         "schedule_runs",
+        "session_controls",  # claimed_at, added with the claim protocol
         "engine_runs",  # Phase C Move 2 — new table registered for future migrations
         "dispatch_outbox",  # ADR-0092 — new table registered for future migrations
     }

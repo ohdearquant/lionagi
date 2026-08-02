@@ -93,6 +93,11 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("status_reason_summary", "TEXT"),
         ("status_evidence_refs", "JSON"),
     ],
+    "session_controls": [
+        # When a consumer claimed the row. NULL on rows created before this
+        # migration and on rows no consumer has claimed.
+        ("claimed_at", "REAL"),
+    ],
     "artifacts": [
         # Nullable in ALTER TABLE because expressions aren't valid
         # column defaults there; insert_artifact() always sets this.

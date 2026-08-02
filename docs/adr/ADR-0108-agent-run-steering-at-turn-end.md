@@ -119,14 +119,22 @@ steer landing as a warm continuation turn at the run's next turn boundary.
 
 4. **Turn-end drain in the agent runner.** When the in-flight `operate()` returns and
    the run would otherwise finalize, the runner drains pending `message` controls:
-   each batch is stamped applying (same crash-recovery stamp order as the flow
-   poller), joined in arrival order into one continuation `operate()` turn on the same
-   warm branch — framed as a live correction from the operator who started the run,
+   each batch is stamped `applying:<run id>` (same crash-recovery stamp order as the
+   flow poller), joined in arrival order into one continuation `operate()` turn on the
+   same warm branch — framed as a live correction from the operator who started the run,
    not a claim of override authority over the original instruction — then stamped
    applied. Steers enqueued during a
    continuation are caught by the next drain iteration. Continuation turns persist
    through the same stream/snapshot directories, so the run record remains one run
    with more turns.
+
+   The claim names the leg because more than one leg can be alive on a branch, and a
+   bare `applying` cannot distinguish "someone else is mid-apply" from "I am". The
+   stamp is a compare-and-set on an unclaimed row, so two drains reading the same
+   pending row cannot both send it; the loser leaves it alone. `claimed_at` is stamped
+   with it. The terminal write back to `applied` carries the same claim string as a
+   condition, so it lands only while this leg still holds the row and cannot record an
+   outcome for work another leg performed.
 
 5. **Receipt visibility without mid-turn delivery.** The runner's 60-second heartbeat
    reports a queued steer ("lands at end of current turn") so the operator knows it
@@ -144,21 +152,42 @@ steer landing as a warm continuation turn at the run's next turn boundary.
 
 **Terminal race — a steer is never silently swallowed.** Two ends own it:
 
-- Enqueue keeps the existing running-status gate: a clearly-terminal run refuses the
-  steer outright, pointing at `li agent -r`.
+- Enqueue carries the running-status condition inside the insert statement rather than
+  in a caller-side check before it. A read followed by an insert is two statements and
+  a run can terminalize between them; evaluated by the insert itself, the condition
+  admits a control only against a session that is still running at the moment the row
+  is written, and a control aimed at a run that has already stopped inserts nothing and
+  is refused, pointing at `li agent -r`.
 - The remaining window (enqueued while running, run reaches terminal before the drain
-  sees it) is closed consumer-side: run teardown finalizes any still-pending controls
-  for its session as `rejected: run reached terminal status before the steer could
-  land — use \`li agent -r\``. Teardown already runs on every terminal path. The
+  sees it) is closed consumer-side: run teardown finalizes the pending controls for its
+  session that no consumer ever claimed as `rejected: run reached terminal status
+  before the steer could land — use \`li agent -r\`` (claimed rows are the bullet
+  below). Teardown already runs on every terminal path. The
+  tombstone runs after the terminal transition, not before it, which is what leaves the
+  two ends with no gap between them: a control that got in was admitted while the
+  session still read running and is therefore committed before that transition and
+  visible to the sweep, and a control arriving after it is refused at the writer. The
   tombstone is skipped when auto-resume keeps the run alive, because the resumed leg's
   own drain will consume the steer.
+- **A claimed row is never resolved by anything but its claimant.** The tombstone
+  finalizes only rows no consumer ever claimed. A claimed row belongs to the leg named
+  in its claim, which may be another leg still inside its provider call or one that died
+  between the claim and the apply, and `rejected` would assert that the message was not
+  delivered, which nothing at teardown knows. The row stays visible as claimed. Nothing
+  auto-resolves it on a timer either, because a timer would record the same guess with a
+  delay. The status surface renders the owner and the claim's age so the operator who
+  finds the wedge can decide dead-versus-slow there and clear it.
 - **Forced-consumer honesty.** The tombstone's failure path logs, but that log has no
   forced consumer and is not the guarantee. The guarantee is state-shaped and computed
-  at read time: the status surface renders a pending control on a terminal run as
-  "never landed — use `li agent -r`" (text and `--json` views), derived from row
+  at read time: the status surface renders an unclaimed pending control on a terminal
+  run as "never landed — use `li agent -r`" (text and `--json` views), derived from row
   status plus session status at query time. It therefore holds even when the tombstone
   write itself failed, and its consumer is the operator's own status query — exactly
-  the process that runs when someone cares whether a steer landed.
+  the process that runs when someone cares whether a steer landed. A claimed row on a
+  terminal run is not folded into that rendering: its consumer took it and did not
+  report back, so whether the message reached the model is the one thing nobody knows,
+  and printing "never landed" there would be the same fabricated negative the tombstone
+  declines to write.
 
 **Timeout budget — same wall clock, no extension.** Continuation turns spend whatever
 remains of the run's original `--timeout`, measured from leg start. The budget preamble
@@ -167,6 +196,18 @@ drain that reaches the deadline stops without consuming, leaving the remaining r
 the terminal tombstone. A steer arriving near the deadline runs its continuation with
 the remaining budget under normal timeout semantics; its row still stamps applied, so
 the attempt is visible.
+
+The deadline gates when new provider work may **start**, and it is checked again after
+the queue read and before anything is claimed, because that read is I/O and can cross
+the deadline on its own. Recording the outcome of work already performed is exempt from
+it, and the reason is the same one that governs the claim protocol above: a finalize
+skipped to honour the clock would leave a message that was delivered on record as
+undelivered, which is a worse artifact than a write that lands a moment late. The write
+is not unguarded for being unclocked — it carries this leg's claim as its condition, so
+a late finalize can only close the row this leg still holds, and it cannot reach a row
+some other consumer has since taken. What the deadline therefore bounds is the leg's
+provider work, not its bookkeeping; a run that ends a fraction past its budget having
+written one terminal row is the intended behaviour, not a violation of it.
 
 ## Considered and rejected
 
@@ -188,7 +229,12 @@ the attempt is visible.
   flows, addressed by session, invocation, play, branch, or run id; the redirect lands
   with context intact instead of after a kill.
 - A steer's fate is always observable as exactly one of: refused at enqueue, applied,
-  rejected by tombstone, or pending-on-terminal rendered as never-landed.
+  rejected by tombstone, pending-on-terminal rendered as never-landed, or claimed by a
+  named leg that never reported back. The last one is the honest name for the case the
+  other four cannot cover, and it is deliberately not resolved for the operator: it
+  carries the owner and the claim's age so they can resolve it, which is the whole of
+  what this design can truthfully offer when the consumer of a non-idempotent message
+  disappeared mid-apply.
 - Agent-kind `message` semantics ("continuation at next boundary") differ from flow
   semantics ("context render before next op"). The gate refusals and the enqueue
   acknowledgment text ("lands as a continuation turn" vs. "applies within ~2s while

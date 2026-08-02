@@ -355,7 +355,17 @@ async def _build_view(
         if branches:
             branch_id = max(branches, key=lambda b: b.get("created_at") or 0).get("id")
         pending_controls = [
-            {"id": c["id"], "verb": c["verb"], "created_at": c["created_at"]}
+            {
+                "id": c["id"],
+                "verb": c["verb"],
+                "created_at": c["created_at"],
+                # The claim, verbatim, and when it was taken. A wedged queue is
+                # only an honest degraded state if the operator who finds it can
+                # tell a slow owner from a dead one, and that decision needs the
+                # owner's id and the claim's age at the place the wedge is seen.
+                "result": c.get("result"),
+                "claimed_at": c.get("claimed_at"),
+            }
             for c in await db.list_pending_session_controls(primary_session["id"])
         ]
 
@@ -412,10 +422,17 @@ async def _build_view(
         "status_reason_summary": row.get("status_reason_summary"),
         "status_evidence_refs": row.get("status_evidence_refs"),
         # Computed at read time so the property holds even when the teardown
-        # tombstone write failed: a pending control on a terminal run can
-        # never be consumed, and this view is the surface an operator checks
-        # to learn whether their steer landed.
-        "pending_controls": [{**c, "never_landed": terminal} for c in pending_controls],
+        # tombstone write failed: an unclaimed control on a terminal run can
+        # never have been consumed, and this view is the surface an operator
+        # checks to learn whether their steer landed. A CLAIMED row on a
+        # terminal run is a different state and must not be flattened into
+        # this one: a consumer took it and did not report back, so whether the
+        # message reached the model is exactly what nobody knows. Rendering
+        # that as never-landed would be the same fabricated negative the
+        # teardown declines to write.
+        "pending_controls": [
+            {**c, "never_landed": terminal and c.get("result") is None} for c in pending_controls
+        ],
     }
 
 
@@ -461,7 +478,13 @@ def _render_human(view: dict[str, Any]) -> str:
             lines.append(_dim("  -- pending controls --"))
         for ctl in view["pending_controls"]:
             line = f"    {ctl['verb']:<8} {ctl['id']}  queued {_fmt_ts(ctl['created_at'])}"
-            if ctl.get("never_landed"):
+            result = ctl.get("result") or ""
+            if result.startswith("applying"):
+                owner = result.partition(":")[2] or "unknown"
+                line += f"  claimed by {owner} at {_fmt_ts(ctl.get('claimed_at'))}"
+                if view["terminal"]:
+                    line += " — owner never reported back; outcome unknown"
+            elif ctl.get("never_landed"):
                 line += "  never landed — use `li agent -r`"
             lines.append(line)
 

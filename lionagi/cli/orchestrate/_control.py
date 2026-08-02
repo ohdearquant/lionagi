@@ -117,6 +117,17 @@ async def _enqueue_control_inner(
         control_id = await db.insert_session_control(
             session_id=session_id, verb=verb, payload=payload
         )
+        if control_id is None:
+            # The status check above and the insert are two statements, and the
+            # run can reach its terminal status between them. The insert carries
+            # the same running-session condition so that it, not the earlier
+            # read, decides: refusing here is the alternative to leaving a
+            # control queued against a run whose consumer has already gone.
+            return (
+                f"session {session_id[:8]} reached a terminal status while the "
+                "control was being queued — nothing would consume it",
+                EXIT_UNKNOWN,
+            )
 
     # Landing time is a property of the consumer, not the verb: a flow/play
     # poller renders context before the next op (~2s poll interval), an agent
