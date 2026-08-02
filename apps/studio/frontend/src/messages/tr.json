@@ -160,7 +160,13 @@
       "open": "Open run"
     },
     "model": {
-      "label": "Model"
+      "label": "Model",
+      "default": "Varsayılan",
+      "unavailable": "{model} (unavailable)"
+    },
+    "effort": {
+      "label": "Çaba",
+      "default": "Varsayılan"
     },
     "list": {
       "toggle": "Conversations",

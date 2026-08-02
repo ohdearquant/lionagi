@@ -3,13 +3,16 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
 import enMessages from "@/messages/en.json";
-import type { OperatorFrame } from "@/lib/types";
+import type { OperatorFrame, OperatorModelCatalogEntry } from "@/lib/types";
 
 const api = vi.hoisted(() => ({
   acknowledgeOperatorEffect: vi.fn(),
   cancelOperatorRequest: vi.fn(),
   createOperatorConversation: vi.fn(),
   decideOperatorProposal: vi.fn(),
+  fetchOperatorModelCatalog: vi.fn(() =>
+    Promise.resolve({ models: [] as OperatorModelCatalogEntry[] }),
+  ),
   forkOperatorConversation: vi.fn(),
   getOperatorConversation: vi.fn(),
   listOperatorConversations: vi.fn(),
@@ -819,6 +822,119 @@ describe("OperatorPanel", () => {
       expect(api.forkOperatorConversation).toHaveBeenCalledWith("conversation-1");
       expect(window.localStorage.getItem("studio:operator-conversation")).toBe("conversation-fork");
       expect(container.textContent).toContain("Forked history");
+    });
+  });
+
+  describe("the model menu and a conversation's stored pin", () => {
+    const pinned = {
+      id: "conversation-1",
+      title: "Pinned",
+      status: "active" as const,
+      activeRequestId: null,
+      provider: "codex",
+      providerModel: "gpt-5.4",
+    };
+
+    function pin(conversation: Record<string, unknown>) {
+      api.listOperatorConversations.mockResolvedValue([conversation]);
+      api.getOperatorConversation.mockResolvedValue({ conversation, frames: [] });
+      api.submitOperatorTurn.mockReset();
+      api.submitOperatorTurn.mockResolvedValue({
+        conversationId: conversation.id,
+        requestId: "request-1",
+        acceptedSequence: 1,
+      });
+    }
+
+    function modelSelect() {
+      return container.querySelector('select[aria-label="Model"]') as HTMLSelectElement;
+    }
+
+    async function send(text: string) {
+      const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+        setter?.call(textarea, text);
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      const sendButton = [...container.querySelectorAll("button")].find((button) =>
+        button.textContent?.startsWith("Send"),
+      );
+      expect(sendButton, "the composer's Send button").toBeDefined();
+      expect(sendButton?.disabled).toBe(false);
+      await act(async () => {
+        sendButton?.click();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    }
+
+    it("shows the pinned model rather than reporting Default", async () => {
+      pin(pinned);
+      api.fetchOperatorModelCatalog.mockResolvedValue({
+        models: [
+          { id: "gpt-5.4", label: "Codex (gpt-5.4)", provider: "codex", efforts: ["high"] },
+          { id: "sonnet", label: "Claude Sonnet", provider: "claude_code", efforts: ["high"] },
+        ],
+      });
+
+      await mount();
+
+      // The daemon keeps using this pin for a turn that names no model, so a
+      // menu reading "Default" would state the opposite of what will run.
+      expect(modelSelect().value).toBe("gpt-5.4");
+    });
+
+    it("names a pinned model the catalog no longer offers instead of hiding it", async () => {
+      pin({ ...pinned, providerModel: "gpt-5.3-retired" });
+      api.fetchOperatorModelCatalog.mockResolvedValue({
+        models: [{ id: "sonnet", label: "Claude Sonnet", provider: "claude_code", efforts: [] }],
+      });
+
+      await mount();
+
+      const select = modelSelect();
+      expect(select.value).toBe("gpt-5.3-retired");
+      const option = [...select.options].find((item) => item.value === "gpt-5.3-retired");
+      expect(option?.textContent).toContain("unavailable");
+    });
+
+    it("asks for the pin to be dropped when the menu is moved back to Default", async () => {
+      pin(pinned);
+      api.fetchOperatorModelCatalog.mockResolvedValue({
+        models: [{ id: "gpt-5.4", label: "Codex (gpt-5.4)", provider: "codex", efforts: [] }],
+      });
+
+      await mount();
+      const select = modelSelect();
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+        setter?.call(select, "");
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      await send("go");
+
+      // Omitting the model would leave the pin in force. Selecting Default has
+      // to be able to undo a pin, so it says so explicitly.
+      expect(api.submitOperatorTurn).toHaveBeenCalledTimes(1);
+      const [, request] = api.submitOperatorTurn.mock.calls[0];
+      expect(request.clearSelection).toBe(true);
+      expect(request.model).toBeUndefined();
+    });
+
+    it("does not ask to clear a conversation that was never pinned", async () => {
+      pin({ id: "conversation-1", title: "Fresh", status: "active", activeRequestId: null });
+      api.fetchOperatorModelCatalog.mockResolvedValue({
+        models: [{ id: "gpt-5.4", label: "Codex (gpt-5.4)", provider: "codex", efforts: [] }],
+      });
+
+      await mount();
+      expect(modelSelect().value).toBe("");
+      await send("go");
+
+      expect(api.submitOperatorTurn).toHaveBeenCalledTimes(1);
+      const [, request] = api.submitOperatorTurn.mock.calls[0];
+      expect(request.clearSelection).toBeUndefined();
     });
   });
 });

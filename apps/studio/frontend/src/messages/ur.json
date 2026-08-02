@@ -160,7 +160,13 @@
       "open": "Open run"
     },
     "model": {
-      "label": "Model"
+      "label": "Model",
+      "default": "پہلے سے طے شدہ",
+      "unavailable": "{model} (unavailable)"
+    },
+    "effort": {
+      "label": "کوشش",
+      "default": "پہلے سے طے شدہ"
     },
     "list": {
       "toggle": "Conversations",

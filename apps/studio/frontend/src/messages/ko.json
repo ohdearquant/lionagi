@@ -160,7 +160,13 @@
       "open": "Open run"
     },
     "model": {
-      "label": "Model"
+      "label": "Model",
+      "default": "기본값",
+      "unavailable": "{model} (unavailable)"
+    },
+    "effort": {
+      "label": "노력",
+      "default": "기본값"
     },
     "list": {
       "toggle": "Conversations",

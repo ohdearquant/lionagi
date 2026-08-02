@@ -160,7 +160,13 @@
       "open": "Open run"
     },
     "model": {
-      "label": "Model"
+      "label": "Model",
+      "default": "Default",
+      "unavailable": "{model} (unavailable)"
+    },
+    "effort": {
+      "label": "Usaha",
+      "default": "Default"
     },
     "list": {
       "toggle": "Conversations",

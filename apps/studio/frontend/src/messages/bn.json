@@ -160,7 +160,13 @@
       "open": "Open run"
     },
     "model": {
-      "label": "Model"
+      "label": "Model",
+      "default": "ডিফল্ট",
+      "unavailable": "{model} (unavailable)"
+    },
+    "effort": {
+      "label": "প্রচেষ্টা",
+      "default": "ডিফল্ট"
     },
     "list": {
       "toggle": "Conversations",

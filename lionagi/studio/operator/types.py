@@ -90,16 +90,36 @@ class OperatorContextSnapshot(WireModel):
     filters: dict[str, Any] = Field(default_factory=dict)
 
 
-# Closed set: the model reaches a CLI argument, so an open string would let the
-# browser choose what the daemon executes.
-OperatorModel = Literal["sonnet", "opus", "haiku"]
+# The model still reaches a CLI argument, so it stays a closed set -- but the
+# set now lives in the backend catalog (catalog.py) instead of a literal here,
+# so a browser can only ever request a model the coordinator recognizes
+# (resolve_selection rejects anything else before the turn is accepted).
+OperatorProvider = Literal["claude_code", "codex", "gemini_code"]
+OperatorEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
 
 
 class OperatorTurnRequest(WireModel):
     instruction: str = Field(min_length=1, max_length=32_768)
     context: OperatorContextSnapshot
     expected_last_sequence: int = Field(ge=0)
-    model: OperatorModel | None = None
+    model: str | None = Field(default=None, max_length=128)
+    # Optional: an explicit provider disambiguates a model id and lets a turn
+    # pin a provider without changing model. Omitted, it is inferred from
+    # `model` (via the catalog) or falls back to the env-var default.
+    provider: OperatorProvider | None = None
+    effort: OperatorEffort | None = None
+    # Omitting `model` means "keep whatever this conversation is pinned to",
+    # so it cannot also mean "remove the pin". This asks for the pin to be
+    # dropped, returning the conversation to the daemon's own default.
+    clear_selection: bool = False
+
+    @model_validator(mode="after")
+    def _clear_is_not_also_a_pin(self) -> OperatorTurnRequest:
+        if self.clear_selection and (
+            self.model is not None or self.provider is not None or self.effort is not None
+        ):
+            raise ValueError("clearSelection cannot be combined with a provider, model, or effort")
+        return self
 
 
 class ConfirmProposalRequest(WireModel):
@@ -170,6 +190,8 @@ class OperatorEngineTurn:
     run_dir: Any | None = None
     provider_session_id: str | None = None
     model: str | None = None
+    provider: str | None = None
+    effort: str | None = None
 
 
 class OperatorEngine(Protocol):

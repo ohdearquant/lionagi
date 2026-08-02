@@ -160,7 +160,13 @@
       "open": "Open run"
     },
     "model": {
-      "label": "Model"
+      "label": "Model",
+      "default": "По умолчанию",
+      "unavailable": "{model} (unavailable)"
+    },
+    "effort": {
+      "label": "Усилие",
+      "default": "По умолчанию"
     },
     "list": {
       "toggle": "Conversations",
