@@ -6,6 +6,8 @@ inline comments in `lionagi/operations/`, `lionagi/providers/`, and
 anything longer lives here. Source pointers back to here read
 `# See docs/internals/providers.md#<anchor>`.
 
+<a id="turn-origin-disposition"></a>
+
 ## Turn-origin disposition
 
 **`operations/_turn_origin.py`**
@@ -29,6 +31,8 @@ into each other):
 - `no-origin` — the call traverses without ever holding a token. The
   boundary stays silent.
 
+<a id="run-lifecycle-signal-ordering"></a>
+
 ## Run lifecycle signal ordering
 
 **`operations/run/run.py`**, **`operations/chat/chat.py`**
@@ -48,6 +52,8 @@ failure. `_terminal_emitted` guards double emission on Python <3.11, where
 `finally` also runs after `GeneratorExit`. `suppress_lifecycle_var`
 suppresses nested signals inside `Branch.ReAct()` turns, since each ReAct
 round is an internal continuation of the same call, not a fresh user turn.
+
+<a id="api-post-call-contract"></a>
 
 ## API post call contract
 
@@ -72,6 +78,8 @@ the call ended:
   ints); `None` when the shape is unrecognized or the call never produced
   one. Never the raw provider usage mapping.
 
+<a id="run-stream-cleanup-cascade"></a>
+
 ## Run stream cleanup cascade
 
 **`operations/run/run.py`**
@@ -87,11 +95,13 @@ orphaned, after the caller already gave up.
 
 The close chain (`ndjson_from_cli -> aterminate_process_group ->
 asyncio.wait_for`) can raise `asyncio.CancelledError`, a `BaseException` a
-plain `except Exception` will not catch. Left unguarded it would escape the
-enclosing `finally` and replace whatever provider/control exception was
-already propagating. Every cleanup site in `run.py` therefore checks
-`sys.exc_info()[1] is not None` before deciding whether a close failure is
-the primary error or a secondary one to log and swallow.
+plain `except Exception` will not catch and, left unguarded, would replace
+whatever provider/control exception was already propagating. Every cleanup
+site in `run.py` checks `sys.exc_info()[1] is not None` before deciding
+whether a close failure is the primary error or a secondary one to log and
+swallow.
+
+<a id="run-worker-liveness-watchdog"></a>
 
 ## Run worker liveness watchdog
 
@@ -119,20 +129,22 @@ liveness timeout only applies to endpoints declaring
 whose first chunk arrives only once the whole result is in) would otherwise
 have a healthy long call misdiagnosed as a dead worker.
 
+<a id="review-engine-partial-export-on-deadline"></a>
+
 ## Review engine partial export on deadline
 
 **`engines/review.py`**
 
 `ReviewEngine._partial_export()` returns an already-computed verdict after
 budget/deadline exhaustion instead of discarding it. A synthesis agent's
-structured emission is captured onto the session bus via the branch's async
-signal-emission side channel independently of whether the `synth.operate()`
-call in `_verdict` itself ever returns — so a `ReviewVerdict` can already
-exist in `run.by_type(ReviewVerdict)` even though the deadline watchdog
-cancelled `_run_task` before `_verdict` reached its `return` statement (e.g.
-a CLI-backed worker still retrying its emission). The base
+structured emission is captured onto the session bus independently of
+whether `synth.operate()` in `_verdict` itself ever returns, so a
+`ReviewVerdict` can already exist in `run.by_type(ReviewVerdict)` even
+though the deadline watchdog cancelled `_run_task` first. The base
 `Engine._partial_export` no-op would silently drop that verdict; this
-surfaces it, flagged via the normal `EngineResult` degrade signal.
+surfaces it via the normal `EngineResult` degrade signal.
+
+<a id="flow-stream-driver-task"></a>
 
 ## Flow-stream driver task
 
@@ -148,6 +160,8 @@ requires a system task (`trio.lowlevel.spawn_system_task`), which is immune
 to any enclosing cancel scope and is stopped via `driver_cancel_scope`
 instead.
 
+<a id="codex-c-override-toml-serialization"></a>
+
 ## Codex c override TOML serialization
 
 **`providers/openai/codex.py`**
@@ -161,6 +175,8 @@ e.g. `mcp_servers.<name>.env`) or, worse, coincidentally parses into a
 different-than-intended TOML value. Every override value is therefore
 serialized as syntactically valid TOML (`toml_override_value()`) instead of
 JSON.
+
+<a id="codex-turn-completed-usage-delta"></a>
 
 ## Codex turn-completed usage delta
 

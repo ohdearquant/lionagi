@@ -40,10 +40,9 @@ Collection applies the marker from the manifest, so source tests do not carry
 stale quarantine annotations. The lint job validates the manifest and fails
 above 15 entries, naming the oldest entries.
 
-A test enters only after two independent false failures with the same signature.
-Before adding it, retain the failure artifacts and confirm the failures came
-from separate run IDs. Quarantine is containment, not a substitute for a root
-cause investigation.
+A test enters only after two independent false failures with the same
+signature, confirmed from separate run IDs with failure artifacts retained.
+Quarantine is containment, not a root-cause fix.
 
 A test exits after its root-cause fix lands and its quarantine step is green for
 50 consecutive workflow runs. In the Actions history, inspect the `Run
@@ -60,9 +59,9 @@ run proves the test has rejoined the blocking lane.
 
 ## Failure telemetry
 
-Every failed test leg uploads `failures.jsonl`. Each record contains the exact
-nodeid, Python matrix leg, first failure signature, run ID, and attempt. Generate
-a windowed report from downloaded artifact directories:
+Every failed test leg uploads `failures.jsonl`: nodeid, Python matrix leg,
+first failure signature, run ID, attempt. Generate a windowed report from
+downloaded artifact directories:
 
 ```bash
 uv run python scripts/flake_report.py path/to/downloaded-artifacts/

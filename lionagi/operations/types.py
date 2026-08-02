@@ -51,21 +51,15 @@ class ExtractionError(ParseError):
 
 class SchemaRejectedError(ParseError):
     """JSON was recovered intact, but it does not satisfy the response model.
-
-    ``validation_error`` carries the underlying pydantic error, which names the
-    offending field and value.
+    ``validation_error`` carries the underlying pydantic error naming the offending field/value.
     """
 
     kind: ClassVar[ParseFailureKind] = "validation"
 
 
 class UnparsedResponse(str):
-    """The raw model text, returned when parsing gave up.
-
-    Subclasses ``str`` so callers that only ever wanted the text are unaffected
-    — equality, formatting and ``isinstance(x, str)`` all behave as before —
-    while ``failure_kind`` and ``validation_error`` make the reason reachable
-    without a second round trip.
+    """Raw model text, returned when parsing gave up. Subclasses ``str`` (equality/
+    formatting/``isinstance`` unaffected); ``failure_kind``/``validation_error`` expose the reason without a second round trip.
     """
 
     __slots__ = ("failure_kind", "validation_error")
@@ -117,10 +111,8 @@ class ChatParam(MorphParam):
     include_token_usage_to_model: bool = False  # deprecated
     imodel: iModel = None
     imodel_kw: dict = None
-    # Tri-state USER_PROMPT_SUBMIT disposition (see ._turn_origin.TurnOrigin).
-    # Unset by default: a genuine outside caller lets the model-submission
-    # boundary mint and fire. Internal callers set an explicit forwarded/
-    # no-origin value to control whether that boundary fires again.
+    # Tri-state USER_PROMPT_SUBMIT disposition (see ._turn_origin.TurnOrigin): unset
+    # lets the model-submission boundary fire; internal callers set forwarded/no-origin to control it.
     turn_origin: TurnOrigin = None
 
     @classmethod

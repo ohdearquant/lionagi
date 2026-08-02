@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 """`li schedule ... --machine` — the schedule family's machine results.
-
-The envelope contract lives in :mod:`lionagi.cli.machine`; this module only
-decides what each schedule subcommand's payload says. See docs/internals/cli.md
-for the three rules shaping every payload (parser reuse, mutation-reports-only-
-what-landed, and explicit `unavailable` when the schedule store is unreachable).
-"""
+The envelope contract lives in lionagi.cli.machine; this module only decides each payload's content."""
 
 from __future__ import annotations
 
@@ -20,9 +15,8 @@ from .machine import MachineError, available, unavailable
 
 __all__ = ("dispatch_schedule",)
 
-# A control-plane read against a local Studio. Longer than this is a Studio that
-# has stopped answering rather than one still working, and the MCP layer's own
-# timeout sits above it.
+# A control-plane read against a local Studio. Longer than this means Studio has stopped answering
+# rather than one still working; the MCP layer's own timeout sits above it.
 STUDIO_TIMEOUT_SECONDS = 15.0
 
 # `li schedule runs --limit` is bounded by the route itself (1-200); refusing
@@ -41,13 +35,8 @@ def _studio_url() -> str:
 
 
 def _studio(path: str, method: str = "GET", body: dict[str, Any] | None = None) -> Any:
-    """One call to the Studio schedules API, or a refusal that says which kind.
-
-    The human client collapses every failure into "returned nothing"; a machine
-    caller has to tell a schedule that does not exist from a Studio that is not
-    running, because the first is an answer and the second means it learned
-    nothing at all.
-    """
+    """One call to the Studio schedules API, or a refusal that says which kind — a machine caller must
+    tell a schedule that doesn't exist apart from a Studio that isn't running."""
     import urllib.error
     import urllib.request
 
@@ -116,12 +105,8 @@ def _schedule_subparsers() -> dict[str, argparse.ArgumentParser]:
 
 
 def _parse(name: str, argv: list[str], *, unhonoured: dict[str, str]) -> argparse.Namespace:
-    """Parse *argv* with the real subcommand parser, refusing what is not acted on.
-
-    argparse reports a bad invocation by printing usage and exiting, which would
-    end the process without an envelope, so its exit is caught and restated as a
-    refusal a caller can read.
-    """
+    """Parse *argv* with the real subcommand parser, refusing what isn't acted on; argparse's
+    SystemExit is caught and restated as a refusal a caller can read."""
     parsers = _schedule_subparsers()
     parser = parsers.get(name)
     if parser is None:
@@ -148,12 +133,8 @@ def _parse(name: str, argv: list[str], *, unhonoured: dict[str, str]) -> argpars
 
 
 def _absolute(path_value: str, label: str) -> Path:
-    """A caller-supplied path, refused unless it is absolute.
-
-    A relative path resolves against this process's working directory, which for
-    a dispatched call is wherever the server was started — never where the
-    caller thinks it is.
-    """
+    """A caller-supplied path, refused unless absolute — a relative one resolves against this
+    process's own working directory, never the caller's."""
     path = Path(path_value).expanduser()
     if not path.is_absolute():
         raise MachineError(
@@ -168,14 +149,8 @@ def _absolute(path_value: str, label: str) -> Path:
 
 
 def _resolved_next_fire(row: dict[str, Any]) -> dict[str, Any]:
-    """When the trigger in *row* next fires, through the scheduler's resolver.
-
-    Computed rather than read back: a freshly written row carries no
-    ``next_fire_at`` until the running scheduler recomputes it, and the value a
-    caller needs is the one its own expression resolves to. Cron fields are read
-    in the scheduler's configured timezone, so a caller that meant 09:00 local
-    can see whether it got 09:00 local.
-    """
+    """When the trigger in *row* next fires, computed through the scheduler's resolver rather than read
+    back (a freshly written row carries no next_fire_at until the scheduler recomputes it)."""
     try:
         from lionagi.studio.scheduler.engine import resolve_schedule_timezone, scheduler
     except Exception as exc:  # noqa: BLE001 — an unimportable resolver is not a create failure
@@ -188,10 +163,8 @@ def _resolved_next_fire(row: dict[str, Any]) -> dict[str, Any]:
             f"the scheduler's resolver returned no next occurrence for trigger_type "
             f"{row.get('trigger_type')!r}",
         )
-    # The row's own zone if it declares one, else the configured default, with
-    # an unloadable name falling back to UTC rather than raising. Asking the
-    # scheduler's resolver for that is what keeps the zone reported here the
-    # same one the fire is actually computed in.
+    # The row's own zone if declared, else the configured default (unloadable name falls back to UTC).
+    # Asking the scheduler's resolver keeps the zone reported here the one the fire is computed in.
     zone = resolve_schedule_timezone(row)
     from datetime import datetime
 
@@ -263,9 +236,8 @@ def _limits(argv: list[str]) -> dict[str, Any]:
     result = _studio("/limits") or {}
     cap = result.get("max_scheduled_concurrent")
     return {
-        # Both are reported because the cap alone is ambiguous: the CLI reads a
-        # falsy cap as no cap at all, and a caller should not have to know
-        # whether that is spelled 0 or null.
+        # Both are reported because the cap alone is ambiguous: a falsy cap reads as no cap at all,
+        # and a caller shouldn't have to know whether that's spelled 0 or null.
         "max_scheduled_concurrent": cap,
         "unlimited": not cap,
         "current_inflight": result.get("current_inflight", 0),
@@ -273,12 +245,8 @@ def _limits(argv: list[str]) -> dict[str, Any]:
 
 
 def _validate(argv: list[str]) -> dict[str, Any]:
-    """Whether a ScheduleSet file resolves. Never touches the database.
-
-    An unreadable or unparseable file is a refusal, not ``valid: false``: the
-    question this answers is which of a document's schedules are wrong, and
-    there is no document to answer it about.
-    """
+    """Whether a ScheduleSet file resolves. Never touches the database; an unreadable/unparseable
+    file is a refusal, not `valid: false` — there's no document to answer that question about."""
     known = _parse(
         "validate",
         argv,
@@ -321,13 +289,8 @@ def _validate(argv: list[str]) -> dict[str, Any]:
 
 
 def _export(argv: list[str]) -> dict[str, Any]:
-    """The ScheduleSet document(s) the current rows convert into.
-
-    The documents come back in the result rather than written to a path: this
-    process's working directory is not the caller's, so a written file would
-    land somewhere the caller cannot name, and the result channel already
-    carries the bytes.
-    """
+    """The ScheduleSet document(s) the current rows convert into; returned in the result rather than
+    written to a path, since this process's working directory isn't the caller's."""
     known = _parse(
         "export",
         argv,
@@ -382,13 +345,8 @@ def _export(argv: list[str]) -> dict[str, Any]:
 
 
 def _create(argv: list[str]) -> dict[str, Any]:
-    """A schedule row, written. Enabled and awaiting the scheduler's next tick.
-
-    What a success here entitles a caller to conclude is exactly this: the row
-    exists with this id, carrying the fields ``schedule`` reports, and its
-    trigger next resolves at ``resolved_next_fire``. It does not mean a
-    scheduler is running to fire it.
-    """
+    """A schedule row, written and enabled, awaiting the scheduler's next tick; success means the
+    row exists with these fields, not that a scheduler is running to fire it."""
     from lionagi.studio.cli import build_create_body
 
     known = _parse("create", argv, unhonoured={})
@@ -407,9 +365,8 @@ def _create(argv: list[str]) -> dict[str, Any]:
     if not isinstance(schedule_id, str):
         raise MachineError("internal", "Studio accepted the schedule without returning its id")
 
-    # Read back rather than echo: what a caller needs to see is the execution
-    # root and project that were actually persisted, which this command resolves
-    # from its own environment when the caller named neither.
+    # Read back rather than echo: the caller needs the execution root/project actually persisted,
+    # which this command resolves from its own environment when the caller named neither.
     try:
         row = _studio(f"/{_quote(schedule_id)}")
         persisted = available(row)
@@ -427,13 +384,8 @@ def _create(argv: list[str]) -> dict[str, Any]:
 
 
 def _trigger(argv: list[str]) -> dict[str, Any]:
-    """A fire, accepted. Not a run that happened.
-
-    Studio hands back a run id before the occurrence row is durably written, so
-    the only thing established here is that the fire was admitted and this id
-    allocated for it. The run's status is read afterwards with `schedule.status`
-    or `schedule.runs`.
-    """
+    """A fire, accepted — not a run that happened. Studio hands back a run id before the occurrence
+    row is durably written; read the run's actual status via `schedule.status`/`schedule.runs`."""
     known = _parse(
         "trigger",
         argv,

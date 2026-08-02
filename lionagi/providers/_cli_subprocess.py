@@ -36,14 +36,9 @@ async def ndjson_from_cli(
 ) -> AsyncIterator[dict]:
     """Yield dicts from an NDJSON-emitting CLI subprocess; tail_repair handles malformed final chunks.
 
-    ``stdin_data`` feeds text to the child over a pipe instead of the command
-    line, which is how an arbitrarily large prompt is delivered without
-    hitting the OS argument-length limit. It overrides ``stdin``: the child
-    always gets a pipe, the data is written by a task that runs concurrently
-    with the stdout/stderr readers below (a sequential write would deadlock as
-    soon as the data exceeds the pipe buffer and the child is blocked writing
-    output nobody is draining), and the pipe is closed afterwards so the child
-    sees EOF rather than waiting forever for more input.
+    ``stdin_data`` pipes text to the child (bypassing the OS arg-length limit) and
+    overrides ``stdin``; it's written concurrently with the stdout/stderr readers below
+    (a sequential write would deadlock once data exceeds the pipe buffer), then closed for EOF.
     """
     kwargs: dict[str, Any] = dict(
         cwd=str(cwd) if cwd else None,

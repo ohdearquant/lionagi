@@ -117,38 +117,24 @@ def _default_reason_code_for_entity_status(entity_type: str, status: str) -> str
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
 
-# Shape of the schema this code applies. ``_apply_schema`` stamps it into
-# ``schema_meta.version`` on every open, so the recorded version describes the
-# database as it stands after migrations rather than as it was created. Bump it
-# whenever a migration changes the shape a reader would see -- a new table, a
-# rebuilt CHECK constraint, a column whose meaning changed. Version "1" is the
-# original shape, before the migrations now applied on open existed.
+# Stamped into schema_meta.version on every open; bump whenever a migration
+# changes the shape a reader would see (new table, rebuilt CHECK, column meaning).
 SCHEMA_VERSION = "2"
 _SCHEMA_MIGRATION_LOCK_KEY = "lionagi.state.schema.migration"
 _DISPATCHED_AT_BACKFILL_KEY = "migration.dispatched_at_backfill"
 
 
 class SchemaTooNewError(RuntimeError):
-    """The database records a schema version this code does not understand.
+    """schema_meta.version is higher than SCHEMA_VERSION on a writable open.
 
-    Raised by a writable open when ``schema_meta.version`` is higher than
-    ``SCHEMA_VERSION``. A writable open rewrites the database into the shape
-    this code applies and then stamps that shape into the version row; neither
-    step has established anything about a shape written by a later release, so
-    both are refused rather than performed blind. Read-only opens apply no
-    schema and are unaffected.
+    Refused rather than blindly rewritten. Read-only opens are unaffected.
     """
 
 
 def state_db_file() -> Path | None:
-    """The local file a default ``StateDB()`` would open, if it opens one at all.
-
-    Resolved the same way ``StateDB.__init__`` resolves it, so the two cannot
-    disagree about which store is in play. Returns None when the configured
-    store is not a local file — a server, or an in-memory database — because
-    then there is no path to report and nothing a filesystem check can say
-    about it.
-    """
+    """The local file a default ``StateDB()`` would open, resolved the same
+    way ``StateDB.__init__`` does. None if the configured store isn't a local
+    file (a server, or in-memory)."""
     raw = settings.LIONAGI_STATE_DB_URL
     if raw is None:
         raw = DEFAULT_DB_PATH
@@ -164,31 +150,15 @@ def state_db_file() -> Path | None:
 
 
 def state_db_known_absent() -> bool:
-    """Whether the store a default ``StateDB()`` would open is known not to exist.
-
-    Callers use this to tell "there is no store, so there is no record of
-    anything" apart from "the store is there and something went wrong reading
-    it". Those are different answers and a caller acts differently on each, so
-    the check has to be about the store that will actually be opened. Testing
-    ``DEFAULT_DB_PATH`` instead asks about a file that need not be involved:
-    ``LIONAGI_STATE_DB_URL`` moves the store elsewhere, and then the default
-    path is absent while every row being asked about exists.
-
-    Only a positive answer is confident. Where existence is not a filesystem
-    question this reports False and leaves the open attempt to give the real
-    answer.
-    """
+    """Whether the store a default ``StateDB()`` would open is known not to
+    exist. Only a positive answer is confident; anything else (including a
+    non-filesystem store) reports False and defers to the open attempt."""
     path = state_db_file()
     return path is not None and not path.exists()
 
 
-# The single definition of which schedule_run statuses count as "fired and
-# resolved" for budget bookkeeping (max_runs, one-shot auto-disable). The
-# scheduler service layer must observe the same set — both its defaults and
-# this one point here so they cannot drift. 'timed_out' counts: a reaped run
-# fired and consumed real work. 'skipped' (never ran) and 'running' (not yet
-# resolved) do not; admission paths that need in-flight rows opt in
-# explicitly with ("running", *TERMINAL_RUN_STATUSES).
+# schedule_run statuses counting as "fired and resolved" for budget bookkeeping
+# (max_runs, one-shot auto-disable); the scheduler service must use this same set.
 TERMINAL_RUN_STATUSES: tuple[str, ...] = ("completed", "failed", "cancelled", "timed_out")
 
 _VALID_STATUS_SOURCES: frozenset[str] = frozenset({"executor", "agent", "admin", "system"})
@@ -226,24 +196,10 @@ _SESSION_COLUMNS = frozenset(
         "total_cost_usd",
         "num_turns",
         "duration_ms",
-        # ADR-0064 documents artifact_contract_json as fixed at session
-        # creation for the single-agent case, where the full contract
-        # (playbook + agent profile) is already known at create_session time.
-        # DAG flows break that assumption: which role runs which leg is only
-        # known once planning finishes, which happens after create_session
-        # (see _build_dag in cli/orchestrate/flow.py). This column is
-        # allowlisted here for two writer classes, both append-only and both
-        # frozen before the work they describe ever runs: (1) _build_dag
-        # folds each planned leg's resolved role artifact_defaults in once,
-        # at DAG-build time, strictly before any leg starts executing; (2)
-        # _execute_dag folds a reactively spawned node's own entries in after
-        # that node completes, but what is expected of it (role defaults +
-        # its builder-stamped spawn_id) was frozen before it was ever
-        # queued, so this is still a "before work starts" declaration in
-        # substance — see the ADR-0064 "Reactive-spawn exception" paragraph.
-        # No other writer may touch this column; the anti-drift intent of
-        # ADR-0064 (no changes once what was expected has been acted on)
-        # still holds.
+        # ADR-0064: artifact_contract_json is write-once, populated only by
+        # _build_dag (at DAG-build, before any leg starts) or _execute_dag (after
+        # a reactive spawn completes, using its pre-frozen role defaults). No
+        # other writer may touch it.
         "artifact_contract_json",
     }
 )
@@ -252,9 +208,8 @@ _INVOCATION_STATUSES = frozenset(
     {
         "running",
         "completed",
-        # Completion-trust gate: flow/scheduler aggregation can settle an
-        # invocation on this status when a child session produced no commits
-        # ahead of base, no artifacts, and no assistant output.
+        # flow/scheduler aggregation settles here when a child session produced
+        # no commits ahead of base, no artifacts, and no assistant output.
         "completed_empty",
         "failed",
         "timed_out",
@@ -332,10 +287,7 @@ VALID_SESSION_STATUSES = frozenset(
     {
         "running",
         "completed",
-        # Completion-trust gate: loop exited clean but no commits ahead of base
-        # and no artifacts were produced — distinct from "completed" so
-        # operators/monitors can tell "ran and produced nothing" apart from a
-        # verified completion.
+        # loop exited clean but produced no commits ahead of base and no artifacts.
         "completed_empty",
         "failed",
         "timed_out",
@@ -348,26 +300,17 @@ ADMIN_TRANSITION_TARGETS = frozenset({"failed", "aborted", "cancelled"})
 
 _SESSION_STATUSES = VALID_SESSION_STATUSES
 
-# ── ADR-0035 terminal-status vocabulary ────────────────────────────────
-# Terminal-state definitions live here, with the record schema, rather than
-# in any one CLI surface — update_status() enforces them uniformly for
-# every entity_type at the single write path; `li wait` reads the same
-# tables to build its per-kind terminal predicate. Sourced from the
-# lifecycle policy registry, the same pattern VALID_STATUSES_BY_ENTITY_TYPE
-# below uses, so this facade's terminal map can never drift from the
-# registry's own terminal_statuses.
+# ADR-0035: terminal-state definitions, sourced from the lifecycle policy
+# registry so this can never drift from update_status()'s enforcement.
 TERMINAL_STATUSES_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     entity_type: _lifecycle_policy.DEFAULT_REGISTRY.get(entity_type).terminal_statuses
     for entity_type in ("session", "invocation", "schedule_run", "show", "play", "team")
 }
 SESSION_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["session"]
 
-# Terminal branches.status values. branches has no lifecycle-policy entry of
-# its own (it never goes through update_status()'s ADR-0035 machinery) — but
-# every status finalize_branch() ever receives is a session final_status
-# passed straight through by cli/_runs.py teardown_persist(), so this IS
-# SESSION_TERMINAL_STATUSES, not a second hand-maintained list that could
-# drift from it.
+# branches has no lifecycle-policy entry of its own; every status
+# finalize_branch() receives is a session final_status passed through by
+# cli/_runs.py teardown_persist(), so this mirrors SESSION_TERMINAL_STATUSES.
 _BRANCH_TERMINAL_STATUSES = SESSION_TERMINAL_STATUSES
 
 INVOCATION_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE[
@@ -375,45 +318,31 @@ INVOCATION_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE[
 ]  # invocations share the session terminal-status vocabulary
 SCHEDULE_RUN_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["schedule_run"]
 SHOW_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["show"]
-# Still-in-flight play statuses — the schema layer owns this vocabulary
-# (kill.py imports it rather than defining its own copy); everything else
-# in PLAY_TERMINAL_STATUSES below is terminal.
+# Still-in-flight play statuses; kill.py imports this rather than duplicating it.
 PLAY_ACTIVE_STATUSES = frozenset(
     {"pending", "prepared", "running", "running_complete", "gated", "redoing"}
 )
 PLAY_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["play"]
 TEAM_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["team"]
 
-# Same-row columns update_status() may set alongside a status write, in the
-# same transaction as the status/status_transitions write — keeps a caller
-# from splitting a status change and a dependent column (e.g. ended_at) into
-# two transactions that a crash between them could leave inconsistent.
-# node_metadata is here for the same reason: it carries the process markers
-# the sweeps use to answer "is this still alive", a question they only ask of
-# rows their status filter already selected.
+# Same-row columns update_status() may set in the same transaction as the
+# status write, so a crash between them can't leave the two inconsistent.
 EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     "session": frozenset({"ended_at", "node_metadata"}),
     "invocation": frozenset({"ended_at"}),
     "schedule_run": frozenset({"ended_at", "error_detail", "exit_code"}),
 }
 
-# ── ADR-0035 status vocabulary (valid, not just terminal) ──────────────
-# update_status() rejects any new_status outside its entity_type's set here —
-# the terminal-overwrite floor above stops a terminal record from moving;
-# this stops ANY record (terminal or not) from being written to a status
-# that was never declared for its entity type. Sourced from the lifecycle
-# policy registry so the facade's vocabulary can never drift from
-# the statuses the unified policy (and the schema CHECK constraints) declare.
+# ADR-0035: full (not just terminal) status vocabulary; update_status() rejects
+# any new_status outside its entity_type's set here.
 VALID_STATUSES_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     entity_type: _lifecycle_policy.DEFAULT_REGISTRY.get(entity_type).statuses
     for entity_type in ("session", "invocation", "schedule_run", "show", "play", "team")
 }
 
 
-# Re-exported (not redefined) so `from lionagi.state.db import
-# TransitionRejectedError` is unchanged for existing callers — the lifecycle
-# adapter module raises this same class object; see
-# lionagi/state/lifecycle/adapters.py.
+# Re-exported (not redefined): the lifecycle adapter module raises this same
+# class object; keeps `from lionagi.state.db import TransitionRejectedError` working.
 TransitionRejectedError = _lifecycle_adapters.TransitionRejectedError
 
 
@@ -449,11 +378,8 @@ def _validate_columns(fields: dict[str, Any], allowed: frozenset[str]) -> None:
 def _to_json_column(value: Any) -> Any:
     """Serialize value to a JSON string for a TEXT column holding JSON.
 
-    Columns bound as ``type_=JSON`` are serialized by the engine instead; this
-    is for the writes that hand the driver a finished string. Both reject inf,
-    -inf and nan rather than storing them, because neither the `null` orjson
-    writes nor the bare `NaN` the stdlib writes can be read back as the value
-    that was handed in.
+    Rejects inf/-inf/nan rather than storing them — neither orjson's `null`
+    nor the stdlib's bare `NaN` round-trips back to the value handed in.
     """
     if value is None or isinstance(value, bytes | bytearray | memoryview):
         return value
@@ -526,36 +452,18 @@ def _install_begin_immediate(sync_engine) -> None:
 
 
 async def _restore_foreign_keys(conn, driver) -> None:
-    """Turn foreign-key enforcement back on after a legacy table rebuild.
-
-    Every rebuild calls this from its ``finally``, so it runs on the failure
-    paths too, and those are the ones that need the care. Two things can leave a
-    pooled connection with enforcement silently off:
-
-    ``PRAGMA foreign_keys`` is a no-op while a transaction is open, so a rollback
-    that itself failed leaves its transaction alive and the pragma inert. Any
-    surviving transaction is therefore closed first.
-
-    And a write is not a result. The setting is read back rather than assumed,
-    and a connection whose enforcement cannot be confirmed is invalidated so it
-    is never handed out again.
-
-    Cancellation gets its own handling rather than falling through. It arrives as
-    a BaseException, so catching ``Exception`` would let it skip the read-back and
-    the invalidation both, which is the one outcome this function exists to
-    prevent. The invalidation is shielded so it completes, and the cancellation is
-    then re-raised untouched.
-    """
+    """Turn foreign-key enforcement back on after a legacy table rebuild; reads
+    the setting back rather than assuming it and invalidates the connection if
+    it can't be confirmed. Cancellation is shielded through the invalidation
+    and re-raised untouched."""
     cancelled_exc = get_cancelled_exc_class()
 
     try:
-        # No-op when the caller already ended its own transaction.
         await driver.rollback()
     except cancelled_exc:
         await shield(conn.invalidate)
         raise
-    except Exception:  # noqa: S110 -- not fatal on its own; the read-back below is
-        # what decides whether this connection is safe to hand out again.
+    except Exception:  # noqa: S110 -- read-back below decides if the connection is safe to reuse
         pass
 
     confirmed = False
@@ -591,27 +499,17 @@ class StateDB:
             raw = DEFAULT_DB_PATH  # module-level; tests can monkeypatch db_mod.DEFAULT_DB_PATH
         self.url = normalize_state_db_url(raw)
         self.dialect = dialect_of(self.url)  # "sqlite" | "postgresql"
-        # Read-only mode: open() skips schema application, the BEGIN IMMEDIATE
-        # write-lock event, and every mutating PRAGMA, and opens the file via
-        # SQLite's own read-only URI mode instead — see make_readonly_engine().
-        # A missing file is a loud error, never a silent create.
+        # readonly: open() uses SQLite's read-only URI mode (make_readonly_engine())
+        # and skips schema application; a missing file is a loud error, never a silent create.
         self.readonly = readonly
         self._engine = None
         # Per-(kind, name) lock to serialize version increment for save_definition.
         self._definition_locks: dict[tuple[str, str], Lock] = {}
-        # Connection-wide write lock: every mutating method that can share the
-        # live-persistence connection must hold this lock during its write window.
-        #
-        # For SQLite: prevents concurrent coroutines from racing BEGIN IMMEDIATE
-        # on the same AsyncEngine (which shares a single connection in the pool).
-        # For PostgreSQL: _tx() uses engine.begin() which handles isolation
-        # natively, so the lock is a no-op for PG paths (they skip it via dialect
-        # check in _tx()), but it still serializes Python-side CAS in update_status.
+        # SQLite: prevents concurrent coroutines racing BEGIN IMMEDIATE on the shared
+        # pooled connection. PostgreSQL: a no-op for _tx() (engine.begin() handles
+        # isolation natively) but still serializes Python-side CAS in update_status.
         self._write_lock: Lock = Lock()
-        # Lazily constructed: the unified lifecycle service that
-        # StateDB.update_status() delegates its guarded read/CAS/history
-        # algorithm to. Cheap to build; deferred only so StateDB.__init__
-        # never depends on import order inside lionagi.state.lifecycle.
+        # Lazily built so __init__ never depends on lifecycle's import order.
         self.__lifecycle_service: _LifecycleService | None = None
 
     def _lifecycle_service(self) -> _LifecycleService:
@@ -688,9 +586,7 @@ class StateDB:
                 else:
                     ensure_lionagi_dir(p.parent)
         if self.readonly:
-            # No make_engine(), no _install_begin_immediate(), no _apply_schema():
-            # every one of those mutates the file (PRAGMAs persisted into the
-            # header, schema/seed writes, a reserved BEGIN IMMEDIATE write lock).
+            # Skips make_engine/_install_begin_immediate/_apply_schema: all three mutate the file.
             self._engine = make_readonly_engine(self.url)
             return
         self._engine = make_engine(self.url)
@@ -707,10 +603,8 @@ class StateDB:
         try:
             await self.open()
         except BaseException:
-            # __aexit__ is not entered when __aenter__ fails. Dispose the
-            # partially opened engine here so its driver worker cannot outlive
-            # a lock-contention or migration failure. Direct open() retains its
-            # established inspect-and-retry behavior on schema failures.
+            # __aexit__ is not entered when __aenter__ fails; dispose here so the
+            # driver worker cannot outlive a lock-contention or migration failure.
             with CancelScope(shield=True):
                 await self.close()
             raise
@@ -738,12 +632,9 @@ class StateDB:
                 yield conn
 
     # ── Public query surface (portable across both dialects) ───────────
-    # Replaces direct `db.db.execute(...)` access from CLI/studio consumers.
-    # Accepts the legacy qmark (?) form with a sequence of params, or named
-    # (:name) SQL with a dict; SQLAlchemy translates the paramstyle per dialect.
-    # Rows are returned as plain dicts (JSON columns left as stored — str on
-    # sqlite, native on pg — so callers keep their own decode, guarded by
-    # isinstance(str) for pg). For multi-statement atomic work use transaction().
+    # Accepts qmark (?) params as a sequence or named (:name) SQL with a dict.
+    # JSON columns are returned as stored (str on sqlite, native on pg) —
+    # callers decode themselves. For multi-statement atomic work use transaction().
 
     @staticmethod
     def _to_named(sql: str, params: Any) -> tuple[str, dict[str, Any]]:
@@ -802,10 +693,8 @@ class StateDB:
         return self._tx()
 
     async def _raw_sqlite_exec(self, sql: str, *, fetch: bool = False):
-        # Run maintenance SQL on sqlite's raw driver connection for true
-        # autocommit. SQLAlchemy's AUTOCOMMIT option does not clear the aiosqlite
-        # adapter's implicit transaction, which blocks VACUUM and wal_checkpoint
-        # ("cannot VACUUM"/"database table is locked").
+        # SQLAlchemy's AUTOCOMMIT doesn't clear aiosqlite's implicit transaction,
+        # which blocks VACUUM/wal_checkpoint — use the raw driver connection instead.
         async with self._engine.connect() as conn:
             driver = (await conn.get_raw_connection()).driver_connection
             cur = await driver.execute(sql)
@@ -821,9 +710,7 @@ class StateDB:
                 await conn.execute(text("VACUUM"))
 
     async def checkpoint(self, mode: str = "PASSIVE") -> tuple[int, int, int] | None:
-        # WAL checkpoint is sqlite-only maintenance; like VACUUM it must bypass
-        # the adapter's implicit transaction. Returns (busy, log_pages,
-        # checkpointed); None on postgresql (no WAL checkpoint concept).
+        # sqlite-only; returns (busy, log_pages, checkpointed), None on postgresql.
         if self.dialect != "sqlite":
             return None
         mode = mode.upper()
@@ -840,8 +727,7 @@ class StateDB:
         try:
             recorded_n = int(recorded)
         except (TypeError, ValueError):
-            # Not a version this code can order against its own, so there is no
-            # downgrade to detect. Leave it to the stamp below.
+            # Not a version this code can order against its own; leave it to the stamp below.
             return
         if recorded_n <= int(SCHEMA_VERSION):
             return
@@ -855,19 +741,12 @@ class StateDB:
         )
 
     async def _refuse_newer_schema(self, conn) -> None:
-        """Refuse to open a database stamped with a version above SCHEMA_VERSION.
-
-        Everything ``_apply_schema`` does afterwards -- adding columns,
-        rebuilding tables to widen CHECK constraints, then recording
-        SCHEMA_VERSION as the shape that resulted -- is written against the
-        schema this release knows. Against a newer one it would rewrite tables
-        on assumptions it cannot check and replace a truthful version stamp
-        with a lower one, leaving a database that reads as understood.
-        """
+        """Refuse to open a database stamped with a version above SCHEMA_VERSION —
+        _apply_schema would otherwise rewrite tables on assumptions it can't
+        check and stamp a truthful newer version with a lower one."""
         if self.dialect == "postgresql":
-            # The version table or row may not exist yet, so a row lock cannot
-            # serialize first-time schema creation. This transaction-scoped
-            # database-local lock is available before any schema object exists.
+            # No table/row may exist yet to row-lock; this database-local advisory
+            # lock is available before any schema object exists.
             await conn.execute(
                 text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
                 {"key": _SCHEMA_MIGRATION_LOCK_KEY},
@@ -898,36 +777,21 @@ class StateDB:
         await self._reconcile_columns()
         if self.dialect == "sqlite":
             await self._rebuild_legacy_sessions_table()
-            # existing DBs created before flow_yaml was added carry a
-            # 4-value CHECK on schedules.action_kind that omits 'flow_yaml'.
-            await self._drop_legacy_action_kind_check()
-            # Existing DBs (including ones already rebuilt to
-            # admit 'flow_yaml') carry a CHECK on schedules.action_kind that
-            # omits 'command'.
-            await self._drop_legacy_schedules_command_check()
-            # Existing DBs carry a CHECK on schedules.trigger_type that
-            # omits 'at' (the declarative ScheduleSet absolute-time trigger).
-            await self._drop_legacy_schedules_trigger_type_check()
-            # existing DBs created before the completion-trust gate carry a
-            # 6-value CHECK on invocations.status that omits 'completed_empty'.
-            await self._drop_legacy_invocations_status_check()
-            # ADR-0071 D2: existing DBs carry a 5-value CHECK on
-            # schedule_runs.status and a NOT NULL schedule_id, from before
-            # schedule_runs was generalized into the task-application entity.
-            await self._drop_legacy_schedule_runs_check()
+            await self._drop_legacy_action_kind_check()  # legacy CHECK omits 'flow_yaml'
+            await self._drop_legacy_schedules_command_check()  # legacy CHECK omits 'command'
+            await self._drop_legacy_schedules_trigger_type_check()  # legacy CHECK omits 'at'
+            await (
+                self._drop_legacy_invocations_status_check()
+            )  # legacy CHECK omits 'completed_empty'
+            await self._drop_legacy_schedule_runs_check()  # ADR-0071 D2: pre-generalization CHECK
         async with self._engine.begin() as conn:
             await self._refuse_newer_schema(conn)
             await conn.run_sync(metadata.create_all)
             await self._reconcile_indexes(conn)
             await self._backfill_dispatched_at_once(conn)
-            # Seed immutable reference rows; ON CONFLICT DO NOTHING is safe to
-            # re-run on every open() because the rows are identity-stable.
-            # The version row is the exception: the migrations above rewrite an
-            # older database into the current shape, so the stamp has to move
-            # with them. DO UPDATE, not DO NOTHING, or a migrated database keeps
-            # reporting the version it was created at. The update only ever
-            # raises the recorded version: a database stamped higher than
-            # SCHEMA_VERSION never reaches here, it is refused at open.
+            # Seed rows use DO NOTHING (identity-stable); the version row uses DO
+            # UPDATE since migrations move it forward — never downward, since a
+            # higher recorded version is refused at open before reaching here.
             await conn.execute(
                 text(
                     "INSERT INTO schema_meta (key, value) VALUES ('version', :version) "
@@ -980,11 +844,8 @@ class StateDB:
                             await self._refuse_newer_schema(conn)
                             await conn.execute(text(add_column))
                     except OperationalError:
-                        # SQLite has no ADD COLUMN IF NOT EXISTS. Another process
-                        # may commit the same migration after our inspection but
-                        # before our ALTER obtains the WAL write lock. Only
-                        # suppress the error when a fresh inspection proves that
-                        # the requested column now exists.
+                        # SQLite has no ADD COLUMN IF NOT EXISTS; only suppress if a
+                        # racing process already added it (fresh inspection proves it).
                         if self.dialect != "sqlite":
                             raise
                         async with self._engine.connect() as conn:
@@ -1014,30 +875,10 @@ class StateDB:
             await self._backfill_dispatched_at(conn)
 
     async def _backfill_dispatched_at(self, conn) -> None:
-        """Set the dispatch marker on running rows that predate its backfill.
-
-        ``dispatched_at`` is only stamped going forward, by
-        ``SchedulerEngine._mark_dispatched()``. Without a backfill, every row
-        left at ``status = 'running'`` from before this column existed would
-        have ``dispatched_at IS NULL`` -- indistinguishable from a row whose
-        launch genuinely never got confirmed. ``list_undispatched_schedule_
-        runs()`` (consumed by ``SchedulerEngine._recover_undispatched_
-        fires()`` on the next daemon startup) would then treat every such row
-        as crashed-before-dispatch and re-fire it, even one that is still
-        genuinely executing across the upgrade restart.
-
-        Stamping ``dispatched_at`` to the row's own ``fired_at`` (NOT NULL by
-        schema) excludes these pre-existing rows from that scan -- the same
-        "no signal to distinguish, so don't auto-retry" resolution
-        ``_backfill_action_cwd()`` applies to ``action_cwd``. A still-running
-        row is left alone (nothing re-fires it); a row that actually crashed
-        pre-migration falls through to ``reap_stale_schedule_runs()``'s
-        wall-clock deadline instead of being auto-retried on ambiguous
-        evidence. Scoped to ``schedule_id IS NOT NULL`` to match
-        ``list_undispatched_schedule_runs()`` and leave the leased ad-hoc
-        task queue (its own dispatch/lease model) untouched. A durable
-        ``schema_meta`` marker makes this a one-time migration even when an
-        earlier release already added the column without running the update.
+        """Stamp ``dispatched_at`` on pre-existing 'running' rows to their own
+        ``fired_at``, so they aren't mistaken for crashed-before-dispatch and
+        re-fired by ``list_undispatched_schedule_runs()``. Scoped to
+        ``schedule_id IS NOT NULL`` — the ad-hoc task queue is untouched.
         """
         await conn.execute(
             text(
@@ -1048,34 +889,17 @@ class StateDB:
         )
 
     async def _rebuild_check_constraint(self, table: str, already_rebuilt, rebuild) -> None:
-        """Run a legacy CHECK-constraint table rebuild, tolerant of a concurrent winner.
-
-        Two processes cold-opening the same legacy DB can both observe the
-        same stale CHECK and enter the identical DROP/CREATE/INSERT/RENAME
-        rebuild. SQLite's write lock serializes the two attempts, but the
-        loser can still surface an OperationalError (busy-timeout exceeded
-        waiting for the write lock). Mirrors the catch-and-reinspect guard
-        in ``_reconcile_columns``: only suppress the error when a fresh read
-        of ``sqlite_master`` proves the rebuild already landed — via this
-        process or a racing one — otherwise re-raise.
-
-        ``already_rebuilt`` takes the table's current ``sqlite_master.sql``
-        (or ``None`` if the table is now missing) and returns whether the
-        table is in its post-rebuild shape.
-        """
+        """Run a legacy CHECK-constraint table rebuild, tolerant of a concurrent
+        winner: suppresses OperationalError only if already_rebuilt(current
+        sqlite_master.sql) proves the rebuild already landed."""
         try:
             await rebuild()
-        # Five of the six rebuilds execute through the raw aiosqlite driver,
-        # which raises sqlite3.OperationalError directly — NOT SQLAlchemy's
-        # wrapper — so both types must be caught here.
+        # Raw aiosqlite driver raises sqlite3.OperationalError directly, not SQLAlchemy's wrapper.
         except (OperationalError, sqlite3.OperationalError) as original_error:
             if self.dialect != "sqlite":
                 raise
-            # The reinspection read is itself a fresh connection contending
-            # for the same schema lock as every other queued racer, so under
-            # deep enough contention it can raise OperationalError too. That
-            # must not surface as a *different*, less informative crash than
-            # the write failure we were already handling.
+            # The reinspection read can itself raise OperationalError under
+            # contention; don't let that mask the original write failure.
             try:
                 async with self._engine.connect() as conn:
                     row = (
@@ -1096,19 +920,12 @@ class StateDB:
                 raise
 
     _LEGACY_SESSION_STATUS_CHECK_MARKER = "'running', 'completed', 'failed', 'aborted'"
-    # Present only in a sessions CREATE SQL written before transcript imports had
-    # their own provenance value; its absence beside a source_kind CHECK is what
-    # marks a DB that would reject 'imported_codex'.
+    # Marks a DB predating 'imported_codex' source_kind support.
     _NARROW_SOURCE_KIND_MARKER = "'live', 'imported_fs')"
 
     @classmethod
     def _sessions_rebuild_needed(cls, create_sql: str) -> bool:
-        """Whether a sessions CREATE SQL still carries either legacy CHECK.
-
-        A DB with no source_kind CHECK at all (the column was added by column
-        reconciliation, which cannot attach one) accepts every value already, so
-        only a CHECK that names the narrow set needs widening.
-        """
+        """Whether a sessions CREATE SQL still carries either legacy CHECK."""
         if cls._LEGACY_SESSION_STATUS_CHECK_MARKER in create_sql:
             return True
         return cls._NARROW_SOURCE_KIND_MARKER in create_sql
@@ -1158,32 +975,16 @@ class StateDB:
                 driver = (await conn.get_raw_connection()).driver_connection
                 try:
                     # The OFF pragma is inside this try, not above it, because it
-                    # takes effect at its own await with no flush required. That is
-                    # measured, not inferred from the commit that follows. Anything
-                    # interrupting after it -- cancellation included -- must still
-                    # reach the finally, or a pooled connection keeps foreign keys
-                    # disabled for every caller that borrows it next.
                     await driver.execute("PRAGMA foreign_keys = OFF")
-                    # The commit does not make the pragma effective; it closes any
-                    # open transaction so BEGIN IMMEDIATE starts cleanly. The pragma
-                    # must run on the raw driver: open() installs BEGIN IMMEDIATE on
-                    # every sqlite engine, so setting it through an engine-level
-                    # begin() block leaves it a no-op and enforcement stays on for
-                    # the whole rebuild.
+                    # commit closes any open transaction so BEGIN IMMEDIATE starts clean;
+                    # must run on the raw driver, since engine-level begin() installs its
+                    # own BEGIN IMMEDIATE and would leave the pragma a no-op.
                     await driver.commit()
                     await driver.execute("BEGIN IMMEDIATE")
                     try:
                         await self._refuse_newer_sqlite_schema(driver)
-                        # The foreign keys below are the ones the declared schema
-                        # carries, so a rebuilt table ends up with the same
-                        # constraints a freshly created one gets. They are what
-                        # makes the OFF pragma above load-bearing: sqlite accepts
-                        # a forward reference to a table that does not exist yet,
-                        # but with enforcement on, every statement against the
-                        # child fails while the parent is absent -- including the
-                        # copy below, and including rows whose FK column is NULL.
-                        # A minimal legacy DB has no messages or invocations table
-                        # until create_all() runs after this rebuild.
+                        # FKs below match the declared schema; OFF above matters because a
+                        # minimal legacy DB lacks messages/invocations until create_all() runs.
                         await driver.execute(
                             """
                             CREATE TABLE sessions_new (
@@ -1323,39 +1124,15 @@ class StateDB:
         rebuild_table = _schedules_table.to_metadata(MetaData(), name="schedules_new")
         create_stmt = str(CreateTable(rebuild_table).compile(dialect=self._engine.dialect))
 
-        # ``schedules`` is an FK target (schedule_runs.schedule_id ON DELETE
-        # CASCADE): dropping it while `PRAGMA foreign_keys` is enforced
-        # cascades away every schedule_runs row that referenced it, even
-        # with the rows already safely copied into the new table first.
-        # `engine.begin()` opens its transaction before our first statement
-        # runs, and SQLite treats `PRAGMA foreign_keys` as a no-op inside a
-        # pending transaction -- so toggling it through a normal SQLAlchemy
-        # connection never actually takes effect (verified: it silently
-        # cascade-deleted schedule_runs rows in this exact rebuild before
-        # this fix). Go through the raw driver connection instead (same
-        # technique as ``_drop_legacy_invocations_status_check``) so the
-        # pragma flip is real autocommit, not swallowed by an open txn.
-        #
-        # The pragma flip itself must stay OUTSIDE any transaction (SQLite
-        # only honors it between transactions), but the CREATE/copy/DROP/
-        # RENAME/index sequence that follows needs its own explicit
-        # transaction: running those as independent autocommit statements
-        # left a failure between DROP and RENAME (cancellation, I/O error,
-        # a bad index statement) with only `schedules_new` on disk --
-        # `metadata.create_all` would then create a fresh *empty*
-        # `schedules` on the next open, stranding every original row.
-        # `BEGIN IMMEDIATE` reclaims the atomicity the old `engine.begin()`
-        # path had, without reintroducing the pragma-inside-transaction bug.
+        # schedules is an FK target (CASCADE); flip foreign_keys via the raw driver
+        # outside any transaction (engine.begin() makes the pragma a silent no-op),
+        # then BEGIN IMMEDIATE wraps the CREATE/copy/DROP/RENAME/index sequence
+        # for atomicity — without it, a mid-sequence failure strands original rows.
         async def _rebuild() -> None:
             async with self._engine.connect() as conn:
                 driver = (await conn.get_raw_connection()).driver_connection
                 try:
-                    # Inside the try, not above it: the pragma takes effect at its
-                    # own await with no flush required, so anything interrupting
-                    # after it -- cancellation included -- must still reach the
-                    # finally or a pooled connection keeps foreign keys disabled.
-                    # The commit closes any open transaction rather than making the
-                    # pragma effective.
+                    # Inside the try so cancellation after this still reaches finally.
                     await driver.execute("PRAGMA foreign_keys = OFF")
                     await driver.commit()
                     await driver.execute("BEGIN IMMEDIATE")
@@ -1381,22 +1158,15 @@ class StateDB:
             _rebuild,
         )
 
-    # Substring present only in the widened schedules CREATE SQL;
-    # its absence indicates a legacy DB whose action_kind CHECK still omits
-    # 'command'. Distinct from ``_LEGACY_SCHEDULES_FLOW_YAML_MARKER`` above:
-    # a DB already rebuilt to admit 'flow_yaml' carries that marker and
-    # would otherwise never re-run to pick up 'command' too.
+    # Distinct from _LEGACY_SCHEDULES_FLOW_YAML_MARKER: a DB already rebuilt for
+    # 'flow_yaml' still needs this check to pick up 'command' too.
     _LEGACY_SCHEDULES_COMMAND_MARKER = "'command'"
 
     async def _drop_legacy_schedules_command_check(self) -> None:
-        """Rebuild ``schedules`` if its action_kind CHECK still omits 'command'.
-
-        SQLite cannot widen a CHECK constraint via ALTER TABLE, so this uses
-        the same rename -> CREATE new -> INSERT SELECT -> DROP old pattern as
-        ``_drop_legacy_action_kind_check``. Runs after ``_reconcile_columns``
-        (via ``_apply_schema``), so the ADD COLUMN for action_command /
-        action_command_args has already landed on the pre-rebuild table.
-        """
+        """Rebuild schedules if its action_kind CHECK still omits 'command'
+        (SQLite can't widen a CHECK via ALTER TABLE). Runs after
+        _reconcile_columns, so action_command/action_command_args already
+        exist on the pre-rebuild table."""
         if self.dialect != "sqlite":
             return
         async with self._engine.connect() as conn:
@@ -1443,39 +1213,15 @@ class StateDB:
         rebuild_table = _schedules_table.to_metadata(MetaData(), name="schedules_new")
         create_stmt = str(CreateTable(rebuild_table).compile(dialect=self._engine.dialect))
 
-        # ``schedules`` is an FK target (schedule_runs.schedule_id ON DELETE
-        # CASCADE): dropping it while `PRAGMA foreign_keys` is enforced
-        # cascades away every schedule_runs row that referenced it, even
-        # with the rows already safely copied into the new table first.
-        # `engine.begin()` opens its transaction before our first statement
-        # runs, and SQLite treats `PRAGMA foreign_keys` as a no-op inside a
-        # pending transaction -- so toggling it through a normal SQLAlchemy
-        # connection never actually takes effect (verified: it silently
-        # cascade-deleted schedule_runs rows in this exact rebuild before
-        # this fix). Go through the raw driver connection instead (same
-        # technique as ``_drop_legacy_invocations_status_check``) so the
-        # pragma flip is real autocommit, not swallowed by an open txn.
-        #
-        # The pragma flip itself must stay OUTSIDE any transaction (SQLite
-        # only honors it between transactions), but the CREATE/copy/DROP/
-        # RENAME/index sequence that follows needs its own explicit
-        # transaction: running those as independent autocommit statements
-        # left a failure between DROP and RENAME (cancellation, I/O error,
-        # a bad index statement) with only `schedules_new` on disk --
-        # `metadata.create_all` would then create a fresh *empty*
-        # `schedules` on the next open, stranding every original row.
-        # `BEGIN IMMEDIATE` reclaims the atomicity the old `engine.begin()`
-        # path had, without reintroducing the pragma-inside-transaction bug.
+        # schedules is an FK target (CASCADE); flip foreign_keys via the raw driver
+        # outside any transaction (engine.begin() makes the pragma a silent no-op),
+        # then BEGIN IMMEDIATE wraps the CREATE/copy/DROP/RENAME/index sequence
+        # for atomicity — without it, a mid-sequence failure strands original rows.
         async def _rebuild() -> None:
             async with self._engine.connect() as conn:
                 driver = (await conn.get_raw_connection()).driver_connection
                 try:
-                    # Inside the try, not above it: the pragma takes effect at its
-                    # own await with no flush required, so anything interrupting
-                    # after it -- cancellation included -- must still reach the
-                    # finally or a pooled connection keeps foreign keys disabled.
-                    # The commit closes any open transaction rather than making the
-                    # pragma effective.
+                    # Inside the try so cancellation after this still reaches finally.
                     await driver.execute("PRAGMA foreign_keys = OFF")
                     await driver.commit()
                     await driver.execute("BEGIN IMMEDIATE")
@@ -1642,30 +1388,15 @@ class StateDB:
             cols = [r["name"] for r in cols_rows]
         col_list = ", ".join(cols)
 
-        # `invocations` is an FK target (sessions.invocation_id,
-        # schedule_runs.invocation_id, artifacts.invocation_id): dropping it
-        # while `PRAGMA foreign_keys` is enforced raises a FOREIGN KEY
-        # constraint failure even with real rows safely copied into the new
-        # table first. `engine.begin()` opens its transaction before our first
-        # statement runs, and SQLite treats `PRAGMA foreign_keys` as a no-op
-        # inside a pending transaction — so toggling it through a normal
-        # SQLAlchemy connection never actually takes effect. Go through the
-        # raw driver connection instead (same technique as `_raw_sqlite_exec`)
-        # so the pragma flip is real autocommit, not swallowed by an open txn.
+        # invocations is an FK target; flip foreign_keys via the raw driver
+        # connection (engine.begin() makes the pragma a silent no-op).
         async def _rebuild() -> None:
             async with self._engine.connect() as conn:
                 driver = (await conn.get_raw_connection()).driver_connection
                 try:
-                    # Inside the try, not above it: the pragma takes effect at its
-                    # own await with no flush required, so anything interrupting
-                    # after it -- cancellation included -- must still reach the
-                    # finally or a pooled connection keeps foreign keys disabled.
                     await driver.execute("PRAGMA foreign_keys = OFF")
-                    # The commit closes any open transaction rather than making the
-                    # pragma effective, then BEGIN IMMEDIATE makes the whole rebuild
-                    # one atomic transaction — DDL autocommits per-statement
-                    # otherwise, so a crash between DROP and RENAME would strand the
-                    # data in invocations_new.
+                    # commit closes any open transaction; BEGIN IMMEDIATE then makes the
+                    # rebuild one atomic transaction (DDL otherwise autocommits per-statement).
                     await driver.commit()
                     await driver.execute("BEGIN IMMEDIATE")
                     await self._refuse_newer_sqlite_schema(driver)
@@ -1728,11 +1459,8 @@ class StateDB:
         p = self.path
         if p is None or str(p) == ":memory:" or not p.exists():
             return
-        # In WAL mode, recently committed transactions can live only in the
-        # `-wal` sidecar file until a checkpoint occurs. A raw file copy taken
-        # without checkpointing first can silently omit that data, defeating
-        # the rollback guarantee this backup exists to provide. TRUNCATE forces
-        # a full checkpoint and truncates the WAL file back to zero length.
+        # TRUNCATE forces a full checkpoint first, or a raw file copy could
+        # silently omit data still living only in the WAL sidecar file.
         await self.checkpoint("TRUNCATE")
         backup_path = p.with_name(f"{p.name}.pre-{label}.{int(time.time())}.bak")
         shutil.copy2(p, backup_path)
@@ -1743,15 +1471,8 @@ class StateDB:
     _LEGACY_SCHEDULE_RUNS_QUEUE_MARKER = "'waiting_dependency'"
 
     async def _drop_legacy_schedule_runs_check(self) -> None:
-        """Rebuild ``schedule_runs`` if it still carries the pre-ADR-0071 status CHECK.
-
-        SQLite cannot widen a CHECK constraint nor drop a NOT NULL via ALTER
-        TABLE, so this uses the same rename → CREATE new → INSERT SELECT →
-        DROP old pattern as ``_drop_legacy_action_kind_check`` /
-        ``_drop_legacy_invocations_status_check``. Takes a pre-rebuild backup
-        of the database file first (``_backup_before_rebuild``); see its
-        docstring for the rollback path.
-        """
+        """Rebuild schedule_runs if it still carries the pre-ADR-0071 status CHECK
+        (SQLite can't widen a CHECK or drop NOT NULL via ALTER TABLE)."""
         if self.dialect != "sqlite":
             return
         async with self._engine.connect() as conn:
@@ -1771,7 +1492,6 @@ class StateDB:
             return
         create_sql: str = row["sql"]
         if self._LEGACY_SCHEDULE_RUNS_QUEUE_MARKER in create_sql:
-            # Table was already created / rebuilt with the widened CHECK.
             return
 
         await self._backup_before_rebuild("schedule_runs")
@@ -1805,7 +1525,7 @@ class StateDB:
                 .mappings()
                 .all()
             )
-            trigger_sqls = [r["sql"] for r in trigger_rows]
+            trigger_sqls = [r["sql"] for r in trigger_rows]  # DROP TABLE also drops triggers
 
             cols_rows = (
                 (await conn.execute(text("PRAGMA table_info(schedule_runs)"))).mappings().all()
@@ -1813,28 +1533,14 @@ class StateDB:
             cols = [r["name"] for r in cols_rows]
         col_list = ", ".join(cols)
 
-        # ``schedule_runs`` is both an FK source (schedules, invocations) and
-        # an FK target (its own chain_parent_id, and dispatch_outbox's
-        # schedule_run_id) — the same complication documented at
-        # ``_drop_legacy_invocations_status_check``, so this rebuild uses the
-        # same hand-kept-literal + raw-driver-autocommit-pragma technique
-        # rather than ``to_metadata()`` (which cannot resolve those
-        # cross-table foreign keys from an isolated, single-table MetaData).
-        # The literal mirrors the CREATE TABLE in schema.sql; parity between
-        # the two is test-enforced.
+        # schedule_runs is both an FK source and target (chain_parent_id,
+        # dispatch_outbox), which to_metadata() can't resolve from a single-table
+        # MetaData — hand-kept literal below, parity with schema.sql is test-enforced.
         async def _rebuild() -> None:
             async with self._engine.connect() as conn:
                 driver = (await conn.get_raw_connection()).driver_connection
                 try:
-                    # Same shape as the invocations rebuild above. The pragma is
-                    # inside the try because it takes effect at its own await, so
-                    # anything interrupting after it -- cancellation included --
-                    # must still reach the finally.
                     await driver.execute("PRAGMA foreign_keys = OFF")
-                    # The commit closes any open transaction rather than making the
-                    # pragma effective, then one BEGIN IMMEDIATE transaction wraps
-                    # the whole rebuild so a crash mid-sequence cannot strand the
-                    # data in schedule_runs_new.
                     await driver.commit()
                     await driver.execute("BEGIN IMMEDIATE")
                     await self._refuse_newer_sqlite_schema(driver)
@@ -2359,12 +2065,9 @@ class StateDB:
     ) -> None:
         """Update session fields; route status changes through update_status().
 
-        Fields named in *set_if_null* are written as ``COALESCE(col, :col)``
-        instead of a plain assignment: the write only takes effect while the
-        column is still NULL, so a concurrent duplicate call converges onto
-        whichever value landed first instead of overwriting it. This is a
-        single atomic UPDATE, not a read-then-write, so it stays correct
-        under concurrent callers.
+        set_if_null fields are written as ``COALESCE(col, :col)`` in a single
+        atomic UPDATE, so concurrent duplicate calls converge on whichever
+        value lands first instead of overwriting it.
         """
         _validate_columns(fields, _SESSION_COLUMNS)
         if "invocation_kind" in fields:
@@ -2418,9 +2121,7 @@ class StateDB:
         session_id: str,
         verification: dict[str, Any] | None,
     ) -> None:
-        # Must hold _write_lock: teardown calls this while signal persistence is
-        # still bound (unbind happens after _teardown_common returns), so a late
-        # signal emit's _tx() can race this UPDATE on SQLite.
+        # _tx() holds _write_lock: teardown calls this while a late signal emit can still race it.
         async with self._tx() as conn:
             await conn.execute(
                 text(
@@ -2438,14 +2139,10 @@ class StateDB:
         project_source: str | None = None,
         cc_session_id: str | None = None,
     ) -> None:
-        """Write attribution/provenance fields without touching updated_at.
-
-        Project bucketing and conversation lineage describe where a session came
-        from, not whether it is live, so they must never move the liveness clock
-        (which reconcile_session_status and the phantom reaper read). project and
-        project_source are written together (the source is meaningless alone).
-        The session update and the projects-registry upsert run as one locked
-        write so neither can commit without the other.
+        """Write attribution/provenance fields without touching updated_at (the
+        liveness clock reconcile_session_status and the phantom reaper read).
+        project/project_source are written together; the session update and the
+        projects-registry upsert run as one locked write.
         """
         sets: list[str] = []
         params: dict[str, Any] = {}
@@ -2555,37 +2252,11 @@ class StateDB:
     ) -> bool:
         """Atomically transition an entity's status and record the reason.
 
-        When *expected_statuses* is provided, the transition is only performed
-        if the current status is a member of that set.  Pass ``None`` inside
-        the set to match a SQL NULL status (e.g. ``{None}`` for null-status
-        sessions, ``{"running", None}`` to accept either).
-
-        When *expected_updated_at* is provided, the guarded write additionally
-        requires the row's ``updated_at`` to still equal that value — an
-        optimistic-lock version check enforced by storage (the same mechanism
-        as the ``previous_status`` compare-and-set). A concurrent writer that
-        touched the row (any status write bumps ``updated_at``) loses the race
-        and the transition is skipped. This lets a caller that decided to act
-        on a stale snapshot (status membership alone cannot distinguish "still
-        stale" from "just re-touched", e.g. a reaper vs. a fresh claim on the
-        same reapable status) refuse to act once the row has moved.
-
-        Returns ``True`` when the transition was applied, ``False`` when it was
-        skipped because the current status was not in *expected_statuses* or
-        the row's ``updated_at`` no longer matches *expected_updated_at*.  All
-        existing callers that ignore the return value are unaffected.
-
-        ADR-0035 integrity floor: once an entity's status is terminal (per
-        TERMINAL_STATUSES_BY_ENTITY_TYPE), any write that would CHANGE it is
-        rejected and recorded in admin_events — a terminal record must not
-        silently move back to running or oscillate to a different terminal
-        value. A same-status write (new_status == previous_status) is not a
-        transition — it is allowed through untouched, since callers already
-        rely on it to attach/refresh a reason code on an already-terminal row
-        without that counting as leaving terminal. Pass override=True with
-        override_actor and override_justification for a deliberate
-        operational repair that does change the value; the repair is itself
-        recorded in admin_events, distinctly from an ordinary transition.
+        expected_statuses gates on current status (None matches SQL NULL);
+        expected_updated_at adds an optimistic-lock compare-and-set, so a
+        caller acting on a stale snapshot loses to a concurrent writer. ADR-0035
+        terminal statuses refuse a value change unless override=True (logged to
+        admin_events); a same-status write always passes through.
         """
         if source not in _VALID_STATUS_SOURCES:
             raise ValueError(
@@ -2694,12 +2365,9 @@ class StateDB:
     ) -> list[dict[str, Any]]:
         """Per-bucket (bucket_start, status, count) rows for the activity window.
 
-        Bucketed by the raw epoch-seconds anchor timestamp (ended_at for
-        terminal sessions, started_at/created_at while running) with a single
-        GROUP BY — no per-bucket queries and no row-by-row counting in Python.
-        ``window_start`` is expected to already be bucket-aligned (the caller
-        owns bucket-boundary math) so every returned row lands in a bucket the
-        caller asked for.
+        Bucketed by epoch-seconds (ended_at for terminal sessions, else
+        started_at/created_at) in a single GROUP BY. window_start must already
+        be bucket-aligned by the caller.
         """
         query = """
             SELECT
@@ -3155,27 +2823,10 @@ class StateDB:
         *,
         guard_cursor_forward: bool = False,
     ):
-        """Validate + build the ``UPDATE schedules`` statement + bound
-        params for *fields* without opening a transaction.
-
-        Shared by ``update_schedule`` (its own standalone commit) and
-        ``create_schedule_run_and_advance`` (folded into the same
-        transaction as the occurrence insert) -- the single choke point for
-        both the field allowlist and the SQL shape, so the two write paths
-        can never drift apart.
-
-        ``guard_cursor_forward`` makes the ``github_cursor`` assignment
-        monotonic: the column moves only if the new value sorts above the
-        stored one. The scheduler passes it, because a poll reads the cursor
-        at tick start and writes it back much later, so its value is a
-        snapshot that an operator's deliberate cursor move can outrun. Without
-        the guard the stale write silently undoes that move, and a backlog the
-        operator had declined becomes eligible again.
-
-        It is a per-COLUMN condition rather than a row predicate on purpose:
-        the same statement carries ``last_fired_at``/``next_fire_at``, and
-        those must land whether or not the cursor is allowed to advance.
-        """
+        """Validate + build the UPDATE schedules statement/params without opening
+        a transaction. guard_cursor_forward makes github_cursor monotonic (moves
+        only if the new value sorts above the stored one) without blocking other
+        columns in the same statement, e.g. last_fired_at/next_fire_at."""
         bad = set(fields) - cls._SCHEDULE_UPDATE_ALLOWED_FIELDS
         if bad:
             raise ValueError(f"Invalid schedule field(s): {bad}")
@@ -3321,17 +2972,9 @@ class StateDB:
         expected_orphan_status: str = "running",
     ) -> bool:
         """Flip an undispatched orphan to a terminal status and insert its
-        replacement occurrence row in one transaction, so a crash leaves
-        either both writes durable or neither. The CAS also requires
-        ``dispatched_at IS NULL``: if a launch confirmation lands between
-        the recovery scan and this write, the row no longer qualifies as
-        undispatched and the call is a no-op (returns ``False``, nothing
-        inserted) rather than tombstoning a run that actually launched.
-
-        Returns ``False`` if the orphan's status no longer matches
-        *expected_orphan_status* or is no longer undispatched -- something
-        else already resolved it between the scan and this write, so there
-        is nothing to recover and no replacement should be created.
+        replacement occurrence row in one transaction. The CAS also requires
+        dispatched_at IS NULL, so a run that actually launched between the
+        recovery scan and this write is left alone (returns False, no-op).
         """
         run_stmt, run_params = self._build_schedule_run_insert_stmt(replacement_run)
         now = time.time()
@@ -3394,16 +3037,8 @@ class StateDB:
         )
 
         if fields:
-            # updated_at must move on every write to this row, not only on a
-            # status transition -- update_status() already bumps it as part
-            # of the status UPDATE above, but a plain field-only call (e.g.
-            # the exit_code/ended_at write that lands *before* the terminal
-            # status transition, while the row is still "running") would
-            # otherwise leave it stale. A stale updated_at is exactly the
-            # snapshot value reap_stale_schedule_runs()'s expected_updated_at
-            # guard would still match on a scan landing in that window,
-            # letting the reaper race a legitimately-finishing run to
-            # "timed_out" ahead of its own terminal write.
+            # Must bump updated_at on every write, not just status transitions, or a
+            # stale value lets reap_stale_schedule_runs()'s CAS race a finishing run.
             fields = dict(fields)
             fields["updated_at"] = time.time()
             sets = ", ".join(f'"{k}" = :{k}' for k in fields)
@@ -3446,15 +3081,10 @@ class StateDB:
         statuses: tuple[str, ...] = TERMINAL_RUN_STATUSES,
         fired_after: float | None = None,
     ) -> int:
-        """Count runs that actually fired and reached a terminal status.
-
-        Used for max_runs bookkeeping: chain_depth=0 excludes on_success/
-        on_fail chain children (they don't consume the parent's budget), and
-        the default status set excludes 'skipped' (missed-fire/overlap skips
-        never ran) and 'running' (not yet terminal). 'timed_out' counts: a
-        reaped run fired and consumed real work — a bounded (max_runs) or
-        one-shot schedule must not silently re-fire because its only run
-        timed out instead of completing.
+        """Count runs that actually fired and reached a terminal status, for
+        max_runs bookkeeping. chain_depth=0 excludes on_success/on_fail chain
+        children; 'timed_out' counts (consumed real work) but 'skipped' and
+        'running' don't.
         """
         placeholders = ", ".join(f":status{i}" for i in range(len(statuses)))
         params: dict[str, Any] = {"schedule_id": schedule_id, "chain_depth": chain_depth}
@@ -3583,17 +3213,9 @@ class StateDB:
     async def metric_value(self, metric: str, window_start: float) -> float:
         """Aggregate a threshold-alert metric over [window_start, now).
 
-        ``failed_sessions``, ``total_cost_usd``, and ``github_poll_consecutive_401``
-        are single-aggregate SQL queries; ``p95_latency_ms`` needs a sorted sample
-        (SQLite has no built-in percentile function), so it fetches raw invocation
-        durations and computes the 95th percentile in Python.
-        ``github_poll_healthy_age_minutes`` is also handled specially: unlike every
-        other metric here, it is a point-in-time gauge (minutes since the last
-        healthy github_poll() read) rather than a [window_start, now) aggregate, so
-        ``window_start`` is accepted for signature parity but ignored -- "now" is
-        read fresh via ``time.time()`` inside this method instead of being threaded
-        through from the caller, since recovering it from ``window_start`` would
-        also require ``window_minutes`` (not available here).
+        ``p95_latency_ms`` computes in Python (no SQL percentile in SQLite).
+        ``github_poll_healthy_age_minutes`` ignores window_start — it's a
+        point-in-time gauge, not a windowed aggregate.
         """
         if metric == "github_poll_healthy_age_minutes":
             async with self._read() as conn:
@@ -3611,12 +3233,8 @@ class StateDB:
                 )
             last_healthy = row["n"] if row else None
             if last_healthy is None:
-                # No enabled github_poll schedule has ever recorded a healthy
-                # poll -- including the case where no github_poll schedule
-                # exists at all. There is nothing to be blind about, so
-                # report a fresh (zero) age rather than a stale one that
-                # would falsely alarm a threshold-alert schedule watching
-                # this metric on a DB with no observed repo yet.
+                # No healthy poll recorded (or no github_poll schedule at all);
+                # report zero age rather than a stale one that would falsely alarm.
                 return 0.0
             return (time.time() - float(last_healthy)) / 60.0
 
@@ -3671,15 +3289,9 @@ class StateDB:
         return streak, last_status
 
     async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool:
-        """True if *schedule_id* has a genuinely-fired top-level schedule_runs
-        row at or after *since* -- used by missed-fire recovery to tell "never
-        fired" from "fired but crashed before follow-up bookkeeping".
-        Excludes ``status = 'skipped'`` rows so a capacity-deferred skip
-        (whose next_fire_at is deliberately left untouched) still counts as
-        due and retries, rather than being treated as already handled.
-        Excludes ``chain_depth != 0`` rows (on_success/on_fail chain children,
-        which share the parent's schedule_id) so a chain-child fire cannot
-        mask a due top-level occurrence.
+        """True if schedule_id has a genuinely-fired top-level schedule_runs row
+        at or after since — tells "never fired" from "fired but crashed before
+        follow-up". Excludes 'skipped' and chain_depth != 0 rows.
         """
         async with self._read() as conn:
             row = (
@@ -3695,13 +3307,10 @@ class StateDB:
         return row is not None
 
     async def list_undispatched_schedule_runs(self) -> list[dict[str, Any]]:
-        """Scheduler-fired occurrence rows whose transaction committed but
-        whose external process launch was never confirmed (cursor already
-        moved, so ordinary missed-fire recovery will never reconsider them).
-        ``SchedulerEngine._recover_undispatched_fires()`` runs this once at
-        startup and re-fires each row. Scoped to ``schedule_id IS NOT NULL``
-        to exclude the leased ad-hoc task queue, which has its own
-        dispatch/lease model and never sets dispatched_at.
+        """Fired occurrence rows whose external process launch was never
+        confirmed; SchedulerEngine._recover_undispatched_fires() re-fires each
+        one at startup. Scoped to schedule_id IS NOT NULL — the ad-hoc task
+        queue has its own dispatch/lease model.
         """
         async with self._read() as conn:
             rows = (
@@ -3733,12 +3342,8 @@ class StateDB:
         return self._row_to_dict(row) if row else None
 
     async def get_schedule_run_by_invocation(self, invocation_id: str) -> dict[str, Any] | None:
-        """Look up the schedule_run that fired a given invocation (ADR-0070).
-
-        invocation_id is 1:1 with schedule_runs in practice (each fire mints a
-        fresh invocation), but the ORDER BY + LIMIT keeps this defensively
-        correct if that ever isn't true.
-        """
+        """Look up the schedule_run that fired a given invocation (ADR-0070);
+        ORDER BY + LIMIT defends against invocation_id ever not being 1:1."""
         async with self._read() as conn:
             row = (
                 (
@@ -3889,21 +3494,11 @@ class StateDB:
         limit: int = 100,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
-        # Per invocation, take project/project_source from its latest-updated
-        # session. ROW_NUMBER() is portable; the old SQLite idiom (bare columns
-        # under HAVING MAX(updated_at)) is rejected by PostgreSQL.
-        #
-        # Also surface the schedule_run that fired this invocation (exit_code,
-        # error_detail) so the UI can show why a scheduled run failed without
-        # a second round-trip. action_kind comes from the same subquery: it is
-        # a property of the fired occurrence, not a column on invocations, and
-        # the lifecycle reaper's policy is per-kind. Unlike the sessions join above, this uses
-        # correlated scalar subqueries rather than a ranked derived table:
-        # ORDER BY + LIMIT/OFFSET on inv.updated_at narrows to the emitted
-        # page first (sorting only invocations, not schedule_runs), and each
-        # subquery then runs once per emitted row against the partial index
-        # on schedule_runs(invocation_id) — instead of ROW_NUMBER()ing the
-        # entire schedule_runs table before pagination even applies.
+        # project/project_source come from the latest-updated session via
+        # ROW_NUMBER() (portable; PostgreSQL rejects the old bare-column SQLite
+        # idiom). schedule_run fields use correlated scalar subqueries instead,
+        # so pagination narrows to the page first and each subquery runs once
+        # per emitted row against the schedule_runs(invocation_id) index.
         query = (
             "SELECT inv.*, "
             "  sq.project        AS project, "
@@ -4231,35 +3826,10 @@ class StateDB:
     async def finalize_branch(
         self, branch_id: str, *, status: str, ended_at: float | None = None
     ) -> bool:
-        """Guarded terminal-status write for one branch row (BRANCH_END).
-
-        Two-sided guard; both conditions must hold for the write to land:
-
-        - *status* itself must be a genuine terminal outcome
-          (``_BRANCH_TERMINAL_STATUSES`` == ``SESSION_TERMINAL_STATUSES`` —
-          every value BRANCH_END ever carries is a session final_status
-          passed straight through by cli/_runs.py teardown_persist()). A
-          non-terminal payload — e.g. the "running" the linked-engine
-          reconciliation path can produce when it suppresses a phantom
-          "failed" back to "running" — is rejected outright: this method
-          never stamps a branch "ended" with a non-terminal status. Returns
-          False without touching the row.
-        - the EXISTING row must still be in a legitimate pre-terminal state:
-          NULL (never touched) or "running" (the only two values flow.py's
-          own per-op writer -- or anything else -- ever leaves a branch in
-          before its real terminal outcome lands; this method itself never
-          writes "running", it only ever writes a terminal status). Any
-          other existing value — whichever terminal status it already
-          holds — is immutable: a run-level finalize must never flap a
-          branch that already reached its outcome, regardless of which
-          terminal status that was (completed, failed, cancelled,
-          timed_out, aborted, completed_empty) or what this call's own
-          *status* argument is.
-
-        A branch row that was never created (a DAG leg that never emitted a
-        first message) matches zero rows and is a harmless no-op.
-        Returns True when a row was actually updated.
-        """
+        """Guarded terminal-status write for one branch row (BRANCH_END). Both
+        must hold: status itself must be terminal, and the existing row must
+        be NULL or "running" — any other value is immutable. Returns True iff
+        a row was updated."""
         if status not in _BRANCH_TERMINAL_STATUSES:
             return False
         async with self._tx() as conn:
@@ -4773,13 +4343,8 @@ class StateDB:
         """Append one lifecycle signal row; returns the assigned seq number.
 
         seq is MAX(seq)+1 for the session, assigned in the same write so
-        concurrent inserts from different processes (WAL mode) do not
-        collide — SQLite serialises IMMEDIATE transactions.
-
-        Concurrent coroutines sharing this StateDB instance are serialised
-        through ``self._write_lock`` (via _tx()) so that no two coroutines can
-        enter BEGIN IMMEDIATE simultaneously on the same AsyncEngine on SQLite.
-        PostgreSQL uses an advisory transaction lock per session_id.
+        concurrent inserts don't collide — SQLite via _tx()'s write lock plus
+        IMMEDIATE serialization, PostgreSQL via an advisory lock per session_id.
         """
         sig_id = uuid.uuid4().hex
         async with self._tx() as conn:
@@ -5230,16 +4795,10 @@ class StateDB:
         return result.rowcount > 0
 
     # ── Session controls (ADR-0069 D1–D3: live-control transport) ──────────
-    # session_controls rows are written by `li o ctl pause|resume|msg` and
-    # consumed by the control poller task in cli/orchestrate/flow.py's
-    # _execute_dag. Apply/stamp
-    # ordering is verb-classed by the poller, not by these methods: pause/
-    # resume call insert_session_control() then, once applied against the
-    # executor, finalize_session_control() directly (idempotent — safe to
-    # re-apply on a poller crash). message calls mark_session_control_applying()
-    # before attempting the (non-idempotent) apply, then finalize_session_control()
-    # (a crash between the two leaves a visible 'applying' row instead of a
-    # silent double-injection risk).
+    # Apply ordering is verb-classed by the poller: idempotent pause/resume call
+    # finalize_session_control() directly; non-idempotent message calls
+    # mark_session_control_applying() first, so a crash leaves a visible
+    # 'applying' row instead of risking a silent double-injection.
 
     async def insert_session_control(
         self,
@@ -5272,12 +4831,9 @@ class StateDB:
         return control_id
 
     async def list_pending_session_controls(self, session_id: str) -> list[dict[str, Any]]:
-        """Unapplied controls (applied_at IS NULL) for *session_id*, oldest first.
-
-        Includes rows mid-apply (result='applying') — the poller/status surface
-        distinguish "never touched" (result IS NULL) from "a prior poller crashed
-        mid-apply" (result='applying') by inspecting that field.
-        """
+        """Unapplied controls (applied_at IS NULL) for session_id, oldest first.
+        Includes mid-apply rows (result='applying') — callers distinguish those
+        from never-touched (result IS NULL) themselves."""
         async with self._read() as conn:
             rows = (
                 (
@@ -5286,9 +4842,7 @@ class StateDB:
                             "SELECT id, session_id, verb, payload, created_at, applied_at, result "
                             "FROM session_controls "
                             "WHERE session_id = :sid AND applied_at IS NULL "
-                            # id tiebreak: identical created_at floats (rapid
-                            # enqueues) must not flip apply order between ticks
-                            "ORDER BY created_at, id"
+                            "ORDER BY created_at, id"  # id tiebreak for identical created_at floats
                         ),
                         {"sid": session_id},
                     )

@@ -1,11 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Plugin discovery (stage 1 of the two-stage load): scan ``<dir>/plugins/*/plugin.yaml``.
-
-Discovery is data-only — it parses and validates manifests, it never imports
-bundle code. Scanning happens the first time any consumer asks the registry
-anything (see ``registry.py``); nothing at ``import lionagi`` time touches
-this module.
+"""Plugin discovery (stage 1 of two-stage load): scan ``<dir>/plugins/*/plugin.yaml``.
+Data-only -- parses/validates manifests, never imports bundle code or runs at ``import lionagi`` time.
 """
 
 from __future__ import annotations
@@ -40,12 +36,8 @@ class DiscoveredPlugin:
 
 
 def _collect_declared_paths(manifest: PluginManifest) -> list[str]:
-    """Every bundle-relative file the manifest declares — the exact set the trust record hashes.
-
-    A tool's file portion comes from ``parse_tool_target``, the same parser
-    ``registry.activate_target`` resolves from later, so the file hashed
-    here can never diverge from the file imported there.
-    """
+    """Every bundle-relative file the manifest declares; uses the same ``parse_tool_target``
+    parse as ``registry.activate_target`` so the hashed file can never diverge from the imported one."""
     paths: list[str] = []
     for tool in manifest.capabilities.tools:
         path_part, _ = parse_tool_target(tool.target, label="tool target")
@@ -64,10 +56,8 @@ def _collect_declared_paths(manifest: PluginManifest) -> list[str]:
 
 
 def _validate_bundle_relative(bundle_dir: Path, rel: str, *, label: str) -> None:
-    """Raise ValueError if *rel* is empty, absolute, traversal-bearing, escapes
-    *bundle_dir*, or contains ``:`` (reserved as the tool-target/callable
-    separator — see ``manifest.parse_tool_target``).
-    """
+    """Raise ValueError if *rel* is empty, absolute, traversal-bearing, escapes *bundle_dir*,
+    or contains ``:`` (reserved as the tool-target/callable separator)."""
     if not rel or not rel.strip():
         raise ValueError(f"{label} entry is empty")
     if ":" in rel:
@@ -88,14 +78,8 @@ def _validate_bundle_relative(bundle_dir: Path, rel: str, *, label: str) -> None
 
 
 def _validate_agent_profile_names(manifest: PluginManifest) -> None:
-    """Every declared agent profile filename must produce a legal profile token.
-
-    ``Path.stem`` only strips the last suffix, so a filename like
-    ``research.v2.md`` produces an advertised token
-    (``<plugin>/research.v2``) that ``load_agent_profile()``'s
-    bare-identifier rule then rejects outright. Caught at discovery instead
-    of surfacing as a load-time dead end.
-    """
+    """Reject agent filenames whose ``Path.stem`` (e.g. ``research.v2.md`` -> ``research.v2``)
+    would fail ``load_agent_profile()``'s bare-identifier rule at load time instead."""
     for rel in manifest.capabilities.agents:
         validate_bare_name(Path(rel).stem, label=f"plugin {manifest.name!r} agent profile name")
 
@@ -139,12 +123,8 @@ def _scan_one(bundle_dir: Path) -> DiscoveredPlugin:
 
 def discover_plugins() -> list[DiscoveredPlugin]:
     """Scan every ``.lionagi/plugins/*/plugin.yaml`` bundle, project dirs first then global.
-
-    A bundle directory without a ``plugin.yaml`` is silently ignored (it may be a
-    work in progress). A ``plugin.yaml`` that fails schema
-    validation, or declares a path that escapes its own bundle, is returned
-    with ``error`` set and ``manifest`` left ``None`` — never partially
-    loaded, and never aborts the rest of the scan.
+    A bundle with no ``plugin.yaml`` is skipped; one that fails validation or declares an
+    escaping path returns with ``error`` set and ``manifest=None`` -- never aborts the rest of the scan.
     """
     discovered: list[DiscoveredPlugin] = []
     for lionagi_dir in find_lionagi_dirs():

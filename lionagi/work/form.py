@@ -68,15 +68,13 @@ class FieldSpec(Element):
 
     @model_validator(mode="after")
     def _validate_name_and_default(self) -> FieldSpec:
-        # Name must be a valid Python identifier (letters/digits/underscores,
-        # starting with a letter or underscore).
+        # Name must be a valid Python identifier.
         if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", self.name):
             raise ValueError(
                 f"Field name {self.name!r} must start with a letter or underscore "
                 "and contain only alphanumeric characters and underscores."
             )
 
-        # Default value must be type-compatible when provided.
         if self.default is not None:
             target = _PYTHON_TYPE_MAP[self.type]
             # Allow int default for float field (numeric widening).
@@ -99,13 +97,11 @@ class FieldSpec(Element):
         # Numeric widening: int → float is allowed.
         if self.type == "float" and isinstance(value, int):
             return float(value)
-        # str → bool special case.
         if self.type == "bool" and isinstance(value, str):
             if value.lower() in {"true", "1", "yes"}:
                 return True
             if value.lower() in {"false", "0", "no"}:
                 return False
-        # str → int / float.
         if self.type in {"int", "float"} and isinstance(value, str):
             try:
                 return target(value)
@@ -171,9 +167,6 @@ class WorkForm(Element):
         return self.model_copy(update={"status": new_status})
 
 
-# Functional API
-
-
 def fill_form(
     form: WorkForm,
     values: dict[str, Any],
@@ -189,7 +182,6 @@ def fill_form(
             merged[name] = spec.default
         # Required with no value: leave absent so validate_form flags it.
 
-    # Propagate extra keys that are not declared in spec (passed through as-is).
     for k, v in values.items():
         if k not in merged:
             merged[k] = v
@@ -210,20 +202,17 @@ def validate_form(
     for name, spec in form.fields.items():
         value = form.values.get(name)
 
-        # Required check.
         if spec.required and value is None:
             errors.append(f"Field {name!r} is required but missing or None.")
             continue
 
-        # Type check / coercion (only when a value is present).
         if value is not None:
             try:
                 coerced_values[name] = spec.coerce(value)
             except TypeError as exc:
                 errors.append(str(exc))
 
-    # Run ruleset against a form that carries the coerced values, so rules
-    # see the post-coercion state (e.g., "7" already became 7).
+    # Run ruleset against the coerced values (e.g., "7" already became 7).
     if ruleset is not None:
         coerced_form = form.model_copy(update={"values": coerced_values})
         rule_errors = ruleset.apply_all(coerced_form)

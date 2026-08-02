@@ -469,10 +469,8 @@ def _handle_play_check(argv: list[str]) -> int:
             profile = load_agent_profile(agent_name)
             agent_defaults = getattr(profile, "artifact_defaults", None)
         except ModuleNotFoundError as exc:
-            # The profile is fine; this installation cannot load it. Nothing has
-            # run, so this is the environment, and returning the ordinary
-            # failure code here would make it indistinguishable from a check
-            # that found a genuinely broken playbook.
+            # The profile is fine; this installation cannot load it. Nothing has run, so returning the
+            # ordinary failure code here would make it indistinguishable from a genuinely broken playbook.
             missing = exc.name or "a required module"
             log_error(
                 f"playbook '{name}' references agent profile '{agent_name}', "
@@ -532,11 +530,8 @@ def _handle_play_check(argv: list[str]) -> int:
 
 
 def _handle_play_shortcut(argv: list[str]) -> list[str] | int:
-    """Expand `li play` sugar into `li o flow -p NAME ...`.
-
-    Returns the rewritten argv (list[str]), or an exit code (int) if the
-    subcommand fully handled the invocation (e.g. `li play list`).
-    """
+    """Expand `li play` sugar into `li o flow -p NAME ...`; returns rewritten argv, or an exit code
+    if the subcommand fully handled the invocation (e.g. `li play list`)."""
     if not argv or argv[0] != "play":
         return argv
     rest = argv[1:]
@@ -564,15 +559,12 @@ def _handle_play_shortcut(argv: list[str]) -> list[str] | int:
         return ["o", "flow", *rest]
 
     if not head.startswith("-"):
-        # NAME comes first — fast path. Custom playbook args (from the
-        # playbook's own `args:` schema) are only recognized once they
-        # follow NAME, so this path leaves them untouched.
+        # NAME comes first — fast path. Custom playbook args (from the playbook's own `args:` schema)
+        # are only recognized once they follow NAME, so this path leaves them untouched.
         name, other = head, rest[1:]
     else:
-        # A flag precedes NAME; probe with the flow subparser's base flags
-        # only (playbook-specific args aren't injected yet) just to locate
-        # NAME — see docs/internals/cli.md. Custom flags before NAME aren't
-        # supported; they must follow it.
+        # A flag precedes NAME; probe with the flow subparser's base flags only (playbook-specific args
+        # aren't injected yet) just to locate NAME. Custom flags before NAME aren't supported.
         probe_parser = argparse.ArgumentParser(prog="li", add_help=False)
         probe_sub = probe_parser.add_subparsers(dest="command")
         fl_probe = _load_orchestrate().add_orchestrate_subparser(probe_sub)["flow"]
@@ -598,9 +590,8 @@ def _handle_play_shortcut(argv: list[str]) -> list[str] | int:
             )
             return 1
         name = bare[0]
-        # Remove NAME from the partition it was selected from, never by
-        # string value across argv (an earlier flag VALUE equal to NAME
-        # must not be deleted in its place).
+        # Remove NAME from the partition it was selected from, never by string value across argv (an
+        # earlier flag VALUE equal to NAME must not be deleted in its place).
         if p_ns.query or p_extras:
             head_tokens = list(p_head)
             head_tokens.remove(name)
@@ -633,23 +624,18 @@ def _run(argv: list[str] | None = None) -> int:
     verbose = "-v" in _pre_sentinel or "--verbose" in _pre_sentinel
     configure_cli_logging(verbose)
 
-    # Machine mode is answered before any other path can write to stdout, and
-    # never inferred from the terminal shape. The dispatcher owns stdout from
-    # here and emits one JSON object; everything human-facing goes to stderr.
+    # Machine mode is answered before any other path can write to stdout, never inferred from the
+    # terminal shape. The dispatcher owns stdout and emits one JSON object; the rest goes to stderr.
     if "--machine" in _pre_sentinel:
         machine = _load_machine()
         return machine.dispatch_machine(machine.strip_machine_flag(_argv))
 
-    # `li ... | head` should stop quietly rather than print a BrokenPipeError
-    # traceback. The machine path above keeps the interpreter's default SIGPIPE
-    # disposition instead, since not every write there belongs to the command
-    # (e.g. a DB driver's worker thread signalling a closing event loop).
+    # `li ... | head` should stop quietly rather than print a BrokenPipeError traceback. The machine
+    # path above keeps the default SIGPIPE disposition since not every write there belongs to the command.
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
-    # Same pre-argparse scan, so a project-scoped .lionagi/settings.yaml
-    # next to a `--cwd DIR` target isn't missed in favor of the shell's cwd.
-    # Scans every token (never breaks early) so a repeated `--cwd` mirrors
-    # argparse's own last-one-wins precedence instead of taking the first.
+    # Same pre-argparse scan, so a project-scoped .lionagi/settings.yaml next to `--cwd DIR` isn't missed.
+    # Scans every token (never breaks early) so a repeated `--cwd` mirrors argparse's last-one-wins.
     _cwd_override: str | None = None
     for _i, _tok in enumerate(_pre_sentinel):
         if _tok == "--cwd" and _i + 1 < len(_pre_sentinel):
@@ -721,10 +707,8 @@ def _run(argv: list[str] | None = None) -> int:
         orch_parsers = selected_parser
         _load_orchestrate().inject_playbook_schema_into_parser(orch_parsers["flow"], _argv)
 
-    # `li agent` parses standalone so flags may appear anywhere relative to
-    # [MODEL] PROMPT. parse_intermixed_args is unusable: it drops the `--`
-    # sentinel between passes, letting a prompt like "--bypass" after `--`
-    # toggle real flags on re-parse. Split at the sentinel ourselves instead.
+    # `li agent` parses standalone so flags may appear anywhere relative to [MODEL] PROMPT.
+    # parse_intermixed_args is unusable: it drops `--`, letting a prompt like "--bypass" re-parse as a flag.
     if selected is _COMMAND_BY_NAME["agent"]:
         agent_parser = selected_parser
         tail = _argv[1:]
@@ -740,9 +724,8 @@ def _run(argv: list[str] | None = None) -> int:
         args.query = [*(args.query or []), *extras, *post]
         return run_agent(args)
 
-    # `li o flow` / `li o fanout` parse standalone for the same reason as
-    # `agent` above (nested subparser dispatch can't intermix flags with
-    # the [MODEL] PROMPT positionals). See docs/internals/cli.md.
+    # `li o flow` / `li o fanout` parse standalone for the same reason as `agent` above (nested
+    # subparser dispatch can't intermix flags with the [MODEL] PROMPT positionals).
     if (
         _argv
         and selected is _COMMAND_BY_NAME["orchestrate"]
@@ -767,16 +750,12 @@ def _run(argv: list[str] | None = None) -> int:
         args.orch_command = sub_name
         return run_orchestrate(args)
 
-    # `li schedule ...` parses its own subparser directly (mirroring the
-    # `agent` special-case above) so an unrecognized flag gets a one-line
-    # "did you mean --X?" suggestion instead of argparse's generic usage dump.
+    # `li schedule ...` parses its own subparser directly (mirroring `agent` above) so an unrecognized
+    # flag gets a one-line "did you mean --X?" suggestion instead of argparse's generic usage dump.
     if selected is _COMMAND_BY_NAME["schedule"]:
         schedule_parser = selected_parser
-        # `li schedule create <kind> <name> ...` — a typed quick-create form
-        # additive to the legacy flat `li schedule create NAME ...`. The kind
-        # token is reserved (agent/flow/playbook/command) and dispatched here,
-        # before argparse ever sees it, so the legacy positional NAME keeps
-        # working unchanged for any other value.
+        # `li schedule create <kind> <name> ...` — a typed quick-create form additive to the legacy flat
+        # form. The kind token (agent/flow/playbook/command) is dispatched here before argparse sees it.
         if (
             len(_argv) > 2
             and _argv[1] == "create"
@@ -809,22 +788,9 @@ def _run(argv: list[str] | None = None) -> int:
 
 
 def _report_broken_environment(exc: ModuleNotFoundError) -> int:
-    """Report a missing import as an environment fault, not a failed run.
-
-    A ``ModuleNotFoundError`` reaching the top of the CLI means some import
-    failed and nothing along the way handled it. Reporting it the way a failed
-    run is reported tells every caller the wrong thing: the command looks like
-    it executed and came back empty. That is how a dependency dropping out of an
-    environment reads downstream as a crashed agent.
-
-    Only called once it is established that no run was allocated, which is what
-    makes the message's claim true rather than merely likely. See ``main``.
-
-    The traceback is printed first because it names the import chain and is the
-    only thing that identifies which package went missing and from where. The
-    single-line summary goes last so that a caller which keeps only the tail of
-    stderr still receives the diagnosis rather than the middle of a stack.
-    """
+    """Report a missing import as an environment fault, not a failed run — reporting it as a failed
+    run would make a dropped dependency read downstream as a crashed agent. Only called once no run
+    was allocated, so the claim holds; see `main`."""
     traceback.print_exc()
     missing = exc.name or "a required module"
     log_error(
@@ -836,17 +802,11 @@ def _report_broken_environment(exc: ModuleNotFoundError) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point for the ``li`` console script.
+    """Entry point for the `li` console script.
 
-    Wraps the real implementation so that a missing dependency is reported as a
-    broken environment rather than as a failed run, but only where that is
-    actually true. A lazily imported module can go missing after a command has
-    already allocated a run, and there a run id, a run directory and a manifest
-    exist on disk; calling that an unusable environment would tell the caller
-    nothing was executed while durable state sits in the runs directory. So the
-    allocation marker decides, and once a run exists the error is left to
-    propagate and be reported the way any other failure during a run is.
-    """
+    Reports a missing dependency as a broken environment rather than a failed run, but only when no
+    run was yet allocated — once a run exists (run id/dir/manifest on disk), the error propagates and
+    is reported as an ordinary run failure."""
     begin_invocation()
     try:
         return _run(argv)

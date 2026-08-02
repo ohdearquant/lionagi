@@ -1,12 +1,8 @@
 # Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Low-level, opt-in compilation of message history for provider requests.
-
-``Branch.chat()``, ``Branch.operate()``, and ``Branch.parse()`` do not accept
-``CustomRenderer`` or ``CustomParser`` hooks. Integrations that need those
-protocols call ``prepare_messages_for_chat`` themselves and own the subsequent
-provider request and response parsing. See ``docs/api/operations.md``.
+"""Opt-in message-history compiler for callers needing ``CustomRenderer``/``CustomParser`` hooks.
+``Branch.chat/operate/parse`` don't expose those; see ``docs/api/operations.md``.
 """
 
 from __future__ import annotations
@@ -107,14 +103,10 @@ def prepare_messages_for_chat(
     round_notifications: bool = False,
     scratchpad: dict[str, str] | None = None,
 ) -> list[MessageContent] | list[dict[str, Any]]:
-    """Compile history for a caller-owned chat request.
-
-    This explicit opt-in path embeds the system message, folds action outputs
-    into context, merges consecutive assistant turns, and appends
-    ``new_instruction``. With ``to_chat=True`` it returns provider-shaped role
-    dictionaries; with ``False`` it returns content models for further custom
-    processing. It does not invoke a model, ``CustomRenderer``, or
-    ``CustomParser``.
+    """Compile history for a caller-owned chat request: embeds the system message,
+    folds action outputs into context, merges consecutive assistant turns, and
+    appends ``new_instruction``. Returns provider-shaped dicts if ``to_chat=True``,
+    else content models. Never invokes a model, ``CustomRenderer``, or ``CustomParser``.
     """
     to_use: Pile[Message] = messages if progression is None else messages[progression]
 
@@ -137,7 +129,6 @@ def prepare_messages_for_chat(
             return [new_content]
         return []
 
-    # Phase 1: Extract system message (auto-detect from first message)
     system_text: str | None = None
     start_idx = 0
 
@@ -147,11 +138,9 @@ def prepare_messages_for_chat(
         system_text = first_content.render()
         start_idx = 1
 
-    # Phase 1b: Prepend system_prefix (e.g., LNDL prompt)
     if system_prefix:
         system_text = f"{system_prefix}\n\n{system_text}" if system_text else system_prefix
 
-    # Phase 2: Process messages — collect action outputs for next instruction
     _use_msgs: list[MessageContent] = []
     pending_actions: list[str] = []
     pending_requests: list[ActionRequestContent] = []
@@ -177,13 +166,11 @@ def prepare_messages_for_chat(
                 pending_actions.append(content.render())
             continue
 
-        # System in middle: skip
         if isinstance(content, SystemContent):
             continue
 
-        # Instruction: embed pending action outputs
         if isinstance(content, InstructionContent):
-            # Clear tool_schemas and response_format from history messages
+            # History messages must not carry forward tool_schemas/response_format
             updates: dict[str, Any] = {"tool_schemas": None, "response_format": None}
 
             if aggregate_actions and pending_responses:
@@ -207,10 +194,8 @@ def prepare_messages_for_chat(
             _use_msgs.append(content.with_updates(**updates))
             continue
 
-        # Other (AssistantResponse, non-aggregated ActionRequest): copy as-is
         _use_msgs.append(content.with_updates())
 
-    # Phase 3: Merge consecutive AssistantResponses
     if len(_use_msgs) > 1:
         merged: list[MessageContent] = [_use_msgs[0]]
         for content in _use_msgs[1:]:
@@ -224,11 +209,9 @@ def prepare_messages_for_chat(
                 merged.append(content)
         _use_msgs = merged
 
-    # Phase 4: Embed system message into first instruction
     system_embedded = False
     if system_text:
         if len(_use_msgs) == 0 and new_instruction:
-            # No history: embed into new_instruction
             new_content_inner = (
                 new_instruction.content  # type: ignore[union-attr]
                 if _is_message(new_instruction)
@@ -261,7 +244,6 @@ def prepare_messages_for_chat(
             _use_msgs[0] = _use_msgs[0].with_updates(instruction=f"{system_text}\n\n{curr}")
             system_embedded = True
 
-    # Phase 5: Append new_instruction (with any remaining action outputs)
     if new_instruction:
         final_updates: dict[str, Any] = {}
         new_content_final = (

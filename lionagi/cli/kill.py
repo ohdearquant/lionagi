@@ -77,14 +77,8 @@ _IdentityVerdict = Literal["ours", "not_ours", "unverifiable", "zombie"]
 
 
 def _pid_is_zombie(pid: int) -> bool:
-    """True if *pid* has exited and is waiting for its parent to reap it.
-
-    `pid_alive` answers "does the OS still know this pid", and a zombie
-    satisfies that: it keeps its slot until it is reaped, so `kill -0` keeps
-    succeeding and signals keep being accepted with no effect. Anything that
-    reads "still there" as "still working" will wait out a grace period that
-    can never end and then escalate onto a process that is already dead.
-    """
+    """True if *pid* has exited and is waiting for its parent to reap it — `pid_alive` still reports
+    it live, so anything reading "still there" as "still working" waits out a grace period that never ends."""
     if pid <= 1:
         return False
     try:
@@ -102,25 +96,9 @@ def _check_pid_identity(
     expected_session_id: str | None = None,
     expected_create_time: float | None = None,
 ) -> _IdentityVerdict:
-    """Classify the process at *pid* against the run we recorded.
-
-    Four answers, every caller must handle all of them:
-
-    - "ours": positively identified as the run in the row.
-    - "not_ours": pid is gone or held by a different process — killing it
-      would hit a stranger.
-    - "unverifiable": present but uninspectable (usually permission denied).
-      Callers must treat this as still-alive, never as dead, or an unattended
-      sweep would cancel a worker it merely lacks permission to see.
-    - "zombie": exited, not yet reaped. Not a recycled pid (the OS won't
-      reissue one before reaping) and not killable again — a finished
-      termination, so folding it into "not_ours" loses a cancellation that
-      already happened.
-
-    A recorded create_time still rules first, since it's readable on a
-    zombie: a reaped-recycled-and-died-again pid reports "not_ours" rather
-    than being mistaken for our own corpse.
-    """
+    """Classify the process at *pid* against the recorded run: "ours" (verified), "not_ours" (gone or a
+    different process), "unverifiable" (present but uninspectable — treat as alive), or "zombie" (exited,
+    unreaped, not killable again). Every caller must handle all four."""
     try:
         proc = psutil.Process(pid)
     except psutil.ZombieProcess:
@@ -191,10 +169,8 @@ def _terminate_pid(
         return "already_dead"
 
     if _pid_is_zombie(pid):
-        # Exited already, just not reaped by whoever started it. There is
-        # nothing left to signal, and no other process can be holding this pid
-        # until the reap happens, so this is a termination that is already
-        # complete rather than a process we failed to identify.
+        # Exited already, just not reaped. Nothing left to signal, and no other process can hold this
+        # pid until the reap happens — a completed termination, not a process we failed to identify.
         return "already_dead"
 
     if expected_cmd is not None:
@@ -224,9 +200,8 @@ def _terminate_pid(
     deadline = time.monotonic() + grace_seconds
     interval = 0.1
     while time.monotonic() < deadline:
-        # A process whose parent never reaps it stays visible to `kill -0`
-        # forever, so waiting on liveness alone would sit out the whole grace
-        # window for a process that obeyed the SIGTERM immediately.
+        # A process whose parent never reaps it stays visible to `kill -0` forever, so waiting on liveness
+        # alone would sit out the whole grace window for a process that obeyed the SIGTERM immediately.
         if not _pid_alive(pid) or _pid_is_zombie(pid):
             return "sigterm"
         time.sleep(interval)
@@ -235,10 +210,8 @@ def _terminate_pid(
     if not _pid_alive(pid) or _pid_is_zombie(pid):
         return "sigterm"
 
-    # Re-check identity before escalating: the pid may have been reused by an
-    # unrelated process in the grace_seconds since SIGTERM, and SIGKILL is not
-    # survivable, so this must not escalate onto a stranger. A pid that now belongs to a different process is
-    # reported the same way a mismatch at entry is.
+    # Re-check identity before escalating: the pid may have been reused since SIGTERM, and SIGKILL is not
+    # survivable, so this must not escalate onto a stranger — reported the same way as a mismatch at entry.
     if expected_cmd is not None:
         verdict = _check_pid_identity(
             pid,
@@ -279,9 +252,8 @@ async def _list_running_children(
             children.append(("plays", "play", db._row_to_dict(row)))
 
     if entity_type == "play":
-        # `plays.session_id` is bound only by the Studio show importer; a play
-        # created by a live run leaves it NULL, so this returns nothing for
-        # those and the caller reports the gap rather than a false reap.
+        # `plays.session_id` is bound only by the Studio show importer; a play created by a live run
+        # leaves it NULL, so this returns nothing for those and the caller reports the gap.
         rows = await db.fetch_all(
             "SELECT sessions.* FROM plays "
             "JOIN sessions ON sessions.id = plays.session_id "
@@ -290,9 +262,8 @@ async def _list_running_children(
         )
         for row in rows:
             session_row = db._row_to_dict(row)
-            # Deepest first: the session's own children are signalled before
-            # the session, so a worker is never orphaned by its parent going
-            # terminal ahead of it.
+            # Deepest first: the session's own children are signalled before the session, so a worker
+            # is never orphaned by its parent going terminal ahead of it.
             children.extend(await _list_running_children(db, "session", session_row["id"]))
             children.append(("sessions", "session", session_row))
 
@@ -328,12 +299,8 @@ async def _persist_cancel(
     reason_summary: str,
     evidence: dict[str, Any],
 ) -> None:
-    """Write the entity's terminal status + status_transition row.
-
-    The status is per entity kind, not one word: a session or invocation goes
-    ``cancelled``, a play goes ``blocked``, a show goes ``aborted``. Anything
-    reported to an operator has to name the one that was actually written.
-    """
+    """Write the entity's terminal status + status_transition row; status is per entity kind —
+    session/invocation -> cancelled, play -> blocked, show -> aborted."""
     from lionagi.state.db import (
         PLAY_TERMINAL_STATUSES,
         SHOW_TERMINAL_STATUSES,
@@ -494,9 +461,8 @@ async def _do_kill(
 
         table, entity_type, row = resolved
         current_status = row.get("status")
-        # Shows never reach "running" (they persist as 'active' per the
-        # shows.status vocabulary in state/db.py); every other entity type
-        # uses "running" as its only killable status.
+        # Shows never reach "running" (they persist as 'active' per state/db.py); every other entity
+        # type uses "running" as its only killable status.
         killable_status = "active" if entity_type == "show" else "running"
 
         if current_status != killable_status:
@@ -512,9 +478,8 @@ async def _do_kill(
         play_workers_unreachable = False
 
         if entity_type == "show":
-            # ADR-0104 explicitly defers show-level reaping: a show kill only
-            # marks the show row terminal. --recursive is a documented no-op
-            # here rather than a partial reap of the show's plays/workers.
+            # ADR-0104 defers show-level reaping: a show kill only marks the show row terminal.
+            # --recursive is a documented no-op here rather than a partial reap of plays/workers.
             children = []
             if recursive:
                 warn(
@@ -523,9 +488,8 @@ async def _do_kill(
                     "play or session ids directly to stop a show's workers"
                 )
         elif entity_type == "play":
-            # A play row carries no PID of its own, so its whole effect on the
-            # running system is through the sessions it started. Resolving them
-            # is the kill, not an extra step behind --recursive.
+            # A play row carries no PID of its own — its whole effect on the running system is through
+            # the sessions it started. Resolving them is the kill, not an extra step behind --recursive.
             children = await _list_running_children(db, entity_type, row["id"])
             play_workers_unreachable = not children
         elif recursive:
@@ -581,13 +545,8 @@ async def _do_kill(
 
 
 async def _play_child_stale(db: Any, play_row: dict[str, Any]) -> bool | None:
-    """Whether the play's linked session has terminated.
-
-    ``None`` means the question could not be asked: the row records no session
-    to look up, or it points at one that is no longer in the table. That is a
-    different answer from "the session is still running", and the sweep reports
-    it differently.
-    """
+    """Whether the play's linked session has terminated; None means the question couldn't be asked
+    (no session recorded, or it no longer exists) — a different answer from "still running"."""
     session_id = play_row.get("session_id")
     if not session_id:
         return None
@@ -657,10 +616,8 @@ async def _do_kill_all_stale(
                     continue
 
                 pid = _read_pid_from_entity(row_dict)
-                # A live pid alone isn't enough — the OS may have reused it.
-                # Correlate against the row's own session id/create_time (same
-                # fields the direct-kill path uses) so a recycled pid occupied
-                # by a different lionagi process doesn't pass as "still alive".
+                # A live pid alone isn't enough — the OS may have reused it. Correlate against the row's
+                # own session id/create_time so a recycled pid doesn't pass as "still alive".
                 if pid is not None and _pid_alive(pid):
                     meta = (
                         row_dict.get("node_metadata")
@@ -689,10 +646,8 @@ async def _do_kill_all_stale(
                             )
                         continue
                     if verdict == "unverifiable":
-                        # We couldn't read enough of the process to confirm
-                        # identity either way (e.g. AccessDenied). Treat as
-                        # live rather than sweep it out from under a worker
-                        # we simply can't inspect.
+                        # Couldn't read enough of the process to confirm identity either way (e.g.
+                        # AccessDenied) — treat as live rather than sweep out a worker we can't inspect.
                         skipped_unverifiable += 1
                         if verbose:
                             print(
@@ -700,10 +655,8 @@ async def _do_kill_all_stale(
                                 "identity unverifiable (permission denied) — treated as live"
                             )
                         continue
-                    # "not_ours" (the pid was recycled by an unrelated process)
-                    # and "zombie" (our process exited and nobody reaped it)
-                    # both mean the recorded run is gone: fall through and
-                    # sweep the row.
+                    # "not_ours" (pid recycled by an unrelated process) and "zombie" (exited, unreaped)
+                    # both mean the recorded run is gone: fall through and sweep the row.
 
                 if dry_run:
                     print(
@@ -751,9 +704,8 @@ async def _do_kill_all_stale(
 
             child_stale = await _play_child_stale(db, row_dict)
             if child_stale is None:
-                # No session to check. Age alone would not distinguish a play
-                # whose workers are gone from one still doing hours of work, so
-                # the row is left alone and counted for the closing summary.
+                # No session to check. Age alone can't distinguish a play whose workers are gone from
+                # one still doing hours of work, so the row is left alone and counted for the summary.
                 skipped_unlinked_plays += 1
                 if verbose:
                     print(
@@ -849,9 +801,8 @@ async def _do_kill_all_stale(
         f"skipped_unlinked_plays={skipped_unlinked_plays}]"
     )
     if skipped_unlinked_plays:
-        # One line per sweep, not one per row: a play created by a live run
-        # never records the sessions it started, so this is a property of how
-        # plays are written rather than an observation about these rows.
+        # One line per sweep, not one per row: a play created by a live run never records the sessions
+        # it started, so this is a property of how plays are written, not an observation about these rows.
         warn(
             f"{skipped_unlinked_plays} running play row(s) were not considered: "
             "a play created by a live run records no worker session, so there is "

@@ -16,10 +16,8 @@ __all__ = (
     "collect_checks",
 )
 
-# ── check inputs ─────────────────────────────────────────────────────────────
-
-# Subsystems whose import already exercises most of the dependency graph —
-# an ImportError here surfaces the same root cause `li --version` hits.
+# Subsystems whose import already exercises most of the dependency graph (an ImportError here
+# surfaces the same root cause `li --version` hits).
 _IMPORT_PROBES = (
     "lionagi",
     "lionagi.session.branch",
@@ -28,8 +26,7 @@ _IMPORT_PROBES = (
     "lionagi.operations",
 )
 
-# Small, explicit subset of pyproject.toml [project] dependencies whose
-# import name differs enough from the package name to be worth spelling out.
+# Small subset of pyproject.toml deps whose import name differs enough from the package name to spell out.
 _CORE_DEPS: dict[str, str] = {
     "pydantic": "pydantic",
     "aiohttp": "aiohttp",
@@ -42,9 +39,7 @@ _STUDIO_HEALTH_URL_DEFAULT = "http://127.0.0.1:8765/api/admin/health"
 
 _SYMBOLS = {"ok": "✓", "warn": "!", "fail": "✗", "unknown": "?"}
 
-# Statuses that must not be read as a passing check. `unknown` is here because a
-# check that could not be run has established nothing, and reporting it as a pass
-# is the failure mode this file exists to prevent.
+# Statuses that must not be read as a passing check — `unknown` means a check that couldn't run.
 _NOT_PASSING = ("fail", "unknown")
 
 
@@ -71,8 +66,7 @@ def _check_version() -> dict[str, str]:
         return _result("fail", f"could not import lionagi: {type(exc).__name__}: {exc}")
     location = getattr(lionagi, "__file__", None)
     detail = f"lionagi {__version__} at {location}"
-    # Editability is informational only: wheel installs are intentionally
-    # non-editable and perfectly healthy.
+    # Editability is informational only: wheel installs are intentionally non-editable and healthy.
     if _looks_editable(location):
         detail += " (editable install)"
     return _result("ok", detail)
@@ -150,13 +144,8 @@ def _check_lionagi_home(home: Path | None = None) -> dict[str, str]:
 
 
 def _check_code_identity() -> dict[str, str]:
-    """Fail when the code that answered is not the code the environment implies.
-
-    An install can be healthy in every other respect and still be serving a tree
-    that stopped tracking its upstream commits ago — the process loaded that tree
-    once, at startup, and nothing since has told anyone. This is the check that
-    tells them.
-    """
+    """Fail when the code that answered is not the code the environment implies — an install can be
+    healthy everywhere else while serving a tree that stopped tracking upstream commits ago."""
     from ._code_identity import code_identity
 
     try:
@@ -180,8 +169,7 @@ def _check_code_identity() -> dict[str, str]:
             # A commit id next to a dirty tree reads as the whole story; it isn't.
             position += " with uncommitted changes"
         where += f", git {position}"
-        # The position is the one read when this process started, not the tree's
-        # position now, so it is quoted with the time it was true of.
+        # The position is read when this process started, not now, so it's quoted with that time.
         taken_at = identity.get("git_snapshot_taken_at")
         if taken_at:
             where += f" as read at {taken_at}"

@@ -54,13 +54,7 @@ class Flow(Element, Generic[E, P]):
 
     @staticmethod
     def _index_progression_names(progressions: Any) -> dict[str, UUID]:
-        """Map each named progression to its id, rejecting duplicate names.
-
-        add_progression enforces name uniqueness; construction and
-        deserialization must enforce the same invariant, otherwise a
-        later-listed progression silently shadows an earlier one in the name
-        index and the earlier one becomes unreachable by name.
-        """
+        """Map each named progression to its id; raises on duplicate names (must match add_progression's invariant)."""
         names: dict[str, UUID] = {}
         for progression in progressions:
             if progression.name:
@@ -75,8 +69,6 @@ class Flow(Element, Generic[E, P]):
         """Rebuild _progression_names index from progressions."""
         super().model_post_init(__context)
         self._progression_names = self._index_progression_names(self.progressions)
-
-    # ==================== Serialization ====================
 
     def to_dict(self, mode="python", **kw):
         """Serialize with nested Pile.to_dict() to preserve lion_class for polymorphic round-trips."""
@@ -102,8 +94,7 @@ class Flow(Element, Generic[E, P]):
     def from_dict(cls, data: dict) -> Flow:
         """Deserialize from dict; reconstructs Pile fields explicitly (model_validate can't round-trip them)."""
         data = data.copy()
-        # Copy the nested metadata dict: data.copy() is shallow, so popping
-        # lion_class off the original would mutate the caller's snapshot.
+        # data.copy() is shallow, so pop lion_class off a fresh dict, not the caller's snapshot.
         metadata = dict(data.pop("metadata", None) or {})
         metadata.pop("lion_class", None)
 
@@ -132,8 +123,6 @@ class Flow(Element, Generic[E, P]):
         flow._lock = threading.RLock()
         flow._progression_names = cls._index_progression_names(flow.progressions)
         return flow
-
-    # ==================== Progression Management ====================
 
     def add_progression(self, progression: P) -> None:
         """Add progression; raises ItemExistsError on duplicate name, ItemNotFoundError on missing items."""
@@ -177,16 +166,12 @@ class Flow(Element, Generic[E, P]):
                 uid = self._progression_names.get(key)
                 if uid is not None:
                     prog = self.progressions.get(uid, None)
-                    # A progression's `name` can be mutated directly (Progression
-                    # has no back-reference to this Flow), so a stored index
-                    # entry can point at a progression removed or renamed away
-                    # from `key`. Treat that as stale rather than trusting it.
+                    # name can mutate directly, so a stored index entry may be stale.
                     if prog is not None and prog.name == key:
                         return prog
                     del self._progression_names[key]
 
-                # Live scan repairs the index for a progression whose current
-                # name matches `key` but was never (or no longer) indexed.
+                # Fallback scan repairs the index for a matching but never-indexed progression.
                 for prog in self.progressions:
                     if prog.name == key:
                         self._progression_names[key] = prog.id
@@ -200,8 +185,6 @@ class Flow(Element, Generic[E, P]):
 
             uid = key.id if isinstance(key, Progression) else key
             return self.progressions[uid]
-
-    # ==================== Item Management ====================
 
     def add_item(
         self,
@@ -217,9 +200,7 @@ class Flow(Element, Generic[E, P]):
                 else:
                     progs_list = list(progressions)
 
-                # Resolve every reference through the owned progression pile,
-                # including bare Progression instances: appending to an unowned
-                # progression would mutate an ordering the flow does not track.
+                # Resolve through the owned pile -- an unowned progression isn't flow-tracked.
                 for p in progs_list:
                     resolved.append(self.get_progression(p))
 

@@ -42,37 +42,25 @@ __all__ = (
 class HookPoint(str, Enum):
     """Closed vocabulary of session lifecycle hook points (see docs/reference/agent-hooks.md)."""
 
-    # emitted in lionagi/cli/_runs.py setup_agent_persist / teardown_persist
     SESSION_START = "session.start"
     SESSION_END = "session.end"
     BRANCH_CREATE = "branch.create"
     BRANCH_END = "branch.end"
-    # emitted in operations/chat/chat.py and operations/run/run.py, bracketing
-    # a session-bound iModel invocation/stream (see operations/_api_hooks.py)
     API_PRE_CALL = "api.pre_call"
     API_POST_CALL = "api.post_call"
     API_STREAM_CHUNK = "api.stream_chunk"
-    TOOL_PRE = "tool.pre"  # emitted in operations/act/act.py before tool invocation
-    TOOL_POST = "tool.post"  # emitted in operations/act/act.py on successful invocation
-    TOOL_ERROR = "tool.error"  # emitted in operations/act/act.py on invocation error
-    MESSAGE_ADD = "message.add"  # live: emitted in session/branch.py
-    # deprecated compatibility vocabulary: no owner has supplied a payload
-    # contract or production emit site (see docs/reference/agent-hooks.md)
+    TOOL_PRE = "tool.pre"
+    TOOL_POST = "tool.post"
+    TOOL_ERROR = "tool.error"
+    MESSAGE_ADD = "message.add"
     ARTIFACT_CREATED = "artifact.created"
-    # emitted in operations/chat/chat.py and operations/run/run.py, immediately
-    # before provider invocation / streaming begins, when a turn-origin token
-    # is present on the operation context (see operations/_turn_origin.py)
     USER_PROMPT_SUBMIT = "prompt.submit"
 
 
-# HookPoints with no production emit site. Registering a handler on one of
-# these is accepted (the enum member is real) but never fires — DORMANT_POINTS
-# is what turns that mismatch from silent into a warned one (see HookBus.on()).
+# Members with no production emit site still register (never fire) — DORMANT_POINTS warns instead of silently no-op'ing.
 DORMANT_POINTS = frozenset({HookPoint.ARTIFACT_CREATED})
 
-
-# HookPoints that propagate handler exceptions (rather than logging and
-# swallowing them) so a guard can veto the action about to happen.
+# These points propagate handler exceptions instead of logging them, so a handler can veto the action.
 _BLOCKING_POINTS = frozenset({HookPoint.TOOL_PRE, HookPoint.USER_PROMPT_SUBMIT})
 
 
@@ -93,7 +81,7 @@ class HookSignal(Signal):
 def _normalize_point(point: HookPoint | str) -> HookPoint:
     if isinstance(point, HookPoint):
         return point
-    return HookPoint(point)  # raises ValueError for unknown values
+    return HookPoint(point)
 
 
 class HookBus:
@@ -180,9 +168,7 @@ class HookBus:
                     logger.exception("Hook failed: %s", point.value)
         finally:
             _emitting_bus.reset(token)
-        # MESSAGE_ADD is represented on the signal bus by MessageAdded (emitted
-        # directly via on_message_added); a redundant HookSignal here would
-        # duplicate every message event on the observable stream.
+        # MESSAGE_ADD already reaches the signal bus via MessageAdded; recording it here would duplicate it.
         if point is not HookPoint.MESSAGE_ADD:
             await self._record(point, kwargs)
 
@@ -190,9 +176,6 @@ class HookBus:
         """Flush default message-hook retries before terminal lifecycle work."""
         for retry_queue in getattr(self, "_message_retry_queues", {}).values():
             await retry_queue.flush()
-
-
-# ── Decorator for user-defined handlers ───────────────────────────────────────
 
 
 def hook(point: HookPoint | str) -> Callable[[HookHandler], HookHandler]:

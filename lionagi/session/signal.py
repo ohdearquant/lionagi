@@ -53,7 +53,7 @@ class StructuredOutput(Signal):
 
 
 class RunStart(Signal):
-    """Run lifecycle: beginning."""
+    pass
 
 
 class RunEnd(Signal):
@@ -111,7 +111,7 @@ class NodeFailed(Signal):
 
 
 class GateDenied(Signal):
-    """Governance gate denied a proposed action."""
+    pass
 
 
 class MessageAdded(Signal):
@@ -122,15 +122,14 @@ class DispatchSignal(Signal):
     """Outbound dispatch payload contract (ADR-0059); one stable envelope shared by every dispatch kind so the transport template never churns per-kind."""
 
     dispatch_id: str = ""
-    kind: str = ""  # e.g. "revival_ping" | "terminal_notify"
+    kind: str = ""
     deliver_to: str = ""
     attempt: int = 0
     ack_token: str | None = None
     body: dict = {}
 
 
-# -- Extended node lifecycle (ADR-0033): queued → running → awaiting_approval →
-# succeeded|failed|escalated. NodeStarted/Completed/Failed (above) cover running/succeeded/failed; these three cover the rest.
+# Extended node lifecycle (ADR-0033): queued → running → awaiting_approval → succeeded|failed|escalated.
 
 
 class NodeQueued(Signal):
@@ -157,7 +156,7 @@ class NodeEscalated(Signal):
     op_id: str = ""
     name: str = ""
     reason: str = ""
-    route: str = ""  # "higher_tier" | "give_up" | "notify"
+    route: str = ""
     escalation_request: Any = None
 
 
@@ -168,9 +167,6 @@ class NodePaused(Signal):
     name: str = ""
 
 
-# -- Lifecycle projection (ADR-0033) ------------------------------------------
-
-#: The seven canonical per-node lifecycle states.
 NodeLifecycleState = Literal[
     "queued", "running", "awaiting_approval", "paused", "succeeded", "failed", "escalated"
 ]
@@ -194,13 +190,10 @@ def _signal_to_state(sig: Any) -> NodeLifecycleState | None:
         return "failed"
     if isinstance(sig, NodeEscalated):
         req = sig.escalation_request
-        # Soft ("fyi") urgency is informational only, not terminal; only
-        # "blocked" urgency (default) or no request pins to "escalated".
+        # Soft ("fyi") urgency is informational only, not terminal.
         if getattr(req, "urgency", "blocked") == "fyi":
             return None
         return "escalated"
-    # StructuredOutput carrying an EscalationRequest also projects to escalated,
-    # unless it is a soft ("fyi") help signal.
     if isinstance(sig, StructuredOutput):
         from lionagi.casts.emission import EscalationRequest  # noqa: PLC0415
 
@@ -246,8 +239,7 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
         usage = mr.get("usage") if isinstance(mr.get("usage"), dict) else mr
         input_tokens += int(usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0)
         output_tokens += int(usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0)
-        # Presence, not truthiness: an explicit total_cost_usd=0.0 (real free
-        # call) must not fall through `x or y` to the cost/None fallback.
+        # Presence, not truthiness: an explicit 0.0 (real free call) must not fall through to None.
         if "total_cost_usd" in mr and mr["total_cost_usd"] is not None:
             cost = mr["total_cost_usd"]
         elif "cost" in mr and mr["cost"] is not None:

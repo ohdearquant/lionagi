@@ -1,11 +1,8 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tool-event hook contract at the ``ActionManager.invoke`` chokepoint.
-
-Mutation-capable layer around every tool call, outermost and distinct from
-``HookBus`` (audit-only) and the spec-level pre/postprocessor chain
-(innermost). See docs/internals/core.md for the full pre/post verdict shape.
+"""Tool-event hook contract at the ``ActionManager.invoke`` chokepoint -- the
+mutation-capable layer, outermost of ``HookBus``/spec pre-post; see docs/internals/core.md.
 """
 
 from __future__ import annotations
@@ -39,8 +36,7 @@ _SNAPSHOT_FAILED = object()
 
 @dataclass(frozen=True, slots=True)
 class ToolPreDecision:
-    """One pre-hook's verdict: ``decision`` in ``allow | deny | ask``; any
-    other value fails closed the same as ``deny``."""
+    """One pre-hook's verdict: ``decision`` in ``allow | deny | ask``; any other value fails closed like ``deny``."""
 
     decision: str = _ALLOW
     reason: str = ""
@@ -66,12 +62,9 @@ ToolPostHook = Callable[
 
 
 class ActionGovernanceDeniedError(PermissionError):
-    """Base for governance/policy denials raised at the tool-invocation
-    boundary (hook deny, schema-rewrite revalidation). A plain
-    ``PermissionError`` raised by a tool's own body is NOT an instance of
-    this class -- callers that need to distinguish "this call was denied by
-    governance" from "the tool raised its own permission error" should match
-    on this type, not on ``PermissionError`` directly.
+    """Base for governance/policy denials at the tool-invocation boundary. A tool's
+    own ``PermissionError`` is NOT an instance of this -- match on this type to
+    distinguish governance denial from the tool's own error.
     """
 
 
@@ -84,12 +77,8 @@ class ToolHookDeniedError(ActionGovernanceDeniedError):
         self.reason = reason
 
     def __reduce__(self):
-        # BaseException's default __reduce__ replays via `self.args`, which
-        # here is the single formatted message string -- not the two
-        # positional args this __init__ requires. That mismatch makes
-        # deepcopy() (used by run_tool_post_hooks' evidence isolation) raise
-        # and silently skip post hooks on the deny path. Reconstruct from
-        # the named fields instead so deepcopy/pickle round-trip correctly.
+        # Default __reduce__ replays via self.args (the formatted string), not this
+        # __init__'s two positional args -- deepcopy would fail; reconstruct from fields instead.
         return (self.__class__, (self.hook_name, self.reason))
 
 
@@ -110,10 +99,8 @@ async def run_tool_pre_hooks(
     tool_name: str,
     arguments: dict[str, Any],
 ) -> dict[str, Any]:
-    """Run pre hooks in order; return the (possibly rewritten) arguments.
-
-    Raises ``ToolHookDeniedError`` on the first ``deny``/``ask``/unrecognized
-    decision, or when a hook itself raises (fail closed).
+    """Run pre hooks in order; return the (possibly rewritten) arguments. Raises
+    ``ToolHookDeniedError`` on the first deny/ask/unrecognized decision or hook error (fail closed).
     """
     for hook_handler in hooks:
         name = _hook_name(hook_handler)
@@ -160,10 +147,8 @@ async def run_tool_post_hooks(
     result: Any,
     error: BaseException | None,
 ) -> list[str]:
-    """Run post hooks in order; advisory only, never affects the outcome.
-
-    A raising hook is logged and skipped. Returns the non-empty ``reason``
-    strings collected from hooks that returned a :class:`ToolPostDecision`.
+    """Run post hooks in order; advisory only, never affects the outcome. A raising
+    hook is logged and skipped; returns non-empty ``reason`` strings from ``ToolPostDecision`` hooks.
     """
     canonical_arguments = _snapshot(arguments)
     canonical_result = _snapshot(result)

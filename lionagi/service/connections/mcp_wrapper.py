@@ -71,26 +71,17 @@ class MCPSecurityConfig:
 
     @classmethod
     def trusted(cls) -> MCPSecurityConfig:
-        """The named, observable transport-trust decision (ADR-0011 delta row 3).
-
-        Allows command and URL transports. A caller must reach for this
-        deliberately -- omitting a policy at MCP load time no longer implies
-        trust; it now preserves the fail-closed default above instead.
-        """
+        """Named, observable transport-trust decision (ADR-0011 delta row 3):
+        allows command and URL transports. Must be reached for deliberately —
+        omitting a policy no longer implies trust."""
         return cls(allow_commands=True, allow_urls=True)
 
 
 class _MCPRecoveryCapability:
-    """Opaque, unforgeable proof that a proxy is authorized to recover the
-    security policy it was created under.
-
-    Minted once per authorization (`MCPConnectionPool._mint_capability`) and
-    checked by IDENTITY, never by content -- an equal-content instance is not
-    accepted. Only the closure `create_mcp_tool` builds holds a reference;
-    it is never assigned into `Tool.mcp_config`, returned by `to_dict()`, or
-    otherwise persisted, so it cannot survive serialization or be forged from
-    a config dict.
-    """
+    """Opaque, unforgeable proof that a proxy may recover the security policy
+    it was created under. Minted once per authorization and checked by
+    IDENTITY, never content. Never assigned into Tool.mcp_config or returned
+    by to_dict(), so it cannot survive serialization or be forged."""
 
     __slots__ = ("security",)
 
@@ -98,9 +89,8 @@ class _MCPRecoveryCapability:
         self.security = security
 
 
-# --- Generic-executor admission rule -----------------------------------
-# Registration-time admission control, independent of MCPSecurityConfig
-# (transport auth) and PermissionPolicy (invocation-time) — see docs/internals/runtime.md.
+# --- Generic-executor admission rule (registration-time; distinct from
+# --- MCPSecurityConfig/PermissionPolicy) — see docs/internals/runtime.md.
 
 AdmissionReason: TypeAlias = Literal[
     "unbounded-command-input",
@@ -265,16 +255,12 @@ _EXEC_TAINTED_KEY_TOKENS = frozenset(
 
 
 def _is_identifier_like_key(norm_key: str) -> bool:
-    """True for dynamic-but-benign resource identifiers (`service_id`,
-    `resource_path`, ...) — excluded from the strong-name bounding fallback.
-    See docs/internals/runtime.md."""
+    """True for dynamic-but-benign resource identifiers (service_id, ...)."""
     return bool(_IDENTIFIER_LIKE_KEY_PATTERN.match(norm_key))
 
 
 def _is_exec_tainted_key(norm_key: str) -> bool:
-    """True when a key's own tokens name an executor channel (`executable_path`,
-    `script_path`, ...), overriding the identifier-suffix exemption.
-    See docs/internals/runtime.md."""
+    """True when a key's tokens name an executor channel, overriding the identifier exemption."""
     return any(token in _EXEC_TAINTED_KEY_TOKENS for token in norm_key.split("_"))
 
 
@@ -298,14 +284,12 @@ _ANNOTATION_ONLY_REF_SIBLING_KEYWORDS = frozenset(
 
 def _has_structural_ref_siblings(siblings: Mapping) -> bool:
     """True when a $ref node's siblings include anything beyond pure
-    annotation — i.e., per Draft 2020-12, something that constrains the same
-    instance and must be evaluated. See docs/internals/runtime.md."""
+    annotation (Draft 2020-12: something that must still be evaluated)."""
     return any(key not in _ANNOTATION_ONLY_REF_SIBLING_KEYWORDS for key in siblings)
 
 
-# --- Keyword registry for the sufficiency proof --------------------------
-# Classifies every Draft 2020-12 keyword into one of four classes, then
-# walks the whole document unconditionally. See docs/internals/runtime.md.
+# --- Keyword registry for the sufficiency proof: classifies every Draft
+# --- 2020-12 keyword into one of four classes. See docs/internals/runtime.md.
 
 # Annotation-only: carry no assertion that admits/denies an instance value.
 _INERT_ANNOTATION_KEYWORDS = frozenset(
@@ -325,9 +309,7 @@ _INERT_ANNOTATION_KEYWORDS = frozenset(
         "format",
         "contentEncoding",
         "contentMediaType",
-        # `contentSchema`'s inertness holds ONLY while the content-assertion
-        # vocabulary is disabled (the default dialect). See docs/internals/runtime.md.
-        "contentSchema",
+        "contentSchema",  # inert only while the content-assertion vocabulary is disabled
     }
 )
 
@@ -371,9 +353,7 @@ _MODELED_APPLICATOR_KEYWORDS = frozenset(
     }
 )
 
-# Applicators recognized by name but not modeled — presence anywhere denies
-# the node outright; promoting one requires its own soundness argument.
-# See docs/internals/runtime.md.
+# Applicators recognized by name but not modeled — presence anywhere denies the node outright.
 _DENIED_APPLICATOR_KEYWORDS = frozenset(
     {
         "patternProperties",
@@ -1531,15 +1511,8 @@ class MCPConnectionPool:
 
     @staticmethod
     def _policy_key(config: dict[str, Any], server_name: str | None = None) -> str:
-        """Content fingerprint of a resolved transport config, folded into
-        the client-cache key so two distinct transports never collide there.
-
-        Callers MUST pass an already-*resolved* transport config (see
-        `_resolve_config`) -- never a bare `{"server": name}` reference. This
-        is NOT a security/authorization key: it is derived purely from the
-        (forgeable, serializable) config, so it must never gate recovery --
-        see `_MCPRecoveryCapability` for the actual recovery authority.
-        """
+        """Content fingerprint of a resolved (see _resolve_config) transport
+        config, folded into the client-cache key. Not a security key — never gates recovery."""
         material = {k: v for k, v in config.items() if not k.startswith("_")}
         blob = json.dumps(material, sort_keys=True, default=str)
         content_hash = compute_hash(blob)
@@ -1570,11 +1543,7 @@ class MCPConnectionPool:
 
     @classmethod
     def _effective_security(cls, security: MCPSecurityConfig | None) -> MCPSecurityConfig:
-        """Precedence: explicit > process-global (`set_security_config`) >
-        fail-closed default. Same precedence `_create_client` validates
-        against; callers use this to derive cache keys and capabilities
-        BEFORE `_create_client` runs, so a cache hit can only ever return a
-        client whose key already encodes this same effective security."""
+        """Precedence: explicit > process-global (set_security_config) > fail-closed default."""
         if security is not None:
             return security
         if cls._security is not None:
@@ -1589,13 +1558,8 @@ class MCPConnectionPool:
 
     @classmethod
     def _resolve_config(cls, server_config: dict[str, Any]) -> dict[str, Any]:
-        """Resolve a `{"server": name}` reference to its concrete transport
-        config (command/args/env or url), loading `.mcp.json` first if the
-        name hasn't been loaded yet. Inline configs pass through unchanged.
-
-        Policy and cached-client identity must always be derived from the
-        RESOLVED config returned here, never from the bare server name.
-        """
+        """Resolve a {"server": name} reference to its concrete transport
+        config, loading .mcp.json first if needed. Inline configs pass through."""
         if "server" in server_config:
             server_name = server_config["server"]
             if server_name not in cls._configs:
@@ -1827,13 +1791,9 @@ def create_mcp_tool(
 ) -> Any:
     """Create an async callable wrapping MCP tool execution.
 
-    `capability` is the recovery authorization minted for this specific
-    proxy at registration time (`MCPConnectionPool._mint_capability`). It is
-    captured only in this closure -- never assigned to a `Tool` field that
-    gets serialized -- so a proxy rehydrated from persisted `mcp_config` has
-    no capability and its calls fail closed instead of recovering a prior
-    policy. Omitting it (the default) means this proxy was never authorized
-    and can never recover a policy either.
+    capability is the recovery authorization minted for this proxy at
+    registration time, captured only in this closure — never serialized — so
+    a proxy rehydrated from persisted mcp_config fails closed instead.
     """
 
     async def mcp_callable(**kwargs):
@@ -1841,12 +1801,8 @@ def create_mcp_tool(
 
         config_for_client = {k: v for k, v in mcp_config.items() if not k.startswith("_")}
 
-        # This is the proxy re-entering a transport it already holds (the
-        # metadata stripped above is the only thing distinguishing this call
-        # from a fresh load) -- recover whatever policy that transport was
-        # already authorized under, via the capability-gated reconnect path.
-        # This is not reachable through the public `get_client` API, and not
-        # reachable at all without the capability this closure holds.
+        # Recovers the policy this transport was already authorized under; not
+        # reachable through the public get_client API or without this closure's capability.
         client = await MCPConnectionPool._get_reconnect_client(config_for_client, capability)
 
         result = await client.call_tool(actual_tool_name, kwargs)

@@ -109,8 +109,7 @@ class Exchange(Element):
                     deliveries.append((message.recipient, message))
             self._mark_in_flight(deliveries, increment=True)
         if deliveries:
-            # _deliver_to clears an entry from in-flight only on success, so a
-            # raising inbox write stays recoverable via drain_pending().
+            # _deliver_to clears in-flight only on success, so a failed write stays recoverable via drain_pending().
             await gather(
                 *[self._deliver_to(recipient_id, message) for recipient_id, message in deliveries],
                 return_exceptions=True,
@@ -219,16 +218,14 @@ class Exchange(Element):
             elif message.recipient is not None and message.recipient in self._owner_index:
                 deliveries.append((message.recipient, message))
 
-        # Track in-flight before delivering (as the async path does) so a
-        # raising inbox write stays recoverable via drain_pending().
+        # Mark in-flight before delivering (mirrors the async path) so a failed write stays recoverable.
         self._mark_in_flight(deliveries, increment=True)
         for recipient_id, message in deliveries:
             with self._in_flight_lock:
                 pending = self._in_flight.get(recipient_id, [])
                 if not any(candidate is message for candidate in pending):
                     continue
-                # Deliver first, then drop from in-flight: if add_item raises the
-                # entry stays in place and remains recoverable.
+                # Deliver before dropping from in-flight: a raising add_item leaves the entry recoverable.
                 self._deliver_locked(recipient_id, message)
                 self._remove_in_flight_locked(recipient_id, message)
 
@@ -245,11 +242,8 @@ class Exchange(Element):
         return total
 
     async def run(self, interval: float = 1.0) -> None:
-        """Continuous sync loop; call stop() to exit.
-
-        One-shot: raises RuntimeError on a second call. Does not reset
-        ``_stop`` on entry, so a stop() issued before the first turn makes
-        this call return immediately instead of looping forever.
+        """Continuous sync loop; call stop() to exit. One-shot — raises RuntimeError on a
+        second call, and doesn't reset ``_stop`` on entry, so a pre-run stop() returns immediately.
         """
         if self._run_started:
             raise RuntimeError(
@@ -335,5 +329,5 @@ class Exchange(Element):
                 outbox = flow.get_progression(OUTBOX)
                 pending += len(outbox)
             except KeyError:
-                pass  # No outbox progression
+                pass
         return f"Exchange(entities={len(self)}, pending_out={pending})"

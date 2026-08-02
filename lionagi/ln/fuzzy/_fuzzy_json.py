@@ -21,12 +21,10 @@ def fuzzy_json(
     with contextlib.suppress(orjson.JSONDecodeError):
         return _validate_return_type(orjson.loads(str_to_parse))
 
-    # 2. State-machine cleaning (preserves string content)
     cleaned = _clean_json_string_safe(str_to_parse)
     with contextlib.suppress(orjson.JSONDecodeError):
         return _validate_return_type(orjson.loads(cleaned))
 
-    # 3. Regex-based cleaning fallback
     cleaned_regex = _clean_json_string(str_to_parse.replace("'", '"'))
     with contextlib.suppress(orjson.JSONDecodeError):
         return _validate_return_type(orjson.loads(cleaned_regex))
@@ -37,7 +35,6 @@ def fuzzy_json(
         with contextlib.suppress(orjson.JSONDecodeError):
             return _validate_return_type(orjson.loads(fixed))
 
-    # If all attempts fail
     raise ValueError("Invalid JSON string")
 
 
@@ -84,7 +81,7 @@ def _clean_json_string_safe(s: str) -> str:
             pos += 1
             while pos < length:
                 inner_char = s[pos]
-                if inner_char == "\\":  # Escape sequence
+                if inner_char == "\\":
                     if pos + 1 < length:
                         next_char = s[pos + 1]
                         if next_char == "'":  # \' -> apostrophe
@@ -98,7 +95,7 @@ def _clean_json_string_safe(s: str) -> str:
                     result.append(inner_char)
                     pos += 1
                     continue
-                if inner_char == "'":  # End single-quoted string
+                if inner_char == "'":
                     result.append('"')
                     pos += 1
                     break
@@ -110,12 +107,12 @@ def _clean_json_string_safe(s: str) -> str:
                 pos += 1
             continue
 
-        if char == '"':  # Pass through double-quoted strings
+        if char == '"':
             result.append(char)
             pos += 1
             while pos < length:
                 inner_char = s[pos]
-                if inner_char == "\\":  # Copy escape sequences
+                if inner_char == "\\":
                     result.append(inner_char)
                     if pos + 1 < length:
                         pos += 1
@@ -130,7 +127,7 @@ def _clean_json_string_safe(s: str) -> str:
             continue
 
         if char in "{,":  # Handle unquoted keys and trailing commas
-            if char == ",":  # Check for trailing comma
+            if char == ",":
                 lookahead = pos + 1
                 while lookahead < length and s[lookahead] in " \t\n\r":
                     lookahead += 1
@@ -141,7 +138,6 @@ def _clean_json_string_safe(s: str) -> str:
             result.append(char)
             pos += 1
 
-            # Skip whitespace
             while pos < length and s[pos] in " \t\n\r":
                 result.append(s[pos])
                 pos += 1
@@ -170,15 +166,11 @@ def _clean_json_string_safe(s: str) -> str:
 
 def _clean_json_string(s: str) -> str:
     """Basic normalization: replace unescaped single quotes, trim spaces, ensure keys are quoted."""
-    # Replace unescaped single quotes with double quotes
-    # '(?<!\\)'" means a single quote not preceded by a backslash
+    # (?<!\\)' means a single quote not preceded by a backslash
     s = re.sub(r"(?<!\\)'", '"', s)
-    # Collapse multiple whitespaces
     s = re.sub(r"\s+", " ", s)
-    # Remove trailing commas before closing brackets/braces
     s = re.sub(r",\s*([}\]])", r"\1", s)
-    # Ensure keys are quoted
-    # This attempts to find patterns like { key: value } and turn them into {"key": value}
+    # Finds patterns like { key: value } and turns them into {"key": value}
     s = re.sub(r'([{,])\s*([^"\s]+)\s*:', r'\1"\2":', s)
     return s.strip()
 

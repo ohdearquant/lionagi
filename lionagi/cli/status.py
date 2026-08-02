@@ -1,9 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 """`li agent status` / `li play status` / `li o ctl status` — read-only lifecycle surfaces.
-
-See docs/internals/cli.md for the `--json` output key-set and exit-code contract.
-"""
+See docs/internals/cli.md for the `--json` output key-set and exit-code contract."""
 
 from __future__ import annotations
 
@@ -46,13 +44,8 @@ _DB_BUSY_TIMEOUT_S = 10.0
 
 
 async def _fetch_by_id(db: Any, table: str, id_or_short: str) -> dict[str, Any] | None:
-    """Exact-id fetch, then unique-prefix fetch, scoped to one table (see
-    _util.resolve_entity for the multi-table sweep).
-
-    Raises `AmbiguousIdError` when a prefix matches more than one row; the
-    status entry points turn that into EXIT_UNKNOWN, never a status readout
-    for an arbitrarily chosen run.
-    """
+    """Exact-id fetch, then unique-prefix fetch, scoped to one table; raises AmbiguousIdError on a
+    multi-row prefix match, which callers turn into EXIT_UNKNOWN rather than an arbitrary readout."""
     row = await fetch_unique_row(db, table, id_or_short)
     return db._row_to_dict(row) if row is not None else None
 
@@ -73,10 +66,7 @@ async def _latest_session(
 
 
 async def _resolve_session_by_branch_id(db: Any, entity_id: str) -> dict[str, Any] | None:
-    """Fallback: resolve *entity_id* as a branch_id to its owning session.
-
-    See docs/internals/cli.md for the branches/sessions schema note.
-    """
+    """Fallback: resolve *entity_id* as a branch_id to its owning session."""
     branch = await _fetch_by_id(db, "branches", entity_id)
     if branch is None:
         return None
@@ -86,13 +76,9 @@ async def _resolve_session_by_branch_id(db: Any, entity_id: str) -> dict[str, An
 async def _resolve_agent_target(
     db: Any, entity_id: str | None, project: str | None
 ) -> tuple[str, dict[str, Any]] | None:
-    """`li agent status` resolution: session (any kind), invocation, or a
-    branch_id, by id; default-latest is scoped to agent-kind sessions.
-
-    Sessions and invocations are searched together: a prefix that fits one of
-    each is ambiguous, and reporting the session because it is looked at first
-    is search order deciding a question it cannot answer.
-    """
+    """`li agent status` resolution: session/invocation/branch_id by id (session and invocation are
+    searched together — a prefix fitting both is ambiguous, not resolved by search order), or
+    default-latest scoped to agent-kind sessions."""
     if entity_id:
         hit = await resolve_entity(db, entity_id, tables=("sessions", "invocations"))
         if hit is not None:
@@ -109,12 +95,8 @@ async def _resolve_agent_target(
 async def _resolve_play_target(
     db: Any, entity_id: str | None, project: str | None
 ) -> tuple[str, dict[str, Any]] | None:
-    """`li play status` resolution: session, invocation, or a show sub-play
-    row, by id; default-latest is scoped to play/flow-kind sessions.
-
-    The three kinds are searched together, for the same reason `li agent
-    status` searches its two together.
-    """
+    """`li play status` resolution: session/invocation/play by id, searched together (same reasoning
+    as `_resolve_agent_target`), or default-latest scoped to play/flow-kind sessions."""
     if entity_id:
         hit = await resolve_entity(db, entity_id, tables=("sessions", "invocations", "plays"))
         if hit is not None:
@@ -126,16 +108,9 @@ async def _resolve_play_target(
 
 
 async def _resolve_any_target(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | None:
-    """`li o ctl status <id>` resolution: no kind scoping, id required (no
-    latest). Falls back to branch_id last, after sessions/invocations/plays.
-
-    The kinds are searched together rather than one after another. Trying each
-    in turn and keeping the first hit resolves a prefix that fits a session and
-    an invocation to whichever is looked at first, and the commands built on
-    this resolver act: `li o ctl pause` would queue a control for a flow the
-    caller never identified. The branch fallback stays last and applies only
-    when no entity matched at all.
-    """
+    """`li o ctl status <id>` resolution: no kind scoping, id required; searches session/invocation/play
+    together (not one after another, since the resolver's caller acts on the result) then falls back
+    to branch_id when nothing matched."""
     hit = await resolve_entity(db, entity_id, tables=("sessions", "invocations", "plays"))
     if hit is not None:
         _table, entity_type, row = hit
@@ -182,10 +157,8 @@ async def _all_session_signals(db: Any, session_id: str) -> list[dict[str, Any]]
 
 
 async def _op_progress(db: Any, session_id: str) -> tuple[int, int] | None:
-    """Reduce session_signals into (completed, total) op counts via lane_for().
-
-    None when no op-scoped signals exist yet — "not derivable", not a stub.
-    """
+    """Reduce session_signals into (completed, total) op counts via lane_for(); None means
+    "not derivable yet", not a stub."""
     rows = await _all_session_signals(db, session_id)
     if not rows:
         return None
@@ -231,8 +204,7 @@ def _classify(entity_type: str, status: str) -> tuple[bool, str, int]:
 def _detect_degraded(
     *, entity_type: str, status: str, primary_session: dict[str, Any] | None
 ) -> tuple[bool, str | None]:
-    """Detect a terminal-success record whose backing session shows no sign
-    normal teardown ran. See docs/internals/cli.md for the heuristic rationale."""
+    """Detect a terminal-success record whose backing session shows no sign normal teardown ran."""
     if primary_session is None:
         return False, None
     success = status in (_PLAY_SUCCESS if entity_type == "play" else _SESSION_SUCCESS)
@@ -461,8 +433,7 @@ def _dispatch(command: str, entity_id: str | None, as_json: bool) -> int:
 
 
 async def _audit_degraded(db: Any) -> dict[str, Any]:
-    """Scan terminal-success play/flow records; count degraded per
-    _detect_degraded. See docs/internals/cli.md for a known coverage gap."""
+    """Scan terminal-success play/flow records; count degraded per `_detect_degraded`."""
     sessions = await db.fetch_all(
         "SELECT * FROM sessions WHERE invocation_kind IN ('play', 'flow') AND status = 'completed'"
     )

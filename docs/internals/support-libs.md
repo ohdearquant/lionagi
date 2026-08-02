@@ -11,22 +11,16 @@ in-source essay. Source points here with `# See docs/internals/support-libs.md#<
 ## _spec_limits: MAX_SPEC_PROMPT_CHARS
 
 `MAX_SPEC_PROMPT_CHARS` is one number, read by every surface that validates
-an orchestration spec: the CLI spec validator and two Studio services. It used
-to be written out three times, which meant three chances for the copies to
-disagree and no single place to raise the bound.
+an orchestration spec (the CLI spec validator, two Studio services) — a
+single place to raise the bound rather than three copies that can disagree.
 
-The module deliberately imports nothing — two of its three readers are
-request-path services whose import cost is paid on startup, and a constant
-that arrives with a module graph behind it charges every one of them for a
-number.
+The module deliberately imports nothing: two of its three readers are
+request-path services whose import cost is paid on startup.
 
-The bound exists for the pathological file, not for the long prompt. An
-orchestration prompt carries the whole task — the brief, the constraints, the
-exit criteria — and a real one had already been squeezed to fit the old 8192
-limit, close enough to normal writing that an ordinary edit could push a
-working spec over it and kill the run at submit. `256 * 1024` is set far
-enough out that no honest spec reaches it, while still refusing a file that
-isn't a prompt.
+Bound is `256 * 1024` — set for the pathological file, not the long prompt.
+An orchestration prompt carries the whole task (brief, constraints, exit
+criteria); the limit is far enough out that no honest spec reaches it while
+still refusing a file that isn't a prompt.
 
 <a id="class-registry-builtin-modules"></a>
 
@@ -67,9 +61,7 @@ then fails loud with `WorkerLivenessError` instead of hanging as a zombie
 "running" leg. `0` disables the watchdog (deterministic / test runs).
 
 `LIONAGI_ANTIGRAVITY_PRINT_TIMEOUT` is the Antigravity print-mode subprocess
-cap (seconds). One hour is comfortably above expected caller deadlines while
-retaining a finite subprocess bound; deployments that need another ceiling
-override this setting by name.
+cap (seconds), default one hour. Override by name for a different ceiling.
 
 <a id="field-model-to-spec"></a>
 

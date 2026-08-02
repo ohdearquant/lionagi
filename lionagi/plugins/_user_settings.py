@@ -1,15 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Read/write helper for the plugin-related blocks of ``~/.lionagi/settings.yaml``.
-
-Trust records and the enable/disable flag are both user-level, never
-project-level: a repository must not be able to self-trust a plugin it
-carries by committing a settings line — the human on the machine approves.
-
-Every mutator in this package (GC, trust, enable/disable) goes through
-``locked_user_settings()``, a single exclusive-``flock`` critical section
-held across the whole read-modify-write, so a concurrent writer's stale
-snapshot can never silently clobber another's write.
+"""Read/write helper for the plugin blocks of ``~/.lionagi/settings.yaml``. Trust/enable
+state is user-level only -- a repo must never self-trust a plugin it carries.
 """
 
 from __future__ import annotations
@@ -93,13 +85,9 @@ def read_user_settings() -> dict[str, Any]:
 
 
 def write_user_settings(data: dict[str, Any]) -> None:
-    """Unconditional whole-file rewrite under an exclusive lock.
-
-    Safe as a standalone call (never tears a concurrent read), but callers
-    that need to read-modify-write — GC, trust, enable/disable — must use
-    ``locked_user_settings()`` instead: this function's lock only spans the
-    write, not the read that preceded it, so two independent read/write
-    pairs can still race each other.
+    """Unconditional whole-file rewrite under an exclusive lock -- safe standalone,
+    but read-modify-write callers must use ``locked_user_settings()`` instead:
+    this lock only spans the write, so two read/write pairs can still race.
     """
     path = user_settings_path()
     ensure_lionagi_dir(path.parent)
@@ -118,18 +106,10 @@ def write_user_settings(data: dict[str, Any]) -> None:
 
 @contextlib.contextmanager
 def locked_user_settings():
-    """Read-modify-write ``~/.lionagi/settings.yaml`` under one exclusive
-    POSIX lock held for the whole critical section — the choke point every
-    settings mutator must go through so a concurrent pair can never
-    interleave and drop one's write.
-
-    Yields the parsed settings dict; mutate it in place. Written back only
-    if it changed, so a no-op pass touches neither the file's mtime nor a
-    concurrent reader.
-
-    Opens with ``O_CREAT`` but never ``O_TRUNC``, since truncating before
-    the lock is held could blow away content a racing creator already
-    committed; truncation only happens below, after the lock is held.
+    """Read-modify-write settings.yaml under one exclusive lock spanning the whole
+    critical section -- the choke point every mutator must use. Yields the dict
+    to mutate in place; writes back only if changed. Opens with ``O_CREAT`` but
+    not ``O_TRUNC``: truncating before the lock is held could blow away a racing creator's write.
     """
     path = user_settings_path()
     ensure_lionagi_dir(path.parent)
