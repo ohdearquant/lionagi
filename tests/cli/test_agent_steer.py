@@ -1185,3 +1185,100 @@ async def test_a_refused_finalize_after_delivery_is_reported_not_swallowed(temp_
     assert any("delivered" in m for m in reported), (
         f"the report does not say the message went out anyway: {reported!r}"
     )
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_survives_the_teardown_closing_the_handle_it_was_given(
+    temp_db_path, tmp_path, monkeypatch
+):
+    """The real teardown closes the run's database handle in its own `finally`,
+    and the sweep is called after it, deliberately, because the terminal
+    transition has to land before pending rows can be judged.
+
+    So the sweep cannot use the handle it was set up with: it is already
+    closed. Nothing about that fails loudly. The sweep's own must-not-raise
+    catch swallows it, which leaves the entire tombstone path dead on every run
+    with one log line as the only symptom, and the row it exists to close
+    pending forever.
+
+    The sibling ordering test above wires a teardown double that does NOT close
+    the handle, so it passes either way. That divergence between the double and
+    the real teardown is what hid this.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.cli.agent import _run_agent
+    from lionagi.service.manager import iModelManager
+
+    db = StateDB()
+    await db.__aenter__()
+    closed = False
+    try:
+        sid = await _make_agent_session(db)
+        cid = await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "queued at the wire"}
+        )
+
+        async def fake_operate(self, instruction=None, **kw):
+            return "done"
+
+        async def fake_setup(*a, **kw):
+            return {"db": db, "session_id": sid}
+
+        async def fake_teardown(ctx, *, status="completed", **kw):
+            # Both halves of what the real teardown does to this path: the
+            # terminal transition, and then closing the handle on the way out.
+            nonlocal closed
+            await _terminalize(db, sid)
+            await db.close()
+            closed = True
+            return status
+
+        async def no_drain(*a, **kw):
+            return None
+
+        monkeypatch.setattr(Branch, "operate", fake_operate)
+        monkeypatch.setattr(iModelManager, "shutdown", AsyncMock())
+        monkeypatch.setattr(agent_mod, "resolve_persisted_effort", lambda *a, **kw: None)
+        monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
+        monkeypatch.setattr(agent_mod, "teardown_agent_persist", fake_teardown)
+        monkeypatch.setattr(agent_mod, "_drain_pending_steers", no_drain)
+        monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
+        monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
+        monkeypatch.setattr(
+            agent_mod,
+            "_provenance",
+            SimpleNamespace(
+                resolve_model_spec=lambda p, m: f"{p}/{m}",
+                agent_definition_hash=lambda n: "abc",
+            ),
+        )
+        monkeypatch.setattr(
+            agent_mod,
+            "allocate_run",
+            lambda: SimpleNamespace(
+                run_id="20260802T000000-closedrun",
+                artifact_root=tmp_path / "artifacts",
+                stream_dir=tmp_path / "stream",
+                branches_dir=tmp_path / "branches",
+            ),
+        )
+
+        await _run_agent("claude", "do the thing")
+
+        assert closed, "the teardown double did not close the handle, so this proves nothing"
+
+        async with StateDB() as check:
+            row = await check.get_session_control(cid)
+        assert row["result"] is not None, (
+            "the control was left pending: the sweep ran against the handle the "
+            "teardown had already closed"
+        )
+        assert row["result"].startswith("rejected:")
+        assert row["applied_at"] is not None
+    finally:
+        if not closed:
+            await db.__aexit__(None, None, None)

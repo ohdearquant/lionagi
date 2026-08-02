@@ -1169,8 +1169,19 @@ async def _run_agent(
             # having written it, which is why the sweep re-reads the stored
             # session and declines a non-terminal one rather than trusting the
             # call order.
-            if not will_auto_resume:
-                await _tombstone_pending_steers(live)
+            # That ordering also means the handle in `live` is gone by now:
+            # teardown closes it in its own `finally`. The sweep is given a
+            # fresh one rather than the corpse, because a sweep that fails on a
+            # closed engine fails into its own must-not-raise catch, which turns
+            # the entire tombstone path into one log line on every run while the
+            # rows it exists to close stay pending forever. The connection is
+            # opened here rather than inside the sweep so callers that hand it a
+            # handle of their own, including the tests, keep doing so.
+            if not will_auto_resume and live:
+                from lionagi.state.db import StateDB
+
+                async with StateDB() as _sweep_db:
+                    await _tombstone_pending_steers({**live, "db": _sweep_db})
             if effective_status != _terminal_status:
                 _terminal_status = effective_status
             from lionagi.state.db import SESSION_TERMINAL_STATUSES
