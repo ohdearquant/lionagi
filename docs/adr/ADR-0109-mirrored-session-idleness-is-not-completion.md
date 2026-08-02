@@ -292,9 +292,17 @@ earlier revision of this section got their target wrong in a way worth recording
 because it contradicted the step list directly above it: it required both arms to
 run through `StateDB.update_status` on the grounds that this is the path the
 mirror uses. That is true only *before* step 2. Step 2 moves the mirror off that
-path, and the compatibility path cannot reject anything while `enforce_edges`
-stays false there, so the requirement asked for a test that is impossible before
-the change and irrelevant after it. The requirement is therefore not "the current
+path, and before step 2 that path cannot reject the transition under test:
+`StateDB.update_status` routes through `run_update_status`, which calls
+`LifecycleService._transition` without `enforce_edges`
+(`lionagi/state/lifecycle/adapters.py:98-100`), so the parameter takes its
+default of `False` (`lionagi/state/lifecycle/service.py:225`) and the declared
+edge graph is never consulted (`service.py:293`). That path can still reject two
+things — a same-status move where the policy says `reject`, and leaving a
+terminal status without an override (`service.py:341-342`, `service.py:365`) — but
+`running → idle` is neither, so it falls through to the unrestricted write. The
+requirement therefore asked for a test that is impossible before the change and
+irrelevant after it. The requirement is therefore not "the current
 path" but **the entry point the mirror calls once step 2 lands**: whichever
 enforcing call or enforcing compatibility variant step 2 introduces, both the
 positive and the negative arm run through that exact function, and the
@@ -416,8 +424,9 @@ mirror reconciler**, because those are real completions and rewriting one to
   disable the feature while looking enforced. Both arms go through the entry
   point the mirror calls *after* step 2 of the mechanism, which the
   implementation names; running them against today's `StateDB.update_status`
-  would assert nothing, since that path does not enforce declared edges and so
-  rejects nobody. A third arm on the legacy path is worth keeping, asserting the
+  would assert nothing, since that path never consults the declared edge graph
+  and so rejects no actor for a nonterminal move like `running → idle`, whoever
+  they claim to be. A third arm on the legacy path is worth keeping, asserting the
   opposite: that the permissive surface stays permissive for its existing
   callers.
 - A regression that a linked mirror session in `idle` is treated as live by
