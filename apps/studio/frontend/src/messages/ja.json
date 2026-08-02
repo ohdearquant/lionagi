@@ -160,7 +160,13 @@
       "open": "Open run"
     },
     "model": {
-      "label": "Model"
+      "label": "Model",
+      "default": "デフォルト",
+      "unavailable": "{model} (unavailable)"
+    },
+    "effort": {
+      "label": "労力",
+      "default": "デフォルト"
     },
     "list": {
       "toggle": "Conversations",

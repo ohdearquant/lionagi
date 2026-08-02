@@ -16,6 +16,7 @@ import {
   cancelOperatorRequest,
   createOperatorConversation,
   decideOperatorProposal,
+  fetchOperatorModelCatalog,
   forkOperatorConversation,
   getOperatorConversation,
   listOperatorConversations,
@@ -28,15 +29,16 @@ import type {
   OperatorConfirmationPayload,
   OperatorConversation,
   OperatorDonePayload,
+  OperatorEffort,
   OperatorErrorPayload,
   OperatorFrame,
+  OperatorModelCatalogEntry,
   OperatorProposalPayload,
   OperatorTextPayload,
   OperatorToolCallPayload,
   OperatorToolResultPayload,
   OperatorUiCommandPayload,
 } from "@/lib/types";
-import { OPERATOR_MODELS, type OperatorModel } from "@/lib/types";
 import Button from "@/components/ui/Button";
 import Markdown from "@/components/ui/Markdown";
 import {
@@ -627,7 +629,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const navigate = useNavigate();
   const [state, dispatch] = useReducer(operatorReducer, initialOperatorState);
   const [instruction, setInstruction] = useState("");
-  const [model, setModel] = useState<OperatorModel>(OPERATOR_MODELS[0]);
+  const [modelCatalog, setModelCatalog] = useState<OperatorModelCatalogEntry[]>([]);
+  const [model, setModel] = useState<string>("");
+  const [effort, setEffort] = useState<OperatorEffort | "">("");
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -713,6 +717,61 @@ export default function OperatorPanel({ open, onClose }: Props) {
     },
     [t],
   );
+
+  useEffect(() => {
+    let active = true;
+    void fetchOperatorModelCatalog()
+      .then((catalog) => {
+        if (!active) return;
+        setModelCatalog(catalog.models);
+        // Never replace "no selection" with the catalog's first entry: the
+        // composer still works with no model chosen -- the daemon falls back
+        // to its own env-var default for a turn that omits one, and picking
+        // one here on the caller's behalf would silently override that
+        // default the moment the catalog loads, before the human ever
+        // touched the menu.
+        //
+        // A selection the catalog does not offer is not cleared either. It is
+        // usually the conversation's own stored pin, which the daemon will
+        // keep using; clearing it would show "Default" for a turn that runs
+        // on something else. The menu renders it as unavailable instead, so
+        // the operator can see what is in force and change it.
+      })
+      .catch(() => {
+        // The composer still works with no model selected -- the daemon
+        // falls back to its own env-var default for a turn that omits one.
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // A conversation remembers the provider and model it was pinned to, and the
+  // daemon keeps using that pin for a turn that names neither. Showing
+  // "Default" while a pin is in force tells the operator the opposite of what
+  // will happen, so the stored selection is hydrated whenever the conversation
+  // changes. Effort is per turn rather than per conversation, so it starts
+  // empty and the operator chooses it again.
+  const hydratedConversationRef = useRef<string | null>(null);
+  useEffect(() => {
+    const conversation = state.conversation;
+    if (!conversation) {
+      hydratedConversationRef.current = null;
+      return;
+    }
+    if (hydratedConversationRef.current === conversation.id) return;
+    hydratedConversationRef.current = conversation.id;
+    setModel(conversation.providerModel ?? "");
+    setEffort("");
+  }, [state.conversation]);
+
+  const effortChoices = useMemo(
+    () => modelCatalog.find((entry) => entry.id === model)?.efforts ?? [],
+    [modelCatalog, model],
+  );
+  // Derived, not synced via effect: a stale selection from a previous model
+  // just stops being offered rather than needing a setState-on-effect sync.
+  const effectiveEffort = effort && effortChoices.includes(effort) ? effort : "";
 
   useEffect(() => {
     let active = true;
@@ -949,11 +1008,18 @@ export default function OperatorPanel({ open, onClose }: Props) {
         location.pathname,
         location.search as Record<string, unknown>,
       );
+      // The menu is hydrated from the conversation's pin, so an empty
+      // selection here means the operator moved it back to Default. Sending
+      // nothing would leave the pin in force, which is the opposite of what
+      // the menu now says, so ask for it to be dropped.
+      const clearing = !model && Boolean(conversation.provider || conversation.providerModel);
       const accepted = await submitOperatorTurn(conversation.id, {
         instruction: trimmed,
         context,
         expectedLastSequence: state.lastSequence,
-        model,
+        ...(model ? { model } : {}),
+        ...(effectiveEffort ? { effort: effectiveEffort } : {}),
+        ...(clearing ? { clearSelection: true } : {}),
       });
       dispatch({ type: "TURN_ACCEPTED", requestId: accepted.requestId });
       setInstruction("");
@@ -976,6 +1042,8 @@ export default function OperatorPanel({ open, onClose }: Props) {
     instruction,
     location.pathname,
     location.search,
+    model,
+    effectiveEffort,
     sending,
     state.activeRequestId,
     state.conversation,
@@ -1430,15 +1498,41 @@ export default function OperatorPanel({ open, onClose }: Props) {
                 aria-label={t("model.label")}
                 title={t("model.label")}
                 value={model}
-                onChange={(event) => setModel(event.target.value as OperatorModel)}
+                onChange={(event) => {
+                  setModel(event.target.value);
+                  // A previous model's effort selection may not exist on the
+                  // new one; clear it explicitly rather than carrying a value
+                  // effortChoices no longer offers.
+                  setEffort("");
+                }}
                 className="shrink-0 border-0 bg-transparent py-0 font-data text-meta text-content-muted outline-none focus:text-content-primary"
               >
-                {OPERATOR_MODELS.map((name) => (
-                  <option key={name} value={name}>
-                    {name}
+                <option value="">{t("model.default")}</option>
+                {model && !modelCatalog.some((entry) => entry.id === model) && (
+                  <option value={model}>{t("model.unavailable", { model })}</option>
+                )}
+                {modelCatalog.map((entry) => (
+                  <option key={entry.id} value={entry.id}>
+                    {entry.label}
                   </option>
                 ))}
               </select>
+              {effortChoices.length > 0 && (
+                <select
+                  aria-label={t("effort.label")}
+                  title={t("effort.label")}
+                  value={effectiveEffort}
+                  onChange={(event) => setEffort(event.target.value as OperatorEffort)}
+                  className="shrink-0 border-0 bg-transparent py-0 font-data text-meta text-content-muted outline-none focus:text-content-primary"
+                >
+                  <option value="">{t("effort.default")}</option>
+                  {effortChoices.map((choice) => (
+                    <option key={choice} value={choice}>
+                      {choice}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
           </div>
           <button

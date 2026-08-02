@@ -160,7 +160,13 @@
       "open": "Open run"
     },
     "model": {
-      "label": "Model"
+      "label": "Model",
+      "default": "Mặc định",
+      "unavailable": "{model} (unavailable)"
+    },
+    "effort": {
+      "label": "Nỗ lực",
+      "default": "Mặc định"
     },
     "list": {
       "toggle": "Conversations",

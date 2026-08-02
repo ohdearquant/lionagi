@@ -160,7 +160,13 @@
       "open": "Open run"
     },
     "model": {
-      "label": "Model"
+      "label": "Model",
+      "default": "Standard",
+      "unavailable": "{model} (unavailable)"
+    },
+    "effort": {
+      "label": "Aufwand",
+      "default": "Standard"
     },
     "list": {
       "toggle": "Conversations",

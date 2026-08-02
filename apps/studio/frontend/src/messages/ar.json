@@ -160,7 +160,13 @@
       "open": "Open run"
     },
     "model": {
-      "label": "Model"
+      "label": "Model",
+      "default": "افتراضي",
+      "unavailable": "{model} (unavailable)"
+    },
+    "effort": {
+      "label": "الجهد",
+      "default": "افتراضي"
     },
     "list": {
       "toggle": "Conversations",

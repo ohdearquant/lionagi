@@ -251,6 +251,29 @@ async def test_fork_copies_completed_turns_into_a_new_independent_conversation(
 
 
 @pytest.mark.asyncio
+async def test_fork_carries_the_whole_pin_not_just_the_model(tmp_path, monkeypatch):
+    """A fork of a pinned conversation resolves to the same provider and model.
+
+    The provider and the model are read as an independent pair when a turn is
+    built, and an absent provider falls back to the environment. A fork that
+    carried only the model would therefore run the source's model name against
+    a different provider rather than refusing.
+    """
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    store = OperatorStore(path)
+    cid = (await store.create_conversation(title="pinned"))["id"]
+    await store.select_provider_model(cid, provider="codex", model="gpt-5.4")
+
+    forked = await store.fork_conversation(cid)
+
+    assert forked["provider"] == "codex"
+    assert forked["providerModel"] == "gpt-5.4"
+    # The session belongs to the pair that opened it, so it is not inherited.
+    assert forked["providerSessionId"] is None
+
+
+@pytest.mark.asyncio
 async def test_fork_up_to_sequence_excludes_later_turns(tmp_path, monkeypatch):
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)

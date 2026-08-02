@@ -425,6 +425,10 @@ export interface OperatorConversation {
   pinned: boolean;
   nextSequence?: number;
   activeRequestId?: string | null;
+  /** The provider and model this conversation is pinned to. The daemon keeps
+   * using them for a turn that names neither, so the composer has to show
+   * them rather than reporting "Default". */
+  provider?: string | null;
   providerModel?: string | null;
   createdAt?: number;
   updatedAt?: number;
@@ -593,15 +597,45 @@ export interface OperatorConversationSnapshot {
   frames: OperatorFrame[];
 }
 
-/** Closed set: the value reaches a CLI argument on the daemon. */
-export const OPERATOR_MODELS = ["sonnet", "opus", "haiku"] as const;
-export type OperatorModel = (typeof OPERATOR_MODELS)[number];
+/** Provider each catalog model runs through; mirrors lionagi/studio/operator/catalog.py. */
+export type OperatorProvider = "claude_code" | "codex" | "gemini_code";
+
+/** Reasoning-effort vocabulary; which subset a given provider accepts is
+ * carried per-entry in OperatorModelCatalogEntry.efforts, not hardcoded here. */
+export type OperatorEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+  | "ultra";
+
+/** One entry in the backend-served model catalog (GET /api/operator/models).
+ * The model reaches a CLI argument on the daemon, so the UI only ever offers
+ * ids the server actually named -- see fetchOperatorModelCatalog. */
+export interface OperatorModelCatalogEntry {
+  id: string;
+  label: string;
+  provider: OperatorProvider;
+  efforts: OperatorEffort[];
+}
+
+export interface OperatorModelCatalog {
+  models: OperatorModelCatalogEntry[];
+}
 
 export interface OperatorTurnRequest {
   instruction: string;
   context: OperatorContextSnapshot;
   expectedLastSequence: number;
-  model?: OperatorModel;
+  model?: string;
+  provider?: OperatorProvider;
+  effort?: OperatorEffort;
+  // Omitting `model` keeps the conversation's stored pin, so it cannot also
+  // mean "drop it". This asks for the pin to be removed.
+  clearSelection?: boolean;
 }
 
 export interface OperatorTurnAccepted {

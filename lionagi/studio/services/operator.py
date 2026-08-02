@@ -15,6 +15,7 @@ from ..operator.store import (
     OperatorConflictError,
     OperatorNotFoundError,
     OperatorStoreError,
+    OperatorValidationError,
 )
 from ..operator.types import (
     AcknowledgeEffectRequest,
@@ -34,6 +35,8 @@ def _http_error(exc: OperatorStoreError) -> HTTPException:
         status = 404
     elif isinstance(exc, OperatorConflictError):
         status = 409
+    elif isinstance(exc, OperatorValidationError):
+        status = 400
     else:
         status = 503
     detail: dict[str, Any] = {
@@ -170,9 +173,21 @@ async def submit_operator_turn(conversation_id: str, body: OperatorTurnRequest) 
             context=body.context.model_dump(by_alias=True),
             expected_last_sequence=body.expected_last_sequence,
             model=body.model,
+            provider=body.provider,
+            effort=body.effort,
+            clear_selection=body.clear_selection,
         )
     except OperatorStoreError as exc:
         raise _http_error(exc) from exc
+
+
+@studio_route("/operator/models", method="GET", area="operator")
+async def list_operator_models() -> dict[str, Any]:
+    """The Operator's model catalog: every model the daemon can actually drive,
+    grouped by provider, with the reasoning-effort levels each accepts."""
+    from ..operator.catalog import catalog_entries
+
+    return {"models": catalog_entries()}
 
 
 @studio_route(
