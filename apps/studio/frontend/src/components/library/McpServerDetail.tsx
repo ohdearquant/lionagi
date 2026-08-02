@@ -45,10 +45,17 @@ function formFromServer(server: McpServerSummary): FormState {
   };
 }
 
-/** Parse `KEY=value` lines into an env patch. A bare `KEY=` (no value) is
- * omitted — it means "leave this key alone", not "clear it". */
-function parseEnvText(text: string): Record<string, string> {
-  const out: Record<string, string> = {};
+/** Parse `KEY=value` lines into an env patch. A bare `KEY=` (no value)
+ * means "leave this key alone" and is omitted. A key from `originalKeys`
+ * that has no line at all in `text` was deleted by the operator — it comes
+ * back as an explicit `null`, the only way the wire format can express
+ * removing a key (see McpServerConfigInput). */
+function parseEnvText(
+  text: string,
+  originalKeys: readonly string[] = [],
+): Record<string, string | null> {
+  const patch: Record<string, string | null> = {};
+  const linesFor = new Set<string>();
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -56,13 +63,21 @@ function parseEnvText(text: string): Record<string, string> {
     if (eq === -1) continue;
     const key = trimmed.slice(0, eq).trim();
     const value = trimmed.slice(eq + 1);
-    if (!key || value === "") continue;
-    out[key] = value;
+    if (!key) continue;
+    linesFor.add(key);
+    if (value === "") continue;
+    patch[key] = value;
   }
-  return out;
+  for (const key of originalKeys) {
+    if (!linesFor.has(key)) patch[key] = null;
+  }
+  return patch;
 }
 
-function formToConfig(form: FormState): McpServerConfigInput {
+function formToConfig(
+  form: FormState,
+  originalEnvKeys: readonly string[] = [],
+): McpServerConfigInput {
   const config: McpServerConfigInput = {};
   if (form.transport === "stdio") {
     config.command = form.command.trim();
@@ -71,7 +86,7 @@ function formToConfig(form: FormState): McpServerConfigInput {
       .map((a) => a.trim())
       .filter(Boolean);
     if (args.length) config.args = args;
-    const env = parseEnvText(form.envText);
+    const env = parseEnvText(form.envText, originalEnvKeys);
     if (Object.keys(env).length) config.env = env;
   } else {
     config.url = form.url.trim();
@@ -263,7 +278,7 @@ export function McpServerDetail({ name, onBack, onDeleted }: DetailProps) {
     setSaving(true);
     setSaveError(null);
     try {
-      const updated = await updateMcpServer(name, formToConfig(form));
+      const updated = await updateMcpServer(name, formToConfig(form, server?.env_keys ?? []));
       setServer(updated);
       setForm(formFromServer(updated));
       setEditing(false);
@@ -273,7 +288,7 @@ export function McpServerDetail({ name, onBack, onDeleted }: DetailProps) {
     } finally {
       setSaving(false);
     }
-  }, [name, form]);
+  }, [name, form, server]);
 
   const handleToggleEnabled = useCallback(async () => {
     if (!server) return;

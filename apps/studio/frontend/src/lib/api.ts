@@ -1455,11 +1455,14 @@ export interface McpServerSummary {
 
 /** Fields a client may submit for register/update. `env` values are only
  * ever sent up (to be stored), never returned by the server — see
- * McpServerSummary, which carries `env_keys` instead. */
+ * McpServerSummary, which carries `env_keys` instead. A `null` value for a
+ * key is the explicit way to remove it; the server never infers a deletion
+ * from a key's mere absence, since env merges key-by-key onto what's
+ * already stored. */
 export interface McpServerConfigInput {
   command?: string;
   args?: string[];
-  env?: Record<string, string>;
+  env?: Record<string, string | null>;
   url?: string;
   timeout?: number;
   enabled?: boolean;

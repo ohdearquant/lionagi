@@ -5,7 +5,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import stat
+import tempfile
 
 import pytest
 
@@ -310,6 +314,145 @@ async def test_check_server_connection_persists_last_check(tmp_path, monkeypatch
 async def test_check_server_connection_nonexistent_returns_none(tmp_path, monkeypatch):
     _point_registry_at(tmp_path, monkeypatch)
     assert await mcp_mod.check_server_connection("nope") is None
+
+
+@pytest.mark.asyncio
+async def test_check_server_connection_does_not_clobber_concurrent_edit(tmp_path, monkeypatch):
+    """A save landing while a connection probe is in flight must survive --
+    the probe must not write back the servers dict it read before the
+    (possibly multi-second) await."""
+    _point_registry_at(tmp_path, monkeypatch)
+    mcp_mod.register_server("myserver", STDIO_CONFIG)
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _blocking_attempt(config):
+        entered.set()
+        await release.wait()
+        return {"ok": True, "error": None}
+
+    monkeypatch.setattr(mcp_mod, "_attempt_connection", _blocking_attempt)
+
+    check_task = asyncio.create_task(mcp_mod.check_server_connection("myserver"))
+    await entered.wait()
+
+    # A save lands deterministically while the probe is still awaiting.
+    mcp_mod.update_server("myserver", {"args": ["-m", "different_module"]})
+
+    release.set()
+    result = await check_task
+
+    assert result is not None
+    assert result["last_check"]["ok"] is True
+
+    fetched = mcp_mod.get_server("myserver")
+    assert fetched["args"] == ["-m", "different_module"], (
+        "the concurrent edit must survive the connection check's write-back"
+    )
+    assert fetched["last_check"]["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_check_server_connection_does_not_resurrect_deleted_server(tmp_path, monkeypatch):
+    """If the server is removed while a probe is in flight, the probe's
+    write-back must not bring it back."""
+    _point_registry_at(tmp_path, monkeypatch)
+    mcp_mod.register_server("myserver", STDIO_CONFIG)
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _blocking_attempt(config):
+        entered.set()
+        await release.wait()
+        return {"ok": True, "error": None}
+
+    monkeypatch.setattr(mcp_mod, "_attempt_connection", _blocking_attempt)
+
+    check_task = asyncio.create_task(mcp_mod.check_server_connection("myserver"))
+    await entered.wait()
+
+    mcp_mod.remove_server("myserver")
+
+    release.set()
+    result = await check_task
+
+    assert result is None
+    assert mcp_mod.get_server("myserver") is None
+
+
+# ---------------------------------------------------------------------------
+# At-rest permissions -- the registry and derived file hold secret env
+# values verbatim, so neither may be group/world readable.
+# ---------------------------------------------------------------------------
+
+
+def _mode(path) -> int:
+    return stat.S_IMODE(os.stat(path).st_mode)
+
+
+def test_save_registry_writes_files_owner_only(tmp_path, monkeypatch):
+    """Under an ordinary permissive umask, both the registry and its derived
+    .mcp.json must land 0600, not the umask-determined 0644 -- and the
+    derived file must still carry the configured secret, so "protect it by
+    not writing it" doesn't pass this test."""
+    registry_path, synced_path = _point_registry_at(tmp_path, monkeypatch)
+    old_umask = os.umask(0o022)
+    try:
+        mcp_mod.register_server("myserver", STDIO_CONFIG)
+    finally:
+        os.umask(old_umask)
+
+    assert _mode(registry_path) == 0o600
+    assert _mode(synced_path) == 0o600
+
+    synced = json.loads(synced_path.read_text())
+    assert synced["mcpServers"]["myserver"]["env"]["API_KEY"] == "sk-super-secret-value"
+
+
+def test_save_registry_repairs_preexisting_permissive_mode(tmp_path, monkeypatch):
+    """A file created by an earlier build (or before this fix landed) that
+    is sitting at 0644 must be repaired to 0600 the next time it is saved,
+    not left at its old mode forever."""
+    registry_path, synced_path = _point_registry_at(tmp_path, monkeypatch)
+    registry_path.write_text('{"servers": {}}')
+    synced_path.write_text('{"mcpServers": {}}')
+    os.chmod(registry_path, 0o644)
+    os.chmod(synced_path, 0o644)
+
+    old_umask = os.umask(0o022)
+    try:
+        mcp_mod.register_server("myserver", STDIO_CONFIG)
+    finally:
+        os.umask(old_umask)
+
+    assert _mode(registry_path) == 0o600
+    assert _mode(synced_path) == 0o600
+
+
+def test_save_registry_writes_temp_file_owner_only(tmp_path, monkeypatch):
+    """The atomic-write temp file must never be group/world readable either
+    -- even a file that exists for milliseconds is an exposure window."""
+    registry_path, _ = _point_registry_at(tmp_path, monkeypatch)
+    seen_modes: list[int] = []
+    real_mkstemp = tempfile.mkstemp
+
+    def _spying_mkstemp(*args, **kwargs):
+        fd, name = real_mkstemp(*args, **kwargs)
+        seen_modes.append(_mode(name))
+        return fd, name
+
+    monkeypatch.setattr(mcp_mod.tempfile, "mkstemp", _spying_mkstemp)
+
+    old_umask = os.umask(0o022)
+    try:
+        mcp_mod.register_server("myserver", STDIO_CONFIG)
+    finally:
+        os.umask(old_umask)
+
+    assert seen_modes, "mkstemp was never called"
+    assert all(mode == 0o600 for mode in seen_modes)
 
 
 # ---------------------------------------------------------------------------

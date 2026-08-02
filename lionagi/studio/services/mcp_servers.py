@@ -22,11 +22,14 @@ the server's launch directory, which is not a meaningful answer here.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
+import tempfile
 import time
 from functools import partial
+from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlparse
 
@@ -69,9 +72,35 @@ def _load_registry() -> dict[str, dict[str, Any]]:
     return data["servers"]
 
 
+def _write_private(path: Path, content: str) -> None:
+    """Write ``content`` to ``path`` atomically, owner-only.
+
+    Both the registry and its derived ``.mcp.json`` hold secret env values,
+    so a reader other than the owner must never see them -- not even
+    briefly. The temp file is created via ``mkstemp``, which is guaranteed
+    ``0600`` regardless of umask, and ``os.replace`` is atomic so a crash
+    mid-write never leaves a half-written registry. The final ``chmod`` is
+    what repairs a file created before this fix: a plain ``write_text``
+    writes into the existing inode and leaves its old ``0644`` mode alone,
+    so an explicit chmod on every save is what actually closes that off.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+        os.replace(tmp_name, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
+    os.chmod(path, 0o600)
+
+
 def _save_registry(servers: dict[str, dict[str, Any]]) -> None:
-    _REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _REGISTRY_PATH.write_text(json.dumps({"servers": servers}, indent=2, sort_keys=True) + "\n")
+    _write_private(
+        _REGISTRY_PATH, json.dumps({"servers": servers}, indent=2, sort_keys=True) + "\n"
+    )
     _sync_mcp_json(servers)
 
 
@@ -85,9 +114,8 @@ def _sync_mcp_json(servers: dict[str, dict[str, Any]]) -> None:
     enabled = {
         name: entry["config"] for name, entry in servers.items() if entry.get("enabled", True)
     }
-    _SYNCED_MCP_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _SYNCED_MCP_JSON_PATH.write_text(
-        json.dumps({"mcpServers": enabled}, indent=2, sort_keys=True) + "\n"
+    _write_private(
+        _SYNCED_MCP_JSON_PATH, json.dumps({"mcpServers": enabled}, indent=2, sort_keys=True) + "\n"
     )
 
 
@@ -360,18 +388,30 @@ def remove_server(name: str) -> bool:
 async def check_server_connection(name: str) -> dict[str, Any] | None:
     """Attempt a real connection to an already-registered server and persist
     the outcome, so list/get can honestly report "whether the last
-    connection attempt succeeded" instead of a shape guess."""
+    connection attempt succeeded" instead of a shape guess.
+
+    The registry is reloaded after the probe rather than reusing the
+    pre-await snapshot: ``_attempt_connection`` can run for seconds, and
+    writing back a stale full ``servers`` dict would silently revert any
+    save that landed while the probe was in flight.
+    """
     servers = _load_registry()
     entry = servers.get(name)
     if entry is None:
         return None
 
     outcome = await _attempt_connection(entry["config"])
-    entry["last_check"] = {
+    last_check = {
         "ok": outcome["ok"],
         "error": outcome["error"],
         "checked_at": time.time(),
     }
+
+    servers = _load_registry()
+    entry = servers.get(name)
+    if entry is None:
+        return None
+    entry["last_check"] = last_check
     _save_registry(servers)
     return _public_entry(name, entry)
 
