@@ -9,6 +9,7 @@ import logging
 import time
 import uuid
 from contextlib import suppress
+from dataclasses import replace
 from typing import Any
 
 from .catalog import OperatorSelectionError, resolve_selection
@@ -305,20 +306,7 @@ class OperatorCoordinator:
                 effort=selected_effort if isinstance(selected_effort, str) else None,
             )
             run_branch = build_operator_branch(engine_turn)
-            engine_turn = OperatorEngineTurn(
-                conversation_id=engine_turn.conversation_id,
-                request_id=engine_turn.request_id,
-                instruction=engine_turn.instruction,
-                context=engine_turn.context,
-                history=engine_turn.history,
-                request_permission=engine_turn.request_permission,
-                runtime_branch=run_branch,
-                store_path=engine_turn.store_path,
-                provider_session_id=engine_turn.provider_session_id,
-                provider=engine_turn.provider,
-                model=engine_turn.model,
-                effort=engine_turn.effort,
-            )
+            engine_turn = replace(engine_turn, runtime_branch=run_branch)
             from lionagi.cli import _runs as cli_runs
 
             file_run_id = f"operator-{uuid.uuid4().hex[:12]}"
@@ -392,19 +380,10 @@ class OperatorCoordinator:
             )
             ready.set()
             engine = self.engine_factory()
-            engine_turn = OperatorEngineTurn(
-                conversation_id=engine_turn.conversation_id,
-                request_id=engine_turn.request_id,
-                instruction=engine_turn.instruction,
-                context=engine_turn.context,
-                history=engine_turn.history,
-                request_permission=engine_turn.request_permission,
-                runtime_branch=engine_turn.runtime_branch,
-                store_path=engine_turn.store_path,
-                run_dir=run_dir,
-                provider_session_id=engine_turn.provider_session_id,
-                model=engine_turn.model,
-            )
+            # Only run_dir changes here. Copying field by field means every
+            # field added later has to be remembered at this call site, and one
+            # already was not: provider and effort were being dropped.
+            engine_turn = replace(engine_turn, run_dir=run_dir)
             async for event in engine.stream(engine_turn):
                 if not isinstance(event, OperatorEngineEvent):
                     raise TypeError("Operator engine yielded an invalid event")

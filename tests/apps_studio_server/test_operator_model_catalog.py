@@ -386,3 +386,57 @@ async def test_provider_and_effort_columns_are_added_to_a_preexisting_store(tmp_
     conversation = await store.get_conversation(conversation_id)
     assert conversation["provider"] == "codex"
     assert conversation["providerModel"] == "gpt-5.3-codex"
+
+
+@pytest.mark.asyncio
+async def test_the_turn_handed_to_the_engine_keeps_the_selected_provider_and_effort(
+    tmp_path, monkeypatch
+):
+    """The coordinator rebuilds the engine turn twice on the way to streaming.
+    Both rebuilds must carry the whole selection, not the subset whoever wrote
+    the call site happened to list.
+
+    The built-in engine reads provider and effort off the Branch it was handed
+    rather than off the turn, so a dropped field is invisible until a different
+    engine is supplied through engine_factory -- which is exactly what this does.
+    """
+    import asyncio
+
+    captured: list = []
+
+    class CapturingEngine:
+        async def _stream(self, turn):
+            captured.append(turn)
+            return
+            yield  # pragma: no cover - makes this an async generator
+
+        def stream(self, turn):
+            return self._stream(turn)
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=CapturingEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation(title="Selection"))["conversation"]["id"]
+    await coordinator.submit(
+        cid,
+        instruction="run it",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+        model="sonnet",
+        effort="high",
+    )
+
+    for _ in range(200):
+        if captured:
+            break
+        await asyncio.sleep(0.02)
+    assert captured, "the engine was never handed a turn"
+    turn = captured[0]
+    assert turn.model == "sonnet"
+    assert turn.provider == "claude_code"
+    assert turn.effort == "high"
+    # run_dir is what that last rebuild exists to attach; if it is missing the
+    # assertions above would pass on a turn that never went through it.
+    assert turn.run_dir is not None
+    await coordinator.shutdown()
