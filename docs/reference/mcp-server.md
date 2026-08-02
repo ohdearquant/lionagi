@@ -194,7 +194,7 @@ against rather than a copy of it.
 
 ## Operations the surface does not offer
 
-Twenty-eight further names are catalogued as **unavailable**, each with its
+Twenty-nine further names are catalogued as **unavailable**, each with its
 reason. They are not omissions: a caller that asks what exists gets the name and
 why it cannot be called, which is a different answer from the name never having
 been considered. The right-hand column below abbreviates the reason; `help=true`
@@ -223,6 +223,7 @@ returns each one in full.
 | `orchestrate.ctl.msg` | The running-flow control plane. | effect lands elsewhere |
 | `orchestrate.ctl.pause` | The running-flow control plane. | effect lands elsewhere |
 | `orchestrate.ctl.resume` | The running-flow control plane. | effect lands elsewhere |
+| `orchestrate.ctl.resolve` | Close a control whose consumer claimed it and never reported back. | a human's finding, not a report |
 | `invoke.end` | Opening and closing a skill-level orchestration record. | no caller identity |
 | `invoke.start` | Opening and closing a skill-level orchestration record. | no caller identity |
 | `mirror` | Mirror Claude Code sessions into Studio, live. | a process, not a call |
