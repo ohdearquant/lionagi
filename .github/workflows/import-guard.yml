@@ -44,7 +44,7 @@ jobs:
       - name: Install uv
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - name: Install runtime deps only
         run: |
           uv venv
@@ -54,8 +54,14 @@ jobs:
         # noise while still catching a real regression (an eager heavy import
         # multiplies the time, it doesn't nudge it). Budget is ~8x the measured
         # local time, so a failure is structural, not jitter.
+        #
+        # --no-sync is load-bearing, not tidiness. `uv run` syncs the project
+        # environment before it runs anything, and its default set includes the
+        # dev group, so a plain `uv run` here would reinstall everything the
+        # `uv sync --no-dev` above deliberately left out and this job would time
+        # an import against an environment no user has.
         run: |
-          uv run python - <<'EOF'
+          uv run --no-sync python - <<'EOF'
           import subprocess, sys
           times = []
           for _ in range(3):
@@ -84,7 +90,7 @@ jobs:
       - name: Install uv
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - name: Install everything
         run: |
           uv venv
