@@ -164,16 +164,28 @@ def test_scoping_the_claude_root_does_not_reach_the_real_codex_tree(tmp_path, mo
         task = asyncio.create_task(
             mirror_mod.mirror_forever(stop, root=root, since=None, interval=0.02, **kwargs)
         )
+        failure: str | None = None
         try:
             for _ in range(500):
                 if predicate():
                     break
                 await asyncio.sleep(0.01)
             else:
-                raise AssertionError(f"tail never {what} within the wait budget")
+                failure = f"tail never {what} within the wait budget"
         finally:
             stop.set()
-            await asyncio.wait_for(task, timeout=5)
+            try:
+                await asyncio.wait_for(task, timeout=5)
+            except asyncio.TimeoutError:
+                task.cancel()
+                # A tail that will not stop is usually the same tail that never
+                # made progress, so raising from here would replace the useful
+                # diagnosis with a generic cleanup timeout. The first failure
+                # observed is the one worth reporting.
+                if failure is None:
+                    failure = "tail did not stop within the cleanup budget"
+        if failure is not None:
+            raise AssertionError(failure)
 
     # The precondition for the negative assertion below: the loop demonstrably
     # ran a pass, so an empty `visited` means the codex root was not reached
