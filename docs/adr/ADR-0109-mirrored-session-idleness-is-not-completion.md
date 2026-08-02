@@ -225,13 +225,28 @@ routine idling because there is no longer a terminal status being exited.
 A mirrored session reaches `completed` through `idle`, never directly from
 `running`, so the day-scale window is evaluated in one place.
 
-**Writers of `idle` are restricted to the mirror reconcilers.** This is a
-requirement, not a convention, and the reason is sharp: `idle` is invisible to
-every sweep that selects `status='running'`, so a non-mirror writer minting
-`idle` would hide a real, live session from the phantom reaper, the health
-sweep, `li kill --all-stale` and `li state doctor` all at once. A status whose
-purpose is to exempt rows from sweeps is a status that must not be reachable by
-accident.
+**Writers of `idle` are restricted to the mirror reconcilers.** The reason is
+sharp: `idle` is invisible to every sweep that selects `status='running'`, so a
+non-mirror writer minting `idle` would hide a real, live session from the
+phantom reaper, the health sweep, `li kill --all-stale` and `li state doctor`
+all at once. A status whose purpose is to exempt rows from sweeps is a status
+that must not be reachable by accident.
+
+**What that restriction can and cannot be, stated before the mechanism, because
+the difference decides what the mechanism is worth.** It is a check against
+*accident*: code that writes a session's status without meaning to claim it is a
+mirrored transcript. It is not, and at this layer cannot be, a check against
+*impersonation*. `StateDB.update_status` takes `source` and `actor` as ordinary
+caller-supplied strings (`lionagi/state/db.py:2649-2660`) and they arrive at the
+lifecycle service inside an `ActorRecord` whose `id` is a plain `str`
+(`lionagi/state/lifecycle/models.py:18-21`). Any caller in the process can pass
+`actor="claude-mirror-reconcile"` and satisfy any identity rule built on that
+field. There is no privilege boundary between callers of a Python module, so no
+rule expressed in this layer can create one. Read the restriction accordingly:
+it makes the intended writer explicit and turns a silent mistake into a
+rejection, and a caller determined to write `idle` can still do so by naming
+itself the reconciler. That is the honest ceiling, and pretending otherwise
+would be the more dangerous document.
 
 Mechanism. An earlier draft of this section said the restriction was enforceable
 today by registering a `session.idle.*` reason prefix and having the transition
@@ -263,18 +278,29 @@ restriction with it, in this order:
 
 1. Give the edge contract an identity-level rule, an explicit actor allow-list,
    alongside the existing `actor_types`. Type is the wrong granularity for a
-   status whose whole purpose is to exempt rows from sweeps.
+   status whose whole purpose is to exempt rows from sweeps. Per the paragraph
+   above, this catches the writer that did not mean to claim to be the mirror,
+   which is the whole of what it is for.
 2. Move the mirror's status write onto an edge-enforcing call, or give the
    compatibility adapter an enforcing variant, so that policy is consulted at
    all on that path. Without this step, step 1 is dead code.
 3. Register the exact reason codes and bind them to the reconcile actors, rather
    than relying on a prefix.
 
-Verification arms for the restriction are listed with the others below, and they
-must include a negative: a non-mirror actor attempting `running → idle` is
-rejected, checked on the same write path the mirror actually uses rather than on
-an edge-enforcing path the mirror never takes. A test that passes only because
-it called the enforcing path would certify a rule the production path skips.
+Verification arms for the restriction are listed with the others below. An
+earlier revision of this section got their target wrong in a way worth recording,
+because it contradicted the step list directly above it: it required both arms to
+run through `StateDB.update_status` on the grounds that this is the path the
+mirror uses. That is true only *before* step 2. Step 2 moves the mirror off that
+path, and the compatibility path cannot reject anything while `enforce_edges`
+stays false there, so the requirement asked for a test that is impossible before
+the change and irrelevant after it. The requirement is therefore not "the current
+path" but **the entry point the mirror calls once step 2 lands**: whichever
+enforcing call or enforcing compatibility variant step 2 introduces, both the
+positive and the negative arm run through that exact function, and the
+implementation names it. Testing the legacy permissive `update_status` remains
+worthwhile as a separate arm, but it asserts something different, namely that the
+old surface stays deliberately permissive for its existing callers.
 
 A declared edge alone would not be enough even after those three steps: edges say
 what transitions exist, not who may perform them, which is the same distinction
@@ -387,11 +413,13 @@ mirror reconciler**, because those are real completions and rewriting one to
   mirror reconciler is **rejected**, paired in the same run with a mirror actor
   performing the same transition successfully. Asserting only the rejection
   would pass against a policy that refuses `idle` from everyone, which would
-  disable the feature while looking enforced. Both arms must go through the
-  entry point the mirror actually uses, `StateDB.update_status`, and not through
-  an edge-enforcing call: as the mechanism section records, the compatibility
-  path does not enforce declared edges, so a test written against the enforcing
-  path would certify a rule the production path skips.
+  disable the feature while looking enforced. Both arms go through the entry
+  point the mirror calls *after* step 2 of the mechanism, which the
+  implementation names; running them against today's `StateDB.update_status`
+  would assert nothing, since that path does not enforce declared edges and so
+  rejects nobody. A third arm on the legacy path is worth keeping, asserting the
+  opposite: that the permissive surface stays permissive for its existing
+  callers.
 - A regression that a linked mirror session in `idle` is treated as live by
   `cli/_runs.py`'s provider-error reconciliation, not left to the fall-through
   that yields a phantom `failed`. Drive it with three linked rows in one
