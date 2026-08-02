@@ -92,7 +92,10 @@ export function AgentDetail({ agent, onBack, onDeleted }: Props) {
         if (alive) setModes(catalog.modes);
       })
       .catch(() => {
-        /* mode selector degrades to free text below if this fails */
+        /* Leaves the mode list empty, so the selector below offers only the
+           clear option. Deliberately not a free-text fallback: mode is looked
+           up by exact name, so a field that accepts anything would let a failed
+           catalog fetch produce a profile nothing can resolve. */
       });
     return () => {
       alive = false;
