@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS studio_operator_conversations (
   -- continues the first instead of starting a stranger.
   provider_session_id TEXT,
   provider_model      TEXT,
+  pinned             INTEGER NOT NULL DEFAULT 0,
   created_at         REAL NOT NULL,
   updated_at         REAL NOT NULL,
   archived_at        REAL,
@@ -123,6 +124,10 @@ MAX_FRAMES_PER_TURN = 2000
 MAX_TURN_PAYLOAD_BYTES = 8 * 1024 * 1024
 TRUNCATION_FRAME_TYPE = "truncation"
 
+# Distinguishes "field omitted from a partial update" from "field explicitly
+# set to None/False" -- title in particular is legitimately nullable.
+_UNSET: Any = object()
+
 
 class OperatorStoreError(RuntimeError):
     code = "service_failure"
@@ -187,7 +192,11 @@ class OperatorStore:
                 await self._add_missing_columns(
                     db,
                     "studio_operator_conversations",
-                    {"provider_session_id": "TEXT", "provider_model": "TEXT"},
+                    {
+                        "provider_session_id": "TEXT",
+                        "provider_model": "TEXT",
+                        "pinned": "INTEGER NOT NULL DEFAULT 0",
+                    },
                 )
                 await db.commit()
             stat = path.stat()
@@ -263,6 +272,7 @@ class OperatorStore:
             "project": row["project"],
             "title": row["title"],
             "status": row["status"],
+            "pinned": bool(row["pinned"]),
             "nextSequence": row["next_sequence"],
             "activeRequestId": row["active_request_id"],
             "providerSessionId": row["provider_session_id"],
@@ -379,17 +389,204 @@ class OperatorStore:
             await db.commit()
         return await self.get_conversation(conversation_id)
 
-    async def list_conversations(self, *, limit: int = 100) -> list[dict[str, Any]]:
+    async def list_conversations(
+        self, *, limit: int = 100, status: str = "active"
+    ) -> list[dict[str, Any]]:
         await self.ensure_schema()
+        if status not in ("active", "archived", "all"):
+            raise OperatorConflictError(f"Unsupported conversation status filter '{status}'")
         async with open_db(str(self.path())) as db:
-            rows = await (
-                await db.execute(
-                    "SELECT * FROM studio_operator_conversations "
-                    "WHERE status != 'deleted' ORDER BY updated_at DESC LIMIT ?",
-                    (limit,),
+            if status == "all":
+                query = (
+                    "SELECT * FROM studio_operator_conversations WHERE status != 'deleted' "
+                    "ORDER BY pinned DESC, updated_at DESC LIMIT ?"
                 )
-            ).fetchall()
+                params: tuple[Any, ...] = (limit,)
+            else:
+                query = (
+                    "SELECT * FROM studio_operator_conversations WHERE status = ? "
+                    "ORDER BY pinned DESC, updated_at DESC LIMIT ?"
+                )
+                params = (status, limit)
+            rows = await (await db.execute(query, params)).fetchall()
         return [self._conversation(row) for row in rows]
+
+    async def update_conversation(
+        self,
+        conversation_id: str,
+        *,
+        title: str | None | object = _UNSET,
+        pinned: bool | object = _UNSET,
+        status: str | object = _UNSET,
+    ) -> dict[str, Any]:
+        """Apply a partial update: rename, pin/unpin, and/or archive/reactivate.
+
+        Only the fields the caller actually names (not left at ``_UNSET``) are
+        touched, so a rename never disturbs the pin state and vice versa.
+        Archiving is refused while a turn is in flight, matching the delete
+        restriction: it removes the conversation from the active list rather
+        than interrupting work in progress.
+        """
+        await self.ensure_schema()
+        if status is not _UNSET and status not in ("active", "archived"):
+            raise OperatorConflictError(f"Unsupported conversation status '{status}'")
+        now = time.time()
+        async with open_db(str(self.path())) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute(
+                    "SELECT status, active_request_id FROM studio_operator_conversations "
+                    "WHERE id = ?",
+                    (conversation_id,),
+                )
+            ).fetchone()
+            if row is None or row["status"] == "deleted":
+                await db.rollback()
+                raise OperatorNotFoundError(f"Operator conversation '{conversation_id}' not found")
+            if status == "archived" and row["active_request_id"]:
+                await db.rollback()
+                raise OperatorConflictError("Cannot archive a conversation with an active turn")
+            sets: list[str] = []
+            params: list[Any] = []
+            if title is not _UNSET:
+                sets.append("title=?")
+                params.append(title)
+            if pinned is not _UNSET:
+                sets.append("pinned=?")
+                params.append(1 if pinned else 0)
+            if status is not _UNSET:
+                sets.append("status=?")
+                params.append(status)
+                sets.append("archived_at=?")
+                params.append(now if status == "archived" else None)
+            if sets:
+                sets.append("updated_at=?")
+                params.append(now)
+                params.append(conversation_id)
+                await db.execute(
+                    f"UPDATE studio_operator_conversations SET {', '.join(sets)} "  # noqa: S608
+                    "WHERE id=?",
+                    params,
+                )
+            await db.commit()
+        return await self.get_conversation(conversation_id)
+
+    async def fork_conversation(
+        self,
+        conversation_id: str,
+        *,
+        up_to_sequence: int | None = None,
+        title: str | None = None,
+    ) -> dict[str, Any]:
+        """Copy a conversation's completed turns into a new, independent conversation.
+
+        Only turns that reached a terminal status (completed/failed/cancelled)
+        are copied whole -- forking a conversation with a turn actively
+        streaming therefore ends the fork at the last completed turn instead
+        of copying a half-written one; the original conversation keeps
+        streaming untouched. ``up_to_sequence``, when given, additionally caps
+        the fork at the turn ending at or before that point in the source
+        conversation's history, so a user can branch from any earlier turn
+        rather than always from the tip. The new conversation starts with no
+        provider session of its own, so it does not resume the source's
+        provider-side session.
+        """
+        await self.ensure_schema()
+        source = await self.get_conversation(conversation_id)
+        now = time.time()
+        async with open_db(str(self.path())) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            query = (
+                "SELECT t.request_id AS request_id, MIN(f.sequence) AS first_sequence "
+                "FROM studio_operator_turns t "
+                "JOIN studio_operator_frames f ON f.request_id = t.request_id "
+                "WHERE t.conversation_id=? AND t.status IN ('completed','failed','cancelled') "
+            )
+            params: list[Any] = [conversation_id]
+            if up_to_sequence is not None:
+                query += "GROUP BY t.request_id HAVING MAX(f.sequence) <= ? "
+                params.append(up_to_sequence)
+            else:
+                query += "GROUP BY t.request_id "
+            query += "ORDER BY first_sequence ASC"
+            turn_rows = await (await db.execute(query, params)).fetchall()
+            ordered_request_ids = [row["request_id"] for row in turn_rows]
+
+            new_id = str(uuid.uuid4())
+            if title is not None:
+                new_title = title
+            elif source["title"]:
+                new_title = f"{source['title']} (fork)"
+            else:
+                new_title = f"Fork of {conversation_id[:8]}"
+
+            await db.execute(
+                "INSERT INTO studio_operator_conversations "
+                "(id, project, title, status, next_sequence, provider_model, "
+                "created_at, updated_at) VALUES (?, ?, ?, 'active', 1, ?, ?, ?)",
+                (new_id, source["project"], new_title, source["providerModel"], now, now),
+            )
+            next_sequence = 1
+            if ordered_request_ids:
+                placeholders = ",".join("?" for _ in ordered_request_ids)
+                turns = await (
+                    await db.execute(
+                        "SELECT * FROM studio_operator_turns "  # noqa: S608
+                        f"WHERE request_id IN ({placeholders})",
+                        tuple(ordered_request_ids),
+                    )
+                ).fetchall()
+                turns_by_id = {row["request_id"]: row for row in turns}
+                request_id_map = {rid: str(uuid.uuid4()) for rid in ordered_request_ids}
+                for original_request_id in ordered_request_ids:
+                    turn = turns_by_id[original_request_id]
+                    new_request_id = request_id_map[original_request_id]
+                    await db.execute(
+                        "INSERT INTO studio_operator_turns "
+                        "(request_id, conversation_id, instruction, context_json, "
+                        "context_hash, status, error_code, created_at, started_at, ended_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            new_request_id,
+                            new_id,
+                            turn["instruction"],
+                            turn["context_json"],
+                            turn["context_hash"],
+                            turn["status"],
+                            turn["error_code"],
+                            turn["created_at"],
+                            turn["started_at"],
+                            turn["ended_at"],
+                        ),
+                    )
+                    frames = await (
+                        await db.execute(
+                            "SELECT * FROM studio_operator_frames "
+                            "WHERE request_id=? ORDER BY sequence ASC",
+                            (original_request_id,),
+                        )
+                    ).fetchall()
+                    for frame in frames:
+                        await db.execute(
+                            "INSERT INTO studio_operator_frames "
+                            "(conversation_id, sequence, request_id, frame_type, "
+                            "payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                            (
+                                new_id,
+                                next_sequence,
+                                new_request_id,
+                                frame["frame_type"],
+                                frame["payload_json"],
+                                frame["created_at"],
+                            ),
+                        )
+                        next_sequence += 1
+                await db.execute(
+                    "UPDATE studio_operator_conversations SET next_sequence=? WHERE id=?",
+                    (next_sequence, new_id),
+                )
+            await db.commit()
+        return await self.get_conversation(new_id)
 
     async def get_conversation(self, conversation_id: str) -> dict[str, Any]:
         await self.ensure_schema()

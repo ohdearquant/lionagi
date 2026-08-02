@@ -264,6 +264,7 @@ function normalizeOperatorConversation(value: unknown): OperatorConversation {
   return {
     id,
     status,
+    pinned: raw.pinned === true,
     project: typeof raw.project === "string" ? raw.project : null,
     title: typeof raw.title === "string" ? raw.title : null,
     nextSequence: readNumber("nextSequence", "next_sequence"),
@@ -303,13 +304,69 @@ export async function createOperatorConversation(input?: {
   return normalizeOperatorConversation(raw.conversation ?? raw);
 }
 
-export async function listOperatorConversations(): Promise<OperatorConversation[]> {
-  const response = await fetchJson<unknown>("/api/operator/conversations");
+export async function listOperatorConversations(options?: {
+  status?: "active" | "archived" | "all";
+}): Promise<OperatorConversation[]> {
+  const query = options?.status ? `?status=${encodeURIComponent(options.status)}` : "";
+  const response = await fetchJson<unknown>(`/api/operator/conversations${query}`);
   const raw = asRecord(response);
   if (!Array.isArray(raw.conversations)) {
     throw new Error("Operator conversation list response was invalid.");
   }
   return raw.conversations.map(normalizeOperatorConversation);
+}
+
+export interface OperatorConversationPatch {
+  title?: string | null;
+  pinned?: boolean;
+  status?: "active" | "archived";
+}
+
+export async function updateOperatorConversation(
+  conversationId: string,
+  patch: OperatorConversationPatch,
+): Promise<OperatorConversation> {
+  const body: Record<string, unknown> = {};
+  if ("title" in patch) body.title = patch.title;
+  if ("pinned" in patch) body.pinned = patch.pinned;
+  if ("status" in patch) body.status = patch.status;
+  const response = await fetchJson<unknown>(
+    `/api/operator/conversations/${encodeURIComponent(conversationId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  const raw = asRecord(response);
+  return normalizeOperatorConversation(raw.conversation ?? raw);
+}
+
+export async function forkOperatorConversation(
+  conversationId: string,
+  options?: { upToSequence?: number; title?: string },
+): Promise<OperatorConversationSnapshot> {
+  const body: Record<string, unknown> = {};
+  if (options?.upToSequence != null) body.upToSequence = options.upToSequence;
+  if (options?.title != null) body.title = options.title;
+  const response = await fetchJson<unknown>(
+    `/api/operator/conversations/${encodeURIComponent(conversationId)}/fork`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  const raw = asRecord(response);
+  const conversation = normalizeOperatorConversation(raw.conversation ?? raw);
+  const framesValue = raw.frames;
+  const page = Array.isArray(framesValue) ? framesValue : [];
+  for (const frame of page) {
+    if (!isOperatorFrame(frame)) {
+      throw new Error("Operator fork response contains an unsupported protocol frame.");
+    }
+  }
+  return { conversation, frames: page };
 }
 
 export async function getOperatorConversation(
@@ -383,7 +440,11 @@ export async function cancelOperatorRequest(
 }
 
 export type OperatorEffectRejectionCode =
-  "unsupported" | "invalid_params" | "stale_context" | "not_visible" | "client_error";
+  | "unsupported"
+  | "invalid_params"
+  | "stale_context"
+  | "not_visible"
+  | "client_error";
 
 export async function acknowledgeOperatorEffect(
   conversationId: string,
@@ -681,7 +742,8 @@ export interface RunFileContent {
 }
 
 export type RunFileResult =
-  { ok: true; data: RunFileContent } | { ok: false; status: number; detail?: string };
+  | { ok: true; data: RunFileContent }
+  | { ok: false; status: number; detail?: string };
 
 /** Read-only fetch of a run artifact's content, for the message-renderer's
  * file viewer. Reports status/detail on failure (rather than throwing) so
@@ -993,6 +1055,12 @@ export async function updateAgent(name: string, data: AgentProfile): Promise<unk
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
+  });
+}
+
+export async function deleteAgent(name: string): Promise<{ deleted: boolean; name: string }> {
+  return fetchJson<{ deleted: boolean; name: string }>(`/api/agents/${encodeURIComponent(name)}`, {
+    method: "DELETE",
   });
 }
 
@@ -1459,6 +1527,127 @@ export async function listPlugins(): Promise<{ plugins: PluginSummary[] }> {
 
 export async function getPlugin(name: string): Promise<PluginDetail> {
   return fetchJson<PluginDetail>(`/api/plugins/${encodeURIComponent(name)}`);
+}
+
+// ─── MCP servers ────────────────────────────────────────────────────────────
+
+export type McpServerTransport = "stdio" | "http";
+
+export interface McpServerLastCheck {
+  ok: boolean;
+  error: string | null;
+  checked_at: number;
+}
+
+export interface McpServerSummary {
+  name: string;
+  transport: McpServerTransport;
+  command?: string;
+  args?: string[];
+  url?: string;
+  timeout?: number;
+  env_keys: string[];
+  enabled: boolean;
+  created_at: number;
+  updated_at: number;
+  last_check: McpServerLastCheck | null;
+}
+
+/** Fields a client may submit for register/update. `env` values are only
+ * ever sent up (to be stored), never returned by the server — see
+ * McpServerSummary, which carries `env_keys` instead. A `null` value for a
+ * key is the explicit way to remove it; the server never infers a deletion
+ * from a key's mere absence, since env merges key-by-key onto what's
+ * already stored. */
+export interface McpServerConfigInput {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string | null>;
+  url?: string;
+  /** `null` clears a stored timeout. Absent leaves it as it was, the same
+   * merge rule `env` follows. */
+  timeout?: number | null;
+  enabled?: boolean;
+}
+
+export interface McpServerValidationResult {
+  ok: boolean;
+  errors?: string[] | null;
+  connection_checked: boolean;
+  connection_ok: boolean | null;
+  connection_error: string | null;
+}
+
+export async function listMcpServers(): Promise<{ servers: McpServerSummary[] }> {
+  return fetchJson<{ servers: McpServerSummary[] }>("/api/mcp/servers/");
+}
+
+export async function getMcpServer(name: string): Promise<McpServerSummary> {
+  return fetchJson<McpServerSummary>(`/api/mcp/servers/${encodeURIComponent(name)}`);
+}
+
+export async function registerMcpServer(
+  name: string,
+  data: McpServerConfigInput,
+): Promise<McpServerSummary> {
+  return fetchJson<McpServerSummary>("/api/mcp/servers/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, ...data }),
+  });
+}
+
+export async function updateMcpServer(
+  name: string,
+  data: McpServerConfigInput,
+): Promise<McpServerSummary> {
+  return fetchJson<McpServerSummary>(`/api/mcp/servers/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+export async function setMcpServerEnabled(
+  name: string,
+  enabled: boolean,
+): Promise<McpServerSummary> {
+  return fetchJson<McpServerSummary>(
+    `/api/mcp/servers/${encodeURIComponent(name)}/${enabled ? "enable" : "disable"}`,
+    { method: "POST" },
+  );
+}
+
+export async function deleteMcpServer(name: string): Promise<{ ok: boolean }> {
+  return fetchJson<{ ok: boolean }>(`/api/mcp/servers/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+}
+
+/** Attempt a real connection to an already-registered server and persist
+ * the result (surfaced afterwards via `last_check` on the summary). */
+export async function checkMcpServer(name: string): Promise<McpServerSummary> {
+  return fetchJson<McpServerSummary>(`/api/mcp/servers/${encodeURIComponent(name)}/check`, {
+    method: "POST",
+  });
+}
+
+/** Validate a config before saving. Shape is always checked; pass
+ * `check_connection: true` to also attempt a real connection (the result
+ * distinguishes "not checked" from "checked and failed" via
+ * `connection_checked`). */
+export async function validateMcpServer(
+  name: string,
+  data: McpServerConfigInput & { check_connection?: boolean },
+): Promise<McpServerValidationResult> {
+  return fetchJson<McpServerValidationResult>(
+    `/api/mcp/servers/${encodeURIComponent(name || "new")}/validate`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, ...data }),
+    },
+  );
 }
 
 export async function getPluginSkill(

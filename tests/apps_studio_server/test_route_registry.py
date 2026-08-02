@@ -240,6 +240,7 @@ _MIGRATED_AREAS = {
     "shows",
     "skills",
     "plugins",
+    "mcp",
     "teams",
     "invocations",
     "launches",
