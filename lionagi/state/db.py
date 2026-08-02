@@ -5726,15 +5726,22 @@ class StateDB:
 
     async def mark_session_control_applying(
         self, control_id: str, *, owner: str | None = None
-    ) -> bool:
+    ) -> str | None:
         """Claim a non-idempotent (message) control as mid-apply, before attempting it.
 
         The stamp is a compare-and-set: only a row no consumer has claimed
-        (``result IS NULL``) moves to 'applying', and the return value says
-        whether this caller is the one that took it. Two consumers that read the
-        same pending row therefore cannot both apply it; the loser sees False and
-        leaves the row alone. A bool rather than an exception keeps the ordinary
-        "someone else got there first" case off the error path.
+        (``result IS NULL``) moves to 'applying'. Returns the claim string this
+        call wrote, or None if another consumer got there first. Two consumers
+        that read the same pending row therefore cannot both apply it; the loser
+        sees None and leaves the row alone. Returning a value rather than raising
+        keeps the ordinary "someone else got there first" case off the error path.
+
+        **The claim comes back because the claimant needs it to finish safely.**
+        finalize_session_control(expect_claim=...) is what stops a slow consumer
+        from overwriting an outcome that someone else recorded while it was
+        working, and a caller can only pass a claim it holds. Rebuilding the
+        string at the call site instead is how the two drift apart, so this is
+        the only place it is constructed.
 
         *owner* names the claimant, and the claim is stored as ``applying:<owner>``.
         Naming it is what lets a second consumer tell "someone else is mid-apply"
@@ -5745,6 +5752,7 @@ class StateDB:
         applied_at stays NULL — the row remains "pending" until finalize_session_control()
         runs, so a poller crash right after this stamp is visible, not silently lost.
         """
+        claim = f"applying:{owner}" if owner else "applying"
         async with self._tx() as conn:
             result = await conn.execute(
                 text(
@@ -5752,12 +5760,12 @@ class StateDB:
                     "WHERE id = :id AND result IS NULL"
                 ),
                 {
-                    "claim": f"applying:{owner}" if owner else "applying",
+                    "claim": claim,
                     "now": time.time(),
                     "id": control_id,
                 },
             )
-            return bool(result.rowcount)
+            return claim if result.rowcount else None
 
     async def finalize_session_control(
         self,

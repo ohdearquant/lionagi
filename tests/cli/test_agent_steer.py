@@ -437,10 +437,29 @@ async def test_claiming_a_control_twice_only_succeeds_once(temp_db_path):
         cid = await db.insert_session_control(
             session_id=sid, verb="message", payload={"text": "once"}
         )
-        assert await db.mark_session_control_applying(cid) is True
-        assert await db.mark_session_control_applying(cid) is False, (
+        assert await db.mark_session_control_applying(cid) == "applying"
+        assert await db.mark_session_control_applying(cid) is None, (
             "a second consumer claimed a control that was already claimed"
         )
+
+
+@pytest.mark.anyio
+async def test_the_claim_comes_back_so_the_claimant_can_guard_its_own_finalize(temp_db_path):
+    """The winner is handed the exact string it wrote. Rebuilding that string at
+    the call site is how a guard stops matching the row it is supposed to guard,
+    so the only copy lives in the claimer."""
+    async with StateDB() as db:
+        sid = await _make_agent_session(db)
+        cid = await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "hi"}
+        )
+        claim = await db.mark_session_control_applying(cid, owner="leg-a")
+        assert claim == "applying:leg-a"
+        # The returned value is usable as-is: it matches the stored row, so a
+        # finalize carrying it lands.
+        assert (await db.get_session_control(cid))["result"] == claim
+        assert await db.finalize_session_control(cid, result="applied", expect_claim=claim)
+        assert (await db.get_session_control(cid))["result"] == "applied"
 
 
 @pytest.mark.anyio

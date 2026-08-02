@@ -466,12 +466,15 @@ async def _drain_pending_steers(
                 break
         texts = []
         claimed = []
-        claim_token = f"applying:{owner}" if owner else "applying"
         for row in steers:
-            if not await db.mark_session_control_applying(row["id"], owner=owner):
+            # Carry the claim the database actually wrote rather than rebuilding
+            # it here: the finalize below is only guarded if the two agree, and
+            # two copies of the same expression are what stop agreeing.
+            claim_token = await db.mark_session_control_applying(row["id"], owner=owner)
+            if claim_token is None:
                 # Another consumer claimed it between the read and here.
                 continue
-            claimed.append(row)
+            claimed.append((row, claim_token))
             payload = row.get("payload") or {}
             texts.append(str(payload.get("text") or ""))
         if not claimed:
@@ -488,7 +491,7 @@ async def _drain_pending_steers(
             instruction=_AGENT_STEER_TEMPLATE.format(lines=joined),
             **kwargs,
         )
-        for row in claimed:
+        for row, claim_token in claimed:
             # Unconditional on the clock, deliberately. The deadline gates when
             # new provider work may start, which the recheck above enforces;
             # recording the outcome of work already performed is exempt, because

@@ -162,6 +162,13 @@ async def _apply_session_control(db, executor, row: dict) -> str | None:
     poller crash). Never raises — failures are recorded as rejected."""
     control_id = row["id"]
     verb = row["verb"]
+    # Set only once this poller has actually claimed the row. Every finalize
+    # below passes it, so a write from this function can never land on an
+    # outcome somebody else recorded while the apply was in flight — including
+    # a hand resolution, which is the one outcome here that nothing can rebuild.
+    # It stays None for the idempotent verbs, which take no claim and want the
+    # unconditional write.
+    claim: str | None = None
     try:
         if verb == "pause":
             executor.pause()
@@ -179,7 +186,8 @@ async def _apply_session_control(db, executor, row: dict) -> str | None:
                 # owner ('applying:<run id>'), and an equality check would stop
                 # recognising exactly the claims that identify who holds them.
                 return None
-            if not await db.mark_session_control_applying(control_id):
+            claim = await db.mark_session_control_applying(control_id)
+            if claim is None:
                 # The row above said unclaimed; this says it is claimed now.
                 # Only the stamp that actually wrote may go on to inject, since
                 # the losing side proceeding is the double-injection the check
@@ -195,7 +203,10 @@ async def _apply_session_control(db, executor, row: dict) -> str | None:
             )
             if not has_pending_op:
                 result = "rejected:no-pending-ops"
-                await db.finalize_session_control(control_id, result=result)
+                if not await db.finalize_session_control(
+                    control_id, result=result, expect_claim=claim
+                ):
+                    return None
                 return result
 
             from lionagi.libs.nested import deep_update  # noqa: PLC0415
@@ -204,18 +215,22 @@ async def _apply_session_control(db, executor, row: dict) -> str | None:
             existing = executor.context.content.get("operator_messages", [])
             entry = {"ts": time.time(), "text": payload.get("text", "")}
             deep_update(executor.context.content, {"operator_messages": [*existing, entry]})
-            return await _finalize_applied(db, control_id)
+            return await _finalize_applied(db, control_id, claim)
 
         # 'stop' is schema-reserved for a later slice (checkpoint writer);
         # reject other verbs loudly instead of polling them forever.
         result = f"rejected:unsupported-verb:{verb}"
-        await db.finalize_session_control(control_id, result=result)
+        await db.finalize_session_control(control_id, result=result, expect_claim=claim)
         return result
     except Exception as exc:  # noqa: BLE001 — the poller must never crash the run
         result = f"rejected:error:{exc}"[:500]
         logger.warning("control %s (%s) failed to apply: %s", control_id, verb, exc)
         try:
-            await db.finalize_session_control(control_id, result=result)
+            if not await db.finalize_session_control(control_id, result=result, expect_claim=claim):
+                # The claim moved while this apply was failing, so the row
+                # already carries somebody else's outcome. Recording our error
+                # over it would replace a settled answer with a worse one.
+                return None
         except Exception:  # noqa: BLE001
             # Still pending: signal the poller to end the tick so a later
             # control isn't overtaken by this one re-applying next tick.
@@ -223,13 +238,18 @@ async def _apply_session_control(db, executor, row: dict) -> str | None:
         return result
 
 
-async def _finalize_applied(db, control_id: str) -> str:
+async def _finalize_applied(db, control_id: str, claim: str | None = None) -> str | None:
     """Stamp 'applied' after a successful apply; on finalize failure, retry
-    once then return the unstamped sentinel for the next poller tick."""
+    once then return the unstamped sentinel for the next poller tick.
+
+    Returns None when *claim* is given and the row no longer carries it: the
+    apply happened, but somebody else has since recorded the outcome, and
+    theirs stands. Callers read None as "left untouched by us"."""
     for _ in range(2):
         try:
-            await db.finalize_session_control(control_id, result="applied")
-            return "applied"
+            if await db.finalize_session_control(control_id, result="applied", expect_claim=claim):
+                return "applied"
+            return None
         except Exception as exc:  # noqa: BLE001 — the poller must never crash the run
             logger.warning("control %s applied but finalize failed: %s", control_id, exc)
     return _CONTROL_UNSTAMPED
