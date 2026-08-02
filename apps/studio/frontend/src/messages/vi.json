@@ -814,7 +814,17 @@
       "durationStatus": "chạy {duration} · hoạt động gần nhất {age} trước",
       "empty": "không có lần chạy hoặc lần gọi đang hoạt động.",
       "emptyHint": "khởi chạy một lần bằng li CLI, hoặc nhấn ⌘K để nhảy tới bất kỳ đâu.",
-      "fleetLink": "nhóm tác nhân →"
+      "fleetLink": "nhóm tác nhân →",
+      "viewCards": "Thẻ",
+      "viewTable": "Bảng",
+      "table": {
+        "colName": "Tên",
+        "colStatus": "Trạng thái",
+        "colUptime": "Thời gian hoạt động",
+        "colLastActivity": "Hoạt động gần nhất",
+        "colKind": "Loại",
+        "colId": "ID"
+      }
     },
     "recent": {
       "title": "gần đây",

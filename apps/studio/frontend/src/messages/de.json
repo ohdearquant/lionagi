@@ -814,7 +814,17 @@
       "durationStatus": "läuft seit {duration} · letzte Aktivität vor {age}",
       "empty": "Keine aktiven Ausführungen oder Aufrufe.",
       "emptyHint": "Starte eine mit der li CLI, oder drücke ⌘K, um überallhin zu springen.",
-      "fleetLink": "Flotte →"
+      "fleetLink": "Flotte →",
+      "viewCards": "Karten",
+      "viewTable": "Tabelle",
+      "table": {
+        "colName": "Name",
+        "colStatus": "Status",
+        "colUptime": "Laufzeit",
+        "colLastActivity": "Letzte Aktivität",
+        "colKind": "Art",
+        "colId": "ID"
+      }
     },
     "recent": {
       "title": "Letzte",

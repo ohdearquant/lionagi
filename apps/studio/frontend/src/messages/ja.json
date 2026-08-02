@@ -814,7 +814,17 @@
       "durationStatus": "稼働 {duration} · 最終アクティビティ {age} 前",
       "empty": "アクティブな実行または呼び出しはありません。",
       "emptyHint": "li CLIで起動するか、⌘Kで任意の場所へ移動できます。",
-      "fleetLink": "エージェントフリート →"
+      "fleetLink": "エージェントフリート →",
+      "viewCards": "カード",
+      "viewTable": "テーブル",
+      "table": {
+        "colName": "名前",
+        "colStatus": "ステータス",
+        "colUptime": "稼働時間",
+        "colLastActivity": "最終アクティビティ",
+        "colKind": "種類",
+        "colId": "ID"
+      }
     },
     "recent": {
       "title": "最近",
