@@ -108,6 +108,110 @@ def test_checkpoint_missing_db_is_noop(tmp_path, monkeypatch):
     assert run_async(maint.get_last_checkpoint_at()) is None
 
 
+def test_checkpoint_result_shape_is_the_same_with_and_without_a_store(tmp_path, monkeypatch):
+    """Both return paths report the same fields.
+
+    The no-store path builds its dict by hand instead of running the PRAGMA,
+    so it is the one that silently falls behind when a field is added. It
+    reaches the admin maintenance API unchanged, and a response that drops a
+    field depending on whether the store happens to exist is a shape a caller
+    cannot rely on.
+    """
+    from lionagi.studio.services import db_maintenance as maint
+
+    _patch_db(monkeypatch, tmp_path / "absent.db")
+    absent = run_async(maint.checkpoint_state_db())
+
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    run_async(_make_session_in(db_path, status="running", started_at=time.time()))
+    present = run_async(maint.checkpoint_state_db(actor="test"))
+
+    assert sorted(absent) == sorted(present)
+
+
+def test_checkpoint_event_records_the_wal_size_and_the_time_it_took(tmp_path, monkeypatch):
+    """The stored row carries what the PRAGMA counters cannot say.
+
+    A TRUNCATE checkpoint that succeeds reports busy, log_pages and
+    checkpointed all zero however much it drained, so those three cannot
+    separate a long stall from an idle tick. Asserted on the admin_events row
+    rather than on the return value because the row is what an operator reads
+    afterwards; a field that was returned but never stored would satisfy a
+    return-value check and still leave the record useless.
+    """
+    from lionagi.studio.services import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    run_async(_make_session_in(db_path, status="running", started_at=time.time()))
+
+    async def _grow_a_wal_then_checkpoint_it():
+        """Hold a connection open so the WAL is still there when we look.
+
+        SQLite checkpoints and removes the WAL when the last connection
+        closes, so a fixture that writes and then lets go leaves nothing
+        behind to drain and the size going in is zero however much was
+        written. Keeping this connection open is what makes the number under
+        test a real one.
+        """
+        async with StateDB() as db:
+            for i in range(200):
+                await db.insert_admin_event(
+                    action="grow", details={"i": i, "pad": "x" * 400}, actor="fixture"
+                )
+            standing = db_path.with_name(db_path.name + "-wal").stat().st_size
+            await maint.checkpoint_state_db(actor="test")
+            events = await db.list_admin_events(action="checkpoint", limit=5)
+        return standing, _details(events[0])
+
+    standing_wal, details = run_async(_grow_a_wal_then_checkpoint_it())
+
+    # The fixture is what makes this an assertion rather than a formality:
+    # if the WAL were empty the recorded size would be zero either way, and
+    # a checkpoint that never read it would pass.
+    assert standing_wal > 0
+    assert details["wal_bytes_before"] == standing_wal
+
+    # Opening a connection and running a PRAGMA is never free, so a zero here
+    # would mean the clock was never read rather than that the work was fast.
+    assert details["elapsed_ms"] > 0
+
+
+def test_wal_size_is_read_from_the_sidecar_that_is_there(tmp_path, monkeypatch):
+    """Three answers, and the difference between the two that look alike.
+
+    Zero and None both read as "no bytes to drain" at a glance and mean
+    different things: zero is a store whose WAL is genuinely empty, None is a
+    store where the question does not apply. An operator seeing None knows to
+    stop asking about the WAL; one seeing zero knows the checkpoint had
+    nothing to do.
+    """
+    from lionagi.studio.services import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+
+    # Nothing beside the store yet.
+    assert maint._wal_bytes_now() == 0
+
+    # The size comes off the file, so the expected value is the number of
+    # bytes actually written rather than anything this test decided.
+    payload = b"x" * 4096
+    db_path.with_name(db_path.name + "-wal").write_bytes(payload)
+    assert maint._wal_bytes_now() == len(payload)
+
+    # A store with no local file at all.
+    monkeypatch.setattr(
+        state_db_mod,
+        "settings",
+        state_db_mod.settings.model_copy(
+            update={"LIONAGI_STATE_DB_URL": "postgresql+asyncpg://u:p@127.0.0.1:5432/lionagi"}
+        ),
+    )
+    assert maint._wal_bytes_now() is None
+
+
 # ── size alert tests ──────────────────────────────────────────────────────────
 
 

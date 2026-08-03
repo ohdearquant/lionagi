@@ -1717,6 +1717,11 @@ export interface MaintenanceResult {
   busy?: number | null;
   log_pages?: number | null;
   checkpointed?: number | null;
+  // How much WAL the checkpoint was asked to drain and how long it took. The
+  // three counters above read zero on every successful TRUNCATE regardless of
+  // size, so they cannot separate a long drain from an idle one.
+  wal_bytes_before?: number | null;
+  elapsed_ms?: number | null;
   // prune
   sessions_pruned?: number;
   runs_pruned?: number;
