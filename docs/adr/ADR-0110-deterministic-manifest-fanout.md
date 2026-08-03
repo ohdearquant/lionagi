@@ -112,19 +112,32 @@ would-be-refused submissions):
 - **`env`** (per-leg, optional): a closed map of named environment variables
   set for that leg — keys matching `[A-Z][A-Z0-9_]{0,63}`, string values,
   passed via the process environment array at spawn (never through a shell).
-  Deny-by-default: nothing travels from the submitting process's environment;
-  beyond its baseline, a leg receives exactly the variables named here, and
-  the manifest snapshot is their durable source. A declared key that also
-  exists in the leg's baseline is overridden by the manifest value — that is
-  the feature (the declared value is the reproducible one); the D4 refusal
-  rule protects only the runner's own reserved name, and
+  Deny-by-default at the manifest surface: no manifest mechanism forwards
+  any environment — not the submitting client's, not the serving process's;
+  the map is literal values only, and the manifest snapshot is their durable
+  source. The baseline a leg otherwise inherits is the runner process's own
+  environment — today the serving daemon's environment as constructed at
+  spawn (`lionagi/mcp/jobs.py`, the submit path's `env` dict handed to
+  `Popen`) — and this ADR neither defines, freezes, nor filters that
+  baseline: scoping it is engine-wide hardening for every job kind at once,
+  a separate decision this ADR names and does not carry. A declared key
+  that also exists in the baseline is overridden by the manifest value —
+  that is the feature (the declared value is the recorded one); the D4
+  refusal rule protects only the runner's own reserved name, and
   `LIONAGI_LEG_ARTIFACTS` is accordingly refused here at submit. Declared
-  keys are listed in the leg's durable record as `env_keys`; the record never
-  re-prints values. Manifests are durable evidence, so credentials do not
-  belong in them: a secret a leg needs stays in the runner's own environment
-  and reaches the leg through the baseline, named nowhere. The consuming
-  workflow demonstrated the concrete cases (actor identity resolving wrong on
-  workspace cwds, per-worktree build target directories).
+  keys are listed in the leg's durable record as `env_keys`; the record
+  never re-prints values. Manifest values are recorded verbatim in the
+  snapshot, which is exactly why a credential in one is a rule violation
+  rather than a supported path — the mechanism cannot stop an author from
+  writing one, and what it CAN guarantee is that nothing hides: whatever a
+  manifest carries, its snapshot shows. A leg that legitimately needs a
+  secret gets it from the serving environment, the channel the existing
+  agent surface already provides; this ADR adds no new one.
+  The reproducibility claim is scoped accordingly: declared keys are the
+  recorded, reproducible deltas over that baseline, and a round is
+  reproducible given the same serving environment, no stronger. The
+  consuming workflow demonstrated the concrete cases (actor identity
+  resolving wrong on workspace cwds, per-worktree build target directories).
 - **Leg count 1..64.** The floor is definitional. The ceiling is one order of
   magnitude above the largest observed round (13) — a bound that exists so a
   generated manifest with a bug cannot fan out unbounded, chosen loose enough
@@ -206,13 +219,30 @@ The round gets one summary record, `{run_dir}/round.json`:
 }
 ```
 
-`round_state` is the honesty field: `complete` means every leg record and
-harvest is durably written; `pending_harvest` means a terminal status became
-visible before cleanup finished (possible only on the non-cooperative paths
-below). A reader who finds a terminal job with `round_state: pending_harvest`
-is told, in the record itself, that leg facts are still landing — the window
-exists and is OBSERVABLE, never silent.
+`round.json` is first written at spawn with `round_state: "pending_harvest"`
+and flipped to `complete` as the last act of finalization — the summary
+exists before any leg runs, so a terminal status published by ANY writer at
+ANY point (including a legacy or non-manifest-aware one) is observably
+pending rather than silently incomplete. `round_state` is the honesty field:
+`complete` means every leg record and harvest is durably written; a reader
+who finds a terminal job with `round_state: pending_harvest` is told, in the
+record itself, that leg facts are still landing — the window exists and is
+OBSERVABLE, never silent.
 
+- **Finalization has exactly one owner at a time.** The right to harvest,
+  write leg records, and flip `round_state` is taken by atomically creating
+  `{run_dir}/finalize.lock` (create-exclusive), which records the owner's
+  role (`runner`, `kill-reaper`, or `orphan-reaper`), its pid, and the run's
+  job marker. The cooperative runner claims it when teardown starts. A
+  reaper may claim only when no live owner holds it: either no claim exists,
+  or the recorded owner is dead — owner-death established from the recorded
+  identity (pid plus job marker), never from elapsed time. While a live
+  owner holds the claim, a reaper does not touch scratch directories or
+  records. Every leg record and `round.json` write lands by
+  temp-file-plus-atomic-rename, and a writer that finds a complete leg
+  record already present leaves it — first write wins, `recorded_by` names
+  the winner — so even a mis-sequenced writer cannot produce two competing
+  records for one leg.
 - **Cooperative ordering guarantee**: on normal completion and per-leg
   timeout, every leg's harvest runs and its record persists, then
   `round.json` is written with `round_state: complete`, and only then does
@@ -226,24 +256,35 @@ exists and is OBSERVABLE, never silent.
   kill surface instead records `kill_requested_at` and signals the group
   WITHOUT writing the terminal fields; the runner's cooperative teardown then
   harvests, records, and terminalizes exactly as above. If the runner does
-  not terminalize within a bounded grace (default 30 s — long enough for N
-  bounded harvests, short enough that a kill still means something), the kill
-  surface performs a manifest-aware reap: harvest each leg's scratch from
-  disk as D4 specifies, write each leg record with what could be established
+  not terminalize within a bounded grace (default 30 s), the kill surface
+  checks the finalization claim: while a live owner holds it, the kill
+  surface waits and re-checks — the stop signal has been delivered, and the
+  terminal write belongs to the claim holder; grace expiry is when the
+  reaper first CHECKS the claim, not an unconditional handoff. Only on
+  taking the claim (no owner, or owner dead by recorded identity) does it
+  perform a manifest-aware reap: harvest each leg's scratch from disk as D4
+  specifies, write each leg record with what could be established
   (`harvest_failed` with a reason where a scratch is unreadable — never an
   empty artifact list), write `round.json`, then make its single terminal
-  write. Records written by a reaper say so (`"recorded_by": "reaper"`).
+  write. Records written by a reaper say so (`"recorded_by":
+  "kill-reaper"`).
 - **An already-dead parent** (crash, OOM, machine restart) is found by the
   existing orphan-reaping path on the job surface; for manifest runs that
-  reaper performs the same disk-side harvest-then-record sequence before its
-  terminal write. Where the existing reaper (or any non-manifest-aware
+  reaper takes the finalization claim the same way (its owner is dead by
+  definition of the path, but the claim still serializes it against a
+  concurrent kill-reaper) and performs the same disk-side
+  harvest-then-record sequence before its terminal write, recording
+  `"recorded_by": "orphan-reaper"`. Where the existing reaper (or any non-manifest-aware
   writer) has already published a terminal status, the manifest-aware pass
   still runs, writes the records late, and flips `round_state` from
   `pending_harvest` to `complete` — late facts beat lost facts.
 - **The bound, stated plainly**: harvest-before-notice holds on cooperative
   paths. On kill and reap paths the guarantee is weaker and explicit —
   `round_state` names whether the facts are all in, and every leg record
-  distinguishes what was established from what could not be.
+  distinguishes what was established from what could not be. At every point
+  there is at most one finalization owner and records are first-write-wins,
+  so the weaker guarantee is about WHEN facts land, never about competing
+  versions of them.
 
 ### D4 — The leg artifact channel
 
@@ -312,23 +353,39 @@ is exactly why it is pinned by a test rather than a review.
 
 ### D6 — Observation contract: closed outcomes preserved, round facts on `job.output`
 
-The job surface's `outcome` is a closed vocabulary —
-`{succeeded, failed, cancelled, indeterminate}` (`lionagi/mcp/jobs.py`,
-`_OUTCOMES`) — and consumers legitimately bind to it. `partial` does NOT
-join that set; widening a closed vocabulary breaks every consumer that
-enumerated it, for the benefit of one producer.
+The job surface's `outcome` is a closed vocabulary, and consumers
+legitimately bind to it. The contract text (ADR-0106) lists
+`succeeded | failed | indeterminate`; the implementation has additionally
+emitted `cancelled` since before that text froze (`lionagi/mcp/jobs.py`,
+`_OUTCOMES`) — a drift ADR-0107's Notes records as a pending ADR-0106
+amendment item. This ADR carries that amendment: ADR-0106's vocabulary is
+corrected to the four values the wire already ships. That is a record
+catching up to shipped behavior — nothing on the wire changes, so
+`contract_version` does not move; the increment exists to warn consumers of
+wire changes, and there is none. `partial` does NOT join the set either
+way: widening a closed vocabulary with a genuinely new value breaks every
+consumer that enumerated it, for the benefit of one producer.
 
 - **Mapping**: round `completed` → job outcome `succeeded`; round `partial`
   or `failed` → job outcome `failed`; a round killed before any leg spawned
   → `cancelled`. The coarse job outcome answers "did the round come out
   clean"; anything finer is the round summary's job.
 - **The read**: for manifest runs, `job.output`'s response carries one
-  additive field, `round` — the full `round.json` content (round_version,
-  round_state, result, counts, and the per-leg records inlined). Additive
-  field on an existing read: consumers that do not know it ignore it;
-  nothing existing changes shape. This is a named, versioned amendment to
-  the ADR-0106-adjacent result surface, carried by this ADR rather than
-  smuggled in by implementation.
+  additive field, `round`, and its shape is exact. `round` is an ADR-0106
+  D7 availability wrapper — `{available, value, reason_code, detail}` —
+  because it is read-derived and D7 applies to every read-derived field.
+  `available: false`, with `reason_code` distinguishing missing from
+  unreadable from malformed, is a read failure of `round.json`; it is NOT
+  how in-flight harvest is expressed — `round_state: "pending_harvest"` is
+  data inside a readable summary. `value` has two parts, matching the two
+  kinds of read behind it: `summary` is the `round.json` content verbatim
+  (its `legs` stay labels, as D3 shows), and `leg_records` is an array read
+  from `{run_dir}/legs/*.json`, each entry its own wrapper
+  `{label, available, value, reason_code, detail}` — one unreadable leg
+  record must not poison the others or masquerade as an absent leg.
+  Consumers that do not know `round` ignore it; nothing existing changes
+  shape. This is a named, versioned amendment to the ADR-0106 result
+  surface, carried by this ADR rather than smuggled in by implementation.
 - **The notice is the signal, not the carrier.** The terminal-notice payload
   is unchanged. A notification consumer that needs leg facts performs the
   `job.output` read on receipt; the cooperative ordering guarantee (D3) makes
@@ -348,9 +405,10 @@ enumerated it, for the benefit of one producer.
 - What becomes harder: the runner takes on a harvest obligation on every
   terminal path, kill becomes two-stage for manifest runs (a contributor
   touching `job.kill` or the reaper must now know the manifest-aware
-  branch), and the harvester must be written as a hostile-input consumer
-  (descriptor-anchored, no-follow, link-count checks) rather than a tree
-  copy.
+  branch), finalization becomes a claimed single-owner step
+  (`finalize.lock`) every terminal writer must respect, and the harvester
+  must be written as a hostile-input consumer (descriptor-anchored,
+  no-follow, link-count checks) rather than a tree copy.
 - The `pending_harvest` window is a deliberate admission: on non-cooperative
   ends, facts can arrive after the terminal status. The alternative — holding
   the terminal status until harvest completes on a path where the harvesting
@@ -406,7 +464,10 @@ enumerated it, for the benefit of one producer.
   keys; loses because it forwards whatever the submitting process happened to
   carry (secrets included), makes a round unreproducible from its manifest,
   and turns the collision check into an unenumerable surface. Named keys with
-  deny-by-default is what the consuming workflow itself asked for.
+  deny-by-default is what the consuming workflow itself asked for. This
+  rejection is about a manifest-level mechanism; the baseline the runner
+  already provides to every job kind is a distinct, pre-existing channel,
+  named in D1 and out of this ADR's scope.
 
 ## Notes
 

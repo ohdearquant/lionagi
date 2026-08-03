@@ -277,7 +277,11 @@ another copy of our rules living in code we do not control.
   failure (D5) — never by matching `status` against a set, and never computed by a reader.
   In v1 those are the only two sources; the deferred reconciler in D6 would be a third.
 - `outcome` answers **"did the work come out right"**. It is a **closed** vocabulary,
-  `succeeded | failed | indeterminate`, and it is **`null` whenever `terminal` is false**.
+  `succeeded | failed | cancelled | indeterminate`, and it is **`null` whenever `terminal`
+  is false**. (`cancelled` added by the 2026-08-03 amendment carried by ADR-0110 D6: the
+  implementation emitted it before this text froze — the drift ADR-0107's Notes recorded
+  as a pending amendment item — so the correction records shipped behavior and moves no
+  version.)
   Stated against `terminal` rather than against "the run is still going", because v1 has a
   state that is neither: an orphan has stopped and is still not terminal (D6), and a rule
   phrased around being in flight would leave that case undefined. Being closed, `outcome`
