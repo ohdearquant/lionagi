@@ -4,9 +4,11 @@
 """What every CLI adapter must show a stream consumer when a session fails.
 
 Four CLI adapters each decide, independently, what reaches a consumer when a
-run ends in failure. Two of them agree, two diverge, and nothing checked the
-agreement -- so a fifth adapter, or a refactor of an existing one, reopens the
-class in silence and the next reader rebuilds the comparison by hand.
+run ends in failure. Two of them agree, two diverge. Each has its own tests, and
+several of those go into more detail on their own adapter than anything here
+does; what none of them does is compare the four, so a fifth adapter, or a
+refactor of an existing one, reopens the class in silence and the next reader
+rebuilds the comparison by hand.
 
 The contract, per adapter, in three separate assertions:
 
@@ -27,19 +29,21 @@ Where the tests patch, and why not one level up
 -----------------------------------------------
 Each test patches ``<module>._ndjson_from_cli``, the module-private wrapper
 around the shared NDJSON reader. All four adapters call it by bare module-global
-name through two levels of real code (``stream_X_cli`` -> ``stream_X_cli_events``
--> the seam), so the fixture is fed to the real parser, the real parser builds
+name through two levels of real code (the parser calls an events function, which
+calls the seam), so the fixture is fed to the real parser, the real parser builds
 the real session, and the real ``stream()`` decides what to yield. Nothing here
 hand-builds a session and hands it to an endpoint: that tests the endpoint
 against a state the parser never produces, which is mutation-sensitive and
 unreachable at the same time.
 
 The CLI-binary guard (``if not CLAUDE_CLI``, and its three siblings) lives in
-``stream_X_cli_events``, ABOVE the seam, so patching the seam alone still raises
-on a machine where that CLI is not installed. Each test therefore also points the
-binary constant at a stub path. That keeps the real events function in the loop,
-including the terminal ``done`` sentinel it appends, which is why the fixtures
-below do not carry one.
+that events function, ABOVE the seam, so patching the seam alone still raises on
+a machine where that CLI is not installed. Each test therefore also points the
+binary constant at a stub path. That keeps the real events function in the loop.
+Three of the four append a terminal ``{"type": "done"}`` themselves, which is why
+no fixture below carries one; gemini's appends nothing and its parser needs no
+sentinel, so the same fixture shape is right for all four for two different
+reasons.
 
 Fixture fidelity
 ----------------
@@ -79,11 +83,17 @@ difference is in which layer constructs the chunk:
   makes gemini the one adapter where "exactly one" is non-vacuous today.
 - ``codex`` constructs one in the parser AND one in the endpoint, with no guard
   between them, so a real ``turn.failed`` event is reported twice. This is why
-  "at least one" would have been the wrong contract: it passes on codex. The
-  parser's construction is also unconditional on its own benign-EOS
-  classification, so a resumed session that ends normally is reported as a
-  failure too.
+  "at least one" would have been the wrong contract: it passes on codex.
 - ``pi`` constructs none at all.
+
+Codex also yields an ``error``-type chunk when a resumed session ends normally,
+which looks like a violation of the third assertion and is not one. That chunk
+carries ``is_error=False`` and ``benign_eos=True``, both set deliberately, and
+the classification behind them is pinned by its own tests. The fixtures here use
+``turn.completed`` for the healthy codex case, so the two do not collide. A
+consumer keying on chunk type alone still cannot tell that case from a failure,
+but the discriminators exist and removing the chunk would break a decision that
+was made on purpose.
 
 What this suite does not cover
 ------------------------------
@@ -91,9 +101,10 @@ What this suite does not cover
   session as a dict with nothing branching on the flag.
 - ReAct's final-answer turn, which catches broadly and substitutes the last
   response.
-- Per-tool error carriers, which are a separate signal with their own working
-  path in all four adapters. Confusing the two is easy and they are not the same
-  contract.
+- Per-tool error carriers, which are a separate signal and not the same
+  contract. Three adapters emit ``tool_result`` chunks carrying their own
+  ``is_error``; gemini emits none, because agy's json format has no per-tool
+  events for it to read.
 - Passing says the adapters agree with each other and with the fixtures. Where a
   fixture is AUTHORED it says nothing about the real CLI.
 """
@@ -120,7 +131,6 @@ _UNMARK_RULE = (
 # Each mark names the specific divergence it is waiting on, so it cannot be
 # removed by anything less than that divergence going away.
 _CODEX_GAP = "the codex double report, and its error chunks not setting is_error"
-_CODEX_BENIGN_EOS_GAP = "codex yielding an error chunk for a benign end-of-stream"
 _PI_GAP = "pi emitting no error chunk and delivering the failure as a result chunk"
 
 
@@ -337,31 +347,38 @@ async def test_pi_does_not_deliver_a_failure_wearing_the_type_that_means_success
     )
 
 
-@pytest.mark.xfail(strict=True, reason=_UNMARK_RULE.format(gap=_CODEX_BENIGN_EOS_GAP))
-async def test_codex_benign_end_of_stream_is_not_reported_as_a_failure(monkeypatch):
-    """A resumed codex session that ends NORMALLY reports a CLI failure.
+async def test_codex_benign_end_of_stream_keeps_its_discriminators(monkeypatch):
+    """The one healthy-session error chunk this contract tolerates, and why.
 
     Some Codex CLI versions emit ``{"type": "error", "error": {}}`` when a
-    resumed session ends normally. The parser classifies that correctly and at
-    some length: three conditions, the raw payload captured before
-    null-normalisation specifically so an explicit ``null`` cannot be mistaken
-    for the bare ``{}`` sentinel. Having decided it is benign it retracts
-    ``session.is_error`` to False and tags the metadata ``benign_eos`` -- and
-    then falls through and yields the error-type chunk anyway, with content
-    reading "CLI failure (empty error payload...)".
+    resumed session ends normally. The parser classifies that at some length:
+    three conditions, the raw payload captured before null-normalisation
+    specifically so an explicit ``null`` cannot be mistaken for the bare ``{}``
+    sentinel. Having decided it is benign it retracts ``session.is_error`` and
+    tags the metadata, then yields an error-type chunk anyway.
 
-    So the classification reaches the session flag and the metadata but never
-    reaches the decision to yield. The non-streaming path is fine, because it
-    reads the retracted flag; a streaming consumer keying on chunk type sees a
-    failure on a session that succeeded. This is the healthy direction of the
-    contract, and it is the reason that direction is asserted at all.
+    That reads like a violation of the third assertion, and the first version of
+    this file asserted the chunk away. It should not be asserted away: the tag
+    is the contract, pinned by the parser's own tests, and a consumer reading
+    either discriminator gets the right answer. What this test pins is that both
+    discriminators survive, because it is their presence, not the chunk's
+    absence, that keeps the case distinguishable from a real failure.
     """
     adapter = next(a for a in ADAPTERS if a.id == "codex")
     benign_eos = Fixture([{"type": "error", "error": {}}], AUTHORED)
     chunks = await _stream_chunks(adapter, benign_eos, monkeypatch)
 
-    assert [c for c in chunks if c.type == "error"] == [], (
-        "a resumed session that ended normally was reported to the stream as a CLI failure"
+    errors = [c for c in chunks if c.type == "error"]
+    assert len(errors) == 1, (
+        "the benign end-of-stream chunk moved; this test no longer describes the path"
+    )
+    assert errors[0].is_error is False, (
+        "a benign end-of-stream set the failure flag, so a consumer reading the flag "
+        "now sees a failure on a session that succeeded"
+    )
+    assert errors[0].metadata.get("benign_eos") is True, (
+        "the benign classification stopped reaching the chunk, leaving an error-type "
+        "chunk on a healthy session with nothing on it to say so"
     )
 
 
