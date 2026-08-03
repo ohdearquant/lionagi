@@ -269,7 +269,15 @@ OBSERVABLE, never silent.
   The kernel couples the lock's lifetime to its holder's: a dead owner's
   claim vanishes with its process, so there is no stale-lock repair path
   for two reapers to race on — takeover IS acquisition, the same primitive
-  every claimant uses. A failed non-blocking acquire means a live owner
+  every claimant uses. Acquisition carries an obligation: every decision
+  to claim is made on a PRE-acquisition observation, and the gap between
+  observing and acquiring is exactly where a live holder finishes,
+  publishes, and exits — releasing the very lock whose availability the
+  claimant then reads as confirmation of its premise. So a claim holder's
+  FIRST act, on every path, is to re-read the run's terminal status and
+  `round.json`'s `round_state` under the claim, and to proceed on what
+  that re-read shows — never on the observation that motivated the claim.
+  A failed non-blocking acquire means a live owner
   exists; the failed claimant re-checks later and touches no scratch
   directory or record meanwhile. The file's content (owner role `runner` /
   `kill-reaper` / `orphan-reaper`, pid, the run's job marker, claimed_at)
@@ -295,7 +303,7 @@ OBSERVABLE, never silent.
   the operator only needs to free the claim. The reaper that then acquires
   it owns the rest: its pre-harvest quiescence sweep (above) is what makes
   a leader-only kill safe, because surviving domain members
-  hold no claim and cannot outlive the reaper's first act.
+  hold no claim and cannot outlive the reaper's quiescence sweep.
   The reaper holders are server-side actors a job-group signal cannot
   reach; their work is bounded by construction — the same per-leg file and
   byte caps that bound every harvest — and one that nonetheless hangs
@@ -331,8 +339,16 @@ OBSERVABLE, never silent.
   terminal write belongs to the claim holder; grace expiry is when the
   reaper first CHECKS the claim, not an unconditional handoff. Only on
   acquiring the lock — which a dead owner cannot still hold, the kernel
-  released it with the process — does it proceed, and its FIRST act on the
-  claim is quiescence, not harvest: a hard kill of every recorded control
+  released it with the process — does it proceed, and per the claim
+  obligation above its first act is the re-read of terminal status and
+  `round_state`. A round found `complete` means a finalizer proved every
+  recorded group quiet before publishing; the reaper releases the claim
+  and the kill path is never entered — the grace-expiry observation is
+  stale, and firing the one destructive primitive in this sequence on it
+  would act on a premise the claim's own availability had already
+  falsified. Only when the re-read shows the round unfinalized does the
+  destructive work begin, and it begins with
+  quiescence, not harvest: a hard kill of every recorded control
   group — the runner's and each leg's, read from the run directory (the
   raw `os.killpg` primitive, identity-verified against each recorded pgid
   and the group marker every descendant inherits — environment survives a
