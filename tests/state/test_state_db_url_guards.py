@@ -233,6 +233,59 @@ def test_the_absent_reason_names_the_store_that_was_consulted(moved_sqlite_url, 
     assert "moved" in detail
 
 
+# ── the open mode a schedules read route asks for ─────────────────────────────
+# Read-only mode exists so a read does not pay schema reconciliation and a
+# BEGIN IMMEDIATE write lock per request. It is SQLite-only: asked for on any
+# other store it fails the open outright, which would turn every working read
+# route into a hard error the moment the store moves to a server. So the flag is
+# conditional, and what the condition answers is checked here rather than
+# inferred from the fact that a SQLite run passes.
+
+
+def test_a_read_route_takes_read_only_mode_on_an_on_disk_sqlite_store(moved_sqlite_url, tmp_path):
+    from lionagi.studio.services.schedules import _read_only_ok
+
+    (tmp_path / "moved" / "state.db").touch()
+    assert _read_only_ok() is True
+
+
+def test_a_read_route_does_not_ask_for_read_only_mode_on_a_server_store(
+    absent_default, monkeypatch
+):
+    from lionagi.studio.services.schedules import _read_only_ok
+
+    _set_url(monkeypatch, _SERVER_URL)
+    assert _read_only_ok() is False
+
+
+def test_a_read_route_does_not_ask_for_read_only_mode_on_an_in_memory_store(
+    absent_default, monkeypatch
+):
+    from lionagi.studio.services.schedules import _read_only_ok
+
+    _set_url(monkeypatch, "sqlite+aiosqlite:///:memory:")
+    assert _read_only_ok() is False
+
+
+async def test_a_server_url_read_fails_on_the_connection_not_on_the_open_mode(
+    absent_default, monkeypatch
+):
+    """The failure a server URL produces here must stay the one it produced
+    before the read routes changed open mode: the driver is absent or the host
+    refuses. If a read route asks for read-only mode on a server store the open
+    is rejected before any connection is attempted, and that rejection would
+    reach a real Postgres deployment as a total outage of the route rather than
+    as the connection error this asserts.
+    """
+    _set_url(monkeypatch, _SERVER_URL)
+    from lionagi.studio.services import schedules as svc
+
+    with pytest.raises(Exception) as excinfo:  # noqa: B017 — the message is the assertion
+        await svc.list_schedules()
+
+    assert "only supports sqlite" not in str(excinfo.value)
+
+
 def test_reported_sizes_describe_the_configured_store(moved_sqlite_url, tmp_path):
     from lionagi.cli.state import _db_sizes
 

@@ -194,12 +194,16 @@ async def test_list_schedules_issues_constant_queries_not_per_row(temp_db_path):
         and "sqlite_master" not in s
         and "pragma" not in s.lower()
     ]
-    # list_schedules() opens its own StateDB, and a writable open reads the
-    # recorded schema version once before applying anything -- so that read,
-    # one SELECT for the schedules themselves, one batched count, and one
-    # batched streak query. All four are per-open or per-call: the count moves
-    # only when the path gains a query, never when it gains a row.
-    assert len(select_statements) == 4, select_statements
+    # One SELECT for the schedules themselves, one batched count, one batched
+    # streak query. All three are per-call: the count moves only when the path
+    # gains a query, never when it gains a row.
+    #
+    # A writable open would add a fourth, reading the recorded schema version
+    # before applying anything. list_schedules() is a read route and opens
+    # read-only on an on-disk SQLite store, which skips the schema step
+    # entirely -- so on this fixture the schema read is absent by design, and
+    # its reappearance would mean a read route went back to a writable open.
+    assert len(select_statements) == 3, select_statements
 
     for sid in sids:
         row = next(r for r in rows if r["id"] == sid)

@@ -20,7 +20,7 @@ from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.service.providers import EFFORT_LEVELS as _VALID_EFFORT_LEVELS
-from lionagi.state.db import StateDB, state_db_known_absent
+from lionagi.state.db import StateDB, state_db_file, state_db_known_absent
 
 from ..registry import studio_route
 from . import run_view
@@ -405,70 +405,18 @@ def _validate_flow_yaml_spec(yaml_text: str) -> str | None:
     return None
 
 
-_ENSURE_SCHEDULES_SQL = """
-CREATE TABLE IF NOT EXISTS schedules (
-    id                  TEXT    PRIMARY KEY,
-    name                TEXT    NOT NULL UNIQUE,
-    description         TEXT,
-    enabled             INTEGER NOT NULL DEFAULT 1,
-    trigger_type        TEXT    NOT NULL,
-    cron_expr           TEXT,
-    interval_sec        INTEGER,
-    github_repo         TEXT,
-    github_filter       JSON,
-    github_cursor       TEXT,
-    poll_interval_sec   INTEGER,
-    action_kind         TEXT    NOT NULL,
-    action_model        TEXT,
-    action_prompt       TEXT,
-    action_agent        TEXT,
-    action_playbook     TEXT,
-    action_project      TEXT,
-    action_extra_args   JSON    DEFAULT '[]',
-    on_success          JSON,
-    on_fail             JSON,
-    last_fired_at       REAL,
-    next_fire_at        REAL,
-    missed_fire_policy  TEXT    NOT NULL DEFAULT 'skip',
-    overlap_policy      TEXT    NOT NULL DEFAULT 'skip',
-    max_runs            INTEGER,
-    budget_usd          REAL,
-    budget_tokens       INTEGER,
-    rate_limit          JSON,
-    project             TEXT,
-    created_at          REAL    NOT NULL,
-    updated_at          REAL    NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_schedules_enabled
-    ON schedules(enabled, next_fire_at) WHERE enabled = 1;
-CREATE INDEX IF NOT EXISTS idx_schedules_name
-    ON schedules(name);
+def _read_only_ok() -> bool:
+    """Whether a read route may take the read-only open.
 
-CREATE TABLE IF NOT EXISTS schedule_runs (
-    id                  TEXT    PRIMARY KEY,
-    schedule_id         TEXT    NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
-    invocation_id       TEXT,
-    trigger_context     JSON    NOT NULL,
-    action_kind         TEXT    NOT NULL,
-    action_args         JSON    NOT NULL,
-    status              TEXT    NOT NULL DEFAULT 'running',
-    exit_code           INTEGER,
-    chain_parent_id     TEXT,
-    chain_depth         INTEGER NOT NULL DEFAULT 0,
-    fired_at            REAL    NOT NULL,
-    ended_at            REAL,
-    error_detail        TEXT,
-    created_at          REAL    NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_sched_runs_schedule
-    ON schedule_runs(schedule_id, fired_at DESC);
-CREATE INDEX IF NOT EXISTS idx_sched_runs_status
-    ON schedule_runs(status) WHERE status = 'running';
-"""
-
-
-async def _ensure_table(db) -> None:
-    await db.executescript(_ENSURE_SCHEDULES_SQL)
+    Serving a read through the ordinary open costs a schema reconciliation and
+    a BEGIN IMMEDIATE write lock per request, neither of which a read needs.
+    Read-only mode removes both, but it is SQLite-only by contract — Postgres
+    has no side-effect-free connect mode to fake at this layer and wants a
+    read-only role instead. ``state_db_file()`` returns a path exactly when the
+    configured store is an on-disk SQLite file, which is the same set
+    ``make_readonly_engine()`` accepts, so other stores take the normal open.
+    """
+    return state_db_file() is not None
 
 
 async def list_schedules(
@@ -479,7 +427,7 @@ async def list_schedules(
 ) -> list[dict[str, Any]]:
     if state_db_known_absent():
         return []
-    async with StateDB() as db:
+    async with StateDB(readonly=_read_only_ok()) as db:
         rows = await db.list_schedules(enabled=enabled, trigger_type=trigger_type, project=project)
         ids = [row["id"] for row in rows]
         used_by_id = await db.count_schedule_runs_batch(ids, chain_depth=0)
@@ -496,7 +444,7 @@ async def list_schedules(
 async def get_schedule(schedule_id: str) -> dict[str, Any] | None:
     if state_db_known_absent():
         return None
-    async with StateDB() as db:
+    async with StateDB(readonly=_read_only_ok()) as db:
         row = await db.get_schedule(schedule_id)
         if not row:
             return None
@@ -514,7 +462,7 @@ async def get_schedule(schedule_id: str) -> dict[str, Any] | None:
 async def get_schedule_by_name(name: str) -> dict[str, Any] | None:
     if state_db_known_absent():
         return None
-    async with StateDB() as db:
+    async with StateDB(readonly=_read_only_ok()) as db:
         return await db.get_schedule_by_name(name)
 
 
@@ -746,7 +694,7 @@ async def list_schedule_runs(
 ) -> list[dict[str, Any]]:
     if state_db_known_absent():
         return []
-    async with StateDB() as db:
+    async with StateDB(readonly=_read_only_ok()) as db:
         return await db.list_schedule_runs(schedule_id, status=status, limit=limit, offset=offset)
 
 
@@ -760,7 +708,7 @@ async def list_schedule_run_views(
     """RunView list — each row additionally carries a reconciled ``outcome``."""
     if state_db_known_absent():
         return []
-    async with StateDB() as db:
+    async with StateDB(readonly=_read_only_ok()) as db:
         return await run_view.list_run_views(
             db, schedule_id, status=status, limit=limit, offset=offset
         )
@@ -769,7 +717,7 @@ async def list_schedule_run_views(
 async def get_schedule_run(run_id: str) -> dict[str, Any] | None:
     if state_db_known_absent():
         return None
-    async with StateDB() as db:
+    async with StateDB(readonly=_read_only_ok()) as db:
         run = await db.get_schedule_run(run_id)
         if not run:
             return None
@@ -793,7 +741,7 @@ async def get_schedule_status(schedule_id: str) -> dict[str, Any] | None:
     """'Did it work?' view: schedule header + latest RunView + shared exit code."""
     if state_db_known_absent():
         return None
-    async with StateDB() as db:
+    async with StateDB(readonly=_read_only_ok()) as db:
         return await run_view.get_schedule_status_view(db, schedule_id)
 
 
