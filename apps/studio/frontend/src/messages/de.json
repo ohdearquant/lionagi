@@ -461,7 +461,6 @@
       "wal": "WAL",
       "walSuffix": "WAL",
       "walPending": "WAL ausstehend",
-      "walPendingSuffix": "WAL ausstehend",
       "phantoms": "Phantom-Sessions",
       "phantomsNone": "Keine erkannt",
       "manageLink": "In Wartung verwalten →",

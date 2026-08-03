@@ -461,7 +461,6 @@
       "wal": "WAL",
       "walSuffix": "WAL",
       "walPending": "bekleyen WAL",
-      "walPendingSuffix": "bekleyen WAL",
       "phantoms": "phantom oturumlar",
       "phantomsNone": "algılanmadı",
       "manageLink": "bakımda yönet →",

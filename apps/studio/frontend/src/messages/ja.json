@@ -461,7 +461,6 @@
       "wal": "WAL",
       "walSuffix": "WAL",
       "walPending": "WAL保留",
-      "walPendingSuffix": "WAL保留",
       "phantoms": "ファントムセッション",
       "phantomsNone": "検出なし",
       "manageLink": "メンテナンスで管理 →",

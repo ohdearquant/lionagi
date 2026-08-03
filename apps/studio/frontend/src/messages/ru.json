@@ -461,7 +461,6 @@
       "wal": "WAL",
       "walSuffix": "WAL",
       "walPending": "Записи WAL в ожидании",
-      "walPendingSuffix": "WAL ожидает",
       "phantoms": "Фантомные сессии",
       "phantomsNone": "Не обнаружено",
       "manageLink": "Управлять в обслуживании →",

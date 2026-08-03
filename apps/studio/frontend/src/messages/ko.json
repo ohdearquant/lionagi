@@ -461,7 +461,6 @@
       "wal": "WAL",
       "walSuffix": "WAL",
       "walPending": "보류 중인 WAL",
-      "walPendingSuffix": "보류 중인 WAL",
       "phantoms": "팬텀 세션",
       "phantomsNone": "감지되지 않음",
       "manageLink": "유지 관리에서 관리 →",

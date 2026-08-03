@@ -461,7 +461,6 @@
       "wal": "WAL",
       "walSuffix": "WAL",
       "walPending": "WAL लंबित",
-      "walPendingSuffix": "WAL लंबित",
       "phantoms": "फ़ैंटम सेशन",
       "phantomsNone": "कोई नहीं मिला",
       "manageLink": "मेंटेनेंस में मैनेज करें →",

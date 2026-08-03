@@ -461,7 +461,6 @@
       "wal": "预写日志",
       "walSuffix": "WAL",
       "walPending": "待处理 WAL",
-      "walPendingSuffix": "WAL 待写回",
       "phantoms": "幽灵会话",
       "phantomsNone": "未检测到",
       "manageLink": "在维护中管理 →",

@@ -461,7 +461,6 @@
       "wal": "WAL",
       "walSuffix": "WAL",
       "walPending": "WAL pending",
-      "walPendingSuffix": "WAL pending",
       "phantoms": "Phantom sessions",
       "phantomsNone": "None detected",
       "manageLink": "Manage in Maintenance →",
