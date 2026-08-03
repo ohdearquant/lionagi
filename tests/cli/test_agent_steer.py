@@ -174,12 +174,16 @@ async def test_msg_refused_when_the_session_never_declared_a_drain(temp_db_path,
     about whether anything will read its controls — and admitting on silence
     is how the queue fills with rows nobody closes.
 
-    This pins a cost as well as a guarantee, and the cost is real: a CLI agent
-    leg that was already running when this landed matches this row exactly, and
-    it does have a drain, so it loses steering until it ends or resumes. Read
-    that as accepted rather than as overlooked. Nothing on a pre-existing row
-    separates that leg from an embedded runner with no drain at all, so the
-    only way to keep steering it is to admit the orphaned controls too."""
+    What this body asserts is narrow: an agent row with a run_id and no
+    declaration is refused and leaves no pending control. That is the whole
+    check. It does not start a CLI runner and does not establish that a real
+    pre-declaration leg would have drained, so do not read it as measuring the
+    cost of the refusal.
+
+    The cost is real and it is recorded next to the predicate rather than here,
+    because it is a property of the design and not of this row: a leg whose
+    session predates the declaration does have a drain, and it is refused
+    anyway. Accepted, not overlooked."""
     async with StateDB() as db:
         sid = uuid.uuid4().hex[:12]
         pid = uuid.uuid4().hex
@@ -1593,6 +1597,77 @@ async def test_a_resume_that_does_not_reopen_keeps_the_row_declaration_one_gap_o
         entity_id=session_id, verb="message", payload={"text": "steer"}
     )
     assert (exit_code == 0) is admits, _message
+
+
+@pytest.mark.asyncio
+async def test_a_row_that_never_declared_stays_undeclared_across_a_resume_that_does_not_reopen(
+    temp_db_path, monkeypatch
+):
+    """KNOWN GAP: the refusal is not bounded by the life of the leg that predates it.
+
+    A row written before the declaration existed carries no key at all. A resume
+    that adopts such a row while it still reads running writes nothing, on
+    purpose, so the key stays absent however many times it is adopted. The leg
+    running it now has a real turn-end drain and declares True, and is refused
+    anyway.
+
+    This is pinned because the boundary is easy to describe as time-limited and
+    it is not: nothing about the original leg ending clears the row, and only a
+    resume that REOPENS a terminal row ever replaces the declaration. It is the
+    third representation the adoption path names — absent is not a spelling of
+    False, and this is the case that separates them.
+    """
+    import json as _json
+
+    import lionagi.cli._runs as runs_mod
+    from lionagi import Branch
+    from lionagi.cli._runs import setup_agent_persist
+
+    monkeypatch.setattr(runs_mod, "active_run_id", lambda: "20260802T000000-undeclared")
+
+    branch = Branch(name="predates-the-field")
+    first = await setup_agent_persist(
+        branch, agent_name="claude", share_db=False, drains_controls=True
+    )
+    assert first is not None
+    session_id = first["session_id"]
+    await first["db"].close()
+
+    # Turn it into a row that predates the field. Removing the key is the point:
+    # writing False instead would test the case the parametrized test already
+    # covers, and absent is the state this one exists to distinguish.
+    async with StateDB() as db:
+        meta = dict((await db.get_session(session_id)).get("node_metadata") or {})
+        meta.pop("drains_controls", None)
+        await db.update_session(session_id, node_metadata=_json.dumps(meta))
+        checked = await db.get_session(session_id)
+        assert checked["status"] == "running"
+        assert "drains_controls" not in (checked["node_metadata"] or {}), (
+            "the row still declares, so the rest of this test would prove nothing"
+        )
+
+    second = await setup_agent_persist(
+        Branch.from_dict(branch.to_dict()),
+        agent_name="claude",
+        share_db=False,
+        drains_controls=True,
+    )
+    assert second is not None
+    assert second["session_id"] == session_id, "this did not adopt the row, so it proves nothing"
+    await second["db"].close()
+
+    async with StateDB() as db:
+        after = (await db.get_session(session_id))["node_metadata"] or {}
+    assert "drains_controls" not in after, (
+        "the non-reopening path wrote a declaration; it is documented as writing nothing"
+    )
+
+    _message, exit_code = await _enqueue_control_inner(
+        entity_id=session_id, verb="message", payload={"text": "steer"}
+    )
+    assert exit_code != 0, (
+        "a row carrying no declaration must refuse however capable the leg adopting it is"
+    )
 
 
 @pytest.mark.asyncio

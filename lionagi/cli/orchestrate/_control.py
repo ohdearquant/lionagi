@@ -128,16 +128,25 @@ async def _enqueue_control_inner(
         # let the runner declare it when it starts the session.
         #
         # This refuses one row that used to be admitted and deserved to be: a
-        # CLI agent leg that was already running when this check landed. It has
-        # a run_id and a real turn-end drain, but its session row predates the
-        # declaration, so it is unsteerable until it ends or resumes. That is
-        # deliberate and it is not a migration that was skipped. A pre-existing
-        # row carries no field separating a CLI leg from an embedded runner —
-        # both are agent-kind with a run_id and no declaration — so reading the
-        # absent key as "capable" to spare the CLI leg would re-admit exactly
-        # the orphaned controls this exists to refuse. The window is bounded by
-        # the life of legs that started before the upgrade; every leg started
-        # after it declares.
+        # CLI agent leg whose session row predates the declaration. It has a
+        # run_id and a real turn-end drain, and its control would have landed.
+        # That is deliberate and it is not a migration that was skipped.
+        #
+        # It is not bounded in time, and it would be convenient to say it was.
+        # Only a resume that REOPENS a terminal row writes a declaration; a
+        # resume adopting a row that still reads running writes nothing, by
+        # design, so an absent key stays absent however many times that row is
+        # adopted. The leg running it then declares, drains, and is refused
+        # anyway. Ending is what clears it, not resuming.
+        #
+        # Absence is still the right reading. Fields that happen to differ
+        # between producers are not capability: the embedded runner's run_id
+        # carries a distinguishing prefix today, but a naming convention is not
+        # a contract, and keying admission on the shape of an id is the same
+        # move as keying it on the presence of one — the proxy this check
+        # exists to retire. There is no field on a pre-existing row that says
+        # what the runner will DO, and inventing one from a prefix would
+        # re-admit the orphaned controls as soon as a producer renamed a run.
         if kind == "agent" and not _runner_drains_controls(session):
             return (
                 f"session {session_id[:8]} is run by something that does not "
