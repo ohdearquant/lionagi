@@ -959,21 +959,37 @@ class _CapturingEngine:
         return self._stream(turn)
 
 
-async def _run_one_turn(coordinator, cid: str, *, expect: int):
+async def _run_one_turn(coordinator, cid: str):
+    """Submit one turn and return only once that turn has finished.
+
+    Both halves matter. The cursor is read here rather than by the caller
+    because a turn's own completion writes bump ``nextSequence``, so a cursor
+    read while a turn is still running is already stale by the time the next
+    submit checks it. And waiting for ``activeRequestId`` to clear is what makes
+    the read at the top of the next call safe: being handed to the engine is the
+    middle of a turn, not the end of one.
+    """
     import asyncio
 
+    conversation = await coordinator.store.get_conversation(cid)
     before = len(_CapturingEngine.captured)
     await coordinator.submit(
         cid,
         instruction="go",
         context={"space": "mission", "route": "/", "filters": {}},
-        expected_last_sequence=expect,
+        expected_last_sequence=int(conversation["nextSequence"]) - 1,
     )
     for _ in range(200):
         if len(_CapturingEngine.captured) > before:
             break
         await asyncio.sleep(0.02)
     assert len(_CapturingEngine.captured) > before, "the engine was never handed a turn"
+    for _ in range(400):
+        conversation = await coordinator.store.get_conversation(cid)
+        if conversation["activeRequestId"] is None:
+            break
+        await asyncio.sleep(0.02)
+    assert conversation["activeRequestId"] is None, "the turn never finished"
     return _CapturingEngine.captured[-1]
 
 
@@ -997,7 +1013,7 @@ async def test_an_unpinned_conversation_stops_resuming_when_the_default_model_mo
     await coordinator.startup()
     cid = (await coordinator.create_conversation(title="Unpinned"))["conversation"]["id"]
 
-    await _run_one_turn(coordinator, cid, expect=0)
+    await _run_one_turn(coordinator, cid)
     conversation = await coordinator.store.get_conversation(cid)
     # The conversation is genuinely unpinned, which is the whole premise: if a
     # pin were set the existing check would already cover this.
@@ -1006,9 +1022,7 @@ async def test_an_unpinned_conversation_stops_resuming_when_the_default_model_mo
     await coordinator.store.set_provider_session_id(cid, "session-from-sonnet")
 
     monkeypatch.setenv("LIONAGI_STUDIO_OPERATOR_MODEL", "opus")
-    turn = await _run_one_turn(
-        coordinator, cid, expect=(await coordinator.store.get_conversation(cid))["nextSequence"] - 1
-    )
+    turn = await _run_one_turn(coordinator, cid)
 
     assert turn.provider_session_id is None
     assert (await coordinator.store.get_conversation(cid))["resolvedModel"] == "opus"
@@ -1030,12 +1044,10 @@ async def test_an_unpinned_conversation_keeps_resuming_while_the_default_holds_s
     await coordinator.startup()
     cid = (await coordinator.create_conversation(title="Steady"))["conversation"]["id"]
 
-    await _run_one_turn(coordinator, cid, expect=0)
+    await _run_one_turn(coordinator, cid)
     await coordinator.store.set_provider_session_id(cid, "session-from-sonnet")
 
-    turn = await _run_one_turn(
-        coordinator, cid, expect=(await coordinator.store.get_conversation(cid))["nextSequence"] - 1
-    )
+    turn = await _run_one_turn(coordinator, cid)
 
     assert turn.provider_session_id == "session-from-sonnet"
     await coordinator.shutdown()
