@@ -858,6 +858,39 @@ class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
         async with contextlib.aclosing(stream_claude_code_cli(request_obj, **handlers)) as gen:
             async for item in gen:
                 if isinstance(item, CLISession):
+                    # The session carries the run's terminal verdict and is not
+                    # itself yielded here, so a failure recorded only there
+                    # reaches nobody on this stream: the result chunk emitted
+                    # beside it carries usage, cost, turns and duration, never
+                    # the error flag. A run that ended in error then looks
+                    # exactly like one that succeeded, and that is the direction
+                    # consumers believe without checking.
+                    #
+                    # The scope is this stream and no wider. `_call()` below
+                    # drives the same generator itself and returns the session
+                    # as a dict, so the flag is present there and nothing
+                    # branches on it; the one-shot helpers built on `_call()`
+                    # still return an ordinary answer for a failed session.
+                    # Closing that is a separate change with a separate
+                    # compatibility question, and this comment is not a claim
+                    # that it is closed.
+                    #
+                    # Per-tool failures already have their own carriers, so this
+                    # is only about the session-terminal verdict.
+                    #
+                    # The already-reported guard is vacuous today: nothing else
+                    # in this module constructs an error chunk, so the condition
+                    # is always true. It is kept because the emission it guards
+                    # belongs to this file, and the natural place to add a real
+                    # error chunk is a few lines up — at which point the guard
+                    # is what stops one failure being reported twice. Do not
+                    # read it as currently load-bearing.
+                    if item.is_error and not any(c.type == "error" for c in item.chunks):
+                        yield StreamChunk(
+                            type="error",
+                            content=item.result or "Claude Code session failed",
+                            is_error=True,
+                        )
                     continue
                 yield item
 
