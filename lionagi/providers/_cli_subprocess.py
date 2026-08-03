@@ -8,6 +8,7 @@ import codecs
 import contextlib
 import json
 import logging
+import os
 import shutil
 from collections.abc import AsyncIterator, Callable
 from functools import partial
@@ -25,6 +26,20 @@ log = logging.getLogger(__name__)
 _INHERIT_STDIN = object()
 
 
+def spawned_pgid(pid: int) -> int:
+    """The process group of a just-spawned child.
+
+    Falls back to the child's own pid: every spawn here uses
+    ``start_new_session``, so the child leads its own group by construction and
+    that pid IS the group id whenever the read fails because the child has
+    already exited.
+    """
+    try:
+        return os.getpgid(pid)
+    except OSError:
+        return pid
+
+
 async def ndjson_from_cli(
     cmd: list[str],
     *,
@@ -33,6 +48,7 @@ async def ndjson_from_cli(
     stdin: Any = asyncio.subprocess.DEVNULL,
     stdin_data: str | bytes | None = None,
     tail_repair: Callable[[str], dict | None] | None = None,
+    on_spawn: Callable[[int, int], None] | None = None,
 ) -> AsyncIterator[dict]:
     """Yield dicts from an NDJSON-emitting CLI subprocess; tail_repair handles malformed final chunks.
 
@@ -44,6 +60,14 @@ async def ndjson_from_cli(
     soon as the data exceeds the pipe buffer and the child is blocked writing
     output nobody is draining), and the pipe is closed afterwards so the child
     sees EOF rather than waiting forever for more input.
+
+    ``on_spawn`` is called once with ``(pid, pgid)`` immediately after the
+    child exists, for a caller that must record the process identity of a
+    process it did not itself spawn. It is deliberately not wrapped in an
+    exception guard: a caller whose recording fails has no record of a child
+    that is now running, and swallowing that leaves a live process outside
+    whatever domain the record defines. The exception propagates through the
+    teardown below, which ends the group it was called for.
     """
     kwargs: dict[str, Any] = dict(
         cwd=str(cwd) if cwd else None,
@@ -57,8 +81,15 @@ async def ndjson_from_cli(
     elif stdin is not _INHERIT_STDIN:
         kwargs["stdin"] = stdin
     proc = await asyncio.create_subprocess_exec(*cmd, **kwargs)
-    # Capture PGID immediately — waiting until teardown risks ProcessLookupError
-    # if the child already exited. See docs/internals/runtime.md.
+    if on_spawn is not None:
+        # Read the group here, not at teardown: once the child is reaped its
+        # pid is recyclable, so a group read then can resolve to a stranger's.
+        # See docs/internals/runtime.md.
+        try:
+            on_spawn(proc.pid, spawned_pgid(proc.pid))
+        except BaseException:
+            await aterminate_process_group(proc, grace=5.0)
+            raise
 
     decoder = codecs.getincrementaldecoder("utf-8")()
     json_decoder = json.JSONDecoder()

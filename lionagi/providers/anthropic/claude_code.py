@@ -202,6 +202,26 @@ class ClaudeCodeRequest(BaseModel):
     # worktree is special-cased (bool vs str) — no _cli metadata
     worktree: str | bool | None = Field(default=None, exclude=True)
 
+    # ── process (runtime-only, never rendered as CLI args) ─────────
+    env: dict[str, str] | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Complete environment for the CLI process. None inherits this "
+            "process's environment; a mapping REPLACES it wholesale, so a "
+            "caller setting one variable supplies the rest itself."
+        ),
+    )
+    on_spawn: Callable[[int, int], None] | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Called once with (pid, pgid) as soon as the CLI process exists, "
+            "for a caller that must record the identity of a process it did "
+            "not spawn itself."
+        ),
+    )
+
     # ── features (order 80–89) ────────────────────────────────────
     chrome: bool | None = Field(
         default=None,
@@ -484,7 +504,13 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
     cmd = [CLAUDE_CLI, *request.as_cmd_args()]
     # tail_repair recovers a malformed-but-repairable final JSON object instead of dropping it.
     async with contextlib.aclosing(
-        ndjson_from_cli(cmd, cwd=workspace, tail_repair=_claude_tail_repair)
+        ndjson_from_cli(
+            cmd,
+            cwd=workspace,
+            env=request.env,
+            tail_repair=_claude_tail_repair,
+            on_spawn=request.on_spawn,
+        )
     ) as stream:
         async for obj in stream:
             yield obj

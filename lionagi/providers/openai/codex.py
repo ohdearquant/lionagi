@@ -175,6 +175,26 @@ class CodexCodeRequest(BaseModel):
         json_schema_extra=_cli("--add-dir", 30, "repeat"),
     )
 
+    # ── process (runtime-only, never rendered as CLI args) ─────────
+    env: dict[str, str] | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Complete environment for the CLI process. None inherits this "
+            "process's environment; a mapping REPLACES it wholesale, so a "
+            "caller setting one variable supplies the rest itself."
+        ),
+    )
+    on_spawn: Callable[[int, int], None] | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Called once with (pid, pgid) as soon as the CLI process exists, "
+            "for a caller that must record the identity of a process it did "
+            "not spawn itself."
+        ),
+    )
+
     # ── system prompt (order 40) ──────────────────────────────────
     system_prompt: str | None = None
 
@@ -426,7 +446,14 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
     cmd = [CODEX_CLI, *request.as_cmd_args()]
     # Do NOT pass cwd here — Codex CLI already gets the workspace via -C <repo>;
     # setting both double-resolves to 'repo/repo'. See docs/internals/runtime.md.
-    async with contextlib.aclosing(ndjson_from_cli(cmd, stdin_data=request.prompt)) as stream:
+    async with contextlib.aclosing(
+        ndjson_from_cli(
+            cmd,
+            env=request.env,
+            stdin_data=request.prompt,
+            on_spawn=request.on_spawn,
+        )
+    ) as stream:
         async for obj in stream:
             yield obj
 
