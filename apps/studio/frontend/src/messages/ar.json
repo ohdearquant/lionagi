@@ -460,8 +460,6 @@
       "stateDbSuffix": "قاعدة بيانات الحالة",
       "wal": "WAL",
       "walSuffix": "WAL",
-      "walPending": "WAL معلّق",
-      "walPendingSuffix": "WAL معلّق",
       "phantoms": "الجلسات الوهمية",
       "phantomsNone": "لم يُكتشف شيء",
       "manageLink": "إدارة في الصيانة ←",

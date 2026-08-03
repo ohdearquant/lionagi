@@ -80,7 +80,7 @@ def db_health() -> dict[str, int]:
     size_bytes = db_path.stat().st_size if db_path.exists() else 0
     wal_path = db_path.parent / (db_path.name + "-wal")
     wal_bytes = wal_path.stat().st_size if wal_path.exists() else 0
-    return {"size_bytes": size_bytes, "wal_bytes": wal_bytes, "wal_pending": wal_bytes}
+    return {"size_bytes": size_bytes, "wal_bytes": wal_bytes}
 
 
 # How long the store probe waits before calling the store slow. Well under any

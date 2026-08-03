@@ -460,8 +460,6 @@
       "stateDbSuffix": "state DB",
       "wal": "WAL",
       "walSuffix": "WAL",
-      "walPending": "WAL زیر التوا",
-      "walPendingSuffix": "WAL زیر التوا",
       "phantoms": "فینٹم سیشنز",
       "phantomsNone": "کوئی نہیں ملا",
       "manageLink": "مینٹیننس میں مینیج کریں →",

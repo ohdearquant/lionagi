@@ -1683,7 +1683,6 @@ export interface AdminDoctorResponse {
   db_health: {
     size_bytes: number;
     wal_bytes: number;
-    wal_pending: number;
   };
   diagnostic_run_at: string;
 }

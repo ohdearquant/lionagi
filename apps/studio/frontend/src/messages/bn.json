@@ -460,8 +460,6 @@
       "stateDbSuffix": "স্টেট DB",
       "wal": "WAL",
       "walSuffix": "WAL",
-      "walPending": "WAL পেন্ডিং",
-      "walPendingSuffix": "WAL পেন্ডিং",
       "phantoms": "ফ্যান্টম সেশন",
       "phantomsNone": "কিছু শনাক্ত হয়নি",
       "manageLink": "মেইনটেন্যান্সে ম্যানেজ করুন →",
