@@ -20,7 +20,7 @@ from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.service.providers import EFFORT_LEVELS as _VALID_EFFORT_LEVELS
-from lionagi.state.db import StateDB, state_db_file, state_db_known_absent
+from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
 
 from ..registry import studio_route
 from . import run_view
@@ -405,29 +405,6 @@ def _validate_flow_yaml_spec(yaml_text: str) -> str | None:
     return None
 
 
-def _read_only_ok() -> bool:
-    """Whether a read route may take the read-only open.
-
-    Serving a read through the ordinary open costs a schema reconciliation and
-    a BEGIN IMMEDIATE write lock per request, neither of which a read needs.
-    Read-only mode removes both, but it is SQLite-only by contract — Postgres
-    has no side-effect-free connect mode to fake at this layer and wants a
-    read-only role instead. ``state_db_file()`` returns a path exactly when the
-    configured store is an on-disk SQLite file, so every other store takes the
-    normal open.
-
-    That is the set ``make_readonly_engine()`` accepts for any URL an async
-    engine can be built from at all, which is the only case that matters here.
-    It is not literally the same set: ``make_readonly_engine()`` also requires
-    the ``sqlite+aiosqlite:///`` spelling, and ``normalize_state_db_url()``
-    passes an unrecognised driver such as ``sqlite+pysqlite:///`` through
-    untouched. Such a URL fails the ordinary open too, since a sync driver
-    cannot back an async engine, so it is broken either way and only the
-    exception differs.
-    """
-    return state_db_file() is not None
-
-
 async def list_schedules(
     *,
     enabled: bool | None = None,
@@ -436,7 +413,7 @@ async def list_schedules(
 ) -> list[dict[str, Any]]:
     if state_db_known_absent():
         return []
-    async with StateDB(readonly=_read_only_ok()) as db:
+    async with StateDB(readonly=read_only_open_supported()) as db:
         rows = await db.list_schedules(enabled=enabled, trigger_type=trigger_type, project=project)
         ids = [row["id"] for row in rows]
         used_by_id = await db.count_schedule_runs_batch(ids, chain_depth=0)
@@ -453,7 +430,7 @@ async def list_schedules(
 async def get_schedule(schedule_id: str) -> dict[str, Any] | None:
     if state_db_known_absent():
         return None
-    async with StateDB(readonly=_read_only_ok()) as db:
+    async with StateDB(readonly=read_only_open_supported()) as db:
         row = await db.get_schedule(schedule_id)
         if not row:
             return None
@@ -471,7 +448,7 @@ async def get_schedule(schedule_id: str) -> dict[str, Any] | None:
 async def get_schedule_by_name(name: str) -> dict[str, Any] | None:
     if state_db_known_absent():
         return None
-    async with StateDB(readonly=_read_only_ok()) as db:
+    async with StateDB(readonly=read_only_open_supported()) as db:
         return await db.get_schedule_by_name(name)
 
 
@@ -703,7 +680,7 @@ async def list_schedule_runs(
 ) -> list[dict[str, Any]]:
     if state_db_known_absent():
         return []
-    async with StateDB(readonly=_read_only_ok()) as db:
+    async with StateDB(readonly=read_only_open_supported()) as db:
         return await db.list_schedule_runs(schedule_id, status=status, limit=limit, offset=offset)
 
 
@@ -717,7 +694,7 @@ async def list_schedule_run_views(
     """RunView list — each row additionally carries a reconciled ``outcome``."""
     if state_db_known_absent():
         return []
-    async with StateDB(readonly=_read_only_ok()) as db:
+    async with StateDB(readonly=read_only_open_supported()) as db:
         return await run_view.list_run_views(
             db, schedule_id, status=status, limit=limit, offset=offset
         )
@@ -726,7 +703,7 @@ async def list_schedule_run_views(
 async def get_schedule_run(run_id: str) -> dict[str, Any] | None:
     if state_db_known_absent():
         return None
-    async with StateDB(readonly=_read_only_ok()) as db:
+    async with StateDB(readonly=read_only_open_supported()) as db:
         run = await db.get_schedule_run(run_id)
         if not run:
             return None
@@ -750,7 +727,7 @@ async def get_schedule_status(schedule_id: str) -> dict[str, Any] | None:
     """'Did it work?' view: schedule header + latest RunView + shared exit code."""
     if state_db_known_absent():
         return None
-    async with StateDB(readonly=_read_only_ok()) as db:
+    async with StateDB(readonly=read_only_open_supported()) as db:
         return await run_view.get_schedule_status_view(db, schedule_id)
 
 

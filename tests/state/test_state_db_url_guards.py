@@ -234,37 +234,10 @@ def test_the_absent_reason_names_the_store_that_was_consulted(moved_sqlite_url, 
 
 
 # ── the open mode a schedules read route asks for ─────────────────────────────
-# Read-only mode exists so a read does not pay schema reconciliation and a
-# BEGIN IMMEDIATE write lock per request. It is SQLite-only: asked for on any
-# other store it fails the open outright, which would turn every working read
-# route into a hard error the moment the store moves to a server. So the flag is
-# conditional, and what the condition answers is checked here rather than
-# inferred from the fact that a SQLite run passes.
-
-
-def test_a_read_route_takes_read_only_mode_on_an_on_disk_sqlite_store(moved_sqlite_url, tmp_path):
-    from lionagi.studio.services.schedules import _read_only_ok
-
-    (tmp_path / "moved" / "state.db").touch()
-    assert _read_only_ok() is True
-
-
-def test_a_read_route_does_not_ask_for_read_only_mode_on_a_server_store(
-    absent_default, monkeypatch
-):
-    from lionagi.studio.services.schedules import _read_only_ok
-
-    _set_url(monkeypatch, _SERVER_URL)
-    assert _read_only_ok() is False
-
-
-def test_a_read_route_does_not_ask_for_read_only_mode_on_an_in_memory_store(
-    absent_default, monkeypatch
-):
-    from lionagi.studio.services.schedules import _read_only_ok
-
-    _set_url(monkeypatch, "sqlite+aiosqlite:///:memory:")
-    assert _read_only_ok() is False
+# Which stores the predicate answers True for is pinned above, beside the
+# predicate. What is left to check here is that a schedules read route actually
+# routes through it, since a route that hardcoded True would pass every one of
+# those tests and still be a total outage on a server-backed store.
 
 
 async def test_a_server_url_read_fails_on_the_connection_not_on_the_open_mode(
