@@ -2307,11 +2307,13 @@ async def wait(
     docs/internals/mcp.md#wait-result-buckets for the full ``pending`` /
     ``stopped_without_end`` / ``unresolved_spawn`` / ``all_terminal`` /
     ``timed_out`` contract, including why ``unresolved_spawn`` exists and the
-    back-off floor for ``stopped_without_end`` ids.
+    back-off floor paid while any id sits in either special bucket.
 
-    Observing does not touch the run — this function only reads; a wait that
-    expires, or whose caller cancels or disconnects, leaves the durable record
-    untouched (cancelling an observation is not cancelling the work).
+    Observing leaves the run as it was, with one fenced exception: resolving
+    a status may durably reap a conclusively-gone started orphan (see
+    ``_reap_if_conclusively_gone``). A wait that expires, or whose caller
+    cancels or disconnects, leaves the durable record untouched (cancelling
+    an observation is not cancelling the work).
     """
     import anyio  # deferred: the CLI's terminal hook also imports this module and stays import-light
 

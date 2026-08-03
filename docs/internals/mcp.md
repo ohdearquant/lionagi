@@ -359,14 +359,23 @@ group."
 `all_terminal`, `timed_out`, `pending`, `stopped_without_end`, and
 `unresolved_spawn` — never a bare boolean, since mixed outcomes are the norm.
 
-- **`stopped_without_end`**: a run whose process is gone but whose loss
-  couldn't be conclusively established (e.g. an unaskable pid) — stopped
-  looking alive but may still be running for all this can tell. Not
+- **`stopped_without_end`**: a run that stopped — or can't be shown to be
+  progressing — and could not be resolved. Three ways in: a loss that
+  couldn't be conclusively established (e.g. an unaskable pid — stopped
+  looking alive but may still be running for all this can tell); a
+  conclusive loss whose fenced reap could not be published (the transition
+  is retried by the next observation); and a record predating the
+  spawn-phase field that is not shown alive — phase absence alone is never
+  stopped evidence, and a live pre-field record is classified running and
+  stays in `pending`. Only
+  an explicitly-`preparing` record is kept out (fresh → `pending`, aged →
+  `unresolved_spawn`). Not
   `pending` (waiting longer can't resolve it), not a per-id `error`
   (observing it succeeded). Because such an id resolves nothing by waiting, a
   caller looping until `all_terminal` would otherwise re-poll as fast as
   possible — so a call that would return having waited zero time, while any id
-  is here, first sleeps one poll interval (bounded by the remaining window)
+  is here or in `unresolved_spawn`, first sleeps one poll interval (bounded by
+  the remaining window)
   before observing again. This floor is spent once at the boundary rather than
   relying on every client to back off on its own; `max_wait=0` is exempt by
   construction (no window to spend).

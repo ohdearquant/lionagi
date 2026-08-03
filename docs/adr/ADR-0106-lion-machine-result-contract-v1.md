@@ -95,11 +95,11 @@ wake it. A consumer restart across a successful delivery loses it the same way.
 | The envelope every machine call returns | D3: one envelope shape — `ok`, `contract_version`, `data`, `error` |
 | Run status | D4: `status` is opaque and verbatim; the producer also publishes `terminal` and `outcome`, on every status-bearing response |
 | Submit | D5: submit returns a handle; the spawn phase is recorded rather than inferred from a missing pid |
-| Reads | D6: one lifecycle authority for every path; liveness is advisory; in v1 an orphaned run stays non-terminal |
+| Reads | D6: one lifecycle authority for every path; liveness is advisory; a conclusively-gone `started` orphan is reaped terminal where the fenced reap publishes (ADR-0107); a `preparing` or inconclusive one, or a reap whose write was refused, stays non-terminal |
 | Distinguishing absence from failure | D7: every read-derived field carries its own availability and reason |
 | Process-level faults | D8: a valid envelope is authoritative; exit status is the transport-level answer, with a defined precedence |
 | Terminal notification | D9: a notification is a prompt to read state, never proof and never the only path |
-| Bounded observation | D10: `wait` is bounded, returns partial results, and takes ADR-0066 D6 with two marked extensions and one clause D6 leaves open decided here |
+| Bounded observation | D10: `wait` is bounded, returns partial results, and shares ADR-0066 D6's wait contract — first stated here as extensions, since adopted into D6 by its 2026-07-27 and 2026-08-03 amendments; this ADR carries the fuller statement |
 
 Out of scope:
 
@@ -109,10 +109,10 @@ Out of scope:
   Owned by the consumer; see D1 on why we nonetheless state a requirement about the
   binary path.
 - **The MCP tool surface itself.** ADR-0066 decides that. This ADR constrains what
-  those tools return, which is a strictly smaller question, and D10 takes ADR-0066 D6
-  as written rather than re-deciding it, marking its two additions as additions and
-  saying plainly where D6 underdetermines a rule that an implementation must nonetheless
-  settle.
+  those tools return, which is a strictly smaller question. D10 shares ADR-0066 D6's
+  wait contract — the rules D10 first stated as additions were adopted into D6 by its
+  2026-07-27 and 2026-08-03 amendments, so neither document re-decides the other; D10
+  carries the fuller rationale.
 - **Hosted / multi-tenant concerns.** No tenancy appears in this contract; a hosted
   join is built above it, not inside it.
 - **Playbook and flow semantics.** What a flow *does* is unchanged here.
@@ -276,8 +276,22 @@ another copy of our rules living in code we do not control.
   state, derived by lionagi from a recorded end — `finished_at`, a producer-written spawn
   failure (D5) — never by matching `status` against a set, and never computed by a reader.
   In v1 those are the only two sources; the deferred reconciler in D6 would be a third.
+  (2026-08-03: ADR-0107 has since implemented that reconciler — its orphan reaper is now
+  the third source.)
 - `outcome` answers **"did the work come out right"**. It is a **closed** vocabulary,
-  `succeeded | failed | indeterminate`, and it is **`null` whenever `terminal` is false**.
+  `succeeded | failed | cancelled | indeterminate`, and it is **`null` whenever `terminal`
+  is false**. (`cancelled` added by the 2026-08-03 erratum carried by ADR-0110 D6.
+  Timing, recorded because D2 makes it matter: this text froze on 2026-07-25 with three
+  values; the wire began emitting `cancelled` hours later that same day and has shipped
+  it since. Envelope stamping itself began at 20:11 that day, so stamped v1 envelopes
+  spoke three values for under three hours, four ever since. That unversioned expansion
+  violated D2 when it happened; this correction documents the wire as it ships and moves
+  no version, because the breaking event was the 2026-07-25 code change, not the text
+  catching up to it. ADR-0107's Notes recorded the drift. Consumer notice and migration
+  policy, normative: a consumer exhaustively matching three values has been exposed to an
+  unlisted `cancelled` since 2026-07-25 22:54; add the `cancelled` branch, and until it is
+  added treat an out-of-vocabulary `outcome` the way `indeterminate` is treated — result
+  not establishable, never success and never failure.)
   Stated against `terminal` rather than against "the run is still going", because v1 has a
   state that is neither: an orphan has stopped and is still not terminal (D6), and a rule
   phrased around being in flight would leave that case undefined. Being closed, `outcome`
@@ -288,10 +302,13 @@ another copy of our rules living in code we do not control.
   `completed_empty` is `terminal: true, outcome: "failed"`. A consumer given only
   `terminal` must either invent the forbidden vocabulary or call every finished run a
   success, which is P2 recreated one level up (P2b).
-- **`indeterminate` is reserved in v1 and emitted by no path in it.** It is the value for a
-  run that can be established to have ended but whose result cannot be established, and the
-  only component that would produce it is the reconciler deferred in D6. It is defined now
-  anyway, and deliberately: `outcome` is a closed vocabulary that consumers branch on, so
+- **`indeterminate` was reserved at freeze and is emitted today.** (2026-08-03: ADR-0107
+  implemented the producer this paragraph deferred — its orphan reaper writes
+  `indeterminate` with an attributable reason; the reservation strategy below worked as
+  intended.) It is the value for a run that can be established to have ended but whose
+  result cannot be established, and the component that produces it is the reconciler D6
+  deferred and ADR-0107 then implemented. It was defined before any path emitted it, and
+  deliberately: `outcome` is a closed vocabulary that consumers branch on, so
   adding a third value later would be a breaking change under D2 and would cost a contract
   version. Defining an unused value costs one sentence; introducing it in v2 costs every
   consumer an upgrade. A two-valued field would also force `failed` for the unknowable case,
@@ -415,7 +432,13 @@ li job kill <run_id> --machine
   extra information carried beside it with its own reliability.
 - A run whose recorded pid is gone with no terminal recorded is an **orphan**. It is
   reported as `status: "exited"`, `terminal: false`, `outcome: null`, with `alive: false`
-  and an advisory flag that it may be orphaned. In v1 it never becomes terminal.
+  and an advisory flag that it may be orphaned. As frozen, it never became terminal;
+  since ADR-0107, a `started` orphan whose process is CONCLUSIVELY established gone —
+  process-incarnation evidence under a fenced claim, never the advisory pid probe the
+  next bullet warns about — is reaped to an attributable terminal
+  (`outcome: indeterminate`) where the fenced write publishes; a refused write leaves
+  it non-terminal until a later observation retries, and a `preparing` record or an
+  inconclusive finding stays non-terminal exactly as before.
 - **Liveness may not be the fact that establishes terminality**, and an earlier revision
   had it both ways: this decision declares the pid probe advisory because a pid can be
   reused or denied, and the next paragraph then derived a terminal outcome from that same
@@ -423,13 +446,19 @@ li job kill <run_id> --machine
   owns it, so a reused pid makes a dead run look alive, and the same unchanged record reads
   differently from two hosts. A lifecycle transition resting on that is a transition that
   depends on who asked.
-- **In v1, nothing terminalises an orphan. It stays non-terminal indefinitely.** This is a
+- **In v1 as frozen, nothing terminalised an orphan.** (2026-08-03: ADR-0107 has since
+  implemented the guarded reaper — a `started` run whose process is conclusively gone now
+  receives an attributable terminal with `outcome: indeterminate` where the fenced reap
+  publishes; a `preparing` record stays non-terminal exactly as described below.) The paragraph that follows records the
+  decision as frozen. This is a
   decision, not a gap, and it is stated here so that a consumer can plan for it rather than
   discover it. A run whose process died without its terminal hook running, and a run whose
   producer died before it ever spawned, both remain `terminal: false` for as long as their
-  records exist. A consumer's bounded wait will keep returning them as pending until its own
-  window closes; what it does then is the consumer's policy, and this contract does not
-  pretend to make that decision for it.
+  records exist. As frozen, a consumer's bounded wait kept returning them as pending until
+  its own window closed (today D10's amended contract returns the stopped cases in
+  `stopped_without_end` and an aged `preparing` record in `unresolved_spawn`, at once
+  rather than at window close); what the consumer does then is its own policy, and this
+  contract does not pretend to make that decision for it.
 - **Why not simply specify the reconciler here.** Two earlier revisions tried, in opposite
   directions, and both failed for the same underlying reason: terminalising a run you did
   not run requires evidence that a run *ended*, and neither a missing pid nor an
@@ -527,8 +556,14 @@ is configured, sends a terminal notice.
   reading, so nothing wakes it to learn that nothing will wake it (P8). A consumer
   restart across a successful delivery loses it identically. Reconciliation is D10's
   bounded wait, or a poll; the notice is an optimisation over that floor, not a
-  replacement for it. That floor is bounded observation and not eventual resolution: an
-  orphan under D6 sends no notice, because it never reaches a terminal status, and it does
+  replacement for it. That floor is bounded observation, and it is eventual resolution
+  only for the case ADR-0107 closed: a conclusive `started` orphan whose fenced reap
+  PUBLISHES durably is terminal, and the reap winner attempts the same configured
+  delivery the dead child's hook would have sent. A reap that cannot publish — the lock
+  or the write refused — leaves the record non-terminal and advisory-flagged, sends no
+  notice, and is retried by the next observation. A `preparing` or inconclusive orphan
+  sends no notice, because it
+  never reaches a terminal status, and it does
   not resolve under polling either. A consumer that reads this decision as "the poll always
   gets there in the end" has the right fallback and the wrong stopping condition, which is
   what the consumer obligation on an unresolved bounded wait is for. D10 names such a run
@@ -542,7 +577,7 @@ is configured, sends a terminal notice.
 - Artifacts are written before the notice is sent, so a consumer woken by the notice
   finds the outputs already present.
 
-### D10 — Bounded observation, taken from ADR-0066 D6, extended in two places and completed in one
+### D10 — Bounded observation, shared with ADR-0066 D6, stated here in full
 
 `wait` takes ids, a maximum wait, and a poll interval; both numbers are clamped to
 documented bounds and the effective values are echoed back. `0` is a legal snapshot
@@ -571,26 +606,52 @@ request.
   is nicer is not the point. Every status-bearing path in this contract resolves through one
   authority, and an orphan is terminal on all of them or on none.
 
-**Three additions this ADR makes, which ADR-0066 does not state.** They are marked as
+**Three additions this ADR made when its text froze, which ADR-0066 then did not state.**
+ADR-0066's amendments have since adopted all three (`outcome` on every entry and the
+partition on 2026-07-27; the four-way partition, either-list floor, and fenced purity
+exception on 2026-08-03), so they are shared rules now and this section carries the fuller
+rationale. They were marked as
 extensions rather than folded into the list above, because presenting a new decision as an
 existing one tells every reader there is nothing left to reconcile, which is the most
 effective way to prevent it being reconciled:
 
-- **Observing does not touch the run.** A wait that times out, is signalled, or whose
-  caller disconnects leaves the durable run exactly as it was. Cancelling an observation is
-  not cancelling the work. ADR-0066 D6 is silent on signal and disconnect, so an MCP
-  implementer reading only that ADR could let request cancellation propagate into the
-  operation while an external consumer assumes it cannot — the two surfaces then behave
-  differently after the identical event.
+- **Observing does not touch the run — with one deliberate, fenced exception.** A wait
+  that times out, is signalled, or whose caller disconnects leaves the durable run exactly
+  as it was; cancelling an observation is not cancelling the work. The exception is the
+  one ADR-0107 added: the first reader of a conclusively-gone `started` orphan reaps it
+  where the fenced write publishes — an attributable terminal written under a fenced
+  claim, before notification and wait aggregation — repairing a record no writer survived
+  to finish, never mutating live work. A refused or unpublishable write leaves the run
+  exactly as every other observation does; the retry belongs to the next reader. ADR-0066
+  D6 as first written was silent on signal and disconnect, so an MCP
+  implementer reading only that ADR could have let request cancellation propagate into the
+  operation while an external consumer assumed it could not; its 2026-07-27 amendment
+  states the purity rule and its 2026-08-03 amendment adds this same fenced exception.
 - **Every entry carries `outcome`** as well as `terminal`, per D4. ADR-0066 D6's entry
-  contract lists kind, status, terminality and reason code, so a conforming ADR-0066
-  implementation would omit the field this contract requires for reporting a result.
+  contract as first written listed kind, status, terminality and reason code, so a
+  conforming implementation could have omitted the field this contract requires for
+  reporting a result; the 2026-07-27 amendment added `outcome` and both documents now
+  require it.
 - **An id that waiting cannot resolve does not hold the window open, and the producer pays
   a floor for it.** A run whose process is gone with no end recorded has stopped, and both
-  writers of an end are past it, so further polling cannot change its answer. Such ids are
-  returned in their own list, `stopped_without_end`, rather than in `pending`, and the call
-  stops re-observing once every remaining id is either terminal or in that list. It is a
-  separate list and not a per-id error, because observing them succeeded. Nothing about the
+  original writers of an end are past it. Where that finding is conclusive for a `started`
+  run and the fenced reap publishes, the status read resolves it before aggregation
+  (ADR-0107): it comes back terminal and never appears in this list. The list is keyed on
+  what is known, not on a phase name: it holds every observed record that stopped, or
+  cannot be shown to be progressing, and could not be resolved — a `started` case with an
+  inconclusive finding, one whose conclusive transition could not be published (retried
+  on the next observation), and a record written before the spawn phase existed that is
+  not shown alive — phase absence alone is never stopped evidence, so a live pre-field
+  record is classified running and stays in `pending`. The only records
+  kept out are the ones the producer explicitly marked `preparing`: fresh, such a record
+  stays in `pending`; aged past the producer's stated threshold, it is returned in its
+  own fourth bucket, `unresolved_spawn`, with that threshold reported beside it (there is
+  no process to prove absent, so it is a different fact than a stopped run). The stopped
+  ids are returned in their own list, `stopped_without_end`, rather than in `pending`,
+  and the call stops re-observing once every remaining id is either terminal or in one of
+  those two lists. It is a
+  separate list and not a per-id error, because observing them succeeded. For those entries
+  nothing about the
   record changes: the entry stays non-terminal with a null outcome, and a run that does
   record an end afterwards is classified terminal by the next observation exactly as
   before. `all_terminal` stays false while any id is in the list, because a run that stopped
@@ -601,7 +662,9 @@ effective way to prevent it being reconciled:
   resolves. Dropping such ids from `pending` removes the second, and a consumer looping
   until `all_terminal` with no backoff of its own would turn a visible stall into a hot
   loop, which is worse than the stall it removes. So a call that would return without having
-  waited at all, while at least one id is in `stopped_without_end`, first sleeps one poll
+  waited at all, while at least one id is in `stopped_without_end` or `unresolved_spawn` —
+  the floor keys on either list, since an aged `preparing` record resolves nothing by
+  waiting either — first sleeps one poll
   interval — bounded by whatever is left of the window — and observes once more. The trigger
   is a property of the observation the call is about to return, not of any history, so it
   applies on a first observation as much as a later one.
@@ -624,25 +687,28 @@ effective way to prevent it being reconciled:
   boundary whose safety depends on N independent clients continuing to behave is not a
   boundary.
 
-The first two extensions need a forward amendment to ADR-0066 D6 to keep the two documents
-in agreement; until that lands, this ADR is the stricter of the two on them and an
-implementation satisfying it also satisfies ADR-0066.
+ADR-0066 D6 was amended on 2026-08-03 to state the same partition, the same either-list
+floor, and the same fenced-reap exception, so the two documents agree; where the level of
+detail differs, this ADR carries the fuller statement.
 
-**The third is a definition of something ADR-0066 D6 leaves open**, and it is the clause to
-read carefully. D6 states the result as the entries plus `all_terminal`, `timed_out`, and
-the list of ids still pending. It names that key and nowhere says which ids qualify for it,
-so it does not by itself decide where a run that stopped without an end belongs. A reading
-is available on which it does: D6 names a per-id error channel for ids that could not be
+**The third was a definition of something ADR-0066 D6 as first written left open**, and it
+is the clause whose history is worth keeping. D6 then stated the result as the entries plus
+`all_terminal`, `timed_out`, and
+the list of ids still pending. It named that key and nowhere said which ids qualify for it,
+so it did not by itself decide where a run that stopped without an end belongs. A reading
+was available on which it did: D6 names a per-id error channel for ids that could not be
 observed, and naming one exclusion can be read as ruling out others. That reading is
-recorded here because it was argued seriously, not because it is adopted. It is not
+recorded here because it was argued seriously, not because it was adopted. It was not
 adopted — the error channel is for ids observation could not resolve, while a stopped id
 was observed and classified, so naming that channel does not settle the pending rule by
-exclusion. The honest conclusion is that D6 underdetermines this, and an underdetermined
+exclusion. The honest conclusion was that D6 underdetermined this, and an underdetermined
 clause is settled by amending it rather than by either document assuming its own reading.
-The forward amendment therefore states the partition outright: `pending`,
-`stopped_without_end` and terminal are disjoint and exhaustive over every observed id.
-That is the invariant this contract's implementation already tests, so the amendment
-records a rule that is enforced rather than adding one that is not.
+ADR-0066's 2026-08-03 amendment therefore states the partition outright: `pending`,
+`stopped_without_end`, `unresolved_spawn` and terminal are disjoint and exhaustive over
+every observed id (2026-08-03: the fourth bucket — an aged `preparing` record — is
+corrected into the partition here; the implementation and its tests already enforce the
+four-way form). The amendment records a rule that is enforced rather than adding one
+that is not.
 
 **Why this is taken up rather than deferred.** An earlier draft deferred bounded wait on
 the grounds that timeout, signal and disconnect had no v1 answer. That was wrong about
@@ -680,7 +746,9 @@ starts from the constraints rather than rediscovering them:
 Everything in this list is a constraint on a future design, not a requirement on a v1
 implementation. Nothing here is normative: a v1 implementation has no reconciler, and the
 list exists so that whoever builds one starts from the constraints rather than
-rediscovering them. Adding it later is additive under D2 only because `outcome`'s
+rediscovering them. (2026-08-03: ADR-0107 built the `started`-phase reconciler within
+exactly these constraints — incarnation identity, host boundary, fenced ownership,
+per-phase eligibility; `preparing` remains unresolved, as this list predicted.) Adding it later is additive under D2 only because `outcome`'s
 vocabulary and the terminal fields are defined now, which is why they are.
 
 **DEFERRED: usage and cost accounting** — tokens, duration, and whatever else a metered
@@ -712,14 +780,15 @@ being asked of them in one place.
    actually tolerates it.
 3. **Never map `status` onto a local set** (D4). Record and display it verbatim; branch
    on `terminal` and `outcome`.
-4. **Branch on `outcome` totally, including `indeterminate`** (D4). All four cases —
-   `null`, `succeeded`, `failed`, `indeterminate` — need a defined behaviour. This is the
-   obligation that makes D4's reservation of `indeterminate` worth anything: the value is
-   defined now so that a reconciler can be added later without a version increment, and
-   that additivity is real only if consumers already have somewhere to put it. No v1 path
-   emits it, so a consumer cannot find the missing branch by testing against a producer,
-   and a two-way branch written against v1 behaviour looks complete for as long as v1 is
-   what it talks to. Test the branch against a hand-written envelope.
+4. **Branch on `outcome` totally** (D4). All five cases — `null`, `succeeded`, `failed`,
+   `cancelled`, `indeterminate` — need a defined behaviour (2026-08-03 erratum:
+   `cancelled` joined the documented set, and ADR-0107's reaper now emits
+   `indeterminate`, so neither formerly-theoretical branch is theoretical any longer).
+   This is the obligation that made D4's reservation of `indeterminate` worth anything:
+   the value was defined before any path emitted it, so its producer was added without a
+   version increment — which is exactly what then happened. A branch written against the
+   pre-reaper wire looks complete for as long as that wire is what it talks to. Test the
+   branch against a hand-written envelope.
 5. **Never render `available: false` as "none"** (D7). Absence of evidence is not
    evidence of absence, and the whole wrapper exists to stop those sharing an encoding.
 6. **Check the exit status before parsing stdout, and do not parse it at all on 78**
@@ -728,20 +797,23 @@ being asked of them in one place.
 7. **Never treat a terminal notice as proof, or as the only discovery path** (D9).
    Delivery can fail, and the record of that failure lives in state a non-polling
    consumer is not reading.
-8. **Have a defined policy for a run a bounded wait does not resolve** (D10, D6). Two
-   shapes reach you and both need the policy: an id still in `pending` when the window
-   expires, and an id in `stopped_without_end`, which comes back at once and comes back
-   every time. This is the obligation created by v1's liveness choice, and it is the one
+8. **Have a defined policy for a run a bounded wait does not resolve** (D10, D6). Three
+   shapes reach you and all need the policy: an id still in `pending` when the window
+   expires; an id in `stopped_without_end`, which comes back at once and comes back
+   every time; and an id in `unresolved_spawn` — an aged `preparing` record with no
+   process to prove absent, which likewise returns every time. This is the obligation created by v1's liveness choice, and it is the one
    most likely to be skipped, because most runs resolve and the case looks like an edge.
-   It is not an edge: v1 states that nothing terminalises an orphan, so a consumer that
-   runs long enough **will** meet a run that never resolves, and this contract does not
-   supply the policy for it. Give up after N attempts, escalate to a human, mark it
+   It is not an edge: v1 as frozen terminalised no orphan, and although ADR-0107 now
+   reaps the conclusive `started` cases whose fenced write publishes, a `preparing` or
+   inconclusive orphan still never resolves on its own — so a consumer that runs long enough **will** meet a run that
+   never resolves, and this contract does not supply the policy for it. Give up after N attempts, escalate to a human, mark it
    abandoned in your own store — any of those is conforming. Having no policy is not,
    because the failure mode is a consumer that waits forever on a run nobody will ever
    finish, or three integrators each inventing a different timeout behaviour, which is
    the divergence removed from the specification arriving back through the consumers.
 
-   On pacing, this obligation describes rather than requires. A `stopped_without_end` id
+   On pacing, this obligation describes rather than requires. A `stopped_without_end` or
+   `unresolved_spawn` id
    does not consume the window, so the window is not backpressure for it — the producer
    spends a one-interval floor instead (D10), and the correctness of the boundary does not
    depend on you. A backoff of your own is still recommended, because a floor set by the
@@ -769,15 +841,20 @@ a local change: it must also be classified, on every status-bearing response.
 it. Additive change stays free under the narrowed rule in D2; anything else costs a
 version increment and a coordinated update.
 
-**Accepted in v1, and stated rather than discovered.** A run whose process dies without
-recording a terminal, or whose producer dies before spawning it, stays non-terminal for as
-long as its record exists. A consumer's bounded wait reports it as stopped without an end
-every time, and never as finished. Two earlier revisions tried to close this with a rule
+**Accepted in v1, and stated rather than discovered.** As frozen: a run whose process
+died without recording a terminal, or whose producer died before spawning it, stayed
+non-terminal for as long as its record existed. Since ADR-0107 the first case closes when
+the evidence is conclusive and the fenced reap publishes — a `started` orphan is reaped
+to an attributable terminal — while producer-death-before-spawn (`preparing`) and
+inconclusive findings still stay non-terminal. A consumer's bounded wait reports the
+inconclusive or unpublishable cases as stopped without an end every time, and
+an aged `preparing` record in its own `unresolved_spawn` bucket, never as finished. Two earlier revisions tried to close this with a rule
 every reader would apply, and both produced worse failures than the one they removed: a
 healthy child reported as terminally failed, and two hosts disagreeing about one unchanged
 record. Closing it properly needs a fenced reconciler with process-incarnation evidence,
 which is a protocol with its own failure modes rather than a clause, so it is written out
-in the deferred section instead of half-specified here. Naming the run is not resolving it:
+in the deferred section instead of half-specified here — and was then built to exactly
+that specification, for the `started` phase, by ADR-0107. Naming the run is not resolving it:
 the caller learns at once that nobody will finish this run, and still has to decide what to
 do about it, which is what consumer obligation 8 is for.
 
@@ -795,12 +872,13 @@ own tests will not catch it.
 **Cost of reversal.** D3, D4 and D7 are cheap to extend and expensive to retract. D2 is
 the escape hatch: a breaking change is expressible as a version increment rather than a
 negotiation. D8 could be dropped without touching the envelope, at the cost of P7
-returning. D10 cannot be dropped without re-opening the contradiction with ADR-0066, and
-its two marked extensions cannot be dropped without leaving the two documents disagreeing
-about what a wait entry contains and what a disconnect does. The clause it decides where
-D6 is silent is the opposite case: nothing forces it, an implementation could have put
-stopped ids in `pending` and stayed conforming, and it is reversible only until a consumer
-has been written against it. The producer floor attached to it is cheaper to reverse than
+returning. D10's rules are now stated in ADR-0066 D6 as well, so dropping them here would
+not create disagreement; it would leave the verb surface carrying the rules with none of
+the rationale, and reversing any of them is a coordinated amendment of both documents. The
+partition clause had a window in which it was cheap to reverse — before ADR-0066's
+2026-08-03 amendment an implementation could have put
+stopped ids in `pending` and stayed conforming — and that window is closed: both documents
+now state where every unresolved id belongs, and consumers may be written against it. The producer floor attached to it is cheaper to reverse than
 to introduce, since removing a minimum call duration cannot break a caller that was
 tolerating it.
 
