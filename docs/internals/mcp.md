@@ -276,6 +276,19 @@ Inconclusive (settle nothing about death):
   `"unreadable"`/`"wrong_shape"` mean a file is on disk and damaged — reporting
   either as unknown would send an operator away from a file that exists.
 
+#### listing-negative-sweep
+
+A caller who suspects nothing still needs to find the run whose terminal
+notice never arrived — by construction that run announced itself to nobody.
+`job.list` is that surface: every row carries `notify_delivery_state`
+(`none` / `delivered` / `delivered_unverified` / `failed`, collapsed from the
+full `notify_delivery` object `status()` reports for one-run detail), so the
+sweep is "list, act on `failed`" with no per-run reads. `none` covers both
+not-terminal-yet and no-notifier-configured — silence is the documented
+default there, never a failure — and `delivered_unverified` is deliberately
+not collapsed into either neighbor (a zero exit from a command shape whose
+zero exit doesn't prove a send supports neither claim).
+
 #### signal-leader-group-safety
 
 `_signal_leader_group()` (`lionagi/mcp/jobs.py`) signals a process group only
