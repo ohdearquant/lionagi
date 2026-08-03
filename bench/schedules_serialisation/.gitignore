@@ -1,0 +1,3 @@
+# Synthetic benchmark stores and raw samples are generated locally.
+artifacts/
+__pycache__/
