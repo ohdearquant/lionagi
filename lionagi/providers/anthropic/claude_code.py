@@ -858,6 +858,30 @@ class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
         async with contextlib.aclosing(stream_claude_code_cli(request_obj, **handlers)) as gen:
             async for item in gen:
                 if isinstance(item, CLISession):
+                    # The session carries the run's terminal verdict and is not
+                    # itself yielded, so a failure recorded only there reaches
+                    # nobody on this path: the result chunk emitted beside it
+                    # carries usage, cost, turns and duration, never the error
+                    # flag. A run that ended in error then looks exactly like
+                    # one that succeeded, and that is the direction consumers
+                    # believe without checking.
+                    #
+                    # Per-tool failures already have their own carriers, so this
+                    # is only about the session-terminal verdict.
+                    #
+                    # The already-reported guard is vacuous today: nothing else
+                    # in this module constructs an error chunk, so the condition
+                    # is always true. It is kept because the emission it guards
+                    # belongs to this file, and the natural place to add a real
+                    # error chunk is a few lines up — at which point the guard
+                    # is what stops one failure being reported twice. Do not
+                    # read it as currently load-bearing.
+                    if item.is_error and not any(c.type == "error" for c in item.chunks):
+                        yield StreamChunk(
+                            type="error",
+                            content=item.result or "Claude Code session failed",
+                            is_error=True,
+                        )
                     continue
                 yield item
 
