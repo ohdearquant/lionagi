@@ -1049,6 +1049,12 @@ async def test_a_conversation_that_predates_this_check_keeps_its_session(tmp_pat
     Every conversation alive when this ships is in that state, so reading NULL
     as a mismatch would drop every live session once, at upgrade, and would look
     like the check working.
+
+    The grace is one turn wide, and that is what the last assertion is for. The
+    same call records the resolution it just let through, so the conversation is
+    governed from its next turn onward. Without that write the exemption would
+    never end, and the conversations it exempted permanently would be exactly the
+    long-lived ones this check exists for.
     """
     store = OperatorStore(tmp_path / "state.db")
     cid = (await store.create_conversation())["id"]
@@ -1058,7 +1064,14 @@ async def test_a_conversation_that_predates_this_check_keeps_its_session(tmp_pat
     kept = await store.claim_resolved_pair(cid, provider="claude_code", model="sonnet")
 
     assert kept == "session-from-before"
-    assert (await store.get_conversation(cid))["providerSessionId"] == "session-from-before"
+    conversation = await store.get_conversation(cid)
+    assert conversation["providerSessionId"] == "session-from-before"
+    assert (conversation["resolvedProvider"], conversation["resolvedModel"]) == (
+        "claude_code",
+        "sonnet",
+    )
+    # Governed from here: the next turn on a different pair drops the session.
+    assert await store.claim_resolved_pair(cid, provider="claude_code", model="opus") is None
 
 
 @pytest.mark.asyncio
