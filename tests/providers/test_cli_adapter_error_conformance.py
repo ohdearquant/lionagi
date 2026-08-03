@@ -79,7 +79,10 @@ difference is in which layer constructs the chunk:
   makes gemini the one adapter where "exactly one" is non-vacuous today.
 - ``codex`` constructs one in the parser AND one in the endpoint, with no guard
   between them, so a real ``turn.failed`` event is reported twice. This is why
-  "at least one" would have been the wrong contract: it passes on codex.
+  "at least one" would have been the wrong contract: it passes on codex. The
+  parser's construction is also unconditional on its own benign-EOS
+  classification, so a resumed session that ends normally is reported as a
+  failure too.
 - ``pi`` constructs none at all.
 
 What this suite does not cover
@@ -117,6 +120,7 @@ _UNMARK_RULE = (
 # Each mark names the specific divergence it is waiting on, so it cannot be
 # removed by anything less than that divergence going away.
 _CODEX_GAP = "the codex double report, and its error chunks not setting is_error"
+_CODEX_BENIGN_EOS_GAP = "codex yielding an error chunk for a benign end-of-stream"
 _PI_GAP = "pi emitting no error chunk and delivering the failure as a result chunk"
 
 
@@ -330,6 +334,34 @@ async def test_pi_does_not_deliver_a_failure_wearing_the_type_that_means_success
     results = [c for c in chunks if c.type == "result"]
     assert not any("500" in (c.content or "") for c in results), (
         "the failure was delivered as a result chunk carrying the error message"
+    )
+
+
+@pytest.mark.xfail(strict=True, reason=_UNMARK_RULE.format(gap=_CODEX_BENIGN_EOS_GAP))
+async def test_codex_benign_end_of_stream_is_not_reported_as_a_failure(monkeypatch):
+    """A resumed codex session that ends NORMALLY reports a CLI failure.
+
+    Some Codex CLI versions emit ``{"type": "error", "error": {}}`` when a
+    resumed session ends normally. The parser classifies that correctly and at
+    some length: three conditions, the raw payload captured before
+    null-normalisation specifically so an explicit ``null`` cannot be mistaken
+    for the bare ``{}`` sentinel. Having decided it is benign it retracts
+    ``session.is_error`` to False and tags the metadata ``benign_eos`` -- and
+    then falls through and yields the error-type chunk anyway, with content
+    reading "CLI failure (empty error payload...)".
+
+    So the classification reaches the session flag and the metadata but never
+    reaches the decision to yield. The non-streaming path is fine, because it
+    reads the retracted flag; a streaming consumer keying on chunk type sees a
+    failure on a session that succeeded. This is the healthy direction of the
+    contract, and it is the reason that direction is asserted at all.
+    """
+    adapter = next(a for a in ADAPTERS if a.id == "codex")
+    benign_eos = Fixture([{"type": "error", "error": {}}], AUTHORED)
+    chunks = await _stream_chunks(adapter, benign_eos, monkeypatch)
+
+    assert [c for c in chunks if c.type == "error"] == [], (
+        "a resumed session that ended normally was reported to the stream as a CLI failure"
     )
 
 
